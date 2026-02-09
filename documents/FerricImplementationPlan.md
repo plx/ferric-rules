@@ -2,9 +2,9 @@
 
 ## Implementation Plan
 
-**Version:** 9.0  
+**Version:** 10.0  
 **Date:** February 2026  
-**Status:** Planning
+**Status:** Final
 
 ---
 
@@ -27,14 +27,6 @@
 15. [Implementation Phases](#15-implementation-phases)
 16. [Compatibility Documentation](#16-compatibility-documentation)
 17. [Appendix A: Dropped Features](#appendix-a-dropped-features)
-18. [Appendix B: Review Feedback Addressed (v2)](#appendix-b-review-feedback-addressed-v2)
-19. [Appendix C: Review Feedback Addressed (v3)](#appendix-c-review-feedback-addressed-v3)
-20. [Appendix D: Review Feedback Addressed (v4)](#appendix-d-review-feedback-addressed-v4)
-21. [Appendix E: Review Feedback Addressed (v5)](#appendix-e-review-feedback-addressed-v5)
-22. [Appendix F: Review Feedback Addressed (v6)](#appendix-f-review-feedback-addressed-v6)
-23. [Appendix G: Review Feedback Addressed (v7)](#appendix-g-review-feedback-addressed-v7)
-24. [Appendix H: Review Feedback Addressed (v8)](#appendix-h-review-feedback-addressed-v8)
-25. [Appendix I: Review Feedback Addressed (v9)](#appendix-i-review-feedback-addressed-v9)
 
 ---
 
@@ -75,25 +67,30 @@ Ferric will be dual-licensed under MIT and Apache 2.0, allowing users to choose 
 
 ### 2.1 No Global State
 
-With one exception (a one-time initialization function), Ferric maintains no global state. Every engine instance is fully independent:
+Ferric avoids process-wide mutable state for engine behavior. There are only two tightly-scoped process-level facilities:
+
+1. A one-time `ferric::init()` initialization hook
+2. Thread-local last-error storage used by the C FFI for pre-engine failures
+
+Neither facility stores rule network state, facts, agenda state, templates, or runtime configuration. Every engine instance remains fully independent:
 
 ```rust
-// The only global operation: called once per process lifetime
+// One-time process setup (optional unless embedding requires it)
 ferric::init();
 
-// All subsequent operations are instance-based
+// All rule execution state is instance-local
 let engine_a = Engine::new(EngineConfig::default())?;
 let engine_b = Engine::new(EngineConfig::strict())?;
 
-// These engines share nothing; they can be used from different threads
-// (though each individual engine is not thread-safe without external synchronization)
+// Engines share no mutable runtime state.
+// Each engine is thread-affine and must be used on its owning thread.
 ```
 
 **Threading model:** Engine instances are **thread-affine** (`!Send + !Sync`). This means:
 
-- An engine **cannot** be moved to a different thread or shared between threads.
+- An engine **cannot** be shared between threads.
+- Cross-thread transfer is only possible via explicit `unsafe` handoff (`move_to_current_thread`), with strict invariants.
 - Multiple independent engines can exist on different threads simultaneously—they share nothing.
-- If cross-thread transfer is genuinely needed (rare), callers must use an `unsafe` wrapper that asserts the invariants (see below).
 
 This is enforced at the type level, not just by documentation:
 
@@ -852,14 +849,23 @@ pub struct VarMap {
 }
 
 impl VarMap {
-    pub fn get_or_create(&mut self, name: Symbol) -> VarId {
+    pub fn get_or_create(&mut self, name: Symbol) -> Result<VarId, VarMapError> {
         if let Some(&id) = self.by_name.get(&name) {
-            return id;
+            return Ok(id);
         }
+
+        let attempted = self.by_id.len() + 1;
+        if attempted > u16::MAX as usize {
+            return Err(VarMapError::TooManyVariables {
+                attempted,
+                max: u16::MAX as usize,
+            });
+        }
+
         let id = VarId(self.by_id.len() as u16);
         self.by_name.insert(name, id);
         self.by_id.push(name);
-        id
+        Ok(id)
     }
 
     pub fn lookup(&self, name: Symbol) -> Option<VarId> {
@@ -873,6 +879,12 @@ impl VarMap {
     pub fn len(&self) -> usize {
         self.by_id.len()
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum VarMapError {
+    #[error("rule declares too many variables: attempted {attempted}, max {max}")]
+    TooManyVariables { attempted: usize, max: usize },
 }
 
 /// Runtime binding set: VarId → Value
@@ -1131,6 +1143,27 @@ impl TokenStore {
             .get(&id)
             .into_iter()
             .flat_map(|children| children.iter().copied())
+    }
+
+    /// Given a set of affected tokens, return only roots whose ancestors are not
+    /// in the same set. This prevents double-cascade during fact retraction.
+    pub fn retraction_roots(&self, affected: &HashSet<TokenId>) -> Vec<TokenId> {
+        let mut roots = Vec::new();
+        for &token_id in affected {
+            let mut has_affected_ancestor = false;
+            let mut current = self.get(token_id).and_then(|t| t.parent);
+            while let Some(parent_id) = current {
+                if affected.contains(&parent_id) {
+                    has_affected_ancestor = true;
+                    break;
+                }
+                current = self.get(parent_id).and_then(|t| t.parent);
+            }
+            if !has_affected_ancestor {
+                roots.push(token_id);
+            }
+        }
+        roots
     }
 
     pub fn get(&self, id: TokenId) -> Option<&Token> {
@@ -1433,14 +1466,24 @@ impl AlphaMemory {
     /// Remove a fact from the memory
     pub fn remove(&mut self, fact_id: FactId, fact: &Fact) {
         self.facts.remove(&fact_id);
-        
-        // Update indices
+
+        // Update indices and prune empty entries eagerly to avoid quiet memory growth.
         for &slot in &self.indexed_slots {
             if let Some(value) = get_slot_value(fact, slot) {
                 if let Some(key) = AtomKey::from_value(value) {
                     if let Some(index) = self.slot_indices.get_mut(&slot) {
+                        let mut remove_slot_index = false;
                         if let Some(set) = index.get_mut(&key) {
                             set.remove(&fact_id);
+                            if set.is_empty() {
+                                index.remove(&key);
+                            }
+                        }
+                        if index.is_empty() {
+                            remove_slot_index = true;
+                        }
+                        if remove_slot_index {
+                            self.slot_indices.remove(&slot);
                         }
                     }
                 }
@@ -1647,11 +1690,11 @@ pub struct Activation {
 
 /// Composite key that determines activation ordering on the agenda.
 /// All fields participate in comparison; the final activation_seq serves
-/// as a stable, monotonic tiebreaker to ensure deterministic, total ordering.
+/// as a stable, monotonic tiebreaker to ensure a total order within a run.
 ///
 /// Ord is derived in field order (salience first, then strategy fields, then seq).
 /// Higher salience fires first (Reverse wrapper), then strategy-specific,
-/// then higher activation_seq fires first (for deterministic test output).
+/// then higher activation_seq fires first.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AgendaKey {
     /// Primary: higher salience fires first (wrapped in Reverse for BTreeMap ordering)
@@ -1716,7 +1759,7 @@ pub struct Agenda {
     
     /// Monotonically increasing counter for activation sequence numbers.
     /// Assigned to each activation on insertion. Never reused, never decremented.
-    /// Provides a stable, deterministic tiebreaker for agenda ordering.
+    /// Provides a stable tiebreaker for agenda ordering within one run.
     next_seq: u64,
 }
 
@@ -1747,7 +1790,8 @@ impl Agenda {
     }
     
     /// Add an activation, maintaining all indices.
-    pub fn add(&mut self, mut activation: Activation) {
+    /// Returns the assigned ActivationId.
+    pub fn add(&mut self, mut activation: Activation) -> ActivationId {
         let token_id = activation.token;
         let seq = self.next_seq;
         self.next_seq += 1;
@@ -1760,6 +1804,7 @@ impl Agenda {
             .entry(token_id)
             .or_default()
             .push(id);
+        id
     }
     
     /// Pop the highest-priority activation. O(log n), no heap allocation.
@@ -1792,7 +1837,7 @@ All strategies share salience as the primary key. The table below defines the se
 
 **Design notes:**
 
-- **Monotonic `activation_seq` as tiebreaker (not `ActivationId`):** SlotMap keys are *not* monotonic — they reuse indices with incremented generations, so `ActivationId` ordering can shift unpredictably across insertion/removal churn. The `activation_seq: u64` counter is strictly monotonic (incremented on every `add()`, never decremented or reused), making the tiebreaker deterministic and genuinely recency-based. `ActivationId` is used only for identity/lookup (in `id_to_key`, `token_to_activations`, etc.), never for ordering.
+- **Monotonic `activation_seq` as tiebreaker (not `ActivationId`):** SlotMap keys are *not* monotonic — they reuse indices with incremented generations, so `ActivationId` ordering can shift unpredictably across insertion/removal churn. The `activation_seq: u64` counter is strictly monotonic (incremented on every `add()`, never decremented or reused), so tie handling never depends on key-reuse artifacts. `ActivationId` is used only for identity/lookup (in `id_to_key`, `token_to_activations`, etc.), never for ordering.
 - **`BTreeMap` (not `BTreeSet`):** The ordering structure is `BTreeMap<AgendaKey, ActivationId>` rather than `BTreeSet<AgendaKey>`. This is because `pop_first()` must return both the key *and* the corresponding `ActivationId` in O(log n). With a `BTreeSet`, recovering the `ActivationId` from a popped key would require an O(n) reverse scan through `id_to_key`. `BTreeMap::pop_first()` returns `(AgendaKey, ActivationId)` directly.
 - **`BTreeMap` over `BinaryHeap`:** `BinaryHeap` does not support efficient arbitrary deletion (only `pop`). Retraction cleanup requires `remove(act_id)`, which in a `BinaryHeap` requires either a positions map + custom sift (fragile) or lazy tombstones (memory leak risk in long-running engines). `BTreeMap` provides honest O(log n) remove.
 - If profiling later reveals that the `BTreeMap` overhead is significant (unlikely given typical agenda sizes of 10–1000 activations), it can be replaced with a custom indexed heap without changing the API. The `Agenda` struct encapsulates the ordering strategy entirely.
@@ -1811,6 +1856,16 @@ All strategies share salience as the primary key. The table below defines the se
 
 No global scans are required at any step.
 ```
+
+### 6.6.2 Determinism Contract
+
+Ferric guarantees that agenda comparisons define a **total order** (no ambiguous comparisons), but it does **not** promise cross-run or cross-platform replay-identical firing order as part of the public API contract.
+
+- Within a single run, agenda operations are stable and well-defined.
+- Across runs, equivalent-priority activations may fire in different order due to factors such as hash iteration order and dynamic rule/fact loading order.
+- Correctness for Ferric is therefore defined in terms of semantic outcomes (final working-memory state) for rule sets that are order-insensitive at equal priority.
+
+If a deployment requires replay-identical ordering, rule authors must encode explicit precedence (salience/module focus/phase facts) rather than relying on incidental tie order.
 
 ### 6.7 Network Compilation
 
@@ -1864,6 +1919,12 @@ impl ReteCompiler {
 ### 6.8 Network Operations
 
 ```rust
+/// Delta produced by a fact retraction.
+pub struct RetractionDelta {
+    pub removed_activations: Vec<Activation>,
+    pub added_activations: Vec<ActivationId>,
+}
+
 impl ReteNetwork {
     /// Assert a fact: propagate through network, return new activations
     pub fn assert_fact(
@@ -1898,32 +1959,41 @@ impl ReteNetwork {
         activations
     }
 
-    /// Retract a fact: update memories, return removed activations
+    /// Retract a fact: update memories and report agenda delta.
     pub fn retract_fact(
         &mut self,
         fact_id: FactId,
         fact: &Fact,
         token_store: &mut TokenStore,
         agenda: &mut Agenda,
-    ) -> Vec<Activation> {
+    ) -> RetractionDelta {
         let mut removed_activations = Vec::new();
-        
-        // 1. Find all tokens containing this fact (using reverse index)
-        let affected_tokens: Vec<_> = token_store.tokens_containing(fact_id).collect();
-        
-        // 2. Remove affected tokens and all descendants (using parent→children index)
-        for token_id in affected_tokens {
+
+        // 1. Find all directly affected tokens.
+        let affected_tokens: HashSet<TokenId> = token_store.tokens_containing(fact_id).collect();
+
+        // 2. Collapse to roots only, so each subtree is removed exactly once.
+        let root_tokens = token_store.retraction_roots(&affected_tokens);
+
+        // 3. Remove affected tokens and descendants (using parent→children index).
+        for token_id in root_tokens {
             self.remove_token_cascade(token_id, token_store, agenda, &mut removed_activations);
         }
-        
-        // 3. Remove from alpha memories
+
+        // 4. Remove from alpha memories.
         self.remove_from_alpha(fact_id, fact);
-        
-        // 4. Update negative nodes (may create new activations)
-        let new_activations = self.update_negative_on_retract(fact_id, fact, token_store);
-        
-        // Return removed activations (agenda will handle new ones from negative updates)
-        removed_activations
+
+        // 5. Update negative-side nodes and enqueue any newly unblocked activations.
+        let mut added_activations = Vec::new();
+        for activation in self.update_negative_on_retract(fact_id, fact, token_store) {
+            let id = agenda.add(activation);
+            added_activations.push(id);
+        }
+
+        RetractionDelta {
+            removed_activations,
+            added_activations,
+        }
     }
 
     /// Remove a token and all its descendants using TokenStore::remove_cascade.
@@ -1943,17 +2013,29 @@ impl ReteNetwork {
         let removed_entries = token_store.remove_cascade(token_id);
         
         for (id, token) in &removed_entries {
-            // O(1): remove from owning beta/negative/NCC memory via owner_node
-            if let Some(memory) = self.get_node_memory_mut(token.owner_node) {
-                memory.remove(*id);
-            }
-            
-            // O(k): remove any agenda activations derived from this token
-            removed_activations.extend(
-                agenda.remove_activations_for_token(*id)
-            );
+            self.dispatch_token_retracted(*id, token.owner_node, agenda, removed_activations);
         }
     }
+
+    fn dispatch_token_retracted(
+        &mut self,
+        token_id: TokenId,
+        owner_node: NodeId,
+        agenda: &mut Agenda,
+        removed_activations: &mut Vec<Activation>,
+    ) {
+        // 1) Remove from owning memory.
+        if let Some(memory) = self.get_node_memory_mut(owner_node) {
+            memory.remove(token_id);
+        }
+
+        // 2) Notify every side memory that retains TokenIds.
+        self.notify_negative_memories_token_retracted(token_id);
+        self.notify_ncc_memories_token_retracted(token_id);
+        self.notify_exists_memories_token_retracted(token_id);
+
+        // 3) Remove any agenda activations derived from this token.
+        removed_activations.extend(agenda.remove_activations_for_token(token_id));
     }
 }
 ```
@@ -2209,6 +2291,30 @@ impl NccMemory {
         }
         None
     }
+
+    /// Cleanup callback for cascade retraction.
+    /// Must be idempotent and tolerate missing entries.
+    pub fn token_retracted(&mut self, token_id: TokenId) {
+        self.unblocked_owners.remove(&token_id);
+
+        // token_id may be an owner
+        if let Some(results) = self.owner_to_results.remove(&token_id) {
+            for result_id in results {
+                self.result_to_owner.remove(&result_id);
+            }
+        }
+
+        // token_id may be a result
+        if let Some(owner_id) = self.result_to_owner.remove(&token_id) {
+            if let Some(results) = self.owner_to_results.get_mut(&owner_id) {
+                results.remove(&token_id);
+                if results.is_empty() {
+                    self.owner_to_results.remove(&owner_id);
+                    self.unblocked_owners.insert(owner_id);
+                }
+            }
+        }
+    }
 }
 ```
 
@@ -2274,6 +2380,25 @@ impl ExistsMemory {
         }
         
         newly_unsatisfied
+    }
+
+    /// Cleanup callback for cascade retraction.
+    /// Must be idempotent and tolerate missing entries.
+    pub fn token_retracted(&mut self, token_id: TokenId) {
+        self.satisfied.remove(&token_id);
+        self.support_count.remove(&token_id);
+
+        // Remove token from every fact support set, pruning empties.
+        let mut empty_facts = Vec::new();
+        for (&fact_id, tokens) in self.fact_to_tokens.iter_mut() {
+            tokens.remove(&token_id);
+            if tokens.is_empty() {
+                empty_facts.push(fact_id);
+            }
+        }
+        for fact_id in empty_facts {
+            self.fact_to_tokens.remove(&fact_id);
+        }
     }
 }
 ```
@@ -2458,7 +2583,7 @@ impl SourceSpan {
 /// | E0002 | Forall condition is not a single fact pattern |
 /// | E0003 | Nested forall |
 /// | E0004 | Unbound variable in forall <then> clause |
-/// | E0005 | Unsupported nesting combination |
+/// | E0005 | Unsupported nesting combination (including invalid forall <then>) |
 ///
 /// **Error code policy (stable contract):**
 /// - Codes are **append-only**: new validation rules receive the next unused
@@ -2542,7 +2667,7 @@ impl PatternValidator {
                 self.validate_pattern(inner, new_depth, errors);
             }
             Pattern::Forall { condition, then } => {
-                // Validate: condition must be a single fact pattern
+                // Validate: condition must be a single fact pattern.
                 if !matches!(condition.kind, Pattern::Fact(_)) {
                     errors.push(PatternValidationError {
                         code: "E0002",
@@ -2555,17 +2680,28 @@ impl PatternValidator {
                         ),
                     });
                 }
-                // Validate: then must be a single fact pattern
+
+                // Validate: then must also be a single fact pattern.
                 if !matches!(then.kind, Pattern::Fact(_)) {
                     errors.push(PatternValidationError {
-                        code: "E0002",
-                        kind: PatternViolation::ForallConditionNotSinglePattern,
+                        code: "E0005",
+                        kind: PatternViolation::UnsupportedNestingCombination {
+                            description: "forall <then> must be a single fact pattern".into(),
+                        },
                         span: Some(then.span.clone()),
                         stage: ValidationStage::ReteCompilation,
-                        suggestion: None,
+                        suggestion: Some(
+                            "Move additional conjunction/negation logic into separate rules.".into()
+                        ),
                     });
                 }
-                // No nested forall
+
+                // Validate variable scope when both sides are fact patterns.
+                if let (Pattern::Fact(cond), Pattern::Fact(then_fact)) = (&condition.kind, &then.kind) {
+                    self.check_forall_variable_scope(cond, then_fact, then.span.clone(), errors);
+                }
+
+                // No nested forall.
                 self.check_no_nested_forall(then, errors);
             }
             Pattern::And(children) => {
@@ -2596,6 +2732,43 @@ impl PatternValidator {
                      rules or restructuring with exists/not.".into()
                 ),
             });
+        }
+    }
+
+    fn check_forall_variable_scope(
+        &self,
+        condition: &FactPattern,
+        then_fact: &FactPattern,
+        then_span: SourceSpan,
+        errors: &mut Vec<PatternValidationError>,
+    ) {
+        let mut bound = HashSet::new();
+        if let Some(v) = condition.binding {
+            bound.insert(v);
+        }
+        for (_, c) in &condition.constraints {
+            if let PatternConstraint::Variable(v) = c {
+                bound.insert(*v);
+            }
+        }
+
+        for (_, c) in &then_fact.constraints {
+            if let PatternConstraint::Variable(v) = c {
+                if !bound.contains(v) {
+                    errors.push(PatternValidationError {
+                        code: "E0004",
+                        kind: PatternViolation::ForallUnboundVariable {
+                            var_name: format!("{:?}", v),
+                        },
+                        span: Some(then_span.clone()),
+                        stage: ValidationStage::ReteCompilation,
+                        suggestion: Some(
+                            "Bind this variable in the forall condition or an earlier LHS pattern."
+                                .into(),
+                        ),
+                    });
+                }
+            }
         }
     }
 }
@@ -2965,12 +3138,12 @@ pub enum ConflictResolutionStrategy {
     #[default]
     Depth,
     Breadth,
-    Simplicity,
-    Complexity,
     Lex,
     Mea,
-    Random,
 }
+
+// Additional CLIPS strategies (Simplicity/Complexity/Random) are explicitly
+// deferred until they are fully specified with ordering semantics and tests.
 
 impl EngineConfig {
     pub fn new() -> Self { ... }
@@ -3211,9 +3384,19 @@ fn register_stdlib(engine: &mut Engine) -> Result<(), RegisterError> {
 
 ### 10.2 Function Categories
 
-*(This section remains the same as v1—full tables of predicate, math, string, multifield, I/O, fact, agenda, and environment functions.)*
+The standard library is implemented in phases. v10 locks a concrete minimum surface so this plan is standalone.
 
-[See Section 9.2 of previous version for complete function tables]
+| Category | Minimum v1 Function Set | Notes |
+|----------|--------------------------|-------|
+| Predicate | `eq`, `neq`, `=`, `!=`, `>`, `<`, `>=`, `<=`, `numberp`, `integerp`, `floatp`, `symbolp`, `stringp`, `multifieldp` | Type/introspection and comparisons |
+| Math | `+`, `-`, `*`, `/`, `mod`, `abs`, `min`, `max` | Numeric ops only; overflow/NaN semantics documented |
+| String/Symbol | `str-cat`, `str-length`, `sub-string`, `sym-cat` | Must follow encoding semantics from §2.4.1 |
+| Multifield | `create$`, `length$`, `nth$`, `member$`, `subsetp` | No implicit flattening beyond CLIPS behavior |
+| Fact Ops | `assert`, `retract`, `modify`, `duplicate` | Wired to core engine APIs |
+| Agenda Ops | `run`, `halt`, `focus`, `get-focus`, `agenda` | Must not bypass agenda invariants |
+| Environment | `reset`, `clear` | Administrative controls |
+
+Functions outside this table are explicitly deferred until they are listed in this document with tests and compatibility notes.
 
 ---
 
@@ -3231,7 +3414,7 @@ fn register_stdlib(engine: &mut Engine) -> Result<(), RegisterError> {
 
 **⚠️ IMPORTANT: Ferric engine instances are thread-affine (NOT thread-safe).**
 
-A `FerricEngine*` must be used exclusively on the thread that created it. It must not be accessed from other threads, even with external synchronization, unless the caller has taken explicit steps to guarantee safety (see §2.1 for the Rust-side `unsafe Send` escape hatch).
+A `FerricEngine*` must be used exclusively on the thread that created it. It must not be accessed from other threads, even with external synchronization. The Rust-only `unsafe` transfer escape hatch from §2.1 is intentionally not exposed through C.
 
 This contract is documented in three places to minimize the chance of misuse:
 
@@ -3292,26 +3475,39 @@ This makes "doing it right" the default: `check_thread()` takes `&self`, so the 
 
 **Rule: No Rust panic may unwind across the FFI boundary.** Unwinding from Rust into C is undefined behavior per the Rust reference, regardless of whether the C caller uses exception handling.
 
-**Enforcement:** The `ferric-ffi` crate is built with `panic = "abort"` in both release and debug profiles:
+**Enforcement:** Ferric uses a profile matrix to keep Rust developer ergonomics while ensuring FFI artifacts never unwind across C boundaries:
 
 ```toml
-# In ferric-ffi/Cargo.toml
+# In workspace root Cargo.toml
 [profile.dev]
-panic = "abort"
+panic = "unwind"
 
 [profile.release]
+panic = "unwind"
+
+[profile.ffi-dev]
+inherits = "dev"
+panic = "abort"
+
+[profile.ffi-release]
+inherits = "release"
 panic = "abort"
 ```
 
+Build commands for FFI artifacts:
+
+- Debug-style FFI build: `cargo build -p ferric-ffi --profile ffi-dev`
+- Release FFI build: `cargo build -p ferric-ffi --profile ffi-release`
+
 This means:
-- In **debug builds**, a `check_thread()` failure (or any other `assert!`/`panic!`) triggers an immediate process abort — matching the "assertion failure (immediate abort)" contract in the C header comment (§11.2).
-- In **release builds**, `check_thread()` returns `FERRIC_ERROR_THREAD_VIOLATION` before any panic path is reached (§11.2). Other unexpected panics (logic bugs) also abort rather than unwinding into C.
+- Rust API development/tests keep unwind semantics (`dev`/`test`), preserving standard panic diagnostics.
+- Shipped FFI artifacts (`ffi-dev`/`ffi-release`) abort on panic, so no unwind can cross `extern "C"`.
 
-**Rationale for `panic = "abort"` over `catch_unwind`:** Wrapping every `extern "C"` entry point in `std::panic::catch_unwind` is error-prone (easy to forget on new entry points, interacts poorly with non-`UnwindSafe` types like `&mut Engine`). Since `panic = "abort"` applies globally to the FFI crate, it is simpler, more reliable, and has slightly better codegen (no unwind tables). The trade-off — a bug in the engine aborts the host process rather than returning an error — is acceptable because a panic in engine internals indicates a logic error that the caller cannot meaningfully recover from.
+**Rationale for `panic = "abort"` over `catch_unwind`:** Wrapping every `extern "C"` entry point in `std::panic::catch_unwind` is error-prone (easy to forget on new entry points, interacts poorly with non-`UnwindSafe` types like `&mut Engine`). Profile-level enforcement is simpler and more reliable for published FFI artifacts.
 
-**Implication for the Rust API:** The `ferric` core crate (used directly by Rust callers) does **not** set `panic = "abort"` and may unwind normally. Only the `ferric-ffi` crate enforces abort-on-panic. Rust callers who want to catch panics can use `catch_unwind` at their own call sites.
+**Implication for the Rust API:** The core Rust-facing crates continue using unwind semantics in normal development/test profiles. Rust callers who want panic boundaries can use `catch_unwind` at their own call sites.
 
-**Testing ergonomics note:** The `[profile.test]` profile for `ferric-ffi` is left at the default (`unwind`), so `#[should_panic]` tests and standard Rust test harness panic-catching work normally when running `cargo test -p ferric-ffi`. The `panic = "abort"` setting applies only to `[profile.dev]` and `[profile.release]` — i.e., to the built library artifact, not to the test runner. If FFI entry points need to be tested for panic behavior specifically under abort semantics, use subprocess-based tests (e.g., `std::process::Command` invoking a test binary) rather than in-process `#[should_panic]`.
+**Testing ergonomics note:** `cargo test -p ferric-ffi` runs under `profile.test` (unwind). To verify abort-on-panic behavior of the produced FFI library, use subprocess tests that invoke binaries built with `--profile ffi-dev` or `--profile ffi-release`.
 
 ### 11.4 Error Handling Strategy
 
@@ -3381,6 +3577,7 @@ The copy-to-buffer functions first check whether an error is present. If no erro
 When an error **is** present, the `buf` and `buf_len` parameters control behavior:
 
 - If `buf` is `NULL` **and** `buf_len` is `0`, the function writes the required buffer size (including the NUL terminator) to `*out_len` and returns `FERRIC_OK`. No data is copied. This is the "query size" path.
+- If `buf` is non-NULL and `buf_len` is `0`, the function returns `FERRIC_ERROR_INVALID_ARGUMENT` (nothing can be written safely).
 - If `buf` is non-NULL but `buf_len` is too small, the message is **truncated** to fit. Exactly `buf_len - 1` bytes of the message are copied, followed by a NUL byte at `buf[buf_len - 1]`. `*out_len` receives the **full** message length (excluding NUL). The function returns `FERRIC_ERROR_BUFFER_TOO_SMALL`.
 - If `buf` is non-NULL and `buf_len` is sufficient, the full message is copied (NUL-terminated), `*out_len` receives the message length (excluding NUL), and the function returns `FERRIC_OK`.
 - If `buf_len` is `1`, only the NUL terminator is written (zero message bytes).
@@ -3643,7 +3840,10 @@ pub fn copy_global_error(buf: *mut c_char, buf_len: usize, out_len: *mut usize) 
                 if buf.is_null() {
                     return FerricError::InvalidArgument;
                 }
-                let copy_len = bytes.len().min(buf_len.saturating_sub(1));
+                if buf_len == 0 {
+                    return FerricError::InvalidArgument;
+                }
+                let copy_len = bytes.len().min(buf_len - 1);
                 unsafe {
                     ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, copy_len);
                     *buf.add(copy_len) = 0; // null terminate
@@ -3699,13 +3899,21 @@ pub extern "C" fn ferric_run(
     limit: i64,
     out_fired: *mut i64,
 ) -> FerricError {
-    let engine = match unsafe { engine.as_mut() } {
+    // Step 1: shared borrow for thread check (no mutation yet).
+    let shared = match unsafe { engine.as_ref() } {
         Some(e) => e,
         None => {
             set_global_error("engine pointer is null");
             return FerricError::InvalidArgument;
         }
     };
+    if let Err(e) = shared.engine.check_thread() {
+        set_global_error(&e.to_string());
+        return FerricError::ThreadViolation;
+    }
+
+    // Step 2: mutable borrow only after check passes.
+    let engine = unsafe { &mut *engine };
 
     let run_limit = if limit < 0 {
         RunLimit::Unlimited
@@ -3736,20 +3944,13 @@ pub extern "C" fn ferric_engine_last_error(engine: *const FerricEngine) -> *cons
 }
 ```
 
-### 11.8 Platform-Specific Build
+### 11.8 Build Profiles and Platform Artifacts
 
 ```toml
-# Cargo.toml for ferric-ffi
+# crates/ferric-ffi/Cargo.toml
 
 [lib]
 crate-type = ["cdylib", "staticlib"]
-
-# No Rust panic may unwind across the FFI boundary (see §11.3).
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
 
 [target.'cfg(windows)'.dependencies]
 # Windows-specific deps if needed
@@ -3757,6 +3958,8 @@ panic = "abort"
 [target.'cfg(target_os = "android")'.dependencies]
 # Android-specific deps if needed
 ```
+
+FFI panic behavior is controlled by workspace-level `ffi-dev` / `ffi-release` profiles (see §11.3).
 
 Build artifacts:
 - `libferric.so` (Linux)
@@ -3768,17 +3971,69 @@ Build artifacts:
 
 ## 12. CLI and REPL
 
-*(This section remains largely the same as v1)*
+Ferric provides a CLI for batch execution and an interactive REPL for debugging rule sets.
 
-[See Section 11 of previous version for CLI/REPL details]
+### 12.1 CLI Goals
+
+- Execute `.clp` files non-interactively with predictable exit codes
+- Support embedding-style diagnostics (parse/compile/runtime errors with spans)
+- Provide machine-friendly output modes for CI
+
+### 12.2 CLI Commands
+
+| Command | Purpose | Exit Behavior |
+|---------|---------|---------------|
+| `ferric run <file.clp>` | Load and run until agenda empty (or error) | `0` on success, non-zero on load/runtime error |
+| `ferric check <file.clp>` | Parse/compile validation only (no execution) | `0` if valid, non-zero if diagnostics emitted |
+| `ferric repl` | Start interactive session | Non-zero only on initialization failure |
+| `ferric version` | Print version/build metadata | Always `0` unless IO failure |
+
+### 12.3 REPL Requirements
+
+- Multi-line input with balanced-paren continuation
+- Commands: `reset`, `run [n]`, `facts`, `agenda`, `clear`, `exit`
+- Source spans in error output when evaluating entered forms
+- Command history and line editing via `rustyline`
+
+### 12.4 Non-Goals (v1)
+
+- Networked/distributed REPL
+- Time-travel debugging
+- Deterministic replay tooling
 
 ---
 
 ## 13. Testing Strategy
 
-*(This section remains largely the same as v1)*
+Testing is layered to catch logic errors early, especially around retraction and negation where bugs are subtle and expensive later.
 
-[See Section 12 of previous version for testing strategy]
+### 13.1 Test Layers
+
+1. Unit tests for values, parser primitives, symbol table, agenda ordering, and index maintenance
+2. Integration tests for load/assert/retract/run behavior across multiple constructs
+3. Regression tests for previously fixed bugs (append-only suite)
+4. CLIPS compatibility tests for supported subset semantics
+5. Property-style tests for invariants (idempotent cleanup, no stale IDs)
+
+### 13.2 Required Invariant Suites
+
+- Retraction invariant suite from §15.0 (must pass before Phase 2 exits)
+- Negative/NCC/exists cleanup idempotence suite
+- Forall vacuous-truth cycle suite (`forall_vacuous_truth_and_retraction_cycle`)
+- FFI error-API contract suite (including copy-to-buffer edge cases)
+
+### 13.3 CI Gates
+
+- `cargo test --workspace` for unit/integration/regression suites
+- Dedicated CLIPS compatibility job
+- Benchmark smoke job (non-blocking early, blocking in Phase 6)
+- FFI subprocess tests for abort-policy verification in `ffi-*` profiles
+
+### 13.4 Test Philosophy
+
+- Add a regression test for every bug fixed in core matching/retraction logic
+- Prefer deterministic assertions on state/invariants over brittle timing assertions
+- Keep fixture rule sets small and targeted to isolate semantic failures quickly
 
 ---
 
@@ -3868,11 +4123,15 @@ Before writing implementation code, the following design decisions must be locke
 | 16 | **FFI thread-check ABI contract** — `check_thread()` runs before any state mutation in every `ferric_engine_*` entry point. `FERRIC_ERROR_THREAD_VIOLATION` guarantees no state was modified. | ✅ Defined | §11.2 |
 | 17 | **Error code policy** — `PatternValidationError` codes are append-only, never renumbered or reused. New validation rules get new codes. | ✅ Defined | §7.7 |
 | 18 | **Debug consistency checker** — `debug_assert_consistency()` verifies cross-structure TokenId/ActivationId integrity. Available in tests and debug builds. | ✅ Defined | §7.2 |
-| 19 | **FFI panic policy** — `ferric-ffi` crate built with `panic = "abort"` in all profiles. No Rust unwind crosses the FFI boundary. | ✅ Defined | §11.3 |
+| 19 | **FFI panic policy matrix** — workspace `dev/release/test` use unwind ergonomics; shipped FFI artifacts use dedicated `ffi-dev`/`ffi-release` profiles with `panic = "abort"`. | ✅ Defined | §11.3 |
 | 20 | **Copy-to-buffer "no error" semantics** — `FERRIC_ERROR_NOT_FOUND` returned (with `*out_len = 0`) before inspecting `buf`/`buf_len`. Size-query path (`buf=NULL, buf_len=0` → `FERRIC_OK`) only applies when an error is present. | ✅ Defined | §11.4.1 |
 | 21 | **LEX/MEA recency vector length** — fixed per rule (equal to positive pattern count), determined at compile time. Ordering comparison never depends on vector length. | ✅ Defined | §6.6.1 |
 | 22 | **`remove_cascade` precondition** — `root_id` must exist in TokenStore. `debug_assert!` in development; defensive early return (empty `Vec`) in release. Double-remove does not corrupt indices. | ✅ Defined | §5.5.1 |
 | 23 | **FFI canonical entry-point pattern** — every `extern "C"` entry point casts to `&Engine` (shared) for `check_thread()`, then to `&mut Engine` only after the check passes. No mutable borrow exists during the thread-ID check. | ✅ Defined | §11.2 |
+| 24 | **Retraction root selection** — if multiple affected tokens are ancestor/descendant, only roots are cascaded to avoid double-remove behavior divergence between debug/release. | ✅ Defined | §5.5.1, §6.8 |
+| 25 | **Retraction activation delta** — activations created during negative/existential re-satisfaction are enqueued and returned in retraction results (not dropped). | ✅ Defined | §6.8 |
+| 26 | **Standalone plan rule** — no normative section can depend on “previous version” text for implementation scope. | ✅ Defined | §10.2, §12, §13, Appendix A |
+| 27 | **Activation ordering contract** — total order within run, no replay-identical cross-run guarantee unless encoded by explicit rule precedence. | ✅ Defined | §6.6.2, §16.6 |
 
 **Go / no-go gate for implementation:**
 
@@ -3881,7 +4140,7 @@ The following items are **must-haves** before writing core logic beyond basic pr
 1. ✅ The retraction invariants test suite skeleton exists (even if not all tests are passing yet) and the harness can create small networks and exercise assert/retract. (See test suite spec below.)
 2. ✅ Cascade callback idempotence / ordering policy is decided: order-independent, all callbacks idempotent and tolerant of missing entries. (§7.2)
 3. ✅ Thread-affinity story is complete: compile-time `!Send + !Sync` enforcement, runtime `check_thread()` on every entry point, and the official `unsafe fn move_to_current_thread()` escape hatch. (§2.1, §11.2)
-4. ✅ FFI panic policy is locked: `ferric-ffi` crate uses `panic = "abort"` in all profiles, so no Rust unwind can cross the FFI boundary. (§11.3)
+4. ✅ FFI panic policy matrix is locked: default Rust dev/test profiles use unwind, while shipped FFI artifacts are built with `ffi-*` abort profiles so no Rust unwind crosses the FFI boundary. (§11.3)
 
 **Retraction invariants test suite (implement in Phase 1):**
 
@@ -4050,156 +4309,28 @@ Documented comparison behavior with:
 
 Step-by-step guide for migrating CLIPS applications to Ferric.
 
+### 16.6 Activation Ordering Contract
+
+Documentation must explicitly state:
+
+- Ferric guarantees total ordering of activations at runtime but does not guarantee cross-run replay-identical order.
+- Semantic compatibility expectations should focus on final working-memory outcomes for order-insensitive rule sets.
+- For order-sensitive side effects, users must encode precedence explicitly (salience, focus, phase facts).
+
 ---
 
 ## Appendix A: Dropped Features
 
-*(Same as v1)*
+The following features are explicitly out of scope for the current implementation plan and are not assumed by any phase exit criteria:
 
-[See Appendix of previous version]
+1. COOL object system
+2. Certainty factors / probabilistic reasoning
+3. Distributed or networked rule evaluation
+4. Replay-identical deterministic scheduling guarantees across runs/platforms
+5. Conflict strategies `Simplicity`, `Complexity`, and `Random` (deferred until fully specified)
 
----
-
-## Appendix B: Review Feedback Addressed (v2)
-
-This section documents feedback addressed in the v2 revision:
-
-| Feedback Item | Section(s) Addressing It |
-|---------------|-------------------------|
-| Token/fact indexing for retraction | 2.5, 5.5, 6.6 |
-| Negative/exists/forall semantics | 7 (new section) |
-| Binding representation (VarId) | 5.4 |
-| Encoding consistency enforcement | 2.4, 9.3 |
-| Two-stage parsing | 8.1-8.4 |
-| FFI error handling (TLS + per-engine) | 11.2-11.5 |
-| Rete node sharing/immutability | 3.3, 6.2 |
-| Phase sequencing (earlier parser) | 15 (Phase 1 now includes S-expr parser) |
-
----
-
-## Appendix C: Review Feedback Addressed (v3)
-
-This section documents feedback addressed in the v3 revision:
-
-| # | Feedback Item | Section(s) Addressing It | Summary of Change |
-|---|---------------|--------------------------|-------------------|
-| 1 | Token lifecycle: parent→children index needed for subtree retraction | 2.5, 5.5.1, 6.8, 14.2 | Added `parent_to_children: HashMap<TokenId, SmallVec<[TokenId; 4]>>` to `TokenStore`. Added `remove_cascade()` method for O(subtree) cascading deletes. Updated `remove_token_cascade` in `ReteNetwork` to use it. |
-| 2 | Avoid cloning tokens on insert | 5.5.1 | `TokenStore::insert` now takes `token: Token` by value. Only the small `facts` SmallVec is cloned for index updates; the full token is moved into the SlotMap without cloning. |
-| 3 | Reverse index memory growth: pick a representation matching typical fanout | 5.5.1, 14.2 | Replaced `HashMap<FactId, HashSet<TokenId>>` with `HashMap<FactId, SmallVec<[TokenId; 4]>>` for both `fact_to_tokens` and `parent_to_children`. Added design notes explaining the rationale and noting the API is representation-agnostic for future swaps. |
-| 4 | Clarify string comparison semantics to avoid spec drift | 2.4.1, 5.1, 16.4 | New subsection 2.4.1 precisely defines equality as exact byte equality and ordering as lexicographic by UTF-8 byte value. Explicitly documents what is NOT supported (normalization, collation, locale). Added compatibility documentation section 16.4 for string semantics. |
-| 5 | NCC/exists/forall: explicit compile-time validation boundaries | 7.7, 6.7, 15 (Phase 2) | New Section 7.7 defines `PatternValidator` with `PatternValidationError` types. Validation runs at Rete compilation time (before node construction). Added validation pipeline summary table. `ReteCompiler::compile_rule` now calls validator as step 0. Phase 2 exit criteria updated. |
-| 6 | FFI: copy-to-buffer error API | 11.3.1, 11.5, 11.6, 15 (Phase 5) | New subsection 11.3.1 defines `ferric_last_error_global_copy()` and `ferric_engine_last_error_copy()` with full parameter documentation. Added Rust implementation. Updated ownership model documentation. Phase 5 exit criteria updated. |
-| 7 | Make "not thread-safe" contract prominent in C header | 11.2 | New Section 11.2 (Thread Safety Contract) with a large block comment template for the generated header. Specifies three documentation locations (plan, header, Rust docs). |
-| 8 | Phase plan: ensure minimal S-expression loader is early enough for integration testing | 15 (Phase 1) | Phase 1 week 5-6 deliverable explicitly calls out "minimal source loader capable of parsing .clp files into S-expression trees, sufficient for integration testing before the full grammar lands." Updated exit criteria. |
-
----
-
-## Appendix D: Review Feedback Addressed (v4)
-
-This section documents feedback addressed in the v4 revision:
-
-| # | Feedback Item | Section(s) Addressing It | Summary of Change |
-|---|---------------|--------------------------|-------------------|
-| 1 | Value vs hashing/equality: `Value` used as `HashMap` key but lacks `Eq`/`Hash`; `ConstantTestType` derives `Eq`/`Hash` with embedded `Value` | 5.1, 5.1.1, 6.3, 6.4 | Introduced `AtomKey` — a hashable subset of `Value` covering symbols, strings, integers, float-bits (`f64::to_bits()`), and external addresses. `Value` intentionally does NOT implement `Eq`/`Hash`. `ConstantTestType` variants now use `AtomKey`. Alpha-memory `slot_indices` now uses `HashMap<AtomKey, HashSet<FactId>>`. Float semantics: bitwise via `to_bits()` (so -0.0 ≠ +0.0, NaN bit patterns are distinct). |
-| 2 | `Rc<Value>` makes `Engine` `!Send`, conflicting with "use from different threads" promise | 2.1, 5.4 | Switched `ValueRef` from `Rc<Value>` to `Arc<Value>`. Updated §2.1 to explicitly document that `Engine` is `Send` but not `Sync`. **Note: reversed in v5** — reverted to `Rc<Value>` with `!Send+!Sync` enforcement (see Appendix E item 2). |
-| 3 | Retraction cascade: downstream cleanup (beta memory + agenda) needs reverse maps to avoid O(N) scans | 5.5, 6.6.1, 6.8, 14.2 | Added `owner_node: NodeId` field to `Token` for O(1) beta-memory removal. Added `token_to_activations` reverse index to `Agenda` for O(k) activation removal. New §6.6.1 documents the full O(1) cleanup cost model with summary table. Updated `remove_token_cascade` to use both. `remove_cascade` now returns `Vec<(TokenId, Token)>` so callers have access to `owner_node`. |
-| 4 | Alpha-memory `request_index`: decide what happens when called after facts already exist | 6.4 | `request_index` now takes a `&FactBase` parameter and immediately builds the index from existing facts. Documented cost (O(n) in current memory size, paid once at compilation) and rationale. |
-| 5 | `remove_cascade` pseudo-code: `stack.extend(children.iter())` pushes `&TokenId` not `TokenId` | 5.5.1 | Fixed to `stack.extend(children.iter().copied())`. |
-| 6 | FactId/TokenId: confirm slotmap key strategy | 5.2, 5.5 | Both `FactId` and `TokenId` now use `slotmap::new_key_type!` macro, which ensures they implement `slotmap::Key` and provides distinct types for type safety. `ActivationId` also uses `new_key_type!`. |
-
----
-
-## Appendix E: Review Feedback Addressed (v5)
-
-This section documents feedback addressed in the v5 revision:
-
-| # | Feedback Item | Section(s) Addressing It | Summary of Change |
-|---|---------------|--------------------------|-------------------|
-| 1 | Agenda ordering: replace placeholder with concrete structure; define `AgendaKey` per strategy with tie-break chain | 6.6.1 | Replaced `/* strategy-specific structure */` with `BTreeSet<AgendaKey>`. Defined `AgendaKey` struct with `salience`, `StrategyOrd` (Depth/Breadth/LEX/MEA), and `ActivationId` tiebreaker. Added strategy ordering table. Documented why `BTreeSet` over `BinaryHeap` (honest O(log n) delete). Added `id_to_key` side map for removal. `token_to_activations` bumped to `SmallVec<[ActivationId; 2]>`. |
-| 2 | Make `!Send+!Sync` enforceable, not just documented | 2.1, 2.2, 5.4, 11.2, 14.3 | **Reversed the v4 `Arc` decision.** `ValueRef` reverted to `Rc<Value>`. `Engine` now contains `PhantomData<Rc<()>>` to mechanically enforce `!Send + !Sync`. §2.1 explains rationale (Rc cheaper, compiler prevents misuse, unsafe escape hatch available). §2.2 async example shows `unsafe Send` wrapper. §11.2 C header updated to "thread-affine" language. |
-| 3 | Classic vs Strict: clarify that unsupported constructs always fail compilation | 2.3, 7.6 | §2.3 now has explicit table: unsupported constructs → compilation **fails** in both modes. Difference is severity (`Warning` vs `Error`), not whether the error is surfaced. §7.6 updated with matching language. |
-| 4 | `PatternValidationError`: add stable error codes and strengthen source span contract | 7.7 | Added `code: &'static str` field (format: `E0001`–`E0005`). Replaced `Option<Span>` with `Option<SourceSpan>` — new struct with `file`, `line`, `col`, `offset`, `len`. Contract: both Phase 1 minimal loader and Phase 3 full grammar must populate spans. Added error code table. |
-| 5 | SmallVec deletion: specify method and invariants to avoid hidden O(n²) | 5.5.1 | Documented that all SmallVec removals use `retain()` (not `swap_remove`). Explained no-duplicates invariant (SlotMap IDs are unique). Added `debug_assert!` check. |
-| 6 | Forall vacuous truth | 7.5 | Added explicit statement: forall with zero condition matches is vacuously true. Includes CLIPS example and required test case. |
-| 7 | FFI error copy: specify buffer sizing convention | 11.3.1 | Added "Buffer sizing convention" subsection: `buf=NULL, buf_len=0` queries required size; too-small buffers truncate + return `FERRIC_ERROR_BUFFER_TOO_SMALL` with full length in `out_len`. Added two-call usage example in C. |
-| 8 | Pre-implementation checklist | 15.0 | New §15.0 with 10-item checklist of locked-down decisions (cross-referencing plan sections) and 6-item retraction invariants test suite specification. |
-
----
-
-## Appendix F: Review Feedback Addressed (v6)
-
-This section documents feedback addressed in the v6 revision:
-
-| # | Feedback Item | Section(s) Addressing It | Summary of Change |
-|---|---------------|--------------------------|-------------------|
-| 1 | Agenda ordering: ActivationId is not monotonic; use explicit counter for tiebreak | 6.6.1 | Replaced `Reverse<ActivationId>` tiebreaker with `Reverse<u64>` (`activation_seq`). Added `activation_seq: u64` field to `Activation`. Added `next_seq: u64` counter to `Agenda`, incremented on every `add()`. `ActivationId` now used only for identity/lookup, never ordering. Strategy table updated. Design note explains why SlotMap keys are unsuitable for recency. |
-| 2 | TokenStore reverse indices: dedup per-token facts to prevent duplicate index entries | 5.5.1 | `TokenStore::insert`, `remove`, and `remove_cascade` now dedup `token.facts` for index maintenance using a local `SmallVec<[FactId; 4]>` + `contains()`. The `token.facts` field itself is kept as-is (preserving pattern order). Explained why O(n²) contains is fine for n ≤ 4. |
-| 3 | Retraction + negation cleanup: prune empty `blocked_by` sets; make token-removal propagation an explicit invariant | 7.2 | `NegativeMemory::token_retracted` now prunes empty `blocked_by` sets after removal. Added **Token retraction propagation invariant** block: every node storing TokenIds must receive cleanup callbacks for all cascaded removals. Added invariant table mapping node types to their cleanup methods. |
-| 4 | Forall vacuous truth: add targeted 6-step regression test | 7.5 | Replaced one-sentence test case with detailed 6-step regression test (`forall_vacuous_truth_and_retraction_cycle`) covering: empty WM fire, condition-added unsatisfy, then-added re-satisfy, then-retracted unsatisfy, condition-retracted re-vacuous. Specifies Phase 2 timing. |
-| 5 | PatternValidator: make spans first-class; validate `SpannedPattern` not bare `Pattern` | 5.6, 7.7 | Added `SpannedPattern` type (wraps `Pattern` + `SourceSpan`). `Pattern` enum variants now use `Box<SpannedPattern>` for children. `Rule.patterns` is `Vec<SpannedPattern>`. `PatternValidator` accepts `&[SpannedPattern]` — no more `span: None // filled in by caller`. Added `SourceSpan::generated()` sentinel for programmatic patterns. |
-| 6 | FFI: add runtime thread-ID check for C callers | 2.1, 11.2 | `Engine` struct now stores `creator_thread_id: ThreadId`. New `check_thread()` method called at every public entry point: `assert!` in debug, `Err(ThreadViolation)` in release. §11.2 documents runtime enforcement and cost (one TLS read). Added `FERRIC_ERROR_THREAD_VIOLATION = 8` to error enum. Also added `FERRIC_ERROR_BUFFER_TOO_SMALL = 9` (previously referenced but missing from enum). |
-| 7 | FFI copy-to-buffer: clarify truncation semantics to avoid off-by-one | 11.3.1 | Added explicit `required_len = *out_len + 1` formula. Specified exact truncation behavior: copy `buf_len - 1` bytes + NUL at `buf[buf_len - 1]`. Added `buf_len == 1` edge case. Added "detect and retry" C example. |
-| 8 | Hot-path budget for agenda operations | 14.4 | New §14.4 with operational targets table: agenda insert/pop/remove are O(log A) with zero heap allocations. Token insert O(k), cascade removal O(subtree) zero-alloc per node. Explicit anti-patterns list (no Vec::clone, no format! on success path, no HashMap full-scan in per-token ops). |
-
----
-
-## Appendix G: Review Feedback Addressed (v7)
-
-This section documents feedback addressed in the v7 revision:
-
-| # | Feedback Item | Section(s) Addressing It | Summary of Change |
-|---|---------------|--------------------------|-------------------|
-| 1 | Unsafe Send wrapper is too footgun-y: caller must manually update `creator_thread_id` | 2.1, 2.2 | Replaced ad-hoc `SendEngine` guidance with an official `unsafe fn move_to_current_thread(&mut self)` method that handles `creator_thread_id` update and error state reset internally. The `SendEngine` wrapper is retained only for the type-system move; all safety-critical state management is now inside the official API. Docs emphasize "one engine per thread" as the primary pattern. |
-| 2 | Cascade retraction callback ordering is unspecified | 7.2 | Added explicit **cascade callback ordering policy**: order-independent, all callbacks must be idempotent and tolerant of missing entries. Rationale documented (reduced coupling, future-proofing, simpler testing). Current traversal order noted as implementation detail, not contract. |
-| 3 | Need debug-mode consistency checker for cross-structure invariants | 7.2, 15.0 | Added `debug_assert_consistency()` method on `Engine` (available in tests and debug builds). Verifies: every TokenId in side indices exists in TokenStore, every ActivationId in ordering exists in activations, no forbidden empty sets. Added as item 9 in the retraction invariants test suite. |
-| 4 | FFI thread-violation check should explicitly be "before any state mutation" | 11.2 | Added **ABI contract** paragraph: `check_thread()` runs before any state mutation, `FERRIC_ERROR_THREAD_VIOLATION` guarantees no state was modified. Implementation must place check as first operation before any `&mut self` field access. |
-| 5 | PatternValidationError: lock error code policy (append-only, no renumbering) | 7.7 | Added **error code policy** block to the error code table doc comment: codes are append-only, never renumbered or reused. Substantially changed rules get new codes; old codes retired but never reassigned. Refined messages permitted if violation category unchanged. |
-
----
-
-## Appendix H: Review Feedback Addressed (v8)
-
-This section documents feedback addressed in the v8 revision:
-
-| # | Feedback Item | Section(s) Addressing It | Summary of Change |
-|---|---------------|--------------------------|-------------------|
-| 1 | FFI panic/unwind policy: `panic!` in `check_thread()` can unwind into C (UB) | 11.3, 11.8, 15.0 | New §11.3 (FFI Panic Policy) commits to `panic = "abort"` for the `ferric-ffi` crate in both debug and release profiles. Cargo.toml in §11.8 updated with `[profile.dev]` and `[profile.release]` panic settings. Rationale: simpler and more reliable than `catch_unwind` wrappers, acceptable trade-off (abort on logic bugs). Core `ferric` crate unaffected. Added to go/no-go gate (item 4). |
-| 2 | Copy-to-buffer: ambiguity between `FERRIC_OK` (size query) and `FERRIC_ERROR_NOT_FOUND` (no error) when `buf=NULL` | 11.4.1, 11.7 | Clarified precedence: "no error" check happens **first**, returning `NOT_FOUND` with `*out_len = 0` before inspecting `buf`/`buf_len`. Size-query path (`buf=NULL, buf_len=0` → `OK`) only applies when an error is present. Updated buffer sizing convention, both C doc comments, and Rust `copy_global_error` implementation. Fixed query-then-allocate example to check return code before `malloc`. Added checklist item 20. |
-| 3 | Hot-path budget "zero heap allocations" is misleading given `BTreeMap` node allocation | 14.4, 15.0 | Softened "zero heap allocations" to "no incidental allocations beyond container-internal node allocation." Added explanatory paragraph defining the boundary (container growth is acceptable; `Vec::clone`, `format!`, full-scans are not). Noted that truly zero-alloc agenda ops can be achieved later via slab + index behind the encapsulated `Agenda` API. Updated checklist item 13. |
-| 4 | Thread transfer: TLS error state clarification and common violation examples | 2.1 | Rewrote safety condition (3) to clarify that TLS error storage is per-thread by nature and needs no explicit clearing. Added FFI note: escape hatch is Rust-only, not exposed through C FFI. Added "common violations" section with three concrete examples of `Rc<Value>` escape scenarios. |
-| 5 | LEX/MEA recency vector length invariant | 6.6.1, 15.0 | Added one-liner invariant to strategy ordering design notes: recency vector length is fixed per rule (equal to positive pattern count), determined at compile time. Ordering comparison never depends on vector length. Added checklist item 21. |
-
----
-
-## Appendix I: Review Feedback Addressed (v9)
-
-This section documents feedback addressed in the v9 revision:
-
-| # | Feedback Item | Section(s) Addressing It | Summary of Change |
-|---|---------------|--------------------------|-------------------|
-| 1 | Thread-check contract: canonical `&Engine` → `check_thread()` → `&mut Engine` pattern needed to prevent accidental mutation before the check | 11.2, 15.0 | Tightened ABI contract wording from "before any `&mut self` field access" to "before any mutation or mutable borrows of internal fields." Added canonical two-step cast pattern (`&Engine` for check, then `&mut Engine` for work) with code example. All `ferric_engine_*` entry points must follow this pattern. Added checklist item 23. |
-| 2 | `remove_cascade` should document precondition or harden against missing root to prevent double-remove from compounding bugs | 5.5.1, 15.0 | Added `debug_assert!` that `root_id` exists in the TokenStore. Added defensive early return (`Vec::new()`) in release when root is missing, so a double-remove does not corrupt indices. Added checklist item 22. |
-| 3 | §14.2 "lazy cleanup" wording contradicts the actual prune-on-removal behavior in TokenStore and NegativeMemory | 14.2 | Replaced "Lazy cleanup: Empty index entries are cleaned up periodically" with "Eager empty-entry pruning: … pruned on removal in the structures already touched during retraction." Matches the `fact_to_tokens`, `parent_to_children`, and `blocked_by` prune-on-empty code in §5.5.1 and §7.2. |
-| 4 | Cascade removal: consider scratch buffer reuse for high-churn workloads | 5.5.1 | Added "Future optimization note" after `remove_cascade`: a `remove_cascade_into` variant with caller-provided `Vec` / stack buffers is an allowed future optimization. No API change needed now; note prevents future profiler-driven changes from becoming an API fight. |
-| 5 | Make "idempotent callbacks" expectation harder to forget: no `unwrap` in cleanup paths | 7.2 | Added explicit **implementation guidance**: all `token_retracted`-style cleanup methods must be total functions — no `unwrap()` or `expect()` on internal lookups. Use `if let Some(…)` instead. Rationale: follows from idempotence requirement but is a common failure mode during refactoring. |
-| 6 | FFI `panic = "abort"` and testing ergonomics: `#[should_panic]` tests won't work under abort | 11.3 | Added **testing ergonomics note**: `[profile.test]` is left at default (`unwind`), so `#[should_panic]` and standard test harness work normally. `panic = "abort"` applies to the built library artifact, not the test runner. Subprocess-based tests recommended for verifying abort-under-panic behavior specifically. |
-
----
-
-## Document History
-
-| Version | Date | Author | Changes |
-|---------|------|--------|---------|
-| 1.0 | January 2026 | - | Initial plan |
-| 2.0 | February 2026 | - | Incorporated technical review feedback |
-| 3.0 | February 2026 | - | Incorporated v2 review feedback (8 items; see Appendix C) |
-| 4.0 | February 2026 | - | Incorporated v3 review feedback (6 items; see Appendix D) |
-| 5.0 | February 2026 | - | Incorporated v4 review feedback (8 items; see Appendix E) |
-| 6.0 | February 2026 | - | Incorporated v5 review feedback (8 items; see Appendix F) |
-| 7.0 | February 2026 | - | Incorporated v6 review feedback (5 items; see Appendix G) |
-| 8.0 | February 2026 | - | Incorporated v7 review feedback (5 items; see Appendix H) |
-| 9.0 | February 2026 | - | Incorporated v8 review feedback (6 items; see Appendix I) |
-
----
-
-*This document will be updated as implementation progresses and decisions are refined.*
+Any future proposal to add one of these features must include:
+- Semantics specification
+- Data-structure impact analysis (especially retraction paths)
+- Migration/compatibility impact
+- Required regression tests
