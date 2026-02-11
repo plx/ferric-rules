@@ -6,12 +6,76 @@
 mod tests {
     use ferric_core::beta::RuleId;
     use ferric_core::{
-        AlphaEntryType, AtomKey, ConstantTest, ConstantTestType, ReteNetwork, SlotIndex,
+        AlphaEntryType, AtomKey, ConstantTest, ConstantTestType, FactId, ReteNetwork, SlotIndex,
         StringEncoding,
     };
 
     use crate::engine::Engine;
     use crate::EngineConfig;
+
+    fn intern_symbol(engine: &mut Engine, symbol: &str) -> ferric_core::Symbol {
+        engine
+            .symbol_table
+            .intern_symbol(symbol, StringEncoding::Utf8)
+            .expect("symbol interning should succeed")
+    }
+
+    fn build_ordered_relation_rete(
+        engine: &mut Engine,
+        relation: &str,
+        rule_id: RuleId,
+    ) -> ReteNetwork {
+        let mut rete = ReteNetwork::new();
+        let relation_sym = intern_symbol(engine, relation);
+
+        let entry_node = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(relation_sym));
+        let alpha_mem_id = rete.alpha.create_memory(entry_node);
+
+        let root_id = rete.beta.root_id();
+        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+
+        rete
+    }
+
+    fn build_constant_test_rete(
+        engine: &mut Engine,
+        relation: &str,
+        test: ConstantTest,
+        rule_id: RuleId,
+    ) -> ReteNetwork {
+        let mut rete = ReteNetwork::new();
+        let relation_sym = intern_symbol(engine, relation);
+
+        let entry_node = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(relation_sym));
+        let test_node = rete.alpha.create_constant_test_node(entry_node, test);
+        let alpha_mem_id = rete.alpha.create_memory(test_node);
+
+        let root_id = rete.beta.root_id();
+        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+
+        rete
+    }
+
+    fn assert_facts_into_rete(
+        rete: &mut ReteNetwork,
+        engine: &Engine,
+        fact_ids: &[FactId],
+    ) -> usize {
+        let mut activation_count = 0;
+        for &fact_id in fact_ids {
+            let fact = engine.fact_base.get(fact_id).expect("Fact should exist");
+            activation_count += rete
+                .assert_fact(fact_id, &fact.fact, &engine.fact_base)
+                .len();
+        }
+        activation_count
+    }
 
     #[test]
     fn integration_parse_load_assert_match() {
@@ -28,32 +92,14 @@ mod tests {
         assert_eq!(load_result.rules.len(), 0);
         assert!(load_result.warnings.is_empty());
 
-        // Build a Rete network to match "person" facts
-        let mut rete = ReteNetwork::new();
-        let person_sym = engine
-            .symbol_table
-            .intern_symbol("person", StringEncoding::Utf8)
-            .unwrap();
-
-        // Alpha: entry node for (person ...) -> alpha memory
-        let entry_type = AlphaEntryType::OrderedRelation(person_sym);
-        let entry_node = rete.alpha.create_entry_node(entry_type);
-        let alpha_mem_id = rete.alpha.create_memory(entry_node);
-
-        // Beta: root -> join (no tests) -> terminal (rule 1)
-        let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+        let mut rete = build_ordered_relation_rete(&mut engine, "person", rule_id);
 
         // Assert the loaded fact into the Rete network
-        let fact_id = load_result.asserted_facts[0];
-        let fact = engine.fact_base.get(fact_id).expect("Fact should exist");
-
-        let activations = rete.assert_fact(fact_id, &fact.fact, &engine.fact_base);
+        let activations = assert_facts_into_rete(&mut rete, &engine, &load_result.asserted_facts);
 
         // Verify one activation is produced
-        assert_eq!(activations.len(), 1);
+        assert_eq!(activations, 1);
         assert_eq!(rete.agenda.len(), 1);
 
         let act = rete.agenda.pop().unwrap();
@@ -69,21 +115,8 @@ mod tests {
         let result = engine.load_str(source).unwrap();
         assert_eq!(result.asserted_facts.len(), 1);
 
-        // Build a Rete network matching "person" facts
-        let mut rete = ReteNetwork::new();
-        let person_sym = engine
-            .symbol_table
-            .intern_symbol("person", StringEncoding::Utf8)
-            .unwrap();
-
-        let entry_type = AlphaEntryType::OrderedRelation(person_sym);
-        let entry_node = rete.alpha.create_entry_node(entry_type);
-        let alpha_mem_id = rete.alpha.create_memory(entry_node);
-
-        let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+        let mut rete = build_ordered_relation_rete(&mut engine, "person", rule_id);
 
         // Assert the loaded fact into the Rete
         let fact_id = result.asserted_facts[0];
@@ -124,32 +157,14 @@ mod tests {
         let result = engine.load_str(source).unwrap();
         assert_eq!(result.asserted_facts.len(), 3);
 
-        // Build a Rete network matching "person" facts
-        let mut rete = ReteNetwork::new();
-        let person_sym = engine
-            .symbol_table
-            .intern_symbol("person", StringEncoding::Utf8)
-            .unwrap();
-
-        let entry_type = AlphaEntryType::OrderedRelation(person_sym);
-        let entry_node = rete.alpha.create_entry_node(entry_type);
-        let alpha_mem_id = rete.alpha.create_memory(entry_node);
-
-        let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+        let mut rete = build_ordered_relation_rete(&mut engine, "person", rule_id);
 
         // Assert each fact into the Rete
-        let mut all_activations = Vec::new();
-        for &fact_id in &result.asserted_facts {
-            let fact = engine.fact_base.get(fact_id).expect("Fact should exist");
-            let acts = rete.assert_fact(fact_id, &fact.fact, &engine.fact_base);
-            all_activations.extend(acts);
-        }
+        let activation_count = assert_facts_into_rete(&mut rete, &engine, &result.asserted_facts);
 
         // Verify 3 activations are produced
-        assert_eq!(all_activations.len(), 3);
+        assert_eq!(activation_count, 3);
         assert_eq!(rete.agenda.len(), 3);
     }
 
@@ -166,44 +181,20 @@ mod tests {
         let result = engine.load_str(source).unwrap();
         assert_eq!(result.asserted_facts.len(), 3);
 
-        // Build a Rete network that only matches (color red)
-        let mut rete = ReteNetwork::new();
-        let color_sym = engine
-            .symbol_table
-            .intern_symbol("color", StringEncoding::Utf8)
-            .unwrap();
-        let red_sym = engine
-            .symbol_table
-            .intern_symbol("red", StringEncoding::Utf8)
-            .unwrap();
-
-        // Alpha: entry for (color ...) -> constant test (field 0 = red) -> memory
-        let entry_type = AlphaEntryType::OrderedRelation(color_sym);
-        let entry_node = rete.alpha.create_entry_node(entry_type);
+        let red_sym = intern_symbol(&mut engine, "red");
 
         let red_test = ConstantTest {
             slot: SlotIndex::Ordered(0),
             test_type: ConstantTestType::Equal(AtomKey::Symbol(red_sym)),
         };
-        let test_node = rete.alpha.create_constant_test_node(entry_node, red_test);
-        let alpha_mem_id = rete.alpha.create_memory(test_node);
-
-        // Beta: root -> join -> terminal
-        let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+        let mut rete = build_constant_test_rete(&mut engine, "color", red_test, rule_id);
 
         // Assert all facts into the Rete
-        let mut all_activations = Vec::new();
-        for &fact_id in &result.asserted_facts {
-            let fact = engine.fact_base.get(fact_id).expect("Fact should exist");
-            let acts = rete.assert_fact(fact_id, &fact.fact, &engine.fact_base);
-            all_activations.extend(acts);
-        }
+        let activation_count = assert_facts_into_rete(&mut rete, &engine, &result.asserted_facts);
 
         // Verify only 1 activation (for red)
-        assert_eq!(all_activations.len(), 1);
+        assert_eq!(activation_count, 1);
         assert_eq!(rete.agenda.len(), 1);
     }
 
@@ -229,32 +220,14 @@ mod tests {
         assert_eq!(result.asserted_facts.len(), 3);
         assert_eq!(result.rules.len(), 1);
 
-        // Build a Rete network matching "animal" facts
-        let mut rete = ReteNetwork::new();
-        let animal_sym = engine
-            .symbol_table
-            .intern_symbol("animal", StringEncoding::Utf8)
-            .unwrap();
-
-        let entry_type = AlphaEntryType::OrderedRelation(animal_sym);
-        let entry_node = rete.alpha.create_entry_node(entry_type);
-        let alpha_mem_id = rete.alpha.create_memory(entry_node);
-
-        let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+        let mut rete = build_ordered_relation_rete(&mut engine, "animal", rule_id);
 
         // Assert all facts into the Rete
-        let mut all_activations = Vec::new();
-        for &fact_id in &result.asserted_facts {
-            let fact = engine.fact_base.get(fact_id).expect("Fact should exist");
-            let acts = rete.assert_fact(fact_id, &fact.fact, &engine.fact_base);
-            all_activations.extend(acts);
-        }
+        let activation_count = assert_facts_into_rete(&mut rete, &engine, &result.asserted_facts);
 
         // Verify 3 activations
-        assert_eq!(all_activations.len(), 3);
+        assert_eq!(activation_count, 3);
         assert_eq!(rete.agenda.len(), 3);
 
         // Pop one activation and verify agenda has 2 remaining

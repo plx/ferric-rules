@@ -56,7 +56,7 @@ pub struct RuleDef {
 }
 
 /// Result of loading source code.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct LoadResult {
     /// Facts asserted during loading.
     pub asserted_facts: Vec<FactId>,
@@ -108,11 +108,7 @@ impl Engine {
         }
 
         // Process each top-level form
-        let mut result = LoadResult {
-            asserted_facts: Vec::new(),
-            rules: Vec::new(),
-            warnings: Vec::new(),
-        };
+        let mut result = LoadResult::default();
         let mut errors = Vec::new();
 
         for expr in &parse_result.exprs {
@@ -161,10 +157,11 @@ impl Engine {
         };
 
         let Some(form_name) = list[0].as_symbol() else {
-            result.warnings.push(format!(
-                "skipping list with non-symbol head at line {}",
-                list[0].span().start.line
-            ));
+            Self::warn_at_line(
+                result,
+                list[0].span().start.line,
+                "skipping list with non-symbol head",
+            );
             return Ok(());
         };
 
@@ -185,10 +182,8 @@ impl Engine {
     /// Each sub-list after `assert` is treated as a fact to assert.
     fn process_assert(&mut self, args: &[SExpr], result: &mut LoadResult) -> Result<(), LoadError> {
         for fact_expr in args {
-            match self.process_assert_fact(fact_expr, result) {
-                Ok(fact_id) => result.asserted_facts.push(fact_id),
-                Err(e) => return Err(e),
-            }
+            let fact_id = self.process_assert_fact(fact_expr, result)?;
+            result.asserted_facts.push(fact_id);
         }
         Ok(())
     }
@@ -219,10 +214,11 @@ impl Engine {
                 Some(value) => fields.push(value),
                 None => {
                     // Skip unsupported values with a warning
-                    result.warnings.push(format!(
-                        "skipping unsupported field value at line {}",
-                        field_expr.span().start.line
-                    ));
+                    Self::warn_at_line(
+                        result,
+                        field_expr.span().start.line,
+                        "skipping unsupported field value",
+                    );
                 }
             }
         }
@@ -298,11 +294,12 @@ impl Engine {
             Atom::String(s) => match FerricString::new(s, self.config.string_encoding) {
                 Ok(fs) => Some(Value::String(fs)),
                 Err(e) => {
-                    result.warnings.push(format!(
-                        "string encoding error at line {}: {}",
+                    Self::warn_with_detail(
+                        result,
                         expr.span().start.line,
-                        e
-                    ));
+                        "string encoding error",
+                        &e,
+                    );
                     None
                 }
             },
@@ -313,11 +310,12 @@ impl Engine {
                 {
                     Ok(sym) => Some(Value::Symbol(sym)),
                     Err(e) => {
-                        result.warnings.push(format!(
-                            "symbol encoding error at line {}: {}",
+                        Self::warn_with_detail(
+                            result,
                             expr.span().start.line,
-                            e
-                        ));
+                            "symbol encoding error",
+                            &e,
+                        );
                         None
                     }
                 }
@@ -327,6 +325,21 @@ impl Engine {
                 None
             }
         }
+    }
+
+    fn warn_at_line(result: &mut LoadResult, line: u32, message: &str) {
+        result.warnings.push(format!("{message} at line {line}"));
+    }
+
+    fn warn_with_detail(
+        result: &mut LoadResult,
+        line: u32,
+        message: &str,
+        detail: &dyn std::fmt::Display,
+    ) {
+        result
+            .warnings
+            .push(format!("{message} at line {line}: {detail}"));
     }
 }
 

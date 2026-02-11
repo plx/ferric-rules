@@ -42,6 +42,18 @@ impl Default for EngineConfig {
     }
 }
 
+impl From<StringEncoding> for EngineConfig {
+    fn from(string_encoding: StringEncoding) -> Self {
+        Self { string_encoding }
+    }
+}
+
+impl From<EngineConfig> for StringEncoding {
+    fn from(config: EngineConfig) -> Self {
+        config.string_encoding
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +77,17 @@ mod tests {
             EngineConfig::ascii_symbols_utf8_strings().string_encoding,
             StringEncoding::AsciiSymbolsUtf8Strings
         );
+    }
+
+    #[test]
+    fn from_string_encoding() {
+        let config = EngineConfig::from(StringEncoding::Ascii);
+        assert_eq!(config.string_encoding, StringEncoding::Ascii);
+    }
+
+    #[test]
+    fn into_string_encoding() {
+        let encoding: StringEncoding = EngineConfig::ascii_symbols_utf8_strings().into();
+        assert_eq!(encoding, StringEncoding::AsciiSymbolsUtf8Strings);
     }
 }
