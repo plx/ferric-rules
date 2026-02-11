@@ -3,6 +3,18 @@
 use crate::span::Span;
 use std::fmt;
 
+fn error_fields(
+    message: impl Into<String>,
+    span: Span,
+    kind: ParseErrorKind,
+) -> (String, Span, ParseErrorKind) {
+    (message.into(), span, kind)
+}
+
+fn display_error(f: &mut fmt::Formatter<'_>, span: Span, message: &str) -> fmt::Result {
+    write!(f, "{}:{}: {}", span.start.line, span.start.column, message)
+}
+
 /// A parse error with location information.
 #[derive(Clone, Debug)]
 pub struct ParseError {
@@ -18,8 +30,9 @@ impl ParseError {
     /// Creates a new parse error.
     #[must_use]
     pub fn new(message: impl Into<String>, span: Span, kind: ParseErrorKind) -> Self {
+        let (message, span, kind) = error_fields(message, span, kind);
         Self {
-            message: message.into(),
+            message,
             span,
             kind,
         }
@@ -28,11 +41,7 @@ impl ParseError {
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}:{}: {}",
-            self.span.start.line, self.span.start.column, self.message
-        )
+        display_error(f, self.span, &self.message)
     }
 }
 
@@ -70,8 +79,9 @@ impl LexError {
     /// Creates a new lexical error.
     #[must_use]
     pub fn new(message: impl Into<String>, span: Span, kind: ParseErrorKind) -> Self {
+        let (message, span, kind) = error_fields(message, span, kind);
         Self {
-            message: message.into(),
+            message,
             span,
             kind,
         }
@@ -80,12 +90,18 @@ impl LexError {
 
 impl fmt::Display for LexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}:{}: {}",
-            self.span.start.line, self.span.start.column, self.message
-        )
+        display_error(f, self.span, &self.message)
     }
 }
 
 impl std::error::Error for LexError {}
+
+impl From<LexError> for ParseError {
+    fn from(value: LexError) -> Self {
+        Self {
+            message: value.message,
+            span: value.span,
+            kind: value.kind,
+        }
+    }
+}

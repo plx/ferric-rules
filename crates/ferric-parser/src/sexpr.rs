@@ -132,10 +132,7 @@ pub fn parse_sexprs(source: &str, file_id: FileId) -> ParseResult {
         Ok(tokens) => tokens,
         Err(lex_errors) => {
             // Convert lex errors to parse errors
-            let errors = lex_errors
-                .into_iter()
-                .map(|e| ParseError::new(e.message, e.span, e.kind))
-                .collect();
+            let errors = lex_errors.into_iter().map(ParseError::from).collect();
             return ParseResult {
                 exprs: Vec::new(),
                 errors,
@@ -211,70 +208,31 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Option<SExpr> {
-        let token = self.current()?.clone();
+        let (atom, span) = {
+            let token = self.current()?;
+            let span = token.span;
+            let atom = match &token.token {
+                Token::LeftParen => return self.parse_list(),
+                Token::RightParen => return None, // Handled by caller
+                Token::Integer(n) => Atom::Integer(*n),
+                Token::Float(f) => Atom::Float(*f),
+                Token::String(s) => Atom::String(s.clone()),
+                Token::Symbol(s) => Atom::Symbol(s.clone()),
+                Token::SingleVar(v) => Atom::SingleVar(v.clone()),
+                Token::MultiVar(v) => Atom::MultiVar(v.clone()),
+                Token::GlobalVar(v) => Atom::GlobalVar(v.clone()),
+                Token::Ampersand => Atom::Connective(Connective::And),
+                Token::Pipe => Atom::Connective(Connective::Or),
+                Token::Tilde => Atom::Connective(Connective::Not),
+                Token::Colon => Atom::Connective(Connective::Colon),
+                Token::Equals => Atom::Connective(Connective::Equals),
+                Token::LeftArrow => Atom::Connective(Connective::Assign),
+            };
+            (atom, span)
+        };
 
-        match token.token {
-            Token::LeftParen => self.parse_list(),
-            Token::RightParen => None, // Handled by caller
-            Token::Integer(n) => {
-                self.advance();
-                Some(SExpr::Atom(Atom::Integer(n), token.span))
-            }
-            Token::Float(f) => {
-                self.advance();
-                Some(SExpr::Atom(Atom::Float(f), token.span))
-            }
-            Token::String(s) => {
-                self.advance();
-                Some(SExpr::Atom(Atom::String(s), token.span))
-            }
-            Token::Symbol(s) => {
-                self.advance();
-                Some(SExpr::Atom(Atom::Symbol(s), token.span))
-            }
-            Token::SingleVar(v) => {
-                self.advance();
-                Some(SExpr::Atom(Atom::SingleVar(v), token.span))
-            }
-            Token::MultiVar(v) => {
-                self.advance();
-                Some(SExpr::Atom(Atom::MultiVar(v), token.span))
-            }
-            Token::GlobalVar(v) => {
-                self.advance();
-                Some(SExpr::Atom(Atom::GlobalVar(v), token.span))
-            }
-            Token::Ampersand => {
-                self.advance();
-                Some(SExpr::Atom(Atom::Connective(Connective::And), token.span))
-            }
-            Token::Pipe => {
-                self.advance();
-                Some(SExpr::Atom(Atom::Connective(Connective::Or), token.span))
-            }
-            Token::Tilde => {
-                self.advance();
-                Some(SExpr::Atom(Atom::Connective(Connective::Not), token.span))
-            }
-            Token::Colon => {
-                self.advance();
-                Some(SExpr::Atom(Atom::Connective(Connective::Colon), token.span))
-            }
-            Token::Equals => {
-                self.advance();
-                Some(SExpr::Atom(
-                    Atom::Connective(Connective::Equals),
-                    token.span,
-                ))
-            }
-            Token::LeftArrow => {
-                self.advance();
-                Some(SExpr::Atom(
-                    Atom::Connective(Connective::Assign),
-                    token.span,
-                ))
-            }
-        }
+        self.advance();
+        Some(SExpr::Atom(atom, span))
     }
 
     fn parse_list(&mut self) -> Option<SExpr> {

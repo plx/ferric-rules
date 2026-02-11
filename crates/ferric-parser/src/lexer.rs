@@ -443,26 +443,7 @@ impl<'a> Lexer<'a> {
 }
 
 fn is_symbol_start(ch: char) -> bool {
-    ch.is_alphanumeric()
-        || matches!(
-            ch,
-            '-' | '_'
-                | '.'
-                | '*'
-                | '+'
-                | '/'
-                | '>'
-                | '<'
-                | '='
-                | '!'
-                | '#'
-                | '$'
-                | '%'
-                | '^'
-                | '@'
-                | '{'
-                | '}'
-        )
+    is_symbol_char(ch)
 }
 
 fn is_symbol_char(ch: char) -> bool {
