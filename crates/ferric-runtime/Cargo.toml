@@ -1,0 +1,21 @@
+[package]
+name = "ferric-runtime"
+description = "Engine, execution environment, value types, and symbol interning for Ferric"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ferric-core = { workspace = true }
+ferric-parser = { workspace = true }
+thiserror = { workspace = true }
+smallvec = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = "3.8"
+
+[lints]
+workspace = true

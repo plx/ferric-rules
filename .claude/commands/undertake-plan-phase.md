@@ -17,10 +17,9 @@ When undertaking a phase, here's what you should do:
 - read the `Plan.md` file to understand the overall phase
 - read the `Progress.txt` file to understand the current progress
 - read the next pass in the sequence that has not been completed (i.e. is not mentioned in `Progress.txt`)
-- spawn a suitable agent team to implement the pass
-- have the agent team work together to implement the pass
+- implement the pass (using teams or subagents as needed)
 - update the `Progress.txt` file to mark the pass as completed
-- shut down the agent team, leaving behind notes in a plan-specific `Notes.md` file about:
+- leave behind notes in a plan-specific `Notes.md` file about:
   - what was done
   - any remaining TODOs or FIXMEs
   - any lingering questions or uncertainties
