@@ -20,6 +20,13 @@ When undertaking a phase, here's what you should do:
 - spawn a suitable agent team to implement the pass
 - have the agent team work together to implement the pass
 - update the `Progress.txt` file to mark the pass as completed
+- shut down the agent team, leaving behind notes in a plan-specific `Notes.md` file about:
+  - what was done
+  - any remaining TODOs or FIXMEs
+  - any lingering questions or uncertainties
+  - any noteworthy decisions or trade-offs made
+  - any updates to the overall plan that may need to be made
+  - any suggestions for improvements to agents, tools, or processes
 - continue to the next pass, etc., until the phase is complete
 
 Note that unless explicitly directed *not* to do so, you should aim to include both "manual tests"—often direct translation of the examples from the CLIPS documentation—*and* property-based tests that thoroughly exercise the code vis-a-vis its expected behavior and invariants; additionally, these tests would be in addition to any "verification"-style tests that directly replicate tests from the CLIPS test suite (or from its documentation, etc.).
