@@ -62,6 +62,34 @@ pub enum AlphaNode {
     },
 }
 
+impl AlphaNode {
+    #[must_use]
+    fn memory(&self) -> Option<AlphaMemoryId> {
+        match self {
+            Self::Entry { memory, .. } | Self::ConstantTest { memory, .. } => *memory,
+        }
+    }
+
+    fn memory_mut(&mut self) -> &mut Option<AlphaMemoryId> {
+        match self {
+            Self::Entry { memory, .. } | Self::ConstantTest { memory, .. } => memory,
+        }
+    }
+
+    #[must_use]
+    fn children(&self) -> &[NodeId] {
+        match self {
+            Self::Entry { children, .. } | Self::ConstantTest { children, .. } => children,
+        }
+    }
+
+    fn children_mut(&mut self) -> &mut Vec<NodeId> {
+        match self {
+            Self::Entry { children, .. } | Self::ConstantTest { children, .. } => children,
+        }
+    }
+}
+
 /// Alpha memory: stores facts that match a particular alpha network path.
 ///
 /// Maintains a set of facts and optional slot indices for efficient lookup
@@ -125,17 +153,7 @@ impl AlphaMemory {
         for &slot in &self.indexed_slots {
             if let Some(value) = get_slot_value(fact, slot) {
                 if let Some(key) = AtomKey::from_value(value) {
-                    if let Some(key_map) = self.slot_indices.get_mut(&slot) {
-                        if let Some(fact_set) = key_map.get_mut(&key) {
-                            fact_set.remove(&fact_id);
-                            if fact_set.is_empty() {
-                                key_map.remove(&key);
-                            }
-                        }
-                        if key_map.is_empty() {
-                            self.slot_indices.remove(&slot);
-                        }
-                    }
+                    remove_from_slot_index(&mut self.slot_indices, slot, &key, fact_id);
                 }
             }
         }
@@ -213,6 +231,28 @@ pub fn get_slot_value(fact: &Fact, slot: SlotIndex) -> Option<&Value> {
     }
 }
 
+fn remove_from_slot_index(
+    slot_indices: &mut HashMap<SlotIndex, HashMap<AtomKey, HashSet<FactId>>>,
+    slot: SlotIndex,
+    key: &AtomKey,
+    fact_id: FactId,
+) {
+    let mut remove_slot = false;
+    if let Some(key_map) = slot_indices.get_mut(&slot) {
+        if let Some(fact_set) = key_map.get_mut(key) {
+            fact_set.remove(&fact_id);
+            if fact_set.is_empty() {
+                key_map.remove(key);
+            }
+        }
+        remove_slot = key_map.is_empty();
+    }
+
+    if remove_slot {
+        slot_indices.remove(&slot);
+    }
+}
+
 /// The alpha network.
 ///
 /// Stores all alpha nodes and memories, and provides methods to propagate facts
@@ -281,11 +321,7 @@ impl AlphaNetwork {
 
         // Add this node as a child of the parent
         if let Some(parent_node) = self.nodes.get_mut(&parent) {
-            match parent_node {
-                AlphaNode::Entry { children, .. } | AlphaNode::ConstantTest { children, .. } => {
-                    children.push(node_id);
-                }
-            }
+            parent_node.children_mut().push(node_id);
         }
 
         node_id
@@ -304,11 +340,7 @@ impl AlphaNetwork {
 
         // Attach to node
         if let Some(node) = self.nodes.get_mut(&node_id) {
-            match node {
-                AlphaNode::Entry { memory: m, .. } | AlphaNode::ConstantTest { memory: m, .. } => {
-                    *m = Some(memory_id);
-                }
-            }
+            *node.memory_mut() = Some(memory_id);
         }
 
         memory_id
@@ -375,11 +407,7 @@ impl AlphaNetwork {
     pub fn debug_assert_consistency(&self) {
         // Check 1: All alpha memory IDs referenced by nodes exist in memories map
         for node in self.nodes.values() {
-            let memory_id = match node {
-                AlphaNode::Entry { memory, .. } | AlphaNode::ConstantTest { memory, .. } => *memory,
-            };
-
-            if let Some(mem_id) = memory_id {
+            if let Some(mem_id) = node.memory() {
                 assert!(
                     self.memories.contains_key(&mem_id),
                     "Node references non-existent memory {mem_id:?}"
@@ -389,13 +417,7 @@ impl AlphaNetwork {
 
         // Check 2: All node IDs in children fields exist in nodes map
         for (node_id, node) in &self.nodes {
-            let children = match node {
-                AlphaNode::Entry { children, .. } | AlphaNode::ConstantTest { children, .. } => {
-                    children
-                }
-            };
-
-            for child_id in children {
+            for child_id in node.children() {
                 assert!(
                     self.nodes.contains_key(child_id),
                     "Node {node_id:?} has non-existent child {child_id:?}"
@@ -405,14 +427,8 @@ impl AlphaNetwork {
 
         // Check 3: No duplicate children in any node
         for (node_id, node) in &self.nodes {
-            let children = match node {
-                AlphaNode::Entry { children, .. } | AlphaNode::ConstantTest { children, .. } => {
-                    children
-                }
-            };
-
             let mut seen = HashSet::new();
-            for child_id in children {
+            for child_id in node.children() {
                 assert!(
                     seen.insert(child_id),
                     "Node {node_id:?} has duplicate child {child_id:?}"
@@ -443,38 +459,17 @@ impl AlphaNetwork {
         fact: &Fact,
         accepted: &mut Vec<AlphaMemoryId>,
     ) {
-        let Some(node) = self.nodes.get(&node_id).cloned() else {
+        let Some((memory_id, children)) = self.propagation_plan(node_id, fact) else {
             return;
         };
-
-        // Check if this node has a test that filters the fact
-        let passes = match &node {
-            AlphaNode::Entry { .. } => true, // Entry nodes don't filter
-            AlphaNode::ConstantTest { test, .. } => evaluate_test(fact, test),
-        };
-
-        if !passes {
-            return;
-        }
 
         // If this node has a memory, insert the fact
-        let memory_id = match &node {
-            AlphaNode::Entry { memory, .. } | AlphaNode::ConstantTest { memory, .. } => *memory,
-        };
-
         if let Some(mem_id) = memory_id {
             if let Some(memory) = self.memories.get_mut(&mem_id) {
                 memory.insert(fact_id, fact);
                 accepted.push(mem_id);
             }
         }
-
-        // Propagate to children
-        let children = match &node {
-            AlphaNode::Entry { children, .. } | AlphaNode::ConstantTest { children, .. } => {
-                children.clone()
-            }
-        };
 
         for child_id in children {
             self.propagate(child_id, fact_id, fact, accepted);
@@ -483,31 +478,37 @@ impl AlphaNetwork {
 
     /// Recursively retract a fact from the network starting at a node.
     fn retract_propagate(&mut self, node_id: NodeId, fact_id: FactId, fact: &Fact) {
-        let Some(node) = self.nodes.get(&node_id).cloned() else {
+        let Some((memory_id, children)) = self.retraction_plan(node_id) else {
             return;
         };
 
         // If this node has a memory, remove the fact
-        let memory_id = match &node {
-            AlphaNode::Entry { memory, .. } | AlphaNode::ConstantTest { memory, .. } => *memory,
-        };
-
         if let Some(mem_id) = memory_id {
             if let Some(memory) = self.memories.get_mut(&mem_id) {
                 memory.remove(fact_id, fact);
             }
         }
 
-        // Propagate to children
-        let children = match &node {
-            AlphaNode::Entry { children, .. } | AlphaNode::ConstantTest { children, .. } => {
-                children.clone()
-            }
-        };
-
         for child_id in children {
             self.retract_propagate(child_id, fact_id, fact);
         }
+    }
+
+    fn propagation_plan(
+        &self,
+        node_id: NodeId,
+        fact: &Fact,
+    ) -> Option<(Option<AlphaMemoryId>, Vec<NodeId>)> {
+        let node = self.nodes.get(&node_id)?;
+        if let AlphaNode::ConstantTest { test, .. } = node {
+            evaluate_test(fact, test).then_some(())?;
+        }
+        Some((node.memory(), node.children().to_vec()))
+    }
+
+    fn retraction_plan(&self, node_id: NodeId) -> Option<(Option<AlphaMemoryId>, Vec<NodeId>)> {
+        let node = self.nodes.get(&node_id)?;
+        Some((node.memory(), node.children().to_vec()))
     }
 }
 

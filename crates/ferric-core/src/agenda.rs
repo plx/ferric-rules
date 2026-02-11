@@ -15,6 +15,22 @@ slotmap::new_key_type! {
     pub struct ActivationId;
 }
 
+fn remove_from_token_index(
+    token_index: &mut HashMap<TokenId, SmallVec<[ActivationId; 2]>>,
+    token_id: TokenId,
+    activation_id: ActivationId,
+) {
+    let mut remove_entry = false;
+    if let Some(acts) = token_index.get_mut(&token_id) {
+        acts.retain(|aid| *aid != activation_id);
+        remove_entry = acts.is_empty();
+    }
+
+    if remove_entry {
+        token_index.remove(&token_id);
+    }
+}
+
 /// An activation: a rule that is ready to fire with a specific token.
 #[derive(Clone, Debug)]
 pub struct Activation {
@@ -106,21 +122,13 @@ impl Agenda {
     ///
     /// Returns `None` if the agenda is empty.
     pub fn pop(&mut self) -> Option<Activation> {
-        let (key, &id) = self.ordering.iter().next()?;
-        let key = key.clone();
-
-        self.ordering.remove(&key);
+        let (_, id) = self.ordering.pop_first()?;
         self.id_to_key.remove(&id);
 
         let activation = self.activations.remove(id)?;
 
         // Clean up token reverse index
-        if let Some(acts) = self.token_to_activations.get_mut(&activation.token) {
-            acts.retain(|aid| *aid != id);
-            if acts.is_empty() {
-                self.token_to_activations.remove(&activation.token);
-            }
-        }
+        remove_from_token_index(&mut self.token_to_activations, activation.token, id);
 
         Some(activation)
     }

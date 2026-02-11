@@ -10,6 +10,21 @@ use std::collections::{HashMap, HashSet};
 use crate::symbol::Symbol;
 use crate::value::Value;
 
+fn remove_from_set_index<K>(index: &mut HashMap<K, HashSet<FactId>>, key: K, id: FactId)
+where
+    K: Copy + Eq + std::hash::Hash,
+{
+    let mut remove_key = false;
+    if let Some(set) = index.get_mut(&key) {
+        set.remove(&id);
+        remove_key = set.is_empty();
+    }
+
+    if remove_key {
+        index.remove(&key);
+    }
+}
+
 slotmap::new_key_type! {
     /// Unique identifier for a fact within a fact base.
     pub struct FactId;
@@ -124,20 +139,10 @@ impl FactBase {
         // Clean up indices
         match &entry.fact {
             Fact::Ordered(ordered) => {
-                if let Some(set) = self.by_relation.get_mut(&ordered.relation) {
-                    set.remove(&id);
-                    if set.is_empty() {
-                        self.by_relation.remove(&ordered.relation);
-                    }
-                }
+                remove_from_set_index(&mut self.by_relation, ordered.relation, id);
             }
             Fact::Template(template) => {
-                if let Some(set) = self.by_template.get_mut(&template.template_id) {
-                    set.remove(&id);
-                    if set.is_empty() {
-                        self.by_template.remove(&template.template_id);
-                    }
-                }
+                remove_from_set_index(&mut self.by_template, template.template_id, id);
             }
         }
 

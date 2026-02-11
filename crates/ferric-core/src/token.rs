@@ -19,6 +19,24 @@ slotmap::new_key_type! {
     pub struct TokenId;
 }
 
+fn remove_from_vec_index<K>(
+    index: &mut HashMap<K, SmallVec<[TokenId; 4]>>,
+    key: K,
+    token_id: TokenId,
+) where
+    K: Copy + Eq + std::hash::Hash,
+{
+    let mut remove_key = false;
+    if let Some(entry) = index.get_mut(&key) {
+        entry.retain(|tid| *tid != token_id);
+        remove_key = entry.is_empty();
+    }
+
+    if remove_key {
+        index.remove(&key);
+    }
+}
+
 /// A token representing a partial match through the beta network.
 ///
 /// Tokens contain the facts matched so far, variable bindings from the match,
@@ -120,23 +138,13 @@ impl TokenStore {
             // Only clean once per distinct fact
             if !cleaned_facts.contains(&fact_id) {
                 cleaned_facts.push(fact_id);
-                if let Some(entry) = self.fact_to_tokens.get_mut(&fact_id) {
-                    entry.retain(|tid| *tid != id);
-                    if entry.is_empty() {
-                        self.fact_to_tokens.remove(&fact_id);
-                    }
-                }
+                remove_from_vec_index(&mut self.fact_to_tokens, fact_id, id);
             }
         }
 
         // Clean up parent_to_children index: remove from parent's children list
         if let Some(parent_id) = token.parent {
-            if let Some(entry) = self.parent_to_children.get_mut(&parent_id) {
-                entry.retain(|tid| *tid != id);
-                if entry.is_empty() {
-                    self.parent_to_children.remove(&parent_id);
-                }
-            }
+            remove_from_vec_index(&mut self.parent_to_children, parent_id, id);
         }
 
         // Also remove the entry where this token is the parent (if it has children)

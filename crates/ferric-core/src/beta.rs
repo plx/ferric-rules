@@ -179,17 +179,7 @@ impl BetaNetwork {
         self.nodes.insert(node_id, node);
         self.memories.insert(memory_id, BetaMemory::new(memory_id));
 
-        // Add this join node as a child of the parent
-        if let Some(parent_node) = self.nodes.get_mut(&parent) {
-            match parent_node {
-                BetaNode::Root { children } | BetaNode::Join { children, .. } => {
-                    children.push(node_id);
-                }
-                BetaNode::Terminal { .. } => {
-                    // Terminal nodes cannot have children
-                }
-            }
-        }
+        self.attach_child_to_parent(parent, node_id);
 
         // Register in alpha_to_joins index
         self.alpha_to_joins
@@ -212,17 +202,7 @@ impl BetaNetwork {
 
         self.nodes.insert(node_id, node);
 
-        // Add this terminal node as a child of the parent
-        if let Some(parent_node) = self.nodes.get_mut(&parent) {
-            match parent_node {
-                BetaNode::Root { children } | BetaNode::Join { children, .. } => {
-                    children.push(node_id);
-                }
-                BetaNode::Terminal { .. } => {
-                    // Terminal nodes cannot have children
-                }
-            }
-        }
+        self.attach_child_to_parent(parent, node_id);
 
         node_id
     }
@@ -271,6 +251,19 @@ impl BetaNetwork {
     /// Iterate over all beta memory IDs.
     pub fn memory_ids(&self) -> impl Iterator<Item = BetaMemoryId> + '_ {
         self.memories.keys().copied()
+    }
+
+    fn attach_child_to_parent(&mut self, parent: NodeId, child_id: NodeId) {
+        if let Some(parent_node) = self.nodes.get_mut(&parent) {
+            match parent_node {
+                BetaNode::Root { children } | BetaNode::Join { children, .. } => {
+                    children.push(child_id);
+                }
+                BetaNode::Terminal { .. } => {
+                    // Terminal nodes cannot have children
+                }
+            }
+        }
     }
 
     /// Verify internal consistency of the beta network.

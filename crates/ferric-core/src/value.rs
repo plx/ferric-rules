@@ -23,7 +23,7 @@ pub struct ExternalTypeId(pub u32);
 ///
 /// The `pointer` field is a raw pointer managed by the embedding application.
 /// Ferric does not dereference it; it is only stored and passed back.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ExternalAddress {
     pub type_id: ExternalTypeId,
     pub pointer: *mut c_void,
@@ -68,6 +68,16 @@ impl Multifield {
     pub fn push(&mut self, value: Value) {
         self.values.push(value);
     }
+
+    /// Iterate over values by shared reference.
+    pub fn iter(&self) -> std::slice::Iter<'_, Value> {
+        self.values.iter()
+    }
+
+    /// Iterate over values by mutable reference.
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Value> {
+        self.values.iter_mut()
+    }
 }
 
 impl Default for Multifield {
@@ -81,6 +91,39 @@ impl FromIterator<Value> for Multifield {
         Self {
             values: iter.into_iter().collect(),
         }
+    }
+}
+
+impl Extend<Value> for Multifield {
+    fn extend<I: IntoIterator<Item = Value>>(&mut self, iter: I) {
+        self.values.extend(iter);
+    }
+}
+
+impl IntoIterator for Multifield {
+    type Item = Value;
+    type IntoIter = smallvec::IntoIter<[Value; 8]>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Multifield {
+    type Item = &'a Value;
+    type IntoIter = std::slice::Iter<'a, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Multifield {
+    type Item = &'a mut Value;
+    type IntoIter = std::slice::IterMut<'a, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter_mut()
     }
 }
 
@@ -360,6 +403,24 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(mf.len(), 2);
+    }
+
+    #[test]
+    fn multifield_extend() {
+        let mut mf = Multifield::new();
+        mf.extend([Value::Integer(1), Value::Integer(2)]);
+        assert_eq!(mf.len(), 2);
+    }
+
+    #[test]
+    fn multifield_into_iter() {
+        let mf: Multifield = vec![Value::Integer(1), Value::Integer(2)]
+            .into_iter()
+            .collect();
+        let values: Vec<_> = mf.into_iter().collect();
+        assert_eq!(values.len(), 2);
+        assert!(matches!(values[0], Value::Integer(1)));
+        assert!(matches!(values[1], Value::Integer(2)));
     }
 
     #[test]
