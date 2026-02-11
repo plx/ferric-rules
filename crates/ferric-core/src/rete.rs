@@ -100,16 +100,13 @@ impl ReteNetwork {
         }
 
         // 4. For each removed token, clean up beta memory and agenda
-        for (token_id, _token) in all_removed_tokens {
+        for (token_id, token) in all_removed_tokens {
             // Remove activations for this token
             let acts = self.agenda.remove_activations_for_token(token_id);
             removed_activations.extend(acts);
 
-            // Remove token from all beta memories
-            // (Inefficient, but correct for Phase 1. A better approach would track
-            // which memory owns each token.)
-            let memory_ids: Vec<_> = self.beta.memory_ids().collect();
-            for mem_id in memory_ids {
+            // Remove token from the owning beta memory in O(1) via token.owner_node.
+            if let Some(mem_id) = self.find_memory_for_node(token.owner_node) {
                 if let Some(memory) = self.beta.get_memory_mut(mem_id) {
                     memory.remove(token_id);
                 }
@@ -282,6 +279,29 @@ impl ReteNetwork {
                     // Join nodes don't propagate tokens directly from parent.
                     // They wait for right activation from alpha memories.
                     // Root nodes shouldn't be children.
+                }
+            }
+        }
+    }
+
+    /// Verify cross-structure consistency for the full rete network.
+    ///
+    /// Intended for use in tests and debug builds.
+    #[cfg(any(test, debug_assertions))]
+    pub fn debug_assert_consistency(&self) {
+        self.token_store.debug_assert_consistency();
+        self.alpha.debug_assert_consistency();
+        self.beta.debug_assert_consistency();
+        self.agenda.debug_assert_consistency();
+
+        // Cross-check: every token referenced by beta memories exists in TokenStore.
+        for memory_id in self.beta.memory_ids() {
+            if let Some(memory) = self.beta.get_memory(memory_id) {
+                for token_id in memory.iter() {
+                    assert!(
+                        self.token_store.get(token_id).is_some(),
+                        "beta memory {memory_id:?} references non-existent token {token_id:?}"
+                    );
                 }
             }
         }
@@ -635,8 +655,7 @@ mod tests {
             rete.assert_fact(fact_id, &fact.fact, &fact_base);
             fact_ids.push(fact_id);
 
-            // Check token store consistency
-            rete.token_store.debug_assert_consistency();
+            rete.debug_assert_consistency();
         }
 
         assert_eq!(rete.agenda.len(), 3);
@@ -651,9 +670,7 @@ mod tests {
         fact_base.retract(retract_id);
         rete.retract_fact(retract_id, &retract_fact);
 
-        // Verify consistency
-        rete.token_store.debug_assert_consistency();
-        rete.alpha.debug_assert_consistency();
+        rete.debug_assert_consistency();
         assert_eq!(rete.agenda.len(), 2);
 
         // Assert 1 more fact
@@ -662,8 +679,7 @@ mod tests {
         rete.assert_fact(fact_id, &fact.fact, &fact_base);
         fact_ids.push(fact_id);
 
-        // Verify consistency
-        rete.token_store.debug_assert_consistency();
+        rete.debug_assert_consistency();
         assert_eq!(rete.agenda.len(), 3);
 
         // Retract all remaining
@@ -676,8 +692,7 @@ mod tests {
         }
 
         // Verify everything is clean
-        rete.token_store.debug_assert_consistency();
-        rete.alpha.debug_assert_consistency();
+        rete.debug_assert_consistency();
         assert!(rete.agenda.is_empty());
         assert!(rete.token_store.is_empty());
     }
@@ -721,9 +736,7 @@ mod tests {
             rete.assert_fact(fact_id, &fact.fact, &fact_base);
             fact_ids.push(fact_id);
 
-            // Check consistency at each step
-            rete.token_store.debug_assert_consistency();
-            rete.alpha.debug_assert_consistency();
+            rete.debug_assert_consistency();
         }
 
         // Non-matching facts
@@ -734,9 +747,7 @@ mod tests {
             rete.assert_fact(fact_id, &fact.fact, &fact_base);
             fact_ids.push(fact_id);
 
-            // Check consistency at each step
-            rete.token_store.debug_assert_consistency();
-            rete.alpha.debug_assert_consistency();
+            rete.debug_assert_consistency();
         }
 
         // Should have 3 activations (only alice facts matched)
@@ -749,9 +760,7 @@ mod tests {
                 fact_base.retract(fact_id);
                 rete.retract_fact(fact_id, &fact);
 
-                // Check consistency after each retraction
-                rete.token_store.debug_assert_consistency();
-                rete.alpha.debug_assert_consistency();
+                rete.debug_assert_consistency();
             }
         }
 

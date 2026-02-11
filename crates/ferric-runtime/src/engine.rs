@@ -70,6 +70,26 @@ impl Engine {
         Ok(id)
     }
 
+    /// Assert a fully constructed fact into working memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine is called from the wrong thread.
+    pub fn assert(&mut self, fact: Fact) -> Result<FactId, EngineError> {
+        self.check_thread_affinity()?;
+
+        let id = match fact {
+            Fact::Ordered(ordered) => self
+                .fact_base
+                .assert_ordered(ordered.relation, ordered.fields),
+            Fact::Template(template) => self
+                .fact_base
+                .assert_template(template.template_id, template.slots),
+        };
+
+        Ok(id)
+    }
+
     /// Retract a fact from working memory.
     ///
     /// # Errors
@@ -154,6 +174,17 @@ impl Engine {
         }
         Ok(())
     }
+
+    /// Transfer ownership of this engine to the current thread.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee there are no outstanding references into engine
+    /// internals that continue to be used from the previous owning thread.
+    #[allow(unsafe_code)]
+    pub unsafe fn move_to_current_thread(&mut self) {
+        self.creator_thread = std::thread::current().id();
+    }
 }
 
 /// Errors that can occur during engine operations.
@@ -226,6 +257,24 @@ mod tests {
     }
 
     #[test]
+    fn assert_structured_ordered_fact() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let relation = engine.intern_symbol("person").unwrap();
+        let fact = Fact::Ordered(ferric_core::OrderedFact {
+            relation,
+            fields: smallvec::smallvec![Value::Integer(42)],
+        });
+
+        let id = engine.assert(fact).unwrap();
+        let stored = engine.get_fact(id).unwrap().unwrap();
+
+        match stored {
+            Fact::Ordered(ordered) => assert_eq!(ordered.fields.len(), 1),
+            Fact::Template(_) => panic!("expected ordered fact"),
+        }
+    }
+
+    #[test]
     fn intern_symbol_is_idempotent() {
         let mut engine = Engine::new(EngineConfig::utf8());
 
@@ -278,5 +327,36 @@ mod tests {
         // The key point is that Engine contains PhantomData<*mut ()>,
         // which makes it !Send and !Sync. This test just verifies the marker exists.
         assert!(std::mem::size_of_val(&engine._not_send_sync) == 0);
+    }
+
+    #[test]
+    fn move_to_current_thread_enables_safe_handoff() {
+        #[allow(unsafe_code)]
+        struct SendEngine(Engine);
+
+        #[allow(unsafe_code)]
+        unsafe impl Send for SendEngine {}
+
+        let send_engine = SendEngine(Engine::new(EngineConfig::utf8()));
+        let handle = std::thread::spawn(move || {
+            let mut send_engine = send_engine;
+
+            // Before transfer, calls from this thread should fail.
+            assert!(matches!(
+                send_engine.0.intern_symbol("before-transfer"),
+                Err(EngineError::WrongThread { .. })
+            ));
+
+            #[allow(unsafe_code)]
+            unsafe {
+                send_engine.0.move_to_current_thread();
+            }
+
+            // After transfer, calls should succeed on this thread.
+            let sym = send_engine.0.intern_symbol("after-transfer");
+            assert!(sym.is_ok());
+        });
+
+        handle.join().expect("thread should complete");
     }
 }
