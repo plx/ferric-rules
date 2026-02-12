@@ -10,11 +10,14 @@
 use std::path::Path;
 use thiserror::Error;
 
-use ferric_core::{FactId, FerricString, Value};
+use ferric_core::{
+    AlphaEntryType, AtomKey, CompilablePattern, CompilableRule, CompileResult, ConstantTest,
+    ConstantTestType, FactId, FerricString, SlotIndex, Value,
+};
 use ferric_parser::{
-    interpret_constructs, parse_sexprs, Atom, Construct, FactBody, FactValue, FileId,
-    InterpreterConfig, LiteralKind, OrderedFactBody, RuleConstruct,
-    SExpr, TemplateConstruct, TemplateFactBody,
+    interpret_constructs, parse_sexprs, Atom, Constraint, Construct, FactBody, FactValue, FileId,
+    InterpreterConfig, LiteralKind, OrderedFactBody, Pattern, RuleConstruct, SExpr,
+    TemplateConstruct, TemplateFactBody,
 };
 
 use crate::engine::{Engine, EngineError};
@@ -40,6 +43,9 @@ pub enum LoadError {
 
     #[error("invalid defrule form: {0}")]
     InvalidDefrule(String),
+
+    #[error("compile error: {0}")]
+    Compile(String),
 
     #[error("engine error: {0}")]
     Engine(#[from] EngineError),
@@ -194,6 +200,14 @@ impl Engine {
                         }
                     }
                 }
+            }
+        }
+
+        // Compile rules into the rete network
+        for rule in &result.rules {
+            match self.compile_rule_construct(rule) {
+                Ok(_) => {}
+                Err(e) => errors.push(e),
             }
         }
 
@@ -426,6 +440,158 @@ impl Engine {
             // Variables and connectives are not supported as fact values in Phase 1
             Atom::SingleVar(_) | Atom::MultiVar(_) | Atom::GlobalVar(_) | Atom::Connective(_) => {
                 None
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Rule compilation pipeline
+    // -----------------------------------------------------------------------
+
+    /// Compile a `RuleConstruct` into the engine's rete network.
+    fn compile_rule_construct(
+        &mut self,
+        rule: &RuleConstruct,
+    ) -> Result<CompileResult, LoadError> {
+        let compilable = self
+            .translate_rule_construct(rule)
+            .map_err(|e| LoadError::Compile(format!("{e}")))?;
+        self.compiler
+            .compile_rule(&mut self.rete, &compilable)
+            .map_err(|e| LoadError::Compile(format!("{e}")))
+    }
+
+    /// Translate a `RuleConstruct` (parser types) into a `CompilableRule` (core types).
+    fn translate_rule_construct(
+        &mut self,
+        rule: &RuleConstruct,
+    ) -> Result<CompilableRule, LoadError> {
+        let rule_id = self.compiler.allocate_rule_id();
+        let mut patterns = Vec::new();
+
+        for pattern in &rule.patterns {
+            if let Some(compilable) = self.translate_pattern(pattern)? {
+                patterns.push(compilable);
+            }
+        }
+
+        Ok(CompilableRule {
+            rule_id,
+            salience: rule.salience,
+            patterns,
+        })
+    }
+
+    /// Translate a single `Pattern` into a `CompilablePattern`.
+    ///
+    /// Returns `None` for pattern types not yet supported (negative, test, exists).
+    fn translate_pattern(&mut self, pattern: &Pattern) -> Result<Option<CompilablePattern>, LoadError> {
+        match pattern {
+            Pattern::Ordered(ordered) => {
+                let sym = self
+                    .symbol_table
+                    .intern_symbol(&ordered.relation, self.config.string_encoding)
+                    .map_err(|e| LoadError::Compile(format!("encoding error: {e}")))?;
+                let entry_type = AlphaEntryType::OrderedRelation(sym);
+                let mut constant_tests = Vec::new();
+                let mut variable_slots = Vec::new();
+
+                for (i, constraint) in ordered.constraints.iter().enumerate() {
+                    let slot = SlotIndex::Ordered(i);
+                    self.translate_constraint(
+                        constraint,
+                        slot,
+                        &mut constant_tests,
+                        &mut variable_slots,
+                    )?;
+                }
+
+                Ok(Some(CompilablePattern {
+                    entry_type,
+                    constant_tests,
+                    variable_slots,
+                }))
+            }
+            Pattern::Assigned { pattern, .. } => {
+                // Unwrap the assignment and compile the inner pattern
+                self.translate_pattern(pattern)
+            }
+            // Not, Test, Exists, Template patterns are not yet compiled (later passes)
+            _ => Ok(None),
+        }
+    }
+
+    /// Translate a single `Constraint` into constant tests and/or variable slots.
+    fn translate_constraint(
+        &mut self,
+        constraint: &Constraint,
+        slot: SlotIndex,
+        constant_tests: &mut Vec<ConstantTest>,
+        variable_slots: &mut Vec<(SlotIndex, ferric_core::Symbol)>,
+    ) -> Result<(), LoadError> {
+        match constraint {
+            Constraint::Literal(lit) => {
+                if let Some(key) = self.literal_to_atom_key(&lit.value)? {
+                    constant_tests.push(ConstantTest {
+                        slot,
+                        test_type: ConstantTestType::Equal(key),
+                    });
+                }
+            }
+            Constraint::Variable(name, _span) => {
+                let sym = self
+                    .symbol_table
+                    .intern_symbol(name, self.config.string_encoding)
+                    .map_err(|e| LoadError::Compile(format!("encoding error: {e}")))?;
+                variable_slots.push((slot, sym));
+            }
+            Constraint::Wildcard(_) | Constraint::MultiWildcard(_) => {
+                // No test needed — matches anything
+            }
+            Constraint::MultiVariable(_name, _span) => {
+                // Multi-field variables are not yet compiled (complex)
+            }
+            Constraint::Not(inner, _span) => {
+                // ~literal → NotEqual constant test
+                if let Constraint::Literal(lit) = inner.as_ref() {
+                    if let Some(key) = self.literal_to_atom_key(&lit.value)? {
+                        constant_tests.push(ConstantTest {
+                            slot,
+                            test_type: ConstantTestType::NotEqual(key),
+                        });
+                    }
+                }
+                // ~variable and other negated constraints: not yet compiled
+            }
+            Constraint::And(constraints, _span) => {
+                // Process each sub-constraint against the same slot
+                for sub in constraints {
+                    self.translate_constraint(sub, slot, constant_tests, variable_slots)?;
+                }
+            }
+            Constraint::Or(_constraints, _span) => {
+                // Or constraints are not yet compiled (require alpha network branching)
+            }
+        }
+        Ok(())
+    }
+
+    /// Convert a `LiteralKind` to an `AtomKey` for constant test matching.
+    fn literal_to_atom_key(&mut self, literal: &LiteralKind) -> Result<Option<AtomKey>, LoadError> {
+        match literal {
+            LiteralKind::Integer(n) => Ok(Some(AtomKey::Integer(*n))),
+            LiteralKind::Float(f) => Ok(Some(AtomKey::FloatBits(f.to_bits()))),
+            LiteralKind::Symbol(s) => {
+                let sym = self
+                    .symbol_table
+                    .intern_symbol(s, self.config.string_encoding)
+                    .map_err(|e| LoadError::Compile(format!("encoding error: {e}")))?;
+                Ok(Some(AtomKey::Symbol(sym)))
+            }
+            LiteralKind::String(s) => {
+                let fs = FerricString::new(s, self.config.string_encoding)
+                    .map_err(|e| LoadError::Compile(format!("encoding error: {e}")))?;
+                Ok(Some(AtomKey::String(fs)))
             }
         }
     }

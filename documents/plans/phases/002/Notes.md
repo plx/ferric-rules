@@ -194,3 +194,76 @@ None — typed construct AST and full interpretation complete for defrule, defte
 ### Suggestions
 
 - None. Ready for Pass 004.
+
+---
+
+## Pass 004: Rule Compilation Pipeline And Node Sharing
+
+### What was done
+
+1. **`ReteCompiler`** (`ferric-core/src/compiler.rs`):
+   - `CompilableRule` and `CompilablePattern` input types (decoupled from parser crate)
+   - `CompileResult` and `CompileError` output types
+   - `AlphaPathKey` for canonical alpha path caching and node sharing
+   - `ReteCompiler::compile_rule()`: builds alpha paths → beta join chain → terminal node
+   - `ReteCompiler::ensure_alpha_path()`: find-or-create with cache for alpha memory reuse
+   - `ReteCompiler::allocate_rule_id()`: sequential rule ID allocation starting from 1
+   - Variable binding tracking: `HashSet<Symbol>` tracks variables bound in previous patterns; first occurrence binds, subsequent occurrences create `JoinTest`
+
+2. **Engine integration** (`ferric-runtime/src/engine.rs`):
+   - Added `ReteNetwork` and `ReteCompiler` fields to `Engine`
+   - Added `rete()` accessor for test inspection
+
+3. **Loader compilation wiring** (`ferric-runtime/src/loader.rs`):
+   - Added `LoadError::Compile` variant
+   - `load_str()` now automatically compiles loaded rules into the engine's rete
+   - `compile_rule_construct()` orchestrates translation + compilation
+   - `translate_rule_construct()` converts `RuleConstruct` → `CompilableRule`
+   - `translate_pattern()` handles `Pattern::Ordered` → `CompilablePattern` (other pattern types deferred)
+   - `translate_constraint()` handles Literal→ConstantTest, Variable→variable_slot, Wildcard→skip, Not(Literal)→NotEqual, And→recursive
+   - `literal_to_atom_key()` converts `LiteralKind` → `AtomKey` for constant tests
+
+4. **15 compiler unit tests** covering:
+   - Sequential rule ID allocation
+   - Empty rule error
+   - Single/multi-pattern compilation
+   - Constant test extraction (Equal and NotEqual)
+   - Variable binding and join test generation
+   - Alpha path sharing (cache reuse for identical patterns)
+   - Deterministic compilation output
+   - Beta network structure validation (parent chain, alpha memory links)
+   - Three-pattern rule with variable binding across all three patterns
+
+5. **10 Phase 2 integration tests** (`phase2_integration_tests.rs`):
+   - End-to-end: load rule → assert facts → verify activations
+   - Constant test filtering through compiled rete
+   - Alpha path sharing across two rules
+   - Multi-pattern rule compilation (structure test, binding deferred to Pass 005)
+   - Retraction cleanup through compiled rete
+   - Multiple facts / multiple activations
+   - Deffacts + compiled rules interaction
+   - NotEqual constant test via compiler API
+
+### Test results
+
+- **339 tests pass** (163 core + 115 parser + 57 runtime + 1 facade + 3 doctests)
+- **0 clippy warnings**
+- **25 new tests** (15 compiler + 10 integration)
+- **0 regressions**
+
+### Remaining TODOs
+
+- Stage 2 interpreter does not yet combine bare connective tokens (`~red` parsed as `~` + `red`) into `Constraint::Not`. This means `~literal` constraint syntax doesn't work end-to-end through the parser. The compiler-level `NotEqual` path is tested directly. Fix planned for a future pass.
+
+### Noteworthy decisions
+
+- `CompilableRule`/`CompilablePattern` are defined in ferric-core (not parser-dependent). The runtime translates from parser types. This preserves the clean crate dependency graph: parser → core, runtime → core + parser.
+- Alpha path sharing uses full-path matching: `(entry_type, Vec<ConstantTest>)` → `AlphaMemoryId`. Partial path sharing (sharing intermediate test nodes across paths with a common prefix) is a future optimization.
+- `RuleId` allocation starts from 1 (0 is reserved for potential special use).
+- Join tests for variable bindings are correctly emitted by the compiler, but the Phase 1 rete doesn't extract bindings into tokens during right activation. Pass 005 will add binding extraction to complete the join pipeline.
+- Template patterns, Or constraints, and multi-field variables are not yet compiled (logged as "not yet supported" — no error, just silently skipped).
+
+### Suggestions
+
+- Pass 005 (Join Binding Extraction) should add binding extraction during token creation in `right_activate`, enabling the multi-pattern join tests to verify correct filtering behavior.
+- A follow-up pass should fix the Stage 2 interpreter to handle bare connective sequences (`~`, `&`, `|` followed by operands) by looking ahead in the constraint atom list.

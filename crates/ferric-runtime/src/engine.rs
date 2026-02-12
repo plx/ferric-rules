@@ -9,7 +9,8 @@ use std::thread::ThreadId;
 use thiserror::Error;
 
 use ferric_core::{
-    EncodingError, Fact, FactBase, FactId, FerricString, Symbol, SymbolTable, Value,
+    EncodingError, Fact, FactBase, FactId, FerricString, ReteCompiler, ReteNetwork, Symbol,
+    SymbolTable, Value,
 };
 
 use crate::config::EngineConfig;
@@ -37,6 +38,8 @@ pub struct Engine {
     pub(crate) fact_base: FactBase,
     pub(crate) symbol_table: SymbolTable,
     pub(crate) config: EngineConfig,
+    pub(crate) rete: ReteNetwork,
+    pub(crate) compiler: ReteCompiler,
     creator_thread: ThreadId,
     // Marker to ensure Engine is !Send + !Sync
     _not_send_sync: PhantomData<*mut ()>,
@@ -50,6 +53,8 @@ impl Engine {
             fact_base: FactBase::new(),
             symbol_table: SymbolTable::new(),
             config,
+            rete: ReteNetwork::new(),
+            compiler: ReteCompiler::new(),
             creator_thread: std::thread::current().id(),
             _not_send_sync: PhantomData,
         }
@@ -172,6 +177,12 @@ impl Engine {
         self.check_thread_affinity()?;
 
         Ok(FerricString::new(s, self.config.string_encoding)?)
+    }
+
+    /// Access the engine's Rete network for inspection.
+    #[must_use]
+    pub fn rete(&self) -> &ReteNetwork {
+        &self.rete
     }
 
     /// Check that the current thread is the same as the creator thread.
