@@ -89,10 +89,34 @@ fn execute_single_action(
     call: &FunctionCall,
 ) -> Result<(), ActionError> {
     match call.name.as_str() {
-        "assert" => execute_assert(fact_base, rete, symbol_table, config, token, rule_info, &call.args),
+        "assert" => execute_assert(
+            fact_base,
+            rete,
+            symbol_table,
+            config,
+            token,
+            rule_info,
+            &call.args,
+        ),
         "retract" => execute_retract(fact_base, rete, token, rule_info, &call.args),
-        "modify" => execute_modify(fact_base, rete, symbol_table, config, token, rule_info, &call.args),
-        "duplicate" => execute_duplicate(fact_base, rete, symbol_table, config, token, rule_info, &call.args),
+        "modify" => execute_modify(
+            fact_base,
+            rete,
+            symbol_table,
+            config,
+            token,
+            rule_info,
+            &call.args,
+        ),
+        "duplicate" => execute_duplicate(
+            fact_base,
+            rete,
+            symbol_table,
+            config,
+            token,
+            rule_info,
+            &call.args,
+        ),
         "halt" => {
             *halted = true;
             Ok(())
@@ -183,7 +207,9 @@ fn execute_modify(
         _ => return Err(ActionError::InvalidRetract),
     };
 
-    let entry = fact_base.get(fact_id).ok_or(ActionError::FactNotFound(fact_id))?;
+    let entry = fact_base
+        .get(fact_id)
+        .ok_or(ActionError::FactNotFound(fact_id))?;
     let original_fact = entry.fact.clone();
 
     // Clone the original fact's fields for modification
@@ -207,7 +233,8 @@ fn execute_modify(
             if let Ok(index) = fc.name.parse::<usize>() {
                 if index < fields.len() {
                     if let Some(first_arg) = fc.args.first() {
-                        fields[index] = eval_expr(token, rule_info, symbol_table, config, first_arg)?;
+                        fields[index] =
+                            eval_expr(token, rule_info, symbol_table, config, first_arg)?;
                     }
                 }
             }
@@ -245,7 +272,9 @@ fn execute_duplicate(
         _ => return Err(ActionError::InvalidRetract),
     };
 
-    let entry = fact_base.get(fact_id).ok_or(ActionError::FactNotFound(fact_id))?;
+    let entry = fact_base
+        .get(fact_id)
+        .ok_or(ActionError::FactNotFound(fact_id))?;
     let original_fact = entry.fact.clone();
 
     let mut fields: smallvec::SmallVec<[Value; 8]> = match &original_fact {
@@ -263,7 +292,8 @@ fn execute_duplicate(
             if let Ok(index) = fc.name.parse::<usize>() {
                 if index < fields.len() {
                     if let Some(first_arg) = fc.args.first() {
-                        fields[index] = eval_expr(token, rule_info, symbol_table, config, first_arg)?;
+                        fields[index] =
+                            eval_expr(token, rule_info, symbol_table, config, first_arg)?;
                     }
                 }
             }
@@ -285,7 +315,10 @@ fn resolve_fact_address(
     var_name: &str,
 ) -> Result<FactId, ActionError> {
     if let Some(&fact_index) = rule_info.fact_address_vars.get(var_name) {
-        token.facts.get(fact_index).copied()
+        token
+            .facts
+            .get(fact_index)
+            .copied()
             .ok_or_else(|| ActionError::UnboundVariable(var_name.to_string()))
     } else {
         Err(ActionError::UnboundVariable(var_name.to_string()))
@@ -308,7 +341,9 @@ fn eval_expr(
                 .intern_symbol(name, config.string_encoding)
                 .map_err(|e| ActionError::Encoding(format!("{e}")))?;
             if let Some(var_id) = rule_info.var_map.lookup(sym) {
-                token.bindings.get(var_id)
+                token
+                    .bindings
+                    .get(var_id)
                     .map(|v| (**v).clone())
                     .ok_or_else(|| ActionError::UnboundVariable(name.clone()))
             } else {

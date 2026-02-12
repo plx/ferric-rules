@@ -8,9 +8,9 @@ use smallvec::SmallVec;
 use crate::agenda::{Activation, ActivationId, Agenda};
 use crate::alpha::{get_slot_value, AlphaMemoryId, AlphaNetwork};
 use crate::beta::{BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType};
-use crate::negative::NegativeMemoryId;
 use crate::binding::BindingSet;
 use crate::fact::{Fact, FactBase, FactId};
+use crate::negative::NegativeMemoryId;
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::AtomKey;
@@ -649,11 +649,7 @@ impl ReteNetwork {
     ///
     /// Removes tokens from the token store, cleans up beta memories and agenda.
     /// Used by negative node blocking to retract pass-through tokens.
-    fn retract_token_cascade(
-        &mut self,
-        token_id: TokenId,
-        _owner_memory: BetaMemoryId,
-    ) {
+    fn retract_token_cascade(&mut self, token_id: TokenId, _owner_memory: BetaMemoryId) {
         let removed = self.token_store.remove_cascade(token_id);
 
         for (tid, token) in removed {
@@ -1018,8 +1014,7 @@ impl ReteNetwork {
                 let parents_to_check: Vec<TokenId> = exists_mem.parents_supported_by(fact_id);
 
                 for parent_token_id in parents_to_check {
-                    let Some(exists_mem) = self.beta.get_exists_memory_mut(exists_memory_id)
-                    else {
+                    let Some(exists_mem) = self.beta.get_exists_memory_mut(exists_memory_id) else {
                         continue;
                     };
 
@@ -1028,9 +1023,7 @@ impl ReteNetwork {
 
                     if was_removed && new_count == 0 {
                         // Support count went N→0: retract pass-through
-                        if let Some(passthrough_id) =
-                            exists_mem.remove_satisfied(parent_token_id)
-                        {
+                        if let Some(passthrough_id) = exists_mem.remove_satisfied(parent_token_id) {
                             self.retract_token_cascade(passthrough_id, beta_memory_id);
                         }
                     }
@@ -1285,7 +1278,9 @@ mod tests {
 
         // Beta: root -> join (no tests) -> terminal
         let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
+        let (join_id, _join_mem_id) =
+            rete.beta
+                .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
         let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
@@ -1343,7 +1338,9 @@ mod tests {
         // Join1: match (person ?x) — no tests, but we'd need to bind ?x
         // For Phase 1 simplicity, we won't actually bind ?x here. We'll just
         // propagate the token. The join test will check slot equality.
-        let (join1_id, join1_mem_id) = rete.beta.create_join_node(root_id, alpha_mem1, vec![], vec![]);
+        let (join1_id, join1_mem_id) =
+            rete.beta
+                .create_join_node(root_id, alpha_mem1, vec![], vec![]);
 
         // Join2: match (age ?x 30) — test that age's field 0 equals person's field 0
         // This requires a join test: alpha_slot=Ordered(0), beta_var=VarId(0), Equal
@@ -1365,7 +1362,9 @@ mod tests {
         // For now, let's just test that a two-pattern rule produces one activation
         // when both facts are asserted. We'll skip the variable binding check.
 
-        let (join2_id, _join2_mem_id) = rete.beta.create_join_node(join1_id, alpha_mem2, vec![], vec![]);
+        let (join2_id, _join2_mem_id) =
+            rete.beta
+                .create_join_node(join1_id, alpha_mem2, vec![], vec![]);
 
         let rule_id = RuleId(2);
         let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, 0);
@@ -1435,7 +1434,9 @@ mod tests {
         let alpha_mem_id = rete.alpha.create_memory(entry_node);
 
         let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
+        let (join_id, _join_mem_id) =
+            rete.beta
+                .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
         let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
@@ -1482,7 +1483,9 @@ mod tests {
         let alpha_mem_id = rete.alpha.create_memory(test_node);
 
         let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
+        let (join_id, _join_mem_id) =
+            rete.beta
+                .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
         let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
@@ -1522,7 +1525,9 @@ mod tests {
         let alpha_mem_id = rete.alpha.create_memory(entry_node);
 
         let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
+        let (join_id, _join_mem_id) =
+            rete.beta
+                .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
         let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
@@ -1601,7 +1606,9 @@ mod tests {
         let alpha_mem_id = rete.alpha.create_memory(test_node);
 
         let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
+        let (join_id, _join_mem_id) =
+            rete.beta
+                .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
         let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
@@ -1899,10 +1906,7 @@ mod tests {
             matches!(**x_binding, Value::Symbol(_)),
             "?x should be alice symbol"
         );
-        assert!(
-            matches!(**y_binding, Value::Integer(42)),
-            "?y should be 42"
-        );
+        assert!(matches!(**y_binding, Value::Integer(42)), "?y should be 42");
     }
 
     #[test]
@@ -2018,14 +2022,11 @@ mod tests {
         let root = rete.beta.root_id();
 
         // Join node for positive pattern (no tests, no bindings)
-        let (join_id, _join_mem) =
-            rete.beta
-                .create_join_node(root, pos_alpha, vec![], vec![]);
+        let (join_id, _join_mem) = rete.beta.create_join_node(root, pos_alpha, vec![], vec![]);
 
         // Negative node for negated pattern
         let (neg_id, _neg_beta_mem, _neg_mem_id) =
-            rete.beta
-                .create_negative_node(join_id, neg_alpha, vec![]);
+            rete.beta.create_negative_node(join_id, neg_alpha, vec![]);
 
         // Terminal
         let rule_id = RuleId(1);
@@ -2049,7 +2050,11 @@ mod tests {
         let fact = fact_base.get(fact_id).unwrap();
         let acts = rete.assert_fact(fact_id, &fact.fact, &fact_base);
 
-        assert_eq!(acts.len(), 1, "Should produce activation with no blocking facts");
+        assert_eq!(
+            acts.len(),
+            1,
+            "Should produce activation with no blocking facts"
+        );
         assert_eq!(rete.agenda.len(), 1);
         rete.debug_assert_consistency();
     }
@@ -2074,7 +2079,11 @@ mod tests {
         let item_fact = fact_base.get(item_id).unwrap();
         let acts = rete.assert_fact(item_id, &item_fact.fact, &fact_base);
 
-        assert_eq!(acts.len(), 0, "Should produce no activation when blocking fact exists");
+        assert_eq!(
+            acts.len(),
+            0,
+            "Should produce no activation when blocking fact exists"
+        );
         assert_eq!(rete.agenda.len(), 0);
         rete.debug_assert_consistency();
     }
@@ -2106,7 +2115,11 @@ mod tests {
         fact_base.retract(block_id);
         rete.retract_fact(block_id, &block_fact, &fact_base);
 
-        assert_eq!(rete.agenda.len(), 1, "Should have activation after unblocking");
+        assert_eq!(
+            rete.agenda.len(),
+            1,
+            "Should have activation after unblocking"
+        );
         rete.debug_assert_consistency();
     }
 
@@ -2125,7 +2138,11 @@ mod tests {
         let item_fact = fact_base.get(item_id).unwrap().fact.clone();
         rete.assert_fact(item_id, &item_fact, &fact_base);
 
-        assert_eq!(rete.agenda.len(), 1, "Should have activation before any blockers");
+        assert_eq!(
+            rete.agenda.len(),
+            1,
+            "Should have activation before any blockers"
+        );
         rete.debug_assert_consistency();
 
         // Assert blocking fact — should block and remove activation
@@ -2247,7 +2264,10 @@ mod tests {
         rete.retract_fact(item_id, &item_fact, &fact_base);
 
         assert_eq!(rete.agenda.len(), 0);
-        assert!(rete.token_store.is_empty(), "All tokens should be cleaned up");
+        assert!(
+            rete.token_store.is_empty(),
+            "All tokens should be cleaned up"
+        );
         rete.debug_assert_consistency();
     }
 
@@ -2329,9 +2349,9 @@ mod tests {
             beta_var: var_x,
             test_type: JoinTestType::Equal,
         }];
-        let (neg_id, _, _) =
-            rete.beta
-                .create_negative_node(join_id, exclude_alpha, neg_tests);
+        let (neg_id, _, _) = rete
+            .beta
+            .create_negative_node(join_id, exclude_alpha, neg_tests);
 
         let rule_id = RuleId(1);
         let _terminal = rete.beta.create_terminal_node(neg_id, rule_id, 0);
@@ -2403,7 +2423,11 @@ mod tests {
         let exc_fact = fact_base.get(exc_id).unwrap().fact.clone();
         rete.assert_fact(exc_id, &exc_fact, &fact_base);
 
-        assert_eq!(rete.agenda.len(), 1, "Non-matching exclude should not block");
+        assert_eq!(
+            rete.agenda.len(),
+            1,
+            "Non-matching exclude should not block"
+        );
         rete.debug_assert_consistency();
     }
 
@@ -2458,14 +2482,20 @@ mod tests {
         let trigger_sym = make_symbol(symbol_table, "trigger");
         let person_sym = make_symbol(symbol_table, "person");
 
-        let trigger_entry = rete.alpha.create_entry_node(AlphaEntryType::OrderedRelation(trigger_sym));
+        let trigger_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(trigger_sym));
         let trigger_alpha = rete.alpha.create_memory(trigger_entry);
 
-        let person_entry = rete.alpha.create_entry_node(AlphaEntryType::OrderedRelation(person_sym));
+        let person_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(person_sym));
         let person_alpha = rete.alpha.create_memory(person_entry);
 
         let root = rete.beta.root_id();
-        let (join_id, _) = rete.beta.create_join_node(root, trigger_alpha, vec![], vec![]);
+        let (join_id, _) = rete
+            .beta
+            .create_join_node(root, trigger_alpha, vec![], vec![]);
         let (exists_id, _, _) = rete.beta.create_exists_node(join_id, person_alpha, vec![]);
 
         let rule_id = RuleId(1);
@@ -2493,7 +2523,11 @@ mod tests {
         let person_id = fact_base.assert_ordered(person_sym, smallvec![Value::Integer(1)]);
         let person_fact = fact_base.get(person_id).unwrap().fact.clone();
         rete.assert_fact(person_id, &person_fact, &fact_base);
-        assert_eq!(rete.agenda.len(), 1, "First person should produce activation");
+        assert_eq!(
+            rete.agenda.len(),
+            1,
+            "First person should produce activation"
+        );
         rete.debug_assert_consistency();
     }
 
@@ -2593,7 +2627,11 @@ mod tests {
         let person_fact = fact_base.get(person_id).unwrap().fact.clone();
         rete.assert_fact(person_id, &person_fact, &fact_base);
 
-        assert_eq!(rete.agenda.len(), 0, "No trigger, no parent token, no activation");
+        assert_eq!(
+            rete.agenda.len(),
+            0,
+            "No trigger, no parent token, no activation"
+        );
         rete.debug_assert_consistency();
     }
 
@@ -2680,7 +2718,11 @@ mod tests {
         let person_fact = fact_base.get(person_id).unwrap().fact.clone();
         rete.assert_fact(person_id, &person_fact, &fact_base);
 
-        assert_eq!(rete.agenda.len(), 2, "Both parent tokens should have activation");
+        assert_eq!(
+            rete.agenda.len(),
+            2,
+            "Both parent tokens should have activation"
+        );
         rete.debug_assert_consistency();
 
         // Retract person — both activations should be removed
@@ -2703,12 +2745,16 @@ mod tests {
         let trigger_alpha = rete.alpha.create_memory(trigger_node);
 
         let root = rete.beta.root_id();
-        let (join_id, _) = rete.beta.create_join_node(root, trigger_alpha, vec![], vec![]);
+        let (join_id, _) = rete
+            .beta
+            .create_join_node(root, trigger_alpha, vec![], vec![]);
 
         // Create NCC node with a real partner node
         let ncc_memory_id = rete.beta.allocate_ncc_memory();
         let partner_id = rete.beta.create_ncc_partner(join_id, root, ncc_memory_id); // Use root as ncc_node for now
-        let (ncc_id, _) = rete.beta.create_ncc_node(join_id, partner_id, ncc_memory_id);
+        let (ncc_id, _) = rete
+            .beta
+            .create_ncc_node(join_id, partner_id, ncc_memory_id);
 
         let rule_id = RuleId(1);
         let _terminal = rete.beta.create_terminal_node(ncc_id, rule_id, 0);

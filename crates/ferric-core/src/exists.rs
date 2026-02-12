@@ -70,19 +70,13 @@ impl ExistsMemory {
             .entry(fact_id)
             .or_default()
             .insert(parent_token_id);
-        self.support
-            .get(&parent_token_id)
-            .map_or(0, HashSet::len)
+        self.support.get(&parent_token_id).map_or(0, HashSet::len)
     }
 
     /// Remove a fact from a parent token's support set.
     ///
     /// Returns (`new_count`, `was_removed`). Caller should check if count went to 0.
-    pub fn remove_support(
-        &mut self,
-        parent_token_id: TokenId,
-        fact_id: FactId,
-    ) -> (usize, bool) {
+    pub fn remove_support(&mut self, parent_token_id: TokenId, fact_id: FactId) -> (usize, bool) {
         let mut was_removed = false;
 
         if let Some(facts) = self.support.get_mut(&parent_token_id) {
@@ -108,9 +102,7 @@ impl ExistsMemory {
     /// Returns 0 if the parent token has no support.
     #[must_use]
     pub fn support_count(&self, parent_token_id: TokenId) -> usize {
-        self.support
-            .get(&parent_token_id)
-            .map_or(0, HashSet::len)
+        self.support.get(&parent_token_id).map_or(0, HashSet::len)
     }
 
     /// Get all parent tokens supported by a specific fact.

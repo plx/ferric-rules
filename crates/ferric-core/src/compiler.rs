@@ -152,12 +152,14 @@ impl ReteCompiler {
             if pattern.negated {
                 // Negated pattern → create negative node
                 let (neg_id, _beta_mem, _neg_mem) =
-                    rete.beta.create_negative_node(current_parent, alpha_mem, join_tests);
+                    rete.beta
+                        .create_negative_node(current_parent, alpha_mem, join_tests);
                 current_parent = neg_id;
             } else if pattern.exists {
                 // Exists pattern → create exists node
                 let (exists_id, _beta_mem, _exists_mem) =
-                    rete.beta.create_exists_node(current_parent, alpha_mem, join_tests);
+                    rete.beta
+                        .create_exists_node(current_parent, alpha_mem, join_tests);
                 current_parent = exists_id;
             } else {
                 // Positive pattern → create join node
@@ -298,7 +300,10 @@ mod tests {
 
         // Verify terminal node exists and references correct rule
         let terminal_node = rete.beta.get_node(result.terminal_node).unwrap();
-        if let BetaNode::Terminal { rule: term_rule, .. } = terminal_node {
+        if let BetaNode::Terminal {
+            rule: term_rule, ..
+        } = terminal_node
+        {
             assert_eq!(*term_rule, rule_id);
         } else {
             panic!("Expected terminal node");
@@ -811,7 +816,10 @@ mod tests {
 
         // Verify terminal node has correct rule
         let terminal_node = rete.beta.get_node(result.terminal_node).unwrap();
-        if let BetaNode::Terminal { rule: term_rule, .. } = terminal_node {
+        if let BetaNode::Terminal {
+            rule: term_rule, ..
+        } = terminal_node
+        {
             assert_eq!(*term_rule, rule_id);
         } else {
             panic!("Expected terminal node");

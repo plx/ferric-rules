@@ -116,7 +116,11 @@ pub enum BetaNode {
         children: Vec<NodeId>,
     },
     /// Terminal node: produces activations for a rule.
-    Terminal { parent: NodeId, rule: RuleId, salience: i32 },
+    Terminal {
+        parent: NodeId,
+        rule: RuleId,
+        salience: i32,
+    },
     /// Negative node: blocks parent tokens when a matching fact exists.
     Negative {
         parent: NodeId,
@@ -261,7 +265,11 @@ impl BetaNetwork {
         let node_id = NodeId(self.next_node_id);
         self.next_node_id += 1;
 
-        let node = BetaNode::Terminal { parent, rule, salience };
+        let node = BetaNode::Terminal {
+            parent,
+            rule,
+            salience,
+        };
 
         self.nodes.insert(node_id, node);
 

@@ -156,10 +156,7 @@ impl Engine {
                     construct_forms.push(expr.clone());
                 } else {
                     // Unknown top-level form
-                    let name = list[0]
-                        .as_symbol()
-                        .unwrap_or("<non-symbol>")
-                        .to_string();
+                    let name = list[0].as_symbol().unwrap_or("<non-symbol>").to_string();
                     errors.push(LoadError::UnsupportedForm {
                         name,
                         line: list[0].span().start.line,
@@ -317,9 +314,15 @@ impl Engine {
     }
 
     /// Convert a `FactValue` to an engine Value.
-    fn fact_value_to_value(&mut self, fact_value: &FactValue, result: &mut LoadResult) -> Option<Value> {
+    fn fact_value_to_value(
+        &mut self,
+        fact_value: &FactValue,
+        result: &mut LoadResult,
+    ) -> Option<Value> {
         match fact_value {
-            FactValue::Literal(lit) => self.literal_to_value(&lit.value, lit.span.start.line, result),
+            FactValue::Literal(lit) => {
+                self.literal_to_value(&lit.value, lit.span.start.line, result)
+            }
             FactValue::Variable(_name, span) => {
                 Self::warn_at_line(
                     result,
@@ -421,7 +424,6 @@ impl Engine {
             .map_err(LoadError::Engine)
     }
 
-
     /// Convert an S-expression atom to a Value.
     ///
     /// Returns `None` for unsupported atom types (variables, connectives).
@@ -472,10 +474,7 @@ impl Engine {
     // -----------------------------------------------------------------------
 
     /// Compile a `RuleConstruct` into the engine's rete network.
-    fn compile_rule_construct(
-        &mut self,
-        rule: &RuleConstruct,
-    ) -> Result<CompileResult, LoadError> {
+    fn compile_rule_construct(&mut self, rule: &RuleConstruct) -> Result<CompileResult, LoadError> {
         // Validate patterns first (max nesting depth: 2)
         let validation_errors = validate_rule_patterns(&rule.patterns, 2);
         if !validation_errors.is_empty() {
@@ -486,7 +485,8 @@ impl Engine {
             .translate_rule_construct(rule)
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
 
-        let compile_result = self.compiler
+        let compile_result = self
+            .compiler
             .compile_rule(&mut self.rete, &translated.compilable)
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
 
@@ -516,7 +516,11 @@ impl Engine {
         for pattern in &rule.patterns {
             // Check for Pattern::Assigned to track fact-address variables
             let (var_name, is_negated) = match pattern {
-                Pattern::Assigned { variable, pattern: inner, .. } => {
+                Pattern::Assigned {
+                    variable,
+                    pattern: inner,
+                    ..
+                } => {
                     // Check if inner is negated (which wouldn't make sense for fact address)
                     let negated = matches!(inner.as_ref(), Pattern::Not(..));
                     (Some(variable.clone()), negated)
@@ -551,7 +555,10 @@ impl Engine {
     /// Translate a single `Pattern` into a `CompilablePattern`.
     ///
     /// Returns `None` for pattern types not yet supported (negative, test, exists).
-    fn translate_pattern(&mut self, pattern: &Pattern) -> Result<Option<CompilablePattern>, LoadError> {
+    fn translate_pattern(
+        &mut self,
+        pattern: &Pattern,
+    ) -> Result<Option<CompilablePattern>, LoadError> {
         match pattern {
             Pattern::Ordered(ordered) => {
                 let sym = self
@@ -714,7 +721,10 @@ impl Engine {
 /// - E0005: Unsupported nesting combinations (exists containing not)
 ///
 /// Returns a vector of validation errors. Empty vector means validation passed.
-fn validate_rule_patterns(patterns: &[Pattern], max_nesting_depth: usize) -> Vec<ferric_core::PatternValidationError> {
+fn validate_rule_patterns(
+    patterns: &[Pattern],
+    max_nesting_depth: usize,
+) -> Vec<ferric_core::PatternValidationError> {
     let mut errors = Vec::new();
     for pattern in patterns {
         validate_pattern_recursive(pattern, 0, max_nesting_depth, &mut errors);
@@ -944,9 +954,7 @@ mod tests {
     #[test]
     fn load_deftemplate() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let result = engine
-            .load_str("(deftemplate person (slot name))")
-            .unwrap();
+        let result = engine.load_str("(deftemplate person (slot name))").unwrap();
 
         assert_eq!(result.templates.len(), 1);
         assert_eq!(result.templates[0].name, "person");
@@ -957,9 +965,7 @@ mod tests {
     #[test]
     fn load_unsupported_form_returns_error() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let errors = engine
-            .load_str("(deffunction foo () (+ 1 2))")
-            .unwrap_err();
+        let errors = engine.load_str("(deffunction foo () (+ 1 2))").unwrap_err();
 
         assert_eq!(errors.len(), 1);
         match &errors[0] {

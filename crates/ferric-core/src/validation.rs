@@ -130,9 +130,9 @@ impl PatternViolation {
     #[must_use]
     pub fn suggestion(&self) -> Option<String> {
         match self {
-            Self::NestingTooDeep { max, .. } => Some(format!(
-                "reduce nesting depth to {max} or fewer levels"
-            )),
+            Self::NestingTooDeep { max, .. } => {
+                Some(format!("reduce nesting depth to {max} or fewer levels"))
+            }
             Self::ForallConditionNotSinglePattern => {
                 Some("forall condition must be a single fact pattern".to_string())
             }
@@ -151,10 +151,7 @@ impl fmt::Display for PatternViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NestingTooDeep { depth, max } => {
-                write!(
-                    f,
-                    "nesting depth {depth} exceeds maximum of {max}",
-                )
+                write!(f, "nesting depth {depth} exceeds maximum of {max}",)
             }
             Self::ForallConditionNotSinglePattern => {
                 write!(f, "forall condition must be a single fact pattern")
@@ -238,13 +235,13 @@ mod tests {
     #[test]
     fn source_location_display_single_line() {
         let loc = SourceLocation::new(10, 5, 10, 15);
-        assert_eq!(format!("{}", loc), "10:5-15");
+        assert_eq!(format!("{loc}"), "10:5-15");
     }
 
     #[test]
     fn source_location_display_multi_line() {
         let loc = SourceLocation::new(10, 5, 12, 20);
-        assert_eq!(format!("{}", loc), "10:5-12:20");
+        assert_eq!(format!("{loc}"), "10:5-12:20");
     }
 
     #[test]
@@ -264,7 +261,7 @@ mod tests {
         let violation = PatternViolation::NestingTooDeep { depth: 3, max: 2 };
         assert_eq!(violation.code(), "E0001");
         assert_eq!(
-            format!("{}", violation),
+            format!("{violation}"),
             "nesting depth 3 exceeds maximum of 2"
         );
         assert!(violation.suggestion().is_some());
@@ -275,7 +272,7 @@ mod tests {
         let violation = PatternViolation::ForallConditionNotSinglePattern;
         assert_eq!(violation.code(), "E0002");
         assert_eq!(
-            format!("{}", violation),
+            format!("{violation}"),
             "forall condition must be a single fact pattern"
         );
         assert!(violation.suggestion().is_some());
@@ -286,7 +283,7 @@ mod tests {
         let violation = PatternViolation::NestedForall;
         assert_eq!(violation.code(), "E0003");
         assert_eq!(
-            format!("{}", violation),
+            format!("{violation}"),
             "forall cannot be nested inside another forall"
         );
         assert!(violation.suggestion().is_some());
@@ -299,7 +296,7 @@ mod tests {
         };
         assert_eq!(violation.code(), "E0004");
         assert_eq!(
-            format!("{}", violation),
+            format!("{violation}"),
             "unbound variable x in forall action clause"
         );
         assert!(violation.suggestion().is_some());
@@ -312,7 +309,7 @@ mod tests {
         };
         assert_eq!(violation.code(), "E0005");
         assert_eq!(
-            format!("{}", violation),
+            format!("{violation}"),
             "unsupported nesting: exists containing not"
         );
         assert!(violation.suggestion().is_some());
@@ -324,7 +321,7 @@ mod tests {
         let location = Some(SourceLocation::new(5, 10, 5, 30));
         let error = PatternValidationError::new(kind, location, ValidationStage::ReteCompilation);
 
-        let display = format!("{}", error);
+        let display = format!("{error}");
         assert!(display.contains("[E0001]"));
         assert!(display.contains("nesting depth 3 exceeds maximum of 2"));
         assert!(display.contains("5:10-30"));
@@ -337,7 +334,7 @@ mod tests {
         let kind = PatternViolation::NestedForall;
         let error = PatternValidationError::new(kind, None, ValidationStage::AstInterpretation);
 
-        let display = format!("{}", error);
+        let display = format!("{error}");
         assert!(display.contains("[E0003]"));
         assert!(display.contains("forall cannot be nested"));
         assert!(display.contains("AST interpretation"));
@@ -349,11 +346,8 @@ mod tests {
             description: "test description".to_string(),
         };
         let loc = SourceLocation::new(1, 1, 1, 10);
-        let error = PatternValidationError::new(
-            kind.clone(),
-            Some(loc),
-            ValidationStage::ReteCompilation,
-        );
+        let error =
+            PatternValidationError::new(kind.clone(), Some(loc), ValidationStage::ReteCompilation);
 
         assert_eq!(error.code, "E0005");
         assert_eq!(error.kind, kind);

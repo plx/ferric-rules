@@ -25,11 +25,11 @@ pub mod execution;
 pub mod loader;
 
 #[cfg(test)]
-pub(crate) mod test_helpers;
-#[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
 mod phase2_integration_tests;
+#[cfg(test)]
+pub(crate) mod test_helpers;
 
 // Re-export types from ferric-core for convenience.
 pub use ferric_core::{

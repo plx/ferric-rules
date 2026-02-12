@@ -51,8 +51,8 @@ pub struct Activation {
 /// activation first (using `pop_first`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StrategyOrd {
-    Depth(std::cmp::Reverse<u64>),         // Higher timestamp first
-    Breadth(u64),                          // Lower timestamp first
+    Depth(std::cmp::Reverse<u64>),              // Higher timestamp first
+    Breadth(u64),                               // Lower timestamp first
     Lex(std::cmp::Reverse<SmallVec<[u64; 4]>>), // Lexicographic recency (most recent first)
     Mea {
         first_recency: std::cmp::Reverse<u64>,

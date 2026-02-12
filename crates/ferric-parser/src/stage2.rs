@@ -286,7 +286,9 @@ impl InterpretError {
             message: "empty construct".to_string(),
             span,
             kind: InterpretErrorKind::EmptyConstruct,
-            suggestions: vec!["constructs must have a keyword (defrule, deftemplate, deffacts)".to_string()],
+            suggestions: vec![
+                "constructs must have a keyword (defrule, deftemplate, deffacts)".to_string(),
+            ],
         }
     }
 
@@ -390,39 +392,33 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
 
         // Dispatch on keyword
         match keyword {
-            "defrule" => {
-                match interpret_rule(&list[1..], sexpr.span()) {
-                    Ok(construct) => result.constructs.push(Construct::Rule(construct)),
-                    Err(err) => {
-                        result.errors.push(err);
-                        if config.strict {
-                            return result;
-                        }
+            "defrule" => match interpret_rule(&list[1..], sexpr.span()) {
+                Ok(construct) => result.constructs.push(Construct::Rule(construct)),
+                Err(err) => {
+                    result.errors.push(err);
+                    if config.strict {
+                        return result;
                     }
                 }
-            }
-            "deftemplate" => {
-                match interpret_template(&list[1..], sexpr.span()) {
-                    Ok(construct) => result.constructs.push(Construct::Template(construct)),
-                    Err(err) => {
-                        result.errors.push(err);
-                        if config.strict {
-                            return result;
-                        }
+            },
+            "deftemplate" => match interpret_template(&list[1..], sexpr.span()) {
+                Ok(construct) => result.constructs.push(Construct::Template(construct)),
+                Err(err) => {
+                    result.errors.push(err);
+                    if config.strict {
+                        return result;
                     }
                 }
-            }
-            "deffacts" => {
-                match interpret_facts(&list[1..], sexpr.span()) {
-                    Ok(construct) => result.constructs.push(Construct::Facts(construct)),
-                    Err(err) => {
-                        result.errors.push(err);
-                        if config.strict {
-                            return result;
-                        }
+            },
+            "deffacts" => match interpret_facts(&list[1..], sexpr.span()) {
+                Ok(construct) => result.constructs.push(Construct::Facts(construct)),
+                Err(err) => {
+                    result.errors.push(err);
+                    if config.strict {
+                        return result;
                     }
                 }
-            }
+            },
             // Known CLIPS keywords that are not yet supported
             "deffunction" | "defglobal" | "defmodule" | "defclass" | "definstances"
             | "defmessage-handler" | "defgeneric" | "defmethod" => {
@@ -431,7 +427,7 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
                     span: list[0].span(),
                     kind: InterpretErrorKind::UnknownConstruct,
                     suggestions: vec![
-                        "currently supported: defrule, deftemplate, deffacts".to_string(),
+                        "currently supported: defrule, deftemplate, deffacts".to_string()
                     ],
                 });
                 if config.strict {
@@ -527,11 +523,9 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
         // Check for ?var <- (pattern) syntax
         if i + 2 < lhs_elements.len() {
             if let Some(Atom::SingleVar(var_name)) = lhs_elements[i].as_atom() {
-                if let Some(Atom::Connective(Connective::Assign)) = lhs_elements[i + 1].as_atom()
-                {
+                if let Some(Atom::Connective(Connective::Assign)) = lhs_elements[i + 1].as_atom() {
                     let inner_pattern = interpret_pattern(&lhs_elements[i + 2])?;
-                    let pat_span =
-                        Span::merge(lhs_elements[i].span(), lhs_elements[i + 2].span());
+                    let pat_span = Span::merge(lhs_elements[i].span(), lhs_elements[i + 2].span());
                     patterns.push(Pattern::Assigned {
                         variable: var_name.clone(),
                         pattern: Box::new(inner_pattern),
@@ -673,7 +667,10 @@ fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
         }
         Some("test") => {
             if list.len() < 2 {
-                return Err(InterpretError::missing("expression after 'test'", expr.span()));
+                return Err(InterpretError::missing(
+                    "expression after 'test'",
+                    expr.span(),
+                ));
             }
             // Store the test expression as raw S-expr (full compilation in Phase 3)
             return Ok(Pattern::Test(list[1].clone(), expr.span()));
@@ -714,7 +711,10 @@ fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
             })?;
 
             if slot_list.is_empty() {
-                return Err(InterpretError::invalid("empty slot constraint", slot_expr.span()));
+                return Err(InterpretError::invalid(
+                    "empty slot constraint",
+                    slot_expr.span(),
+                ));
             }
 
             let slot_name = slot_list[0]
@@ -905,12 +905,15 @@ fn interpret_slot_definition(expr: &SExpr) -> Result<SlotDefinition, InterpretEr
         .ok_or_else(|| InterpretError::expected("slot definition (list)", expr.span()))?;
 
     if list.is_empty() {
-        return Err(InterpretError::invalid("empty slot definition", expr.span()));
+        return Err(InterpretError::invalid(
+            "empty slot definition",
+            expr.span(),
+        ));
     }
 
-    let keyword = list[0]
-        .as_symbol()
-        .ok_or_else(|| InterpretError::expected("slot keyword (slot or multislot)", list[0].span()))?;
+    let keyword = list[0].as_symbol().ok_or_else(|| {
+        InterpretError::expected("slot keyword (slot or multislot)", list[0].span())
+    })?;
 
     let (slot_type, name_idx) = match keyword {
         "slot" => (SlotType::Single, 1),
@@ -1016,7 +1019,9 @@ fn interpret_fact_body(expr: &SExpr) -> Result<FactBody, InterpretError> {
 
     let name = list[0]
         .as_symbol()
-        .ok_or_else(|| InterpretError::expected("fact relation or template name (symbol)", list[0].span()))?
+        .ok_or_else(|| {
+            InterpretError::expected("fact relation or template name (symbol)", list[0].span())
+        })?
         .to_string();
 
     // Determine if this is a template fact by checking if sub-elements are (name value) lists
@@ -1032,12 +1037,15 @@ fn interpret_fact_body(expr: &SExpr) -> Result<FactBody, InterpretError> {
         // Template fact
         let mut slot_values = Vec::new();
         for slot_expr in &list[1..] {
-            let slot_list = slot_expr.as_list().ok_or_else(|| {
-                InterpretError::expected("slot value (list)", slot_expr.span())
-            })?;
+            let slot_list = slot_expr
+                .as_list()
+                .ok_or_else(|| InterpretError::expected("slot value (list)", slot_expr.span()))?;
 
             if slot_list.is_empty() {
-                return Err(InterpretError::invalid("empty slot value", slot_expr.span()));
+                return Err(InterpretError::invalid(
+                    "empty slot value",
+                    slot_expr.span(),
+                ));
             }
 
             let slot_name = slot_list[0]
@@ -1395,7 +1403,10 @@ mod tests {
 
     #[test]
     fn interpret_deftemplate_with_comment() {
-        let parsed = parse_sexprs(r#"(deftemplate person "Person template" (slot name))"#, file());
+        let parsed = parse_sexprs(
+            r#"(deftemplate person "Person template" (slot name))"#,
+            file(),
+        );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1412,7 +1423,10 @@ mod tests {
 
     #[test]
     fn interpret_deffacts_with_comment() {
-        let parsed = parse_sexprs(r#"(deffacts startup "Initial facts" (person Alice))"#, file());
+        let parsed = parse_sexprs(
+            r#"(deffacts startup "Initial facts" (person Alice))"#,
+            file(),
+        );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1461,7 +1475,10 @@ mod tests {
 
     #[test]
     fn interpret_deftemplate_multiple_slots() {
-        let parsed = parse_sexprs("(deftemplate person (slot name) (slot age) (multislot hobbies))", file());
+        let parsed = parse_sexprs(
+            "(deftemplate person (slot name) (slot age) (multislot hobbies))",
+            file(),
+        );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1482,7 +1499,10 @@ mod tests {
 
     #[test]
     fn interpret_deffacts_multiple_facts() {
-        let parsed = parse_sexprs("(deffacts startup (person Alice) (person Bob) (setting debug on))", file());
+        let parsed = parse_sexprs(
+            "(deffacts startup (person Alice) (person Bob) (setting debug on))",
+            file(),
+        );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1590,7 +1610,10 @@ mod tests {
         assert!(result.errors.is_empty());
 
         if let Construct::Template(template) = &result.constructs[0] {
-            assert!(matches!(template.slots[0].default, Some(DefaultValue::None)));
+            assert!(matches!(
+                template.slots[0].default,
+                Some(DefaultValue::None)
+            ));
         } else {
             panic!("expected Template construct");
         }
@@ -1604,7 +1627,10 @@ mod tests {
         assert!(result.errors.is_empty());
 
         if let Construct::Template(template) = &result.constructs[0] {
-            assert!(matches!(template.slots[0].default, Some(DefaultValue::Derive)));
+            assert!(matches!(
+                template.slots[0].default,
+                Some(DefaultValue::Derive)
+            ));
         } else {
             panic!("expected Template construct");
         }
@@ -1612,7 +1638,10 @@ mod tests {
 
     #[test]
     fn interpret_ordered_pattern_with_literals() {
-        let parsed = parse_sexprs("(defrule test (person Alice 30) => (printout t ok))", file());
+        let parsed = parse_sexprs(
+            "(defrule test (person Alice 30) => (printout t ok))",
+            file(),
+        );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1634,7 +1663,10 @@ mod tests {
 
     #[test]
     fn interpret_ordered_pattern_with_variables() {
-        let parsed = parse_sexprs("(defrule test (person ?name ?age) => (printout t ?name))", file());
+        let parsed = parse_sexprs(
+            "(defrule test (person ?name ?age) => (printout t ?name))",
+            file(),
+        );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1654,7 +1686,10 @@ mod tests {
 
     #[test]
     fn interpret_ordered_pattern_with_wildcard() {
-        let parsed = parse_sexprs("(defrule test (person ? ?age) => (printout t ?age))", file());
+        let parsed = parse_sexprs(
+            "(defrule test (person ? ?age) => (printout t ?age))",
+            file(),
+        );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1728,7 +1763,10 @@ mod tests {
 
     #[test]
     fn interpret_exists_pattern() {
-        let parsed = parse_sexprs("(defrule test (exists (person ?x)) => (assert (has-person)))", file());
+        let parsed = parse_sexprs(
+            "(defrule test (exists (person ?x)) => (assert (has-person)))",
+            file(),
+        );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1747,10 +1785,7 @@ mod tests {
 
     #[test]
     fn interpret_action_with_nested_calls() {
-        let parsed = parse_sexprs(
-            "(defrule test (x) => (printout t (+ 1 2) crlf))",
-            file(),
-        );
+        let parsed = parse_sexprs("(defrule test (x) => (printout t (+ 1 2) crlf))", file());
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1768,7 +1803,10 @@ mod tests {
 
     #[test]
     fn interpret_deffacts_ordered() {
-        let parsed = parse_sexprs("(deffacts startup (person Alice 30) (person Bob 25))", file());
+        let parsed = parse_sexprs(
+            "(deffacts startup (person Alice 30) (person Bob 25))",
+            file(),
+        );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1790,10 +1828,7 @@ mod tests {
 
     #[test]
     fn interpret_deffacts_template() {
-        let parsed = parse_sexprs(
-            "(deffacts startup (person (name Alice) (age 30)))",
-            file(),
-        );
+        let parsed = parse_sexprs("(deffacts startup (person (name Alice) (age 30)))", file());
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
@@ -1915,7 +1950,9 @@ mod tests {
         if let Construct::Rule(rule) = &result.constructs[0] {
             if let Pattern::Ordered(ord) = &rule.patterns[0] {
                 assert_eq!(ord.constraints.len(), 1);
-                assert!(matches!(&ord.constraints[0], Constraint::MultiVariable(n, _) if n == "items"));
+                assert!(
+                    matches!(&ord.constraints[0], Constraint::MultiVariable(n, _) if n == "items")
+                );
             } else {
                 panic!("expected ordered pattern");
             }
@@ -1970,7 +2007,9 @@ mod tests {
         if let Construct::Rule(rule) = &result.constructs[0] {
             assert_eq!(rule.patterns.len(), 3);
             assert!(matches!(&rule.patterns[0], Pattern::Ordered(o) if o.relation == "trigger"));
-            assert!(matches!(&rule.patterns[1], Pattern::Assigned { variable, .. } if variable == "f"));
+            assert!(
+                matches!(&rule.patterns[1], Pattern::Assigned { variable, .. } if variable == "f")
+            );
             assert!(matches!(&rule.patterns[2], Pattern::Ordered(o) if o.relation == "other"));
         } else {
             panic!("expected Rule construct");
@@ -1989,8 +2028,12 @@ mod tests {
 
         if let Construct::Rule(rule) = &result.constructs[0] {
             assert_eq!(rule.patterns.len(), 2);
-            assert!(matches!(&rule.patterns[0], Pattern::Assigned { variable, .. } if variable == "a"));
-            assert!(matches!(&rule.patterns[1], Pattern::Assigned { variable, .. } if variable == "b"));
+            assert!(
+                matches!(&rule.patterns[0], Pattern::Assigned { variable, .. } if variable == "a")
+            );
+            assert!(
+                matches!(&rule.patterns[1], Pattern::Assigned { variable, .. } if variable == "b")
+            );
         } else {
             panic!("expected Rule construct");
         }

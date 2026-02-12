@@ -813,3 +813,93 @@ None — positive-pattern join semantics are complete for the Phase 2 subset.
 ### Suggestions
 
 - None. Ready for Pass 012 (Phase 2 Integration And Exit Validation).
+
+---
+
+## Pass 012: Phase 2 Integration And Exit Validation
+
+### What was done
+
+1. **`.clp` fixture files** (6 files in `crates/ferric-runtime/tests/fixtures/`):
+   - `phase2_basic.clp`: deftemplate + deffacts + defrule + assert action
+   - `phase2_negative.clp`: negative pattern blocking/unblocking with variable binding
+   - `phase2_exists.clp`: exists at-most-once semantics with multiple matches
+   - `phase2_salience.clp`: salience-based conflict resolution ordering
+   - `phase2_chain.clp`: 3-step chain reaction via assert actions
+   - `phase2_retract.clp`: fact-address variables and retract action
+
+2. **Fixture-loading integration tests** (6 tests):
+   - `fixture_phase2_basic`: loads `.clp`, verifies deffacts assertion and rule execution
+   - `fixture_phase2_negative`: verifies negative pattern selectively blocks matching facts
+   - `fixture_phase2_exists`: verifies exists fires exactly once despite multiple matches
+   - `fixture_phase2_salience`: verifies high-priority rule fires first via step()
+   - `fixture_phase2_chain`: verifies 3-step chain reaction completes
+   - `fixture_phase2_retract`: verifies retract action removes fact, assert creates replacement
+
+3. **Retraction invariant hardening** (5 tests):
+   - `retract_all_facts_leaves_clean_rete`: retract all facts → rete is completely empty
+   - `retract_positive_fact_cascades_through_join_chain`: middle-of-chain retraction removes activation
+   - `retract_under_negative_and_exists_preserves_consistency`: mixed retraction with negative + exists
+   - `reset_clears_all_runtime_state`: reset preserves rules, re-asserts deffacts, maintains consistency
+   - `multiple_rules_retract_churn_consistency`: assert/retract cycles across multiple rules
+
+4. **Compile-time validation integration** (2 tests):
+   - `validation_error_from_file_has_source_location`: file-loaded invalid rules produce errors with source spans
+   - `valid_complex_rule_compiles_successfully`: complex rule with not + exists compiles cleanly
+
+5. **Quality gates**:
+   - `cargo fmt --all --check` ✓
+   - `cargo clippy --workspace --all-targets -- -D warnings` ✓
+   - `cargo test --workspace` ✓
+   - `cargo check --workspace --all-targets` ✓
+
+### Test results
+
+- **495 tests pass** (256 core + 119 parser + 116 runtime + 3 doctests + 1 facade)
+- **0 clippy warnings**
+- **13 new tests** (6 fixture + 5 retraction invariant + 2 validation integration)
+- **0 regressions**
+
+### Phase 2 Exit Criteria Validation
+
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| 1. `.clp` loading: deftemplate, defrule, deffacts | ✓ | 6 fixture tests load real .clp files |
+| 2. Rules compile and execute via run/step | ✓ | fixture_phase2_chain, fixture_phase2_salience, 10+ prior action execution tests |
+| 3. Retraction correct across all structures | ✓ | 5 new retraction invariant tests + 8 prior negative retraction tests |
+| 4. Negative pattern behavior correct | ✓ | fixture_phase2_negative + 8 prior negative integration tests |
+| 5. Exists behavior correct | ✓ | fixture_phase2_exists + 3 prior exists tests + 10 rete-level exists tests |
+| 6. Pattern validation with stable codes | ✓ | validation_error_from_file_has_source_location + 6 prior validation tests |
+| 7. Integration suites pass with .clp fixtures | ✓ | All 495 tests pass, all quality gates clean |
+
+### Remaining TODOs
+
+- **NCC subnetwork integration**: The NCC partner `receive_result` method is still a stub. Full multi-pattern `(not (and ...))` requires parser support (Phase 3 scope).
+- **Template-aware modify/duplicate**: Currently implemented as retract+assert of ordered facts. Template slot-level modification requires template metadata lookup (Phase 3).
+- **Function call evaluation**: `eval_expr` returns an error for unknown function names. Built-in functions (`+`, `-`, `str-cat`, etc.) are Phase 3.
+- **Printout**: No-op placeholder — IO infrastructure is Phase 3+.
+- **Forall**: Error codes E0002-E0004 defined but not triggered. Parser and runtime support is Phase 3.
+
+### Noteworthy decisions
+
+- **Fixtures in crate test directory**: Placed in `crates/ferric-runtime/tests/fixtures/` because `cargo test` for a crate runs with the crate root as working directory.
+- **Symbol-based fact lookup in tests**: Tests use `engine.intern_symbol("name")` before iterating facts, then compare `Symbol` values directly (avoids string allocation during iteration).
+- **Dual fixture locations**: Fixtures exist at both the workspace level (`tests/fixtures/`) and crate level (`crates/ferric-runtime/tests/fixtures/`). The crate-level ones are used by tests; the workspace-level ones serve as documentation.
+
+### Phase 2 Summary
+
+Phase 2 (Core Engine) is **complete**. The implementation delivers:
+
+- **495 passing tests** covering all subsystems
+- **Stage 2 typed AST** with full interpretation for deftemplate/defrule/deffacts
+- **Rule compilation pipeline** with alpha path sharing, join test generation, variable binding extraction
+- **Negative pattern support** with blocker tracking and correct retraction behavior
+- **Exists pattern support** with support counting and at-most-one activation
+- **NCC infrastructure** (memory, node types) ready for Phase 3 multi-pattern negation
+- **Four conflict resolution strategies** (Depth, Breadth, LEX, MEA) with stable total ordering
+- **Execution loop** (run/step/halt/reset) with RHS action execution (assert/retract/modify/duplicate/halt)
+- **Compile-time validation** with 5 stable error codes and source-located diagnostics
+- **6 real `.clp` fixtures** exercising the full pipeline
+- **Comprehensive retraction invariant coverage** across all structure types
+
+The project is handoff-ready for Phase 3: Language Completion.

@@ -88,7 +88,10 @@ impl NccMemory {
     /// Returns 0 if the parent token is not tracked.
     #[must_use]
     pub fn result_count(&self, parent_token_id: TokenId) -> usize {
-        self.result_count.get(&parent_token_id).copied().unwrap_or(0)
+        self.result_count
+            .get(&parent_token_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Record a parent token as unblocked with its pass-through token.

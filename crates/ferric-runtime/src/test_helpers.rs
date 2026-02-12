@@ -5,7 +5,9 @@
 //! Phase 2 passes add new capabilities.
 
 use ferric_core::beta::RuleId;
-use ferric_core::{AlphaEntryType, AlphaMemoryId, ConstantTest, FactId, ReteNetwork, StringEncoding};
+use ferric_core::{
+    AlphaEntryType, AlphaMemoryId, ConstantTest, FactId, ReteNetwork, StringEncoding,
+};
 
 use crate::config::EngineConfig;
 use crate::engine::Engine;
@@ -76,7 +78,9 @@ pub fn build_single_pattern_rete(
     let alpha_mem_id = rete.alpha.create_memory(entry_node);
 
     let root_id = rete.beta.root_id();
-    let (join_id, _) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
+    let (join_id, _) = rete
+        .beta
+        .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
     let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
 
     rete
@@ -101,7 +105,9 @@ pub fn build_constant_test_rete(
     let alpha_mem_id = rete.alpha.create_memory(test_node);
 
     let root_id = rete.beta.root_id();
-    let (join_id, _) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
+    let (join_id, _) = rete
+        .beta
+        .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
     let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
 
     rete
@@ -172,7 +178,9 @@ pub fn assert_facts_into_rete(
             .fact_base
             .get(fact_id)
             .expect("fact should exist in test helper");
-        count += rete.assert_fact(fact_id, &fact.fact, &engine.fact_base).len();
+        count += rete
+            .assert_fact(fact_id, &fact.fact, &engine.fact_base)
+            .len();
     }
     count
 }

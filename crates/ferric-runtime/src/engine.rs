@@ -9,11 +9,11 @@ use std::marker::PhantomData;
 use std::thread::ThreadId;
 use thiserror::Error;
 
+use ferric_core::beta::RuleId;
 use ferric_core::{
     EncodingError, Fact, FactBase, FactId, FerricString, ReteCompiler, ReteNetwork, Symbol,
     SymbolTable, Value,
 };
-use ferric_core::beta::RuleId;
 
 use crate::actions::{self, CompiledRuleInfo};
 use crate::config::EngineConfig;
@@ -369,18 +369,17 @@ impl Engine {
         for deffacts in &self.registered_deffacts.clone() {
             for fact in deffacts {
                 let fact_id = match fact {
-                    Fact::Ordered(ordered) => {
-                        self.fact_base
-                            .assert_ordered(ordered.relation, ordered.fields.clone())
-                    }
-                    Fact::Template(template) => {
-                        self.fact_base
-                            .assert_template(template.template_id, template.slots.clone())
-                    }
+                    Fact::Ordered(ordered) => self
+                        .fact_base
+                        .assert_ordered(ordered.relation, ordered.fields.clone()),
+                    Fact::Template(template) => self
+                        .fact_base
+                        .assert_template(template.template_id, template.slots.clone()),
                 };
                 // Propagate through rete
                 let stored_fact = self.fact_base.get(fact_id).unwrap().fact.clone();
-                self.rete.assert_fact(fact_id, &stored_fact, &self.fact_base);
+                self.rete
+                    .assert_fact(fact_id, &stored_fact, &self.fact_base);
             }
         }
 
@@ -615,7 +614,10 @@ mod tests {
 
         let result = engine.run(RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 2);
-        assert_eq!(result.halt_reason, crate::execution::HaltReason::AgendaEmpty);
+        assert_eq!(
+            result.halt_reason,
+            crate::execution::HaltReason::AgendaEmpty
+        );
         assert!(engine.rete.agenda.is_empty());
     }
 
@@ -631,7 +633,10 @@ mod tests {
 
         let result = engine.run(RunLimit::Count(2)).unwrap();
         assert_eq!(result.rules_fired, 2);
-        assert_eq!(result.halt_reason, crate::execution::HaltReason::LimitReached);
+        assert_eq!(
+            result.halt_reason,
+            crate::execution::HaltReason::LimitReached
+        );
         assert_eq!(engine.rete.agenda.len(), 1);
     }
 
@@ -641,7 +646,10 @@ mod tests {
         let mut engine = Engine::new(EngineConfig::utf8());
         let result = engine.run(RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 0);
-        assert_eq!(result.halt_reason, crate::execution::HaltReason::AgendaEmpty);
+        assert_eq!(
+            result.halt_reason,
+            crate::execution::HaltReason::AgendaEmpty
+        );
     }
 
     #[test]
@@ -653,7 +661,10 @@ mod tests {
 
         let result = engine.run(RunLimit::Count(0)).unwrap();
         assert_eq!(result.rules_fired, 0);
-        assert_eq!(result.halt_reason, crate::execution::HaltReason::LimitReached);
+        assert_eq!(
+            result.halt_reason,
+            crate::execution::HaltReason::LimitReached
+        );
         assert_eq!(engine.rete.agenda.len(), 1);
     }
 
@@ -774,7 +785,9 @@ mod tests {
 
         // assert_ordered should automatically propagate through rete
         let alice_sym = engine.intern_symbol("Alice").unwrap();
-        engine.assert_ordered("person", vec![Value::Symbol(alice_sym)]).unwrap();
+        engine
+            .assert_ordered("person", vec![Value::Symbol(alice_sym)])
+            .unwrap();
         assert_eq!(engine.rete.agenda.len(), 1);
     }
 
@@ -784,7 +797,9 @@ mod tests {
         engine.load_str("(defrule test (person ?x) =>)").unwrap();
 
         let alice_sym = engine.intern_symbol("Alice").unwrap();
-        let fid = engine.assert_ordered("person", vec![Value::Symbol(alice_sym)]).unwrap();
+        let fid = engine
+            .assert_ordered("person", vec![Value::Symbol(alice_sym)])
+            .unwrap();
         assert_eq!(engine.rete.agenda.len(), 1);
 
         engine.retract(fid).unwrap();

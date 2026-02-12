@@ -120,8 +120,7 @@ impl NegativeMemory {
 
     /// Record a parent token as unblocked with its pass-through token.
     pub fn set_unblocked(&mut self, parent_token_id: TokenId, passthrough_token_id: TokenId) {
-        self.unblocked
-            .insert(parent_token_id, passthrough_token_id);
+        self.unblocked.insert(parent_token_id, passthrough_token_id);
     }
 
     /// Get the pass-through token for an unblocked parent token.

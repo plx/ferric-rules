@@ -7,7 +7,9 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::test_helpers::{assert_rete_clean, assert_rete_consistent, load_ok, new_utf8_engine};
+    use crate::test_helpers::{
+        assert_rete_clean, assert_rete_consistent, load_ok, new_utf8_engine,
+    };
 
     // -----------------------------------------------------------------------
     // Pass 004: Rule compilation pipeline
@@ -22,29 +24,46 @@ mod tests {
         // Verify the rule compiled into executable rete by asserting a matching fact
         let _fact_result = load_ok(&mut engine, "(assert (person Alice))");
 
-        assert_eq!(engine.rete.agenda.len(), 1, "compiled rule should produce activation");
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "compiled rule should produce activation"
+        );
     }
 
     #[test]
     fn compiled_rule_activates_on_matching_fact() {
         let mut engine = new_utf8_engine();
-        let _result = load_ok(&mut engine, "(defrule greet (person ?x) => (printout t ?x))");
+        let _result = load_ok(
+            &mut engine,
+            "(defrule greet (person ?x) => (printout t ?x))",
+        );
 
         // Assert a matching fact (automatically propagates through rete)
         let _fact_result = load_ok(&mut engine, "(assert (person Alice))");
 
-        assert_eq!(engine.rete.agenda.len(), 1, "should have one activation for matching fact");
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "should have one activation for matching fact"
+        );
     }
 
     #[test]
     fn compiled_rule_does_not_activate_on_non_matching_fact() {
         let mut engine = new_utf8_engine();
-        let _result = load_ok(&mut engine, "(defrule greet (person ?x) => (printout t ?x))");
+        let _result = load_ok(
+            &mut engine,
+            "(defrule greet (person ?x) => (printout t ?x))",
+        );
 
         // Assert a non-matching fact (different relation)
         let _fact_result = load_ok(&mut engine, "(assert (animal dog))");
 
-        assert!(engine.rete.agenda.is_empty(), "non-matching fact should not activate");
+        assert!(
+            engine.rete.agenda.is_empty(),
+            "non-matching fact should not activate"
+        );
     }
 
     #[test]
@@ -372,10 +391,7 @@ mod tests {
                 (printout t ?x))",
         );
 
-        assert_facts_into_rete(
-            &mut engine,
-            "(assert (item alice)) (assert (item bob))",
-        );
+        assert_facts_into_rete(&mut engine, "(assert (item alice)) (assert (item bob))");
         assert_eq!(
             engine.rete.agenda.len(),
             2,
@@ -384,11 +400,7 @@ mod tests {
 
         // Exclude alice specifically
         let exc_fids = assert_facts_into_rete(&mut engine, "(assert (exclude alice))");
-        assert_eq!(
-            engine.rete.agenda.len(),
-            1,
-            "Only bob should remain active"
-        );
+        assert_eq!(engine.rete.agenda.len(), 1, "Only bob should remain active");
         assert_rete_consistent(engine.rete());
 
         // Retract exclude
@@ -474,7 +486,9 @@ mod tests {
     #[test]
     fn rule_assert_action_creates_new_fact() {
         let mut engine = new_utf8_engine();
-        engine.load_str("(defrule derive (person ?name) => (assert (greeted ?name)))").unwrap();
+        engine
+            .load_str("(defrule derive (person ?name) => (assert (greeted ?name)))")
+            .unwrap();
         engine.load_str("(assert (person Alice))").unwrap();
 
         // Should have 1 activation for the rule
@@ -502,9 +516,7 @@ mod tests {
         let fact_count_before = engine.facts().unwrap().count();
         assert_eq!(fact_count_before, 1);
 
-        engine
-            .run(crate::execution::RunLimit::Count(1))
-            .unwrap();
+        engine.run(crate::execution::RunLimit::Count(1)).unwrap();
 
         // The temporary fact should be retracted
         let fact_count_after = engine.facts().unwrap().count();
@@ -514,8 +526,12 @@ mod tests {
     #[test]
     fn rule_halt_action_stops_execution() {
         let mut engine = new_utf8_engine();
-        engine.load_str("(defrule stopper (stop) => (halt))").unwrap();
-        engine.load_str("(defrule other (person ?x) => (assert (greeted ?x)))").unwrap();
+        engine
+            .load_str("(defrule stopper (stop) => (halt))")
+            .unwrap();
+        engine
+            .load_str("(defrule other (person ?x) => (assert (greeted ?x)))")
+            .unwrap();
         engine.load_str("(assert (stop))").unwrap();
         engine.load_str("(assert (person Alice))").unwrap();
 
@@ -525,17 +541,23 @@ mod tests {
         let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
         // One rule should fire halt, which stops execution
         // The exact number depends on agenda ordering (both have salience 0)
-        assert!(result.halt_reason == crate::execution::HaltReason::HaltRequested
-             || result.halt_reason == crate::execution::HaltReason::AgendaEmpty);
+        assert!(
+            result.halt_reason == crate::execution::HaltReason::HaltRequested
+                || result.halt_reason == crate::execution::HaltReason::AgendaEmpty
+        );
     }
 
     #[test]
     fn rule_assert_triggers_chain_reaction() {
         let mut engine = new_utf8_engine();
         // Rule 1: person → greeted
-        engine.load_str("(defrule greet (person ?name) => (assert (greeted ?name)))").unwrap();
+        engine
+            .load_str("(defrule greet (person ?name) => (assert (greeted ?name)))")
+            .unwrap();
         // Rule 2: greeted → done
-        engine.load_str("(defrule done (greeted ?name) => (assert (done ?name)))").unwrap();
+        engine
+            .load_str("(defrule done (greeted ?name) => (assert (done ?name)))")
+            .unwrap();
         engine.load_str("(assert (person Alice))").unwrap();
 
         let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
@@ -566,10 +588,14 @@ mod tests {
     #[test]
     fn rule_with_salience_fires_in_order() {
         let mut engine = new_utf8_engine();
-        engine.load_str(r"
+        engine
+            .load_str(
+                r"
             (defrule low-priority (trigger) => (assert (fired low)))
             (defrule high-priority (declare (salience 10)) (trigger) => (assert (fired high)))
-        ").unwrap();
+        ",
+            )
+            .unwrap();
         engine.load_str("(assert (trigger))").unwrap();
 
         // Step once — should fire high-priority first
@@ -584,8 +610,12 @@ mod tests {
     #[test]
     fn reset_and_run_cycle_with_actions() {
         let mut engine = new_utf8_engine();
-        engine.load_str("(defrule greet (person ?name) => (assert (greeted ?name)))").unwrap();
-        engine.load_str("(deffacts startup (person Alice))").unwrap();
+        engine
+            .load_str("(defrule greet (person ?name) => (assert (greeted ?name)))")
+            .unwrap();
+        engine
+            .load_str("(deffacts startup (person Alice))")
+            .unwrap();
 
         // First run
         let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
@@ -606,13 +636,21 @@ mod tests {
     #[test]
     fn exists_single_pattern_fires_once() {
         let mut engine = new_utf8_engine();
-        engine.load_str("(defrule has-person (trigger) (exists (person ?x)) => (assert (has-someone)))").unwrap();
+        engine
+            .load_str(
+                "(defrule has-person (trigger) (exists (person ?x)) => (assert (has-someone)))",
+            )
+            .unwrap();
         engine.load_str("(assert (trigger))").unwrap();
         engine.load_str("(assert (person Alice))").unwrap();
         engine.load_str("(assert (person Bob))").unwrap();
 
         // Despite two persons, exists should produce only one activation
-        assert_eq!(engine.rete.agenda.len(), 1, "exists should produce exactly one activation");
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "exists should produce exactly one activation"
+        );
 
         let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 1);
@@ -621,7 +659,9 @@ mod tests {
     #[test]
     fn exists_retract_last_removes_activation() {
         let mut engine = new_utf8_engine();
-        engine.load_str("(defrule has-person (trigger) (exists (person ?x)) => (assert (detected)))").unwrap();
+        engine
+            .load_str("(defrule has-person (trigger) (exists (person ?x)) => (assert (detected)))")
+            .unwrap();
         engine.load_str("(assert (trigger))").unwrap();
         engine.load_str("(assert (person Alice))").unwrap();
 
@@ -634,13 +674,17 @@ mod tests {
     #[test]
     fn exists_with_run_produces_expected_facts() {
         let mut engine = new_utf8_engine();
-        engine.load_str(r"
+        engine
+            .load_str(
+                r"
             (defrule detect-person
                 (trigger)
                 (exists (person ?x))
                 =>
                 (assert (has-person-detected)))
-        ").unwrap();
+        ",
+            )
+            .unwrap();
         engine.load_str("(assert (trigger))").unwrap();
         engine.load_str("(assert (person Alice))").unwrap();
         engine.load_str("(assert (person Bob))").unwrap();
@@ -680,7 +724,10 @@ mod tests {
         let mut engine = new_utf8_engine();
         let result = engine.load_str("(defrule r (a) (exists (not (b))) => )");
 
-        assert!(result.is_err(), "exists containing not should fail validation");
+        assert!(
+            result.is_err(),
+            "exists containing not should fail validation"
+        );
         let errs = result.unwrap_err();
         assert_eq!(errs.len(), 1);
 
@@ -697,7 +744,10 @@ mod tests {
         let mut engine = new_utf8_engine();
         let result = engine.load_str("(defrule r (a) (not (exists (b))) => )");
 
-        assert!(result.is_ok(), "not-exists combination should pass validation");
+        assert!(
+            result.is_ok(),
+            "not-exists combination should pass validation"
+        );
     }
 
     #[test]
@@ -705,7 +755,10 @@ mod tests {
         let mut engine = new_utf8_engine();
         let result = engine.load_str("(defrule r (a) (not (not (b))) => )");
 
-        assert!(result.is_ok(), "double-nested not (depth 2) should pass validation");
+        assert!(
+            result.is_ok(),
+            "double-nested not (depth 2) should pass validation"
+        );
     }
 
     #[test]
@@ -778,5 +831,335 @@ mod tests {
     //     let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
     //     assert_eq!(result.rules_fired, 1, "forall should be vacuously true again with no items");
     // }
-}
 
+    // -----------------------------------------------------------------------
+    // Pass 012: Integration fixtures and exit validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fixture_phase2_basic() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_file(std::path::Path::new("tests/fixtures/phase2_basic.clp"))
+            .unwrap();
+
+        // Should have 2 facts from deffacts
+        assert_eq!(engine.facts().unwrap().count(), 2);
+
+        // Run should produce 2 greeted facts (one per person)
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 2);
+        assert_eq!(engine.facts().unwrap().count(), 4); // 2 person + 2 greeted
+    }
+
+    #[test]
+    fn fixture_phase2_negative() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_file(std::path::Path::new("tests/fixtures/phase2_negative.clp"))
+            .unwrap();
+
+        // Should have 3 items + 1 forbidden = 4 facts
+        assert_eq!(engine.facts().unwrap().count(), 4);
+
+        // Run: apple and cherry should be allowed (banana is forbidden)
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 2); // apple + cherry
+        assert_eq!(engine.facts().unwrap().count(), 6); // 4 original + 2 allowed
+    }
+
+    #[test]
+    fn fixture_phase2_exists() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_file(std::path::Path::new("tests/fixtures/phase2_exists.clp"))
+            .unwrap();
+
+        // Should have 1 category + 3 items = 4 facts
+        assert_eq!(engine.facts().unwrap().count(), 4);
+
+        // Run: exists should fire exactly once despite 3 fruit items
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1);
+        assert_eq!(engine.facts().unwrap().count(), 5); // 4 original + fruit-detected
+    }
+
+    #[test]
+    fn fixture_phase2_salience() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_file(std::path::Path::new("tests/fixtures/phase2_salience.clp"))
+            .unwrap();
+
+        // Step once — high-priority should fire first
+        engine.step().unwrap();
+
+        // After one step, should have trigger + fired-high = 2 facts
+        assert_eq!(engine.facts().unwrap().count(), 2);
+    }
+
+    #[test]
+    fn fixture_phase2_chain() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_file(std::path::Path::new("tests/fixtures/phase2_chain.clp"))
+            .unwrap();
+
+        // Run all rules
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 3);
+        assert_eq!(engine.facts().unwrap().count(), 4); // input + stage1 + stage2 + complete
+    }
+
+    #[test]
+    fn fixture_phase2_retract() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_file(std::path::Path::new("tests/fixtures/phase2_retract.clp"))
+            .unwrap();
+
+        // Should have 1 temporary fact from deffacts
+        assert_eq!(engine.facts().unwrap().count(), 1);
+
+        // Run: retract temporary, assert cleaned
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1);
+        assert_eq!(engine.facts().unwrap().count(), 1); // only cleaned remains
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 012: Retraction invariant hardening
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn retract_all_facts_leaves_clean_rete() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_str(
+                r"
+            (defrule r1 (a ?x) => (printout t ?x))
+            (defrule r2 (b ?x) (not (c ?x)) => (printout t ?x))
+            (defrule r3 (d) (exists (e ?x)) => (printout t ?x))
+        ",
+            )
+            .unwrap();
+
+        engine
+            .load_str("(assert (a 1) (b 2) (d) (e 10) (e 20))")
+            .unwrap();
+
+        // Collect all fact IDs
+        let fids: Vec<_> = engine.facts().unwrap().map(|(fid, _)| fid).collect();
+        assert!(!fids.is_empty());
+
+        // Retract all
+        for fid in fids {
+            engine.retract(fid).unwrap();
+        }
+
+        // Rete should be completely clean
+        assert_rete_clean(engine.rete());
+    }
+
+    #[test]
+    fn retract_positive_fact_cascades_through_join_chain() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_str(
+                r"
+            (defrule chain
+                (a ?x)
+                (b ?x ?y)
+                (c ?y)
+                =>
+                (printout t ?x ?y))
+        ",
+            )
+            .unwrap();
+
+        engine.load_str("(assert (a 1) (b 1 2) (c 2))").unwrap();
+        assert_eq!(engine.rete.agenda.len(), 1);
+
+        // Retract middle fact by finding it in the fact base
+        let b_sym = engine.intern_symbol("b").unwrap();
+        let b_fid = engine
+            .facts()
+            .unwrap()
+            .find(|(_, f)| matches!(f, ferric_core::Fact::Ordered(of) if of.relation == b_sym))
+            .map(|(fid, _)| fid)
+            .unwrap();
+        engine.retract(b_fid).unwrap();
+
+        assert_eq!(engine.rete.agenda.len(), 0);
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn retract_under_negative_and_exists_preserves_consistency() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_str(
+                r"
+            (defrule neg-rule (a ?x) (not (block ?x)) => (printout t ?x))
+            (defrule exists-rule (trigger) (exists (item ?x)) => (printout t exists))
+        ",
+            )
+            .unwrap();
+
+        engine
+            .load_str("(assert (a 1) (block 1) (trigger) (item foo) (item bar))")
+            .unwrap();
+
+        // neg-rule: blocked by (block 1) → 0 activations from neg-rule
+        // exists-rule: trigger + exists(item) → 1 activation
+        assert_eq!(engine.rete.agenda.len(), 1);
+
+        // Retract block fact
+        let block_sym = engine.intern_symbol("block").unwrap();
+        let block_fid = engine
+            .facts()
+            .unwrap()
+            .find(|(_, f)| matches!(f, ferric_core::Fact::Ordered(of) if of.relation == block_sym))
+            .map(|(fid, _)| fid)
+            .unwrap();
+        engine.retract(block_fid).unwrap();
+
+        // Now neg-rule should have 1 activation (unblocked), exists-rule still 1 = 2 total
+        assert_eq!(engine.rete.agenda.len(), 2);
+        assert_rete_consistent(engine.rete());
+
+        // Retract all items
+        let item_sym = engine.intern_symbol("item").unwrap();
+        let item_fids: Vec<_> = engine
+            .facts()
+            .unwrap()
+            .filter(|(_, f)| matches!(f, ferric_core::Fact::Ordered(of) if of.relation == item_sym))
+            .map(|(fid, _)| fid)
+            .collect();
+        for fid in item_fids {
+            engine.retract(fid).unwrap();
+        }
+
+        // exists-rule should lose its activation (no more items)
+        // neg-rule still active
+        assert_eq!(engine.rete.agenda.len(), 1);
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn reset_clears_all_runtime_state() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_str(
+                r"
+            (defrule r1 (a ?x) (not (b ?x)) => (printout t ?x))
+            (defrule r2 (trigger) (exists (c ?x)) => (printout t exists))
+            (deffacts startup (a 1) (trigger) (c 10))
+        ",
+            )
+            .unwrap();
+
+        // Should have activations
+        assert!(!engine.rete.agenda.is_empty());
+
+        // Run some rules
+        engine.run(crate::execution::RunLimit::Count(1)).unwrap();
+
+        // Reset
+        engine.reset().unwrap();
+
+        // After reset: deffacts re-asserted, rules should re-fire
+        assert!(!engine.rete.agenda.is_empty());
+        assert_rete_consistent(engine.rete());
+
+        // Run all
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert!(result.rules_fired >= 1);
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn multiple_rules_retract_churn_consistency() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_str(
+                r"
+            (defrule r1 (x ?a) => (printout t ?a))
+            (defrule r2 (x ?a) (y ?a) => (printout t ?a))
+            (defrule r3 (x ?a) (not (z ?a)) => (printout t ?a))
+        ",
+            )
+            .unwrap();
+
+        // Assert/retract cycle
+        engine.load_str("(assert (x 1))").unwrap();
+        let y_facts = load_ok(&mut engine, "(assert (y 1))");
+        engine.load_str("(assert (z 1))").unwrap();
+
+        assert_rete_consistent(engine.rete());
+
+        // Retract y
+        engine.retract(y_facts.asserted_facts[0]).unwrap();
+        assert_rete_consistent(engine.rete());
+
+        // Retract z (should unblock r3)
+        let z_sym = engine.intern_symbol("z").unwrap();
+        let z_fid = engine
+            .facts()
+            .unwrap()
+            .find(|(_, f)| matches!(f, ferric_core::Fact::Ordered(of) if of.relation == z_sym))
+            .map(|(fid, _)| fid)
+            .unwrap();
+        engine.retract(z_fid).unwrap();
+        assert_rete_consistent(engine.rete());
+
+        // r1 and r3 should be active (x 1 exists, no z 1, no y 1 for r2)
+        assert_eq!(engine.rete.agenda.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 012: Compile-time validation in integration scenarios
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validation_error_from_file_has_source_location() {
+        use std::io::Write;
+        // Create a temporary file with invalid nesting
+        let mut temp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(temp, "(defrule bad-rule (a) (not (not (not (b)))) => )").unwrap();
+
+        let mut engine = new_utf8_engine();
+        let result = engine.load_file(temp.path());
+
+        assert!(result.is_err());
+        let errs = result.unwrap_err();
+        if let crate::loader::LoadError::Validation(v_errors) = &errs[0] {
+            assert!(!v_errors.is_empty());
+            assert_eq!(v_errors[0].code, "E0001");
+            // Location should be present (from parsed source)
+            assert!(v_errors[0].location.is_some());
+        } else {
+            panic!("Expected validation error, got: {errs:?}");
+        }
+    }
+
+    #[test]
+    fn valid_complex_rule_compiles_successfully() {
+        let mut engine = new_utf8_engine();
+        let result = engine.load_str(
+            r"
+            (defrule complex
+                (a ?x)
+                (b ?x ?y)
+                (not (exclude ?x))
+                (exists (c ?y))
+                =>
+                (assert (result ?x ?y)))
+        ",
+        );
+        assert!(
+            result.is_ok(),
+            "Complex rule with not + exists should compile: {result:?}"
+        );
+    }
+}

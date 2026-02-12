@@ -47,9 +47,9 @@ pub use span::{FileId, Position, Span};
 pub use stage2::{
     interpret_constructs, Action, ActionExpr, Constraint, Construct, DefaultValue, FactBody,
     FactSlotValue, FactValue, FactsConstruct, FunctionCall, InterpretError, InterpretErrorKind,
-    InterpretResult, InterpreterConfig, LiteralKind, LiteralValue, OrderedFactBody,
-    OrderedPattern, Pattern, RuleConstruct, SlotConstraint, SlotDefinition, SlotType,
-    TemplateConstruct, TemplateFactBody, TemplatePattern,
+    InterpretResult, InterpreterConfig, LiteralKind, LiteralValue, OrderedFactBody, OrderedPattern,
+    Pattern, RuleConstruct, SlotConstraint, SlotDefinition, SlotType, TemplateConstruct,
+    TemplateFactBody, TemplatePattern,
 };
 
 #[cfg(test)]
