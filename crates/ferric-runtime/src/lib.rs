@@ -41,3 +41,6 @@ pub use ferric_core::{
 pub use config::EngineConfig;
 pub use engine::{Engine, EngineError};
 pub use loader::{LoadError, LoadResult, RuleDef};
+
+// Re-export Stage 2 AST types for working with loaded constructs
+pub use ferric_parser::{RuleConstruct, TemplateConstruct};

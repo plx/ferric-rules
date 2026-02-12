@@ -45,8 +45,11 @@ pub use lexer::{lex, SpannedToken, Token};
 pub use sexpr::{parse_sexprs, Atom, Connective, ParseResult, SExpr};
 pub use span::{FileId, Position, Span};
 pub use stage2::{
-    interpret_constructs, Construct, FactsConstruct, InterpretError, InterpretErrorKind,
-    InterpretResult, InterpreterConfig, RuleConstruct, TemplateConstruct,
+    interpret_constructs, Action, ActionExpr, Constraint, Construct, DefaultValue, FactBody,
+    FactSlotValue, FactValue, FactsConstruct, FunctionCall, InterpretError, InterpretErrorKind,
+    InterpretResult, InterpreterConfig, LiteralKind, LiteralValue, OrderedFactBody,
+    OrderedPattern, Pattern, RuleConstruct, SlotConstraint, SlotDefinition, SlotType,
+    TemplateConstruct, TemplateFactBody, TemplatePattern,
 };
 
 #[cfg(test)]

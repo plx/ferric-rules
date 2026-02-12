@@ -11,7 +11,11 @@ use std::path::Path;
 use thiserror::Error;
 
 use ferric_core::{FactId, FerricString, Value};
-use ferric_parser::{parse_sexprs, Atom, FileId, SExpr};
+use ferric_parser::{
+    interpret_constructs, parse_sexprs, Atom, Construct, FactBody, FactValue, FileId,
+    InterpreterConfig, LiteralKind, OrderedFactBody, RuleConstruct,
+    SExpr, TemplateConstruct, TemplateFactBody,
+};
 
 use crate::engine::{Engine, EngineError};
 
@@ -20,6 +24,9 @@ use crate::engine::{Engine, EngineError};
 pub enum LoadError {
     #[error("parse error: {0}")]
     Parse(String),
+
+    #[error("interpret error: {0}")]
+    Interpret(String),
 
     #[error("unsupported top-level form: {name} at line {line}, column {column}")]
     UnsupportedForm {
@@ -62,8 +69,10 @@ pub struct RuleDef {
 pub struct LoadResult {
     /// Facts asserted during loading.
     pub asserted_facts: Vec<FactId>,
-    /// Rules registered during loading.
-    pub rules: Vec<RuleDef>,
+    /// Rules registered during loading (typed constructs from Stage 2).
+    pub rules: Vec<RuleConstruct>,
+    /// Templates registered during loading.
+    pub templates: Vec<TemplateConstruct>,
     /// Warnings/diagnostics (non-fatal).
     pub warnings: Vec<String>,
 }
@@ -96,7 +105,7 @@ impl Engine {
         self.check_thread_affinity()
             .map_err(|e| vec![LoadError::Engine(e)])?;
 
-        // Parse the source into S-expressions
+        // Parse the source into S-expressions (Stage 1)
         let parse_result = parse_sexprs(source, FileId(0));
 
         // Convert parse errors to LoadError
@@ -109,14 +118,82 @@ impl Engine {
             return Err(errors);
         }
 
-        // Process each top-level form
         let mut result = LoadResult::default();
         let mut errors = Vec::new();
 
+        // Separate assert forms from constructs
+        // Assert forms are processed directly for Phase 1 compatibility
+        let mut assert_forms = Vec::new();
+        let mut construct_forms = Vec::new();
+
         for expr in &parse_result.exprs {
-            match self.process_top_level_form(expr, &mut result) {
-                Ok(()) => {}
-                Err(e) => errors.push(e),
+            if let Some(list) = expr.as_list() {
+                if !list.is_empty() && list[0].as_symbol() == Some("assert") {
+                    assert_forms.push(expr);
+                } else if !list.is_empty()
+                    && matches!(
+                        list[0].as_symbol(),
+                        Some("defrule" | "deftemplate" | "deffacts")
+                    )
+                {
+                    construct_forms.push(expr.clone());
+                } else {
+                    // Unknown top-level form
+                    let name = list[0]
+                        .as_symbol()
+                        .unwrap_or("<non-symbol>")
+                        .to_string();
+                    errors.push(LoadError::UnsupportedForm {
+                        name,
+                        line: list[0].span().start.line,
+                        column: list[0].span().start.column,
+                    });
+                }
+            } else {
+                result.warnings.push(format!(
+                    "skipping non-list top-level form at line {}",
+                    expr.span().start.line
+                ));
+            }
+        }
+
+        // Process assert forms
+        for expr in &assert_forms {
+            if let Some(list) = expr.as_list() {
+                if let Err(e) = self.process_assert(&list[1..], &mut result) {
+                    errors.push(e);
+                }
+            }
+        }
+
+        // Interpret constructs via Stage 2
+        if !construct_forms.is_empty() {
+            let config = InterpreterConfig::default();
+            let interpret_result = interpret_constructs(&construct_forms, &config);
+
+            // Convert interpret errors to LoadError
+            if !interpret_result.errors.is_empty() {
+                for e in interpret_result.errors {
+                    errors.push(LoadError::Interpret(format!("{e}")));
+                }
+            }
+
+            // Process the interpreted constructs
+            for construct in interpret_result.constructs {
+                match construct {
+                    Construct::Rule(rule) => {
+                        result.rules.push(rule);
+                    }
+                    Construct::Template(template) => {
+                        result.templates.push(template);
+                    }
+                    Construct::Facts(facts) => {
+                        // Assert the facts from deffacts
+                        if let Err(e) = self.process_deffacts_construct(&facts, &mut result) {
+                            errors.push(e);
+                        }
+                    }
+                }
             }
         }
 
@@ -141,41 +218,119 @@ impl Engine {
         self.load_str(&source)
     }
 
-    /// Process a single top-level form.
-    fn process_top_level_form(
+    /// Process a deffacts construct and assert its facts.
+    fn process_deffacts_construct(
         &mut self,
-        expr: &SExpr,
+        facts_construct: &ferric_parser::FactsConstruct,
         result: &mut LoadResult,
     ) -> Result<(), LoadError> {
-        let list = match expr.as_list() {
-            Some(list) if !list.is_empty() => list,
-            _ => {
-                result.warnings.push(format!(
-                    "skipping non-list top-level form at {}",
-                    expr.span().start.line
-                ));
-                return Ok(());
+        for fact_body in &facts_construct.facts {
+            let fact_id = self.process_fact_body(fact_body, result)?;
+            result.asserted_facts.push(fact_id);
+        }
+        Ok(())
+    }
+
+    /// Process a single fact body from a deffacts construct.
+    fn process_fact_body(
+        &mut self,
+        fact_body: &FactBody,
+        result: &mut LoadResult,
+    ) -> Result<FactId, LoadError> {
+        match fact_body {
+            FactBody::Ordered(ordered) => self.process_ordered_fact_body(ordered, result),
+            FactBody::Template(template) => self.process_template_fact_body(template, result),
+        }
+    }
+
+    /// Process an ordered fact body.
+    fn process_ordered_fact_body(
+        &mut self,
+        ordered: &OrderedFactBody,
+        result: &mut LoadResult,
+    ) -> Result<FactId, LoadError> {
+        let mut fields = Vec::new();
+        for fact_value in &ordered.values {
+            if let Some(value) = self.fact_value_to_value(fact_value, result) {
+                fields.push(value);
             }
-        };
+        }
 
-        let Some(form_name) = list[0].as_symbol() else {
-            Self::warn_at_line(
-                result,
-                list[0].span().start.line,
-                "skipping list with non-symbol head",
-            );
-            return Ok(());
-        };
+        self.assert_ordered(&ordered.relation, fields)
+            .map_err(LoadError::Engine)
+    }
 
-        match form_name {
-            "assert" => self.process_assert(&list[1..], result),
-            "defrule" => self.process_defrule(&list[1..], result),
-            "deffacts" => self.process_deffacts(&list[1..], result),
-            _ => Err(LoadError::UnsupportedForm {
-                name: form_name.to_string(),
-                line: list[0].span().start.line,
-                column: list[0].span().start.column,
-            }),
+    /// Process a template fact body.
+    fn process_template_fact_body(
+        &mut self,
+        template: &TemplateFactBody,
+        result: &mut LoadResult,
+    ) -> Result<FactId, LoadError> {
+        // For Phase 2, we treat template facts as ordered facts with the slot values
+        // Full template support with slot matching will be added in later phases
+        let mut fields = Vec::new();
+        for slot_value in &template.slot_values {
+            if let Some(value) = self.fact_value_to_value(&slot_value.value, result) {
+                fields.push(value);
+            }
+        }
+
+        self.assert_ordered(&template.template, fields)
+            .map_err(LoadError::Engine)
+    }
+
+    /// Convert a `FactValue` to an engine Value.
+    fn fact_value_to_value(&mut self, fact_value: &FactValue, result: &mut LoadResult) -> Option<Value> {
+        match fact_value {
+            FactValue::Literal(lit) => self.literal_to_value(&lit.value, lit.span.start.line, result),
+            FactValue::Variable(_name, span) => {
+                Self::warn_at_line(
+                    result,
+                    span.start.line,
+                    "variables in deffacts not supported, skipping",
+                );
+                None
+            }
+            FactValue::GlobalVariable(_name, span) => {
+                Self::warn_at_line(
+                    result,
+                    span.start.line,
+                    "global variables in deffacts not supported, skipping",
+                );
+                None
+            }
+        }
+    }
+
+    /// Convert a `LiteralKind` to an engine Value.
+    fn literal_to_value(
+        &mut self,
+        literal: &LiteralKind,
+        line: u32,
+        result: &mut LoadResult,
+    ) -> Option<Value> {
+        match literal {
+            LiteralKind::Integer(n) => Some(Value::Integer(*n)),
+            LiteralKind::Float(f) => Some(Value::Float(*f)),
+            LiteralKind::String(s) => match FerricString::new(s, self.config.string_encoding) {
+                Ok(fs) => Some(Value::String(fs)),
+                Err(e) => {
+                    Self::warn_with_detail(result, line, "string encoding error", &e);
+                    None
+                }
+            },
+            LiteralKind::Symbol(s) => {
+                match self
+                    .symbol_table
+                    .intern_symbol(s, self.config.string_encoding)
+                {
+                    Ok(sym) => Some(Value::Symbol(sym)),
+                    Err(e) => {
+                        Self::warn_with_detail(result, line, "symbol encoding error", &e);
+                        None
+                    }
+                }
+            }
         }
     }
 
@@ -229,60 +384,6 @@ impl Engine {
             .map_err(LoadError::Engine)
     }
 
-    /// Process a `(defrule ...)` form.
-    #[allow(clippy::unused_self)] // Keep consistent API with other process methods
-    fn process_defrule(&self, args: &[SExpr], result: &mut LoadResult) -> Result<(), LoadError> {
-        if args.is_empty() {
-            return Err(LoadError::InvalidDefrule("missing rule name".to_string()));
-        }
-
-        // First argument is the rule name
-        let name = args[0]
-            .as_symbol()
-            .ok_or_else(|| LoadError::InvalidDefrule("rule name must be a symbol".to_string()))?;
-
-        // Find the => separator
-        let arrow_pos = args[1..]
-            .iter()
-            .position(|expr| expr.as_symbol() == Some("=>"))
-            .ok_or_else(|| LoadError::InvalidDefrule("missing '=>' separator".to_string()))?;
-
-        // arrow_pos is relative to args[1..], so adjust for the full slice
-        let arrow_index = arrow_pos + 1;
-
-        // LHS is everything between name and =>
-        let lhs = args[1..arrow_index].to_vec();
-
-        // RHS is everything after =>
-        let rhs = args[arrow_index + 1..].to_vec();
-
-        result.rules.push(RuleDef {
-            name: name.to_string(),
-            lhs,
-            rhs,
-        });
-
-        Ok(())
-    }
-
-    /// Process a `(deffacts ...)` form.
-    ///
-    /// In Phase 1, we treat deffacts like a batch assert.
-    fn process_deffacts(
-        &mut self,
-        args: &[SExpr],
-        result: &mut LoadResult,
-    ) -> Result<(), LoadError> {
-        if args.is_empty() {
-            return Err(LoadError::InvalidAssert(
-                "deffacts missing name".to_string(),
-            ));
-        }
-
-        // First arg is the deffacts name (we ignore it for now)
-        // Remaining args are facts to assert
-        self.process_assert(&args[1..], result)
-    }
 
     /// Convert an S-expression atom to a Value.
     ///
@@ -439,8 +540,8 @@ mod tests {
 
         let rule = &result.rules[0];
         assert_eq!(rule.name, "test");
-        assert_eq!(rule.lhs.len(), 1);
-        assert_eq!(rule.rhs.len(), 1);
+        assert_eq!(rule.patterns.len(), 1);
+        assert_eq!(rule.actions.len(), 1);
     }
 
     #[test]
@@ -458,8 +559,8 @@ mod tests {
         assert_eq!(result.rules.len(), 1);
         let rule = &result.rules[0];
         assert_eq!(rule.name, "match-pair");
-        assert_eq!(rule.lhs.len(), 2);
-        assert_eq!(rule.rhs.len(), 1);
+        assert_eq!(rule.patterns.len(), 2);
+        assert_eq!(rule.actions.len(), 1);
     }
 
     #[test]
@@ -477,16 +578,29 @@ mod tests {
     }
 
     #[test]
+    fn load_deftemplate() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str("(deftemplate person (slot name))")
+            .unwrap();
+
+        assert_eq!(result.templates.len(), 1);
+        assert_eq!(result.templates[0].name, "person");
+        assert_eq!(result.templates[0].slots.len(), 1);
+        assert_eq!(result.templates[0].slots[0].name, "name");
+    }
+
+    #[test]
     fn load_unsupported_form_returns_error() {
         let mut engine = Engine::new(EngineConfig::utf8());
         let errors = engine
-            .load_str("(deftemplate person (slot name))")
+            .load_str("(deffunction foo () (+ 1 2))")
             .unwrap_err();
 
         assert_eq!(errors.len(), 1);
         match &errors[0] {
             LoadError::UnsupportedForm { name, .. } => {
-                assert_eq!(name, "deftemplate");
+                assert_eq!(name, "deffunction");
             }
             _ => panic!("expected UnsupportedForm error"),
         }
@@ -516,7 +630,7 @@ mod tests {
         let errors = engine.load_str("(defrule)").unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(matches!(errors[0], LoadError::InvalidDefrule(_)));
+        assert!(matches!(errors[0], LoadError::Interpret(_)));
     }
 
     #[test]
@@ -527,7 +641,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(matches!(errors[0], LoadError::InvalidDefrule(_)));
+        assert!(matches!(errors[0], LoadError::Interpret(_)));
     }
 
     #[test]
@@ -538,7 +652,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(errors.len(), 1);
-        assert!(matches!(errors[0], LoadError::InvalidDefrule(_)));
+        assert!(matches!(errors[0], LoadError::Interpret(_)));
     }
 
     #[test]

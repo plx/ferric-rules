@@ -130,8 +130,8 @@ mod tests {
 
         let rule_def = &result.rules[0];
         assert_eq!(rule_def.name, "match-animal");
-        assert_eq!(rule_def.lhs.len(), 1);
-        assert_eq!(rule_def.rhs.len(), 1);
+        assert_eq!(rule_def.patterns.len(), 1);
+        assert_eq!(rule_def.actions.len(), 1);
     }
 
     #[test]

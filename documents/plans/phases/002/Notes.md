@@ -121,3 +121,76 @@ None — deep construct semantics (typed patterns, slot definitions, etc.) are P
 ### Suggestions
 
 - None. Ready for Pass 003.
+
+---
+
+## Pass 003: Stage 2 Deftemplate Defrule And Deffacts Interpretation
+
+### What was done
+
+1. **Typed AST types** (`ferric-parser/src/stage2.rs`):
+   - `Pattern` enum: `Ordered`, `Template`, `Not`, `Test`, `Exists`, `Assigned`
+   - `OrderedPattern`: relation name + constraints vector
+   - `TemplatePattern`: template name + slot constraints vector
+   - `SlotConstraint`: slot name + constraint
+   - `Constraint` enum: `Literal`, `Variable`, `MultiVariable`, `Wildcard`, `MultiWildcard`, `Not`, `And`, `Or`
+   - `LiteralValue` and `LiteralKind` (Integer, Float, String, Symbol)
+   - `Action`, `FunctionCall`, `ActionExpr` for RHS actions
+   - `SlotDefinition`, `SlotType` (Single/Multi), `DefaultValue` for deftemplate
+   - `FactBody` (Ordered/Template), `OrderedFactBody`, `TemplateFactBody`, `FactSlotValue`, `FactValue` for deffacts
+
+2. **Full interpretation replacing raw fields**:
+   - `RuleConstruct`: `lhs_raw`/`rhs_raw` replaced with `patterns: Vec<Pattern>` and `actions: Vec<Action>`
+   - `TemplateConstruct`: `slots_raw` replaced with `slots: Vec<SlotDefinition>`
+   - `FactsConstruct`: `facts_raw` replaced with `facts: Vec<FactBody>`
+   - Pattern interpretation: handles ordered patterns, template patterns, `not`, `test`, `exists`, assigned patterns (`?var <- ...`)
+   - Constraint interpretation: handles variables, wildcards, literals, connectives (`&`, `|`, `~`)
+   - Action interpretation: function calls with nested arguments
+   - Slot interpretation: `(slot ...)`, `(multislot ...)`, `(default ...)`, `(default ?DERIVE)`, `(default ?NONE)`, `(type ...)`, `(range ...)`, `(allowed-values ...)`
+   - Fact body interpretation: ordered and template fact bodies with literal/variable values
+
+3. **Loader Stage 2 integration** (`ferric-runtime/src/loader.rs`):
+   - `LoadResult` updated: `rules: Vec<RuleConstruct>`, added `templates: Vec<TemplateConstruct>`
+   - `load_str()` separates assert forms from constructs, routes constructs through Stage 2
+   - Added `LoadError::Interpret(String)` variant
+   - New methods: `process_deffacts_construct()`, `process_fact_body()`, `process_ordered_fact_body()`, `process_template_fact_body()`, `fact_value_to_value()`, `literal_to_value()`
+   - Kept `(assert ...)` as Phase 1 direct-assertion path
+   - `deffunction` goes through loader's unsupported form handling
+
+4. **Re-exports updated**: All new types re-exported from `ferric-parser` and `ferric-runtime` crate roots.
+
+5. **~48 new parser tests** covering:
+   - Ordered patterns with variables, literals, wildcards, multi-variables
+   - Template patterns with slot constraints
+   - Negation, test, and exists patterns
+   - Actions with nested function calls
+   - Template slots with defaults (`?DERIVE`, `?NONE`, literal)
+   - Deffacts with ordered and template fact bodies
+   - Comprehensive CLIPS example (full defrule with template patterns, multiple actions)
+   - Error cases: empty patterns, empty actions, invalid slot keywords
+
+6. **Existing tests updated**: Integration tests use `.patterns.len()` and `.actions.len()` instead of old raw fields. Loader tests check `LoadError::Interpret(_)` for Stage 2 errors.
+
+### Test results
+
+- **314 tests pass** (148 core + 115 parser + 47 runtime + 1 facade + 3 doctests)
+- **0 clippy warnings**
+- **~48 new tests** (Stage 2 typed interpretation)
+- **1 new loader test** (`load_deftemplate`)
+- **0 regressions**
+
+### Remaining TODOs
+
+None — typed construct AST and full interpretation complete for defrule, deftemplate, and deffacts.
+
+### Noteworthy decisions
+
+- Raw `_raw` fields fully replaced by typed fields (not kept alongside).
+- `Test` pattern variant keeps a raw `SExpr` body since test expression evaluation is Phase 3+ scope.
+- Constraint connectives (`&`, `|`, `~`) are parsed from Stage 1 `Connective` atoms, maintaining the two-stage parse architecture.
+- Template fact bodies in deffacts produce warnings (not errors) for unsupported features like variables, allowing graceful degradation.
+- `LoadResult` now carries `Vec<RuleConstruct>` and `Vec<TemplateConstruct>` directly, replacing the old `Vec<RuleDef>` for rules.
+
+### Suggestions
+
+- None. Ready for Pass 004.
