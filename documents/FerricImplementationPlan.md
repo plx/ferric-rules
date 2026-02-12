@@ -438,6 +438,10 @@ This separation means retraction never needs to modify the network structure—o
 
 ### 4.1 Workspace Layout
 
+The layout below reflects the **current baseline after Phase 1**. The earlier
+nested `ferric-core/src/rete/*` sketch has been flattened into top-level core
+modules to match implementation reality.
+
 ```
 ferric/
 ├── Cargo.toml                 # Workspace definition
@@ -455,20 +459,17 @@ ferric/
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── rete/
-│   │       │   ├── mod.rs
-│   │       │   ├── alpha.rs       # Alpha network implementation
-│   │       │   ├── beta.rs        # Beta network and join nodes
-│   │       │   ├── negative.rs    # Negative nodes and NCC networks
-│   │       │   ├── memory.rs      # Alpha/beta memories with indexing
-│   │       │   ├── token.rs       # Token representation and storage
-│   │       │   ├── network.rs     # Network construction and management
-│   │       │   ├── indices.rs     # Reverse indices for retraction
-│   │       │   └── validation.rs  # Compile-time validation for pattern restrictions
 │   │       ├── agenda.rs          # Conflict resolution, activation management
+│   │       ├── alpha.rs           # Alpha network implementation
+│   │       ├── beta.rs            # Beta network and join nodes
+│   │       ├── token.rs           # Token representation and storage
+│   │       ├── rete.rs            # Rete integration (alpha+beta+agenda+tokens)
 │   │       ├── fact.rs            # Fact representation
-│   │       ├── pattern.rs         # Pattern representation and constraints
-│   │       └── binding.rs         # Variable bindings with VarId
+│   │       ├── binding.rs         # Variable bindings with VarId
+│   │       ├── value.rs           # Value enum and operations
+│   │       ├── symbol.rs          # Symbol interning (encoding-aware)
+│   │       ├── string.rs          # FerricString (encoding-aware)
+│   │       └── encoding.rs        # StringEncoding and EncodingError
 │   │
 │   ├── ferric-parser/         # Lexer, parser, AST
 │   │   ├── Cargo.toml
@@ -476,8 +477,7 @@ ferric/
 │   │       ├── lib.rs
 │   │       ├── lexer.rs           # Tokenization
 │   │       ├── sexpr.rs           # Stage 1: S-expression parsing
-│   │       ├── ast.rs             # Typed AST definitions
-│   │       ├── construct.rs       # Stage 2: S-expr → AST interpretation
+│   │       ├── span.rs            # Source location tracking
 │   │       └── error.rs           # Parse errors with spans
 │   │
 │   ├── ferric-runtime/        # Engine, execution, modules
@@ -485,14 +485,10 @@ ferric/
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── engine.rs          # Main Engine type
-│   │       ├── config.rs          # EngineConfig, ErrorMode, etc.
-│   │       ├── module.rs          # Module system
-│   │       ├── value.rs           # Value enum and operations
-│   │       ├── symbol.rs          # Symbol interning (encoding-aware)
-│   │       ├── string.rs          # FerricString (encoding-aware)
-│   │       └── eval.rs            # Expression evaluation
+│   │       ├── config.rs          # EngineConfig (Phase 1 subset)
+│   │       └── loader.rs          # Minimal source loader
 │   │
-│   ├── ferric-stdlib/         # Built-in functions
+│   ├── ferric-stdlib/         # Built-in functions (Phase 2+)
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -504,7 +500,7 @@ ferric/
 │   │       ├── fact_ops.rs
 │   │       └── agenda_ops.rs
 │   │
-│   ├── ferric-ffi/            # C API
+│   ├── ferric-ffi/            # C API (Phase 5+)
 │   │   ├── Cargo.toml
 │   │   ├── build.rs               # cbindgen header generation
 │   │   ├── src/
@@ -516,7 +512,7 @@ ferric/
 │   │   └── include/
 │   │       └── ferric.h           # Generated C header
 │   │
-│   └── ferric-cli/            # Command-line interface and REPL
+│   └── ferric-cli/            # Command-line interface and REPL (Phase 5+)
 │       ├── Cargo.toml
 │       └── src/
 │           ├── main.rs
@@ -541,7 +537,14 @@ ferric/
     └── architecture.md        # Internal documentation
 ```
 
+Phase 2+ expected additions to this layout include parser Stage-2 files
+(`ast.rs`, `construct.rs`) and runtime module/eval surfaces.
+
 ### 4.2 Crate Dependencies
+
+The graph below reflects the **current implemented dependency baseline**.
+Additional edges involving `ferric-stdlib`, `ferric-ffi`, and `ferric-cli`
+are phased in later.
 
 ```
 ferric (public facade)
@@ -549,16 +552,14 @@ ferric (public facade)
 ├── ferric-parser
 ├── ferric-runtime
 │   ├── ferric-core
-│   ├── ferric-parser
-│   └── ferric-stdlib
-└── ferric-stdlib
+│   └── ferric-parser
 
 ferric-ffi
 └── ferric
 
 ferric-cli
-├── ferric
-└── rustyline (for REPL)
+├── ferric                  # planned Phase 5+
+└── rustyline (for REPL)    # planned Phase 5+
 ```
 
 ### 4.3 External Dependencies (Preliminary)
@@ -582,6 +583,10 @@ All dependencies are compatible with MIT/Apache-2.0 dual licensing.
 ## 5. Core Data Structures
 
 ### 5.1 Values
+
+`Value`, `FerricString`, `SymbolTable`, and encoding primitives are currently
+implemented in `ferric-core` (not `ferric-runtime`) to avoid crate cycles
+between facts/rete internals and runtime APIs.
 
 The `Value` type represents all runtime values in Ferric:
 
@@ -607,8 +612,9 @@ pub enum Value {
     /// A 64-bit floating point number
     Float(f64),
     
-    /// An ordered collection of values
-    Multifield(Multifield),
+    /// An ordered collection of values.
+    /// Boxed to avoid recursive-size issues (`Value` -> `Multifield` -> `Value`).
+    Multifield(Box<Multifield>),
     
     /// An opaque pointer for embedding (with type tag)
     ExternalAddress(ExternalAddress),
@@ -1662,6 +1668,10 @@ Ferric avoids these scans via two reverse maps:
 **Token → owning node (for beta memory cleanup):**
 
 Each `Token` stores its `owner_node: NodeId` (see §5.5). When a token is removed, the engine looks up the node's memory and calls `remove(token_id)` directly — O(1).
+
+Phase 1 baseline status: this owner-node-directed cleanup path is now the
+implemented default; the temporary all-memories scan used during early bring-up
+has been removed.
 
 **Token → activations (for agenda cleanup):**
 
@@ -2894,8 +2904,27 @@ pub struct Position {
 
 ```rust
 /// Parse source into S-expressions
-pub fn parse_sexprs(source: &str, file_id: FileId) -> Result<Vec<SExpr>, Vec<ParseError>> {
-    let tokens = lex(source, file_id)?;
+pub struct ParseResult {
+    pub exprs: Vec<SExpr>,
+    pub errors: Vec<ParseError>,
+}
+
+pub fn parse_sexprs(source: &str, file_id: FileId) -> ParseResult {
+    // Lex first. Current implementation returns early with converted parse
+    // errors if lexing fails (no partial token-stream parsing).
+    let tokens = match lex(source, file_id) {
+        Ok(tokens) => tokens,
+        Err(lex_errors) => {
+            return ParseResult {
+                exprs: Vec::new(),
+                errors: lex_errors
+                    .into_iter()
+                    .map(|e| ParseError::new(e.message, e.span, e.kind))
+                    .collect(),
+            };
+        }
+    };
+
     parse_sexpr_list(&tokens)
 }
 ```
@@ -2908,6 +2937,15 @@ The S-expression parser implements recovery strategies:
 - Continue parsing to find multiple errors
 
 ### 8.3 Stage 2: Construct Interpretation
+
+Phase 1 baseline note:
+
+- Stage 2 interpretation is not yet the default load path.
+- `Engine::load_str` / `Engine::load_file` currently return
+  `Result<LoadResult, Vec<LoadError>>`.
+- `LoadResult` carries asserted fact IDs, collected S-expression-level
+  `RuleDef` values, and warnings.
+- `deffacts` is currently accepted as batch assert behavior.
 
 ```rust
 /// Top-level construct
@@ -3154,6 +3192,11 @@ impl EngineConfig {
 
 ### 9.2 Engine API
 
+The API below combines the long-term target surface with explicit Phase 1
+baseline notes. Phase 1 currently implements loading/assert/retract/query
+building blocks and thread-affinity controls; rule execution surfaces
+(`run`, `step`, module/function management) remain Phase 2+ work.
+
 ```rust
 /// The main Ferric engine
 pub struct Engine {
@@ -3183,19 +3226,29 @@ pub struct Engine {
 
 impl Engine {
     /// Create a new engine with the given configuration
-    pub fn new(config: EngineConfig) -> Result<Self, EngineError>;
+    pub fn new(config: EngineConfig) -> Self;
 
     // === Loading ===
 
     /// Load constructs from a string
-    pub fn load_str(&mut self, source: &str) -> Result<(), LoadError>;
+    /// Phase 1 return shape: successful facts/rules + warnings, or collected errors.
+    pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>>;
 
     /// Load constructs from a file
-    pub fn load_file(&mut self, path: &Path) -> Result<(), LoadError>;
+    pub fn load_file(&mut self, path: &Path) -> Result<LoadResult, Vec<LoadError>>;
 
     // === Facts ===
 
+    /// Assert an ordered fact by relation name and positional fields.
+    /// Implemented in Phase 1 as a convenience surface.
+    pub fn assert_ordered(
+        &mut self,
+        relation: &str,
+        fields: Vec<Value>,
+    ) -> Result<FactId, AssertError>;
+
     /// Assert a fact from a string
+    /// Phase 2+
     pub fn assert_str(&mut self, fact_str: &str) -> Result<FactId, AssertError>;
 
     /// Assert a programmatically constructed fact
@@ -3211,6 +3264,7 @@ impl Engine {
     pub fn facts(&self) -> impl Iterator<Item = (FactId, &Fact)>;
 
     /// Query facts matching a pattern
+    /// Phase 2+
     pub fn query(&self, pattern: &str) -> Result<Vec<FactId>, QueryError>;
 
     // === Execution ===
@@ -3229,6 +3283,15 @@ impl Engine {
 
     /// Request halt (checked between rule firings)
     pub fn halt(&mut self);
+
+    // === Thread Transfer ===
+
+    /// Explicitly rebind engine ownership to the current thread.
+    ///
+    /// # Safety
+    /// Caller must guarantee no references into engine internals are used
+    /// after transfer from the old owning thread.
+    pub unsafe fn move_to_current_thread(&mut self);
 
     // === Symbols and Strings (encoding-aware) ===
 
@@ -3305,6 +3368,9 @@ pub enum StepResult {
 ```
 
 ### 9.3 Symbol Table
+
+Implementation note: `SymbolTable` currently lives in `ferric-core` and is
+re-exported into runtime-facing APIs.
 
 ```rust
 /// Symbol interning with encoding awareness
@@ -4156,6 +4222,11 @@ Before any feature work beyond basic assert/retract, the following invariants mu
 8. Negative memory `blocked_by` map contains no empty sets after token retraction (prune-on-empty invariant).
 9. `debug_assert_consistency()` passes after every assert and retract operation in all retraction invariant tests (structural regression check).
 
+Phase 1 baseline status: consistency checks now cover token, alpha, beta, and
+agenda internals, plus rete-level cross-structure integrity checks exercised in
+retraction-oriented tests. Negative/NCC/exists-specific invariants remain
+Phase 2+ as those structures are introduced.
+
 ### Phase 1: Foundation (Weeks 1-10)
 
 **Goal:** Minimal working engine with basic rules AND minimal parser
@@ -4172,9 +4243,13 @@ Before any feature work beyond basic assert/retract, the following invariants mu
 - Can parse basic `.clp` files into S-expressions
 - Minimal source loader supports `(assert ...)` and `(defrule ...)` at the S-expression level
 - Can assert facts
-- Can define rules with simple patterns (programmatically)
+- Can retain minimal rule definitions and demonstrate simple pattern
+  propagation via programmatic alpha/beta/agenda network construction
 - Alpha-beta propagation works
 - Unit tests pass
+
+Automatic compilation from parsed rule definitions into rete networks is
+explicitly Phase 2 scope.
 
 ### Phase 2: Core Engine (Weeks 11-20)
 
