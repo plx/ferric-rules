@@ -8,20 +8,15 @@ use thiserror::Error;
 /// Text encoding mode for symbols and strings.
 ///
 /// Controls what byte sequences are accepted when creating symbols and strings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum StringEncoding {
     /// ASCII only for both symbols and strings. Maximum CLIPS compatibility.
     Ascii,
     /// UTF-8 for both symbols and strings. Full internationalization.
+    #[default]
     Utf8,
     /// ASCII-only symbols, UTF-8 strings. Identifiers remain ASCII, text data is modern.
     AsciiSymbolsUtf8Strings,
-}
-
-impl Default for StringEncoding {
-    fn default() -> Self {
-        Self::Utf8
-    }
 }
 
 /// Errors arising from encoding mode enforcement.
