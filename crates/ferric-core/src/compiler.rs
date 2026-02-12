@@ -31,6 +31,9 @@ pub struct CompilablePattern {
     /// Variable bindings: (`slot_index`, `variable_symbol`)
     /// The Symbol is the interned variable name (e.g., intern("x") for ?x)
     pub variable_slots: Vec<(SlotIndex, Symbol)>,
+    /// If true, this pattern is a negated conditional element (not CE).
+    /// Negated patterns create negative nodes instead of join nodes.
+    pub negated: bool,
 }
 
 /// Result of compiling a rule.
@@ -139,13 +142,21 @@ impl ReteCompiler {
             // Add newly-bound variables to the tracking set
             bound_vars.extend(new_bindings);
 
-            let (join_id, _beta_mem) = rete.beta.create_join_node(
-                current_parent,
-                alpha_mem,
-                join_tests,
-                binding_extractions,
-            );
-            current_parent = join_id;
+            if pattern.negated {
+                // Negated pattern → create negative node
+                let (neg_id, _beta_mem, _neg_mem) =
+                    rete.beta.create_negative_node(current_parent, alpha_mem, join_tests);
+                current_parent = neg_id;
+            } else {
+                // Positive pattern → create join node
+                let (join_id, _beta_mem) = rete.beta.create_join_node(
+                    current_parent,
+                    alpha_mem,
+                    join_tests,
+                    binding_extractions,
+                );
+                current_parent = join_id;
+            }
         }
 
         // Step 3: Create terminal node
@@ -257,6 +268,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated: false,
         };
 
         let rule = CompilableRule {
@@ -298,6 +310,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test],
             variable_slots: vec![],
+            negated: false,
         };
 
         let rule = CompilableRule {
@@ -330,6 +343,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
         };
 
         let rule = CompilableRule {
@@ -370,12 +384,14 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
         };
 
         let pattern2 = CompilablePattern {
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
         };
 
         let rule = CompilableRule {
@@ -412,12 +428,14 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
         };
 
         let pattern2 = CompilablePattern {
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_y)],
+            negated: false,
         };
 
         let rule = CompilableRule {
@@ -444,6 +462,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated: false,
         };
 
         // Compile first rule
@@ -481,12 +500,14 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated: false,
         };
 
         let pattern2 = CompilablePattern {
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated: false,
         };
 
         // Compile first rule
@@ -524,6 +545,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
         };
 
         let rule_id = compiler.allocate_rule_id();
@@ -571,6 +593,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test1, test2],
             variable_slots: vec![],
+            negated: false,
         };
 
         let rule = CompilableRule {
@@ -605,6 +628,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test],
             variable_slots: vec![],
+            negated: false,
         };
 
         let rule = CompilableRule {
@@ -637,18 +661,21 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
         };
 
         let pattern2 = CompilablePattern {
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
         };
 
         let pattern3 = CompilablePattern {
             entry_type: AlphaEntryType::OrderedRelation(rel3),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
         };
 
         let rule = CompilableRule {
@@ -684,6 +711,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test],
             variable_slots: vec![],
+            negated: false,
         };
 
         // Compile first rule
@@ -726,6 +754,7 @@ mod tests {
             entry_type: AlphaEntryType::Template(template_id),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Template(0), var_x)],
+            negated: false,
         };
 
         let pattern2 = CompilablePattern {
@@ -735,6 +764,7 @@ mod tests {
                 (SlotIndex::Template(0), var_x),
                 (SlotIndex::Template(1), var_y),
             ],
+            negated: false,
         };
 
         let rule = CompilableRule {
@@ -763,5 +793,106 @@ mod tests {
         // variable configurations, they should have the same alpha memory
         // (no constant tests, so same entry type → same path)
         assert_eq!(result.alpha_memories[0], result.alpha_memories[1]);
+    }
+
+    #[test]
+    fn test_negated_pattern_creates_negative_node() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut table = new_table();
+
+        let item_rel = intern(&mut table, "item");
+        let danger_rel = intern(&mut table, "danger");
+        let rule_id = compiler.allocate_rule_id();
+
+        let positive_pattern = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(item_rel),
+            constant_tests: vec![],
+            variable_slots: vec![],
+            negated: false,
+        };
+
+        let negated_pattern = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(danger_rel),
+            constant_tests: vec![],
+            variable_slots: vec![],
+            negated: true,
+        };
+
+        let rule = CompilableRule {
+            rule_id,
+            salience: 0,
+            patterns: vec![positive_pattern, negated_pattern],
+        };
+
+        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+
+        assert_eq!(result.alpha_memories.len(), 2);
+
+        // Verify terminal node exists
+        let terminal_node = rete.beta.get_node(result.terminal_node).unwrap();
+        assert!(matches!(terminal_node, BetaNode::Terminal { .. }));
+
+        // Walk up from terminal: terminal's parent should be a Negative node
+        if let BetaNode::Terminal { parent, .. } = terminal_node {
+            let parent_node = rete.beta.get_node(*parent).unwrap();
+            assert!(
+                matches!(parent_node, BetaNode::Negative { .. }),
+                "Parent of terminal should be a Negative node, got {parent_node:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_negated_pattern_with_join_test() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut table = new_table();
+
+        let item_rel = intern(&mut table, "item");
+        let exclude_rel = intern(&mut table, "exclude");
+        let var_x = intern(&mut table, "x");
+        let rule_id = compiler.allocate_rule_id();
+
+        // (item ?x) (not (exclude ?x))
+        let pattern1 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(item_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+        };
+
+        let pattern2 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(exclude_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: true,
+        };
+
+        let rule = CompilableRule {
+            rule_id,
+            salience: 0,
+            patterns: vec![pattern1, pattern2],
+        };
+
+        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+
+        assert_eq!(result.alpha_memories.len(), 2);
+
+        // Walk up from terminal: terminal → Negative → Join → root
+        let terminal = rete.beta.get_node(result.terminal_node).unwrap();
+        if let BetaNode::Terminal { parent, .. } = terminal {
+            let neg_node = rete.beta.get_node(*parent).unwrap();
+            assert!(matches!(neg_node, BetaNode::Negative { .. }));
+
+            if let BetaNode::Negative { tests, .. } = neg_node {
+                // The negated pattern should have a join test for ?x
+                assert_eq!(
+                    tests.len(),
+                    1,
+                    "Negated pattern should have one join test for ?x"
+                );
+            }
+        }
     }
 }

@@ -53,6 +53,7 @@ pub use binding::{BindingSet, VarId, VarMap};
 pub use compiler::{CompilablePattern, CompilableRule, CompileError, CompileResult, ReteCompiler};
 pub use encoding::{EncodingError, StringEncoding};
 pub use fact::{Fact, FactBase, FactEntry, FactId, OrderedFact, TemplateFact, TemplateId};
+pub use negative::{NegativeMemory, NegativeMemoryId};
 pub use rete::ReteNetwork;
 pub use string::FerricString;
 pub use symbol::{Symbol, SymbolTable};

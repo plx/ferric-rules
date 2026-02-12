@@ -3,3 +3,4 @@ Pass 002 - Stage2ConstructAstAndInterpreterScaffold - COMPLETED
 Pass 003 - Stage2DeftemplateDefruleAndDeffactsInterpretation - COMPLETED
 Pass 004 - RuleCompilationPipelineAndNodeSharing - COMPLETED
 Pass 005 - JoinBindingExtractionAndLeftActivationCompletion - COMPLETED
+Pass 006 - NegativeNodeSinglePatternAndBlockerTracking - COMPLETED

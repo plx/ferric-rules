@@ -209,7 +209,7 @@ pub fn retract_one_fact(
         .fact_base
         .retract(fact_id)
         .expect("retract should succeed in test helper");
-    rete.retract_fact(fact_id, &fact)
+    rete.retract_fact(fact_id, &fact, &engine.fact_base)
 }
 
 // ---------------------------------------------------------------------------

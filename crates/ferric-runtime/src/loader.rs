@@ -510,13 +510,23 @@ impl Engine {
                     entry_type,
                     constant_tests,
                     variable_slots,
+                    negated: false,
                 }))
             }
             Pattern::Assigned { pattern, .. } => {
                 // Unwrap the assignment and compile the inner pattern
                 self.translate_pattern(pattern)
             }
-            // Not, Test, Exists, Template patterns are not yet compiled (later passes)
+            Pattern::Not(inner, _span) => {
+                // Unwrap the inner pattern and set negated flag
+                if let Some(mut compilable) = self.translate_pattern(inner)? {
+                    compilable.negated = true;
+                    Ok(Some(compilable))
+                } else {
+                    Ok(None)
+                }
+            }
+            // Test, Exists, Template patterns are not yet compiled (later passes)
             _ => Ok(None),
         }
     }

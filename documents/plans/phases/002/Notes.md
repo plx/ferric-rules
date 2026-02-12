@@ -321,3 +321,76 @@ None — positive-pattern join semantics are complete for the Phase 2 subset.
 ### Suggestions
 
 - None. Core positive-rule matching semantics are complete. Ready for Pass 006 (Negative Nodes).
+
+---
+
+## Pass 006: Negative Node (Single Pattern) And Blocker Tracking
+
+### What was done
+
+1. **`NegativeMemory`** (`ferric-core/src/negative.rs`):
+   - Full implementation of blocker tracking data structure
+   - Forward index: `blocked: HashMap<TokenId, HashSet<FactId>>` (parent token → blocking facts)
+   - Reverse index: `fact_to_blocked: HashMap<FactId, HashSet<TokenId>>` (fact → blocked tokens)
+   - Unblocked tracking: `unblocked: HashMap<TokenId, TokenId>` (parent → pass-through token)
+   - Methods: `add_blocker`, `remove_blocker` (returns bool), `is_blocked`, `tokens_blocked_by`, `set_unblocked`, `get_passthrough`, `remove_unblocked`, `is_unblocked`, `remove_parent_token`, `is_empty`, `blocked_count`, `unblocked_count`, `iter_unblocked`, `debug_assert_consistency`
+   - 12 unit tests + 2 property-based tests
+
+2. **`BetaNode::Negative` variant** (`ferric-core/src/beta.rs`):
+   - New variant: `Negative { parent, alpha_memory, tests, memory, neg_memory, children }`
+   - `BetaNetwork` additions: `neg_memories` map, `next_neg_memory_id`, `alpha_to_negatives` index
+   - `create_negative_node(parent, alpha_memory, tests)` → `(NodeId, BetaMemoryId, NegativeMemoryId)`
+   - Accessors: `get_neg_memory`, `get_neg_memory_mut`, `negative_nodes_for_alpha`, `neg_memory_ids`
+   - Updated `attach_child_to_parent` and `debug_assert_consistency` for Negative variant
+
+3. **Runtime negative node handling** (`ferric-core/src/rete.rs`):
+   - `negative_left_activate`: parent token arrives at negative node → check alpha memory for blockers. If none, create pass-through token and propagate. If any match, block.
+   - `negative_right_activate`: new fact arrives at negative node → check unblocked tokens for matches. If match, block (cascade-retract pass-through, move to blocked state).
+   - `negative_handle_retraction`: fact retracted → find blocked tokens via reverse index, remove blocker, if fully unblocked create new pass-through and propagate.
+   - `retract_token_cascade`: helper for cascade-retracting a token and all descendants with full cleanup (beta memories, agenda, negative memories).
+   - `cleanup_negative_memories_for_token`: scan all negative memories to remove references to a retracted token.
+   - Updated `assert_fact` to right-activate negative nodes (step 3, after join nodes).
+   - Updated `propagate_token` to handle `BetaNode::Negative` children (calls `negative_left_activate`).
+   - Updated `retract_fact` signature to accept `fact_base: &FactBase` (needed for negative unblocking). All callers updated.
+   - Updated `find_memory_for_node` to handle `BetaNode::Negative`.
+
+4. **Compiler support** (`ferric-core/src/compiler.rs`):
+   - Added `negated: bool` field to `CompilablePattern`
+   - `compile_rule` creates `Negative` nodes for `negated: true` patterns, `Join` nodes otherwise
+   - 2 new compiler tests: `test_negated_pattern_creates_negative_node`, `test_negated_pattern_with_join_test`
+
+5. **Loader support** (`ferric-runtime/src/loader.rs`):
+   - `translate_pattern` handles `Pattern::Not`: unwraps inner pattern, sets `negated = true`
+   - Existing ordered pattern compilation gets `negated: false`
+
+6. **Alpha network addition** (`ferric-core/src/alpha.rs`):
+   - Added `memories_containing_fact(fact_id)` method (used by `retract_fact` to determine which alpha memories to check for negative unblocking)
+
+7. **New tests** (21 total for this pass):
+   - 11 rete unit tests: no-blocking activation, blocking suppression, retract-unblock, assert-reblock, block-unblock cycle, multiple blockers, positive retract cleanup, multiple positive facts, variable-selective blocking, non-matching exclusion, full lifecycle
+   - 8 integration tests: end-to-end via CLIPS syntax — fires when no blocker, blocked when exists, unblocked by retraction, block/unblock cycle, shared variable selective blocking, non-matching exclude, multiple blockers, positive retract cleanup
+   - 2 compiler tests: negative node creation, negative with join test
+
+### Test results
+
+- **376 tests pass** (193 core + 115 parser + 65 runtime + 3 doctests)
+- **0 clippy warnings**
+- **21 new tests** (11 rete + 8 integration + 2 compiler)
+- **0 regressions**
+
+### Remaining TODOs
+
+- `cleanup_negative_memories_for_token` scans all negative memories linearly. For large networks this could be optimized with a reverse index from `TokenId` to `NegativeMemoryId`, but current cost is acceptable for correctness.
+- The `retract_fact` API change (added `fact_base: &FactBase` parameter) is a minor breaking change. All callers within the workspace have been updated.
+
+### Noteworthy decisions
+
+- **Pass-through token architecture**: When a parent token passes through an unblocked negative node, a new "pass-through" token is created that copies the parent's facts and bindings, with `parent = parent_token_id` and `owner_node = negative_node_id`. This enables cascade retraction to work correctly when blocking occurs — the pass-through and all its descendants are cleanly removed.
+- **Dual-index blocker tracking**: Forward (`parent → facts`) and reverse (`fact → parents`) indices enable O(1) lookup in both directions. The reverse index is critical for efficient `negative_handle_retraction` (finding which tokens to unblock when a fact is retracted).
+- **Retraction ordering**: In `retract_fact`, positive tokens are cascade-removed first (steps 1-4), then negative unblocking is handled (step 6), then alpha memories are cleaned (step 7). This ensures negative nodes see the correct alpha memory state during unblocking.
+- **`retract_fact` signature change**: Added `fact_base: &FactBase` parameter, consistent with `assert_fact` which already takes it. Needed because `negative_handle_retraction` must check alpha memories and evaluate join tests to create pass-through tokens.
+- **No binding extraction for negated patterns**: Negated patterns create join tests for previously-bound variables but do NOT extract new bindings (variables that appear only in a negated pattern can't contribute bindings to downstream tokens, since the negated fact doesn't exist in the match). The compiler correctly skips binding extractions for negated patterns.
+
+### Suggestions
+
+- None. Ready for Pass 007 (Agenda Strategy Depth And Breadth).

@@ -399,6 +399,15 @@ impl AlphaNetwork {
         self.nodes.get(&id)
     }
 
+    /// Return all alpha memory IDs that currently contain the given fact.
+    pub fn memories_containing_fact(&self, fact_id: FactId) -> Vec<AlphaMemoryId> {
+        self.memories
+            .values()
+            .filter(|mem| mem.contains(fact_id))
+            .map(|mem| mem.id)
+            .collect()
+    }
+
     /// Verify internal consistency of the alpha network.
     ///
     /// This method is gated behind `test` or `debug_assertions` and will panic

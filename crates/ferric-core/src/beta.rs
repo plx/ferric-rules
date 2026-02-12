@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::alpha::{AlphaMemoryId, SlotIndex};
 use crate::binding::VarId;
+use crate::negative::{NegativeMemory, NegativeMemoryId};
 use crate::token::NodeId;
 use crate::token::TokenId;
 
@@ -109,6 +110,15 @@ pub enum BetaNode {
     },
     /// Terminal node: produces activations for a rule.
     Terminal { parent: NodeId, rule: RuleId },
+    /// Negative node: blocks parent tokens when a matching fact exists.
+    Negative {
+        parent: NodeId,
+        alpha_memory: AlphaMemoryId,
+        tests: Vec<JoinTest>,
+        memory: BetaMemoryId,
+        neg_memory: NegativeMemoryId,
+        children: Vec<NodeId>,
+    },
 }
 
 /// The beta network.
@@ -118,11 +128,15 @@ pub enum BetaNode {
 pub struct BetaNetwork {
     nodes: HashMap<NodeId, BetaNode>,
     memories: HashMap<BetaMemoryId, BetaMemory>,
+    neg_memories: HashMap<NegativeMemoryId, NegativeMemory>,
     root_id: NodeId,
     next_node_id: u32,
     next_memory_id: u32,
+    next_neg_memory_id: u32,
     /// Reverse index: alpha memory -> list of join nodes that subscribe to it.
     alpha_to_joins: HashMap<AlphaMemoryId, Vec<NodeId>>,
+    /// Reverse index: alpha memory -> list of negative nodes that subscribe to it.
+    alpha_to_negatives: HashMap<AlphaMemoryId, Vec<NodeId>>,
 }
 
 impl BetaNetwork {
@@ -146,10 +160,13 @@ impl BetaNetwork {
         Self {
             nodes,
             memories: HashMap::new(),
+            neg_memories: HashMap::new(),
             root_id: root_node_id,
             next_node_id,
             next_memory_id: 0,
+            next_neg_memory_id: 0,
             alpha_to_joins: HashMap::new(),
+            alpha_to_negatives: HashMap::new(),
         }
     }
 
@@ -210,6 +227,52 @@ impl BetaNetwork {
         node_id
     }
 
+    /// Create a negative node as a child of the given parent.
+    ///
+    /// A negative node blocks parent tokens when matching facts exist in the
+    /// alpha memory. Returns the node ID, beta memory ID (for unblocked tokens),
+    /// and negative memory ID (for blocker tracking).
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn create_negative_node(
+        &mut self,
+        parent: NodeId,
+        alpha_memory: AlphaMemoryId,
+        tests: Vec<JoinTest>,
+    ) -> (NodeId, BetaMemoryId, NegativeMemoryId) {
+        let node_id = NodeId(self.next_node_id);
+        self.next_node_id += 1;
+
+        let memory_id = BetaMemoryId(self.next_memory_id);
+        self.next_memory_id += 1;
+
+        let neg_memory_id = NegativeMemoryId(self.next_neg_memory_id);
+        self.next_neg_memory_id += 1;
+
+        let node = BetaNode::Negative {
+            parent,
+            alpha_memory,
+            tests,
+            memory: memory_id,
+            neg_memory: neg_memory_id,
+            children: Vec::new(),
+        };
+
+        self.nodes.insert(node_id, node);
+        self.memories.insert(memory_id, BetaMemory::new(memory_id));
+        self.neg_memories
+            .insert(neg_memory_id, NegativeMemory::new(neg_memory_id));
+
+        self.attach_child_to_parent(parent, node_id);
+
+        // Register in alpha_to_negatives index
+        self.alpha_to_negatives
+            .entry(alpha_memory)
+            .or_default()
+            .push(node_id);
+
+        (node_id, memory_id, neg_memory_id)
+    }
+
     /// Get a beta node by ID.
     #[must_use]
     pub fn get_node(&self, id: NodeId) -> Option<&BetaNode> {
@@ -233,10 +296,29 @@ impl BetaNetwork {
         self.root_id
     }
 
+    /// Get a negative memory by ID.
+    #[must_use]
+    pub fn get_neg_memory(&self, id: NegativeMemoryId) -> Option<&NegativeMemory> {
+        self.neg_memories.get(&id)
+    }
+
+    /// Get a mutable reference to a negative memory by ID.
+    pub fn get_neg_memory_mut(&mut self, id: NegativeMemoryId) -> Option<&mut NegativeMemory> {
+        self.neg_memories.get_mut(&id)
+    }
+
     /// Get the list of join nodes that subscribe to a given alpha memory.
     #[must_use]
     pub fn join_nodes_for_alpha(&self, alpha_mem: AlphaMemoryId) -> &[NodeId] {
         self.alpha_to_joins
+            .get(&alpha_mem)
+            .map_or(&[], |v| v.as_slice())
+    }
+
+    /// Get the list of negative nodes that subscribe to a given alpha memory.
+    #[must_use]
+    pub fn negative_nodes_for_alpha(&self, alpha_mem: AlphaMemoryId) -> &[NodeId] {
+        self.alpha_to_negatives
             .get(&alpha_mem)
             .map_or(&[], |v| v.as_slice())
     }
@@ -256,10 +338,17 @@ impl BetaNetwork {
         self.memories.keys().copied()
     }
 
+    /// Iterate over all negative memory IDs.
+    pub fn neg_memory_ids(&self) -> impl Iterator<Item = NegativeMemoryId> + '_ {
+        self.neg_memories.keys().copied()
+    }
+
     fn attach_child_to_parent(&mut self, parent: NodeId, child_id: NodeId) {
         if let Some(parent_node) = self.nodes.get_mut(&parent) {
             match parent_node {
-                BetaNode::Root { children } | BetaNode::Join { children, .. } => {
+                BetaNode::Root { children }
+                | BetaNode::Join { children, .. }
+                | BetaNode::Negative { children, .. } => {
                     children.push(child_id);
                 }
                 BetaNode::Terminal { .. } => {
@@ -278,7 +367,9 @@ impl BetaNetwork {
         // Check 1: All node IDs in children fields exist in nodes map
         for (node_id, node) in &self.nodes {
             let children = match node {
-                BetaNode::Root { children } | BetaNode::Join { children, .. } => children,
+                BetaNode::Root { children }
+                | BetaNode::Join { children, .. }
+                | BetaNode::Negative { children, .. } => children,
                 BetaNode::Terminal { .. } => continue,
             };
 
@@ -293,7 +384,9 @@ impl BetaNetwork {
         // Check 2: All parent references point to existing nodes
         for (node_id, node) in &self.nodes {
             let parent = match node {
-                BetaNode::Join { parent, .. } | BetaNode::Terminal { parent, .. } => *parent,
+                BetaNode::Join { parent, .. }
+                | BetaNode::Terminal { parent, .. }
+                | BetaNode::Negative { parent, .. } => *parent,
                 BetaNode::Root { .. } => continue,
             };
 
@@ -303,13 +396,28 @@ impl BetaNetwork {
             );
         }
 
-        // Check 3: All memory IDs in join nodes exist in memories map
+        // Check 3: All memory IDs in join/negative nodes exist in memories map
         for (node_id, node) in &self.nodes {
-            if let BetaNode::Join { memory, .. } = node {
-                assert!(
-                    self.memories.contains_key(memory),
-                    "Join node {node_id:?} references non-existent memory {memory:?}"
-                );
+            match node {
+                BetaNode::Join { memory, .. } => {
+                    assert!(
+                        self.memories.contains_key(memory),
+                        "Join node {node_id:?} references non-existent memory {memory:?}"
+                    );
+                }
+                BetaNode::Negative {
+                    memory, neg_memory, ..
+                } => {
+                    assert!(
+                        self.memories.contains_key(memory),
+                        "Negative node {node_id:?} references non-existent beta memory {memory:?}"
+                    );
+                    assert!(
+                        self.neg_memories.contains_key(neg_memory),
+                        "Negative node {node_id:?} references non-existent negative memory {neg_memory:?}"
+                    );
+                }
+                _ => {}
             }
         }
 
@@ -321,10 +429,27 @@ impl BetaNetwork {
                     "Alpha memory {alpha_mem_id:?} references non-existent join node {join_node_id:?}"
                 );
 
-                // Verify it's actually a join node
                 assert!(
                     matches!(self.nodes.get(join_node_id), Some(BetaNode::Join { .. })),
                     "Alpha memory {alpha_mem_id:?} references node {join_node_id:?} which is not a join node"
+                );
+            }
+        }
+
+        // Check 4b: All negative nodes referenced in alpha_to_negatives exist
+        for (alpha_mem_id, neg_nodes) in &self.alpha_to_negatives {
+            for neg_node_id in neg_nodes {
+                assert!(
+                    self.nodes.contains_key(neg_node_id),
+                    "Alpha memory {alpha_mem_id:?} references non-existent negative node {neg_node_id:?}"
+                );
+
+                assert!(
+                    matches!(
+                        self.nodes.get(neg_node_id),
+                        Some(BetaNode::Negative { .. })
+                    ),
+                    "Alpha memory {alpha_mem_id:?} references node {neg_node_id:?} which is not a negative node"
                 );
             }
         }
@@ -341,6 +466,12 @@ impl BetaNetwork {
             "Root node {:?} is not a Root variant",
             self.root_id
         );
+
+        // Check 6: All negative memories are internally consistent
+        for (neg_mem_id, neg_mem) in &self.neg_memories {
+            let _ = neg_mem_id;
+            neg_mem.debug_assert_consistency();
+        }
     }
 }
 

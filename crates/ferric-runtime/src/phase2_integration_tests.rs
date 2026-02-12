@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(engine.rete.agenda.len(), 1);
 
         // Retract
-        engine.rete.retract_fact(fid, &fact);
+        engine.rete.retract_fact(fid, &fact, &engine.fact_base);
         assert_rete_clean(engine.rete());
     }
 
@@ -250,6 +250,7 @@ mod tests {
                     test_type: ConstantTestType::NotEqual(AtomKey::Symbol(red_sym)),
                 }],
                 variable_slots: vec![],
+                negated: false,
             }],
         };
 
@@ -275,9 +276,261 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Pass 006: Negative node (single pattern) and blocker tracking
+    // -----------------------------------------------------------------------
+
+    /// Helper: assert facts into both the `fact_base` (via `load_ok`) and the rete network.
+    fn assert_facts_into_rete(
+        engine: &mut crate::Engine,
+        source: &str,
+    ) -> Vec<ferric_core::FactId> {
+        let result = load_ok(engine, source);
+        for &fid in &result.asserted_facts {
+            let fact = engine.fact_base.get(fid).unwrap().fact.clone();
+            engine.rete.assert_fact(fid, &fact, &engine.fact_base);
+        }
+        result.asserted_facts
+    }
+
+    /// Helper: retract a fact from both the `fact_base` and the rete network.
+    fn retract_from_rete(engine: &mut crate::Engine, fid: ferric_core::FactId) {
+        let fact = engine.fact_base.get(fid).unwrap().fact.clone();
+        engine
+            .fact_base
+            .retract(fid)
+            .expect("retract should succeed");
+        engine.rete.retract_fact(fid, &fact, &engine.fact_base);
+    }
+
+    #[test]
+    fn negative_rule_fires_when_no_blocking_fact() {
+        // CLIPS equivalent:
+        //   (defrule no-danger (item ?x) (not (danger)) => (printout t "safe"))
+        //   (assert (item lamp))
+        //   => activation fires because no (danger) fact exists
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            "(defrule safe (item ?x) (not (danger)) => (printout t safe))",
+        );
+
+        assert_facts_into_rete(&mut engine, "(assert (item lamp))");
+
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "Rule should fire when no blocking fact exists"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn negative_rule_blocked_when_fact_exists() {
+        // CLIPS equivalent:
+        //   (defrule safe (item ?x) (not (danger)) => ...)
+        //   (assert (item lamp))
+        //   (assert (danger))
+        //   => no activation because (danger) exists
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            "(defrule safe (item ?x) (not (danger)) => (printout t safe))",
+        );
+
+        // Assert both the item and the blocking fact
+        assert_facts_into_rete(&mut engine, "(assert (danger))");
+        assert_facts_into_rete(&mut engine, "(assert (item lamp))");
+
+        assert_eq!(
+            engine.rete.agenda.len(),
+            0,
+            "Rule should NOT fire when blocking fact exists"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn negative_rule_unblocked_by_retraction() {
+        // CLIPS equivalent:
+        //   (defrule safe (item ?x) (not (danger)) => ...)
+        //   (assert (danger)) (assert (item lamp))
+        //   => no activation
+        //   (retract <danger-fact>)
+        //   => activation fires
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            "(defrule safe (item ?x) (not (danger)) => (printout t safe))",
+        );
+
+        let danger_fids = assert_facts_into_rete(&mut engine, "(assert (danger))");
+        assert_facts_into_rete(&mut engine, "(assert (item lamp))");
+        assert_eq!(engine.rete.agenda.len(), 0, "Should be blocked");
+
+        // Retract the blocking fact
+        retract_from_rete(&mut engine, danger_fids[0]);
+
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "Rule should fire after blocking fact retracted"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn negative_rule_blocked_then_unblocked_cycle() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            "(defrule safe (item ?x) (not (danger)) => (printout t safe))",
+        );
+
+        // Start with just the item — activation fires
+        assert_facts_into_rete(&mut engine, "(assert (item lamp))");
+        assert_eq!(engine.rete.agenda.len(), 1);
+
+        // Add danger — blocks
+        let danger_fids = assert_facts_into_rete(&mut engine, "(assert (danger))");
+        assert_eq!(engine.rete.agenda.len(), 0);
+
+        // Remove danger — unblocks
+        retract_from_rete(&mut engine, danger_fids[0]);
+        assert_eq!(engine.rete.agenda.len(), 1);
+
+        // Add danger again — blocks again
+        let second_danger_fids = assert_facts_into_rete(&mut engine, "(assert (danger))");
+        assert_eq!(engine.rete.agenda.len(), 0);
+
+        // Remove danger again — unblocks again
+        retract_from_rete(&mut engine, second_danger_fids[0]);
+        assert_eq!(engine.rete.agenda.len(), 1);
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn negative_rule_with_shared_variable() {
+        // CLIPS equivalent:
+        //   (defrule not-excluded
+        //     (item ?x)
+        //     (not (exclude ?x))
+        //     =>
+        //     (printout t ?x " is not excluded"))
+        //
+        //   (assert (item alice) (item bob))
+        //   => 2 activations
+        //   (assert (exclude alice))
+        //   => alice blocked, bob still active → 1 activation
+        //   (retract <exclude-alice>)
+        //   => alice unblocked → 2 activations
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"(defrule not-excluded
+                (item ?x)
+                (not (exclude ?x))
+                =>
+                (printout t ?x))",
+        );
+
+        assert_facts_into_rete(
+            &mut engine,
+            "(assert (item alice)) (assert (item bob))",
+        );
+        assert_eq!(
+            engine.rete.agenda.len(),
+            2,
+            "Both items should fire with no excludes"
+        );
+
+        // Exclude alice specifically
+        let exc_fids = assert_facts_into_rete(&mut engine, "(assert (exclude alice))");
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "Only bob should remain active"
+        );
+        assert_rete_consistent(engine.rete());
+
+        // Retract exclude
+        retract_from_rete(&mut engine, exc_fids[0]);
+        assert_eq!(
+            engine.rete.agenda.len(),
+            2,
+            "Both items should be active again"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn negative_rule_non_matching_exclude_doesnt_block() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"(defrule not-excluded
+                (item ?x)
+                (not (exclude ?x))
+                =>
+                (printout t ?x))",
+        );
+
+        assert_facts_into_rete(&mut engine, "(assert (item alice))");
+        assert_eq!(engine.rete.agenda.len(), 1);
+
+        // Exclude charlie (not alice) — shouldn't block
+        assert_facts_into_rete(&mut engine, "(assert (exclude charlie))");
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "Non-matching exclude should not block alice"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn negative_rule_multiple_blockers_need_all_retracted() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            "(defrule safe (item ?x) (not (danger)) => (printout t safe))",
+        );
+
+        // Two blocking facts
+        let d1 = assert_facts_into_rete(&mut engine, "(assert (danger))");
+        let d2 = assert_facts_into_rete(&mut engine, "(assert (danger))");
+
+        assert_facts_into_rete(&mut engine, "(assert (item lamp))");
+        assert_eq!(engine.rete.agenda.len(), 0, "Both block");
+
+        // Remove first — still blocked
+        retract_from_rete(&mut engine, d1[0]);
+        assert_eq!(engine.rete.agenda.len(), 0, "Still blocked by second");
+
+        // Remove second — now unblocked
+        retract_from_rete(&mut engine, d2[0]);
+        assert_eq!(engine.rete.agenda.len(), 1, "Now unblocked");
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn negative_rule_retract_positive_cleans_up() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            "(defrule safe (item ?x) (not (danger)) => (printout t safe))",
+        );
+
+        let items = assert_facts_into_rete(&mut engine, "(assert (item lamp))");
+        assert_eq!(engine.rete.agenda.len(), 1);
+
+        // Retract the positive fact
+        retract_from_rete(&mut engine, items[0]);
+        assert_rete_clean(engine.rete());
+    }
+
+    // -----------------------------------------------------------------------
     // Planned test areas for later passes:
     // -----------------------------------------------------------------------
-    // - negative pattern behavior under assert/retract
     // - NCC behavior under conjunction match/unmatch
     // - exists behavior under support add/remove
     // - agenda strategy ordering in multi-rule programs
