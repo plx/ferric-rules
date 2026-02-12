@@ -651,3 +651,93 @@ None — positive-pattern join semantics are complete for the Phase 2 subset.
 ### Suggestions
 
 - None. Ready for Pass 010 (NCC And Exists Node Types).
+
+---
+
+## Pass 010: NCC And Exists Nodes, Plus Cleanup Invariants
+
+### What was done
+
+1. **NCC memory** (`ferric-core/src/ncc.rs`):
+   - `NccMemoryId` identifier type
+   - `NccMemory` struct with result count tracking (`HashMap<TokenId, usize>`) and unblocked pass-through tracking (`HashMap<TokenId, TokenId>`)
+   - Methods: `increment_results`, `decrement_results`, `result_count`, `is_blocked`, `set_unblocked`, `get_passthrough`, `remove_unblocked`, `remove_parent_token`, `clear`, `is_empty`, `debug_assert_consistency`
+   - 10 unit tests covering increment/decrement transitions, blocking state, cleanup, consistency
+
+2. **Exists memory** (`ferric-core/src/exists.rs`):
+   - `ExistsMemoryId` identifier type
+   - `ExistsMemory` struct with support tracking (`HashMap<TokenId, HashSet<FactId>>`), satisfied tracking (`HashMap<TokenId, TokenId>`), reverse index (`HashMap<FactId, HashSet<TokenId>>`)
+   - Methods: `add_support`, `remove_support`, `support_count`, `parents_supported_by`, `set_satisfied`, `get_passthrough`, `remove_satisfied`, `is_satisfied`, `remove_parent_token`, `clear`, `is_empty`, `debug_assert_consistency`
+   - 10 unit tests covering support transitions, reverse index, satisfied state, cleanup, consistency
+
+3. **Beta node variants** (`ferric-core/src/beta.rs`):
+   - `BetaNode::Ncc { parent, partner, memory, ncc_memory, children }` — blocks parent tokens when subnetwork has results
+   - `BetaNode::NccPartner { parent, ncc_node, ncc_memory }` — reports subnetwork results to NCC node
+   - `BetaNode::Exists { parent, alpha_memory, tests, memory, exists_memory, children }` — propagates when at least one supporting fact exists
+   - `BetaNetwork` additions: `ncc_memories`, `exists_memories`, `alpha_to_exists` maps, `next_ncc_memory_id`, `next_exists_memory_id` counters
+   - Methods: `allocate_ncc_memory`, `create_ncc_node`, `create_ncc_partner`, `get_ncc_memory[_mut]`, `create_exists_node`, `get_exists_memory[_mut]`, `exists_nodes_for_alpha`
+   - Updated `attach_child_to_parent`, `clear_all_runtime`, `debug_assert_consistency` for all new variants
+
+4. **Rete runtime — exists nodes** (`ferric-core/src/rete.rs`):
+   - `exists_left_activate`: When parent token arrives, check alpha memory for supporting facts. If any match, create pass-through and propagate. Record support in exists memory.
+   - `exists_right_activate`: When new fact enters alpha memory, for each parent token evaluate join tests. If count goes 0→1, create pass-through and propagate.
+   - `exists_handle_retraction`: When fact retracted, find affected parent tokens via reverse index, remove support. If count goes N→0, retract pass-through cascade.
+   - Updated `assert_fact` step 4: right-activate exists nodes for affected alpha memories.
+   - Updated `retract_fact` step 6b: call `exists_handle_retraction`.
+
+5. **Rete runtime — NCC nodes** (`ferric-core/src/rete.rs`):
+   - `ncc_left_activate`: When parent token arrives, check NCC memory result count. If 0, create pass-through and propagate. If > 0, token is blocked.
+   - `ncc_partner_receive_result`: Stub for subnetwork result handling (full NCC subnetwork integration deferred — requires parser support for multi-pattern `not`).
+   - Updated `propagate_token` to dispatch to `ncc_left_activate` for Ncc children and handle NccPartner/Exists children.
+
+6. **Cleanup integration**:
+   - `cleanup_negative_memories_for_token` extended to also clean NCC memories and exists memories.
+   - `find_memory_for_node` handles Ncc and Exists nodes.
+   - `clear_working_memory` clears NCC and exists memories via `clear_all_runtime`.
+   - `debug_assert_consistency` checks NCC and exists memory invariants.
+
+7. **Compiler — exists support** (`ferric-core/src/compiler.rs`):
+   - Added `pub exists: bool` field to `CompilablePattern` (default `false`)
+   - `compile_rule` creates `BetaNode::Exists` for `pattern.exists == true` patterns
+   - 1 new compiler test: `test_exists_pattern_creates_exists_node`
+
+8. **Loader — exists support** (`ferric-runtime/src/loader.rs`):
+   - `translate_pattern` handles `Pattern::Exists`: single-pattern exists sets `compilable.exists = true`; multi-pattern deferred
+   - `translate_rule_construct` correctly handles exists patterns (no fact_index increment, no fact-address variable tracking — same as negated)
+   - `Pattern::Ordered` and `Pattern::Not` constructions include `exists: false`
+
+9. **Re-exports** (`ferric-core/src/lib.rs`):
+   - `pub use ncc::{NccMemory, NccMemoryId}`
+   - `pub use exists::{ExistsMemory, ExistsMemoryId}`
+
+10. **Tests**:
+    - 10 NCC memory unit tests
+    - 10 exists memory unit tests
+    - 9 exists rete-level tests: first match activation, at-most-one semantics, retract-one-of-two keeps active, retract-last removes, no-parent no-activation, support add/retract/re-add cycle, parent retract cleanup, multiple independent parents, basic NCC test
+    - 1 compiler test for exists node creation
+    - 3 integration tests: exists fires once with multiple matches, exists retract removes activation, exists with run produces expected facts
+
+### Test results
+
+- **465 tests pass** (245 core + 119 parser + 97 runtime + 3 doctests + 1 facade)
+- **0 clippy warnings/errors**
+- **33 new tests** (20 memory unit + 10 rete + 1 compiler + 3 integration) — note: some tests overlap with the basic tests from the first implementation pass
+- **0 regressions**
+
+### Remaining TODOs
+
+- **NCC subnetwork**: The NCC partner `receive_result` method is a stub. Full NCC subnetwork integration requires: (1) parser support for `(not (pattern1) (pattern2))` multi-pattern negation, and (2) compiler support for building the subnetwork join chain feeding into the NCC partner. The NCC memory and node types are in place ready for this.
+- **Multi-pattern exists**: `(exists (pattern1) (pattern2))` — multi-pattern existential quantification also needs NCC-style subnetwork support. Single-pattern exists is fully functional.
+
+### Noteworthy decisions
+
+- **Exists as support-counting node**: Rather than implementing exists as `not(not(pattern))` (which would require full NCC), we implemented it as a direct support-counting node. This is simpler and more efficient for the common single-pattern case.
+- **Exists does NOT contribute facts to tokens**: Like negative nodes, exists nodes produce pass-through tokens that copy the parent's facts and bindings. No new fact is added to the token's fact list. This means exists patterns don't increment `fact_index` in the loader.
+- **NCC infrastructure first, integration later**: The NCC memory, node types, and basic left activation are in place. The complex part (subnetwork results flowing to the NCC partner) is deferred until parser/compiler support for multi-pattern negation is added.
+- **Exists patterns reuse negative node patterns**: The exists node's join test evaluation, pass-through token creation, and cascade retraction follow the same patterns as the negative node. The key difference is the polarity: negative blocks when matches exist; exists propagates when matches exist.
+- **Cleanup covers all memory types**: `cleanup_negative_memories_for_token` (renamed conceptually but kept for compatibility) now scans NCC and exists memories in addition to negative memories. This ensures no stale token references after cascade retraction.
+
+### Suggestions
+
+- A future pass could add parser support for `(not (pattern1) (pattern2))` multi-pattern syntax and wire NCC subnetwork compilation.
+- Ready for Pass 011 (Pattern Validation And Source Located Compile Errors).

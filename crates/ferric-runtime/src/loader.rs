@@ -518,11 +518,11 @@ impl Engine {
 
             if let Some(compilable) = self.translate_pattern(pattern)? {
                 if let Some(name) = var_name {
-                    if !is_negated {
+                    if !is_negated && !compilable.exists {
                         fact_address_vars.insert(name, fact_index);
                     }
                 }
-                if !compilable.negated {
+                if !compilable.negated && !compilable.exists {
                     fact_index += 1;
                 }
                 patterns.push(compilable);
@@ -568,6 +568,7 @@ impl Engine {
                     constant_tests,
                     variable_slots,
                     negated: false,
+                    exists: false,
                 }))
             }
             Pattern::Assigned { pattern, .. } => {
@@ -583,8 +584,22 @@ impl Engine {
                     Ok(None)
                 }
             }
-            // Test, Exists, Template patterns are not yet compiled (later passes)
-            _ => Ok(None),
+            Pattern::Exists(patterns, _span) => {
+                // For single-pattern exists, compile as an exists pattern
+                if patterns.len() == 1 {
+                    if let Some(mut compilable) = self.translate_pattern(&patterns[0])? {
+                        compilable.exists = true;
+                        Ok(Some(compilable))
+                    } else {
+                        Ok(None)
+                    }
+                } else {
+                    // Multi-pattern exists is deferred (would need NCC subnetwork)
+                    Ok(None)
+                }
+            }
+            // Test and Template patterns are not yet compiled
+            Pattern::Test(..) | Pattern::Template(..) => Ok(None),
         }
     }
 

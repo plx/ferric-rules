@@ -34,6 +34,9 @@ pub struct CompilablePattern {
     /// If true, this pattern is a negated conditional element (not CE).
     /// Negated patterns create negative nodes instead of join nodes.
     pub negated: bool,
+    /// If true, this pattern is an exists conditional element.
+    /// Exists patterns create exists nodes that produce at most one activation.
+    pub exists: bool,
 }
 
 /// Result of compiling a rule.
@@ -149,6 +152,11 @@ impl ReteCompiler {
                 let (neg_id, _beta_mem, _neg_mem) =
                     rete.beta.create_negative_node(current_parent, alpha_mem, join_tests);
                 current_parent = neg_id;
+            } else if pattern.exists {
+                // Exists pattern → create exists node
+                let (exists_id, _beta_mem, _exists_mem) =
+                    rete.beta.create_exists_node(current_parent, alpha_mem, join_tests);
+                current_parent = exists_id;
             } else {
                 // Positive pattern → create join node
                 let (join_id, _beta_mem) = rete.beta.create_join_node(
@@ -272,6 +280,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![],
             negated: false,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -314,6 +323,7 @@ mod tests {
             constant_tests: vec![test],
             variable_slots: vec![],
             negated: false,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -347,6 +357,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
             negated: false,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -388,6 +399,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
             negated: false,
+            exists: false,
         };
 
         let pattern2 = CompilablePattern {
@@ -395,6 +407,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
             negated: false,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -432,6 +445,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
             negated: false,
+            exists: false,
         };
 
         let pattern2 = CompilablePattern {
@@ -439,6 +453,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_y)],
             negated: false,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -466,6 +481,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![],
             negated: false,
+            exists: false,
         };
 
         // Compile first rule
@@ -504,6 +520,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![],
             negated: false,
+            exists: false,
         };
 
         let pattern2 = CompilablePattern {
@@ -511,6 +528,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![],
             negated: false,
+            exists: false,
         };
 
         // Compile first rule
@@ -549,6 +567,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
             negated: false,
+            exists: false,
         };
 
         let rule_id = compiler.allocate_rule_id();
@@ -597,6 +616,7 @@ mod tests {
             constant_tests: vec![test1, test2],
             variable_slots: vec![],
             negated: false,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -632,6 +652,7 @@ mod tests {
             constant_tests: vec![test],
             variable_slots: vec![],
             negated: false,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -665,6 +686,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
             negated: false,
+            exists: false,
         };
 
         let pattern2 = CompilablePattern {
@@ -672,6 +694,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
             negated: false,
+            exists: false,
         };
 
         let pattern3 = CompilablePattern {
@@ -679,6 +702,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
             negated: false,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -715,6 +739,7 @@ mod tests {
             constant_tests: vec![test],
             variable_slots: vec![],
             negated: false,
+            exists: false,
         };
 
         // Compile first rule
@@ -758,6 +783,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Template(0), var_x)],
             negated: false,
+            exists: false,
         };
 
         let pattern2 = CompilablePattern {
@@ -768,6 +794,7 @@ mod tests {
                 (SlotIndex::Template(1), var_y),
             ],
             negated: false,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -813,6 +840,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![],
             negated: false,
+            exists: false,
         };
 
         let negated_pattern = CompilablePattern {
@@ -820,6 +848,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![],
             negated: true,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -863,6 +892,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
             negated: false,
+            exists: false,
         };
 
         let pattern2 = CompilablePattern {
@@ -870,6 +900,7 @@ mod tests {
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
             negated: true,
+            exists: false,
         };
 
         let rule = CompilableRule {
@@ -896,6 +927,53 @@ mod tests {
                     "Negated pattern should have one join test for ?x"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_exists_pattern_creates_exists_node() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut table = new_table();
+
+        let trigger_rel = intern(&mut table, "trigger");
+        let person_rel = intern(&mut table, "person");
+        let rule_id = compiler.allocate_rule_id();
+
+        let pattern1 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(trigger_rel),
+            constant_tests: vec![],
+            variable_slots: vec![],
+            negated: false,
+            exists: false,
+        };
+
+        let pattern2 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(person_rel),
+            constant_tests: vec![],
+            variable_slots: vec![],
+            negated: false,
+            exists: true,
+        };
+
+        let rule = CompilableRule {
+            rule_id,
+            salience: 0,
+            patterns: vec![pattern1, pattern2],
+        };
+
+        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+
+        // Walk up from terminal: terminal's parent should be an Exists node
+        let terminal = rete.beta.get_node(result.terminal_node).unwrap();
+        if let BetaNode::Terminal { parent, .. } = terminal {
+            let parent_node = rete.beta.get_node(*parent).unwrap();
+            assert!(
+                matches!(parent_node, BetaNode::Exists { .. }),
+                "Parent of terminal should be an Exists node, got {parent_node:?}"
+            );
+        } else {
+            panic!("Expected terminal node");
         }
     }
 }

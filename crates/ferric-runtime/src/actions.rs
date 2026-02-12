@@ -363,6 +363,6 @@ mod tests {
     #[test]
     fn action_error_unbound_variable() {
         let err = ActionError::UnboundVariable("x".to_string());
-        assert!(format!("{err}").contains("x"));
+        assert!(format!("{err}").contains('x'));
     }
 }

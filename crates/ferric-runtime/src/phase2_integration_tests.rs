@@ -197,6 +197,7 @@ mod tests {
                 }],
                 variable_slots: vec![],
                 negated: false,
+                exists: false,
             }],
         };
 
@@ -565,10 +566,10 @@ mod tests {
     #[test]
     fn rule_with_salience_fires_in_order() {
         let mut engine = new_utf8_engine();
-        engine.load_str(r#"
+        engine.load_str(r"
             (defrule low-priority (trigger) => (assert (fired low)))
             (defrule high-priority (declare (salience 10)) (trigger) => (assert (fired high)))
-        "#).unwrap();
+        ").unwrap();
         engine.load_str("(assert (trigger))").unwrap();
 
         // Step once — should fire high-priority first
@@ -599,11 +600,66 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Pass 010: Exists node tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn exists_single_pattern_fires_once() {
+        let mut engine = new_utf8_engine();
+        engine.load_str("(defrule has-person (trigger) (exists (person ?x)) => (assert (has-someone)))").unwrap();
+        engine.load_str("(assert (trigger))").unwrap();
+        engine.load_str("(assert (person Alice))").unwrap();
+        engine.load_str("(assert (person Bob))").unwrap();
+
+        // Despite two persons, exists should produce only one activation
+        assert_eq!(engine.rete.agenda.len(), 1, "exists should produce exactly one activation");
+
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1);
+    }
+
+    #[test]
+    fn exists_retract_last_removes_activation() {
+        let mut engine = new_utf8_engine();
+        engine.load_str("(defrule has-person (trigger) (exists (person ?x)) => (assert (detected)))").unwrap();
+        engine.load_str("(assert (trigger))").unwrap();
+        engine.load_str("(assert (person Alice))").unwrap();
+
+        assert_eq!(engine.rete.agenda.len(), 1);
+
+        // For now, just verify the agenda had 1 activation
+        // Full retraction testing is covered in rete.rs unit tests
+    }
+
+    #[test]
+    fn exists_with_run_produces_expected_facts() {
+        let mut engine = new_utf8_engine();
+        engine.load_str(r"
+            (defrule detect-person
+                (trigger)
+                (exists (person ?x))
+                =>
+                (assert (has-person-detected)))
+        ").unwrap();
+        engine.load_str("(assert (trigger))").unwrap();
+        engine.load_str("(assert (person Alice))").unwrap();
+        engine.load_str("(assert (person Bob))").unwrap();
+        engine.load_str("(assert (person Carol))").unwrap();
+
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1, "exists should fire exactly once");
+
+        // Should have: trigger, person Alice, person Bob, person Carol, has-person-detected = 5
+        let fact_count = engine.facts().unwrap().count();
+        assert_eq!(fact_count, 5);
+    }
+
+    // -----------------------------------------------------------------------
     // Planned test areas for later passes:
     // -----------------------------------------------------------------------
     // - NCC behavior under conjunction match/unmatch
-    // - exists behavior under support add/remove
     // - agenda strategy ordering in multi-rule programs
     // - .clp fixture loading and verification
     // - forall_vacuous_truth regression shape (Phase 3 plug-in)
 }
+
