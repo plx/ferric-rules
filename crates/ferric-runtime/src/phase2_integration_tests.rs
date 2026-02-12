@@ -655,11 +655,128 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Pass 011: Pattern validation and source-located compile errors
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn triple_nested_not_fails_validation() {
+        let mut engine = new_utf8_engine();
+        let result = engine.load_str("(defrule r (a) (not (not (not (b)))) => )");
+
+        assert!(result.is_err(), "triple-nested not should fail validation");
+        let errs = result.unwrap_err();
+        assert_eq!(errs.len(), 1);
+
+        if let crate::loader::LoadError::Validation(validation_errors) = &errs[0] {
+            assert_eq!(validation_errors.len(), 1);
+            assert_eq!(validation_errors[0].code, "E0001");
+        } else {
+            panic!("Expected LoadError::Validation, got {:?}", errs[0]);
+        }
+    }
+
+    #[test]
+    fn exists_containing_not_fails_validation() {
+        let mut engine = new_utf8_engine();
+        let result = engine.load_str("(defrule r (a) (exists (not (b))) => )");
+
+        assert!(result.is_err(), "exists containing not should fail validation");
+        let errs = result.unwrap_err();
+        assert_eq!(errs.len(), 1);
+
+        if let crate::loader::LoadError::Validation(validation_errors) = &errs[0] {
+            assert_eq!(validation_errors.len(), 1);
+            assert_eq!(validation_errors[0].code, "E0005");
+        } else {
+            panic!("Expected LoadError::Validation, got {:?}", errs[0]);
+        }
+    }
+
+    #[test]
+    fn valid_not_exists_passes() {
+        let mut engine = new_utf8_engine();
+        let result = engine.load_str("(defrule r (a) (not (exists (b))) => )");
+
+        assert!(result.is_ok(), "not-exists combination should pass validation");
+    }
+
+    #[test]
+    fn double_nested_not_passes() {
+        let mut engine = new_utf8_engine();
+        let result = engine.load_str("(defrule r (a) (not (not (b))) => )");
+
+        assert!(result.is_ok(), "double-nested not (depth 2) should pass validation");
+    }
+
+    #[test]
+    fn single_not_passes() {
+        let mut engine = new_utf8_engine();
+        let result = engine.load_str("(defrule r (a) (not (b)) => )");
+
+        assert!(result.is_ok(), "single not should pass validation");
+    }
+
+    #[test]
+    fn single_exists_passes() {
+        let mut engine = new_utf8_engine();
+        let result = engine.load_str("(defrule r (a) (exists (b)) => )");
+
+        assert!(result.is_ok(), "single exists should pass validation");
+    }
+
+    // -----------------------------------------------------------------------
     // Planned test areas for later passes:
     // -----------------------------------------------------------------------
     // - NCC behavior under conjunction match/unmatch
     // - agenda strategy ordering in multi-rule programs
     // - .clp fixture loading and verification
-    // - forall_vacuous_truth regression shape (Phase 3 plug-in)
+
+    // Phase 3 forall regression contract (per Section 7.5 of implementation plan):
+    // This test will be enabled once forall CE is implemented.
+    //
+    // #[test]
+    // fn forall_vacuous_truth_and_retraction_cycle() {
+    //     let mut engine = new_utf8_engine();
+    //
+    //     // Step 1: Load rule with forall CE
+    //     engine.load_str(r"
+    //         (defrule all-checked
+    //             (forall (item ?id) (checked ?id))
+    //             =>
+    //             (assert (all-complete)))
+    //     ").unwrap();
+    //
+    //     // Step 2: Empty working memory → forall is vacuously true → rule fires
+    //     let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+    //     assert_eq!(result.rules_fired, 1, "forall should be vacuously true with no items");
+    //
+    //     // Step 3: Assert (item 1) → forall unsatisfied
+    //     engine.load_str("(assert (item 1))").unwrap();
+    //     let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+    //     assert_eq!(result.rules_fired, 0, "forall should be unsatisfied with unchecked item");
+    //
+    //     // Step 4: Assert (checked 1) → forall satisfied again → rule fires
+    //     engine.load_str("(assert (checked 1))").unwrap();
+    //     let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+    //     assert_eq!(result.rules_fired, 1, "forall should fire when all items are checked");
+    //
+    //     // Step 5: Retract (checked 1) → forall unsatisfied
+    //     let checked_fid = engine.facts().unwrap()
+    //         .find(|(_, f)| matches!(f, ferric_core::Fact::Ordered(of) if of.relation == "checked"))
+    //         .map(|(fid, _)| fid)
+    //         .unwrap();
+    //     engine.retract(checked_fid).unwrap();
+    //     let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+    //     assert_eq!(result.rules_fired, 0, "forall should be unsatisfied after retraction");
+    //
+    //     // Step 6: Retract (item 1) → forall vacuously true again
+    //     let item_fid = engine.facts().unwrap()
+    //         .find(|(_, f)| matches!(f, ferric_core::Fact::Ordered(of) if of.relation == "item"))
+    //         .map(|(fid, _)| fid)
+    //         .unwrap();
+    //     engine.retract(item_fid).unwrap();
+    //     let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+    //     assert_eq!(result.rules_fired, 1, "forall should be vacuously true again with no items");
+    // }
 }
 

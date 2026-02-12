@@ -741,3 +741,75 @@ None — positive-pattern join semantics are complete for the Phase 2 subset.
 
 - A future pass could add parser support for `(not (pattern1) (pattern2))` multi-pattern syntax and wire NCC subnetwork compilation.
 - Ready for Pass 011 (Pattern Validation And Source Located Compile Errors).
+
+---
+
+## Pass 011: Pattern Validation And Source-Located Compile Errors
+
+### What was done
+
+1. **Validation types** (`ferric-core/src/validation.rs`):
+   - `SourceLocation` struct: simple source location (line, column, end_line, end_column) independent of parser crate
+   - `ValidationStage` enum: `AstInterpretation`, `ReteCompilation`
+   - `PatternViolation` enum with 5 stable error codes:
+     - E0001: `NestingTooDeep { depth, max }` — nesting exceeds limit
+     - E0002: `ForallConditionNotSinglePattern` — forall condition must be single fact pattern (Phase 3)
+     - E0003: `NestedForall` — forall cannot be nested (Phase 3)
+     - E0004: `ForallUnboundVariable { var_name }` — unbound variable in forall then clause (Phase 3)
+     - E0005: `UnsupportedNestingCombination { description }` — e.g., `(exists (not ...))`
+   - `PatternValidationError` struct: code, kind, location, stage, suggestion
+   - Helper methods: `code()`, `suggestion()` on `PatternViolation`; `new()` on `PatternValidationError`
+   - `Display` and `Error` trait implementations with full formatting
+   - 9 unit tests covering all violation types and display formatting
+
+2. **Compiler error variant** (`ferric-core/src/compiler.rs`):
+   - Added `CompileError::Validation(Vec<PatternValidationError>)` variant
+
+3. **Pattern validation in loader** (`ferric-runtime/src/loader.rs`):
+   - `validate_rule_patterns(patterns, max_nesting_depth)`: top-level validation entry point
+   - `validate_pattern_recursive(pattern, depth, max_depth, errors)`: recursive walker
+   - `span_to_source_location(span)`: converter from parser `Span` to core `SourceLocation`
+   - Validation integrated into `compile_rule_construct()` before pattern translation
+   - `LoadError::Validation(Vec<PatternValidationError>)` variant added
+   - Validation rules enforced:
+     - E0001: `not`/`exists` nesting depth > 2
+     - E0005: `exists` containing `not` as a direct child
+
+4. **Re-exports** (`ferric-core/src/lib.rs`):
+   - `pub use validation::{PatternValidationError, PatternViolation, SourceLocation, ValidationStage}`
+
+5. **Integration tests** (`ferric-runtime/src/phase2_integration_tests.rs`):
+   - `triple_nested_not_fails_validation`: `(not (not (not (b))))` → E0001
+   - `exists_containing_not_fails_validation`: `(exists (not (b)))` → E0005
+   - `valid_not_exists_passes`: `(not (exists (b)))` accepted (depth 2, within limit)
+   - `double_nested_not_passes`: `(not (not (b)))` accepted (depth 2, within limit)
+   - `single_not_passes`: basic negation accepted
+   - `single_exists_passes`: basic exists accepted
+
+6. **Forall regression fixture** (`tests/fixtures/forall_vacuous_truth.clp`):
+   - Commented-out forall rule with documented expected 5-step behavior
+   - Corresponding commented-out test contract in `phase2_integration_tests.rs`
+
+### Test results
+
+- **482 tests pass** (256 core + 119 parser + 103 runtime + 3 doctests + 1 facade)
+- **0 clippy warnings**
+- **15 new tests** (9 validation unit + 6 integration)
+- **0 regressions**
+
+### Remaining TODOs
+
+- Forall-related error codes (E0002, E0003, E0004) are defined but not triggered — forall CE is Phase 3 scope. The types and codes are stable and ready.
+- Multi-pattern `not` (NCC) validation is not yet needed since the parser doesn't yet support `(not (pattern1) (pattern2))` multi-pattern syntax.
+
+### Noteworthy decisions
+
+- **Type separation**: Validation error types live in `ferric-core` using `SourceLocation` (not parser's `Span`) to avoid a dependency from core to parser. The runtime layer converts `Span` → `SourceLocation` when building errors.
+- **Validation timing**: Validation runs in `compile_rule_construct()` BEFORE pattern translation, ensuring invalid rules never reach rete node construction.
+- **Nesting depth limit of 2**: Default matches the implementation plan. `(not (not (fact)))` and `(not (exists (fact)))` are allowed; `(not (not (not (fact))))` is not.
+- **`exists(not(...))` is E0005, not E0001**: Even though it's technically within the depth limit, `(exists (not ...))` is flagged as an unsupported combination because it can't be correctly implemented (exists semantics require the inner pattern to be positive).
+- **Error code policy**: E0001-E0005 are defined upfront as stable, append-only codes per the plan. New validation rules in future passes will receive E0006+.
+
+### Suggestions
+
+- None. Ready for Pass 012 (Phase 2 Integration And Exit Validation).

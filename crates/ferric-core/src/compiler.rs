@@ -57,6 +57,8 @@ pub enum CompileError {
     EmptyRule,
     #[error("too many variables in rule (limit: 65536)")]
     VarMapOverflow,
+    #[error("pattern validation failed")]
+    Validation(Vec<crate::validation::PatternValidationError>),
 }
 
 /// Canonical key for alpha network paths, used for node sharing.
