@@ -137,14 +137,21 @@ impl ReteNetwork {
             return;
         };
 
-        let (parent_id, tests, join_memory_id, children) = match join_node {
+        let (parent_id, tests, bindings, join_memory_id, children) = match join_node {
             BetaNode::Join {
                 parent,
                 tests,
+                bindings,
                 memory,
                 children,
                 ..
-            } => (*parent, tests.clone(), *memory, children.clone()),
+            } => (
+                *parent,
+                tests.clone(),
+                bindings.clone(),
+                *memory,
+                children.clone(),
+            ),
             _ => return,
         };
 
@@ -170,9 +177,18 @@ impl ReteNetwork {
             if evaluate_join(fact, None, &tests) {
                 let mut facts = SmallVec::new();
                 facts.push(fact_id);
+
+                // Extract bindings from the fact
+                let mut new_bindings = BindingSet::new();
+                for &(slot, var_id) in &bindings {
+                    if let Some(value) = get_slot_value(fact, slot) {
+                        new_bindings.set(var_id, std::rc::Rc::new(value.clone()));
+                    }
+                }
+
                 let new_token = Token {
                     facts,
-                    bindings: BindingSet::new(),
+                    bindings: new_bindings,
                     parent: None,
                     owner_node: join_node_id,
                 };
@@ -199,9 +215,17 @@ impl ReteNetwork {
                     let mut new_facts = parent_token.facts.clone();
                     new_facts.push(fact_id);
 
+                    // Clone parent bindings and add new bindings from this fact
+                    let mut new_bindings = parent_token.bindings.clone();
+                    for &(slot, var_id) in &bindings {
+                        if let Some(value) = get_slot_value(fact, slot) {
+                            new_bindings.set(var_id, std::rc::Rc::new(value.clone()));
+                        }
+                    }
+
                     let new_token = Token {
                         facts: new_facts,
-                        bindings: parent_token.bindings.clone(),
+                        bindings: new_bindings,
                         parent: Some(parent_token_id),
                         owner_node: join_node_id,
                     };
@@ -217,6 +241,102 @@ impl ReteNetwork {
                     self.propagate_token(token_id, &children, fact_base, new_activations);
                 }
             }
+        }
+    }
+
+    /// Perform a left activation on a join node.
+    ///
+    /// When a new token enters a join node's parent memory, this function:
+    /// 1. Gets all facts from the join's alpha memory
+    /// 2. For each fact, evaluates join tests against the parent token
+    /// 3. If tests pass, creates a new child token and propagates it
+    fn left_activate(
+        &mut self,
+        join_node_id: NodeId,
+        parent_token_id: TokenId,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
+    ) {
+        // 1. Get join node info
+        let Some(join_node) = self.beta.get_node(join_node_id) else {
+            return;
+        };
+
+        let (alpha_memory_id, tests, bindings, join_memory_id, children) = match join_node {
+            BetaNode::Join {
+                alpha_memory,
+                tests,
+                bindings,
+                memory,
+                children,
+                ..
+            } => (
+                *alpha_memory,
+                tests.clone(),
+                bindings.clone(),
+                *memory,
+                children.clone(),
+            ),
+            _ => return,
+        };
+
+        // 2. Get parent token data (clone what we need before mutation)
+        let Some(parent_token) = self.token_store.get(parent_token_id) else {
+            return;
+        };
+        let parent_facts = parent_token.facts.clone();
+        let parent_bindings = parent_token.bindings.clone();
+
+        // 3. Get all fact IDs from alpha memory (clone before mutation)
+        let Some(alpha_memory) = self.alpha.get_memory(alpha_memory_id) else {
+            return;
+        };
+        let fact_ids: Vec<FactId> = alpha_memory.iter().collect();
+
+        // 4. For each fact, try to join
+        for fact_id in fact_ids {
+            let Some(fact_entry) = fact_base.get(fact_id) else {
+                continue;
+            };
+            let fact = &fact_entry.fact;
+
+            // Get fresh parent token reference for each iteration
+            let Some(parent_token) = self.token_store.get(parent_token_id) else {
+                break;
+            };
+
+            // Evaluate join tests
+            if !evaluate_join(fact, Some(parent_token), &tests) {
+                continue;
+            }
+
+            // Tests passed: create child token
+            let mut new_facts = parent_facts.clone();
+            new_facts.push(fact_id);
+
+            let mut new_bindings = parent_bindings.clone();
+            for &(slot, var_id) in &bindings {
+                if let Some(value) = get_slot_value(fact, slot) {
+                    new_bindings.set(var_id, std::rc::Rc::new(value.clone()));
+                }
+            }
+
+            let new_token = Token {
+                facts: new_facts,
+                bindings: new_bindings,
+                parent: Some(parent_token_id),
+                owner_node: join_node_id,
+            };
+
+            let token_id = self.token_store.insert(new_token);
+
+            // Add to join's beta memory
+            if let Some(memory) = self.beta.get_memory_mut(join_memory_id) {
+                memory.insert(token_id);
+            }
+
+            // Propagate to children
+            self.propagate_token(token_id, &children, fact_base, new_activations);
         }
     }
 
@@ -275,9 +395,11 @@ impl ReteNetwork {
                     let act_id = self.agenda.add(activation);
                     new_activations.push(act_id);
                 }
-                BetaNode::Join { .. } | BetaNode::Root { .. } => {
-                    // Join nodes don't propagate tokens directly from parent.
-                    // They wait for right activation from alpha memories.
+                BetaNode::Join { .. } => {
+                    // Perform left activation: token enters as parent for this join
+                    self.left_activate(child_id, token_id, fact_base, new_activations);
+                }
+                BetaNode::Root { .. } => {
                     // Root nodes shouldn't be children.
                 }
             }
@@ -438,7 +560,7 @@ mod tests {
 
         // Beta: root -> join (no tests) -> terminal
         let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
+        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
         let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
@@ -496,7 +618,7 @@ mod tests {
         // Join1: match (person ?x) — no tests, but we'd need to bind ?x
         // For Phase 1 simplicity, we won't actually bind ?x here. We'll just
         // propagate the token. The join test will check slot equality.
-        let (join1_id, join1_mem_id) = rete.beta.create_join_node(root_id, alpha_mem1, vec![]);
+        let (join1_id, join1_mem_id) = rete.beta.create_join_node(root_id, alpha_mem1, vec![], vec![]);
 
         // Join2: match (age ?x 30) — test that age's field 0 equals person's field 0
         // This requires a join test: alpha_slot=Ordered(0), beta_var=VarId(0), Equal
@@ -518,7 +640,7 @@ mod tests {
         // For now, let's just test that a two-pattern rule produces one activation
         // when both facts are asserted. We'll skip the variable binding check.
 
-        let (join2_id, _join2_mem_id) = rete.beta.create_join_node(join1_id, alpha_mem2, vec![]);
+        let (join2_id, _join2_mem_id) = rete.beta.create_join_node(join1_id, alpha_mem2, vec![], vec![]);
 
         let rule_id = RuleId(2);
         let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id);
@@ -588,7 +710,7 @@ mod tests {
         let alpha_mem_id = rete.alpha.create_memory(entry_node);
 
         let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
+        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
         let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
@@ -635,7 +757,7 @@ mod tests {
         let alpha_mem_id = rete.alpha.create_memory(test_node);
 
         let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
+        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
         let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
@@ -675,7 +797,7 @@ mod tests {
         let alpha_mem_id = rete.alpha.create_memory(entry_node);
 
         let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
+        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
         let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
@@ -754,7 +876,7 @@ mod tests {
         let alpha_mem_id = rete.alpha.create_memory(test_node);
 
         let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
+        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
         let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
@@ -801,5 +923,343 @@ mod tests {
         // Verify clean state
         assert!(rete.agenda.is_empty());
         assert!(rete.token_store.is_empty());
+    }
+
+    #[test]
+    fn two_pattern_rule_with_variable_binding() {
+        use crate::binding::VarId;
+
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut symbol_table = SymbolTable::new();
+
+        let person = make_symbol(&mut symbol_table, "person");
+        let age = make_symbol(&mut symbol_table, "age");
+        let alice_val = Value::Symbol(make_symbol(&mut symbol_table, "alice"));
+        let bob_val = Value::Symbol(make_symbol(&mut symbol_table, "bob"));
+
+        // Build rule: (person ?x) (age ?x 30) => activation
+        // Pattern 1: (person ?x) — binds ?x to field 0
+        // Pattern 2: (age ?x 30) — field 0 must match ?x (join test), field 1 must equal 30 (constant test)
+
+        // Alpha network:
+        let entry1 = AlphaEntryType::OrderedRelation(person);
+        let entry_node1 = rete.alpha.create_entry_node(entry1);
+        let alpha_mem1 = rete.alpha.create_memory(entry_node1);
+
+        let entry2 = AlphaEntryType::OrderedRelation(age);
+        let entry_node2 = rete.alpha.create_entry_node(entry2);
+        let const_test = ConstantTest {
+            slot: SlotIndex::Ordered(1),
+            test_type: ConstantTestType::Equal(AtomKey::Integer(30)),
+        };
+        let test_node = rete
+            .alpha
+            .create_constant_test_node(entry_node2, const_test);
+        let alpha_mem2 = rete.alpha.create_memory(test_node);
+
+        // Beta network:
+        let root_id = rete.beta.root_id();
+
+        // Join1: match (person ?x) — bind ?x from field 0
+        let var_x = VarId(0);
+        let join1_bindings = vec![(SlotIndex::Ordered(0), var_x)];
+        let (join1_id, _join1_mem_id) =
+            rete.beta
+                .create_join_node(root_id, alpha_mem1, vec![], join1_bindings);
+
+        // Join2: match (age ?x 30) — test that age's field 0 equals ?x
+        let join2_tests = vec![JoinTest {
+            alpha_slot: SlotIndex::Ordered(0),
+            beta_var: var_x,
+            test_type: JoinTestType::Equal,
+        }];
+        let (join2_id, _join2_mem_id) =
+            rete.beta
+                .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
+
+        let rule_id = RuleId(42);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id);
+
+        // Assert facts
+        // (person alice) — should bind ?x to alice
+        let mut person_fields = SmallVec::new();
+        person_fields.push(alice_val.clone());
+        let person_fact_id = fact_base.assert_ordered(person, person_fields);
+        let person_fact = fact_base
+            .get(person_fact_id)
+            .expect("Fact should exist")
+            .fact
+            .clone();
+
+        // (age alice 30) — should match ?x = alice
+        let mut age_alice_fields = SmallVec::new();
+        age_alice_fields.push(alice_val.clone());
+        age_alice_fields.push(Value::Integer(30));
+        let age_alice_fact_id = fact_base.assert_ordered(age, age_alice_fields);
+        let age_alice_fact = fact_base
+            .get(age_alice_fact_id)
+            .expect("Fact should exist")
+            .fact
+            .clone();
+
+        // (age bob 30) — should NOT match because ?x is bound to alice
+        let mut age_bob_fields = SmallVec::new();
+        age_bob_fields.push(bob_val.clone());
+        age_bob_fields.push(Value::Integer(30));
+        let age_bob_fact_id = fact_base.assert_ordered(age, age_bob_fields);
+        let age_bob_fact = fact_base
+            .get(age_bob_fact_id)
+            .expect("Fact should exist")
+            .fact
+            .clone();
+
+        // Assert person fact — should create token in join1's memory with ?x = alice
+        let acts1 = rete.assert_fact(person_fact_id, &person_fact, &fact_base);
+        assert_eq!(acts1.len(), 0, "No activation yet, waiting for age fact");
+
+        // Assert age alice fact — should join with person token and create activation
+        let acts2 = rete.assert_fact(age_alice_fact_id, &age_alice_fact, &fact_base);
+        assert_eq!(
+            acts2.len(),
+            1,
+            "Should produce one activation for matching age"
+        );
+
+        // Assert age bob fact — should NOT produce activation (different ?x)
+        let acts3 = rete.assert_fact(age_bob_fact_id, &age_bob_fact, &fact_base);
+        assert_eq!(
+            acts3.len(),
+            0,
+            "Should not produce activation for non-matching age"
+        );
+
+        assert_eq!(rete.agenda.len(), 1, "Only one activation total");
+    }
+
+    #[test]
+    fn left_activation_with_reverse_assertion_order() {
+        use crate::binding::VarId;
+
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut symbol_table = SymbolTable::new();
+
+        let person = make_symbol(&mut symbol_table, "person");
+        let age = make_symbol(&mut symbol_table, "age");
+        let alice_val = Value::Symbol(make_symbol(&mut symbol_table, "alice"));
+
+        // Build rule: (person ?x) (age ?x 30) => activation
+
+        // Alpha network:
+        let entry1 = AlphaEntryType::OrderedRelation(person);
+        let entry_node1 = rete.alpha.create_entry_node(entry1);
+        let alpha_mem1 = rete.alpha.create_memory(entry_node1);
+
+        let entry2 = AlphaEntryType::OrderedRelation(age);
+        let entry_node2 = rete.alpha.create_entry_node(entry2);
+        let const_test = ConstantTest {
+            slot: SlotIndex::Ordered(1),
+            test_type: ConstantTestType::Equal(AtomKey::Integer(30)),
+        };
+        let test_node = rete
+            .alpha
+            .create_constant_test_node(entry_node2, const_test);
+        let alpha_mem2 = rete.alpha.create_memory(test_node);
+
+        // Beta network:
+        let root_id = rete.beta.root_id();
+
+        let var_x = VarId(0);
+        let join1_bindings = vec![(SlotIndex::Ordered(0), var_x)];
+        let (join1_id, _join1_mem_id) =
+            rete.beta
+                .create_join_node(root_id, alpha_mem1, vec![], join1_bindings);
+
+        let join2_tests = vec![JoinTest {
+            alpha_slot: SlotIndex::Ordered(0),
+            beta_var: var_x,
+            test_type: JoinTestType::Equal,
+        }];
+        let (join2_id, _join2_mem_id) =
+            rete.beta
+                .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
+
+        let rule_id = RuleId(42);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id);
+
+        // Assert facts IN REVERSE ORDER: age fact first, then person fact
+
+        // (age alice 30) — enters alpha memory, no parent tokens yet, no join
+        let mut age_fields = SmallVec::new();
+        age_fields.push(alice_val.clone());
+        age_fields.push(Value::Integer(30));
+        let age_fact_id = fact_base.assert_ordered(age, age_fields);
+        let age_fact = fact_base.get(age_fact_id).expect("Fact should exist");
+
+        let acts1 = rete.assert_fact(age_fact_id, &age_fact.fact, &fact_base);
+        assert_eq!(acts1.len(), 0, "No activation yet, age fact waiting");
+
+        // (person alice) — should create token in join1, then left-activate join2
+        let mut person_fields = SmallVec::new();
+        person_fields.push(alice_val.clone());
+        let person_fact_id = fact_base.assert_ordered(person, person_fields);
+        let person_fact = fact_base.get(person_fact_id).expect("Fact should exist");
+
+        let acts2 = rete.assert_fact(person_fact_id, &person_fact.fact, &fact_base);
+        assert_eq!(
+            acts2.len(),
+            1,
+            "Should produce activation via left activation"
+        );
+
+        assert_eq!(rete.agenda.len(), 1);
+    }
+
+    #[test]
+    fn binding_extraction_stores_correct_values() {
+        use crate::binding::VarId;
+
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut symbol_table = SymbolTable::new();
+
+        let person = make_symbol(&mut symbol_table, "person");
+        let alice_val = Value::Symbol(make_symbol(&mut symbol_table, "alice"));
+
+        // Build simple rule: (person ?x ?y) => activation
+        // Should bind ?x from field 0, ?y from field 1
+
+        let entry1 = AlphaEntryType::OrderedRelation(person);
+        let entry_node1 = rete.alpha.create_entry_node(entry1);
+        let alpha_mem1 = rete.alpha.create_memory(entry_node1);
+
+        let root_id = rete.beta.root_id();
+
+        let var_x = VarId(0);
+        let var_y = VarId(1);
+        let join1_bindings = vec![
+            (SlotIndex::Ordered(0), var_x),
+            (SlotIndex::Ordered(1), var_y),
+        ];
+        let (join1_id, join1_mem_id) =
+            rete.beta
+                .create_join_node(root_id, alpha_mem1, vec![], join1_bindings);
+
+        let rule_id = RuleId(1);
+        let _terminal_id = rete.beta.create_terminal_node(join1_id, rule_id);
+
+        // Assert (person alice 42)
+        let mut fields = SmallVec::new();
+        fields.push(alice_val.clone());
+        fields.push(Value::Integer(42));
+        let fact_id = fact_base.assert_ordered(person, fields);
+        let fact = fact_base.get(fact_id).expect("Fact should exist");
+
+        let acts = rete.assert_fact(fact_id, &fact.fact, &fact_base);
+        assert_eq!(acts.len(), 1);
+
+        // Get the token from join1's memory
+        let join1_memory = rete.beta.get_memory(join1_mem_id).expect("Memory exists");
+        assert_eq!(join1_memory.len(), 1);
+
+        let token_id = join1_memory.iter().next().expect("Token exists");
+        let token = rete.token_store.get(token_id).expect("Token should exist");
+
+        // Verify bindings
+        let x_binding = token.bindings.get(var_x).expect("?x should be bound");
+        let y_binding = token.bindings.get(var_y).expect("?y should be bound");
+
+        assert!(
+            matches!(**x_binding, Value::Symbol(_)),
+            "?x should be alice symbol"
+        );
+        assert!(
+            matches!(**y_binding, Value::Integer(42)),
+            "?y should be 42"
+        );
+    }
+
+    #[test]
+    fn retraction_with_variable_bindings() {
+        use crate::binding::VarId;
+
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut symbol_table = SymbolTable::new();
+
+        let person = make_symbol(&mut symbol_table, "person");
+        let age = make_symbol(&mut symbol_table, "age");
+        let alice_val = Value::Symbol(make_symbol(&mut symbol_table, "alice"));
+
+        // Build rule: (person ?x) (age ?x 30) => activation
+
+        let entry1 = AlphaEntryType::OrderedRelation(person);
+        let entry_node1 = rete.alpha.create_entry_node(entry1);
+        let alpha_mem1 = rete.alpha.create_memory(entry_node1);
+
+        let entry2 = AlphaEntryType::OrderedRelation(age);
+        let entry_node2 = rete.alpha.create_entry_node(entry2);
+        let const_test = ConstantTest {
+            slot: SlotIndex::Ordered(1),
+            test_type: ConstantTestType::Equal(AtomKey::Integer(30)),
+        };
+        let test_node = rete
+            .alpha
+            .create_constant_test_node(entry_node2, const_test);
+        let alpha_mem2 = rete.alpha.create_memory(test_node);
+
+        let root_id = rete.beta.root_id();
+
+        let var_x = VarId(0);
+        let join1_bindings = vec![(SlotIndex::Ordered(0), var_x)];
+        let (join1_id, _join1_mem_id) =
+            rete.beta
+                .create_join_node(root_id, alpha_mem1, vec![], join1_bindings);
+
+        let join2_tests = vec![JoinTest {
+            alpha_slot: SlotIndex::Ordered(0),
+            beta_var: var_x,
+            test_type: JoinTestType::Equal,
+        }];
+        let (join2_id, _join2_mem_id) =
+            rete.beta
+                .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
+
+        let rule_id = RuleId(1);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id);
+
+        // Assert facts
+        let mut person_fields = SmallVec::new();
+        person_fields.push(alice_val.clone());
+        let person_fact_id = fact_base.assert_ordered(person, person_fields);
+        let person_fact = fact_base
+            .get(person_fact_id)
+            .expect("Fact should exist")
+            .fact
+            .clone();
+
+        let mut age_fields = SmallVec::new();
+        age_fields.push(alice_val.clone());
+        age_fields.push(Value::Integer(30));
+        let age_fact_id = fact_base.assert_ordered(age, age_fields);
+        let age_fact = fact_base
+            .get(age_fact_id)
+            .expect("Fact should exist")
+            .fact
+            .clone();
+
+        rete.assert_fact(person_fact_id, &person_fact, &fact_base);
+        rete.assert_fact(age_fact_id, &age_fact, &fact_base);
+
+        assert_eq!(rete.agenda.len(), 1);
+        rete.debug_assert_consistency();
+
+        // Retract person fact
+        let removed = rete.retract_fact(person_fact_id, &person_fact);
+        assert_eq!(removed.len(), 1, "Should remove one activation");
+        assert!(rete.agenda.is_empty());
+        assert!(rete.token_store.is_empty());
+        rete.debug_assert_consistency();
     }
 }

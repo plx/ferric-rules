@@ -265,5 +265,59 @@ None — typed construct AST and full interpretation complete for defrule, defte
 
 ### Suggestions
 
-- Pass 005 (Join Binding Extraction) should add binding extraction during token creation in `right_activate`, enabling the multi-pattern join tests to verify correct filtering behavior.
+- ~~Pass 005 (Join Binding Extraction) should add binding extraction during token creation in `right_activate`.~~ Done in Pass 005.
 - A follow-up pass should fix the Stage 2 interpreter to handle bare connective sequences (`~`, `&`, `|` followed by operands) by looking ahead in the constraint atom list.
+
+---
+
+## Pass 005: Join Binding Extraction And Left Activation Completion
+
+### What was done
+
+1. **Binding field on join nodes** (`ferric-core/src/beta.rs`):
+   - Added `bindings: Vec<(SlotIndex, VarId)>` field to `BetaNode::Join`
+   - Updated `create_join_node` signature to accept bindings parameter
+   - All existing callers updated to pass `vec![]` where no bindings are needed
+
+2. **Compiler binding extraction** (`ferric-core/src/compiler.rs`):
+   - Modified compilation loop to distinguish new variables (→ binding extractions) from previously-bound variables (→ join tests)
+   - Binding extractions passed to `create_join_node` alongside join tests
+
+3. **Right activation binding extraction** (`ferric-core/src/rete.rs`):
+   - When creating tokens in `right_activate`, extract slot values from facts using the join node's `bindings` list
+   - Root-parent tokens get fresh `BindingSet` populated from fact slots
+   - Non-root tokens inherit parent bindings then add new extractions
+
+4. **Left activation** (`ferric-core/src/rete.rs`):
+   - Added `left_activate` method: when a parent token is propagated to a child join node, check all facts in the child's alpha memory against the token
+   - Updated `propagate_token` to call `left_activate` for child join nodes (previously skipped with "wait for right activation" comment)
+   - Left activation creates child tokens with inherited + new bindings, just like right activation
+
+5. **Test helper updates** (`ferric-runtime/src/test_helpers.rs`):
+   - All `build_*_rete` helpers updated for new `create_join_node` signature
+
+6. **New tests**:
+   - 4 rete tests: two-pattern binding extraction, left activation order independence, binding value verification, retraction correctness with bindings
+   - Updated Phase 2 integration test `multi_pattern_rule_compiles_into_join_chain` to verify actual join filtering (now passes: exactly 1 activation for alice→bob→carol chain)
+
+### Test results
+
+- **343 tests pass** (167 core + 115 parser + 57 runtime + 1 facade + 3 doctests)
+- **0 clippy warnings**
+- **4 new core rete tests** + 1 updated integration test
+- **0 regressions**
+
+### Remaining TODOs
+
+None — positive-pattern join semantics are complete for the Phase 2 subset.
+
+### Noteworthy decisions
+
+- Binding extractions are `Vec<(SlotIndex, VarId)>` on the join node itself, not in a separate data structure. This keeps binding metadata close to where it's used during token creation.
+- Left activation symmetry: left and right activation both produce the same tokens. The order of fact assertion doesn't affect the final activation set.
+- Borrow checker pattern: clone parent token data and collect alpha memory fact IDs before mutation loops to avoid aliasing issues.
+- `Rc<Value>` is used for binding values via `BindingSet::set(var_id, Rc::new(value.clone()))`, consistent with the Phase 1 `ValueRef = Rc<Value>` design.
+
+### Suggestions
+
+- None. Core positive-rule matching semantics are complete. Ready for Pass 006 (Negative Nodes).

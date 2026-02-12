@@ -76,7 +76,7 @@ pub fn build_single_pattern_rete(
     let alpha_mem_id = rete.alpha.create_memory(entry_node);
 
     let root_id = rete.beta.root_id();
-    let (join_id, _) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
+    let (join_id, _) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
     let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
 
     rete
@@ -101,7 +101,7 @@ pub fn build_constant_test_rete(
     let alpha_mem_id = rete.alpha.create_memory(test_node);
 
     let root_id = rete.beta.root_id();
-    let (join_id, _) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
+    let (join_id, _) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
     let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
 
     rete
@@ -143,10 +143,10 @@ pub fn build_two_pattern_rete(
     let root_id = rete.beta.root_id();
     let (join1_id, _) = rete
         .beta
-        .create_join_node(root_id, alpha_mem_1, vec![]);
+        .create_join_node(root_id, alpha_mem_1, vec![], vec![]);
     let (join2_id, _) = rete
         .beta
-        .create_join_node(join1_id, alpha_mem_2, vec![]);
+        .create_join_node(join1_id, alpha_mem_2, vec![], vec![]);
     let _terminal = rete.beta.create_terminal_node(join2_id, rule_id);
 
     TwoPatternRete {

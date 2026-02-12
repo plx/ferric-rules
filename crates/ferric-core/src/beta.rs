@@ -103,6 +103,7 @@ pub enum BetaNode {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
         tests: Vec<JoinTest>,
+        bindings: Vec<(SlotIndex, VarId)>,
         memory: BetaMemoryId,
         children: Vec<NodeId>,
     },
@@ -161,6 +162,7 @@ impl BetaNetwork {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
         tests: Vec<JoinTest>,
+        bindings: Vec<(SlotIndex, VarId)>,
     ) -> (NodeId, BetaMemoryId) {
         let node_id = NodeId(self.next_node_id);
         self.next_node_id += 1;
@@ -172,6 +174,7 @@ impl BetaNetwork {
             parent,
             alpha_memory,
             tests,
+            bindings,
             memory: memory_id,
             children: Vec::new(),
         };
@@ -412,7 +415,7 @@ mod tests {
             test_type: JoinTestType::Equal,
         }];
 
-        let (join_id, mem_id) = net.create_join_node(root, alpha_mem, tests.clone());
+        let (join_id, mem_id) = net.create_join_node(root, alpha_mem, tests.clone(), vec![]);
 
         // Verify join node was created
         let join_node = net.get_node(join_id).expect("Join node should exist");
@@ -420,6 +423,7 @@ mod tests {
             parent,
             alpha_memory,
             tests: node_tests,
+            bindings,
             memory,
             children,
         } = join_node
@@ -427,6 +431,7 @@ mod tests {
             assert_eq!(*parent, root);
             assert_eq!(*alpha_memory, alpha_mem);
             assert_eq!(node_tests, &tests);
+            assert!(bindings.is_empty(), "No bindings in this test");
             assert_eq!(*memory, mem_id);
             assert!(children.is_empty());
         } else {

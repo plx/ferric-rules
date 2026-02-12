@@ -114,6 +114,7 @@ impl ReteCompiler {
         for (i, pattern) in rule.patterns.iter().enumerate() {
             let alpha_mem = alpha_memories[i];
             let mut join_tests = Vec::new();
+            let mut binding_extractions = Vec::new();
             let mut new_bindings = Vec::new();
 
             for &(slot, var_sym) in &pattern.variable_slots {
@@ -129,6 +130,8 @@ impl ReteCompiler {
                         test_type: JoinTestType::Equal,
                     });
                 } else {
+                    // New variable → bind it from this fact
+                    binding_extractions.push((slot, var_id));
                     new_bindings.push(var_sym);
                 }
             }
@@ -136,9 +139,12 @@ impl ReteCompiler {
             // Add newly-bound variables to the tracking set
             bound_vars.extend(new_bindings);
 
-            let (join_id, _beta_mem) =
-                rete.beta
-                    .create_join_node(current_parent, alpha_mem, join_tests);
+            let (join_id, _beta_mem) = rete.beta.create_join_node(
+                current_parent,
+                alpha_mem,
+                join_tests,
+                binding_extractions,
+            );
             current_parent = join_id;
         }
 

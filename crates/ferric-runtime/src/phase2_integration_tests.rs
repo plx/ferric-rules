@@ -134,22 +134,29 @@ mod tests {
         let result = load_ok(&mut engine, source);
         assert_eq!(result.rules.len(), 1);
 
-        // Verify the rule compiled: assert a single fact and check
-        // it creates activations through the first join.
-        // Full variable-binding join tests (verifying ?y matches across
-        // patterns) will be tested in Pass 005 after join binding extraction
-        // is implemented.
-        let f1 = load_ok(&mut engine, "(assert (parent alice bob))");
-        let fid = f1.asserted_facts[0];
-        let fact = engine.fact_base.get(fid).unwrap().fact.clone();
-        let activations = engine.rete.assert_fact(fid, &fact, &engine.fact_base);
+        // Assert facts: (parent alice bob), (parent bob carol), (parent dan eve)
+        // Expected: 1 activation (alice→bob→carol chain)
+        let facts = load_ok(
+            &mut engine,
+            r"
+            (assert (parent alice bob))
+            (assert (parent bob carol))
+            (assert (parent dan eve))
+        ",
+        );
 
-        // The fact should reach the first join (for pattern 1: parent ?x ?y)
-        // and right-activate the second join (for pattern 2: parent ?y ?z).
-        // Without full binding extraction, the exact activation count depends
-        // on the Phase 1 join behavior. The key assertion is: no panic, rete
-        // is consistent.
-        let _ = activations; // activation count depends on binding extraction (Pass 005)
+        for &fid in &facts.asserted_facts {
+            let fact = engine.fact_base.get(fid).unwrap().fact.clone();
+            engine.rete.assert_fact(fid, &fact, &engine.fact_base);
+        }
+
+        // Only (parent alice bob) → (parent bob carol) should match
+        // (parent dan eve) doesn't connect, so no second activation
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "Should have exactly one activation for the alice→bob→carol chain"
+        );
         assert_rete_consistent(engine.rete());
     }
 
