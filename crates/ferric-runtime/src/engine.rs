@@ -19,9 +19,20 @@ use crate::config::EngineConfig;
 /// This is the main entry point for embedding applications. The engine is
 /// not `Send` or `Sync` — it must remain on the thread that created it.
 ///
-/// Phase 1 provides fact assertion and retraction, symbol interning, and
-/// string creation. Pattern matching, rules, and agenda will be added in
-/// later phases.
+/// ## Phase 1 API surface
+///
+/// - Fact assertion/retraction (`assert_ordered`, `assert`, `retract`)
+/// - Fact query (`get_fact`, `facts`)
+/// - Symbol interning and string creation
+/// - Source loading (`load_str`, `load_file`) — returns `RuleDef` placeholders
+/// - Thread affinity enforcement with `unsafe move_to_current_thread`
+///
+/// ## Phase 2 additions (planned)
+///
+/// - Rule compilation from Stage 2 AST into shared rete network
+/// - Execution loop (`run`, `step`, `halt`, `reset`)
+/// - RHS action execution (`assert`, `retract`, `modify`, `duplicate`)
+/// - Agenda conflict strategy selection
 pub struct Engine {
     pub(crate) fact_base: FactBase,
     pub(crate) symbol_table: SymbolTable,

@@ -286,9 +286,13 @@ impl ReteNetwork {
 
     /// Verify cross-structure consistency for the full rete network.
     ///
+    /// Checks all substructures and cross-structure invariants. Extended
+    /// incrementally as Phase 2 adds negative, NCC, and exists nodes.
+    ///
     /// Intended for use in tests and debug builds.
     #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
+        // --- Phase 1 substructure checks ---
         self.token_store.debug_assert_consistency();
         self.alpha.debug_assert_consistency();
         self.beta.debug_assert_consistency();
@@ -305,6 +309,36 @@ impl ReteNetwork {
                 }
             }
         }
+
+        // Cross-check: every token referenced by an agenda activation exists.
+        for activation in self.agenda.iter_activations() {
+            assert!(
+                self.token_store.get(activation.token).is_some(),
+                "activation for rule {:?} references non-existent token {:?}",
+                activation.rule,
+                activation.token
+            );
+        }
+
+        // --- Phase 2 extension points (filled in by later passes) ---
+
+        // Negative node checks (Pass 006):
+        // - Every blocker entry maps to an existing token.
+        // - Blocker counts match actual blockers for each parent token.
+        // - Blocked tokens have no downstream activations.
+
+        // NCC node checks (Pass 010):
+        // - NCC partner memory and result memory are consistent.
+        // - Conjunction sub-network cleanup leaves no orphaned tokens.
+
+        // Exists node checks (Pass 010):
+        // - Support count for each parent token matches actual supporting facts.
+        // - Tokens with zero support have no downstream activations.
+
+        // Agenda strategy checks (Pass 007):
+        // - All activations in the ordering are correctly sorted per the
+        //   active conflict resolution strategy.
+        // - No duplicate activations for the same (rule, token) pair.
     }
 }
 

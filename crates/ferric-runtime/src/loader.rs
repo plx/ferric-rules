@@ -44,7 +44,9 @@ pub enum LoadError {
 /// A minimal rule definition stored at S-expression level.
 ///
 /// This is Phase 1's placeholder for rules — it captures the raw S-expression
-/// structure without full Stage 2 parsing. Full rule compilation comes later.
+/// structure without full Stage 2 interpretation. Phase 2 replaces this with
+/// a Stage 2 AST that is compiled into the rete network. This type is retained
+/// for backward compatibility during the transition.
 #[derive(Clone, Debug)]
 pub struct RuleDef {
     /// Rule name

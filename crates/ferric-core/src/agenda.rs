@@ -174,6 +174,11 @@ impl Agenda {
         self.activations.get(id)
     }
 
+    /// Iterate over all activations.
+    pub fn iter_activations(&self) -> impl Iterator<Item = &Activation> {
+        self.activations.values()
+    }
+
     /// Verify internal consistency of agenda indices.
     ///
     /// Intended for use in tests and debug builds.
