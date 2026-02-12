@@ -1,0 +1,46 @@
+[workspace]
+members = [
+    "crates/ferric",
+    "crates/ferric-core",
+    "crates/ferric-parser",
+    "crates/ferric-runtime",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/prb/ferric-rules"
+
+[workspace.dependencies]
+# Error handling
+thiserror = "2"
+
+# Slot-based storage
+slotmap = "1"
+
+# Small inline vectors
+smallvec = "1"
+
+# Property-based testing
+proptest = "1"
+
+# Internal crates
+ferric = { path = "crates/ferric" }
+ferric-core = { path = "crates/ferric-core" }
+ferric-parser = { path = "crates/ferric-parser" }
+ferric-runtime = { path = "crates/ferric-runtime" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Allow common pedantic false-positives
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
