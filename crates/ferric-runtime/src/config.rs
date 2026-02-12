@@ -1,38 +1,49 @@
-//! Engine configuration types, focused on encoding mode for Phase 1.
+//! Engine configuration types.
 
-use ferric_core::StringEncoding;
+use ferric_core::{ConflictResolutionStrategy, StringEncoding};
 
-/// Engine configuration (Phase 1 subset — encoding mode only).
+/// Engine configuration.
 ///
-/// Additional fields will be added in later passes as engine capabilities expand.
+/// Includes encoding mode and conflict resolution strategy.
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
     pub string_encoding: StringEncoding,
+    pub strategy: ConflictResolutionStrategy,
 }
 
 impl EngineConfig {
-    /// CLIPS-compatible strict ASCII mode.
+    /// CLIPS-compatible strict ASCII mode with Depth strategy.
     #[must_use]
     pub fn ascii() -> Self {
         Self {
             string_encoding: StringEncoding::Ascii,
+            strategy: ConflictResolutionStrategy::default(),
         }
     }
 
-    /// Full UTF-8 mode.
+    /// Full UTF-8 mode with Depth strategy.
     #[must_use]
     pub fn utf8() -> Self {
         Self {
             string_encoding: StringEncoding::Utf8,
+            strategy: ConflictResolutionStrategy::default(),
         }
     }
 
-    /// Mixed mode: ASCII symbols, UTF-8 strings.
+    /// Mixed mode: ASCII symbols, UTF-8 strings with Depth strategy.
     #[must_use]
     pub fn ascii_symbols_utf8_strings() -> Self {
         Self {
             string_encoding: StringEncoding::AsciiSymbolsUtf8Strings,
+            strategy: ConflictResolutionStrategy::default(),
         }
+    }
+
+    /// Set the conflict resolution strategy.
+    #[must_use]
+    pub fn with_strategy(mut self, strategy: ConflictResolutionStrategy) -> Self {
+        self.strategy = strategy;
+        self
     }
 }
 
@@ -44,7 +55,10 @@ impl Default for EngineConfig {
 
 impl From<StringEncoding> for EngineConfig {
     fn from(string_encoding: StringEncoding) -> Self {
-        Self { string_encoding }
+        Self {
+            string_encoding,
+            strategy: ConflictResolutionStrategy::default(),
+        }
     }
 }
 

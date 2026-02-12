@@ -17,22 +17,52 @@
 //!
 //! - Pass 007: Agenda conflict strategies and ordering contract
 
-// Implementation will be added in Pass 007.
+/// Conflict resolution strategies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ConflictResolutionStrategy {
+    #[default]
+    Depth,
+    Breadth,
+    Lex,
+    Mea,
+}
 
 #[cfg(test)]
 mod tests {
-    // Strategy ordering tests will be added as the implementation lands.
-    //
-    // Planned test areas:
-    // - depth ordering: salience > recency (most recent first) > sequence
-    // - breadth ordering: salience > recency (least recent first) > sequence
-    // - LEX ordering: salience > lexicographic recency comparison
-    // - MEA ordering: salience > first-pattern recency > LEX tiebreak
-    // - strategy switching at runtime
-    // - total ordering: no ties (all strategies produce deterministic order)
-    //
-    // Planned property tests:
-    // - ordering is always a total order (antisymmetric, transitive, total)
-    // - pop always returns the highest-priority activation
-    // - adding an activation preserves ordering of existing activations
+    use super::*;
+
+    #[test]
+    fn default_strategy_is_depth() {
+        assert_eq!(
+            ConflictResolutionStrategy::default(),
+            ConflictResolutionStrategy::Depth
+        );
+    }
+
+    #[test]
+    fn strategy_variants_exist() {
+        let _ = ConflictResolutionStrategy::Depth;
+        let _ = ConflictResolutionStrategy::Breadth;
+        let _ = ConflictResolutionStrategy::Lex;
+        let _ = ConflictResolutionStrategy::Mea;
+    }
+
+    #[test]
+    fn strategies_are_comparable() {
+        assert_eq!(
+            ConflictResolutionStrategy::Depth,
+            ConflictResolutionStrategy::Depth
+        );
+        assert_ne!(
+            ConflictResolutionStrategy::Depth,
+            ConflictResolutionStrategy::Breadth
+        );
+    }
+
+    #[test]
+    fn strategies_are_cloneable() {
+        let s1 = ConflictResolutionStrategy::Lex;
+        let s2 = s1;
+        assert_eq!(s1, s2);
+    }
 }

@@ -11,6 +11,7 @@ use crate::beta::{BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType};
 use crate::negative::NegativeMemoryId;
 use crate::binding::BindingSet;
 use crate::fact::{Fact, FactBase, FactId};
+use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::AtomKey;
 
@@ -26,9 +27,15 @@ pub struct ReteNetwork {
 }
 
 impl ReteNetwork {
-    /// Create a new, empty Rete network.
+    /// Create a new, empty Rete network with the default (Depth) strategy.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_strategy(ConflictResolutionStrategy::default())
+    }
+
+    /// Create a new, empty Rete network with the given conflict resolution strategy.
+    #[must_use]
+    pub fn with_strategy(strategy: ConflictResolutionStrategy) -> Self {
         let alpha = AlphaNetwork::new();
 
         // Allocate a node ID for the beta root
@@ -37,7 +44,7 @@ impl ReteNetwork {
 
         let beta = BetaNetwork::new(beta_root_id);
         let token_store = TokenStore::new();
-        let agenda = Agenda::new();
+        let agenda = Agenda::with_strategy(strategy);
 
         Self {
             alpha,
@@ -683,14 +690,16 @@ impl ReteNetwork {
                         continue;
                     };
 
-                    // Get timestamp from the most recent fact in the token
-                    let timestamp = token
+                    // Build recency vector: timestamps of facts in pattern order
+                    let recency: SmallVec<[u64; 4]> = token
                         .facts
                         .iter()
                         .filter_map(|&fid| fact_base.get(fid))
                         .map(|entry| entry.timestamp)
-                        .max()
-                        .unwrap_or(0);
+                        .collect();
+
+                    // Get timestamp from the most recent fact in the token
+                    let timestamp = recency.iter().max().copied().unwrap_or(0);
 
                     let activation = Activation {
                         id: ActivationId::default(), // Will be set by agenda.add()
@@ -699,6 +708,7 @@ impl ReteNetwork {
                         salience: 0, // Default salience for Phase 1
                         timestamp,
                         activation_seq: 0, // Will be set by agenda.add()
+                        recency,
                     };
 
                     let act_id = self.agenda.add(activation);

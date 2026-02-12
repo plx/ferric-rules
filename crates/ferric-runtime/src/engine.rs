@@ -49,11 +49,12 @@ impl Engine {
     /// Create a new engine with the given configuration.
     #[must_use]
     pub fn new(config: EngineConfig) -> Self {
+        let strategy = config.strategy;
         Self {
             fact_base: FactBase::new(),
             symbol_table: SymbolTable::new(),
             config,
-            rete: ReteNetwork::new(),
+            rete: ReteNetwork::with_strategy(strategy),
             compiler: ReteCompiler::new(),
             creator_thread: std::thread::current().id(),
             _not_send_sync: PhantomData,

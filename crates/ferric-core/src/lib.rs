@@ -43,7 +43,7 @@ pub mod validation;
 pub mod value;
 
 // Re-export primary types at crate root for convenience.
-pub use agenda::{Activation, ActivationId, Agenda, AgendaKey};
+pub use agenda::{Activation, ActivationId, Agenda, AgendaKey, StrategyOrd};
 pub use alpha::{
     AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNetwork, AlphaNode, ConstantTest,
     ConstantTestType, SlotIndex,
@@ -55,6 +55,7 @@ pub use encoding::{EncodingError, StringEncoding};
 pub use fact::{Fact, FactBase, FactEntry, FactId, OrderedFact, TemplateFact, TemplateId};
 pub use negative::{NegativeMemory, NegativeMemoryId};
 pub use rete::ReteNetwork;
+pub use strategy::ConflictResolutionStrategy;
 pub use string::FerricString;
 pub use symbol::{Symbol, SymbolTable};
 pub use token::{NodeId, Token, TokenId, TokenStore};

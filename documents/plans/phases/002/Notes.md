@@ -394,3 +394,84 @@ None — positive-pattern join semantics are complete for the Phase 2 subset.
 ### Suggestions
 
 - None. Ready for Pass 007 (Agenda Strategy Depth And Breadth).
+
+---
+
+## Pass 007: Agenda Conflict Strategies And Ordering Contract
+
+### What was done
+
+1. **`ConflictResolutionStrategy` enum** (`ferric-core/src/strategy.rs`):
+   - Four variants: `Depth` (default), `Breadth`, `Lex`, `Mea`
+   - Derives `Clone`, `Copy`, `Debug`, `PartialEq`, `Eq`, `Default`
+   - 4 basic unit tests for enum behavior
+
+2. **`StrategyOrd` enum** (`ferric-core/src/agenda.rs`):
+   - Strategy-specific ordering component for `AgendaKey`
+   - `Depth(Reverse<u64>)`: higher timestamp first (most recent)
+   - `Breadth(u64)`: lower timestamp first (oldest)
+   - `Lex(Reverse<SmallVec<[u64; 4]>>)`: lexicographic comparison of recency vectors (most recent per position)
+   - `Mea { first_recency: Reverse<u64>, rest_recency: Reverse<SmallVec<[u64; 4]>> }`: first pattern recency dominates, then LEX tiebreak on remaining
+   - Derives `PartialOrd` and `Ord` for natural `BTreeMap` ordering
+
+3. **Refactored `AgendaKey`** (`ferric-core/src/agenda.rs`):
+   - Fields: `salience: Reverse<i32>`, `strategy_ord: StrategyOrd`, `seq: Reverse<u64>`
+   - Salience always dominates; strategy-specific ordering is secondary; monotonic sequence is final tiebreaker
+   - Total ordering via derived `Ord` on the struct
+
+4. **`Activation` recency field**:
+   - Added `recency: SmallVec<[u64; 4]>` to `Activation` struct
+   - Holds timestamps of facts in pattern order for LEX/MEA strategies
+   - All existing `Activation` constructions updated with `recency: SmallVec::new()`
+
+5. **`Agenda::build_key` method**:
+   - Constructs `AgendaKey` from `Activation` based on the agenda's strategy
+   - `Agenda::with_strategy(strategy)` constructor for non-default strategies
+   - `Agenda::new()` delegates to `with_strategy(Depth)`
+
+6. **Recency vector construction** (`ferric-core/src/rete.rs`):
+   - Terminal node activation builds recency vector by mapping token facts to timestamps via `fact_base.get(fid).map(|(_, ts)| ts)`
+   - `timestamp` field set to `max` of recency vector (for Depth/Breadth fallback)
+
+7. **Runtime wiring**:
+   - `EngineConfig` (`ferric-runtime/src/config.rs`): added `strategy: ConflictResolutionStrategy` field, `with_strategy()` builder method, all existing constructors default to `Depth`
+   - `Engine::new()` (`ferric-runtime/src/engine.rs`): extracts strategy from config, passes to `ReteNetwork::with_strategy(strategy)`
+   - `ReteNetwork::with_strategy()` (`ferric-core/src/rete.rs`): creates `Agenda::with_strategy(strategy)`, `ReteNetwork::new()` delegates to `with_strategy(Depth)`
+
+8. **Re-exports** (`ferric-core/src/lib.rs`):
+   - `pub use strategy::ConflictResolutionStrategy`
+   - `pub use agenda::{..., AgendaKey, StrategyOrd}`
+
+9. **19 new agenda tests** covering:
+   - Depth: most recent timestamp first
+   - Breadth: oldest timestamp first
+   - LEX: lexicographic recency vector comparison
+   - MEA: first pattern recency dominates, falls back to LEX on tie
+   - Salience dominates all four strategies (4 tests)
+   - Activation sequence tiebreaker for all four strategies (4 tests)
+   - Strategy switch changes ordering (Depth vs Breadth on same data)
+   - Remove activations for token works with all four strategies (4 tests)
+
+### Test results
+
+- **399 tests pass** (215 core + 115 parser + 65 runtime + 3 doctests + 1 facade)
+- **0 clippy warnings**
+- **23 new tests** (19 agenda + 4 strategy)
+- **0 regressions**
+
+### Remaining TODOs
+
+- Salience on activations is currently hardcoded to 0 in the terminal node activation path. When salience from `(declare (salience N))` is wired through compilation to the terminal node, this will need updating.
+- The recency vector sorts facts by pattern order based on `token.facts` order. This is correct for the current implementation where facts are accumulated in join order.
+
+### Noteworthy decisions
+
+- **`StrategyOrd` as enum variant**: Rather than using a single struct with optional fields, each strategy variant carries exactly the data it needs. This makes the ordering derivation via `#[derive(Ord)]` clean and correct — no need for manual `Ord` implementations.
+- **`Reverse` wrappers for BTreeMap ordering**: `BTreeMap::pop_first()` returns the smallest key. Using `Reverse` where needed (salience, depth timestamp, sequence) ensures `pop_first` returns the highest-priority activation without needing a custom iterator.
+- **`SmallVec<[u64; 4]>` for recency**: Most rules have 2-4 patterns, so the inline capacity of 4 avoids heap allocation in the common case. `SmallVec` implements `Ord` (lexicographic), which makes `StrategyOrd::Lex` and `StrategyOrd::Mea` comparisons work via derive.
+- **Activation sequence as final tiebreaker**: The monotonically-increasing `activation_seq` (assigned by `Agenda::add`) ensures total ordering even when all other fields match. This provides deterministic behavior.
+- **Configuration flows downward**: `EngineConfig.strategy` → `Engine::new()` → `ReteNetwork::with_strategy()` → `Agenda::with_strategy()`. Strategy is fixed at construction time; dynamic strategy switching is not supported (consistent with CLIPS behavior where strategy changes only take effect on the next `reset`).
+
+### Suggestions
+
+- None. Ready for Pass 008 (Engine Execution Loop).
