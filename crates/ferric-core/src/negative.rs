@@ -97,6 +97,13 @@ impl NegativeMemory {
         now_unblocked
     }
 
+    /// Clear all blocker and unblocked tracking.
+    pub fn clear(&mut self) {
+        self.blocked.clear();
+        self.fact_to_blocked.clear();
+        self.unblocked.clear();
+    }
+
     /// Check if a parent token is blocked.
     #[must_use]
     pub fn is_blocked(&self, parent_token_id: TokenId) -> bool {

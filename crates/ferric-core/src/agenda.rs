@@ -232,6 +232,22 @@ impl Agenda {
         self.activations.values()
     }
 
+    /// Get the current conflict resolution strategy.
+    #[must_use]
+    pub fn strategy(&self) -> ConflictResolutionStrategy {
+        self.strategy
+    }
+
+    /// Clear all activations, preserving the strategy.
+    pub fn clear(&mut self) {
+        self.ordering.clear();
+        self.activations.clear();
+        self.id_to_key.clear();
+        self.token_to_activations.clear();
+        // Reset next_seq to 0 since this is a full clear
+        self.next_seq = 0;
+    }
+
     /// Verify internal consistency of agenda indices.
     ///
     /// Intended for use in tests and debug builds.

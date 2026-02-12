@@ -157,6 +157,17 @@ impl ReteNetwork {
         removed_activations
     }
 
+    /// Clear all runtime state (facts, tokens, activations) while preserving the compiled network structure.
+    ///
+    /// This is used during `reset` to return to a clean state before re-asserting deffacts.
+    pub fn clear_working_memory(&mut self) {
+        self.alpha.clear_all_memories();
+        self.token_store.clear();
+        self.beta.clear_all_runtime();
+        let strategy = self.agenda.strategy();
+        self.agenda = Agenda::with_strategy(strategy);
+    }
+
     /// Perform a right activation on a join node.
     ///
     /// When a new fact enters an alpha memory, this function:

@@ -86,6 +86,11 @@ impl BetaMemory {
     pub fn len(&self) -> usize {
         self.tokens.len()
     }
+
+    /// Clear all tokens from this memory.
+    pub fn clear(&mut self) {
+        self.tokens.clear();
+    }
 }
 
 /// Simple identifier for rules.
@@ -321,6 +326,16 @@ impl BetaNetwork {
         self.alpha_to_negatives
             .get(&alpha_mem)
             .map_or(&[], |v| v.as_slice())
+    }
+
+    /// Clear all runtime state from beta and negative memories, preserving network structure.
+    pub fn clear_all_runtime(&mut self) {
+        for memory in self.memories.values_mut() {
+            memory.clear();
+        }
+        for neg_memory in self.neg_memories.values_mut() {
+            neg_memory.clear();
+        }
     }
 
     /// Allocate a new node ID without creating a node.

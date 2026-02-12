@@ -40,6 +40,7 @@ pub use ferric_core::{
 // Re-export primary types at crate root for convenience.
 pub use config::EngineConfig;
 pub use engine::{Engine, EngineError};
+pub use execution::{FiredRule, HaltReason, RunLimit, RunResult};
 pub use loader::{LoadError, LoadResult, RuleDef};
 
 // Re-export Stage 2 AST types for working with loaded constructs

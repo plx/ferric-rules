@@ -163,15 +163,6 @@ impl Engine {
             }
         }
 
-        // Process assert forms
-        for expr in &assert_forms {
-            if let Some(list) = expr.as_list() {
-                if let Err(e) = self.process_assert(&list[1..], &mut result) {
-                    errors.push(e);
-                }
-            }
-        }
-
         // Interpret constructs via Stage 2
         if !construct_forms.is_empty() {
             let config = InterpreterConfig::default();
@@ -184,7 +175,8 @@ impl Engine {
                 }
             }
 
-            // Process the interpreted constructs
+            // Collect constructs by type (don't assert deffacts yet)
+            let mut deffacts_constructs = Vec::new();
             for construct in interpret_result.constructs {
                 match construct {
                     Construct::Rule(rule) => {
@@ -194,20 +186,33 @@ impl Engine {
                         result.templates.push(template);
                     }
                     Construct::Facts(facts) => {
-                        // Assert the facts from deffacts
-                        if let Err(e) = self.process_deffacts_construct(&facts, &mut result) {
-                            errors.push(e);
-                        }
+                        deffacts_constructs.push(facts);
                     }
+                }
+            }
+
+            // Compile rules first so rete has patterns before facts arrive
+            for rule in &result.rules {
+                match self.compile_rule_construct(rule) {
+                    Ok(_) => {}
+                    Err(e) => errors.push(e),
+                }
+            }
+
+            // Now process deffacts (facts will flow through compiled rete via assert_ordered)
+            for facts in &deffacts_constructs {
+                if let Err(e) = self.process_deffacts_construct(facts, &mut result) {
+                    errors.push(e);
                 }
             }
         }
 
-        // Compile rules into the rete network
-        for rule in &result.rules {
-            match self.compile_rule_construct(rule) {
-                Ok(_) => {}
-                Err(e) => errors.push(e),
+        // Process assert forms AFTER rules are compiled so facts flow through rete
+        for expr in &assert_forms {
+            if let Some(list) = expr.as_list() {
+                if let Err(e) = self.process_assert(&list[1..], &mut result) {
+                    errors.push(e);
+                }
             }
         }
 
@@ -238,10 +243,17 @@ impl Engine {
         facts_construct: &ferric_parser::FactsConstruct,
         result: &mut LoadResult,
     ) -> Result<(), LoadError> {
+        let mut constructed_facts = Vec::new();
         for fact_body in &facts_construct.facts {
             let fact_id = self.process_fact_body(fact_body, result)?;
             result.asserted_facts.push(fact_id);
+            // Collect the fact for deffacts registration
+            if let Some(entry) = self.fact_base.get(fact_id) {
+                constructed_facts.push(entry.fact.clone());
+            }
         }
+        // Register for reset
+        self.registered_deffacts.push(constructed_facts);
         Ok(())
     }
 

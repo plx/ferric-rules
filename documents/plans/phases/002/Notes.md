@@ -475,3 +475,89 @@ None — positive-pattern join semantics are complete for the Phase 2 subset.
 ### Suggestions
 
 - None. Ready for Pass 008 (Engine Execution Loop).
+
+---
+
+## Pass 008: Run, Step, Halt, And Reset Execution Loop
+
+### What was done
+
+1. **Core clear/reset infrastructure** (ferric-core):
+   - `AlphaMemory::clear()`: clears facts and slot indices, preserves indexed_slots metadata
+   - `AlphaNetwork::clear_all_memories()`: clears all alpha memories' fact contents
+   - `TokenStore::clear()`: removes all tokens and clears reverse indices
+   - `BetaMemory::clear()`: clears token set
+   - `BetaNetwork::clear_all_runtime()`: clears all beta memories and negative memories
+   - `NegativeMemory::clear()`: clears blocked/unblocked/fact_to_blocked maps
+   - `Agenda::strategy()`: getter for current strategy (needed to preserve across clear)
+   - `Agenda::clear()`: removes all activations, resets sequence counter
+   - `ReteNetwork::clear_working_memory()`: orchestrates clearing all runtime state while preserving compiled network structure
+
+2. **Execution types** (`ferric-runtime/src/execution.rs`):
+   - `RunLimit` enum: `Unlimited`, `Count(usize)`
+   - `HaltReason` enum: `AgendaEmpty`, `LimitReached`, `HaltRequested`
+   - `RunResult` struct: `rules_fired: usize`, `halt_reason: HaltReason`
+   - `FiredRule` struct: `rule_id: RuleId`, `token_id: TokenId`
+   - All types derive appropriate traits (Clone, Debug, PartialEq, Eq)
+
+3. **Unified assert/retract pipeline** (`ferric-runtime/src/engine.rs`):
+   - `Engine::assert_ordered()` now propagates facts through the rete network after inserting into fact_base
+   - `Engine::assert()` now propagates facts through the rete network
+   - `Engine::retract()` now retracts from rete first (while fact still in fact_base for negative node handling), then removes from fact_base
+   - This eliminates the need for manual rete manipulation in application code and tests
+
+4. **Execution loop methods** (`ferric-runtime/src/engine.rs`):
+   - `Engine::step()`: pops one activation from agenda and returns `FiredRule` info (action execution is Pass 009)
+   - `Engine::run(limit: RunLimit)`: loops firing rules until agenda empty, limit reached, or halt requested. Clears halt flag on entry.
+   - `Engine::halt()`: sets halt flag checked between firings
+   - `Engine::is_halted()`: halt flag query
+   - `Engine::agenda_len()`: convenience accessor for agenda size
+
+5. **Reset semantics** (`ferric-runtime/src/engine.rs`):
+   - `Engine::reset()`: clears fact_base, clears rete working memory, clears halt flag, re-asserts all registered deffacts through the rete
+   - Added `registered_deffacts: Vec<Vec<Fact>>` field to Engine for deffacts storage
+   - Deffacts are registered during `process_deffacts_construct` (clone of constructed facts)
+   - Compiled rules preserved across reset (only runtime state cleared)
+
+6. **Loader reordering** (`ferric-runtime/src/loader.rs`):
+   - Changed `load_str` to compile rules BEFORE asserting facts (deffacts and bare asserts)
+   - This ensures facts flow through the compiled rete network when asserted
+   - New order: parse → interpret constructs → compile rules → process deffacts → process assert forms
+   - Deffacts now registered for reset during processing
+
+7. **Updated integration tests** (`phase2_integration_tests.rs`):
+   - Removed ALL manual `engine.rete.assert_fact(...)` calls — automatic via unified pipeline
+   - Removed ALL manual `engine.fact_base.retract(...)` + `engine.rete.retract_fact(...)` calls — replaced with `engine.retract(fid).unwrap()`
+   - Tests now simpler and more realistic (use engine API, not rete internals)
+   - `integration_tests.rs` unchanged (uses separate rete objects, unaffected)
+
+8. **Re-exports** (`ferric-runtime/src/lib.rs`):
+   - Added `pub use execution::{FiredRule, HaltReason, RunLimit, RunResult}`
+
+9. **20 new tests**:
+   - 4 execution type tests
+   - 16 engine execution tests: step on empty agenda, step fires one, step returns rule info, run all, run with limit, run on empty, run with zero limit, halt stops execution, reset clears state, reset preserves rules, reset reasserts deffacts, reset clears halt, step equivalence to run(1), multiple resets cycle, assert propagates through rete, retract removes from rete
+
+### Test results
+
+- **419 tests pass** (215 core + 115 parser + 85 runtime + 3 doctests + 1 facade)
+- **0 clippy warnings**
+- **20 new tests** (4 execution + 16 engine)
+- **0 regressions**
+
+### Remaining TODOs
+
+- `step()` and `run()` pop activations but do not execute RHS actions — action execution is Pass 009. Currently "firing" a rule means popping its activation from the agenda.
+- The `halt()` method sets a flag that's only checked between firings in `run()`. Since action execution doesn't exist yet, halt can't be triggered from within a rule's RHS (which is the typical CLIPS use case). Pass 009 will enable this.
+
+### Noteworthy decisions
+
+- **Unified assert/retract pipeline**: Engine methods now automatically propagate through the rete network. This is a significant architectural change that simplifies all downstream code. Integration tests no longer need to manually push facts through the rete.
+- **Loader reordering**: `load_str` now compiles rules BEFORE asserting facts. This ensures that when a single `load_str` call contains both rules and deffacts (or assert forms), the facts automatically match compiled patterns. The old order (assert facts → compile rules) meant facts were silently not matched.
+- **Deffacts registration via `Vec<Vec<Fact>>`**: Each deffacts block stores a vector of cloned `Fact` objects. Since `Fact` contains `Symbol` values that reference the symbol table (which persists across reset), the cloned facts remain valid after reset.
+- **Reset clones deffacts**: `registered_deffacts.clone()` in reset to avoid borrow issues. The clone cost is small (typically few deffacts) and occurs only on reset.
+- **Retract order**: Rete retraction happens before fact_base retraction, so `negative_handle_retraction` can still read the fact_base for unblocking decisions. The fact being retracted is still present in fact_base during rete processing.
+
+### Suggestions
+
+- None. Ready for Pass 009 (Action Execution).

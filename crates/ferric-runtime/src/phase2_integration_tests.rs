@@ -20,12 +20,9 @@ mod tests {
         assert_eq!(rule_result.rules.len(), 1);
 
         // Verify the rule compiled into executable rete by asserting a matching fact
-        let fact_result = load_ok(&mut engine, "(assert (person Alice))");
-        let fid = fact_result.asserted_facts[0];
-        let fact = engine.fact_base.get(fid).unwrap().fact.clone();
-        let activations = engine.rete.assert_fact(fid, &fact, &engine.fact_base);
+        let _fact_result = load_ok(&mut engine, "(assert (person Alice))");
 
-        assert_eq!(activations.len(), 1, "compiled rule should produce activation");
+        assert_eq!(engine.rete.agenda.len(), 1, "compiled rule should produce activation");
     }
 
     #[test]
@@ -33,24 +30,10 @@ mod tests {
         let mut engine = new_utf8_engine();
         let _result = load_ok(&mut engine, "(defrule greet (person ?x) => (printout t ?x))");
 
-        // Assert a matching fact
-        let fact_result = load_ok(&mut engine, "(assert (person Alice))");
-        assert_eq!(fact_result.asserted_facts.len(), 1);
+        // Assert a matching fact (automatically propagates through rete)
+        let _fact_result = load_ok(&mut engine, "(assert (person Alice))");
 
-        // Propagate the fact through the engine's rete
-        let fact_id = fact_result.asserted_facts[0];
-        let fact = engine
-            .fact_base
-            .get(fact_id)
-            .expect("fact should exist")
-            .fact
-            .clone();
-        let activations = engine
-            .rete
-            .assert_fact(fact_id, &fact, &engine.fact_base);
-
-        assert_eq!(activations.len(), 1, "should have one activation for matching fact");
-        assert_eq!(engine.rete.agenda.len(), 1);
+        assert_eq!(engine.rete.agenda.len(), 1, "should have one activation for matching fact");
     }
 
     #[test]
@@ -59,20 +42,9 @@ mod tests {
         let _result = load_ok(&mut engine, "(defrule greet (person ?x) => (printout t ?x))");
 
         // Assert a non-matching fact (different relation)
-        let fact_result = load_ok(&mut engine, "(assert (animal dog))");
-        let fact_id = fact_result.asserted_facts[0];
-        let fact = engine
-            .fact_base
-            .get(fact_id)
-            .expect("fact should exist")
-            .fact
-            .clone();
-        let activations = engine
-            .rete
-            .assert_fact(fact_id, &fact, &engine.fact_base);
+        let _fact_result = load_ok(&mut engine, "(assert (animal dog))");
 
-        assert!(activations.is_empty(), "non-matching fact should not activate");
-        assert!(engine.rete.agenda.is_empty());
+        assert!(engine.rete.agenda.is_empty(), "non-matching fact should not activate");
     }
 
     #[test]
@@ -83,8 +55,8 @@ mod tests {
             "(defrule match-red (color red) => (printout t \"found red\"))",
         );
 
-        // Assert multiple facts
-        let facts = load_ok(
+        // Assert multiple facts (automatically propagate through rete)
+        let _facts = load_ok(
             &mut engine,
             r"
             (assert (color red))
@@ -92,11 +64,6 @@ mod tests {
             (assert (color green))
         ",
         );
-
-        for &fid in &facts.asserted_facts {
-            let fact = engine.fact_base.get(fid).unwrap().fact.clone();
-            engine.rete.assert_fact(fid, &fact, &engine.fact_base);
-        }
 
         // Only (color red) should match
         assert_eq!(engine.rete.agenda.len(), 1);
@@ -112,13 +79,9 @@ mod tests {
         let _result = load_ok(&mut engine, source);
 
         // Assert a fact — should activate both rules
-        let facts = load_ok(&mut engine, "(assert (person Alice))");
-        let fid = facts.asserted_facts[0];
-        let fact = engine.fact_base.get(fid).unwrap().fact.clone();
-        let activations = engine.rete.assert_fact(fid, &fact, &engine.fact_base);
+        let _facts = load_ok(&mut engine, "(assert (person Alice))");
 
-        assert_eq!(activations.len(), 2, "both rules should activate");
-        assert_eq!(engine.rete.agenda.len(), 2);
+        assert_eq!(engine.rete.agenda.len(), 2, "both rules should activate");
     }
 
     #[test]
@@ -136,7 +99,7 @@ mod tests {
 
         // Assert facts: (parent alice bob), (parent bob carol), (parent dan eve)
         // Expected: 1 activation (alice→bob→carol chain)
-        let facts = load_ok(
+        let _facts = load_ok(
             &mut engine,
             r"
             (assert (parent alice bob))
@@ -144,11 +107,6 @@ mod tests {
             (assert (parent dan eve))
         ",
         );
-
-        for &fid in &facts.asserted_facts {
-            let fact = engine.fact_base.get(fid).unwrap().fact.clone();
-            engine.rete.assert_fact(fid, &fact, &engine.fact_base);
-        }
 
         // Only (parent alice bob) → (parent bob carol) should match
         // (parent dan eve) doesn't connect, so no second activation
@@ -168,12 +126,10 @@ mod tests {
         // Assert then retract
         let facts = load_ok(&mut engine, "(assert (item foo))");
         let fid = facts.asserted_facts[0];
-        let fact = engine.fact_base.get(fid).unwrap().fact.clone();
-        engine.rete.assert_fact(fid, &fact, &engine.fact_base);
         assert_eq!(engine.rete.agenda.len(), 1);
 
-        // Retract
-        engine.rete.retract_fact(fid, &fact, &engine.fact_base);
+        // Retract (use engine.retract which handles rete)
+        engine.retract(fid).unwrap();
         assert_rete_clean(engine.rete());
     }
 
@@ -182,7 +138,7 @@ mod tests {
         let mut engine = new_utf8_engine();
         let _result = load_ok(&mut engine, "(defrule test (item ?x) => (printout t ?x))");
 
-        let facts = load_ok(
+        let _facts = load_ok(
             &mut engine,
             r"
             (assert (item a))
@@ -190,11 +146,6 @@ mod tests {
             (assert (item c))
         ",
         );
-
-        for &fid in &facts.asserted_facts {
-            let fact = engine.fact_base.get(fid).unwrap().fact.clone();
-            engine.rete.assert_fact(fid, &fact, &engine.fact_base);
-        }
 
         assert_eq!(engine.rete.agenda.len(), 3);
         assert_rete_consistent(engine.rete());
@@ -212,12 +163,7 @@ mod tests {
         assert_eq!(result.rules.len(), 1);
         assert_eq!(result.asserted_facts.len(), 3);
 
-        // Propagate deffacts through the compiled rete
-        for &fid in &result.asserted_facts {
-            let fact = engine.fact_base.get(fid).unwrap().fact.clone();
-            engine.rete.assert_fact(fid, &fact, &engine.fact_base);
-        }
-
+        // Facts from deffacts automatically propagate through rete during load
         assert_eq!(engine.rete.agenda.len(), 3);
         assert_rete_consistent(engine.rete());
     }
@@ -284,22 +230,14 @@ mod tests {
         engine: &mut crate::Engine,
         source: &str,
     ) -> Vec<ferric_core::FactId> {
+        // Facts now automatically propagate through rete via load_ok
         let result = load_ok(engine, source);
-        for &fid in &result.asserted_facts {
-            let fact = engine.fact_base.get(fid).unwrap().fact.clone();
-            engine.rete.assert_fact(fid, &fact, &engine.fact_base);
-        }
         result.asserted_facts
     }
 
-    /// Helper: retract a fact from both the `fact_base` and the rete network.
+    /// Helper: retract a fact (automatically retracts from rete).
     fn retract_from_rete(engine: &mut crate::Engine, fid: ferric_core::FactId) {
-        let fact = engine.fact_base.get(fid).unwrap().fact.clone();
-        engine
-            .fact_base
-            .retract(fid)
-            .expect("retract should succeed");
-        engine.rete.retract_fact(fid, &fact, &engine.fact_base);
+        engine.retract(fid).expect("retract should succeed");
     }
 
     #[test]
