@@ -7,6 +7,7 @@
 //!
 //! Full rule compilation and pattern matching will be added in later phases.
 
+use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
 
@@ -20,7 +21,14 @@ use ferric_parser::{
     TemplateConstruct, TemplateFactBody,
 };
 
+use crate::actions::CompiledRuleInfo;
 use crate::engine::{Engine, EngineError};
+
+/// Translated rule data including fact-address variable bindings.
+struct TranslatedRule {
+    compilable: CompilableRule,
+    fact_address_vars: HashMap<String, usize>,
+}
 
 /// Errors that can occur during source loading.
 #[derive(Debug, Error)]
@@ -465,32 +473,69 @@ impl Engine {
         &mut self,
         rule: &RuleConstruct,
     ) -> Result<CompileResult, LoadError> {
-        let compilable = self
+        let translated = self
             .translate_rule_construct(rule)
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
-        self.compiler
-            .compile_rule(&mut self.rete, &compilable)
-            .map_err(|e| LoadError::Compile(format!("{e}")))
+
+        let compile_result = self.compiler
+            .compile_rule(&mut self.rete, &translated.compilable)
+            .map_err(|e| LoadError::Compile(format!("{e}")))?;
+
+        // Store rule info for action execution
+        let info = CompiledRuleInfo {
+            name: rule.name.clone(),
+            actions: rule.actions.clone(),
+            var_map: compile_result.var_map.clone(),
+            fact_address_vars: translated.fact_address_vars,
+            salience: rule.salience,
+        };
+        self.rule_info.insert(compile_result.rule_id, info);
+
+        Ok(compile_result)
     }
 
     /// Translate a `RuleConstruct` (parser types) into a `CompilableRule` (core types).
     fn translate_rule_construct(
         &mut self,
         rule: &RuleConstruct,
-    ) -> Result<CompilableRule, LoadError> {
+    ) -> Result<TranslatedRule, LoadError> {
         let rule_id = self.compiler.allocate_rule_id();
         let mut patterns = Vec::new();
+        let mut fact_address_vars = HashMap::new();
+        let mut fact_index = 0usize;
 
         for pattern in &rule.patterns {
+            // Check for Pattern::Assigned to track fact-address variables
+            let (var_name, is_negated) = match pattern {
+                Pattern::Assigned { variable, pattern: inner, .. } => {
+                    // Check if inner is negated (which wouldn't make sense for fact address)
+                    let negated = matches!(inner.as_ref(), Pattern::Not(..));
+                    (Some(variable.clone()), negated)
+                }
+                Pattern::Not(..) => (None, true),
+                _ => (None, false),
+            };
+
             if let Some(compilable) = self.translate_pattern(pattern)? {
+                if let Some(name) = var_name {
+                    if !is_negated {
+                        fact_address_vars.insert(name, fact_index);
+                    }
+                }
+                if !compilable.negated {
+                    fact_index += 1;
+                }
                 patterns.push(compilable);
             }
         }
 
-        Ok(CompilableRule {
-            rule_id,
-            salience: rule.salience,
-            patterns,
+        Ok(TranslatedRule {
+            compilable: CompilableRule {
+                rule_id,
+                salience: rule.salience,
+                patterns,
+            },
+            fact_address_vars,
         })
     }
 

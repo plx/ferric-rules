@@ -695,7 +695,7 @@ impl ReteNetwork {
             };
 
             match child_node {
-                BetaNode::Terminal { rule, .. } => {
+                BetaNode::Terminal { rule, salience, .. } => {
                     // Create activation
                     let Some(token) = self.token_store.get(token_id) else {
                         continue;
@@ -716,7 +716,7 @@ impl ReteNetwork {
                         id: ActivationId::default(), // Will be set by agenda.add()
                         rule: *rule,
                         token: token_id,
-                        salience: 0, // Default salience for Phase 1
+                        salience: *salience,
                         timestamp,
                         activation_seq: 0, // Will be set by agenda.add()
                         recency,
@@ -898,7 +898,7 @@ mod tests {
         let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
 
         // Assert a person fact
         let fact_id = fact_base.assert_ordered(person, SmallVec::new());
@@ -978,7 +978,7 @@ mod tests {
         let (join2_id, _join2_mem_id) = rete.beta.create_join_node(join1_id, alpha_mem2, vec![], vec![]);
 
         let rule_id = RuleId(2);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, 0);
 
         // Assert facts
         let mut person_fields = SmallVec::new();
@@ -1048,7 +1048,7 @@ mod tests {
         let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
 
         // Assert a fact
         let fact_id = fact_base.assert_ordered(person, SmallVec::new());
@@ -1095,7 +1095,7 @@ mod tests {
         let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
 
         // Assert (person alice) — should match
         let mut alice_fields = SmallVec::new();
@@ -1135,7 +1135,7 @@ mod tests {
         let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
 
         // Assert 3 facts, checking consistency after each
         let mut fact_ids = Vec::new();
@@ -1214,7 +1214,7 @@ mod tests {
         let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
 
         // Assert 5 facts (some matching, some not)
         let mut fact_ids = Vec::new();
@@ -1314,7 +1314,7 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
 
         let rule_id = RuleId(42);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, 0);
 
         // Assert facts
         // (person alice) — should bind ?x to alice
@@ -1421,7 +1421,7 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
 
         let rule_id = RuleId(42);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, 0);
 
         // Assert facts IN REVERSE ORDER: age fact first, then person fact
 
@@ -1482,7 +1482,7 @@ mod tests {
                 .create_join_node(root_id, alpha_mem1, vec![], join1_bindings);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join1_id, rule_id);
+        let _terminal_id = rete.beta.create_terminal_node(join1_id, rule_id, 0);
 
         // Assert (person alice 42)
         let mut fields = SmallVec::new();
@@ -1562,7 +1562,7 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, 0);
 
         // Assert facts
         let mut person_fields = SmallVec::new();
@@ -1639,7 +1639,7 @@ mod tests {
 
         // Terminal
         let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(neg_id, rule_id);
+        let _terminal = rete.beta.create_terminal_node(neg_id, rule_id, 0);
 
         (rete, pos_alpha, neg_alpha, rule_id)
     }
@@ -1944,7 +1944,7 @@ mod tests {
                 .create_negative_node(join_id, exclude_alpha, neg_tests);
 
         let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(neg_id, rule_id);
+        let _terminal = rete.beta.create_terminal_node(neg_id, rule_id, 0);
 
         (rete, item_alpha, exclude_alpha, rule_id)
     }

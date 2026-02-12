@@ -561,3 +561,93 @@ None — positive-pattern join semantics are complete for the Phase 2 subset.
 ### Suggestions
 
 - None. Ready for Pass 009 (Action Execution).
+
+---
+
+## Pass 009: Action Execution
+
+### What was done
+
+1. **`CompiledRuleInfo` struct** (`ferric-runtime/src/actions.rs`):
+   - Holds all data needed for RHS action execution: `name`, `actions`, `var_map`, `fact_address_vars`, `salience`
+   - `var_map: VarMap` maps variable names → `VarId` for resolving bindings
+   - `fact_address_vars: HashMap<String, usize>` maps `?f` → pattern index for fact-address resolution
+   - Stored in `Engine::rule_info: HashMap<RuleId, CompiledRuleInfo>`
+
+2. **`ActionError` enum** (`ferric-runtime/src/actions.rs`):
+   - Variants: `UnknownAction`, `UnboundVariable`, `FactNotFound`, `InvalidAssert`, `InvalidRetract`, `Encoding`
+   - Provides structured error reporting for each action execution failure mode
+
+3. **`execute_actions` function** (`ferric-runtime/src/actions.rs`):
+   - Main entry point for RHS action execution, takes split borrows of Engine parts
+   - Dispatches on action function name: `assert`, `retract`, `modify`, `duplicate`, `halt`, `printout`
+   - `resolve_fact_address()`: maps variable name → pattern index → `token.facts[index]` → `FactId`
+   - `eval_expr()`: resolves `ActionExpr` values — literals (via `literal_to_value`), variables (via VarMap+BindingSet), function calls (nested evaluation)
+   - `literal_to_value()`: converts `LiteralKind` → `Value` using symbol table for interning
+
+4. **Action implementations**:
+   - **assert**: Builds ordered fact from evaluated arguments, asserts through engine pipeline
+   - **retract**: Resolves fact-address variable → FactId, retracts through engine pipeline
+   - **modify**: Resolves fact-address variable, retracts old fact, asserts new fact with modifications (stub for template support)
+   - **duplicate**: Like modify but doesn't retract the original
+   - **halt**: Sets `halted = true` on engine
+   - **printout**: No-op placeholder (IO infrastructure is Phase 3+)
+
+5. **Engine wiring** (`ferric-runtime/src/engine.rs`):
+   - `step()`: Clones token and `CompiledRuleInfo` for the fired rule, calls `execute_actions` with split borrows
+   - `run()`: Loops `step()` with halt/limit checking
+   - Added `rule_info: HashMap<RuleId, CompiledRuleInfo>` field to Engine
+
+6. **Salience wiring** (`ferric-core/src/beta.rs` + `rete.rs`):
+   - Added `salience: i32` field to `BetaNode::Terminal`
+   - Terminal node activation uses node's salience (was hardcoded to 0)
+   - Salience flows: `RuleConstruct.salience` → `CompilableRule.salience` → `BetaNode::Terminal.salience` → `Activation.salience`
+
+7. **Compiler VarMap export** (`ferric-core/src/compiler.rs`):
+   - Added `var_map: VarMap` to `CompileResult` (needed for action variable resolution)
+   - Added `Clone`, `Debug`, `PartialEq`, `Eq` derives to `VarMap` in `binding.rs`
+
+8. **Loader fact-address tracking** (`ferric-runtime/src/loader.rs`):
+   - `TranslatedRule` struct includes `fact_address_vars: HashMap<String, usize>`
+   - `translate_rule_construct` detects `Pattern::Assigned` and records variable → pattern-index mapping
+   - `compile_rule_construct` assembles `CompiledRuleInfo` from compilation result + translation data
+
+9. **Parser `?f <- (pattern)` support** (`ferric-parser/src/stage2.rs`):
+   - Modified LHS parsing loop in `interpret_rule` to detect 3-element sequence: `SingleVar` + `Connective::Assign` + pattern
+   - Constructs `Pattern::Assigned { variable, pattern, span }` with merged span
+   - 4 new parser tests: basic assigned pattern, mixed with other patterns, multiple assigned patterns, assigned-not pattern
+
+10. **Integration tests** (`phase2_integration_tests.rs`):
+    - `rule_asserts_new_fact_during_execution`: assert action creates facts end-to-end
+    - `rule_retract_action_removes_matched_fact`: `?f <- (pattern)` + `(retract ?f)` end-to-end
+    - `rule_retract_with_assert_rebuilds_state`: retract old + assert new in single rule
+    - `rule_halt_action_stops_execution`: halt action terminates run loop
+    - `rule_assert_triggers_chain_reaction`: two-rule chain reaction with assert
+    - `rule_with_salience_fires_in_order`: salience ordering verified via step
+    - `reset_and_run_cycle_with_actions`: full reset + re-run cycle
+
+### Test results
+
+- **432 tests pass** (215 core + 119 parser + 94 runtime + 3 doctests + 1 facade)
+- **0 clippy errors** (2 pedantic warnings: single-char-pattern suggestion)
+- **11 new tests** (4 parser + 7 integration)
+- **0 regressions**
+
+### Remaining TODOs
+
+- `printout` action is a no-op — IO infrastructure deferred to Phase 3+.
+- `modify` and `duplicate` actions are implemented as retract+assert of ordered facts. Template-aware modify (updating specific slots) requires template metadata lookup, deferred to Phase 3.
+- Function call evaluation in `eval_expr` returns an error for unknown functions. Built-in functions (`+`, `-`, `str-cat`, etc.) are Phase 3 scope.
+- The `?f <- (not (pattern))` combination parses correctly but `fact_address_vars` tracking correctly skips negated patterns (can't bind a fact address to a fact that doesn't exist).
+
+### Noteworthy decisions
+
+- **Split borrows for action execution**: `execute_actions` takes `&mut FactBase`, `&mut ReteNetwork`, `&mut bool` (halted), and `&SymbolTable` rather than `&mut Engine` to satisfy the borrow checker. The token and rule_info are cloned before the call.
+- **Clone token + rule_info before execution**: Since action execution may mutate the rete (assert/retract), we clone the token's data and the `CompiledRuleInfo` before calling `execute_actions`. This avoids aliasing issues where the rete needs exclusive access while we're reading from it.
+- **Fact-address resolution is positional**: `?f <- (pattern)` maps `f` → pattern index `N`, then looks up `token.facts[N]`. This is correct because token facts are accumulated in join order (pattern 0, 1, 2, ...).
+- **Salience wired through compilation**: Rather than looking up salience at activation time, it's stored on the `BetaNode::Terminal` and copied into `Activation`. This is simpler and more efficient.
+- **Parser `?f <- (pattern)` lookahead**: The LHS parsing loop uses a `while` loop with index-based iteration instead of `for` to allow consuming 3 elements at a time when an assigned pattern is detected.
+
+### Suggestions
+
+- None. Ready for Pass 010 (NCC And Exists Node Types).

@@ -4,6 +4,7 @@
 //! for embedding applications. Phase 1 includes basic fact assertion/retraction
 //! and thread affinity checking.
 
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::thread::ThreadId;
 use thiserror::Error;
@@ -12,7 +13,9 @@ use ferric_core::{
     EncodingError, Fact, FactBase, FactId, FerricString, ReteCompiler, ReteNetwork, Symbol,
     SymbolTable, Value,
 };
+use ferric_core::beta::RuleId;
 
+use crate::actions::{self, CompiledRuleInfo};
 use crate::config::EngineConfig;
 use crate::execution::{FiredRule, HaltReason, RunLimit, RunResult};
 
@@ -43,6 +46,8 @@ pub struct Engine {
     pub(crate) compiler: ReteCompiler,
     /// Registered deffacts for re-assertion on reset.
     pub(crate) registered_deffacts: Vec<Vec<Fact>>,
+    /// Compiled rule info for action execution.
+    pub(crate) rule_info: HashMap<RuleId, CompiledRuleInfo>,
     /// Whether a halt has been requested.
     halted: bool,
     creator_thread: ThreadId,
@@ -62,6 +67,7 @@ impl Engine {
             rete: ReteNetwork::with_strategy(strategy),
             compiler: ReteCompiler::new(),
             registered_deffacts: Vec::new(),
+            rule_info: HashMap::new(),
             halted: false,
             creator_thread: std::thread::current().id(),
             _not_send_sync: PhantomData,
@@ -252,12 +258,29 @@ impl Engine {
             return Ok(None);
         };
 
-        // Pass 009 will add RHS action execution here.
-
-        Ok(Some(FiredRule {
+        let fired = FiredRule {
             rule_id: activation.rule,
             token_id: activation.token,
-        }))
+        };
+
+        // Execute RHS actions if rule info is available
+        if let Some(token) = self.rete.token_store.get(activation.token).cloned() {
+            if let Some(info) = self.rule_info.get(&activation.rule).cloned() {
+                let _errors = actions::execute_actions(
+                    &mut self.fact_base,
+                    &mut self.rete,
+                    &mut self.symbol_table,
+                    &mut self.halted,
+                    &self.config,
+                    &token,
+                    &info,
+                );
+                // For Phase 2, action errors are silently ignored.
+                // Future phases can report them.
+            }
+        }
+
+        Ok(Some(fired))
     }
 
     /// Run the engine, firing rules until the agenda is empty, the limit is
@@ -294,8 +317,20 @@ impl Engine {
                 });
             };
 
-            // Pass 009 will add RHS action execution here.
-            let _ = activation; // Suppress unused warning
+            // Execute RHS actions
+            if let Some(token) = self.rete.token_store.get(activation.token).cloned() {
+                if let Some(info) = self.rule_info.get(&activation.rule).cloned() {
+                    let _errors = actions::execute_actions(
+                        &mut self.fact_base,
+                        &mut self.rete,
+                        &mut self.symbol_table,
+                        &mut self.halted,
+                        &self.config,
+                        &token,
+                        &info,
+                    );
+                }
+            }
 
             rules_fired += 1;
         }

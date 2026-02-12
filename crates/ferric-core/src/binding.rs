@@ -20,6 +20,7 @@ pub struct VarId(pub u16);
 /// Maps variable names (symbols) to their IDs.
 ///
 /// Used during pattern compilation to assign stable IDs to variables.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VarMap {
     by_name: HashMap<Symbol, VarId>,
     by_id: Vec<Symbol>,

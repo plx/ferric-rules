@@ -9,7 +9,7 @@
 //! - Pass 002: AST types and interpreter scaffold
 //! - Pass 003: Full interpretation for deftemplate, defrule, deffacts
 
-use crate::sexpr::{Atom, SExpr};
+use crate::sexpr::{Atom, Connective, SExpr};
 use crate::span::Span;
 use std::fmt;
 
@@ -522,8 +522,28 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
     // Interpret LHS patterns
     let lhs_elements = &elements[idx..arrow_idx];
     let mut patterns = Vec::new();
-    for lhs_expr in lhs_elements {
-        patterns.push(interpret_pattern(lhs_expr)?);
+    let mut i = 0;
+    while i < lhs_elements.len() {
+        // Check for ?var <- (pattern) syntax
+        if i + 2 < lhs_elements.len() {
+            if let Some(Atom::SingleVar(var_name)) = lhs_elements[i].as_atom() {
+                if let Some(Atom::Connective(Connective::Assign)) = lhs_elements[i + 1].as_atom()
+                {
+                    let inner_pattern = interpret_pattern(&lhs_elements[i + 2])?;
+                    let pat_span =
+                        Span::merge(lhs_elements[i].span(), lhs_elements[i + 2].span());
+                    patterns.push(Pattern::Assigned {
+                        variable: var_name.clone(),
+                        pattern: Box::new(inner_pattern),
+                        span: pat_span,
+                    });
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        patterns.push(interpret_pattern(&lhs_elements[i])?);
+        i += 1;
     }
 
     // Interpret RHS actions
@@ -1898,6 +1918,105 @@ mod tests {
                 assert!(matches!(&ord.constraints[0], Constraint::MultiVariable(n, _) if n == "items"));
             } else {
                 panic!("expected ordered pattern");
+            }
+        } else {
+            panic!("expected Rule construct");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pattern::Assigned (?var <- pattern) tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpret_assigned_pattern_ordered() {
+        let parsed = parse_sexprs(
+            "(defrule cleanup ?f <- (temporary ?x) => (retract ?f))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.constructs.len(), 1);
+
+        if let Construct::Rule(rule) = &result.constructs[0] {
+            assert_eq!(rule.patterns.len(), 1);
+            if let Pattern::Assigned {
+                variable, pattern, ..
+            } = &rule.patterns[0]
+            {
+                assert_eq!(variable, "f");
+                assert!(
+                    matches!(pattern.as_ref(), Pattern::Ordered(o) if o.relation == "temporary")
+                );
+            } else {
+                panic!("expected Assigned pattern, got {:?}", rule.patterns[0]);
+            }
+        } else {
+            panic!("expected Rule construct");
+        }
+    }
+
+    #[test]
+    fn interpret_assigned_pattern_with_other_patterns() {
+        let parsed = parse_sexprs(
+            "(defrule test (trigger) ?f <- (item ?x) (other) => (retract ?f))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        if let Construct::Rule(rule) = &result.constructs[0] {
+            assert_eq!(rule.patterns.len(), 3);
+            assert!(matches!(&rule.patterns[0], Pattern::Ordered(o) if o.relation == "trigger"));
+            assert!(matches!(&rule.patterns[1], Pattern::Assigned { variable, .. } if variable == "f"));
+            assert!(matches!(&rule.patterns[2], Pattern::Ordered(o) if o.relation == "other"));
+        } else {
+            panic!("expected Rule construct");
+        }
+    }
+
+    #[test]
+    fn interpret_multiple_assigned_patterns() {
+        let parsed = parse_sexprs(
+            "(defrule test ?a <- (alpha) ?b <- (beta) => (retract ?a))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        if let Construct::Rule(rule) = &result.constructs[0] {
+            assert_eq!(rule.patterns.len(), 2);
+            assert!(matches!(&rule.patterns[0], Pattern::Assigned { variable, .. } if variable == "a"));
+            assert!(matches!(&rule.patterns[1], Pattern::Assigned { variable, .. } if variable == "b"));
+        } else {
+            panic!("expected Rule construct");
+        }
+    }
+
+    #[test]
+    fn interpret_assigned_not_pattern() {
+        // ?f <- (not (danger)) — while unusual, should parse correctly
+        let parsed = parse_sexprs(
+            "(defrule test ?f <- (not (danger)) => (printout t ok))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        if let Construct::Rule(rule) = &result.constructs[0] {
+            assert_eq!(rule.patterns.len(), 1);
+            if let Pattern::Assigned {
+                variable, pattern, ..
+            } = &rule.patterns[0]
+            {
+                assert_eq!(variable, "f");
+                assert!(matches!(pattern.as_ref(), Pattern::Not(..)));
+            } else {
+                panic!("expected Assigned pattern");
             }
         } else {
             panic!("expected Rule construct");

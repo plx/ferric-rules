@@ -114,7 +114,7 @@ pub enum BetaNode {
         children: Vec<NodeId>,
     },
     /// Terminal node: produces activations for a rule.
-    Terminal { parent: NodeId, rule: RuleId },
+    Terminal { parent: NodeId, rule: RuleId, salience: i32 },
     /// Negative node: blocks parent tokens when a matching fact exists.
     Negative {
         parent: NodeId,
@@ -219,11 +219,11 @@ impl BetaNetwork {
     ///
     /// Returns the new terminal node's ID.
     #[allow(clippy::cast_possible_truncation)] // Node count will never reach u32::MAX in practice.
-    pub fn create_terminal_node(&mut self, parent: NodeId, rule: RuleId) -> NodeId {
+    pub fn create_terminal_node(&mut self, parent: NodeId, rule: RuleId, salience: i32) -> NodeId {
         let node_id = NodeId(self.next_node_id);
         self.next_node_id += 1;
 
-        let node = BetaNode::Terminal { parent, rule };
+        let node = BetaNode::Terminal { parent, rule, salience };
 
         self.nodes.insert(node_id, node);
 
@@ -604,7 +604,7 @@ mod tests {
 
         // Create a terminal node
         let rule = RuleId(42);
-        let terminal_id = net.create_terminal_node(join_id, rule);
+        let terminal_id = net.create_terminal_node(join_id, rule, 0);
 
         let terminal_node = net
             .get_node(terminal_id)
@@ -612,10 +612,12 @@ mod tests {
         if let BetaNode::Terminal {
             parent,
             rule: node_rule,
+            salience,
         } = terminal_node
         {
             assert_eq!(*parent, join_id);
             assert_eq!(*node_rule, rule);
+            assert_eq!(*salience, 0);
         } else {
             panic!("Expected Terminal node");
         }

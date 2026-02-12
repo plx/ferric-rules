@@ -38,6 +38,7 @@ pub use ferric_core::{
 };
 
 // Re-export primary types at crate root for convenience.
+pub use actions::ActionError;
 pub use config::EngineConfig;
 pub use engine::{Engine, EngineError};
 pub use execution::{FiredRule, HaltReason, RunLimit, RunResult};

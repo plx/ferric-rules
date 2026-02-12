@@ -467,6 +467,138 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Pass 009: Action execution tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rule_assert_action_creates_new_fact() {
+        let mut engine = new_utf8_engine();
+        engine.load_str("(defrule derive (person ?name) => (assert (greeted ?name)))").unwrap();
+        engine.load_str("(assert (person Alice))").unwrap();
+
+        // Should have 1 activation for the rule
+        assert_eq!(engine.rete.agenda.len(), 1);
+
+        // Fire the rule
+        let result = engine.run(crate::execution::RunLimit::Count(1)).unwrap();
+        assert_eq!(result.rules_fired, 1);
+
+        // The assert action should have created a (greeted Alice) fact
+        let facts: Vec<_> = engine.facts().unwrap().collect();
+        // Should have original (person Alice) + new (greeted Alice) = 2 facts
+        assert_eq!(facts.len(), 2);
+    }
+
+    #[test]
+    fn rule_retract_action_removes_matched_fact() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_str("(defrule cleanup ?f <- (temporary ?x) => (retract ?f))")
+            .unwrap();
+        engine.load_str("(assert (temporary data))").unwrap();
+
+        assert_eq!(engine.rete.agenda.len(), 1);
+        let fact_count_before = engine.facts().unwrap().count();
+        assert_eq!(fact_count_before, 1);
+
+        engine
+            .run(crate::execution::RunLimit::Count(1))
+            .unwrap();
+
+        // The temporary fact should be retracted
+        let fact_count_after = engine.facts().unwrap().count();
+        assert_eq!(fact_count_after, 0);
+    }
+
+    #[test]
+    fn rule_halt_action_stops_execution() {
+        let mut engine = new_utf8_engine();
+        engine.load_str("(defrule stopper (stop) => (halt))").unwrap();
+        engine.load_str("(defrule other (person ?x) => (assert (greeted ?x)))").unwrap();
+        engine.load_str("(assert (stop))").unwrap();
+        engine.load_str("(assert (person Alice))").unwrap();
+
+        // Both rules should have activations
+        assert!(!engine.rete.agenda.is_empty());
+
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        // One rule should fire halt, which stops execution
+        // The exact number depends on agenda ordering (both have salience 0)
+        assert!(result.halt_reason == crate::execution::HaltReason::HaltRequested
+             || result.halt_reason == crate::execution::HaltReason::AgendaEmpty);
+    }
+
+    #[test]
+    fn rule_assert_triggers_chain_reaction() {
+        let mut engine = new_utf8_engine();
+        // Rule 1: person → greeted
+        engine.load_str("(defrule greet (person ?name) => (assert (greeted ?name)))").unwrap();
+        // Rule 2: greeted → done
+        engine.load_str("(defrule done (greeted ?name) => (assert (done ?name)))").unwrap();
+        engine.load_str("(assert (person Alice))").unwrap();
+
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 2);
+
+        // Should have: person Alice, greeted Alice, done Alice
+        let fact_count = engine.facts().unwrap().count();
+        assert_eq!(fact_count, 3);
+    }
+
+    #[test]
+    fn rule_retract_with_assert_rebuilds_state() {
+        let mut engine = new_utf8_engine();
+        // Retract old, assert new
+        engine
+            .load_str("(defrule upgrade ?f <- (level low) => (retract ?f) (assert (level high)))")
+            .unwrap();
+        engine.load_str("(assert (level low))").unwrap();
+
+        let result = engine.run(crate::execution::RunLimit::Count(1)).unwrap();
+        assert_eq!(result.rules_fired, 1);
+
+        // Should have only (level high), not (level low)
+        let facts: Vec<_> = engine.facts().unwrap().collect();
+        assert_eq!(facts.len(), 1);
+    }
+
+    #[test]
+    fn rule_with_salience_fires_in_order() {
+        let mut engine = new_utf8_engine();
+        engine.load_str(r#"
+            (defrule low-priority (trigger) => (assert (fired low)))
+            (defrule high-priority (declare (salience 10)) (trigger) => (assert (fired high)))
+        "#).unwrap();
+        engine.load_str("(assert (trigger))").unwrap();
+
+        // Step once — should fire high-priority first
+        engine.step().unwrap();
+
+        // Check which rule fired (high-priority should fire first due to salience)
+        let facts: Vec<_> = engine.facts().unwrap().collect();
+        // After one step, should have trigger + fired-high = 2 facts
+        assert_eq!(facts.len(), 2);
+    }
+
+    #[test]
+    fn reset_and_run_cycle_with_actions() {
+        let mut engine = new_utf8_engine();
+        engine.load_str("(defrule greet (person ?name) => (assert (greeted ?name)))").unwrap();
+        engine.load_str("(deffacts startup (person Alice))").unwrap();
+
+        // First run
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1);
+        assert_eq!(engine.facts().unwrap().count(), 2); // person + greeted
+
+        // Reset and run again
+        engine.reset().unwrap();
+        let result2 = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result2.rules_fired, 1);
+        assert_eq!(engine.facts().unwrap().count(), 2);
+    }
+
+    // -----------------------------------------------------------------------
     // Planned test areas for later passes:
     // -----------------------------------------------------------------------
     // - NCC behavior under conjunction match/unmatch

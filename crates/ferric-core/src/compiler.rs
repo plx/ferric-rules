@@ -43,6 +43,8 @@ pub struct CompileResult {
     pub terminal_node: NodeId,
     /// Alpha memories used by this rule's patterns.
     pub alpha_memories: Vec<AlphaMemoryId>,
+    /// Variable name → `VarId` mapping from compilation.
+    pub var_map: VarMap,
 }
 
 /// Errors from compilation.
@@ -162,12 +164,13 @@ impl ReteCompiler {
         // Step 3: Create terminal node
         let terminal = rete
             .beta
-            .create_terminal_node(current_parent, rule.rule_id);
+            .create_terminal_node(current_parent, rule.rule_id, rule.salience);
 
         Ok(CompileResult {
             rule_id: rule.rule_id,
             terminal_node: terminal,
             alpha_memories,
+            var_map,
         })
     }
 
