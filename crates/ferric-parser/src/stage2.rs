@@ -660,7 +660,16 @@ fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
     match keyword {
         Some("not") => {
             if list.len() < 2 {
-                return Err(InterpretError::missing("pattern after 'not'", expr.span()));
+                return Err(InterpretError::missing(
+                    "pattern after 'not'",
+                    list[0].span(),
+                ));
+            }
+            if list.len() > 2 {
+                return Err(InterpretError::invalid(
+                    "'not' conditional element: expected exactly one pattern",
+                    list[2].span(),
+                ));
             }
             let inner_pattern = interpret_pattern(&list[1])?;
             return Ok(Pattern::Not(Box::new(inner_pattern), expr.span()));
@@ -1733,17 +1742,63 @@ mod tests {
 
     #[test]
     fn interpret_negation_pattern() {
-        let parsed = parse_sexprs("(defrule test (not (blocker)) => (assert (ok)))", file());
+        let parsed = parse_sexprs(
+            "(defrule test (not (blocker ?x)) => (assert (ok ?x)))",
+            file(),
+        );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(result.errors.is_empty());
 
         if let Construct::Rule(rule) = &result.constructs[0] {
             assert_eq!(rule.patterns.len(), 1);
-            assert!(matches!(&rule.patterns[0], Pattern::Not(_, _)));
+            if let Pattern::Not(inner, _) = &rule.patterns[0] {
+                if let Pattern::Ordered(ord) = inner.as_ref() {
+                    assert_eq!(ord.relation, "blocker");
+                    assert_eq!(ord.constraints.len(), 1);
+                } else {
+                    panic!("expected ordered inner pattern");
+                }
+            } else {
+                panic!("expected not pattern");
+            }
         } else {
             panic!("expected Rule construct");
         }
+    }
+
+    #[test]
+    fn interpret_negation_pattern_missing_inner_pattern() {
+        let parsed = parse_sexprs("(defrule test (not) => (assert (ok)))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.constructs.is_empty());
+
+        let err = &result.errors[0];
+        assert_eq!(err.kind, InterpretErrorKind::MissingElement);
+        assert!(err.message.contains("pattern after 'not'"));
+        assert_eq!(err.span.start.line, 1);
+        assert_eq!(err.span.start.column, 16);
+    }
+
+    #[test]
+    fn interpret_negation_pattern_rejects_multiple_inner_patterns() {
+        let parsed = parse_sexprs(
+            "(defrule test (not (blocker) (other)) => (assert (ok)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.constructs.is_empty());
+
+        let err = &result.errors[0];
+        assert_eq!(err.kind, InterpretErrorKind::InvalidStructure);
+        assert!(err.message.contains("'not' conditional element"));
+        assert!(err.message.contains("exactly one pattern"));
+        assert_eq!(err.span.start.line, 1);
+        assert_eq!(err.span.start.column, 30);
     }
 
     #[test]

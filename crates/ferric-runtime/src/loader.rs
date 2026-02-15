@@ -1211,6 +1211,23 @@ mod tests {
     }
 
     #[test]
+    fn load_invalid_defrule_not_with_multiple_patterns() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str("(defrule test (not (a) (b)) => (printout t ok))")
+            .unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        match &errors[0] {
+            LoadError::Interpret(message) => {
+                assert!(message.contains("expected exactly one pattern"));
+                assert!(message.contains("line 1, column "));
+            }
+            other => panic!("expected interpret error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn load_parse_error() {
         let mut engine = Engine::new(EngineConfig::utf8());
         let errors = engine.load_str("(assert (person)").unwrap_err();
