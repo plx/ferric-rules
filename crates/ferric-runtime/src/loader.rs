@@ -529,17 +529,16 @@ impl Engine {
                 _ => (None, false),
             };
 
-            if let Some(compilable) = self.translate_pattern(pattern)? {
-                if let Some(name) = var_name {
-                    if !is_negated && !compilable.exists {
-                        fact_address_vars.insert(name, fact_index);
-                    }
+            let compilable = self.translate_pattern(pattern)?;
+            if let Some(name) = var_name {
+                if !is_negated && !compilable.exists {
+                    fact_address_vars.insert(name, fact_index);
                 }
-                if !compilable.negated && !compilable.exists {
-                    fact_index += 1;
-                }
-                patterns.push(compilable);
             }
+            if !compilable.negated && !compilable.exists {
+                fact_index += 1;
+            }
+            patterns.push(compilable);
         }
 
         Ok(TranslatedRule {
@@ -553,12 +552,7 @@ impl Engine {
     }
 
     /// Translate a single `Pattern` into a `CompilablePattern`.
-    ///
-    /// Returns `None` for pattern types not yet supported (negative, test, exists).
-    fn translate_pattern(
-        &mut self,
-        pattern: &Pattern,
-    ) -> Result<Option<CompilablePattern>, LoadError> {
+    fn translate_pattern(&mut self, pattern: &Pattern) -> Result<CompilablePattern, LoadError> {
         match pattern {
             Pattern::Ordered(ordered) => {
                 let sym = self
@@ -579,13 +573,13 @@ impl Engine {
                     )?;
                 }
 
-                Ok(Some(CompilablePattern {
+                Ok(CompilablePattern {
                     entry_type,
                     constant_tests,
                     variable_slots,
                     negated: false,
                     exists: false,
-                }))
+                })
             }
             Pattern::Assigned { pattern, .. } => {
                 // Unwrap the assignment and compile the inner pattern
@@ -593,29 +587,40 @@ impl Engine {
             }
             Pattern::Not(inner, _span) => {
                 // Unwrap the inner pattern and set negated flag
-                if let Some(mut compilable) = self.translate_pattern(inner)? {
-                    compilable.negated = true;
-                    Ok(Some(compilable))
-                } else {
-                    Ok(None)
-                }
+                let mut compilable = self.translate_pattern(inner)?;
+                compilable.negated = true;
+                Ok(compilable)
             }
-            Pattern::Exists(patterns, _span) => {
+            Pattern::Exists(patterns, span) => {
                 // For single-pattern exists, compile as an exists pattern
                 if patterns.len() == 1 {
-                    if let Some(mut compilable) = self.translate_pattern(&patterns[0])? {
-                        compilable.exists = true;
-                        Ok(Some(compilable))
-                    } else {
-                        Ok(None)
-                    }
+                    let mut compilable = self.translate_pattern(&patterns[0])?;
+                    compilable.exists = true;
+                    Ok(compilable)
                 } else {
-                    // Multi-pattern exists is deferred (would need NCC subnetwork)
-                    Ok(None)
+                    Err(Self::unsupported_pattern(
+                        "exists",
+                        span,
+                        format!(
+                            "multi-pattern exists is not supported yet (received {} patterns)",
+                            patterns.len()
+                        ),
+                    ))
                 }
             }
-            // Test and Template patterns are not yet compiled
-            Pattern::Test(..) | Pattern::Template(..) => Ok(None),
+            Pattern::Test(_, span) => Err(Self::unsupported_pattern(
+                "test",
+                span,
+                "test conditional elements are not supported yet".to_string(),
+            )),
+            Pattern::Template(template) => Err(Self::unsupported_pattern(
+                "template",
+                &template.span,
+                format!(
+                    "template pattern `{}` is not supported yet",
+                    template.template
+                ),
+            )),
         }
     }
 
@@ -646,10 +651,14 @@ impl Engine {
             Constraint::Wildcard(_) | Constraint::MultiWildcard(_) => {
                 // No test needed — matches anything
             }
-            Constraint::MultiVariable(_name, _span) => {
-                // Multi-field variables are not yet compiled (complex)
+            Constraint::MultiVariable(name, span) => {
+                return Err(Self::unsupported_constraint(
+                    "multi-variable",
+                    span,
+                    format!("multi-field variable `$?{name}` is not supported yet"),
+                ));
             }
-            Constraint::Not(inner, _span) => {
+            Constraint::Not(inner, span) => {
                 // ~literal → NotEqual constant test
                 if let Constraint::Literal(lit) = inner.as_ref() {
                     if let Some(key) = self.literal_to_atom_key(&lit.value)? {
@@ -658,8 +667,13 @@ impl Engine {
                             test_type: ConstantTestType::NotEqual(key),
                         });
                     }
+                } else {
+                    return Err(Self::unsupported_constraint(
+                        "not",
+                        span,
+                        "only negated literals (~<literal>) are supported".to_string(),
+                    ));
                 }
-                // ~variable and other negated constraints: not yet compiled
             }
             Constraint::And(constraints, _span) => {
                 // Process each sub-constraint against the same slot
@@ -667,8 +681,12 @@ impl Engine {
                     self.translate_constraint(sub, slot, constant_tests, variable_slots)?;
                 }
             }
-            Constraint::Or(_constraints, _span) => {
-                // Or constraints are not yet compiled (require alpha network branching)
+            Constraint::Or(_constraints, span) => {
+                return Err(Self::unsupported_constraint(
+                    "or",
+                    span,
+                    "or constraints are not supported yet".to_string(),
+                ));
             }
         }
         Ok(())
@@ -707,6 +725,20 @@ impl Engine {
         result
             .warnings
             .push(format!("{message} at line {line}: {detail}"));
+    }
+
+    fn unsupported_pattern(kind: &str, span: &ferric_parser::Span, detail: String) -> LoadError {
+        LoadError::Compile(format!(
+            "unsupported pattern form `{kind}` at line {}, column {}: {detail}",
+            span.start.line, span.start.column
+        ))
+    }
+
+    fn unsupported_constraint(kind: &str, span: &ferric_parser::Span, detail: String) -> LoadError {
+        LoadError::Compile(format!(
+            "unsupported constraint form `{kind}` at line {}, column {}: {detail}",
+            span.start.line, span.start.column
+        ))
     }
 }
 
@@ -826,6 +858,32 @@ mod tests {
     use crate::config::EngineConfig;
     use ferric_core::Fact;
 
+    fn assert_single_compile_error_contains(errors: Vec<LoadError>, expected: &str) {
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got {errors:?}"
+        );
+        match &errors[0] {
+            LoadError::Compile(message) => {
+                assert!(
+                    message.contains(expected),
+                    "expected compile error to contain `{expected}`, got `{message}`"
+                );
+            }
+            other => panic!("expected LoadError::Compile, got {other:?}"),
+        }
+    }
+
+    fn test_span(line: u32, column: u32) -> ferric_parser::Span {
+        let pos = ferric_parser::Position {
+            offset: 0,
+            line,
+            column,
+        };
+        ferric_parser::Span::new(pos, pos, FileId(0))
+    }
+
     #[test]
     fn load_empty_string_returns_empty_result() {
         let mut engine = Engine::new(EngineConfig::utf8());
@@ -916,6 +974,133 @@ mod tests {
         assert_eq!(rule.name, "test");
         assert_eq!(rule.patterns.len(), 1);
         assert_eq!(rule.actions.len(), 1);
+    }
+
+    #[test]
+    fn load_rule_with_test_pattern_returns_compile_error() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str("(defrule t (test (> 1 0)) => (assert (ok)))")
+            .unwrap_err();
+
+        assert_single_compile_error_contains(errors, "unsupported pattern form `test`");
+    }
+
+    #[test]
+    fn load_rule_with_template_pattern_returns_compile_error() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str("(defrule t (person (name Alice)) => (assert (ok)))")
+            .unwrap_err();
+
+        assert_single_compile_error_contains(errors, "unsupported pattern form `template`");
+    }
+
+    #[test]
+    fn load_rule_with_multi_pattern_exists_returns_compile_error() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str("(defrule t (exists (a) (b)) => (assert (ok)))")
+            .unwrap_err();
+
+        assert_single_compile_error_contains(errors, "unsupported pattern form `exists`");
+    }
+
+    #[test]
+    fn load_rule_with_multivariable_constraint_returns_compile_error() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str("(defrule t (items $?values) => (assert (ok)))")
+            .unwrap_err();
+
+        assert_single_compile_error_contains(
+            errors,
+            "unsupported constraint form `multi-variable`",
+        );
+    }
+
+    #[test]
+    fn translate_or_constraint_returns_compile_error() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut constant_tests = Vec::new();
+        let mut variable_slots = Vec::new();
+        let span = test_span(9, 4);
+        let constraint = Constraint::Or(Vec::new(), span);
+
+        let error = engine
+            .translate_constraint(
+                &constraint,
+                SlotIndex::Ordered(0),
+                &mut constant_tests,
+                &mut variable_slots,
+            )
+            .unwrap_err();
+
+        match error {
+            LoadError::Compile(message) => {
+                assert!(message.contains("unsupported constraint form `or`"));
+                assert!(message.contains("line 9, column 4"));
+            }
+            other => panic!("expected compile error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_negated_non_literal_constraint_returns_compile_error() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut constant_tests = Vec::new();
+        let mut variable_slots = Vec::new();
+        let outer_span = test_span(7, 2);
+        let inner_span = test_span(7, 3);
+        let constraint = Constraint::Not(
+            Box::new(Constraint::Variable("x".to_string(), inner_span)),
+            outer_span,
+        );
+
+        let error = engine
+            .translate_constraint(
+                &constraint,
+                SlotIndex::Ordered(0),
+                &mut constant_tests,
+                &mut variable_slots,
+            )
+            .unwrap_err();
+
+        match error {
+            LoadError::Compile(message) => {
+                assert!(message.contains("unsupported constraint form `not`"));
+                assert!(message.contains("line 7, column 2"));
+            }
+            other => panic!("expected compile error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_negated_literal_constraint_still_compiles() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut constant_tests = Vec::new();
+        let mut variable_slots = Vec::new();
+        let span = test_span(3, 8);
+        let literal = ferric_parser::LiteralValue {
+            value: LiteralKind::Integer(42),
+            span,
+        };
+        let constraint = Constraint::Not(Box::new(Constraint::Literal(literal)), span);
+
+        engine
+            .translate_constraint(
+                &constraint,
+                SlotIndex::Ordered(0),
+                &mut constant_tests,
+                &mut variable_slots,
+            )
+            .unwrap();
+
+        assert_eq!(constant_tests.len(), 1);
+        assert!(matches!(
+            constant_tests[0].test_type,
+            ConstantTestType::NotEqual(AtomKey::Integer(42))
+        ));
     }
 
     #[test]
@@ -1126,7 +1311,7 @@ mod proptests {
             name in "[a-z][a-z0-9-]{0,15}",
         ) {
             let mut engine = Engine::new(EngineConfig::utf8());
-            let source = format!("(defrule {name} (test ?x) => (assert (result ?x)))");
+            let source = format!("(defrule {name} (item ?x) => (assert (result ?x)))");
 
             if let Ok(result) = engine.load_str(&source) {
                 prop_assert_eq!(result.rules.len(), 1);
