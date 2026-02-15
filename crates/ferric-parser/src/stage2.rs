@@ -24,6 +24,8 @@ pub enum Pattern {
     Ordered(OrderedPattern),
     /// Template fact pattern: (template (slot-name constraint) ...)
     Template(TemplatePattern),
+    /// Conjunction CE: (and <pattern> <pattern> ...)
+    And(Vec<Pattern>, Span),
     /// Negation CE: (not <pattern>)
     Not(Box<Pattern>, Span),
     /// Test CE: (test <expression>) -- kept as raw `SExpr` for Phase 2
@@ -658,6 +660,19 @@ fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
     // Check for special conditional elements
     let keyword = list[0].as_symbol();
     match keyword {
+        Some("and") => {
+            if list.len() < 2 {
+                return Err(InterpretError::missing(
+                    "pattern after 'and'",
+                    list[0].span(),
+                ));
+            }
+            let mut patterns = Vec::new();
+            for pattern_expr in &list[1..] {
+                patterns.push(interpret_pattern(pattern_expr)?);
+            }
+            return Ok(Pattern::And(patterns, expr.span()));
+        }
         Some("not") => {
             if list.len() < 2 {
                 return Err(InterpretError::missing(
@@ -1799,6 +1814,34 @@ mod tests {
         assert!(err.message.contains("exactly one pattern"));
         assert_eq!(err.span.start.line, 1);
         assert_eq!(err.span.start.column, 30);
+    }
+
+    #[test]
+    fn interpret_negation_conjunction_pattern() {
+        let parsed = parse_sexprs(
+            "(defrule test (not (and (blocker ?x) (other ?x))) => (assert (ok ?x)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        if let Construct::Rule(rule) = &result.constructs[0] {
+            assert_eq!(rule.patterns.len(), 1);
+            if let Pattern::Not(inner, _) = &rule.patterns[0] {
+                if let Pattern::And(parts, _) = inner.as_ref() {
+                    assert_eq!(parts.len(), 2);
+                    assert!(matches!(&parts[0], Pattern::Ordered(_)));
+                    assert!(matches!(&parts[1], Pattern::Ordered(_)));
+                } else {
+                    panic!("expected and inside not");
+                }
+            } else {
+                panic!("expected not pattern");
+            }
+        } else {
+            panic!("expected Rule construct");
+        }
     }
 
     #[test]

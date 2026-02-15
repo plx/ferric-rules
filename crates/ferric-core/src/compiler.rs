@@ -39,6 +39,15 @@ pub struct CompilablePattern {
     pub exists: bool,
 }
 
+/// A compilable conditional element in rule order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompilableCondition {
+    /// A single pattern CE (positive, not, or exists).
+    Pattern(CompilablePattern),
+    /// A negated conjunction CE: `(not (and ...))`.
+    Ncc(Vec<CompilablePattern>),
+}
+
 /// Result of compiling a rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompileResult {
@@ -108,78 +117,63 @@ impl ReteCompiler {
         if rule.patterns.is_empty() {
             return Err(CompileError::EmptyRule);
         }
+        let conditions: Vec<_> = rule
+            .patterns
+            .iter()
+            .cloned()
+            .map(CompilableCondition::Pattern)
+            .collect();
+        self.compile_conditions(rete, rule.rule_id, rule.salience, &conditions)
+    }
 
-        // Step 1: Ensure alpha paths exist for all patterns
-        let mut alpha_memories = Vec::with_capacity(rule.patterns.len());
-        for pattern in &rule.patterns {
-            let mem_id = self.ensure_alpha_path(&mut rete.alpha, pattern);
-            alpha_memories.push(mem_id);
+    /// Compile a sequence of conditional elements into the rete network.
+    pub fn compile_conditions(
+        &mut self,
+        rete: &mut ReteNetwork,
+        rule_id: RuleId,
+        salience: i32,
+        conditions: &[CompilableCondition],
+    ) -> Result<CompileResult, CompileError> {
+        if conditions.is_empty() {
+            return Err(CompileError::EmptyRule);
         }
 
-        // Step 2: Build join chain with variable binding extraction
+        let mut alpha_memories = Vec::new();
         let mut var_map = VarMap::new();
         let mut bound_vars: HashSet<Symbol> = HashSet::new();
         let mut current_parent = rete.beta.root_id();
 
-        for (i, pattern) in rule.patterns.iter().enumerate() {
-            let alpha_mem = alpha_memories[i];
-            let mut join_tests = Vec::new();
-            let mut binding_extractions = Vec::new();
-            let mut new_bindings = Vec::new();
-
-            for &(slot, var_sym) in &pattern.variable_slots {
-                let var_id = var_map
-                    .get_or_create(var_sym)
-                    .map_err(|_| CompileError::VarMapOverflow)?;
-
-                if bound_vars.contains(&var_sym) {
-                    // Variable already bound in a previous pattern → join test
-                    join_tests.push(JoinTest {
-                        alpha_slot: slot,
-                        beta_var: var_id,
-                        test_type: JoinTestType::Equal,
-                    });
-                } else {
-                    // New variable → bind it from this fact
-                    binding_extractions.push((slot, var_id));
-                    new_bindings.push(var_sym);
+        for condition in conditions {
+            match condition {
+                CompilableCondition::Pattern(pattern) => {
+                    current_parent = self.compile_pattern(
+                        rete,
+                        current_parent,
+                        pattern,
+                        &mut var_map,
+                        &mut bound_vars,
+                        &mut alpha_memories,
+                    )?;
                 }
-            }
-
-            // Add newly-bound variables to the tracking set
-            bound_vars.extend(new_bindings);
-
-            if pattern.negated {
-                // Negated pattern → create negative node
-                let (neg_id, _beta_mem, _neg_mem) =
-                    rete.beta
-                        .create_negative_node(current_parent, alpha_mem, join_tests);
-                current_parent = neg_id;
-            } else if pattern.exists {
-                // Exists pattern → create exists node
-                let (exists_id, _beta_mem, _exists_mem) =
-                    rete.beta
-                        .create_exists_node(current_parent, alpha_mem, join_tests);
-                current_parent = exists_id;
-            } else {
-                // Positive pattern → create join node
-                let (join_id, _beta_mem) = rete.beta.create_join_node(
-                    current_parent,
-                    alpha_mem,
-                    join_tests,
-                    binding_extractions,
-                );
-                current_parent = join_id;
+                CompilableCondition::Ncc(subpatterns) => {
+                    current_parent = self.compile_ncc_condition(
+                        rete,
+                        current_parent,
+                        subpatterns,
+                        &mut var_map,
+                        &bound_vars,
+                        &mut alpha_memories,
+                    )?;
+                }
             }
         }
 
-        // Step 3: Create terminal node
         let terminal = rete
             .beta
-            .create_terminal_node(current_parent, rule.rule_id, rule.salience);
+            .create_terminal_node(current_parent, rule_id, salience);
 
         Ok(CompileResult {
-            rule_id: rule.rule_id,
+            rule_id,
             terminal_node: terminal,
             alpha_memories,
             var_map,
@@ -212,6 +206,106 @@ impl ReteCompiler {
         let mem_id = alpha.create_memory(current_node);
         self.alpha_path_cache.insert(key, mem_id);
         mem_id
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compile_pattern(
+        &mut self,
+        rete: &mut ReteNetwork,
+        current_parent: NodeId,
+        pattern: &CompilablePattern,
+        var_map: &mut VarMap,
+        bound_vars: &mut HashSet<Symbol>,
+        alpha_memories: &mut Vec<AlphaMemoryId>,
+    ) -> Result<NodeId, CompileError> {
+        let alpha_mem = self.ensure_alpha_path(&mut rete.alpha, pattern);
+        alpha_memories.push(alpha_mem);
+
+        let mut join_tests = Vec::new();
+        let mut binding_extractions = Vec::new();
+        let mut new_bindings = Vec::new();
+
+        for &(slot, var_sym) in &pattern.variable_slots {
+            let var_id = var_map
+                .get_or_create(var_sym)
+                .map_err(|_| CompileError::VarMapOverflow)?;
+
+            if bound_vars.contains(&var_sym) {
+                join_tests.push(JoinTest {
+                    alpha_slot: slot,
+                    beta_var: var_id,
+                    test_type: JoinTestType::Equal,
+                });
+            } else {
+                binding_extractions.push((slot, var_id));
+                new_bindings.push(var_sym);
+            }
+        }
+
+        bound_vars.extend(new_bindings);
+
+        if pattern.negated {
+            let (neg_id, _beta_mem, _neg_mem) =
+                rete.beta
+                    .create_negative_node(current_parent, alpha_mem, join_tests);
+            Ok(neg_id)
+        } else if pattern.exists {
+            let (exists_id, _beta_mem, _exists_mem) =
+                rete.beta
+                    .create_exists_node(current_parent, alpha_mem, join_tests);
+            Ok(exists_id)
+        } else {
+            let (join_id, _beta_mem) = rete.beta.create_join_node(
+                current_parent,
+                alpha_mem,
+                join_tests,
+                binding_extractions,
+            );
+            Ok(join_id)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compile_ncc_condition(
+        &mut self,
+        rete: &mut ReteNetwork,
+        current_parent: NodeId,
+        subpatterns: &[CompilablePattern],
+        var_map: &mut VarMap,
+        bound_vars: &HashSet<Symbol>,
+        alpha_memories: &mut Vec<AlphaMemoryId>,
+    ) -> Result<NodeId, CompileError> {
+        if subpatterns.is_empty() {
+            return Err(CompileError::EmptyRule);
+        }
+
+        // Create the main-chain NCC node first, then wire its partner once the
+        // subnetwork bottom is known.
+        let ncc_memory_id = rete.beta.allocate_ncc_memory();
+        let placeholder_partner = rete.beta.root_id();
+        let (ncc_id, _ncc_beta_mem) =
+            rete.beta
+                .create_ncc_node(current_parent, placeholder_partner, ncc_memory_id);
+
+        let mut sub_parent = current_parent;
+        let mut sub_bound_vars = bound_vars.clone();
+        for subpattern in subpatterns {
+            sub_parent = self.compile_pattern(
+                rete,
+                sub_parent,
+                subpattern,
+                var_map,
+                &mut sub_bound_vars,
+                alpha_memories,
+            )?;
+        }
+
+        let partner_id = rete
+            .beta
+            .create_ncc_partner(sub_parent, ncc_id, ncc_memory_id);
+        rete.beta.set_ncc_partner(ncc_id, partner_id);
+
+        Ok(ncc_id)
     }
 }
 
@@ -985,5 +1079,67 @@ mod tests {
         } else {
             panic!("Expected terminal node");
         }
+    }
+
+    #[test]
+    fn test_ncc_condition_creates_ncc_and_partner_nodes() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut table = new_table();
+
+        let item_rel = intern(&mut table, "item");
+        let block_rel = intern(&mut table, "block");
+        let reason_rel = intern(&mut table, "reason");
+        let var_x = intern(&mut table, "x");
+        let rule_id = compiler.allocate_rule_id();
+
+        let positive = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(item_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+        let ncc_sub_1 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(block_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+        let ncc_sub_2 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(reason_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+
+        let conditions = vec![
+            CompilableCondition::Pattern(positive),
+            CompilableCondition::Ncc(vec![ncc_sub_1, ncc_sub_2]),
+        ];
+
+        let result = compiler
+            .compile_conditions(&mut rete, rule_id, 0, &conditions)
+            .unwrap();
+
+        let terminal = rete.beta.get_node(result.terminal_node).unwrap();
+        let ncc_id = match terminal {
+            BetaNode::Terminal { parent, .. } => *parent,
+            _ => panic!("Expected terminal node"),
+        };
+
+        let ncc_node = rete.beta.get_node(ncc_id).unwrap();
+        let partner_id = match ncc_node {
+            BetaNode::Ncc { partner, .. } => *partner,
+            other => panic!("Expected NCC node, got {other:?}"),
+        };
+
+        let partner = rete.beta.get_node(partner_id).unwrap();
+        assert!(
+            matches!(partner, BetaNode::NccPartner { .. }),
+            "NCC partner should exist"
+        );
     }
 }

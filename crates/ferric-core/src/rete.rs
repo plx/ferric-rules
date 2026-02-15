@@ -136,8 +136,14 @@ impl ReteNetwork {
             all_removed_tokens.extend(removed);
         }
 
+        // New activations that arise during unblocking operations.
+        let mut new_activations = Vec::new();
+
         // 4. For each removed token, clean up beta memory, agenda, and negative memories
         for (token_id, token) in &all_removed_tokens {
+            // Handle NCC result-token decrement before generic memory cleanup.
+            self.ncc_handle_result_retraction(*token_id, fact_base, &mut new_activations);
+
             // Remove activations for this token
             let acts = self.agenda.remove_activations_for_token(*token_id);
             removed_activations.extend(acts);
@@ -158,7 +164,6 @@ impl ReteNetwork {
 
         // 6. Unblock negative nodes: fact retraction may cause tokens to become unblocked.
         // New activations created by unblocking remain on the agenda (they are not "removed").
-        let mut new_activations = Vec::new();
         self.negative_handle_retraction(
             fact_id,
             &affected_alpha_mems,
@@ -768,21 +773,146 @@ impl ReteNetwork {
     ///
     /// Increment the result count for the corresponding owner token.
     /// If count went from 0→1, retract the NCC node's pass-through.
-    #[allow(clippy::unused_self)]
     fn ncc_partner_receive_result(
         &mut self,
-        _partner_node_id: NodeId,
-        _result_token_id: TokenId,
+        partner_node_id: NodeId,
+        result_token_id: TokenId,
         _fact_base: &FactBase,
     ) {
-        // For Phase 2, NCC partner logic is implemented but not fully hooked up
-        // because we don't have the parser/compiler support for multi-pattern NCC yet.
-        // This stub is here for future expansion.
-        //
-        // Full implementation would:
-        // 1. Find the owner token (the NCC parent's token that this result traces to)
-        // 2. Increment result count in NCC memory
-        // 3. If count went 0→1: retract the pass-through token cascade
+        let Some(partner_node) = self.beta.get_node(partner_node_id) else {
+            return;
+        };
+
+        let (ncc_node_id, ncc_memory_id) = match partner_node {
+            BetaNode::NccPartner {
+                ncc_node,
+                ncc_memory,
+                ..
+            } => (*ncc_node, *ncc_memory),
+            _ => return,
+        };
+
+        // Find the NCC parent token traced through the subnetwork token chain.
+        let Some(parent_token_id) = self.find_ncc_owner_parent_token(ncc_node_id, result_token_id)
+        else {
+            return;
+        };
+
+        let (old_count, new_count) = {
+            let Some(ncc_mem) = self.beta.get_ncc_memory_mut(ncc_memory_id) else {
+                return;
+            };
+            ncc_mem.add_result(parent_token_id, result_token_id)
+        };
+
+        if old_count == 0 && new_count == 1 {
+            // First subnetwork result for this parent: block by retracting pass-through.
+            let beta_memory_id = match self.beta.get_node(ncc_node_id) {
+                Some(BetaNode::Ncc { memory, .. }) => *memory,
+                _ => return,
+            };
+
+            let passthrough_id = self
+                .beta
+                .get_ncc_memory_mut(ncc_memory_id)
+                .and_then(|mem| mem.remove_unblocked(parent_token_id));
+            if let Some(pt_id) = passthrough_id {
+                self.retract_token_cascade(pt_id, beta_memory_id);
+            }
+        }
+    }
+
+    /// Walk a subnetwork result token's ancestry to find the NCC parent token.
+    ///
+    /// The sought token is the first ancestor whose owner node is the NCC node's parent.
+    fn find_ncc_owner_parent_token(
+        &self,
+        ncc_node_id: NodeId,
+        result_token_id: TokenId,
+    ) -> Option<TokenId> {
+        let ncc_parent_node = match self.beta.get_node(ncc_node_id)? {
+            BetaNode::Ncc { parent, .. } => *parent,
+            _ => return None,
+        };
+
+        let mut current = result_token_id;
+        loop {
+            let token = self.token_store.get(current)?;
+            let parent_token_id = token.parent?;
+            let parent_token = self.token_store.get(parent_token_id)?;
+            if parent_token.owner_node == ncc_parent_node {
+                return Some(parent_token_id);
+            }
+            current = parent_token_id;
+        }
+    }
+
+    /// Handle retraction of a token that may be a tracked NCC subnetwork result.
+    ///
+    /// If a parent token's result count transitions 1→0, the parent becomes unblocked
+    /// and a pass-through token is re-propagated through the NCC node.
+    fn ncc_handle_result_retraction(
+        &mut self,
+        result_token_id: TokenId,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
+    ) {
+        let ncc_mem_ids: Vec<_> = self.beta.ncc_memory_ids().collect();
+
+        let mut transition = None;
+        for ncc_memory_id in ncc_mem_ids {
+            let Some(ncc_mem) = self.beta.get_ncc_memory_mut(ncc_memory_id) else {
+                continue;
+            };
+            if let Some((parent_token_id, new_count)) = ncc_mem.remove_result(result_token_id) {
+                transition = Some((ncc_memory_id, parent_token_id, new_count));
+                break;
+            }
+        }
+
+        let Some((ncc_memory_id, parent_token_id, new_count)) = transition else {
+            return;
+        };
+        if new_count != 0 {
+            return;
+        }
+
+        // Count transitioned 1→0, so this parent is now unblocked. If the parent
+        // token was itself retracted, there is nothing to propagate.
+        let Some(parent_token) = self.token_store.get(parent_token_id) else {
+            return;
+        };
+        let parent_facts = parent_token.facts.clone();
+        let parent_bindings = parent_token.bindings.clone();
+
+        let Some(ncc_node_id) = self.beta.ncc_node_for_memory(ncc_memory_id) else {
+            return;
+        };
+
+        let (beta_memory_id, children) = match self.beta.get_node(ncc_node_id) {
+            Some(BetaNode::Ncc {
+                memory, children, ..
+            }) => (*memory, children.clone()),
+            _ => return,
+        };
+
+        let passthrough_token = Token {
+            facts: parent_facts,
+            bindings: parent_bindings,
+            parent: Some(parent_token_id),
+            owner_node: ncc_node_id,
+        };
+
+        let pt_id = self.token_store.insert(passthrough_token);
+
+        if let Some(memory) = self.beta.get_memory_mut(beta_memory_id) {
+            memory.insert(pt_id);
+        }
+        if let Some(ncc_mem) = self.beta.get_ncc_memory_mut(ncc_memory_id) {
+            ncc_mem.set_unblocked(parent_token_id, pt_id);
+        }
+
+        self.propagate_token(pt_id, &children, fact_base, new_activations);
     }
 
     /// Perform an exists left activation.
@@ -2732,39 +2862,134 @@ mod tests {
         rete.debug_assert_consistency();
     }
 
-    #[test]
-    fn ncc_node_basic_test() {
+    fn build_ncc_rule_item_not_and_block_reason(
+        symbol_table: &mut SymbolTable,
+    ) -> (ReteNetwork, Symbol, Symbol, Symbol) {
+        use crate::compiler::{CompilableCondition, CompilablePattern, ReteCompiler};
+
         let mut rete = ReteNetwork::new();
-        let mut fact_base = FactBase::new();
+        let mut compiler = ReteCompiler::new();
+        let rule_id = compiler.allocate_rule_id();
+
+        let item_sym = make_symbol(symbol_table, "item");
+        let block_sym = make_symbol(symbol_table, "block");
+        let reason_sym = make_symbol(symbol_table, "reason");
+        let var_x = make_symbol(symbol_table, "x");
+
+        let positive = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(item_sym),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+        let ncc_sub_1 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(block_sym),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+        let ncc_sub_2 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(reason_sym),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+
+        let conditions = vec![
+            CompilableCondition::Pattern(positive),
+            CompilableCondition::Ncc(vec![ncc_sub_1, ncc_sub_2]),
+        ];
+        compiler
+            .compile_conditions(&mut rete, rule_id, 0, &conditions)
+            .expect("NCC rule should compile");
+
+        (rete, item_sym, block_sym, reason_sym)
+    }
+
+    #[test]
+    fn ncc_node_block_unblock_cycle_on_result_assert_and_retract() {
         let mut symbol_table = SymbolTable::new();
+        let (mut rete, item_sym, block_sym, reason_sym) =
+            build_ncc_rule_item_not_and_block_reason(&mut symbol_table);
+        let mut fact_base = FactBase::new();
 
-        let trigger_sym = make_symbol(&mut symbol_table, "trigger");
+        let x = Value::Integer(1);
 
-        let trigger_entry = AlphaEntryType::OrderedRelation(trigger_sym);
-        let trigger_node = rete.alpha.create_entry_node(trigger_entry);
-        let trigger_alpha = rete.alpha.create_memory(trigger_node);
-
-        let root = rete.beta.root_id();
-        let (join_id, _) = rete
-            .beta
-            .create_join_node(root, trigger_alpha, vec![], vec![]);
-
-        // Create NCC node with a real partner node
-        let ncc_memory_id = rete.beta.allocate_ncc_memory();
-        let partner_id = rete.beta.create_ncc_partner(join_id, root, ncc_memory_id); // Use root as ncc_node for now
-        let (ncc_id, _) = rete
-            .beta
-            .create_ncc_node(join_id, partner_id, ncc_memory_id);
-
-        let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(ncc_id, rule_id, 0);
-
-        let trigger_id = fact_base.assert_ordered(trigger_sym, SmallVec::new());
-        let trigger_fact = fact_base.get(trigger_id).unwrap().fact.clone();
-        rete.assert_fact(trigger_id, &trigger_fact, &fact_base);
-
-        // NCC with no subnetwork results should propagate
+        // (item 1) => no conjunction result yet, so NCC passes through
+        let item_id = fact_base.assert_ordered(item_sym, smallvec![x.clone()]);
+        let item_fact = fact_base.get(item_id).unwrap().fact.clone();
+        rete.assert_fact(item_id, &item_fact, &fact_base);
         assert_eq!(rete.agenda.len(), 1);
-        // Skip debug_assert_consistency because partner points to root which is not a valid NCC node
+        rete.debug_assert_consistency();
+
+        // (block 1) alone is not enough for conjunction; still unblocked
+        let block_id = fact_base.assert_ordered(block_sym, smallvec![x.clone()]);
+        let block_fact = fact_base.get(block_id).unwrap().fact.clone();
+        rete.assert_fact(block_id, &block_fact, &fact_base);
+        assert_eq!(rete.agenda.len(), 1);
+        rete.debug_assert_consistency();
+
+        // (reason 1) completes conjunction => NCC result count 0->1, pass-through retracted
+        let reason_id = fact_base.assert_ordered(reason_sym, smallvec![x.clone()]);
+        let reason_fact = fact_base.get(reason_id).unwrap().fact.clone();
+        rete.assert_fact(reason_id, &reason_fact, &fact_base);
+        assert_eq!(rete.agenda.len(), 0);
+        rete.debug_assert_consistency();
+
+        // Retract (reason 1) => NCC result count 1->0, pass-through restored
+        fact_base.retract(reason_id);
+        rete.retract_fact(reason_id, &reason_fact, &fact_base);
+        assert_eq!(rete.agenda.len(), 1);
+        rete.debug_assert_consistency();
+
+        // Re-assert reason => blocked again
+        let reason2_id = fact_base.assert_ordered(reason_sym, smallvec![x.clone()]);
+        let reason2_fact = fact_base.get(reason2_id).unwrap().fact.clone();
+        rete.assert_fact(reason2_id, &reason2_fact, &fact_base);
+        assert_eq!(rete.agenda.len(), 0);
+        rete.debug_assert_consistency();
+
+        // Retract block this time => conjunction breaks, unblocked again
+        fact_base.retract(block_id);
+        rete.retract_fact(block_id, &block_fact, &fact_base);
+        assert_eq!(rete.agenda.len(), 1);
+        rete.debug_assert_consistency();
+    }
+
+    #[test]
+    fn ncc_node_retract_parent_cleans_up_subnetwork_state() {
+        let mut symbol_table = SymbolTable::new();
+        let (mut rete, item_sym, block_sym, reason_sym) =
+            build_ncc_rule_item_not_and_block_reason(&mut symbol_table);
+        let mut fact_base = FactBase::new();
+
+        let x = Value::Integer(1);
+
+        let item_id = fact_base.assert_ordered(item_sym, smallvec![x.clone()]);
+        let item_fact = fact_base.get(item_id).unwrap().fact.clone();
+        rete.assert_fact(item_id, &item_fact, &fact_base);
+
+        let block_id = fact_base.assert_ordered(block_sym, smallvec![x.clone()]);
+        let block_fact = fact_base.get(block_id).unwrap().fact.clone();
+        rete.assert_fact(block_id, &block_fact, &fact_base);
+
+        let reason_id = fact_base.assert_ordered(reason_sym, smallvec![x]);
+        let reason_fact = fact_base.get(reason_id).unwrap().fact.clone();
+        rete.assert_fact(reason_id, &reason_fact, &fact_base);
+
+        assert_eq!(rete.agenda.len(), 0, "blocked before parent retract");
+
+        fact_base.retract(item_id);
+        rete.retract_fact(item_id, &item_fact, &fact_base);
+
+        assert_eq!(rete.agenda.len(), 0);
+        assert!(
+            rete.token_store.is_empty(),
+            "all descendant tokens should be removed"
+        );
+        rete.debug_assert_consistency();
     }
 }

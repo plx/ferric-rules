@@ -12,8 +12,8 @@ use std::path::Path;
 use thiserror::Error;
 
 use ferric_core::{
-    AlphaEntryType, AtomKey, CompilablePattern, CompilableRule, CompileResult, ConstantTest,
-    ConstantTestType, FactId, FerricString, SlotIndex, Value,
+    AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult, ConstantTest,
+    ConstantTestType, FactId, FerricString, RuleId, SlotIndex, Value,
 };
 use ferric_parser::{
     interpret_constructs, parse_sexprs, Atom, Constraint, Construct, FactBody, FactValue, FileId,
@@ -26,7 +26,9 @@ use crate::engine::{Engine, EngineError};
 
 /// Translated rule data including fact-address variable bindings.
 struct TranslatedRule {
-    compilable: CompilableRule,
+    rule_id: RuleId,
+    salience: i32,
+    conditions: Vec<CompilableCondition>,
     fact_address_vars: HashMap<String, usize>,
 }
 
@@ -487,7 +489,12 @@ impl Engine {
 
         let compile_result = self
             .compiler
-            .compile_rule(&mut self.rete, &translated.compilable)
+            .compile_conditions(
+                &mut self.rete,
+                translated.rule_id,
+                translated.salience,
+                &translated.conditions,
+            )
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
 
         // Store rule info for action execution
@@ -509,7 +516,7 @@ impl Engine {
         rule: &RuleConstruct,
     ) -> Result<TranslatedRule, LoadError> {
         let rule_id = self.compiler.allocate_rule_id();
-        let mut patterns = Vec::new();
+        let mut conditions = Vec::new();
         let mut fact_address_vars = HashMap::new();
         let mut fact_index = 0usize;
 
@@ -529,26 +536,79 @@ impl Engine {
                 _ => (None, false),
             };
 
-            let compilable = self.translate_pattern(pattern)?;
+            let condition = self.translate_condition(pattern)?;
             if let Some(name) = var_name {
-                if !is_negated && !compilable.exists {
+                if !is_negated && Self::condition_has_fact_address(&condition) {
                     fact_address_vars.insert(name, fact_index);
                 }
             }
-            if !compilable.negated && !compilable.exists {
+            if Self::condition_advances_fact_index(&condition) {
                 fact_index += 1;
             }
-            patterns.push(compilable);
+            conditions.push(condition);
         }
 
         Ok(TranslatedRule {
-            compilable: CompilableRule {
-                rule_id,
-                salience: rule.salience,
-                patterns,
-            },
+            rule_id,
+            salience: rule.salience,
+            conditions,
             fact_address_vars,
         })
+    }
+
+    fn condition_has_fact_address(condition: &CompilableCondition) -> bool {
+        match condition {
+            CompilableCondition::Pattern(pattern) => !pattern.negated && !pattern.exists,
+            CompilableCondition::Ncc(_) => false,
+        }
+    }
+
+    fn condition_advances_fact_index(condition: &CompilableCondition) -> bool {
+        Self::condition_has_fact_address(condition)
+    }
+
+    fn translate_condition(&mut self, pattern: &Pattern) -> Result<CompilableCondition, LoadError> {
+        match pattern {
+            Pattern::Assigned { pattern, .. } => self.translate_condition(pattern),
+            Pattern::Not(inner, span) => {
+                if let Pattern::And(inner_patterns, and_span) = inner.as_ref() {
+                    if inner_patterns.is_empty() {
+                        return Err(Self::unsupported_pattern(
+                            "not/and",
+                            span,
+                            "not(and ...) requires at least one inner pattern".to_string(),
+                        ));
+                    }
+
+                    let mut subpatterns = Vec::with_capacity(inner_patterns.len());
+                    for sub in inner_patterns {
+                        let translated = self.translate_pattern(sub)?;
+                        if translated.negated {
+                            return Err(Self::unsupported_pattern(
+                                "not/and",
+                                and_span,
+                                "nested negation inside and is not supported yet".to_string(),
+                            ));
+                        }
+                        subpatterns.push(translated);
+                    }
+                    Ok(CompilableCondition::Ncc(subpatterns))
+                } else {
+                    let mut compilable = self.translate_pattern(inner)?;
+                    compilable.negated = true;
+                    Ok(CompilableCondition::Pattern(compilable))
+                }
+            }
+            Pattern::And(_, span) => Err(Self::unsupported_pattern(
+                "and",
+                span,
+                "standalone and conditional elements are not supported; use (not (and ...))"
+                    .to_string(),
+            )),
+            _ => Ok(CompilableCondition::Pattern(
+                self.translate_pattern(pattern)?,
+            )),
+        }
     }
 
     /// Translate a single `Pattern` into a `CompilablePattern`.
@@ -620,6 +680,11 @@ impl Engine {
                     "template pattern `{}` is not supported yet",
                     template.template
                 ),
+            )),
+            Pattern::And(_, span) => Err(Self::unsupported_pattern(
+                "and",
+                span,
+                "and conditional elements are only supported inside (not (and ...))".to_string(),
             )),
         }
     }
@@ -836,6 +901,12 @@ fn validate_pattern_recursive(
             validate_pattern_recursive(inner, depth, max_depth, errors);
         }
 
+        Pattern::And(inner_patterns, _) => {
+            for inner in inner_patterns {
+                validate_pattern_recursive(inner, depth, max_depth, errors);
+            }
+        }
+
         Pattern::Ordered(..) | Pattern::Template(..) | Pattern::Test(..) => {
             // Leaf patterns - nothing to validate at this level
         }
@@ -1004,6 +1075,16 @@ mod tests {
             .unwrap_err();
 
         assert_single_compile_error_contains(errors, "unsupported pattern form `exists`");
+    }
+
+    #[test]
+    fn load_rule_with_not_and_compiles() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine.load_str(
+            "(defrule t (item ?x) (not (and (block ?x) (reason ?x))) => (assert (ok ?x)))",
+        );
+
+        assert!(result.is_ok(), "not(and ...) should compile in Phase 2");
     }
 
     #[test]

@@ -401,6 +401,16 @@ impl BetaNetwork {
         node_id
     }
 
+    /// Update the partner pointer of an existing NCC node.
+    ///
+    /// This is used when the NCC node is created before the subnetwork bottom
+    /// (and thus partner node) is known.
+    pub fn set_ncc_partner(&mut self, ncc_node_id: NodeId, partner_id: NodeId) {
+        if let Some(BetaNode::Ncc { partner, .. }) = self.nodes.get_mut(&ncc_node_id) {
+            *partner = partner_id;
+        }
+    }
+
     /// Create an exists node as a child of the given parent.
     ///
     /// An exists node propagates when at least one supporting fact exists in the
@@ -566,6 +576,15 @@ impl BetaNetwork {
     /// Iterate over all NCC memory IDs.
     pub fn ncc_memory_ids(&self) -> impl Iterator<Item = NccMemoryId> + '_ {
         self.ncc_memories.keys().copied()
+    }
+
+    /// Find the NCC node that owns the given NCC memory.
+    #[must_use]
+    pub fn ncc_node_for_memory(&self, ncc_memory_id: NccMemoryId) -> Option<NodeId> {
+        self.nodes.iter().find_map(|(node_id, node)| match node {
+            BetaNode::Ncc { ncc_memory, .. } if *ncc_memory == ncc_memory_id => Some(*node_id),
+            _ => None,
+        })
     }
 
     /// Iterate over all exists memory IDs.

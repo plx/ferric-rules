@@ -777,10 +777,96 @@ mod tests {
         assert!(result.is_ok(), "single exists should pass validation");
     }
 
+    #[test]
+    fn ncc_not_and_block_unblock_cycle() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"(defrule allow
+                (item ?x)
+                (not (and (block ?x) (reason ?x)))
+                =>
+                (printout t ?x))",
+        );
+
+        let item = assert_facts_into_rete(&mut engine, "(assert (item apple))");
+        assert_eq!(engine.rete.agenda.len(), 1, "unblocked with no conjunction");
+
+        let block = assert_facts_into_rete(&mut engine, "(assert (block apple))");
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "single subpattern should not block conjunction"
+        );
+
+        let reason = assert_facts_into_rete(&mut engine, "(assert (reason apple))");
+        assert_eq!(
+            engine.rete.agenda.len(),
+            0,
+            "full conjunction should block (0->1 transition)"
+        );
+        assert_rete_consistent(engine.rete());
+
+        retract_from_rete(&mut engine, reason[0]);
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "retraction should unblock (1->0 transition)"
+        );
+
+        let reason2 = assert_facts_into_rete(&mut engine, "(assert (reason apple))");
+        assert_eq!(engine.rete.agenda.len(), 0, "blocked again");
+
+        retract_from_rete(&mut engine, block[0]);
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "unblocked by breaking conjunction"
+        );
+
+        // Cleanup should leave rete clean when parent is removed.
+        retract_from_rete(&mut engine, reason2[0]);
+        retract_from_rete(&mut engine, item[0]);
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn ncc_not_and_selective_blocking_by_variable() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"(defrule allow
+                (item ?x)
+                (not (and (block ?x) (reason ?x)))
+                =>
+                (printout t ?x))",
+        );
+
+        assert_facts_into_rete(&mut engine, "(assert (item alice)) (assert (item bob))");
+        assert_eq!(engine.rete.agenda.len(), 2);
+
+        assert_facts_into_rete(&mut engine, "(assert (block alice))");
+        assert_eq!(engine.rete.agenda.len(), 2, "still missing reason alice");
+
+        let reason_alice = assert_facts_into_rete(&mut engine, "(assert (reason alice))");
+        assert_eq!(
+            engine.rete.agenda.len(),
+            1,
+            "alice blocked; bob remains unblocked"
+        );
+
+        retract_from_rete(&mut engine, reason_alice[0]);
+        assert_eq!(
+            engine.rete.agenda.len(),
+            2,
+            "alice should be restored after reason retract"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
     // -----------------------------------------------------------------------
     // Planned test areas for later passes:
     // -----------------------------------------------------------------------
-    // - NCC behavior under conjunction match/unmatch
     // - agenda strategy ordering in multi-rule programs
     // - .clp fixture loading and verification
 
@@ -925,6 +1011,22 @@ mod tests {
         let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 1);
         assert_eq!(engine.facts().unwrap().count(), 1); // only cleaned remains
+    }
+
+    #[test]
+    fn fixture_phase2_ncc() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_file(std::path::Path::new("tests/fixtures/phase2_ncc.clp"))
+            .unwrap();
+
+        // 2 items + block/reason apple + block banana
+        assert_eq!(engine.facts().unwrap().count(), 5);
+
+        // Only banana should pass (apple is blocked by full conjunction)
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1);
+        assert_eq!(engine.facts().unwrap().count(), 6);
     }
 
     // -----------------------------------------------------------------------

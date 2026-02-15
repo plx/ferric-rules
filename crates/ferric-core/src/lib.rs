@@ -50,7 +50,10 @@ pub use alpha::{
 };
 pub use beta::{BetaMemory, BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId};
 pub use binding::{BindingSet, VarId, VarMap};
-pub use compiler::{CompilablePattern, CompilableRule, CompileError, CompileResult, ReteCompiler};
+pub use compiler::{
+    CompilableCondition, CompilablePattern, CompilableRule, CompileError, CompileResult,
+    ReteCompiler,
+};
 pub use encoding::{EncodingError, StringEncoding};
 pub use exists::{ExistsMemory, ExistsMemoryId};
 pub use fact::{Fact, FactBase, FactEntry, FactId, OrderedFact, TemplateFact, TemplateId};

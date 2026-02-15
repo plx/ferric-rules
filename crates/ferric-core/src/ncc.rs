@@ -1,7 +1,7 @@
 //! NCC (Negated Conjunctive Condition) memory: tracks subnetwork results for NCC nodes.
 //!
-//! In Rete, NCC implements `(not (pattern1) (pattern2) ...)` by building a
-//! "subnetwork" of join nodes that evaluate the conjunction. An NCC node in
+//! In Rete, NCC implements `(not (and (pattern1) (pattern2) ...))` by building
+//! a "subnetwork" of join nodes that evaluate the conjunction. An NCC node in
 //! the main beta network watches the subnetwork's results:
 //!
 //! - When a parent token enters the NCC node, we check the subnetwork results
@@ -41,6 +41,8 @@ pub struct NccMemory {
     pub id: NccMemoryId,
     /// Parent token → count of subnetwork result tokens
     result_count: HashMap<TokenId, usize>,
+    /// Subnetwork result token → NCC parent token it blocks.
+    result_owner: HashMap<TokenId, TokenId>,
     /// Parent token → pass-through token (when unblocked, count == 0)
     unblocked: HashMap<TokenId, TokenId>,
 }
@@ -52,6 +54,7 @@ impl NccMemory {
         Self {
             id,
             result_count: HashMap::new(),
+            result_owner: HashMap::new(),
             unblocked: HashMap::new(),
         }
     }
@@ -63,6 +66,25 @@ impl NccMemory {
         let count = self.result_count.entry(parent_token_id).or_insert(0);
         *count += 1;
         *count
+    }
+
+    /// Add a concrete subnetwork result token for a parent token.
+    ///
+    /// Returns `(old_count, new_count)` for the parent token.
+    pub fn add_result(
+        &mut self,
+        parent_token_id: TokenId,
+        result_token_id: TokenId,
+    ) -> (usize, usize) {
+        if let Some(existing_parent) = self.result_owner.get(&result_token_id) {
+            let current = self.result_count(*existing_parent);
+            return (current, current);
+        }
+
+        let old_count = self.result_count(parent_token_id);
+        let new_count = self.increment_results(parent_token_id);
+        self.result_owner.insert(result_token_id, parent_token_id);
+        (old_count, new_count)
     }
 
     /// Decrement the result count for a parent token.
@@ -81,6 +103,15 @@ impl NccMemory {
         } else {
             0
         }
+    }
+
+    /// Remove a concrete subnetwork result token.
+    ///
+    /// Returns `(parent_token_id, new_count)` if the token was tracked.
+    pub fn remove_result(&mut self, result_token_id: TokenId) -> Option<(TokenId, usize)> {
+        let parent_token_id = self.result_owner.remove(&result_token_id)?;
+        let new_count = self.decrement_results(parent_token_id);
+        Some((parent_token_id, new_count))
     }
 
     /// Get the current result count for a parent token.
@@ -123,19 +154,22 @@ impl NccMemory {
     /// Remove all tracking for a parent token (cleanup on parent retraction).
     pub fn remove_parent_token(&mut self, parent_token_id: TokenId) {
         self.result_count.remove(&parent_token_id);
+        self.result_owner
+            .retain(|_, owner_parent| *owner_parent != parent_token_id);
         self.unblocked.remove(&parent_token_id);
     }
 
     /// Clear all state from this NCC memory.
     pub fn clear(&mut self) {
         self.result_count.clear();
+        self.result_owner.clear();
         self.unblocked.clear();
     }
 
     /// Check if the NCC memory has no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.result_count.is_empty() && self.unblocked.is_empty()
+        self.result_count.is_empty() && self.result_owner.is_empty() && self.unblocked.is_empty()
     }
 
     /// Verify internal consistency of the NCC memory.
@@ -155,6 +189,28 @@ impl NccMemory {
             assert!(
                 count > 0,
                 "NccMemory {:?}: token {token_id:?} has zero count in result_count map",
+                self.id
+            );
+        }
+
+        // Check 3: each tracked result token points to a parent with a non-zero count.
+        let mut per_parent_results: HashMap<TokenId, usize> = HashMap::new();
+        for (&result_token, &parent_token) in &self.result_owner {
+            let _ = result_token;
+            assert!(
+                self.result_count.contains_key(&parent_token),
+                "NccMemory {:?}: result token references parent {parent_token:?} with no count entry",
+                self.id
+            );
+            *per_parent_results.entry(parent_token).or_insert(0) += 1;
+        }
+
+        // Check 4: parent counts match tracked result tokens.
+        for (&parent_token, &count) in &self.result_count {
+            let tracked = per_parent_results.get(&parent_token).copied().unwrap_or(0);
+            assert_eq!(
+                tracked, count,
+                "NccMemory {:?}: parent {parent_token:?} count mismatch: count={count}, tracked-results={tracked}",
                 self.id
             );
         }
@@ -181,10 +237,11 @@ mod tests {
     #[test]
     fn increment_from_zero_returns_one() {
         let mut mem = NccMemory::new(NccMemoryId(0));
-        let tokens = make_token_ids(1);
+        let tokens = make_token_ids(2);
 
-        let count = mem.increment_results(tokens[0]);
-        assert_eq!(count, 1);
+        let (old_count, new_count) = mem.add_result(tokens[0], tokens[1]);
+        assert_eq!(old_count, 0);
+        assert_eq!(new_count, 1);
         assert_eq!(mem.result_count(tokens[0]), 1);
         assert!(mem.is_blocked(tokens[0]));
 
@@ -194,11 +251,12 @@ mod tests {
     #[test]
     fn increment_from_one_returns_two() {
         let mut mem = NccMemory::new(NccMemoryId(0));
-        let tokens = make_token_ids(1);
+        let tokens = make_token_ids(3);
 
-        mem.increment_results(tokens[0]);
-        let count = mem.increment_results(tokens[0]);
-        assert_eq!(count, 2);
+        let (_old, _new) = mem.add_result(tokens[0], tokens[1]);
+        let (old_count, new_count) = mem.add_result(tokens[0], tokens[2]);
+        assert_eq!(old_count, 1);
+        assert_eq!(new_count, 2);
         assert_eq!(mem.result_count(tokens[0]), 2);
 
         mem.debug_assert_consistency();
@@ -207,13 +265,13 @@ mod tests {
     #[test]
     fn decrement_from_two_returns_one() {
         let mut mem = NccMemory::new(NccMemoryId(0));
-        let tokens = make_token_ids(1);
+        let tokens = make_token_ids(3);
 
-        mem.increment_results(tokens[0]);
-        mem.increment_results(tokens[0]);
+        let (_old, _new) = mem.add_result(tokens[0], tokens[1]);
+        let (_old, _new) = mem.add_result(tokens[0], tokens[2]);
 
-        let count = mem.decrement_results(tokens[0]);
-        assert_eq!(count, 1);
+        let removed = mem.remove_result(tokens[2]);
+        assert_eq!(removed, Some((tokens[0], 1)));
         assert!(mem.is_blocked(tokens[0]));
 
         mem.debug_assert_consistency();
@@ -222,12 +280,12 @@ mod tests {
     #[test]
     fn decrement_from_one_returns_zero() {
         let mut mem = NccMemory::new(NccMemoryId(0));
-        let tokens = make_token_ids(1);
+        let tokens = make_token_ids(2);
 
-        mem.increment_results(tokens[0]);
+        let (_old, _new) = mem.add_result(tokens[0], tokens[1]);
 
-        let count = mem.decrement_results(tokens[0]);
-        assert_eq!(count, 0);
+        let removed = mem.remove_result(tokens[1]);
+        assert_eq!(removed, Some((tokens[0], 0)));
         assert!(!mem.is_blocked(tokens[0]));
 
         mem.debug_assert_consistency();
@@ -262,10 +320,10 @@ mod tests {
     #[test]
     fn remove_parent_token_cleans_everything() {
         let mut mem = NccMemory::new(NccMemoryId(0));
-        let tokens = make_token_ids(2);
+        let tokens = make_token_ids(3);
 
-        mem.increment_results(tokens[0]);
-        mem.increment_results(tokens[0]);
+        let (_old, _new) = mem.add_result(tokens[0], tokens[1]);
+        let (_old, _new) = mem.add_result(tokens[0], tokens[2]);
 
         mem.remove_parent_token(tokens[0]);
 
@@ -292,14 +350,14 @@ mod tests {
     #[test]
     fn consistency_check_passes_on_valid_state() {
         let mut mem = NccMemory::new(NccMemoryId(0));
-        let tokens = make_token_ids(3);
+        let tokens = make_token_ids(4);
 
         // Token 0: blocked with count 2
-        mem.increment_results(tokens[0]);
-        mem.increment_results(tokens[0]);
+        let (_old, _new) = mem.add_result(tokens[0], tokens[1]);
+        let (_old, _new) = mem.add_result(tokens[0], tokens[2]);
 
         // Token 1: unblocked with passthrough
-        mem.set_unblocked(tokens[1], tokens[2]);
+        mem.set_unblocked(tokens[3], tokens[1]);
 
         mem.debug_assert_consistency();
     }
