@@ -657,6 +657,20 @@ mod tests {
     }
 
     #[test]
+    fn exists_root_level_pattern_fires() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_str("(defrule any-person (exists (person ?x)) => (assert (seen-person)))")
+            .unwrap();
+        engine.load_str("(assert (person Alice))").unwrap();
+
+        assert_eq!(engine.rete.agenda.len(), 1);
+
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1, "root-level exists should fire");
+    }
+
+    #[test]
     fn exists_retract_last_removes_activation() {
         let mut engine = new_utf8_engine();
         engine

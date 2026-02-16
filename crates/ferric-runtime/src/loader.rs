@@ -158,12 +158,20 @@ impl Engine {
                     construct_forms.push(expr.clone());
                 } else {
                     // Unknown top-level form
-                    let name = list[0].as_symbol().unwrap_or("<non-symbol>").to_string();
-                    errors.push(LoadError::UnsupportedForm {
-                        name,
-                        line: list[0].span().start.line,
-                        column: list[0].span().start.column,
-                    });
+                    let (name, line, column) = if let Some(head) = list.first() {
+                        (
+                            head.as_symbol().unwrap_or("<non-symbol>").to_string(),
+                            head.span().start.line,
+                            head.span().start.column,
+                        )
+                    } else {
+                        (
+                            "<empty-list>".to_string(),
+                            expr.span().start.line,
+                            expr.span().start.column,
+                        )
+                    };
+                    errors.push(LoadError::UnsupportedForm { name, line, column });
                 }
             } else {
                 result.warnings.push(format!(
@@ -1238,6 +1246,21 @@ mod tests {
                 assert_eq!(name, "deffunction");
             }
             _ => panic!("expected UnsupportedForm error"),
+        }
+    }
+
+    #[test]
+    fn load_empty_top_level_list_returns_error_not_panic() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine.load_str("()").unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        match &errors[0] {
+            LoadError::UnsupportedForm { name, line, column } => {
+                assert_eq!(name, "<empty-list>");
+                assert_eq!((*line, *column), (1, 1));
+            }
+            other => panic!("expected UnsupportedForm, got {other:?}"),
         }
     }
 

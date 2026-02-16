@@ -394,8 +394,6 @@ impl ReteCompiler {
             }
         }
 
-        bound_vars.extend(new_bindings);
-
         if pattern.negated {
             let (neg_id, _beta_mem, _neg_mem) =
                 rete.beta
@@ -407,6 +405,7 @@ impl ReteCompiler {
                     .create_exists_node(current_parent, alpha_mem, join_tests);
             Ok(exists_id)
         } else {
+            bound_vars.extend(new_bindings);
             let join_id = self.ensure_join_node(
                 &mut rete.beta,
                 current_parent,
@@ -1363,6 +1362,92 @@ mod tests {
             );
         } else {
             panic!("Expected terminal node");
+        }
+    }
+
+    #[test]
+    fn test_negated_pattern_does_not_bind_new_variables() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut table = new_table();
+
+        let a_rel = intern(&mut table, "a");
+        let b_rel = intern(&mut table, "b");
+        let var_x = intern(&mut table, "x");
+        let rule_id = compiler.allocate_rule_id();
+
+        // (not (a ?x)) (b ?x): ?x should be introduced by the positive pattern only.
+        let pattern1 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(a_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: true,
+            exists: false,
+        };
+        let pattern2 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(b_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+        let rule = CompilableRule {
+            rule_id,
+            salience: 0,
+            patterns: vec![pattern1, pattern2],
+        };
+
+        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let join_id = terminal_parent(&rete, result.terminal_node);
+        let join_node = rete.beta.get_node(join_id).unwrap();
+        match join_node {
+            BetaNode::Join { tests, .. } => {
+                assert!(tests.is_empty(), "positive pattern should not join on ?x");
+            }
+            other => panic!("expected join node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_exists_pattern_does_not_bind_new_variables() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut table = new_table();
+
+        let a_rel = intern(&mut table, "a");
+        let b_rel = intern(&mut table, "b");
+        let var_x = intern(&mut table, "x");
+        let rule_id = compiler.allocate_rule_id();
+
+        // (exists (a ?x)) (b ?x): ?x should be introduced by the positive pattern only.
+        let pattern1 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(a_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: true,
+        };
+        let pattern2 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(b_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+        let rule = CompilableRule {
+            rule_id,
+            salience: 0,
+            patterns: vec![pattern1, pattern2],
+        };
+
+        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let join_id = terminal_parent(&rete, result.terminal_node);
+        let join_node = rete.beta.get_node(join_id).unwrap();
+        match join_node {
+            BetaNode::Join { tests, .. } => {
+                assert!(tests.is_empty(), "positive pattern should not join on ?x");
+            }
+            other => panic!("expected join node, got {other:?}"),
         }
     }
 

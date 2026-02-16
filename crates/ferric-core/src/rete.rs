@@ -3,6 +3,7 @@
 //! The Rete network combines all components of the pattern matcher to efficiently
 //! propagate facts through the network and produce rule activations.
 
+use slotmap::Key;
 use smallvec::SmallVec;
 
 use crate::agenda::{Activation, ActivationId, Agenda};
@@ -1049,11 +1050,12 @@ impl ReteNetwork {
             _ => return,
         };
 
-        // Get parent tokens
-        let parent_tokens: Vec<TokenId> = if parent_id == self.beta.root_id() {
-            // For root parent, there's a dummy parent. In practice, exists nodes
-            // are usually not direct children of root, but handle it anyway.
-            vec![]
+        let root_parent = parent_id == self.beta.root_id();
+
+        // Get parent tokens.
+        // Root-parent exists nodes use a synthetic parent key for support tracking.
+        let parent_tokens: Vec<TokenId> = if root_parent {
+            vec![TokenId::null()]
         } else {
             self.find_memory_for_node(parent_id)
                 .and_then(|mem_id| self.beta.get_memory(mem_id))
@@ -1062,11 +1064,16 @@ impl ReteNetwork {
         };
 
         for parent_token_id in parent_tokens {
-            let Some(parent_token) = self.token_store.get(parent_token_id) else {
-                continue;
+            let is_supported = if root_parent {
+                evaluate_join(fact, None, &tests)
+            } else {
+                let Some(parent_token) = self.token_store.get(parent_token_id) else {
+                    continue;
+                };
+                evaluate_join(fact, Some(parent_token), &tests)
             };
 
-            if evaluate_join(fact, Some(parent_token), &tests) {
+            if is_supported {
                 // This fact supports this parent token
                 let Some(exists_mem) = self.beta.get_exists_memory_mut(exists_memory_id) else {
                     continue;
@@ -1077,16 +1084,23 @@ impl ReteNetwork {
 
                 if old_count == 0 && new_count > 0 {
                     // Support count went 0→1: create pass-through and propagate
-                    let Some(parent_token) = self.token_store.get(parent_token_id) else {
-                        continue;
+                    let (parent_facts, parent_bindings, parent_ref) = if root_parent {
+                        (SmallVec::new(), BindingSet::new(), None)
+                    } else {
+                        let Some(parent_token) = self.token_store.get(parent_token_id) else {
+                            continue;
+                        };
+                        (
+                            parent_token.facts.clone(),
+                            parent_token.bindings.clone(),
+                            Some(parent_token_id),
+                        )
                     };
-                    let parent_facts = parent_token.facts.clone();
-                    let parent_bindings = parent_token.bindings.clone();
 
                     let passthrough_token = Token {
                         facts: parent_facts,
                         bindings: parent_bindings,
-                        parent: Some(parent_token_id),
+                        parent: parent_ref,
                         owner_node: exists_node_id,
                     };
 
@@ -2634,6 +2648,27 @@ mod tests {
         (rete, trigger_alpha, person_alpha, rule_id)
     }
 
+    /// Build a rule: (exists (person)) => activation.
+    fn build_root_exists_person(
+        symbol_table: &mut SymbolTable,
+    ) -> (ReteNetwork, AlphaMemoryId, RuleId) {
+        let mut rete = ReteNetwork::new();
+
+        let person_sym = make_symbol(symbol_table, "person");
+        let person_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(person_sym));
+        let person_alpha = rete.alpha.create_memory(person_entry);
+
+        let root = rete.beta.root_id();
+        let (exists_id, _, _) = rete.beta.create_exists_node(root, person_alpha, vec![]);
+
+        let rule_id = RuleId(1);
+        let _terminal = rete.beta.create_terminal_node(exists_id, rule_id, 0);
+
+        (rete, person_alpha, rule_id)
+    }
+
     #[test]
     fn exists_node_first_match_produces_activation() {
         let mut symbol_table = SymbolTable::new();
@@ -2657,6 +2692,47 @@ mod tests {
             rete.agenda.len(),
             1,
             "First person should produce activation"
+        );
+        rete.debug_assert_consistency();
+    }
+
+    #[test]
+    fn exists_node_root_parent_first_match_produces_activation() {
+        let mut symbol_table = SymbolTable::new();
+        let (mut rete, _, _) = build_root_exists_person(&mut symbol_table);
+        let mut fact_base = FactBase::new();
+        let person_sym = make_symbol(&mut symbol_table, "person");
+
+        let person_id = fact_base.assert_ordered(person_sym, smallvec![Value::Integer(1)]);
+        let person_fact = fact_base.get(person_id).unwrap().fact.clone();
+        rete.assert_fact(person_id, &person_fact, &fact_base);
+
+        assert_eq!(
+            rete.agenda.len(),
+            1,
+            "Root exists should activate on first support"
+        );
+        rete.debug_assert_consistency();
+    }
+
+    #[test]
+    fn exists_node_root_parent_retract_last_support_removes_activation() {
+        let mut symbol_table = SymbolTable::new();
+        let (mut rete, _, _) = build_root_exists_person(&mut symbol_table);
+        let mut fact_base = FactBase::new();
+        let person_sym = make_symbol(&mut symbol_table, "person");
+
+        let person_id = fact_base.assert_ordered(person_sym, smallvec![Value::Integer(1)]);
+        let person_fact = fact_base.get(person_id).unwrap().fact.clone();
+        rete.assert_fact(person_id, &person_fact, &fact_base);
+        assert_eq!(rete.agenda.len(), 1);
+
+        fact_base.retract(person_id);
+        rete.retract_fact(person_id, &person_fact, &fact_base);
+        assert_eq!(
+            rete.agenda.len(),
+            0,
+            "Root exists activation should retract when last support disappears"
         );
         rete.debug_assert_consistency();
     }
