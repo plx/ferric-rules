@@ -229,6 +229,26 @@ impl Engine {
         Ok(())
     }
 
+    fn execute_activation_actions(
+        &mut self,
+        rule_id: RuleId,
+        token_id: ferric_core::token::TokenId,
+    ) {
+        if let Some(token) = self.rete.token_store.get(token_id).cloned() {
+            if let Some(info) = self.rule_info.get(&rule_id).cloned() {
+                let _errors = actions::execute_actions(
+                    &mut self.fact_base,
+                    &mut self.rete,
+                    &mut self.symbol_table,
+                    &mut self.halted,
+                    &self.config,
+                    &token,
+                    &info,
+                );
+            }
+        }
+    }
+
     /// Transfer ownership of this engine to the current thread.
     ///
     /// # Safety
@@ -263,22 +283,9 @@ impl Engine {
             token_id: activation.token,
         };
 
-        // Execute RHS actions if rule info is available
-        if let Some(token) = self.rete.token_store.get(activation.token).cloned() {
-            if let Some(info) = self.rule_info.get(&activation.rule).cloned() {
-                let _errors = actions::execute_actions(
-                    &mut self.fact_base,
-                    &mut self.rete,
-                    &mut self.symbol_table,
-                    &mut self.halted,
-                    &self.config,
-                    &token,
-                    &info,
-                );
-                // For Phase 2, action errors are silently ignored.
-                // Future phases can report them.
-            }
-        }
+        self.execute_activation_actions(activation.rule, activation.token);
+        // For Phase 2, action errors are silently ignored.
+        // Future phases can report them.
 
         Ok(Some(fired))
     }
@@ -317,20 +324,7 @@ impl Engine {
                 });
             };
 
-            // Execute RHS actions
-            if let Some(token) = self.rete.token_store.get(activation.token).cloned() {
-                if let Some(info) = self.rule_info.get(&activation.rule).cloned() {
-                    let _errors = actions::execute_actions(
-                        &mut self.fact_base,
-                        &mut self.rete,
-                        &mut self.symbol_table,
-                        &mut self.halted,
-                        &self.config,
-                        &token,
-                        &info,
-                    );
-                }
-            }
+            self.execute_activation_actions(activation.rule, activation.token);
 
             rules_fired += 1;
         }

@@ -362,25 +362,8 @@ impl Engine {
         match literal {
             LiteralKind::Integer(n) => Some(Value::Integer(*n)),
             LiteralKind::Float(f) => Some(Value::Float(*f)),
-            LiteralKind::String(s) => match FerricString::new(s, self.config.string_encoding) {
-                Ok(fs) => Some(Value::String(fs)),
-                Err(e) => {
-                    Self::warn_with_detail(result, line, "string encoding error", &e);
-                    None
-                }
-            },
-            LiteralKind::Symbol(s) => {
-                match self
-                    .symbol_table
-                    .intern_symbol(s, self.config.string_encoding)
-                {
-                    Ok(sym) => Some(Value::Symbol(sym)),
-                    Err(e) => {
-                        Self::warn_with_detail(result, line, "symbol encoding error", &e);
-                        None
-                    }
-                }
-            }
+            LiteralKind::String(s) => self.warned_string_value(s, line, result),
+            LiteralKind::Symbol(s) => self.warned_symbol_value(s, line, result),
         }
     }
 
@@ -439,41 +422,48 @@ impl Engine {
     /// Returns `None` for unsupported atom types (variables, connectives).
     fn atom_to_value(&mut self, expr: &SExpr, result: &mut LoadResult) -> Option<Value> {
         let atom = expr.as_atom()?;
+        let line = expr.span().start.line;
 
         match atom {
             Atom::Integer(n) => Some(Value::Integer(*n)),
             Atom::Float(f) => Some(Value::Float(*f)),
-            Atom::String(s) => match FerricString::new(s, self.config.string_encoding) {
-                Ok(fs) => Some(Value::String(fs)),
-                Err(e) => {
-                    Self::warn_with_detail(
-                        result,
-                        expr.span().start.line,
-                        "string encoding error",
-                        &e,
-                    );
-                    None
-                }
-            },
-            Atom::Symbol(s) => {
-                match self
-                    .symbol_table
-                    .intern_symbol(s, self.config.string_encoding)
-                {
-                    Ok(sym) => Some(Value::Symbol(sym)),
-                    Err(e) => {
-                        Self::warn_with_detail(
-                            result,
-                            expr.span().start.line,
-                            "symbol encoding error",
-                            &e,
-                        );
-                        None
-                    }
-                }
-            }
+            Atom::String(s) => self.warned_string_value(s, line, result),
+            Atom::Symbol(s) => self.warned_symbol_value(s, line, result),
             // Variables and connectives are not supported as fact values in Phase 1
             Atom::SingleVar(_) | Atom::MultiVar(_) | Atom::GlobalVar(_) | Atom::Connective(_) => {
+                None
+            }
+        }
+    }
+
+    fn warned_string_value(
+        &self,
+        value: &str,
+        line: u32,
+        result: &mut LoadResult,
+    ) -> Option<Value> {
+        match FerricString::new(value, self.config.string_encoding) {
+            Ok(fs) => Some(Value::String(fs)),
+            Err(error) => {
+                Self::warn_with_detail(result, line, "string encoding error", &error);
+                None
+            }
+        }
+    }
+
+    fn warned_symbol_value(
+        &mut self,
+        symbol: &str,
+        line: u32,
+        result: &mut LoadResult,
+    ) -> Option<Value> {
+        match self
+            .symbol_table
+            .intern_symbol(symbol, self.config.string_encoding)
+        {
+            Ok(sym) => Some(Value::Symbol(sym)),
+            Err(error) => {
+                Self::warn_with_detail(result, line, "symbol encoding error", &error);
                 None
             }
         }
@@ -550,7 +540,7 @@ impl Engine {
                     fact_address_vars.insert(name, fact_index);
                 }
             }
-            if Self::condition_advances_fact_index(&condition) {
+            if Self::condition_has_fact_address(&condition) {
                 fact_index += 1;
             }
             conditions.push(condition);
@@ -569,10 +559,6 @@ impl Engine {
             CompilableCondition::Pattern(pattern) => !pattern.negated && !pattern.exists,
             CompilableCondition::Ncc(_) => false,
         }
-    }
-
-    fn condition_advances_fact_index(condition: &CompilableCondition) -> bool {
-        Self::condition_has_fact_address(condition)
     }
 
     fn translate_condition(&mut self, pattern: &Pattern) -> Result<CompilableCondition, LoadError> {
@@ -622,10 +608,7 @@ impl Engine {
     fn translate_pattern(&mut self, pattern: &Pattern) -> Result<CompilablePattern, LoadError> {
         match pattern {
             Pattern::Ordered(ordered) => {
-                let sym = self
-                    .symbol_table
-                    .intern_symbol(&ordered.relation, self.config.string_encoding)
-                    .map_err(|e| LoadError::Compile(format!("encoding error: {e}")))?;
+                let sym = self.compile_symbol(&ordered.relation)?;
                 let entry_type = AlphaEntryType::OrderedRelation(sym);
                 let mut constant_tests = Vec::new();
                 let mut variable_slots = Vec::new();
@@ -714,10 +697,7 @@ impl Engine {
                 }
             }
             Constraint::Variable(name, _span) => {
-                let sym = self
-                    .symbol_table
-                    .intern_symbol(name, self.config.string_encoding)
-                    .map_err(|e| LoadError::Compile(format!("encoding error: {e}")))?;
+                let sym = self.compile_symbol(name)?;
                 variable_slots.push((slot, sym));
             }
             Constraint::Wildcard(_) | Constraint::MultiWildcard(_) => {
@@ -770,18 +750,28 @@ impl Engine {
             LiteralKind::Integer(n) => Ok(Some(AtomKey::Integer(*n))),
             LiteralKind::Float(f) => Ok(Some(AtomKey::FloatBits(f.to_bits()))),
             LiteralKind::Symbol(s) => {
-                let sym = self
-                    .symbol_table
-                    .intern_symbol(s, self.config.string_encoding)
-                    .map_err(|e| LoadError::Compile(format!("encoding error: {e}")))?;
+                let sym = self.compile_symbol(s)?;
                 Ok(Some(AtomKey::Symbol(sym)))
             }
             LiteralKind::String(s) => {
-                let fs = FerricString::new(s, self.config.string_encoding)
-                    .map_err(|e| LoadError::Compile(format!("encoding error: {e}")))?;
+                let fs = self.compile_string(s)?;
                 Ok(Some(AtomKey::String(fs)))
             }
         }
+    }
+
+    fn compile_encoding_error(error: impl std::fmt::Display) -> LoadError {
+        LoadError::Compile(format!("encoding error: {error}"))
+    }
+
+    fn compile_symbol(&mut self, symbol: &str) -> Result<ferric_core::Symbol, LoadError> {
+        self.symbol_table
+            .intern_symbol(symbol, self.config.string_encoding)
+            .map_err(Self::compile_encoding_error)
+    }
+
+    fn compile_string(&self, value: &str) -> Result<FerricString, LoadError> {
+        FerricString::new(value, self.config.string_encoding).map_err(Self::compile_encoding_error)
     }
 
     fn warn_at_line(result: &mut LoadResult, line: u32, message: &str) {
@@ -800,15 +790,21 @@ impl Engine {
     }
 
     fn unsupported_pattern(kind: &str, span: &ferric_parser::Span, detail: &str) -> LoadError {
-        LoadError::Compile(format!(
-            "unsupported pattern form `{kind}` at line {}, column {}: {detail}",
-            span.start.line, span.start.column
-        ))
+        Self::unsupported_compile_form("pattern", kind, span, detail)
     }
 
     fn unsupported_constraint(kind: &str, span: &ferric_parser::Span, detail: &str) -> LoadError {
+        Self::unsupported_compile_form("constraint", kind, span, detail)
+    }
+
+    fn unsupported_compile_form(
+        category: &str,
+        kind: &str,
+        span: &ferric_parser::Span,
+        detail: &str,
+    ) -> LoadError {
         LoadError::Compile(format!(
-            "unsupported constraint form `{kind}` at line {}, column {}: {detail}",
+            "unsupported {category} form `{kind}` at line {}, column {}: {detail}",
             span.start.line, span.start.column
         ))
     }

@@ -127,16 +127,9 @@ impl ReteCompiler {
         rete: &mut ReteNetwork,
         rule: &CompilableRule,
     ) -> Result<CompileResult, CompileError> {
-        if rule.patterns.is_empty() {
-            return Err(CompileError::EmptyRule);
-        }
+        Self::ensure_non_empty(&rule.patterns)?;
         Self::validate_rule_patterns(&rule.patterns)?;
-        let conditions: Vec<_> = rule
-            .patterns
-            .iter()
-            .cloned()
-            .map(CompilableCondition::Pattern)
-            .collect();
+        let conditions = Self::patterns_as_conditions(&rule.patterns);
         self.compile_conditions_unchecked(rete, rule.rule_id, rule.salience, &conditions)
     }
 
@@ -148,11 +141,24 @@ impl ReteCompiler {
         salience: i32,
         conditions: &[CompilableCondition],
     ) -> Result<CompileResult, CompileError> {
-        if conditions.is_empty() {
-            return Err(CompileError::EmptyRule);
-        }
+        Self::ensure_non_empty(conditions)?;
         Self::validate_conditions(conditions)?;
         self.compile_conditions_unchecked(rete, rule_id, salience, conditions)
+    }
+
+    fn ensure_non_empty<T>(items: &[T]) -> Result<(), CompileError> {
+        if items.is_empty() {
+            return Err(CompileError::EmptyRule);
+        }
+        Ok(())
+    }
+
+    fn patterns_as_conditions(patterns: &[CompilablePattern]) -> Vec<CompilableCondition> {
+        patterns
+            .iter()
+            .cloned()
+            .map(CompilableCondition::Pattern)
+            .collect()
     }
 
     fn compile_conditions_unchecked(
@@ -206,15 +212,14 @@ impl ReteCompiler {
 
     fn validate_rule_patterns(patterns: &[CompilablePattern]) -> Result<(), CompileError> {
         let mut errors = Vec::new();
-        for (idx, pattern) in patterns.iter().enumerate() {
-            let context = format!("pattern {idx}");
-            Self::validate_pattern_structure(pattern, &context, true, true, &mut errors);
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(CompileError::Validation(errors))
-        }
+        Self::validate_pattern_slice(
+            patterns,
+            |idx| format!("pattern {idx}"),
+            true,
+            true,
+            &mut errors,
+        );
+        Self::finish_validation(errors)
     }
 
     fn validate_conditions(conditions: &[CompilableCondition]) -> Result<(), CompileError> {
@@ -250,11 +255,46 @@ impl ReteCompiler {
                 }
             }
         }
+        Self::finish_validation(errors)
+    }
+
+    fn validate_pattern_slice<F>(
+        patterns: &[CompilablePattern],
+        mut context_for: F,
+        allow_negated: bool,
+        allow_exists: bool,
+        errors: &mut Vec<PatternValidationError>,
+    ) where
+        F: FnMut(usize) -> String,
+    {
+        for (idx, pattern) in patterns.iter().enumerate() {
+            let context = context_for(idx);
+            Self::validate_pattern_structure(
+                pattern,
+                &context,
+                allow_negated,
+                allow_exists,
+                errors,
+            );
+        }
+    }
+
+    fn finish_validation(errors: Vec<PatternValidationError>) -> Result<(), CompileError> {
         if errors.is_empty() {
             Ok(())
         } else {
             Err(CompileError::Validation(errors))
         }
+    }
+
+    fn unsupported_structure_compile_error(description: impl Into<String>) -> CompileError {
+        CompileError::Validation(vec![PatternValidationError::new(
+            PatternViolation::UnsupportedNestingCombination {
+                description: description.into(),
+            },
+            None,
+            ValidationStage::ReteCompilation,
+        )])
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -428,13 +468,9 @@ impl ReteCompiler {
         alpha_memories: &mut Vec<AlphaMemoryId>,
     ) -> Result<NodeId, CompileError> {
         if subpatterns.is_empty() {
-            return Err(CompileError::Validation(vec![PatternValidationError::new(
-                PatternViolation::UnsupportedNestingCombination {
-                    description: "NCC requires at least one subpattern".to_string(),
-                },
-                None,
-                ValidationStage::ReteCompilation,
-            )]));
+            return Err(Self::unsupported_structure_compile_error(
+                "NCC requires at least one subpattern",
+            ));
         }
 
         // Create the main-chain NCC node first, then wire its partner once the
@@ -1567,6 +1603,129 @@ mod tests {
                 assert!(errors[0].to_string().contains("cannot be negated"));
             }
             other => panic!("expected validation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_entry_points_share_pattern_validation_behavior() {
+        let mut table = new_table();
+        let rel = intern(&mut table, "person");
+        let var_x = intern(&mut table, "x");
+
+        let invalid_pattern = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(rel),
+            constant_tests: vec![],
+            variable_slots: vec![
+                (SlotIndex::Ordered(0), var_x),
+                (SlotIndex::Ordered(1), var_x),
+            ],
+            negated: false,
+            exists: false,
+        };
+
+        let mut rule_compiler = ReteCompiler::new();
+        let mut rule_rete = ReteNetwork::new();
+        let rule = CompilableRule {
+            rule_id: rule_compiler.allocate_rule_id(),
+            salience: 0,
+            patterns: vec![invalid_pattern.clone()],
+        };
+        let rule_error = rule_compiler
+            .compile_rule(&mut rule_rete, &rule)
+            .unwrap_err();
+
+        let mut condition_compiler = ReteCompiler::new();
+        let mut condition_rete = ReteNetwork::new();
+        let condition_rule_id = condition_compiler.allocate_rule_id();
+        let condition_error = condition_compiler
+            .compile_conditions(
+                &mut condition_rete,
+                condition_rule_id,
+                0,
+                &[CompilableCondition::Pattern(invalid_pattern)],
+            )
+            .unwrap_err();
+
+        match (rule_error, condition_error) {
+            (CompileError::Validation(rule_errors), CompileError::Validation(condition_errors)) => {
+                assert_eq!(rule_errors.len(), 1);
+                assert_eq!(condition_errors.len(), 1);
+                assert_eq!(rule_errors[0].code, condition_errors[0].code);
+                assert_eq!(rule_errors[0].stage, condition_errors[0].stage);
+
+                let common_detail = "reuses variable symbol across slots Ordered(0) and Ordered(1)";
+                assert!(rule_errors[0].to_string().contains(common_detail));
+                assert!(condition_errors[0].to_string().contains(common_detail));
+            }
+            (lhs, rhs) => {
+                panic!("expected validation errors from both entry points, got {lhs:?} and {rhs:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn test_compile_entry_points_produce_equivalent_join_shape() {
+        let mut table = new_table();
+        let person_rel = intern(&mut table, "person");
+        let age_rel = intern(&mut table, "age");
+        let var_x = intern(&mut table, "x");
+
+        let pattern_1 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(person_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+        let pattern_2 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(age_rel),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+
+        let mut rule_compiler = ReteCompiler::new();
+        let mut rule_rete = ReteNetwork::new();
+        let rule = CompilableRule {
+            rule_id: rule_compiler.allocate_rule_id(),
+            salience: 5,
+            patterns: vec![pattern_1.clone(), pattern_2.clone()],
+        };
+        let rule_result = rule_compiler.compile_rule(&mut rule_rete, &rule).unwrap();
+        let rule_join_id = terminal_parent(&rule_rete, rule_result.terminal_node);
+        let rule_join = rule_rete.beta.get_node(rule_join_id).unwrap();
+
+        let mut condition_compiler = ReteCompiler::new();
+        let mut condition_rete = ReteNetwork::new();
+        let condition_rule_id = condition_compiler.allocate_rule_id();
+        let conditions = vec![
+            CompilableCondition::Pattern(pattern_1),
+            CompilableCondition::Pattern(pattern_2),
+        ];
+        let condition_result = condition_compiler
+            .compile_conditions(&mut condition_rete, condition_rule_id, 5, &conditions)
+            .unwrap();
+        let condition_join_id = terminal_parent(&condition_rete, condition_result.terminal_node);
+        let condition_join = condition_rete.beta.get_node(condition_join_id).unwrap();
+
+        assert_eq!(rule_result.var_map, condition_result.var_map);
+        assert_eq!(
+            rule_result.alpha_memories.len(),
+            condition_result.alpha_memories.len()
+        );
+
+        match (rule_join, condition_join) {
+            (
+                BetaNode::Join {
+                    tests: rule_tests, ..
+                },
+                BetaNode::Join {
+                    tests: condition_tests,
+                    ..
+                },
+            ) => assert_eq!(rule_tests.len(), condition_tests.len()),
+            (lhs, rhs) => panic!("expected join nodes for both paths, got {lhs:?} and {rhs:?}"),
         }
     }
 }

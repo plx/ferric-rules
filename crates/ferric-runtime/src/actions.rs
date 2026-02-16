@@ -4,10 +4,12 @@ use std::collections::HashMap;
 
 use ferric_core::binding::VarMap;
 use ferric_core::token::Token;
-use ferric_core::{Fact, FactBase, FactId, FerricString, ReteNetwork, SymbolTable, Value};
+use ferric_core::{Fact, FactBase, FactId, FerricString, ReteNetwork, Symbol, SymbolTable, Value};
 use ferric_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
 
 use crate::config::EngineConfig;
+
+type OrderedFields = smallvec::SmallVec<[Value; 8]>;
 
 /// Compiled rule metadata stored for action execution.
 #[derive(Clone, Debug)]
@@ -154,9 +156,7 @@ fn execute_assert(
                     fields.push(value);
                 }
 
-                let fact_id = fact_base.assert_ordered(relation_sym, fields);
-                let fact = fact_base.get(fact_id).unwrap().fact.clone();
-                rete.assert_fact(fact_id, &fact, fact_base);
+                assert_ordered_and_propagate(fact_base, rete, relation_sym, fields);
             }
             _ => return Err(ActionError::InvalidAssert),
         }
@@ -175,10 +175,7 @@ fn execute_retract(
         match arg {
             ActionExpr::Variable(var_name, _) => {
                 let fact_id = resolve_fact_address(token, rule_info, var_name)?;
-                if fact_base.get(fact_id).is_none() {
-                    return Err(ActionError::FactNotFound(fact_id));
-                }
-                let fact = fact_base.get(fact_id).unwrap().fact.clone();
+                let fact = get_fact_or_error(fact_base, fact_id)?;
                 rete.retract_fact(fact_id, &fact, fact_base);
                 fact_base.retract(fact_id);
             }
@@ -197,58 +194,27 @@ fn execute_modify(
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
 ) -> Result<(), ActionError> {
-    if args.is_empty() {
-        return Err(ActionError::InvalidRetract);
-    }
-
-    // First arg is the fact address variable
-    let fact_id = match &args[0] {
-        ActionExpr::Variable(var_name, _) => resolve_fact_address(token, rule_info, var_name)?,
-        _ => return Err(ActionError::InvalidRetract),
+    let fact_id = resolve_target_fact_id(args, token, rule_info)?;
+    let original_fact = get_fact_or_error(fact_base, fact_id)?;
+    let Some((relation, mut fields)) = ordered_relation_and_fields(&original_fact) else {
+        return Ok(());
     };
 
-    let entry = fact_base
-        .get(fact_id)
-        .ok_or(ActionError::FactNotFound(fact_id))?;
-    let original_fact = entry.fact.clone();
-
-    // Clone the original fact's fields for modification
-    let mut fields: smallvec::SmallVec<[Value; 8]> = match &original_fact {
-        Fact::Ordered(ordered) => ordered.fields.clone(),
-        Fact::Template(_) => return Ok(()), // Template modify not yet supported
-    };
-    let relation = match &original_fact {
-        Fact::Ordered(ordered) => ordered.relation,
-        Fact::Template(_) => return Ok(()),
-    };
-
-    // Apply slot overrides (for ordered facts, these are positional)
-    // In CLIPS, modify uses (slot-name value) syntax. For ordered facts in Phase 2,
-    // we interpret FunctionCall args as positional overrides where the "name" is the index.
-    // But the more common usage is with template facts, which we don't fully support yet.
-    // For now, just apply any remaining arguments as additional field values if they're simple values.
-    for slot_override in &args[1..] {
-        if let ActionExpr::FunctionCall(fc) = slot_override {
-            // Try to parse the function name as a field index for ordered fact positional override
-            if let Ok(index) = fc.name.parse::<usize>() {
-                if index < fields.len() {
-                    if let Some(first_arg) = fc.args.first() {
-                        fields[index] =
-                            eval_expr(token, rule_info, symbol_table, config, first_arg)?;
-                    }
-                }
-            }
-        }
-    }
+    apply_ordered_slot_overrides(
+        &mut fields,
+        &args[1..],
+        token,
+        rule_info,
+        symbol_table,
+        config,
+    )?;
 
     // Retract original
     rete.retract_fact(fact_id, &original_fact, fact_base);
     fact_base.retract(fact_id);
 
     // Assert modified
-    let new_id = fact_base.assert_ordered(relation, fields);
-    let new_fact = fact_base.get(new_id).unwrap().fact.clone();
-    rete.assert_fact(new_id, &new_fact, fact_base);
+    assert_ordered_and_propagate(fact_base, rete, relation, fields);
 
     Ok(())
 }
@@ -262,48 +228,99 @@ fn execute_duplicate(
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
 ) -> Result<(), ActionError> {
+    let fact_id = resolve_target_fact_id(args, token, rule_info)?;
+    let original_fact = get_fact_or_error(fact_base, fact_id)?;
+    let Some((relation, mut fields)) = ordered_relation_and_fields(&original_fact) else {
+        return Ok(());
+    };
+
+    apply_ordered_slot_overrides(
+        &mut fields,
+        &args[1..],
+        token,
+        rule_info,
+        symbol_table,
+        config,
+    )?;
+
+    // Assert duplicate (original stays)
+    assert_ordered_and_propagate(fact_base, rete, relation, fields);
+
+    Ok(())
+}
+
+fn assert_ordered_and_propagate(
+    fact_base: &mut FactBase,
+    rete: &mut ReteNetwork,
+    relation: Symbol,
+    fields: OrderedFields,
+) -> FactId {
+    let fact_id = fact_base.assert_ordered(relation, fields);
+    let fact = fact_base
+        .get(fact_id)
+        .expect("asserted fact should be present in fact base")
+        .fact
+        .clone();
+    rete.assert_fact(fact_id, &fact, fact_base);
+    fact_id
+}
+
+fn get_fact_or_error(fact_base: &FactBase, fact_id: FactId) -> Result<Fact, ActionError> {
+    fact_base
+        .get(fact_id)
+        .map(|entry| entry.fact.clone())
+        .ok_or(ActionError::FactNotFound(fact_id))
+}
+
+fn resolve_target_fact_id(
+    args: &[ActionExpr],
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+) -> Result<FactId, ActionError> {
     if args.is_empty() {
         return Err(ActionError::InvalidRetract);
     }
 
-    // First arg is the fact address variable
-    let fact_id = match &args[0] {
-        ActionExpr::Variable(var_name, _) => resolve_fact_address(token, rule_info, var_name)?,
-        _ => return Err(ActionError::InvalidRetract),
-    };
+    match &args[0] {
+        ActionExpr::Variable(var_name, _) => resolve_fact_address(token, rule_info, var_name),
+        _ => Err(ActionError::InvalidRetract),
+    }
+}
 
-    let entry = fact_base
-        .get(fact_id)
-        .ok_or(ActionError::FactNotFound(fact_id))?;
-    let original_fact = entry.fact.clone();
+fn ordered_relation_and_fields(fact: &Fact) -> Option<(Symbol, OrderedFields)> {
+    match fact {
+        Fact::Ordered(ordered) => Some((ordered.relation, ordered.fields.clone())),
+        Fact::Template(_) => None,
+    }
+}
 
-    let mut fields: smallvec::SmallVec<[Value; 8]> = match &original_fact {
-        Fact::Ordered(ordered) => ordered.fields.clone(),
-        Fact::Template(_) => return Ok(()),
-    };
-    let relation = match &original_fact {
-        Fact::Ordered(ordered) => ordered.relation,
-        Fact::Template(_) => return Ok(()),
-    };
+fn apply_ordered_slot_overrides(
+    fields: &mut OrderedFields,
+    slot_overrides: &[ActionExpr],
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    symbol_table: &mut SymbolTable,
+    config: &EngineConfig,
+) -> Result<(), ActionError> {
+    // In CLIPS, modify uses (slot-name value) syntax. For ordered facts in Phase 2,
+    // we interpret FunctionCall args as positional overrides where the "name" is the index.
+    // But the more common usage is with template facts, which we don't fully support yet.
+    for slot_override in slot_overrides {
+        let ActionExpr::FunctionCall(fc) = slot_override else {
+            continue;
+        };
 
-    // Apply slot overrides (same as modify)
-    for slot_override in &args[1..] {
-        if let ActionExpr::FunctionCall(fc) = slot_override {
-            if let Ok(index) = fc.name.parse::<usize>() {
-                if index < fields.len() {
-                    if let Some(first_arg) = fc.args.first() {
-                        fields[index] =
-                            eval_expr(token, rule_info, symbol_table, config, first_arg)?;
-                    }
-                }
-            }
+        let Ok(index) = fc.name.parse::<usize>() else {
+            continue;
+        };
+        if index >= fields.len() {
+            continue;
+        }
+
+        if let Some(first_arg) = fc.args.first() {
+            fields[index] = eval_expr(token, rule_info, symbol_table, config, first_arg)?;
         }
     }
-
-    // Assert duplicate (original stays)
-    let new_id = fact_base.assert_ordered(relation, fields);
-    let new_fact = fact_base.get(new_id).unwrap().fact.clone();
-    rete.assert_fact(new_id, &new_fact, fact_base);
 
     Ok(())
 }

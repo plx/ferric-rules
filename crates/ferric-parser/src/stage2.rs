@@ -727,68 +727,88 @@ fn interpret_relation_pattern(list: &[SExpr], expr: &SExpr) -> Result<Pattern, I
         .ok_or_else(|| InterpretError::expected("pattern name (symbol)", list[0].span()))?
         .to_string();
 
-    // Determine if this is a template pattern by checking if sub-elements are (name value) lists
-    let is_template = list[1..].iter().all(|elem| {
-        if let Some(sub_list) = elem.as_list() {
-            !sub_list.is_empty() && sub_list[0].as_symbol().is_some()
-        } else {
-            false
-        }
-    });
-
-    if is_template && !list[1..].is_empty() {
-        // Template pattern
-        let mut slot_constraints = Vec::new();
-        for slot_expr in &list[1..] {
-            let slot_list = slot_expr.as_list().ok_or_else(|| {
-                InterpretError::expected("slot constraint (list)", slot_expr.span())
-            })?;
-
-            if slot_list.is_empty() {
-                return Err(InterpretError::invalid(
-                    "empty slot constraint",
-                    slot_expr.span(),
-                ));
-            }
-
-            let slot_name = slot_list[0]
-                .as_symbol()
-                .ok_or_else(|| InterpretError::expected("slot name (symbol)", slot_list[0].span()))?
-                .to_string();
-
-            // For Phase 2, support single constraint per slot
-            let constraint = if slot_list.len() > 1 {
-                interpret_constraint(&slot_list[1])?
-            } else {
-                // Empty slot means wildcard
-                Constraint::Wildcard(slot_expr.span())
-            };
-
-            slot_constraints.push(SlotConstraint {
-                slot_name,
-                constraint,
-                span: slot_expr.span(),
-            });
-        }
-
-        Ok(Pattern::Template(TemplatePattern {
-            template: relation,
-            slot_constraints,
-            span: expr.span(),
-        }))
+    if is_template_style_fields(&list[1..]) {
+        interpret_template_pattern(relation, &list[1..], expr.span())
     } else {
-        // Ordered pattern
-        let mut constraints = Vec::new();
-        for field_expr in &list[1..] {
-            constraints.push(interpret_constraint(field_expr)?);
-        }
-
-        Ok(Pattern::Ordered(OrderedPattern {
-            relation,
-            constraints,
-            span: expr.span(),
-        }))
+        interpret_ordered_pattern(relation, &list[1..], expr.span())
     }
+}
+
+fn is_template_style_fields(fields: &[SExpr]) -> bool {
+    !fields.is_empty() && fields.iter().all(is_named_pair_list)
+}
+
+fn is_named_pair_list(expr: &SExpr) -> bool {
+    let Some(sub_list) = expr.as_list() else {
+        return false;
+    };
+
+    !sub_list.is_empty() && sub_list[0].as_symbol().is_some()
+}
+
+fn interpret_template_pattern(
+    relation: String,
+    slot_exprs: &[SExpr],
+    span: Span,
+) -> Result<Pattern, InterpretError> {
+    let mut slot_constraints = Vec::with_capacity(slot_exprs.len());
+    for slot_expr in slot_exprs {
+        slot_constraints.push(interpret_pattern_slot_constraint(slot_expr)?);
+    }
+
+    Ok(Pattern::Template(TemplatePattern {
+        template: relation,
+        slot_constraints,
+        span,
+    }))
+}
+
+fn interpret_pattern_slot_constraint(slot_expr: &SExpr) -> Result<SlotConstraint, InterpretError> {
+    let slot_list = slot_expr
+        .as_list()
+        .ok_or_else(|| InterpretError::expected("slot constraint (list)", slot_expr.span()))?;
+
+    if slot_list.is_empty() {
+        return Err(InterpretError::invalid(
+            "empty slot constraint",
+            slot_expr.span(),
+        ));
+    }
+
+    let slot_name = slot_list[0]
+        .as_symbol()
+        .ok_or_else(|| InterpretError::expected("slot name (symbol)", slot_list[0].span()))?
+        .to_string();
+
+    // For Phase 2, support single constraint per slot.
+    let constraint = if slot_list.len() > 1 {
+        interpret_constraint(&slot_list[1])?
+    } else {
+        Constraint::Wildcard(slot_expr.span())
+    };
+
+    Ok(SlotConstraint {
+        slot_name,
+        constraint,
+        span: slot_expr.span(),
+    })
+}
+
+fn interpret_ordered_pattern(
+    relation: String,
+    field_exprs: &[SExpr],
+    span: Span,
+) -> Result<Pattern, InterpretError> {
+    let mut constraints = Vec::with_capacity(field_exprs.len());
+    for field_expr in field_exprs {
+        constraints.push(interpret_constraint(field_expr)?);
+    }
+
+    Ok(Pattern::Ordered(OrderedPattern {
+        relation,
+        constraints,
+        span,
+    }))
 }
 
 /// Interpret a single constraint from a pattern field.
@@ -997,9 +1017,9 @@ fn interpret_slot_definition(expr: &SExpr) -> Result<SlotDefinition, InterpretEr
 fn interpret_default_value(expr: &SExpr) -> Result<DefaultValue, InterpretError> {
     // Check for special symbols ?NONE and ?DERIVE
     if let Some(Atom::SingleVar(name)) = expr.as_atom() {
-        if name.to_uppercase() == "NONE" {
+        if name.eq_ignore_ascii_case("NONE") {
             return Ok(DefaultValue::None);
-        } else if name.to_uppercase() == "DERIVE" {
+        } else if name.eq_ignore_ascii_case("DERIVE") {
             return Ok(DefaultValue::Derive);
         }
     }
@@ -1058,69 +1078,78 @@ fn interpret_fact_body(expr: &SExpr) -> Result<FactBody, InterpretError> {
         })?
         .to_string();
 
-    // Determine if this is a template fact by checking if sub-elements are (name value) lists
-    let is_template = list[1..].iter().all(|elem| {
-        if let Some(sub_list) = elem.as_list() {
-            !sub_list.is_empty() && sub_list[0].as_symbol().is_some()
-        } else {
-            false
-        }
-    });
-
-    if is_template && !list[1..].is_empty() {
-        // Template fact
-        let mut slot_values = Vec::new();
-        for slot_expr in &list[1..] {
-            let slot_list = slot_expr
-                .as_list()
-                .ok_or_else(|| InterpretError::expected("slot value (list)", slot_expr.span()))?;
-
-            if slot_list.is_empty() {
-                return Err(InterpretError::invalid(
-                    "empty slot value",
-                    slot_expr.span(),
-                ));
-            }
-
-            let slot_name = slot_list[0]
-                .as_symbol()
-                .ok_or_else(|| InterpretError::expected("slot name (symbol)", slot_list[0].span()))?
-                .to_string();
-
-            if slot_list.len() < 2 {
-                return Err(InterpretError::missing(
-                    "value for slot in fact",
-                    slot_expr.span(),
-                ));
-            }
-
-            let value = interpret_fact_value(&slot_list[1])?;
-
-            slot_values.push(FactSlotValue {
-                name: slot_name,
-                value,
-                span: slot_expr.span(),
-            });
-        }
-
-        Ok(FactBody::Template(TemplateFactBody {
-            template: name,
-            slot_values,
-            span: expr.span(),
-        }))
+    if is_template_style_fields(&list[1..]) {
+        interpret_template_fact(name, &list[1..], expr.span())
     } else {
-        // Ordered fact
-        let mut values = Vec::new();
-        for value_expr in &list[1..] {
-            values.push(interpret_fact_value(value_expr)?);
-        }
-
-        Ok(FactBody::Ordered(OrderedFactBody {
-            relation: name,
-            values,
-            span: expr.span(),
-        }))
+        interpret_ordered_fact(name, &list[1..], expr.span())
     }
+}
+
+fn interpret_template_fact(
+    template: String,
+    slot_exprs: &[SExpr],
+    span: Span,
+) -> Result<FactBody, InterpretError> {
+    let mut slot_values = Vec::with_capacity(slot_exprs.len());
+    for slot_expr in slot_exprs {
+        slot_values.push(interpret_fact_slot_value(slot_expr)?);
+    }
+
+    Ok(FactBody::Template(TemplateFactBody {
+        template,
+        slot_values,
+        span,
+    }))
+}
+
+fn interpret_fact_slot_value(slot_expr: &SExpr) -> Result<FactSlotValue, InterpretError> {
+    let slot_list = slot_expr
+        .as_list()
+        .ok_or_else(|| InterpretError::expected("slot value (list)", slot_expr.span()))?;
+
+    if slot_list.is_empty() {
+        return Err(InterpretError::invalid(
+            "empty slot value",
+            slot_expr.span(),
+        ));
+    }
+
+    let slot_name = slot_list[0]
+        .as_symbol()
+        .ok_or_else(|| InterpretError::expected("slot name (symbol)", slot_list[0].span()))?
+        .to_string();
+
+    if slot_list.len() < 2 {
+        return Err(InterpretError::missing(
+            "value for slot in fact",
+            slot_expr.span(),
+        ));
+    }
+
+    let value = interpret_fact_value(&slot_list[1])?;
+
+    Ok(FactSlotValue {
+        name: slot_name,
+        value,
+        span: slot_expr.span(),
+    })
+}
+
+fn interpret_ordered_fact(
+    relation: String,
+    value_exprs: &[SExpr],
+    span: Span,
+) -> Result<FactBody, InterpretError> {
+    let mut values = Vec::with_capacity(value_exprs.len());
+    for value_expr in value_exprs {
+        values.push(interpret_fact_value(value_expr)?);
+    }
+
+    Ok(FactBody::Ordered(OrderedFactBody {
+        relation,
+        values,
+        span,
+    }))
 }
 
 /// Interpret a value in a fact body.
