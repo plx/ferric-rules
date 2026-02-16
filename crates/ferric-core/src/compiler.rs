@@ -2,14 +2,14 @@
 //!
 //! The compiler takes `CompilableRule` input (constructed by the runtime layer from
 //! parsed rule AST) and builds alpha network paths, beta join chains with variable
-//! binding tests, and terminal nodes. Node sharing is achieved through alpha path
-//! caching: rules with identical alpha patterns share the same memory.
+//! binding tests, and terminal nodes. Node sharing is achieved through canonical
+//! alpha path and positive join caching.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
-use crate::beta::{JoinTest, JoinTestType, RuleId};
-use crate::binding::VarMap;
+use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId};
+use crate::binding::{VarId, VarMap};
 use crate::rete::ReteNetwork;
 use crate::symbol::Symbol;
 use crate::token::NodeId;
@@ -78,14 +78,25 @@ struct AlphaPathKey {
     tests: Vec<ConstantTest>,
 }
 
+/// Canonical key for positive join nodes, used for node sharing.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct JoinNodeKey {
+    parent: NodeId,
+    alpha_memory: AlphaMemoryId,
+    tests: Vec<JoinTest>,
+    bindings: Vec<(SlotIndex, VarId)>,
+}
+
 /// Compiles rule patterns into shared Rete network nodes.
 ///
 /// The compiler maintains caches to ensure that rules with identical alpha
-/// patterns share the same alpha network paths and memories. Node sharing
-/// is determined by the canonical alpha path key: (`entry_type`, `constant_tests`).
+/// patterns share alpha network paths/memories, and identical positive join
+/// structures share join nodes. Sharing is keyed by canonical structural keys.
 pub struct ReteCompiler {
     /// Cache: alpha path → memory ID. Ensures identical alpha paths share memory.
     alpha_path_cache: HashMap<AlphaPathKey, AlphaMemoryId>,
+    /// Cache: join structure → join node ID. Ensures identical joins share nodes.
+    join_node_cache: HashMap<JoinNodeKey, NodeId>,
     /// Next rule ID counter.
     next_rule_id: u32,
 }
@@ -95,6 +106,7 @@ impl ReteCompiler {
     pub fn new() -> Self {
         Self {
             alpha_path_cache: HashMap::new(),
+            join_node_cache: HashMap::new(),
             next_rule_id: 1, // Start from 1, reserve 0
         }
     }
@@ -339,6 +351,31 @@ impl ReteCompiler {
         mem_id
     }
 
+    /// Ensure a positive join node exists for the given structure.
+    fn ensure_join_node(
+        &mut self,
+        beta: &mut BetaNetwork,
+        parent: NodeId,
+        alpha_memory: AlphaMemoryId,
+        tests: Vec<JoinTest>,
+        bindings: Vec<(SlotIndex, VarId)>,
+    ) -> NodeId {
+        let key = JoinNodeKey {
+            parent,
+            alpha_memory,
+            tests: tests.clone(),
+            bindings: bindings.clone(),
+        };
+
+        if let Some(&join_id) = self.join_node_cache.get(&key) {
+            return join_id;
+        }
+
+        let (join_id, _beta_mem) = beta.create_join_node(parent, alpha_memory, tests, bindings);
+        self.join_node_cache.insert(key, join_id);
+        join_id
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn compile_pattern(
         &mut self,
@@ -386,7 +423,8 @@ impl ReteCompiler {
                     .create_exists_node(current_parent, alpha_mem, join_tests);
             Ok(exists_id)
         } else {
-            let (join_id, _beta_mem) = rete.beta.create_join_node(
+            let join_id = self.ensure_join_node(
+                &mut rete.beta,
                 current_parent,
                 alpha_mem,
                 join_tests,
@@ -474,6 +512,15 @@ mod tests {
 
     fn intern(table: &mut SymbolTable, s: &str) -> Symbol {
         table.intern_symbol(s, StringEncoding::Utf8).unwrap()
+    }
+
+    fn terminal_parent(rete: &ReteNetwork, terminal_id: NodeId) -> NodeId {
+        let terminal_node = rete.beta.get_node(terminal_id).unwrap();
+        if let BetaNode::Terminal { parent, .. } = terminal_node {
+            *parent
+        } else {
+            panic!("Expected terminal node");
+        }
     }
 
     #[test]
@@ -792,6 +839,123 @@ mod tests {
 
         // Different patterns should have different alpha memories
         assert_ne!(result1.alpha_memories[0], result2.alpha_memories[0]);
+    }
+
+    #[test]
+    fn test_join_node_sharing_same_structure_across_rules() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut table = new_table();
+
+        let rel1 = intern(&mut table, "person");
+        let rel2 = intern(&mut table, "age");
+        let var_x = intern(&mut table, "x");
+
+        let pattern1 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(rel1),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+        let pattern2 = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(rel2),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated: false,
+            exists: false,
+        };
+
+        let rule_id1 = compiler.allocate_rule_id();
+        let rule1 = CompilableRule {
+            rule_id: rule_id1,
+            salience: 0,
+            patterns: vec![pattern1.clone(), pattern2.clone()],
+        };
+        let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
+
+        let rule_id2 = compiler.allocate_rule_id();
+        let rule2 = CompilableRule {
+            rule_id: rule_id2,
+            salience: 0,
+            patterns: vec![pattern1, pattern2],
+        };
+        let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
+
+        let join2_id_1 = terminal_parent(&rete, result1.terminal_node);
+        let join2_id_2 = terminal_parent(&rete, result2.terminal_node);
+        assert_eq!(join2_id_1, join2_id_2);
+
+        let join1_id = match rete.beta.get_node(join2_id_1).unwrap() {
+            BetaNode::Join { parent, .. } => *parent,
+            other => panic!("Expected join node, got {other:?}"),
+        };
+
+        if let Some(BetaNode::Root { children }) = rete.beta.get_node(rete.beta.root_id()) {
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0], join1_id);
+        } else {
+            panic!("Expected root node");
+        }
+
+        if let Some(BetaNode::Join { children, .. }) = rete.beta.get_node(join1_id) {
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0], join2_id_1);
+        } else {
+            panic!("Expected first join node");
+        }
+
+        if let Some(BetaNode::Join { children, .. }) = rete.beta.get_node(join2_id_1) {
+            assert_eq!(children.len(), 2);
+            assert!(children.contains(&result1.terminal_node));
+            assert!(children.contains(&result2.terminal_node));
+        } else {
+            panic!("Expected second join node");
+        }
+    }
+
+    #[test]
+    fn test_join_node_not_shared_when_bindings_differ() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut table = new_table();
+
+        let relation = intern(&mut table, "person");
+        let var_x = intern(&mut table, "x");
+
+        let rule1 = CompilableRule {
+            rule_id: compiler.allocate_rule_id(),
+            salience: 0,
+            patterns: vec![CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(relation),
+                constant_tests: vec![],
+                variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+                negated: false,
+                exists: false,
+            }],
+        };
+
+        let rule2 = CompilableRule {
+            rule_id: compiler.allocate_rule_id(),
+            salience: 0,
+            patterns: vec![CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(relation),
+                constant_tests: vec![],
+                variable_slots: vec![],
+                negated: false,
+                exists: false,
+            }],
+        };
+
+        let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
+        let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
+
+        // Same alpha path, different join bindings => different join key.
+        assert_eq!(result1.alpha_memories[0], result2.alpha_memories[0]);
+
+        let join_id_1 = terminal_parent(&rete, result1.terminal_node);
+        let join_id_2 = terminal_parent(&rete, result2.terminal_node);
+        assert_ne!(join_id_1, join_id_2);
     }
 
     #[test]
