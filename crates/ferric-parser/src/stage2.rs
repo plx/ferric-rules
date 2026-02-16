@@ -657,9 +657,18 @@ fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
         return Err(InterpretError::invalid("empty pattern", expr.span()));
     }
 
-    // Check for special conditional elements
-    let keyword = list[0].as_symbol();
-    match keyword {
+    if let Some(conditional) = interpret_conditional_pattern(list, expr)? {
+        return Ok(conditional);
+    }
+
+    interpret_relation_pattern(list, expr)
+}
+
+fn interpret_conditional_pattern(
+    list: &[SExpr],
+    expr: &SExpr,
+) -> Result<Option<Pattern>, InterpretError> {
+    match list[0].as_symbol() {
         Some("and") => {
             if list.len() < 2 {
                 return Err(InterpretError::missing(
@@ -671,7 +680,7 @@ fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
             for pattern_expr in &list[1..] {
                 patterns.push(interpret_pattern(pattern_expr)?);
             }
-            return Ok(Pattern::And(patterns, expr.span()));
+            Ok(Some(Pattern::And(patterns, expr.span())))
         }
         Some("not") => {
             if list.len() < 2 {
@@ -687,7 +696,7 @@ fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
                 ));
             }
             let inner_pattern = interpret_pattern(&list[1])?;
-            return Ok(Pattern::Not(Box::new(inner_pattern), expr.span()));
+            Ok(Some(Pattern::Not(Box::new(inner_pattern), expr.span())))
         }
         Some("test") => {
             if list.len() < 2 {
@@ -697,23 +706,24 @@ fn interpret_pattern(expr: &SExpr) -> Result<Pattern, InterpretError> {
                 ));
             }
             // Store the test expression as raw S-expr (full compilation in Phase 3)
-            return Ok(Pattern::Test(list[1].clone(), expr.span()));
+            Ok(Some(Pattern::Test(list[1].clone(), expr.span())))
         }
         Some("exists") => {
             let mut patterns = Vec::new();
             for pattern_expr in &list[1..] {
                 patterns.push(interpret_pattern(pattern_expr)?);
             }
-            return Ok(Pattern::Exists(patterns, expr.span()));
+            Ok(Some(Pattern::Exists(patterns, expr.span())))
         }
-        _ => {}
+        _ => Ok(None),
     }
+}
 
-    // Check if this is a regular pattern (ordered or template)
+fn interpret_relation_pattern(list: &[SExpr], expr: &SExpr) -> Result<Pattern, InterpretError> {
     // Template patterns have slot-value pairs like: (template (slot-name value) ...)
     // Ordered patterns have fields like: (relation value1 value2 ...)
-
-    let relation = keyword
+    let relation = list[0]
+        .as_symbol()
         .ok_or_else(|| InterpretError::expected("pattern name (symbol)", list[0].span()))?
         .to_string();
 

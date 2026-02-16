@@ -2946,9 +2946,9 @@ mod tests {
         rete.debug_assert_consistency();
 
         // Re-assert reason => blocked again
-        let reason2_id = fact_base.assert_ordered(reason_sym, smallvec![x.clone()]);
-        let reason2_fact = fact_base.get(reason2_id).unwrap().fact.clone();
-        rete.assert_fact(reason2_id, &reason2_fact, &fact_base);
+        let reason_reasserted_id = fact_base.assert_ordered(reason_sym, smallvec![x.clone()]);
+        let reason_reasserted_fact = fact_base.get(reason_reasserted_id).unwrap().fact.clone();
+        rete.assert_fact(reason_reasserted_id, &reason_reasserted_fact, &fact_base);
         assert_eq!(rete.agenda.len(), 0);
         rete.debug_assert_consistency();
 

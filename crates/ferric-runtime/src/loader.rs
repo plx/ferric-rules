@@ -576,7 +576,7 @@ impl Engine {
                         return Err(Self::unsupported_pattern(
                             "not/and",
                             span,
-                            "not(and ...) requires at least one inner pattern".to_string(),
+                            "not(and ...) requires at least one inner pattern",
                         ));
                     }
 
@@ -587,7 +587,7 @@ impl Engine {
                             return Err(Self::unsupported_pattern(
                                 "not/and",
                                 and_span,
-                                "nested negation inside and is not supported yet".to_string(),
+                                "nested negation inside and is not supported yet",
                             ));
                         }
                         subpatterns.push(translated);
@@ -602,8 +602,7 @@ impl Engine {
             Pattern::And(_, span) => Err(Self::unsupported_pattern(
                 "and",
                 span,
-                "standalone and conditional elements are not supported; use (not (and ...))"
-                    .to_string(),
+                "standalone and conditional elements are not supported; use (not (and ...))",
             )),
             _ => Ok(CompilableCondition::Pattern(
                 self.translate_pattern(pattern)?,
@@ -661,7 +660,7 @@ impl Engine {
                     Err(Self::unsupported_pattern(
                         "exists",
                         span,
-                        format!(
+                        &format!(
                             "multi-pattern exists is not supported yet (received {} patterns)",
                             patterns.len()
                         ),
@@ -671,12 +670,12 @@ impl Engine {
             Pattern::Test(_, span) => Err(Self::unsupported_pattern(
                 "test",
                 span,
-                "test conditional elements are not supported yet".to_string(),
+                "test conditional elements are not supported yet",
             )),
             Pattern::Template(template) => Err(Self::unsupported_pattern(
                 "template",
                 &template.span,
-                format!(
+                &format!(
                     "template pattern `{}` is not supported yet",
                     template.template
                 ),
@@ -684,7 +683,7 @@ impl Engine {
             Pattern::And(_, span) => Err(Self::unsupported_pattern(
                 "and",
                 span,
-                "and conditional elements are only supported inside (not (and ...))".to_string(),
+                "and conditional elements are only supported inside (not (and ...))",
             )),
         }
     }
@@ -720,7 +719,7 @@ impl Engine {
                 return Err(Self::unsupported_constraint(
                     "multi-variable",
                     span,
-                    format!("multi-field variable `$?{name}` is not supported yet"),
+                    &format!("multi-field variable `$?{name}` is not supported yet"),
                 ));
             }
             Constraint::Not(inner, span) => {
@@ -736,7 +735,7 @@ impl Engine {
                     return Err(Self::unsupported_constraint(
                         "not",
                         span,
-                        "only negated literals (~<literal>) are supported".to_string(),
+                        "only negated literals (~<literal>) are supported",
                     ));
                 }
             }
@@ -750,7 +749,7 @@ impl Engine {
                 return Err(Self::unsupported_constraint(
                     "or",
                     span,
-                    "or constraints are not supported yet".to_string(),
+                    "or constraints are not supported yet",
                 ));
             }
         }
@@ -792,14 +791,14 @@ impl Engine {
             .push(format!("{message} at line {line}: {detail}"));
     }
 
-    fn unsupported_pattern(kind: &str, span: &ferric_parser::Span, detail: String) -> LoadError {
+    fn unsupported_pattern(kind: &str, span: &ferric_parser::Span, detail: &str) -> LoadError {
         LoadError::Compile(format!(
             "unsupported pattern form `{kind}` at line {}, column {}: {detail}",
             span.start.line, span.start.column
         ))
     }
 
-    fn unsupported_constraint(kind: &str, span: &ferric_parser::Span, detail: String) -> LoadError {
+    fn unsupported_constraint(kind: &str, span: &ferric_parser::Span, detail: &str) -> LoadError {
         LoadError::Compile(format!(
             "unsupported constraint form `{kind}` at line {}, column {}: {detail}",
             span.start.line, span.start.column
@@ -929,7 +928,7 @@ mod tests {
     use crate::config::EngineConfig;
     use ferric_core::Fact;
 
-    fn assert_single_compile_error_contains(errors: Vec<LoadError>, expected: &str) {
+    fn assert_single_compile_error_contains(errors: &[LoadError], expected: &str) {
         assert_eq!(
             errors.len(),
             1,
@@ -1054,7 +1053,7 @@ mod tests {
             .load_str("(defrule t (test (> 1 0)) => (assert (ok)))")
             .unwrap_err();
 
-        assert_single_compile_error_contains(errors, "unsupported pattern form `test`");
+        assert_single_compile_error_contains(&errors, "unsupported pattern form `test`");
     }
 
     #[test]
@@ -1064,7 +1063,7 @@ mod tests {
             .load_str("(defrule t (person (name Alice)) => (assert (ok)))")
             .unwrap_err();
 
-        assert_single_compile_error_contains(errors, "unsupported pattern form `template`");
+        assert_single_compile_error_contains(&errors, "unsupported pattern form `template`");
     }
 
     #[test]
@@ -1074,7 +1073,7 @@ mod tests {
             .load_str("(defrule t (exists (a) (b)) => (assert (ok)))")
             .unwrap_err();
 
-        assert_single_compile_error_contains(errors, "unsupported pattern form `exists`");
+        assert_single_compile_error_contains(&errors, "unsupported pattern form `exists`");
     }
 
     #[test]
@@ -1095,7 +1094,7 @@ mod tests {
             .unwrap_err();
 
         assert_single_compile_error_contains(
-            errors,
+            &errors,
             "unsupported constraint form `multi-variable`",
         );
     }

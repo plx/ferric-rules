@@ -130,7 +130,7 @@ impl ReteCompiler {
         if rule.patterns.is_empty() {
             return Err(CompileError::EmptyRule);
         }
-        self.validate_rule_patterns(&rule.patterns)?;
+        Self::validate_rule_patterns(&rule.patterns)?;
         let conditions: Vec<_> = rule
             .patterns
             .iter()
@@ -151,7 +151,7 @@ impl ReteCompiler {
         if conditions.is_empty() {
             return Err(CompileError::EmptyRule);
         }
-        self.validate_conditions(conditions)?;
+        Self::validate_conditions(conditions)?;
         self.compile_conditions_unchecked(rete, rule_id, salience, conditions)
     }
 
@@ -204,17 +204,11 @@ impl ReteCompiler {
         })
     }
 
-    fn validate_rule_patterns(&self, patterns: &[CompilablePattern]) -> Result<(), CompileError> {
+    fn validate_rule_patterns(patterns: &[CompilablePattern]) -> Result<(), CompileError> {
         let mut errors = Vec::new();
         for (idx, pattern) in patterns.iter().enumerate() {
             let context = format!("pattern {idx}");
-            self.validate_pattern_structure(
-                pattern,
-                &context,
-                true,
-                true,
-                &mut errors,
-            );
+            Self::validate_pattern_structure(pattern, &context, true, true, &mut errors);
         }
         if errors.is_empty() {
             Ok(())
@@ -223,19 +217,13 @@ impl ReteCompiler {
         }
     }
 
-    fn validate_conditions(&self, conditions: &[CompilableCondition]) -> Result<(), CompileError> {
+    fn validate_conditions(conditions: &[CompilableCondition]) -> Result<(), CompileError> {
         let mut errors = Vec::new();
         for (condition_idx, condition) in conditions.iter().enumerate() {
             match condition {
                 CompilableCondition::Pattern(pattern) => {
                     let context = format!("condition {condition_idx}");
-                    self.validate_pattern_structure(
-                        pattern,
-                        &context,
-                        true,
-                        true,
-                        &mut errors,
-                    );
+                    Self::validate_pattern_structure(pattern, &context, true, true, &mut errors);
                 }
                 CompilableCondition::Ncc(subpatterns) => {
                     if subpatterns.is_empty() {
@@ -251,7 +239,7 @@ impl ReteCompiler {
                     for (subpattern_idx, subpattern) in subpatterns.iter().enumerate() {
                         let context =
                             format!("condition {condition_idx} NCC subpattern {subpattern_idx}");
-                        self.validate_pattern_structure(
+                        Self::validate_pattern_structure(
                             subpattern,
                             &context,
                             false,
@@ -271,7 +259,6 @@ impl ReteCompiler {
 
     #[allow(clippy::too_many_arguments)]
     fn validate_pattern_structure(
-        &self,
         pattern: &CompilablePattern,
         context: &str,
         allow_negated: bool,
@@ -279,10 +266,7 @@ impl ReteCompiler {
         errors: &mut Vec<PatternValidationError>,
     ) {
         if pattern.negated && !allow_negated {
-            Self::push_unsupported_structure_error(
-                errors,
-                format!("{context} cannot be negated"),
-            );
+            Self::push_unsupported_structure_error(errors, format!("{context} cannot be negated"));
         }
         if pattern.exists && !allow_exists {
             Self::push_unsupported_structure_error(errors, format!("{context} cannot be exists"));
@@ -445,16 +429,13 @@ impl ReteCompiler {
         alpha_memories: &mut Vec<AlphaMemoryId>,
     ) -> Result<NodeId, CompileError> {
         if subpatterns.is_empty() {
-            return Err(CompileError::Validation(vec![
-                PatternValidationError::new(
-                    PatternViolation::UnsupportedNestingCombination {
-                        description:
-                            "NCC requires at least one subpattern".to_string(),
-                    },
-                    None,
-                    ValidationStage::ReteCompilation,
-                ),
-            ]));
+            return Err(CompileError::Validation(vec![PatternValidationError::new(
+                PatternViolation::UnsupportedNestingCombination {
+                    description: "NCC requires at least one subpattern".to_string(),
+                },
+                None,
+                ValidationStage::ReteCompilation,
+            )]));
         }
 
         // Create the main-chain NCC node first, then wire its partner once the
@@ -1461,11 +1442,9 @@ mod tests {
             CompileError::Validation(errors) => {
                 assert!(!errors.is_empty());
                 assert_eq!(errors[0].code, "E0005");
-                assert!(
-                    errors[0]
-                        .to_string()
-                        .contains("NCC requires at least one subpattern")
-                );
+                assert!(errors[0]
+                    .to_string()
+                    .contains("NCC requires at least one subpattern"));
             }
             other => panic!("expected validation error, got {other:?}"),
         }
