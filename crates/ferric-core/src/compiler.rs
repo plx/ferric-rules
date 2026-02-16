@@ -13,6 +13,7 @@ use crate::binding::VarMap;
 use crate::rete::ReteNetwork;
 use crate::symbol::Symbol;
 use crate::token::NodeId;
+use crate::validation::{PatternValidationError, PatternViolation, ValidationStage};
 
 /// A rule ready for compilation into rete structures.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,13 +118,14 @@ impl ReteCompiler {
         if rule.patterns.is_empty() {
             return Err(CompileError::EmptyRule);
         }
+        self.validate_rule_patterns(&rule.patterns)?;
         let conditions: Vec<_> = rule
             .patterns
             .iter()
             .cloned()
             .map(CompilableCondition::Pattern)
             .collect();
-        self.compile_conditions(rete, rule.rule_id, rule.salience, &conditions)
+        self.compile_conditions_unchecked(rete, rule.rule_id, rule.salience, &conditions)
     }
 
     /// Compile a sequence of conditional elements into the rete network.
@@ -137,7 +139,17 @@ impl ReteCompiler {
         if conditions.is_empty() {
             return Err(CompileError::EmptyRule);
         }
+        self.validate_conditions(conditions)?;
+        self.compile_conditions_unchecked(rete, rule_id, salience, conditions)
+    }
 
+    fn compile_conditions_unchecked(
+        &mut self,
+        rete: &mut ReteNetwork,
+        rule_id: RuleId,
+        salience: i32,
+        conditions: &[CompilableCondition],
+    ) -> Result<CompileResult, CompileError> {
         let mut alpha_memories = Vec::new();
         let mut var_map = VarMap::new();
         let mut bound_vars: HashSet<Symbol> = HashSet::new();
@@ -178,6 +190,125 @@ impl ReteCompiler {
             alpha_memories,
             var_map,
         })
+    }
+
+    fn validate_rule_patterns(&self, patterns: &[CompilablePattern]) -> Result<(), CompileError> {
+        let mut errors = Vec::new();
+        for (idx, pattern) in patterns.iter().enumerate() {
+            let context = format!("pattern {idx}");
+            self.validate_pattern_structure(
+                pattern,
+                &context,
+                true,
+                true,
+                &mut errors,
+            );
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(CompileError::Validation(errors))
+        }
+    }
+
+    fn validate_conditions(&self, conditions: &[CompilableCondition]) -> Result<(), CompileError> {
+        let mut errors = Vec::new();
+        for (condition_idx, condition) in conditions.iter().enumerate() {
+            match condition {
+                CompilableCondition::Pattern(pattern) => {
+                    let context = format!("condition {condition_idx}");
+                    self.validate_pattern_structure(
+                        pattern,
+                        &context,
+                        true,
+                        true,
+                        &mut errors,
+                    );
+                }
+                CompilableCondition::Ncc(subpatterns) => {
+                    if subpatterns.is_empty() {
+                        Self::push_unsupported_structure_error(
+                            &mut errors,
+                            format!(
+                                "condition {condition_idx} has an empty NCC; NCC requires at least one subpattern"
+                            ),
+                        );
+                        continue;
+                    }
+
+                    for (subpattern_idx, subpattern) in subpatterns.iter().enumerate() {
+                        let context =
+                            format!("condition {condition_idx} NCC subpattern {subpattern_idx}");
+                        self.validate_pattern_structure(
+                            subpattern,
+                            &context,
+                            false,
+                            false,
+                            &mut errors,
+                        );
+                    }
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(CompileError::Validation(errors))
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_pattern_structure(
+        &self,
+        pattern: &CompilablePattern,
+        context: &str,
+        allow_negated: bool,
+        allow_exists: bool,
+        errors: &mut Vec<PatternValidationError>,
+    ) {
+        if pattern.negated && !allow_negated {
+            Self::push_unsupported_structure_error(
+                errors,
+                format!("{context} cannot be negated"),
+            );
+        }
+        if pattern.exists && !allow_exists {
+            Self::push_unsupported_structure_error(errors, format!("{context} cannot be exists"));
+        }
+
+        let mut slot_bindings = HashSet::new();
+        let mut variable_bindings: HashMap<Symbol, SlotIndex> = HashMap::new();
+        for &(slot, var_sym) in &pattern.variable_slots {
+            if !slot_bindings.insert(slot) {
+                Self::push_unsupported_structure_error(
+                    errors,
+                    format!("{context} binds slot {slot:?} more than once"),
+                );
+            }
+
+            if let Some(previous_slot) = variable_bindings.insert(var_sym, slot) {
+                if previous_slot != slot {
+                    Self::push_unsupported_structure_error(
+                        errors,
+                        format!(
+                            "{context} reuses variable symbol across slots {previous_slot:?} and {slot:?}; \
+                             intra-pattern equality is not supported at core compile stage"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    fn push_unsupported_structure_error(
+        errors: &mut Vec<PatternValidationError>,
+        description: String,
+    ) {
+        errors.push(PatternValidationError::new(
+            PatternViolation::UnsupportedNestingCombination { description },
+            None,
+            ValidationStage::ReteCompilation,
+        ));
     }
 
     /// Ensure an alpha path exists for a pattern, reusing cached paths when possible.
@@ -276,7 +407,16 @@ impl ReteCompiler {
         alpha_memories: &mut Vec<AlphaMemoryId>,
     ) -> Result<NodeId, CompileError> {
         if subpatterns.is_empty() {
-            return Err(CompileError::EmptyRule);
+            return Err(CompileError::Validation(vec![
+                PatternValidationError::new(
+                    PatternViolation::UnsupportedNestingCombination {
+                        description:
+                            "NCC requires at least one subpattern".to_string(),
+                    },
+                    None,
+                    ValidationStage::ReteCompilation,
+                ),
+            ]));
         }
 
         // Create the main-chain NCC node first, then wire its partner once the
@@ -1141,5 +1281,64 @@ mod tests {
             matches!(partner, BetaNode::NccPartner { .. }),
             "NCC partner should exist"
         );
+    }
+
+    #[test]
+    fn test_compile_conditions_rejects_empty_ncc() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let rule_id = compiler.allocate_rule_id();
+
+        let err = compiler
+            .compile_conditions(&mut rete, rule_id, 0, &[CompilableCondition::Ncc(vec![])])
+            .unwrap_err();
+
+        match err {
+            CompileError::Validation(errors) => {
+                assert!(!errors.is_empty());
+                assert_eq!(errors[0].code, "E0005");
+                assert!(
+                    errors[0]
+                        .to_string()
+                        .contains("NCC requires at least one subpattern")
+                );
+            }
+            other => panic!("expected validation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compile_conditions_rejects_negated_ncc_subpattern() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut table = new_table();
+        let rule_id = compiler.allocate_rule_id();
+        let rel = intern(&mut table, "blocked");
+
+        let ncc_subpattern = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(rel),
+            constant_tests: vec![],
+            variable_slots: vec![],
+            negated: true,
+            exists: false,
+        };
+
+        let err = compiler
+            .compile_conditions(
+                &mut rete,
+                rule_id,
+                0,
+                &[CompilableCondition::Ncc(vec![ncc_subpattern])],
+            )
+            .unwrap_err();
+
+        match err {
+            CompileError::Validation(errors) => {
+                assert!(!errors.is_empty());
+                assert_eq!(errors[0].code, "E0005");
+                assert!(errors[0].to_string().contains("cannot be negated"));
+            }
+            other => panic!("expected validation error, got {other:?}"),
+        }
     }
 }
