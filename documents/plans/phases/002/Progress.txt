@@ -10,3 +10,9 @@ Pass 009 - ActionExecution - COMPLETED
 Pass 010 - NccAndExistsNodesAndCleanupInvariants - COMPLETED
 Pass 011 - PatternValidationAndSourceLocatedCompileErrors - COMPLETED
 Pass 012 - Phase2IntegrationAndExitValidation - COMPLETED
+Remediation 001 - Complete NCC semantics for `(not (and ...))` - COMPLETED
+Remediation 002 - Eliminate silent rule downgrades for unsupported forms - COMPLETED
+Remediation 003 - Enforce strict `not` arity handling - COMPLETED
+Remediation 004 - Align validation ownership with compiler contract - COMPLETED
+Remediation 005 - Resolve join-sharing contract drift - COMPLETED
+Remediation 006 - Phase status refresh and gate evidence rerun (2026-02-16) - COMPLETED

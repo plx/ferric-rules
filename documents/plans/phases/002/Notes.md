@@ -847,16 +847,16 @@ None — positive-pattern join semantics are complete for the Phase 2 subset.
    - `validation_error_from_file_has_source_location`: file-loaded invalid rules produce errors with source spans
    - `valid_complex_rule_compiles_successfully`: complex rule with not + exists compiles cleanly
 
-5. **Quality gates**:
-   - `cargo fmt --all --check` ✓
-   - `cargo clippy --workspace --all-targets -- -D warnings` ✓
-   - `cargo test --workspace` ✓
+5. **Quality gates** (rerun for remediation item 6 on 2026-02-16):
+   - `cargo fmt --all --check` ✗ (formatting diffs in `crates/ferric-core/src/compiler.rs`)
+   - `cargo clippy --workspace --all-targets -- -D warnings` ✗ (4 denied warnings/errors)
+   - `cargo test --workspace` ✓ (516 tests passed: 262 core + 122 parser + 128 runtime + 3 doctests + 1 facade)
    - `cargo check --workspace --all-targets` ✓
 
 ### Test results
 
-- **495 tests pass** (256 core + 119 parser + 116 runtime + 3 doctests + 1 facade)
-- **0 clippy warnings**
+- **516 tests pass** (262 core + 122 parser + 128 runtime + 3 doctests + 1 facade)
+- **Clippy gate reports 4 denied warnings/errors**
 - **13 new tests** (6 fixture + 5 retraction invariant + 2 validation integration)
 - **0 regressions**
 
@@ -870,11 +870,10 @@ None — positive-pattern join semantics are complete for the Phase 2 subset.
 | 4. Negative pattern behavior correct | ✓ | fixture_phase2_negative + 8 prior negative integration tests |
 | 5. Exists behavior correct | ✓ | fixture_phase2_exists + 3 prior exists tests + 10 rete-level exists tests |
 | 6. Pattern validation with stable codes | ✓ | validation_error_from_file_has_source_location + 6 prior validation tests |
-| 7. Integration suites pass with .clp fixtures | ✓ | All 495 tests pass, all quality gates clean |
+| 7. Integration suites pass with .clp fixtures | PARTIAL | 516 tests pass, but `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` currently fail in this workspace snapshot |
 
 ### Remaining TODOs
 
-- **NCC subnetwork integration**: The NCC partner `receive_result` method is still a stub. Full multi-pattern `(not (and ...))` requires parser support (Phase 3 scope).
 - **Template-aware modify/duplicate**: Currently implemented as retract+assert of ordered facts. Template slot-level modification requires template metadata lookup (Phase 3).
 - **Function call evaluation**: `eval_expr` returns an error for unknown function names. Built-in functions (`+`, `-`, `str-cat`, etc.) are Phase 3.
 - **Printout**: No-op placeholder — IO infrastructure is Phase 3+.
@@ -888,18 +887,18 @@ None — positive-pattern join semantics are complete for the Phase 2 subset.
 
 ### Phase 2 Summary
 
-Phase 2 (Core Engine) is **complete**. The implementation delivers:
+Phase 2 (Core Engine) functional scope, including remediations 1-5 from `RemediationReport.md`, is **complete**. The implementation delivers:
 
-- **495 passing tests** covering all subsystems
+- **516 passing tests** covering all subsystems
 - **Stage 2 typed AST** with full interpretation for deftemplate/defrule/deffacts
 - **Rule compilation pipeline** with alpha path sharing, join test generation, variable binding extraction
 - **Negative pattern support** with blocker tracking and correct retraction behavior
 - **Exists pattern support** with support counting and at-most-one activation
-- **NCC infrastructure** (memory, node types) ready for Phase 3 multi-pattern negation
+- **NCC `(not (and ...))` semantics** with partner result accounting and unblock/reblock behavior
 - **Four conflict resolution strategies** (Depth, Breadth, LEX, MEA) with stable total ordering
 - **Execution loop** (run/step/halt/reset) with RHS action execution (assert/retract/modify/duplicate/halt)
 - **Compile-time validation** with 5 stable error codes and source-located diagnostics
 - **6 real `.clp` fixtures** exercising the full pipeline
 - **Comprehensive retraction invariant coverage** across all structure types
 
-The project is handoff-ready for Phase 3: Language Completion.
+As of 2026-02-16, remediation item 6 evidence rerun shows mixed exit-gate status in the current workspace snapshot: `fmt` and `clippy` fail, while `test` and `check` pass.
