@@ -247,7 +247,7 @@ impl ReteCompiler {
                         Self::validate_pattern_structure(
                             subpattern,
                             &context,
-                            false,
+                            true, // Negated subpatterns in NCC are valid for forall(P, not(Q)) desugaring.
                             false,
                             &mut errors,
                         );
@@ -1572,14 +1572,24 @@ mod tests {
     }
 
     #[test]
-    fn test_compile_conditions_rejects_negated_ncc_subpattern() {
+    fn test_compile_conditions_allows_negated_ncc_subpattern() {
+        // Negated subpatterns inside NCC are now valid: they support forall(P, Q)
+        // desugaring to NCC([P, neg(Q)]).
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
         let mut table = new_table();
         let rule_id = compiler.allocate_rule_id();
-        let rel = intern(&mut table, "blocked");
+        let rel = intern(&mut table, "checked");
 
-        let ncc_subpattern = CompilablePattern {
+        let ncc_positive = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(intern(&mut table, "item")),
+            constant_tests: vec![],
+            variable_slots: vec![],
+            negated: false,
+            exists: false,
+        };
+
+        let ncc_negated = CompilablePattern {
             entry_type: AlphaEntryType::OrderedRelation(rel),
             constant_tests: vec![],
             variable_slots: vec![],
@@ -1587,23 +1597,17 @@ mod tests {
             exists: false,
         };
 
-        let err = compiler
-            .compile_conditions(
-                &mut rete,
-                rule_id,
-                0,
-                &[CompilableCondition::Ncc(vec![ncc_subpattern])],
-            )
-            .unwrap_err();
-
-        match err {
-            CompileError::Validation(errors) => {
-                assert!(!errors.is_empty());
-                assert_eq!(errors[0].code, "E0005");
-                assert!(errors[0].to_string().contains("cannot be negated"));
-            }
-            other => panic!("expected validation error, got {other:?}"),
-        }
+        // Should succeed: NCC([item, neg(checked)]) is the forall(item, checked) desugaring.
+        let result = compiler.compile_conditions(
+            &mut rete,
+            rule_id,
+            0,
+            &[CompilableCondition::Ncc(vec![ncc_positive, ncc_negated])],
+        );
+        assert!(
+            result.is_ok(),
+            "NCC with negated subpattern should compile: {result:?}"
+        );
     }
 
     #[test]

@@ -1,13 +1,20 @@
 //! Stage 2: Construct AST and semantic interpretation.
 //!
 //! Stage 2 transforms the S-expression trees produced by Stage 1 into typed
-//! construct representations for `deftemplate`, `defrule`, and `deffacts`.
+//! construct representations for `deftemplate`, `defrule`, `deffacts`,
+//! `deffunction`, and `defglobal`.
 //! Source spans are preserved through the transformation for diagnostics.
 //!
-//! ## Phase 2 implementation plan
+//! ## Phase 2 complete
 //!
-//! - Pass 002: AST types and interpreter scaffold
-//! - Pass 003: Full interpretation for deftemplate, defrule, deffacts
+//! - Full interpretation for `deftemplate`, `defrule`, `deffacts`.
+//! - Typed AST with patterns, constraints, actions, slot definitions, and
+//!   fact bodies.
+//!
+//! ## Phase 3 scope
+//!
+//! - `deffunction` and `defglobal` interpretation (Pass 005).
+//! - Add interpretation for `defmodule`, `defgeneric`, `defmethod`.
 
 use crate::sexpr::{Atom, Connective, SExpr};
 use crate::span::Span;
@@ -32,6 +39,8 @@ pub enum Pattern {
     Test(SExpr, Span),
     /// Exists CE: (exists <pattern> ...)
     Exists(Vec<Pattern>, Span),
+    /// Forall CE: (forall <condition> <then-clause>...)
+    Forall(Vec<Pattern>, Span),
     /// Assigned pattern: ?var <- <pattern>
     Assigned {
         variable: String,
@@ -202,6 +211,11 @@ pub enum Construct {
     Rule(RuleConstruct),
     Template(TemplateConstruct),
     Facts(FactsConstruct),
+    Function(FunctionConstruct),
+    Global(GlobalConstruct),
+    Module(ModuleConstruct),
+    Generic(GenericConstruct),
+    Method(MethodConstruct),
 }
 
 /// Interpreted `(defrule ...)`.
@@ -237,6 +251,126 @@ pub struct FactsConstruct {
     pub comment: Option<String>,
     /// Fact bodies (typed).
     pub facts: Vec<FactBody>,
+}
+
+/// Interpreted `(deffunction ...)`.
+#[derive(Clone, Debug)]
+pub struct FunctionConstruct {
+    /// Function name.
+    pub name: String,
+    /// Source span of the entire construct.
+    pub span: Span,
+    /// Optional doc comment.
+    pub comment: Option<String>,
+    /// Regular parameters (e.g., `?x`, `?y`).  Names do not include the `?` prefix.
+    pub parameters: Vec<String>,
+    /// Optional wildcard parameter (e.g., `$?rest`).  Name does not include the `$?` prefix.
+    pub wildcard_parameter: Option<String>,
+    /// Function body expressions (one or more).
+    pub body: Vec<ActionExpr>,
+}
+
+/// A single global variable definition.
+#[derive(Clone, Debug)]
+pub struct GlobalDefinition {
+    /// Global variable name (without `?*` and `*` delimiters).
+    pub name: String,
+    /// Source span of this definition (the `?*name*` token).
+    pub span: Span,
+    /// Initial value expression.
+    pub value: ActionExpr,
+}
+
+/// Interpreted `(defglobal ...)`.
+#[derive(Clone, Debug)]
+pub struct GlobalConstruct {
+    /// Source span of the entire construct.
+    pub span: Span,
+    /// The global definitions.
+    pub globals: Vec<GlobalDefinition>,
+}
+
+/// A module import/export specification.
+#[derive(Clone, Debug)]
+pub enum ModuleSpec {
+    /// Export/import everything (`?ALL`).
+    All,
+    /// Export/import nothing (`?NONE`).
+    None,
+    /// Export/import specific constructs of a given type.
+    /// e.g., `(export deftemplate reading sensor)` →
+    /// `construct_type` = `"deftemplate"`, `names` = `["reading", "sensor"]`
+    Specific {
+        /// The construct type keyword (e.g., `"deftemplate"`).
+        construct_type: String,
+        /// The specific construct names.
+        names: Vec<String>,
+    },
+}
+
+/// An import declaration within a defmodule.
+#[derive(Clone, Debug)]
+pub struct ImportSpec {
+    /// The module to import from.
+    pub module_name: String,
+    /// What to import.
+    pub spec: ModuleSpec,
+    /// Source span.
+    pub span: Span,
+}
+
+/// Interpreted `(defmodule ...)`.
+#[derive(Clone, Debug)]
+pub struct ModuleConstruct {
+    /// Module name.
+    pub name: String,
+    /// Source span of the entire construct.
+    pub span: Span,
+    /// Optional doc comment.
+    pub comment: Option<String>,
+    /// Export specifications.
+    pub exports: Vec<ModuleSpec>,
+    /// Import specifications.
+    pub imports: Vec<ImportSpec>,
+}
+
+/// Interpreted `(defgeneric ...)`.
+#[derive(Clone, Debug)]
+pub struct GenericConstruct {
+    /// Generic function name.
+    pub name: String,
+    /// Source span.
+    pub span: Span,
+    /// Optional doc comment.
+    pub comment: Option<String>,
+}
+
+/// A method parameter with optional type restriction.
+#[derive(Clone, Debug)]
+pub struct MethodParameter {
+    /// Parameter name (without `?` prefix).
+    pub name: String,
+    /// Type restrictions (e.g., `["INTEGER"]`, `["INTEGER", "FLOAT"]`), empty = any type.
+    pub type_restrictions: Vec<String>,
+    /// Source span of this parameter.
+    pub span: Span,
+}
+
+/// Interpreted `(defmethod ...)`.
+#[derive(Clone, Debug)]
+pub struct MethodConstruct {
+    /// The generic function name this method belongs to.
+    pub name: String,
+    /// Source span.
+    pub span: Span,
+    /// Optional method index (explicit dispatch priority).
+    pub index: Option<i32>,
+    /// Regular parameters with optional type restrictions.
+    pub parameters: Vec<MethodParameter>,
+    /// Optional wildcard parameter name (without `$?` prefix).
+    pub wildcard_parameter: Option<String>,
+    /// Method body expressions.
+    pub body: Vec<ActionExpr>,
 }
 
 /// Configuration for Stage 2 interpretation.
@@ -351,6 +485,7 @@ pub struct InterpretResult {
 }
 
 /// Interpret a slice of S-expressions into typed constructs.
+#[allow(clippy::too_many_lines)] // Dispatch table grows as constructs are added; each arm is small
 pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> InterpretResult {
     let mut result = InterpretResult::default();
 
@@ -421,15 +556,59 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
                     }
                 }
             },
+            "deffunction" => match interpret_function(&list[1..], sexpr.span()) {
+                Ok(construct) => result.constructs.push(Construct::Function(construct)),
+                Err(err) => {
+                    result.errors.push(err);
+                    if config.strict {
+                        return result;
+                    }
+                }
+            },
+            "defglobal" => match interpret_global(&list[1..], sexpr.span()) {
+                Ok(construct) => result.constructs.push(Construct::Global(construct)),
+                Err(err) => {
+                    result.errors.push(err);
+                    if config.strict {
+                        return result;
+                    }
+                }
+            },
+            "defmodule" => match interpret_module(&list[1..], sexpr.span()) {
+                Ok(construct) => result.constructs.push(Construct::Module(construct)),
+                Err(err) => {
+                    result.errors.push(err);
+                    if config.strict {
+                        return result;
+                    }
+                }
+            },
+            "defgeneric" => match interpret_generic(&list[1..], sexpr.span()) {
+                Ok(construct) => result.constructs.push(Construct::Generic(construct)),
+                Err(err) => {
+                    result.errors.push(err);
+                    if config.strict {
+                        return result;
+                    }
+                }
+            },
+            "defmethod" => match interpret_method(&list[1..], sexpr.span()) {
+                Ok(construct) => result.constructs.push(Construct::Method(construct)),
+                Err(err) => {
+                    result.errors.push(err);
+                    if config.strict {
+                        return result;
+                    }
+                }
+            },
             // Known CLIPS keywords that are not yet supported
-            "deffunction" | "defglobal" | "defmodule" | "defclass" | "definstances"
-            | "defmessage-handler" | "defgeneric" | "defmethod" => {
+            "defclass" | "definstances" | "defmessage-handler" => {
                 result.errors.push(InterpretError {
                     message: format!("{keyword} is not yet supported"),
                     span: list[0].span(),
                     kind: InterpretErrorKind::UnknownConstruct,
                     suggestions: vec![
-                        "currently supported: defrule, deftemplate, deffacts".to_string()
+                        "currently supported: defrule, deftemplate, deffacts, deffunction, defglobal, defmodule, defgeneric, defmethod".to_string()
                     ],
                 });
                 if config.strict {
@@ -644,6 +823,589 @@ fn interpret_facts(elements: &[SExpr], span: Span) -> Result<FactsConstruct, Int
 }
 
 // ============================================================================
+// Deffunction interpretation
+// ============================================================================
+
+/// Interprets a `deffunction` construct.
+///
+/// Expects elements after the `deffunction` keyword:
+/// - name (symbol)
+/// - optional comment (string)
+/// - parameter list (a list of `?name` and optionally a trailing `$?name`)
+/// - one or more body expressions
+#[allow(clippy::too_many_lines)] // Parameter and body parsing sections keep the logic clear inline
+fn interpret_function(elements: &[SExpr], span: Span) -> Result<FunctionConstruct, InterpretError> {
+    if elements.is_empty() {
+        return Err(InterpretError {
+            message: "deffunction requires a name".to_string(),
+            span,
+            kind: InterpretErrorKind::MissingElement,
+            suggestions: vec!["(deffunction name (<parameters>) <body>)".to_string()],
+        });
+    }
+
+    let name = elements[0]
+        .as_symbol()
+        .ok_or_else(|| InterpretError {
+            message: "deffunction name must be a symbol".to_string(),
+            span: elements[0].span(),
+            kind: InterpretErrorKind::InvalidStructure,
+            suggestions: vec![],
+        })?
+        .to_string();
+
+    let mut idx = 1;
+
+    // Optional doc comment (string literal immediately after the name)
+    let comment = if idx < elements.len() {
+        if let Some(Atom::String(s)) = elements[idx].as_atom() {
+            idx += 1;
+            Some(s.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Parameter list (required; must be a list)
+    if idx >= elements.len() {
+        return Err(InterpretError {
+            message: "deffunction requires a parameter list".to_string(),
+            span,
+            kind: InterpretErrorKind::MissingElement,
+            suggestions: vec!["(deffunction name (<parameters>) <body>)".to_string()],
+        });
+    }
+
+    let param_list = elements[idx].as_list().ok_or_else(|| InterpretError {
+        message: "deffunction parameter list must be a list".to_string(),
+        span: elements[idx].span(),
+        kind: InterpretErrorKind::InvalidStructure,
+        suggestions: vec!["(deffunction name (?x ?y) <body>)".to_string()],
+    })?;
+    idx += 1;
+
+    let mut parameters = Vec::new();
+    let mut wildcard_parameter = None;
+
+    for param_expr in param_list {
+        match param_expr.as_atom() {
+            Some(Atom::SingleVar(var_name)) => {
+                if wildcard_parameter.is_some() {
+                    return Err(InterpretError {
+                        message: "regular parameters cannot follow a wildcard parameter"
+                            .to_string(),
+                        span: param_expr.span(),
+                        kind: InterpretErrorKind::InvalidStructure,
+                        suggestions: vec![],
+                    });
+                }
+                parameters.push(var_name.clone());
+            }
+            Some(Atom::MultiVar(var_name)) => {
+                if wildcard_parameter.is_some() {
+                    return Err(InterpretError {
+                        message: "only one wildcard parameter is allowed".to_string(),
+                        span: param_expr.span(),
+                        kind: InterpretErrorKind::InvalidStructure,
+                        suggestions: vec![],
+                    });
+                }
+                wildcard_parameter = Some(var_name.clone());
+            }
+            _ => {
+                return Err(InterpretError {
+                    message: "deffunction parameter must be a variable (?name or $?name)"
+                        .to_string(),
+                    span: param_expr.span(),
+                    kind: InterpretErrorKind::InvalidStructure,
+                    suggestions: vec![],
+                });
+            }
+        }
+    }
+
+    // Body (one or more expressions)
+    if idx >= elements.len() {
+        return Err(InterpretError {
+            message: "deffunction requires at least one body expression".to_string(),
+            span,
+            kind: InterpretErrorKind::MissingElement,
+            suggestions: vec!["(deffunction name (?x) (+ ?x 1))".to_string()],
+        });
+    }
+
+    let mut body = Vec::new();
+    for elem in &elements[idx..] {
+        body.push(interpret_action_expr(elem)?);
+    }
+
+    Ok(FunctionConstruct {
+        name,
+        span,
+        comment,
+        parameters,
+        wildcard_parameter,
+        body,
+    })
+}
+
+// ============================================================================
+// Defglobal interpretation
+// ============================================================================
+
+/// Interprets a `defglobal` construct.
+///
+/// Expects elements after the `defglobal` keyword in repeating triplets:
+/// `?*name* = <value-expression>`
+///
+/// At least one global definition is required.
+fn interpret_global(elements: &[SExpr], span: Span) -> Result<GlobalConstruct, InterpretError> {
+    let mut globals = Vec::new();
+    let mut idx = 0;
+
+    while idx < elements.len() {
+        // Expect a global variable atom: ?*name*
+        let global_name = match elements[idx].as_atom() {
+            Some(Atom::GlobalVar(name)) => name.clone(),
+            _ => {
+                return Err(InterpretError {
+                    message: format!(
+                        "expected global variable name (?*name*), found {:?}",
+                        elements[idx]
+                    ),
+                    span: elements[idx].span(),
+                    kind: InterpretErrorKind::InvalidStructure,
+                    suggestions: vec!["(defglobal ?*name* = value)".to_string()],
+                });
+            }
+        };
+        let def_span = elements[idx].span();
+        idx += 1;
+
+        // Expect `=` sign (may be Symbol("=") or Connective(Equals))
+        if idx >= elements.len() {
+            return Err(InterpretError {
+                message: format!("expected `=` after ?*{global_name}*"),
+                span: def_span,
+                kind: InterpretErrorKind::MissingElement,
+                suggestions: vec!["(defglobal ?*name* = value)".to_string()],
+            });
+        }
+
+        let is_equals = match elements[idx].as_atom() {
+            Some(Atom::Symbol(s)) => s == "=",
+            Some(Atom::Connective(Connective::Equals)) => true,
+            _ => false,
+        };
+        if !is_equals {
+            return Err(InterpretError {
+                message: format!(
+                    "expected `=` after ?*{global_name}*, found {:?}",
+                    elements[idx]
+                ),
+                span: elements[idx].span(),
+                kind: InterpretErrorKind::InvalidStructure,
+                suggestions: vec!["(defglobal ?*name* = value)".to_string()],
+            });
+        }
+        idx += 1;
+
+        // Expect value expression
+        if idx >= elements.len() {
+            return Err(InterpretError {
+                message: format!("expected value expression after ?*{global_name}* ="),
+                span: def_span,
+                kind: InterpretErrorKind::MissingElement,
+                suggestions: vec!["(defglobal ?*name* = value)".to_string()],
+            });
+        }
+
+        let value = interpret_action_expr(&elements[idx])?;
+        idx += 1;
+
+        globals.push(GlobalDefinition {
+            name: global_name,
+            span: def_span,
+            value,
+        });
+    }
+
+    if globals.is_empty() {
+        return Err(InterpretError {
+            message: "defglobal requires at least one global definition".to_string(),
+            span,
+            kind: InterpretErrorKind::MissingElement,
+            suggestions: vec!["(defglobal ?*name* = value)".to_string()],
+        });
+    }
+
+    Ok(GlobalConstruct { span, globals })
+}
+
+// ============================================================================
+// Defmodule interpretation
+// ============================================================================
+
+/// Interprets a `defmodule` construct.
+///
+/// Syntax:
+/// ```clips
+/// (defmodule NAME
+///   "optional comment"
+///   (export ?ALL)
+///   (export deftemplate name1 name2)
+///   (import OTHER-MODULE ?ALL)
+///   (import OTHER-MODULE deftemplate name1))
+/// ```
+fn interpret_module(elements: &[SExpr], span: Span) -> Result<ModuleConstruct, InterpretError> {
+    if elements.is_empty() {
+        return Err(InterpretError::missing("module name", span));
+    }
+
+    let name = elements[0]
+        .as_symbol()
+        .ok_or_else(|| InterpretError::expected("module name (symbol)", elements[0].span()))?
+        .to_string();
+
+    let mut idx = 1;
+
+    // Optional comment
+    let comment = if idx < elements.len() {
+        if let Some(Atom::String(s)) = elements[idx].as_atom() {
+            idx += 1;
+            Some(s.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut exports = Vec::new();
+    let mut imports = Vec::new();
+
+    // Process remaining elements — each should be a list starting with "export" or "import"
+    while idx < elements.len() {
+        let spec_list = elements[idx].as_list().ok_or_else(|| {
+            InterpretError::expected(
+                "export or import specification (list)",
+                elements[idx].span(),
+            )
+        })?;
+
+        if spec_list.is_empty() {
+            return Err(InterpretError::invalid(
+                "empty module specification",
+                elements[idx].span(),
+            ));
+        }
+
+        let keyword = spec_list[0].as_symbol().ok_or_else(|| {
+            InterpretError::expected("\"export\" or \"import\" keyword", spec_list[0].span())
+        })?;
+
+        match keyword {
+            "export" => {
+                let spec = interpret_module_spec(&spec_list[1..], elements[idx].span())?;
+                exports.push(spec);
+            }
+            "import" => {
+                let import = interpret_import_spec(&spec_list[1..], elements[idx].span())?;
+                imports.push(import);
+            }
+            other => {
+                return Err(InterpretError::invalid(
+                    &format!(
+                        "unknown module specification keyword `{other}`; expected `export` or `import`"
+                    ),
+                    spec_list[0].span(),
+                ));
+            }
+        }
+
+        idx += 1;
+    }
+
+    Ok(ModuleConstruct {
+        name,
+        span,
+        comment,
+        exports,
+        imports,
+    })
+}
+
+/// Parse a module spec like `?ALL`, `?NONE`, or `deftemplate name1 name2`.
+fn interpret_module_spec(elements: &[SExpr], span: Span) -> Result<ModuleSpec, InterpretError> {
+    if elements.is_empty() {
+        return Err(InterpretError::missing("export specification", span));
+    }
+
+    // Check for ?ALL or ?NONE (single-field variables in the parser)
+    if let Some(atom) = elements[0].as_atom() {
+        match atom {
+            Atom::SingleVar(v) if v == "ALL" => return Ok(ModuleSpec::All),
+            Atom::SingleVar(v) if v == "NONE" => return Ok(ModuleSpec::None),
+            // Also handle as symbols in case parser treats them differently
+            Atom::Symbol(s) if s == "?ALL" => return Ok(ModuleSpec::All),
+            Atom::Symbol(s) if s == "?NONE" => return Ok(ModuleSpec::None),
+            _ => {}
+        }
+    }
+
+    // Otherwise: construct-type followed by names
+    let construct_type = elements[0]
+        .as_symbol()
+        .ok_or_else(|| {
+            InterpretError::expected("construct type (symbol) or ?ALL/?NONE", elements[0].span())
+        })?
+        .to_string();
+
+    let mut names = Vec::new();
+    for elem in &elements[1..] {
+        // Names can also be ?ALL or ?NONE for construct-type-level wildcards
+        if let Some(atom) = elem.as_atom() {
+            match atom {
+                Atom::SingleVar(v) if v == "ALL" => {
+                    // (export deftemplate ?ALL) — export all deftemplates
+                    return Ok(ModuleSpec::Specific {
+                        construct_type,
+                        names: vec!["?ALL".to_string()],
+                    });
+                }
+                Atom::SingleVar(v) if v == "NONE" => {
+                    return Ok(ModuleSpec::Specific {
+                        construct_type,
+                        names: vec!["?NONE".to_string()],
+                    });
+                }
+                _ => {}
+            }
+        }
+        let name = elem
+            .as_symbol()
+            .ok_or_else(|| InterpretError::expected("construct name (symbol)", elem.span()))?
+            .to_string();
+        names.push(name);
+    }
+
+    Ok(ModuleSpec::Specific {
+        construct_type,
+        names,
+    })
+}
+
+/// Parse an import spec like `MODULE-NAME ?ALL` or `MODULE-NAME deftemplate name1`.
+fn interpret_import_spec(elements: &[SExpr], span: Span) -> Result<ImportSpec, InterpretError> {
+    if elements.is_empty() {
+        return Err(InterpretError::missing("module name for import", span));
+    }
+
+    let module_name = elements[0]
+        .as_symbol()
+        .ok_or_else(|| InterpretError::expected("module name (symbol)", elements[0].span()))?
+        .to_string();
+
+    if elements.len() < 2 {
+        return Err(InterpretError::missing(
+            "import specification after module name",
+            span,
+        ));
+    }
+
+    let spec = interpret_module_spec(&elements[1..], span)?;
+
+    Ok(ImportSpec {
+        module_name,
+        spec,
+        span,
+    })
+}
+
+// ============================================================================
+// Defgeneric interpretation
+// ============================================================================
+
+/// Interprets a `defgeneric` construct.
+///
+/// Syntax:
+/// ```clips
+/// (defgeneric display "Display any value")
+/// ```
+fn interpret_generic(elements: &[SExpr], span: Span) -> Result<GenericConstruct, InterpretError> {
+    if elements.is_empty() {
+        return Err(InterpretError::missing("generic function name", span));
+    }
+
+    let name = elements[0]
+        .as_symbol()
+        .ok_or_else(|| {
+            InterpretError::expected("generic function name (symbol)", elements[0].span())
+        })?
+        .to_string();
+
+    let mut idx = 1;
+
+    // Optional comment
+    let comment = if idx < elements.len() {
+        if let Some(Atom::String(s)) = elements[idx].as_atom() {
+            idx += 1;
+            Some(s.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // defgeneric should have no more elements after name and optional comment
+    if idx < elements.len() {
+        return Err(InterpretError::invalid(
+            "unexpected elements after defgeneric declaration",
+            elements[idx].span(),
+        ));
+    }
+
+    Ok(GenericConstruct {
+        name,
+        span,
+        comment,
+    })
+}
+
+// ============================================================================
+// Defmethod interpretation
+// ============================================================================
+
+/// Interprets a `defmethod` construct.
+///
+/// Syntax:
+/// ```clips
+/// (defmethod display ((?x INTEGER))        ; typed param
+///   (printout t "Int:" ?x crlf))
+///
+/// (defmethod display 1 ((?x INTEGER))      ; with explicit index
+///   (printout t "Int:" ?x crlf))
+///
+/// (defmethod display ((?x) $?rest) ?x)     ; untyped + wildcard
+/// ```
+fn interpret_method(elements: &[SExpr], span: Span) -> Result<MethodConstruct, InterpretError> {
+    if elements.is_empty() {
+        return Err(InterpretError::missing("method name", span));
+    }
+
+    let name = elements[0]
+        .as_symbol()
+        .ok_or_else(|| InterpretError::expected("method name (symbol)", elements[0].span()))?
+        .to_string();
+
+    let mut idx = 1;
+
+    // Optional method index (integer)
+    let index = if idx < elements.len() {
+        if let Some(Atom::Integer(n)) = elements[idx].as_atom() {
+            idx += 1;
+            #[allow(clippy::cast_possible_truncation)]
+            Some(*n as i32)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Required parameter list
+    if idx >= elements.len() {
+        return Err(InterpretError::missing("parameter restrictions list", span));
+    }
+
+    let param_list = elements[idx].as_list().ok_or_else(|| {
+        InterpretError::expected("parameter restrictions list", elements[idx].span())
+    })?;
+    idx += 1;
+
+    // Parse parameters
+    let mut parameters = Vec::new();
+    let mut wildcard_parameter = None;
+
+    for param_expr in param_list {
+        // Check for wildcard ($?rest)
+        if let Some(Atom::MultiVar(var_name)) = param_expr.as_atom() {
+            wildcard_parameter = Some(var_name.clone());
+            continue;
+        }
+
+        // Regular parameter: must be a list like (?name TYPE1 TYPE2 ...)
+        let restriction_list = param_expr.as_list().ok_or_else(|| {
+            InterpretError::expected(
+                "parameter restriction (list like (?x INTEGER))",
+                param_expr.span(),
+            )
+        })?;
+
+        if restriction_list.is_empty() {
+            return Err(InterpretError::invalid(
+                "empty parameter restriction",
+                param_expr.span(),
+            ));
+        }
+
+        // First element must be a single variable
+        let param_name = match restriction_list[0].as_atom() {
+            Some(Atom::SingleVar(v)) => v.clone(),
+            _ => {
+                return Err(InterpretError::expected(
+                    "parameter variable (?name)",
+                    restriction_list[0].span(),
+                ));
+            }
+        };
+
+        // Remaining elements are type restrictions (symbols)
+        let mut type_restrictions = Vec::new();
+        for type_expr in &restriction_list[1..] {
+            let type_name = type_expr
+                .as_symbol()
+                .ok_or_else(|| {
+                    InterpretError::expected(
+                        "type restriction (symbol like INTEGER, FLOAT)",
+                        type_expr.span(),
+                    )
+                })?
+                .to_string();
+            type_restrictions.push(type_name);
+        }
+
+        parameters.push(MethodParameter {
+            name: param_name,
+            type_restrictions,
+            span: param_expr.span(),
+        });
+    }
+
+    // Body expressions (at least one required)
+    if idx >= elements.len() {
+        return Err(InterpretError::missing("method body", span));
+    }
+
+    let mut body = Vec::new();
+    for elem in &elements[idx..] {
+        body.push(interpret_action_expr(elem)?);
+    }
+
+    Ok(MethodConstruct {
+        name,
+        span,
+        index,
+        parameters,
+        wildcard_parameter,
+        body,
+    })
+}
+
+// ============================================================================
 // Pattern interpretation
 // ============================================================================
 
@@ -714,6 +1476,19 @@ fn interpret_conditional_pattern(
                 patterns.push(interpret_pattern(pattern_expr)?);
             }
             Ok(Some(Pattern::Exists(patterns, expr.span())))
+        }
+        Some("forall") => {
+            if list.len() < 3 {
+                return Err(InterpretError::missing(
+                    "condition and then-clause (forall requires at least two sub-patterns)",
+                    expr.span(),
+                ));
+            }
+            let mut patterns = Vec::new();
+            for pattern_expr in &list[1..] {
+                patterns.push(interpret_pattern(pattern_expr)?);
+            }
+            Ok(Some(Pattern::Forall(patterns, expr.span())))
         }
         _ => Ok(None),
     }
@@ -1455,7 +2230,8 @@ mod tests {
 
     #[test]
     fn interpret_known_unsupported() {
-        let parsed = parse_sexprs("(deffunction foo () (+ 1 2))", file());
+        // defclass is still unsupported; verify it produces the right error
+        let parsed = parse_sexprs("(defclass Sensor (is-a USER))", file());
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert_eq!(result.errors.len(), 1);
@@ -2201,5 +2977,603 @@ mod tests {
         } else {
             panic!("expected Rule construct");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 005: deffunction interpretation tests
+    // -----------------------------------------------------------------------
+
+    fn interpret_source_inner(source: &str) -> InterpretResult {
+        let parsed = parse_sexprs(source, file());
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        interpret_constructs(&parsed.exprs, &InterpreterConfig::default())
+    }
+
+    #[test]
+    fn interpret_deffunction_simple() {
+        let result = interpret_source_inner("(deffunction add-one (?x) (+ ?x 1))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.constructs.len(), 1);
+        match &result.constructs[0] {
+            Construct::Function(func) => {
+                assert_eq!(func.name, "add-one");
+                assert_eq!(func.parameters, vec!["x"]);
+                assert!(func.wildcard_parameter.is_none());
+                assert_eq!(func.body.len(), 1);
+                assert!(func.comment.is_none());
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_deffunction_with_comment() {
+        let result = interpret_source_inner(r#"(deffunction inc "Increment by 1" (?x) (+ ?x 1))"#);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.constructs[0] {
+            Construct::Function(func) => {
+                assert_eq!(func.comment, Some("Increment by 1".to_string()));
+                assert_eq!(func.name, "inc");
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_deffunction_with_wildcard_only() {
+        let result = interpret_source_inner("(deffunction sum-all ($?values) (+ $?values))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.constructs[0] {
+            Construct::Function(func) => {
+                assert!(func.parameters.is_empty());
+                assert_eq!(func.wildcard_parameter, Some("values".to_string()));
+                assert_eq!(func.body.len(), 1);
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_deffunction_mixed_params() {
+        let result = interpret_source_inner(
+            "(deffunction fmt (?prefix $?rest) (printout t ?prefix $?rest))",
+        );
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.constructs[0] {
+            Construct::Function(func) => {
+                assert_eq!(func.parameters, vec!["prefix"]);
+                assert_eq!(func.wildcard_parameter, Some("rest".to_string()));
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_deffunction_multiple_body_expressions() {
+        let result = interpret_source_inner(
+            "(deffunction two-steps (?x) (assert (step1)) (assert (step2)))",
+        );
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.constructs[0] {
+            Construct::Function(func) => {
+                assert_eq!(func.body.len(), 2);
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_deffunction_no_params() {
+        let result = interpret_source_inner("(deffunction greet () (printout t hello crlf))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.constructs[0] {
+            Construct::Function(func) => {
+                assert!(func.parameters.is_empty());
+                assert!(func.wildcard_parameter.is_none());
+                assert_eq!(func.body.len(), 1);
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_deffunction_missing_name_errors() {
+        let result = interpret_source_inner("(deffunction)");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::MissingElement
+        ));
+    }
+
+    #[test]
+    fn interpret_deffunction_missing_params_errors() {
+        let result = interpret_source_inner("(deffunction foo)");
+        assert!(!result.errors.is_empty());
+    }
+
+    #[test]
+    fn interpret_deffunction_missing_body_errors() {
+        let result = interpret_source_inner("(deffunction foo (?x))");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::MissingElement
+        ));
+    }
+
+    #[test]
+    fn interpret_deffunction_non_symbol_name_errors() {
+        let result = interpret_source_inner("(deffunction 42 (?x) (+ ?x 1))");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::InvalidStructure
+        ));
+    }
+
+    #[test]
+    fn interpret_deffunction_non_list_params_errors() {
+        let result = interpret_source_inner("(deffunction foo ?x (+ ?x 1))");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::InvalidStructure
+        ));
+    }
+
+    #[test]
+    fn interpret_deffunction_duplicate_wildcard_errors() {
+        let result = interpret_source_inner("(deffunction foo ($?a $?b) (+ 1 2))");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::InvalidStructure
+        ));
+    }
+
+    #[test]
+    fn interpret_deffunction_param_after_wildcard_errors() {
+        let result = interpret_source_inner("(deffunction foo ($?a ?b) (+ 1 2))");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::InvalidStructure
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 005: defglobal interpretation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpret_defglobal_single() {
+        let result = interpret_source_inner("(defglobal ?*threshold* = 50)");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.constructs.len(), 1);
+        match &result.constructs[0] {
+            Construct::Global(global) => {
+                assert_eq!(global.globals.len(), 1);
+                assert_eq!(global.globals[0].name, "threshold");
+            }
+            other => panic!("expected Global, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_defglobal_multiple() {
+        let result = interpret_source_inner("(defglobal ?*a* = 1 ?*b* = 2 ?*c* = 3)");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.constructs[0] {
+            Construct::Global(global) => {
+                assert_eq!(global.globals.len(), 3);
+                assert_eq!(global.globals[0].name, "a");
+                assert_eq!(global.globals[1].name, "b");
+                assert_eq!(global.globals[2].name, "c");
+            }
+            other => panic!("expected Global, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_defglobal_float_value() {
+        let result = interpret_source_inner("(defglobal ?*pi* = 3.14159)");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.constructs[0] {
+            Construct::Global(global) => {
+                assert_eq!(global.globals.len(), 1);
+                assert_eq!(global.globals[0].name, "pi");
+                assert!(matches!(
+                    &global.globals[0].value,
+                    ActionExpr::Literal(lit) if matches!(lit.value, LiteralKind::Float(_))
+                ));
+            }
+            other => panic!("expected Global, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_defglobal_expression_value() {
+        let result = interpret_source_inner("(defglobal ?*doubled* = (* 2 3))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.constructs[0] {
+            Construct::Global(global) => {
+                assert!(matches!(
+                    &global.globals[0].value,
+                    ActionExpr::FunctionCall(_)
+                ));
+            }
+            other => panic!("expected Global, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_defglobal_empty_errors() {
+        let result = interpret_source_inner("(defglobal)");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::MissingElement
+        ));
+    }
+
+    #[test]
+    fn interpret_defglobal_missing_equals_errors() {
+        let result = interpret_source_inner("(defglobal ?*x* 50)");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::InvalidStructure
+        ));
+    }
+
+    #[test]
+    fn interpret_defglobal_missing_value_errors() {
+        let result = interpret_source_inner("(defglobal ?*x* =)");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::MissingElement
+        ));
+    }
+
+    #[test]
+    fn interpret_defglobal_non_global_var_errors() {
+        // ?x is a SingleVar, not a GlobalVar
+        let result = interpret_source_inner("(defglobal ?x = 50)");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::InvalidStructure
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 007: defmodule interpretation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpret_defmodule_simple_no_specs() {
+        let result = interpret_source_inner("(defmodule MAIN)");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.constructs.len(), 1);
+        let Construct::Module(m) = &result.constructs[0] else {
+            panic!("expected Module construct");
+        };
+        assert_eq!(m.name, "MAIN");
+        assert!(m.comment.is_none());
+        assert!(m.exports.is_empty());
+        assert!(m.imports.is_empty());
+    }
+
+    #[test]
+    fn interpret_defmodule_with_export_all() {
+        let result = interpret_source_inner("(defmodule MAIN (export ?ALL))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.constructs.len(), 1);
+        let Construct::Module(m) = &result.constructs[0] else {
+            panic!("expected Module construct");
+        };
+        assert_eq!(m.name, "MAIN");
+        assert_eq!(m.exports.len(), 1);
+        assert!(matches!(m.exports[0], ModuleSpec::All));
+    }
+
+    #[test]
+    fn interpret_defmodule_with_export_none() {
+        let result = interpret_source_inner("(defmodule MAIN (export ?NONE))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Module(m) = &result.constructs[0] else {
+            panic!("expected Module construct");
+        };
+        assert_eq!(m.exports.len(), 1);
+        assert!(matches!(m.exports[0], ModuleSpec::None));
+    }
+
+    #[test]
+    fn interpret_defmodule_with_specific_exports() {
+        let result = interpret_source_inner("(defmodule MAIN (export deftemplate reading sensor))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Module(m) = &result.constructs[0] else {
+            panic!("expected Module construct");
+        };
+        assert_eq!(m.exports.len(), 1);
+        let ModuleSpec::Specific {
+            construct_type,
+            names,
+        } = &m.exports[0]
+        else {
+            panic!("expected Specific export");
+        };
+        assert_eq!(construct_type, "deftemplate");
+        assert_eq!(names, &["reading", "sensor"]);
+    }
+
+    #[test]
+    fn interpret_defmodule_with_import() {
+        let result = interpret_source_inner("(defmodule SENSOR (import MAIN ?ALL))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Module(m) = &result.constructs[0] else {
+            panic!("expected Module construct");
+        };
+        assert_eq!(m.name, "SENSOR");
+        assert_eq!(m.imports.len(), 1);
+        assert_eq!(m.imports[0].module_name, "MAIN");
+        assert!(matches!(m.imports[0].spec, ModuleSpec::All));
+    }
+
+    #[test]
+    fn interpret_defmodule_with_import_and_export() {
+        let result = interpret_source_inner(
+            "(defmodule SENSOR (import MAIN ?ALL) (export deftemplate reading))",
+        );
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Module(m) = &result.constructs[0] else {
+            panic!("expected Module construct");
+        };
+        assert_eq!(m.imports.len(), 1);
+        assert_eq!(m.exports.len(), 1);
+    }
+
+    #[test]
+    fn interpret_defmodule_with_comment() {
+        let result = interpret_source_inner(r#"(defmodule MAIN "Main module" (export ?ALL))"#);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Module(m) = &result.constructs[0] else {
+            panic!("expected Module construct");
+        };
+        assert_eq!(m.comment.as_deref(), Some("Main module"));
+        assert_eq!(m.exports.len(), 1);
+    }
+
+    #[test]
+    fn interpret_defmodule_missing_name_errors() {
+        let result = interpret_source_inner("(defmodule)");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::MissingElement
+        ));
+    }
+
+    #[test]
+    fn interpret_defmodule_invalid_spec_keyword_errors() {
+        let result = interpret_source_inner("(defmodule MAIN (reexport ?ALL))");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::InvalidStructure
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 007: defgeneric interpretation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpret_defgeneric_simple() {
+        let result = interpret_source_inner("(defgeneric display)");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.constructs.len(), 1);
+        let Construct::Generic(g) = &result.constructs[0] else {
+            panic!("expected Generic construct");
+        };
+        assert_eq!(g.name, "display");
+        assert!(g.comment.is_none());
+    }
+
+    #[test]
+    fn interpret_defgeneric_with_comment() {
+        let result = interpret_source_inner(r#"(defgeneric display "Display any value")"#);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Generic(g) = &result.constructs[0] else {
+            panic!("expected Generic construct");
+        };
+        assert_eq!(g.name, "display");
+        assert_eq!(g.comment.as_deref(), Some("Display any value"));
+    }
+
+    #[test]
+    fn interpret_defgeneric_missing_name_errors() {
+        let result = interpret_source_inner("(defgeneric)");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::MissingElement
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 007: defmethod interpretation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpret_defmethod_simple_typed_param() {
+        let result = interpret_source_inner("(defmethod display ((?x INTEGER)) (printout t ?x))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.constructs.len(), 1);
+        let Construct::Method(m) = &result.constructs[0] else {
+            panic!("expected Method construct");
+        };
+        assert_eq!(m.name, "display");
+        assert!(m.index.is_none());
+        assert_eq!(m.parameters.len(), 1);
+        assert_eq!(m.parameters[0].name, "x");
+        assert_eq!(m.parameters[0].type_restrictions, ["INTEGER"]);
+        assert!(m.wildcard_parameter.is_none());
+        assert_eq!(m.body.len(), 1);
+    }
+
+    #[test]
+    fn interpret_defmethod_with_explicit_index() {
+        let result = interpret_source_inner("(defmethod display 1 ((?x INTEGER)) (printout t ?x))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Method(m) = &result.constructs[0] else {
+            panic!("expected Method construct");
+        };
+        assert_eq!(m.index, Some(1));
+        assert_eq!(m.parameters.len(), 1);
+    }
+
+    #[test]
+    fn interpret_defmethod_multiple_params() {
+        let result =
+            interpret_source_inner("(defmethod display ((?x INTEGER) (?y FLOAT)) (+ ?x ?y))");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Method(m) = &result.constructs[0] else {
+            panic!("expected Method construct");
+        };
+        assert_eq!(m.parameters.len(), 2);
+        assert_eq!(m.parameters[0].name, "x");
+        assert_eq!(m.parameters[0].type_restrictions, ["INTEGER"]);
+        assert_eq!(m.parameters[1].name, "y");
+        assert_eq!(m.parameters[1].type_restrictions, ["FLOAT"]);
+    }
+
+    #[test]
+    fn interpret_defmethod_multi_type_restriction() {
+        let result = interpret_source_inner("(defmethod display ((?x INTEGER FLOAT)) ?x)");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Method(m) = &result.constructs[0] else {
+            panic!("expected Method construct");
+        };
+        assert_eq!(m.parameters.len(), 1);
+        assert_eq!(m.parameters[0].type_restrictions, ["INTEGER", "FLOAT"]);
+    }
+
+    #[test]
+    fn interpret_defmethod_untyped_param() {
+        let result = interpret_source_inner("(defmethod display ((?x)) ?x)");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Method(m) = &result.constructs[0] else {
+            panic!("expected Method construct");
+        };
+        assert_eq!(m.parameters.len(), 1);
+        assert_eq!(m.parameters[0].name, "x");
+        assert!(m.parameters[0].type_restrictions.is_empty());
+    }
+
+    #[test]
+    fn interpret_defmethod_wildcard_param() {
+        let result = interpret_source_inner("(defmethod display ((?x) $?rest) ?x)");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Method(m) = &result.constructs[0] else {
+            panic!("expected Method construct");
+        };
+        assert_eq!(m.parameters.len(), 1);
+        assert_eq!(m.wildcard_parameter.as_deref(), Some("rest"));
+    }
+
+    #[test]
+    fn interpret_defmethod_missing_name_errors() {
+        let result = interpret_source_inner("(defmethod)");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::MissingElement
+        ));
+    }
+
+    #[test]
+    fn interpret_defmethod_missing_param_list_errors() {
+        let result = interpret_source_inner("(defmethod display)");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::MissingElement
+        ));
+    }
+
+    #[test]
+    fn interpret_defmethod_missing_body_errors() {
+        let result = interpret_source_inner("(defmethod display ((?x INTEGER)))");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::MissingElement
+        ));
+    }
+
+    #[test]
+    fn interpret_defmethod_empty_param_restriction_errors() {
+        let result = interpret_source_inner("(defmethod display (()) ?x)");
+        assert!(!result.errors.is_empty());
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::InvalidStructure
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 010: forall interpretation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpret_forall_basic() {
+        let result = interpret_source_inner(
+            r"
+            (defrule all-checked
+                (forall (item ?id) (checked ?id))
+                =>
+                (assert (all-complete)))
+            ",
+        );
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.constructs.len(), 1);
+        if let Construct::Rule(rule) = &result.constructs[0] {
+            assert_eq!(rule.name, "all-checked");
+            assert_eq!(rule.patterns.len(), 1);
+            assert!(
+                matches!(&rule.patterns[0], Pattern::Forall(pats, _) if pats.len() == 2),
+                "expected Forall with 2 sub-patterns, got {:?}",
+                rule.patterns[0]
+            );
+        } else {
+            panic!("expected Rule");
+        }
+    }
+
+    #[test]
+    fn interpret_forall_too_few_patterns_errors() {
+        let result = interpret_source_inner(
+            r"
+            (defrule bad
+                (forall (item ?id))
+                =>
+                (assert (done)))
+            ",
+        );
+        assert!(
+            !result.errors.is_empty(),
+            "expected an error for forall with too few patterns"
+        );
+        assert!(matches!(
+            result.errors[0].kind,
+            InterpretErrorKind::MissingElement
+        ));
     }
 }

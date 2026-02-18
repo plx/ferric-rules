@@ -186,6 +186,41 @@ impl Agenda {
         Some(activation)
     }
 
+    /// Pop the highest-priority activation matching the given predicate.
+    ///
+    /// Scans from highest to lowest priority and returns the first activation
+    /// for which `predicate` returns `true`. Returns `None` if no matching
+    /// activation exists.
+    pub fn pop_matching(&mut self, predicate: impl Fn(&Activation) -> bool) -> Option<Activation> {
+        let mut target_key = None;
+        let mut target_id = None;
+
+        for (key, &id) in &self.ordering {
+            if let Some(activation) = self.activations.get(id) {
+                if predicate(activation) {
+                    target_key = Some(key.clone());
+                    target_id = Some(id);
+                    break;
+                }
+            }
+        }
+
+        let key = target_key?;
+        let id = target_id?;
+
+        self.ordering.remove(&key);
+        self.id_to_key.remove(&id);
+        let activation = self.activations.remove(id)?;
+        remove_from_token_index(&mut self.token_to_activations, activation.token, id);
+
+        Some(activation)
+    }
+
+    /// Check whether any activation matches the given predicate.
+    pub fn has_matching(&self, predicate: impl Fn(&Activation) -> bool) -> bool {
+        self.activations.values().any(predicate)
+    }
+
     /// Remove all activations for a given token.
     ///
     /// Returns the removed activations.
@@ -1054,6 +1089,89 @@ mod tests {
         let popped = agenda.pop().expect("Should have activation");
         assert_eq!(popped.id, id3);
         assert_eq!(popped.activation_seq, 2);
+    }
+
+    #[test]
+    fn pop_matching_finds_highest_priority_match() {
+        let mut agenda = Agenda::new();
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 10, // highest salience
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t3,
+            salience: 5,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        // Only match rule 2
+        let popped = agenda.pop_matching(|a| a.rule == RuleId(2)).unwrap();
+        assert_eq!(popped.id, id2);
+        assert_eq!(popped.salience, 10);
+        assert_eq!(agenda.len(), 2);
+    }
+
+    #[test]
+    fn pop_matching_returns_none_when_no_match() {
+        let mut agenda = Agenda::new();
+        let t1 = make_token_id();
+
+        agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let result = agenda.pop_matching(|a| a.rule == RuleId(99));
+        assert!(result.is_none());
+        assert_eq!(agenda.len(), 1); // Not removed
+    }
+
+    #[test]
+    fn has_matching_checks_predicate() {
+        let mut agenda = Agenda::new();
+        let t1 = make_token_id();
+
+        agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(5),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        assert!(agenda.has_matching(|a| a.rule == RuleId(5)));
+        assert!(!agenda.has_matching(|a| a.rule == RuleId(99)));
     }
 
     #[test]

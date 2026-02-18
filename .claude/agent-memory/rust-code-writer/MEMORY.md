@@ -5,7 +5,7 @@
 This is a Cargo workspace with four crates:
 - `ferric` — facade crate that re-exports from the others
 - `ferric-core` — shared types, fact storage, pattern matching (core engine internals)
-- `ferric-parser` — parser (Stage 1 S-expression parser complete, Stage 2 construct interpreter added in Pass 002)
+- `ferric-parser` — parser (Stage 1 S-expression parser complete, Stage 2 construct interpreter added)
 - `ferric-runtime` — Engine, EngineConfig, execution environment, and source loader
 
 ## Key Architectural Decisions
@@ -107,210 +107,100 @@ let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
 let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
 ```
 
-## Pass 003 Implementation
+## Phase 3 Patterns
 
-Successfully moved shared types from `ferric-runtime` to `ferric-core` and added:
-- `encoding.rs` — StringEncoding, EncodingError
-- `string.rs` — FerricString
-- `symbol.rs` — Symbol, SymbolId, SymbolTable
-- `value.rs` — Value, AtomKey, Multifield, ExternalAddress
-- `fact.rs` — Fact, FactBase, FactId, TemplateId, OrderedFact, TemplateFact
-- `binding.rs` — VarId, VarMap, BindingSet, ValueRef
-- `engine.rs` in ferric-runtime — Engine with thread affinity checking
+See `phase3-pass-notes.md` for detailed notes on each Phase 3 pass.
 
-All 97 tests pass, clippy clean with `-D warnings`.
+### Pass 003: Template Registry (Template-Aware Modify/Duplicate)
+- `RegisteredTemplate` lives in `crates/ferric-runtime/src/templates.rs` (pub(crate))
+- `Engine` gained: `template_ids: HashMap<String, TemplateId>`, `template_defs: HashMap<TemplateId, RegisteredTemplate>`, `template_id_alloc: slotmap::SlotMap<TemplateId, ()>`
+- Must add `slotmap = { workspace = true }` to `ferric-runtime`'s Cargo.toml
+- Template registration happens in `load_str` at `Construct::Template`, **before** rules are compiled
+- `execute_actions` takes 8 args — needs `#[allow(clippy::too_many_arguments)]`
+- `apply_template_slot_overrides` takes `&mut [Value]` not `&mut Vec<Value>` (clippy::ptr_arg)
+- `translate_pattern` with template arm is >100 lines — `#[allow(clippy::too_many_lines)]`
+- `register_template` returns `Result<(), LoadError>` but never errors — `#[allow(clippy::unnecessary_wraps)]`
+- **INFINITE LOOP hazard**: `duplicate` preserves the original; if the duplicate matches the same rule, it fires forever. Tests for `duplicate` must use constant constraints that the duplicate does NOT satisfy.
 
-## Pass 005 Implementation
+### Test CE (Pass 002) Pattern
+- Test CEs are NOT compiled into Rete; collected in `CompiledRuleInfo::test_conditions`
+- Evaluated at firing time in `execute_actions`
+- `execute_actions` returns `(bool, Vec<ActionError>)` — `bool` = did rule logically fire?
+- `run()` only increments `rules_fired` when bool is `true`
+- `step()` always returns `Some(FiredRule)` (agenda pop happened regardless)
 
-Successfully implemented a minimal source loader connecting parser to engine:
-- `loader.rs` in `ferric-runtime/src/` with `LoadError`, `RuleDef`, `LoadResult` types
-- `Engine::load_str()` and `Engine::load_file()` methods for loading CLIPS source
-- Support for `(assert ...)` forms — converts S-expressions to facts in working memory
-- Support for `(defrule ...)` forms — stores raw S-expression structure in `RuleDef` for later compilation
-- Support for `(deffacts ...)` forms — treated like batch assert
-- Comprehensive error handling with `LoadError` enum (Parse, UnsupportedForm, InvalidAssert, InvalidDefrule, Engine, Io)
-- Atom-to-Value conversion respects encoding settings
-- 36 loader tests including property-based tests, all passing
-- Clippy clean with `-D warnings`
+### EvalContext Borrow Pattern
+`EvalContext` holds `&'a mut SymbolTable`. `from_action_expr` also needs `&mut SymbolTable`.
+These cannot coexist — translate first, then construct context:
+```rust
+// CORRECT
+let runtime_expr = from_action_expr(expr, symbol_table, config)?;  // uses &mut
+let mut ctx = EvalContext { symbol_table, ... };                    // then borrow
+eval(&mut ctx, &runtime_expr)
+```
 
-Key design notes:
-- Made Engine fields `pub(crate)` for intra-crate access (fact_base, symbol_table, config)
-- Made `check_thread_affinity()` `pub(crate)` for reuse in loader
-- `process_defrule` doesn't use `self` but kept as method for API consistency
-- Parse errors aggregated and returned as vector for multi-error reporting
-- Warnings collected for non-fatal issues (encoding errors, unsupported values)
-
-All 186 tests pass workspace-wide, clippy clean.
-
-## Pass 007 Implementation (Phase 2)
-
-Successfully implemented all four conflict resolution strategies with full ordering contract:
-- `strategy.rs` — `ConflictResolutionStrategy` enum (Depth, Breadth, Lex, Mea)
-- `agenda.rs` — Refactored to support all strategies with `StrategyOrd` enum, `build_key()` method
-- Added `recency: SmallVec<[u64; 4]>` field to `Activation` for LEX/MEA strategies
-- `rete.rs` — Builds recency vectors (fact timestamps in pattern order) when creating activations
-- `config.rs` — Added `strategy` field to `EngineConfig`, builder method `with_strategy()`
-- `engine.rs` — Wires strategy from config to `ReteNetwork::with_strategy()`
-- 19 comprehensive tests covering all strategies, salience dominance, seq tiebreaking, removal
-- All 399 workspace tests pass (215 in ferric-core), clippy clean with `-D warnings`
-
-Key strategy ordering rules:
+### Conflict Resolution Strategies (Pass 007)
 - **Depth**: Higher salience > Higher timestamp (most recent) > Higher seq
 - **Breadth**: Higher salience > Lower timestamp (oldest) > Higher seq
 - **LEX**: Higher salience > Lexicographic recency (most recent fact first per position) > Higher seq
 - **MEA**: Higher salience > First-pattern recency > LEX tiebreak on rest > Higher seq
 
-CRITICAL: Recency vector built in `rete.rs` when creating Terminal activations by collecting `fact_base.get(fid).timestamp` for each fact in pattern order
-
-## Pass 008 Implementation
-
-Successfully implemented beta network, join operations, and agenda (second stage of Rete):
-- `beta.rs` — BetaNode (Root, Join, Terminal), BetaMemory, BetaNetwork, JoinTest, RuleId
-- `agenda.rs` — Agenda, Activation, ActivationId, AgendaKey with depth strategy (most recent first)
-- `rete.rs` — ReteNetwork integrating alpha + beta + token store + agenda
-- Right activation: when facts enter alpha memories, propagate through join nodes
-- Join evaluation: compare left token bindings with right fact slot values
-- Retraction: cascade remove tokens, clean up beta memories and agenda
-- 12 unit tests for beta and agenda, 5 integration tests for full Rete network
-- All 248 workspace tests pass, clippy clean with `-D warnings`
-
-Key design notes:
+### Beta Network
 - Beta network root node ID starts at 100,000 to avoid conflicts with alpha node IDs
 
-## Pass 011 Implementation
-
-Successfully implemented pattern validation and source-located compile errors:
-- **validation.rs** in `ferric-core/src/` — `SourceLocation`, `ValidationStage`, `PatternViolation`, `PatternValidationError` types
-- Error codes E0001-E0005 defined (E0002-E0004 for forall, Phase 3 scope)
-- `LoadError::Validation` variant added to runtime error enum
-- `CompileError::Validation` variant added to core compiler error enum
-- Pattern validation function in `loader.rs` — checks nesting depth (max 2) and unsupported combinations
-- E0001: Nesting depth exceeded for `not`/`exists` CEs
-- E0005: Unsupported nesting (exists containing not is rejected)
-- 6 integration tests in `phase2_integration_tests.rs` covering validation pass/fail cases
-- 9 unit tests in `validation.rs` covering error type construction and Display formatting
-- Forall regression fixture created at `tests/fixtures/forall_vacuous_truth.clp` with commented test contract
-- All 482 workspace tests pass (256 core + 119 parser + 103 runtime + 1 facade + 3 doc), clippy clean
-
-Key design notes:
-- `SourceLocation` is a simple struct in core (doesn't depend on parser's Span type)
-- Runtime converts `ferric_parser::Span` → `ferric_core::SourceLocation` when creating errors
+### Pattern Validation
 - Validation happens in `compile_rule_construct` BEFORE pattern translation
-- Pattern validation walks recursively, checking depth and nesting combinations inline
+- Max nesting depth: 2 (for not/exists)
+- `exists` containing `not` is rejected (E0005)
+- `SourceLocation` is in `ferric-core` (doesn't depend on parser's `Span` type)
 
-## Pass 009 (Phase 2, Pass 005) Implementation
+### Pass 005: Deffunction / Defglobal Stage 2 Interpretation
+- New types (`FunctionConstruct`, `GlobalDefinition`, `GlobalConstruct`) and `Construct::Function`/`Construct::Global` variants live in `ferric-parser/src/stage2.rs`
+- Body expressions in `interpret_function` use `interpret_action_expr` (the spec may call it `parse_action_expr` but the real name in this codebase is `interpret_action_expr`)
+- `?*name*` tokens are `Atom::GlobalVar(name)` in the AST; `=` in defglobal is `Atom::Connective(Connective::Equals)` from the lexer
+- Loader: add `"deffunction" | "defglobal"` to the construct_forms filter; add `functions` and `globals` fields to `LoadResult`; handle `Construct::Function` and `Construct::Global` arms in the processing loop
+- Tests that previously expected `UnsupportedForm` errors for `deffunction`/`defglobal` must be replaced with success assertions
+- `pedantic` is at `warn` level (not `deny`) in workspace lints, so `too_many_lines` warnings are non-fatal; suppress them with `#[allow(clippy::too_many_lines)]` on the affected functions (`interpret_constructs`, `interpret_function`, `load_str`)
 
-Successfully implemented join binding extraction and left activation:
-- **Beta.rs**: Added `bindings: Vec<(SlotIndex, VarId)>` field to `BetaNode::Join`
-- **Compiler.rs**: Modified compilation loop to extract bindings for new variables (not seen before) vs. join tests for previously-bound variables
-- **Rete.rs**:
-  - Right activation now extracts bindings from facts using `get_slot_value` and stores in tokens via `BindingSet::set`
-  - Added `left_activate` method: when a new parent token is created, it triggers left activation on child join nodes by iterating through alpha memory facts
-  - Both root-parent and non-root-parent cases extract bindings using `Rc::new(value.clone())`
-- Updated all callers of `create_join_node` to pass empty `vec![]` for bindings where not needed
-- 4 comprehensive tests in `rete.rs`:
-  - Two-pattern rule with variable binding and join test filtering
-  - Left activation with reverse assertion order (age fact first, then person fact)
-  - Binding extraction verification
-  - Retraction correctness with variable bindings
-- Updated `multi_pattern_rule_compiles_into_join_chain` integration test to verify actual join filtering (1 activation for alice→bob→carol chain)
-- All 343 workspace tests pass (1 + 167 + 115 + 57 + 0 + 0 + 2 + 1), clippy clean with `-D warnings`
+### Pass 007 (parser): Defmodule / Defgeneric / Defmethod Stage 2 Interpretation
+- New types (`ModuleSpec`, `ImportSpec`, `ModuleConstruct`, `GenericConstruct`, `MethodParameter`, `MethodConstruct`) and `Construct::Module/Generic/Method` variants live in `ferric-parser/src/stage2.rs` BEFORE `InterpreterConfig`
+- When a form transitions from "unsupported" to supported: update BOTH the parser test AND the loader test that expected `UnsupportedForm`/`UnknownConstruct` to use a genuinely unsupported form (e.g., `defclass`)
+- Also remove unused imports from integration tests (e.g., `assert_unsupported_form`)
+- **Clippy: collapsible_match** — `if let Some(x) = ... { if let Pattern(v) = x { ... } }` must collapse to `if let Some(Pattern(v)) = ...`
+- **Clippy: doc-link-with-quotes / doc-markdown** — avoid `construct_type="deftemplate"` style in doc comments; use backtick-wrapped code or rephrase
+- `?ALL` / `?NONE` are parsed as `Atom::SingleVar("ALL")` / `Atom::SingleVar("NONE")` (not symbols), since `?foo` is a variable in CLIPS
+- `defgeneric` takes only name + optional comment — NO parameter list in the defgeneric itself (params go in defmethod)
 
-Key implementation notes:
-- **Borrow checker pattern**: Clone parent token facts/bindings BEFORE the iteration loop, collect alpha memory fact IDs into Vec before loop, get fresh parent token reference on each iteration
-- `BindingSet::set` takes `Rc<Value>` (ValueRef), so use `std::rc::Rc::new(value.clone())`
+### Pass 008: Defmodule / Focus Stack
+- `ModuleRegistry` lives in `crates/ferric-runtime/src/modules.rs` (pub)
+- Engine gains: `module_registry: ModuleRegistry`, `rule_modules: HashMap<RuleId, ModuleId>`, `template_modules: HashMap<TemplateId, ModuleId>`
+- **CRITICAL BUG AVOIDED**: In `load_str`, constructs are collected in a first pass then rules compiled in a second pass. If `defmodule` statements update `current_module` during the first pass, ALL rules get the LAST module's id (not their own). Fix: capture `current_module` alongside each rule during the first pass using `Vec<(RuleConstruct, ModuleId)>`, then restore module before compiling each rule.
+- Focus stack initialized with `[MAIN]`; `run()` uses `pop_matching` to find activations for current focus module; pops focus when no matching activations exist for that module
+- `focus` RHS action: collects module names in `focus_requests: Vec<String>`, applied in reverse order after all actions complete (so first arg ends up on top)
+- `reset()` must call `module_registry.reset_focus()` to restore `[MAIN]` focus stack
+- `step()` is NOT focus-aware (uses `agenda.pop()` directly); only `run()` is focus-aware
+- `clippy::uninlined_format_args`: use `{var:?}` not `"{:?}", var` in assert messages
 
-## Pass 010 (Phase 2, Pass 006) Implementation
+### Pass 004: Printout / OutputRouter
+- `OutputRouter` lives in `crates/ferric-runtime/src/router.rs` (pub, not pub(crate))
+- Engine gains `pub(crate) router: OutputRouter` field; `reset()` calls `router.clear()`
+- `execute_actions` and `execute_single_action` both gain `router: &mut OutputRouter` parameter (now 9 args)
+- `Multifield` exposes `as_slice()` (not `values()`) for iterating elements
+- `clippy::match_same_arms`: merge identical pattern arms with `|` (e.g., `Symbol(s) | String(s)`)
+- `clippy::format_push_string`: use `use std::fmt::Write as FmtWrite` + `write!(output, ...)` instead of `push_str(&format!(...))`
+- `crlf` / `tab` / `ff` in printout are resolved as symbols at format time, not at parse time
 
-Successfully implemented exists pattern support in compiler and loader:
-- **CompilablePattern**: Added `pub exists: bool` field (after `negated: bool`)
-- **Compiler.rs**:
-  - Updated compilation loop to check `pattern.exists` and create exists nodes via `rete.beta.create_exists_node()`
-  - Added `test_exists_pattern_creates_exists_node` compiler test
-  - Updated ALL 14+ test constructions of `CompilablePattern` to include `exists: false`
-- **Loader.rs**:
-  - Added `Pattern::Exists` handling in `translate_pattern()` for single-pattern exists (multi-pattern deferred)
-  - Updated `translate_rule_construct()` fact_index tracking to exclude exists patterns (like negated patterns)
-  - Updated `Pattern::Ordered` construction to include `exists: false`
-- **Rete.rs**: Added 9 comprehensive exists node tests with helper function `build_trigger_with_exists_person()`
-  - First match produces activation, second match does not
-  - Retract one of two keeps activation, retract last removes activation
-  - No parent = no activation
-  - Support add/retract/re-add cycle
-  - Retract parent cleans up
-  - Multiple parents independent
-- **Phase2_integration_tests.rs**: Added 3 integration tests for exists behavior
-- All 465 workspace tests pass (1 + 245 + 119 + 97 + 0 + 0 + 2 + 1), clippy clean with `-D warnings`
+### Pass 009: Defgeneric/Defmethod Dispatch Runtime
+- `GenericRegistry` (with `RegisteredMethod`, `GenericFunction`) lives in `functions.rs`; `Engine` gains `pub(crate) generics: GenericRegistry`
+- `EvalContext` gains `pub generics: &'a GenericRegistry`; threaded through all call sites in `evaluator.rs`, `actions.rs`, `loader.rs`
+- `MethodConstruct.parameters` is `Vec<MethodParameter>` (not `Vec<String>`); extract names/type_restrictions when calling `register_method`
+- **CRITICAL design**: method bodies evaluate through `eval()`, NOT through action machinery — `assert`/`retract` do NOT work inside method bodies. Methods must return pure values; RHS actions use those values.
+- `clippy::single_match_else`: `match { Some(x) => x, None => { return Err(...) } }` must use `if let Some(x) = ... { x } else { return Err(...) }`
+- `clippy::too_many_arguments` on local `eval_expr` (8 params): add `#[allow(clippy::too_many_arguments)]`
+- `get_ordered_fields_for_fact(engine, FactId)` added to `test_helpers.rs` for test inspection by fact ID
 
-Key notes:
-- Exists patterns do NOT increment fact_index (they pass through parent token facts unchanged)
-- Exists patterns do NOT allow fact-address variable assignment (similar to negated patterns)
-- Single-pattern exists compiles to `BetaNode::Exists`, multi-pattern exists deferred to NCC subnetwork
-- Propagate_token updated to call `left_activate` for child join nodes (not just terminals)
-- Join nodes now properly bind variables on first occurrence and test them on subsequent occurrences
-- Join nodes subscribe to alpha memories via `alpha_to_joins` index for right activation
-- Tokens created during join clone parent bindings (variable binding creation deferred to later pass)
-- Beta memory cleanup during retraction is inefficient (iterates all memories) but correct for Phase 1
-- AgendaKey uses `std::cmp::Reverse` for salience, timestamp, and seq to achieve proper BTreeMap ordering
-- `evaluate_join()` helper compares AtomKey values extracted from fact slots and token bindings
-
-## Pass 009 Implementation
-
-Successfully implemented Phase 1 integration and exit validation:
-- `integration_tests.rs` in `ferric-runtime` — 5 full-pipeline integration tests (parser → loader → engine → Rete → activation)
-- `debug_assert_consistency()` for `AlphaNetwork` — validates memory references, node children, no duplicates, slot index invariants
-- `debug_assert_consistency()` for `BetaNetwork` — validates node children, parent references, memory IDs, alpha_to_joins index, root node
-- 2 retraction invariant tests in `rete.rs` — assert/retract cycles with consistency checks
-- All 258 workspace tests pass, clippy clean with `-D warnings`
-
-Key design notes:
-- Integration tests in `ferric-runtime` crate to access `pub(crate)` fields of Engine
-- Tests manually build Rete networks since RuleDef → Rete bridge not yet implemented (deferred to later phase)
-- Consistency checks gated behind `#[cfg(any(test, debug_assertions))]`
-- Fact cloning required before retraction due to borrow checker (fact ref used after retract call)
-- Loader API uses single-arg `load_str(source)` not two-arg version
-
-## Pass 002 Implementation (Phase 2)
-
-Successfully implemented Stage 2 construct AST types and interpreter scaffold:
-- `stage2.rs` in `ferric-parser/src/` with complete construct interpretation
-- Types: `Construct`, `RuleConstruct`, `TemplateConstruct`, `FactsConstruct`
-- `InterpreterConfig` with strict/classic mode (strict stops on first error)
-- `InterpretError` with `InterpretErrorKind` and helpful error messages
-- `InterpretResult` aggregates constructs and errors
-- `interpret_constructs()` entry point dispatches on keyword
-- Individual interpret functions: `interpret_rule`, `interpret_template`, `interpret_facts`
-- Edit distance helper for keyword suggestions
-- 30 comprehensive tests covering all error cases and construct types
-- All 292 workspace tests pass, clippy clean with `-D warnings`
-
-Key design notes:
-- Rule interpretation extracts salience from `(declare (salience N))` forms
-- All constructs support optional doc comment strings as second element after name
-- LHS/RHS and slot/fact bodies stored as raw S-expressions for later typing (Pass 003)
-- Strict mode stops on first error; classic mode collects all errors
-- Known unsupported keywords (deffunction, defglobal, etc.) give helpful "not yet supported" errors
-- Unknown keywords suggest similar valid keywords using Levenshtein distance
-- Error Display impl includes source location and suggestions
-
-## Pass 004 Implementation (Phase 2)
-
-Successfully implemented the ReteCompiler in `ferric-core/src/compiler.rs`:
-- Input types: `CompilableRule`, `CompilablePattern` (constructed by runtime layer from parser types)
-- `ReteCompiler` with alpha path caching for node sharing across rules
-- `compile_rule()` builds alpha paths, beta join chain with variable binding tests, and terminal nodes
-- Variable binding tracking: uses `HashSet<Symbol>` to track bound variables and generate join tests only for previously-bound variables
-- Alpha path sharing: rules with identical patterns (`entry_type`, `constant_tests`) share the same alpha memory
-- Error types: `CompileError::EmptyRule`, `CompileError::VarMapOverflow`
-- Result type: `CompileResult` with `rule_id`, `terminal_node`, `alpha_memories`
-- 15 comprehensive tests covering single/multi-pattern rules, variable binding, alpha path sharing, constant tests
-- All 329 workspace tests pass, clippy clean with `-D warnings`
-
-Key design notes:
-- `BetaNode::Terminal` has two fields: `parent` and `rule` — pattern matching must use `..` for field ignoring
-- Rule ID allocation starts from 1 (reserve 0)
-- Alpha path cache key: `AlphaPathKey { entry_type, tests }` — uses `HashMap` for fast lookups
-- Variable binding logic: first occurrence binds, subsequent occurrences create join tests
-- Join tests use `JoinTestType::Equal` for variable equality constraints
-- `ensure_alpha_path()` is idempotent: caches alpha paths by (entry_type, constant_tests) key
-- Compiler exports added to `ferric-core` lib.rs: `CompilableRule`, `CompilablePattern`, `CompileError`, `CompileResult`, `ReteCompiler`
+### Pass 011: Phase 3 Integration and Exit Validation
+- **CRITICAL fixture path rule**: Fixture files must exist in BOTH `tests/fixtures/` (workspace root) AND `crates/ferric-runtime/tests/fixtures/` (crate root). `cargo test` sets CWD to the crate root, so `load_fixture` using `"tests/fixtures"` relative path will look in `crates/ferric-runtime/tests/fixtures/`.
+- `printout` is an RHS action and is NOT available inside defmethod/deffunction bodies (bodies are pure expression evaluators). Tests for "generic + printout" must call the generic from the rule RHS and do the printing in the rule body.
+- When adding new tests, check the `use` imports at the top of the test module — helpers like `find_facts_by_relation` and `load_fixture` must be explicitly imported.
+- `cargo fmt` enforces line-length limits: long `assert!(cond, "msg {var}")` calls must be broken into multi-line form.
