@@ -181,6 +181,13 @@ impl TokenStore {
         removed
     }
 
+    /// Remove all tokens and clear all indices.
+    pub fn clear(&mut self) {
+        self.tokens.clear();
+        self.fact_to_tokens.clear();
+        self.parent_to_children.clear();
+    }
+
     /// Return an iterator over all tokens that contain the given fact.
     pub fn tokens_containing(&self, fact_id: FactId) -> impl Iterator<Item = TokenId> + '_ {
         self.fact_to_tokens

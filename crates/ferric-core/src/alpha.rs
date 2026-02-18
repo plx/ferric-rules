@@ -195,6 +195,13 @@ impl AlphaMemory {
         self.slot_indices.get(&slot)?.get(key)
     }
 
+    /// Clear all facts and indices from this memory, preserving its ID and structure.
+    pub fn clear(&mut self) {
+        self.facts.clear();
+        self.slot_indices.clear();
+        // indexed_slots stays — it tracks which slots SHOULD be indexed
+    }
+
     /// Iterate over all fact IDs in this memory.
     pub fn iter(&self) -> impl Iterator<Item = FactId> + '_ {
         self.facts.iter().copied()
@@ -397,6 +404,22 @@ impl AlphaNetwork {
     #[must_use]
     pub fn get_node(&self, id: NodeId) -> Option<&AlphaNode> {
         self.nodes.get(&id)
+    }
+
+    /// Return all alpha memory IDs that currently contain the given fact.
+    pub fn memories_containing_fact(&self, fact_id: FactId) -> Vec<AlphaMemoryId> {
+        self.memories
+            .values()
+            .filter(|mem| mem.contains(fact_id))
+            .map(|mem| mem.id)
+            .collect()
+    }
+
+    /// Clear all facts from all alpha memories, preserving network structure.
+    pub fn clear_all_memories(&mut self) {
+        for memory in self.memories.values_mut() {
+            memory.clear();
+        }
     }
 
     /// Verify internal consistency of the alpha network.
