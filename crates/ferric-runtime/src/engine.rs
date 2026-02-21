@@ -363,10 +363,39 @@ impl Engine {
         self.creator_thread = std::thread::current().id();
     }
 
+    /// Pop the next activation eligible under current focus semantics.
+    ///
+    /// Selection is module-aware: only activations whose rule belongs to the
+    /// current focus module are eligible. If the current focus module has no
+    /// eligible activations and there are stacked focuses, the top focus is
+    /// popped and selection continues. The final baseline focus is preserved.
+    fn pop_next_focus_activation(&mut self) -> Option<ferric_core::Activation> {
+        loop {
+            let focus_module = self.module_registry.current_focus()?;
+            let rule_modules = &self.rule_modules;
+
+            if let Some(activation) = self
+                .rete
+                .agenda
+                .pop_matching(|a| rule_modules.get(&a.rule).copied() == Some(focus_module))
+            {
+                return Some(activation);
+            }
+
+            if self.module_registry.focus_stack().len() > 1 {
+                self.module_registry.pop_focus();
+                continue;
+            }
+
+            return None;
+        }
+    }
+
     /// Fire a single rule activation from the agenda.
     ///
-    /// Returns `None` if the agenda is empty. Otherwise pops the highest-priority
-    /// activation and fires it (executing RHS actions if all test CEs pass).
+    /// Returns `None` when no activation is eligible under current focus
+    /// semantics. Otherwise pops the highest-priority eligible activation and
+    /// fires it (executing RHS actions if all test CEs pass).
     ///
     /// # Errors
     ///
@@ -375,7 +404,7 @@ impl Engine {
         self.check_thread_affinity()?;
         self.action_diagnostics.clear();
 
-        let Some(activation) = self.rete.agenda.pop() else {
+        let Some(activation) = self.pop_next_focus_activation() else {
             return Ok(None);
         };
 
@@ -427,35 +456,9 @@ impl Engine {
                 });
             }
 
-            // Focus-aware activation selection: find the highest-priority
-            // activation whose rule belongs to the current focus module.
-            // When no activations exist for the focus module, pop the focus
-            // stack and try the next module.
-            let activation = loop {
-                let Some(focus_module) = self.module_registry.current_focus() else {
-                    return Ok(RunResult {
-                        rules_fired,
-                        halt_reason: HaltReason::AgendaEmpty,
-                    });
-                };
-
-                let rule_modules = &self.rule_modules;
-                if let Some(act) = self
-                    .rete
-                    .agenda
-                    .pop_matching(|a| rule_modules.get(&a.rule).copied() == Some(focus_module))
-                {
-                    break act;
-                }
-
-                // No activations for this module. Pop to the next focus module,
-                // but preserve the final baseline focus so subsequent run() calls
-                // still have a stable module context.
-                if self.module_registry.focus_stack().len() > 1 {
-                    self.module_registry.pop_focus();
-                    continue;
-                }
-
+            // Focus-aware activation selection preserves the final baseline
+            // focus when no activations are eligible.
+            let Some(activation) = self.pop_next_focus_activation() else {
                 return Ok(RunResult {
                     rules_fired,
                     halt_reason: HaltReason::AgendaEmpty,
@@ -1042,6 +1045,55 @@ mod tests {
         assert!(step_result.is_some());
         assert_eq!(run_result.rules_fired, 1);
         assert_eq!(engine1.rete.agenda.len(), engine2.rete.agenda.len());
+    }
+
+    #[test]
+    fn step_respects_focus_filter_like_run_count_1() {
+        use crate::execution::RunLimit;
+
+        let program = r"
+            (defrule main-high
+                (declare (salience 10))
+                (go)
+                =>
+                (assert (main-fired)))
+
+            (defmodule SENSOR (export ?ALL))
+            (defrule sensor-low
+                (go)
+                =>
+                (assert (sensor-fired)))
+        ";
+
+        let mut step_engine = Engine::new(EngineConfig::utf8());
+        step_engine.load_str(program).unwrap();
+        step_engine.load_str("(assert (go))").unwrap();
+        step_engine.push_focus("SENSOR").unwrap();
+
+        let mut run_engine = Engine::new(EngineConfig::utf8());
+        run_engine.load_str(program).unwrap();
+        run_engine.load_str("(assert (go))").unwrap();
+        run_engine.push_focus("SENSOR").unwrap();
+
+        let step_result = step_engine.step().unwrap();
+        let run_result = run_engine.run(RunLimit::Count(1)).unwrap();
+
+        let has_relation = |engine: &Engine, relation: &str| {
+            engine.facts().unwrap().any(|(_, fact)| match fact {
+                Fact::Ordered(ordered) => engine
+                    .symbol_table
+                    .resolve_symbol_str(ordered.relation)
+                    .is_some_and(|name| name == relation),
+                Fact::Template(_) => false,
+            })
+        };
+
+        assert!(step_result.is_some());
+        assert_eq!(run_result.rules_fired, 1);
+        assert!(has_relation(&step_engine, "sensor-fired"));
+        assert!(!has_relation(&step_engine, "main-fired"));
+        assert!(has_relation(&run_engine, "sensor-fired"));
+        assert!(!has_relation(&run_engine, "main-fired"));
     }
 
     #[test]

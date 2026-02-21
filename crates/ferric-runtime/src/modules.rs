@@ -169,6 +169,24 @@ impl ModuleRegistry {
         self.modules.get(&id).map(|m| m.name.as_str())
     }
 
+    fn specific_spec_matches(
+        spec_construct_type: &str,
+        names: &[String],
+        construct_type: &str,
+        construct_name: &str,
+    ) -> bool {
+        if spec_construct_type != construct_type {
+            return false;
+        }
+        if names.iter().any(|name| name == "?ALL") {
+            return true;
+        }
+        if names.iter().any(|name| name == "?NONE") {
+            return false;
+        }
+        names.iter().any(|name| name == construct_name)
+    }
+
     /// Check if a construct is visible from `from_module`.
     ///
     /// A construct is visible if:
@@ -196,7 +214,7 @@ impl ModuleRegistry {
             ModuleSpec::Specific {
                 construct_type: ct,
                 names,
-            } => ct == construct_type && names.iter().any(|n| n == construct_name),
+            } => Self::specific_spec_matches(ct, names, construct_type, construct_name),
         });
 
         if !exported {
@@ -220,7 +238,7 @@ impl ModuleRegistry {
                 ModuleSpec::Specific {
                     construct_type: ct,
                     names,
-                } => ct == construct_type && names.iter().any(|n| n == construct_name),
+                } => Self::specific_spec_matches(ct, names, construct_type, construct_name),
             }
         })
     }
@@ -287,6 +305,22 @@ impl Default for ModuleRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dummy_span() -> ferric_parser::Span {
+        ferric_parser::Span::new(
+            ferric_parser::Position {
+                offset: 0,
+                line: 1,
+                column: 1,
+            },
+            ferric_parser::Position {
+                offset: 0,
+                line: 1,
+                column: 1,
+            },
+            ferric_parser::FileId(0),
+        )
+    }
 
     #[test]
     fn new_registry_has_main_module() {
@@ -375,26 +409,13 @@ mod tests {
         );
 
         // Register MAIN with import from SENSOR
-        let span = ferric_parser::Span::new(
-            ferric_parser::Position {
-                offset: 0,
-                line: 1,
-                column: 1,
-            },
-            ferric_parser::Position {
-                offset: 0,
-                line: 1,
-                column: 1,
-            },
-            ferric_parser::FileId(0),
-        );
         registry.register(
             "MAIN",
             vec![ModuleSpec::All],
             vec![ImportSpec {
                 module_name: "SENSOR".to_string(),
                 spec: ModuleSpec::All,
-                span,
+                span: dummy_span(),
             }],
         );
 
@@ -416,6 +437,89 @@ mod tests {
         let sensor_id = registry.register("SENSOR", vec![ModuleSpec::All], vec![]);
         let main = registry.main_module_id();
         // MAIN has no imports from SENSOR
+        assert!(!registry.is_construct_visible(main, sensor_id, "deftemplate", "reading"));
+    }
+
+    #[test]
+    fn visibility_typed_export_all_matches_construct_type() {
+        let mut registry = ModuleRegistry::new();
+        let sensor_id = registry.register(
+            "SENSOR",
+            vec![ModuleSpec::Specific {
+                construct_type: "deftemplate".to_string(),
+                names: vec!["?ALL".to_string()],
+            }],
+            vec![],
+        );
+        registry.register(
+            "MAIN",
+            vec![ModuleSpec::All],
+            vec![ImportSpec {
+                module_name: "SENSOR".to_string(),
+                spec: ModuleSpec::All,
+                span: dummy_span(),
+            }],
+        );
+
+        let main = registry.main_module_id();
+        assert!(registry.is_construct_visible(main, sensor_id, "deftemplate", "reading"));
+        assert!(!registry.is_construct_visible(main, sensor_id, "defrule", "reading"));
+    }
+
+    #[test]
+    fn visibility_typed_import_all_matches_construct_type() {
+        let mut registry = ModuleRegistry::new();
+        let sensor_id = registry.register(
+            "SENSOR",
+            vec![ModuleSpec::Specific {
+                construct_type: "deftemplate".to_string(),
+                names: vec!["reading".to_string()],
+            }],
+            vec![],
+        );
+        registry.register(
+            "MAIN",
+            vec![ModuleSpec::All],
+            vec![ImportSpec {
+                module_name: "SENSOR".to_string(),
+                spec: ModuleSpec::Specific {
+                    construct_type: "deftemplate".to_string(),
+                    names: vec!["?ALL".to_string()],
+                },
+                span: dummy_span(),
+            }],
+        );
+
+        let main = registry.main_module_id();
+        assert!(registry.is_construct_visible(main, sensor_id, "deftemplate", "reading"));
+        assert!(!registry.is_construct_visible(main, sensor_id, "defrule", "reading"));
+    }
+
+    #[test]
+    fn visibility_typed_none_blocks_visibility() {
+        let mut registry = ModuleRegistry::new();
+        let sensor_id = registry.register(
+            "SENSOR",
+            vec![ModuleSpec::Specific {
+                construct_type: "deftemplate".to_string(),
+                names: vec!["?NONE".to_string()],
+            }],
+            vec![],
+        );
+        registry.register(
+            "MAIN",
+            vec![ModuleSpec::All],
+            vec![ImportSpec {
+                module_name: "SENSOR".to_string(),
+                spec: ModuleSpec::Specific {
+                    construct_type: "deftemplate".to_string(),
+                    names: vec!["?ALL".to_string()],
+                },
+                span: dummy_span(),
+            }],
+        );
+
+        let main = registry.main_module_id();
         assert!(!registry.is_construct_visible(main, sensor_id, "deftemplate", "reading"));
     }
 
