@@ -110,9 +110,15 @@ pub enum RuntimeExpr {
     /// A literal value (already resolved to a runtime Value).
     Literal(Value),
     /// A bound variable reference (resolved via `VarMap` at eval time).
-    BoundVar(String),
+    BoundVar {
+        name: String,
+        span: Option<SourceSpan>,
+    },
     /// A global variable reference (e.g., `?*name*`).
-    GlobalVar(String),
+    GlobalVar {
+        name: String,
+        span: Option<SourceSpan>,
+    },
     /// A function call with evaluated arguments.
     Call {
         name: String,
@@ -147,36 +153,36 @@ pub struct EvalContext<'a> {
 pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
     match expr {
         RuntimeExpr::Literal(v) => Ok(v.clone()),
-        RuntimeExpr::BoundVar(name) => {
+        RuntimeExpr::BoundVar { name, span } => {
             let sym = ctx
                 .symbol_table
                 .intern_symbol(name, ctx.config.string_encoding)
                 .map_err(|_| EvalError::UnboundVariable {
                     name: name.clone(),
-                    span: None,
+                    span: span.clone(),
                 })?;
             let var_id = ctx
                 .var_map
                 .lookup(sym)
                 .ok_or_else(|| EvalError::UnboundVariable {
                     name: name.clone(),
-                    span: None,
+                    span: span.clone(),
                 })?;
             ctx.bindings
                 .get(var_id)
                 .map(|v| (**v).clone())
                 .ok_or_else(|| EvalError::UnboundVariable {
                     name: name.clone(),
-                    span: None,
+                    span: span.clone(),
                 })
         }
-        RuntimeExpr::GlobalVar(name) => {
+        RuntimeExpr::GlobalVar { name, span } => {
             ctx.globals
                 .get(name)
                 .cloned()
                 .ok_or_else(|| EvalError::UnboundGlobal {
                     name: name.clone(),
-                    span: None,
+                    span: span.clone(),
                 })
         }
         RuntimeExpr::Call { name, args, span } => {
@@ -535,10 +541,20 @@ pub fn from_action_expr(
             let value = literal_to_value(&lit.value, symbol_table, config)?;
             Ok(RuntimeExpr::Literal(value))
         }
-        ferric_parser::ActionExpr::Variable(name, _span) => Ok(RuntimeExpr::BoundVar(name.clone())),
-        ferric_parser::ActionExpr::GlobalVariable(name, _span) => {
-            Ok(RuntimeExpr::GlobalVar(name.clone()))
-        }
+        ferric_parser::ActionExpr::Variable(name, span) => Ok(RuntimeExpr::BoundVar {
+            name: name.clone(),
+            span: Some(SourceSpan {
+                line: span.start.line,
+                column: span.start.column,
+            }),
+        }),
+        ferric_parser::ActionExpr::GlobalVariable(name, span) => Ok(RuntimeExpr::GlobalVar {
+            name: name.clone(),
+            span: Some(SourceSpan {
+                line: span.start.line,
+                column: span.start.column,
+            }),
+        }),
         ferric_parser::ActionExpr::FunctionCall(call) => {
             let mut args = Vec::with_capacity(call.args.len());
             for arg in &call.args {
@@ -648,9 +664,27 @@ fn sexpr_atom_to_runtime(
                 })?;
             Ok(RuntimeExpr::Literal(Value::Symbol(sym)))
         }
-        ferric_parser::Atom::SingleVar(name) => Ok(RuntimeExpr::BoundVar(name.clone())),
-        ferric_parser::Atom::MultiVar(name) => Ok(RuntimeExpr::BoundVar(format!("$?{name}"))),
-        ferric_parser::Atom::GlobalVar(name) => Ok(RuntimeExpr::GlobalVar(name.clone())),
+        ferric_parser::Atom::SingleVar(name) => Ok(RuntimeExpr::BoundVar {
+            name: name.clone(),
+            span: Some(SourceSpan {
+                line: span.start.line,
+                column: span.start.column,
+            }),
+        }),
+        ferric_parser::Atom::MultiVar(name) => Ok(RuntimeExpr::BoundVar {
+            name: format!("$?{name}"),
+            span: Some(SourceSpan {
+                line: span.start.line,
+                column: span.start.column,
+            }),
+        }),
+        ferric_parser::Atom::GlobalVar(name) => Ok(RuntimeExpr::GlobalVar {
+            name: name.clone(),
+            span: Some(SourceSpan {
+                line: span.start.line,
+                column: span.start.column,
+            }),
+        }),
         ferric_parser::Atom::Connective(_) => Err(EvalError::UnknownFunction {
             name: "connective".to_string(),
             span: Some(SourceSpan {
@@ -859,7 +893,7 @@ fn dispatch_bind(
     check_arity_exact("bind", args, 2, span)?;
 
     match &args[0] {
-        RuntimeExpr::GlobalVar(name) => {
+        RuntimeExpr::GlobalVar { name, .. } => {
             let name = name.clone();
             let value = eval(ctx, &args[1])?;
             ctx.globals.set(&name, value.clone());
@@ -1600,14 +1634,52 @@ mod tests {
             generics: &generics,
             call_depth: 0,
         };
-        let result = eval(&mut ctx, &RuntimeExpr::BoundVar("x".to_string())).unwrap();
+        let result = eval(
+            &mut ctx,
+            &RuntimeExpr::BoundVar {
+                name: "x".to_string(),
+                span: None,
+            },
+        )
+        .unwrap();
         assert!(result.structural_eq(&Value::Integer(99)));
     }
 
     #[test]
     fn eval_unbound_variable_returns_error() {
-        let result = eval_expr(&RuntimeExpr::BoundVar("missing".to_string()));
+        let result = eval_expr(&RuntimeExpr::BoundVar {
+            name: "missing".to_string(),
+            span: None,
+        });
         assert!(matches!(result, Err(EvalError::UnboundVariable { .. })));
+    }
+
+    #[test]
+    fn eval_unbound_variable_preserves_source_span() {
+        let (mut st, vm, bs, cfg, fenv, mut gs, generics) = test_ctx();
+        let action = ferric_parser::ActionExpr::Variable("missing".to_string(), dummy_span());
+        let runtime = from_action_expr(&action, &mut st, &cfg).unwrap();
+
+        let mut ctx = EvalContext {
+            bindings: &bs,
+            var_map: &vm,
+            symbol_table: &mut st,
+            config: &cfg,
+            functions: &fenv,
+            globals: &mut gs,
+            generics: &generics,
+            call_depth: 0,
+        };
+
+        match eval(&mut ctx, &runtime).unwrap_err() {
+            EvalError::UnboundVariable {
+                span: Some(span), ..
+            } => {
+                assert_eq!(span.line, 1);
+                assert_eq!(span.column, 1);
+            }
+            other => panic!("expected UnboundVariable with span, got {other:?}"),
+        }
     }
 
     // -------------------------------------------------------------------
@@ -1616,8 +1688,39 @@ mod tests {
 
     #[test]
     fn eval_global_variable_returns_error_when_unset() {
-        let result = eval_expr(&RuntimeExpr::GlobalVar("count".to_string()));
+        let result = eval_expr(&RuntimeExpr::GlobalVar {
+            name: "count".to_string(),
+            span: None,
+        });
         assert!(matches!(result, Err(EvalError::UnboundGlobal { .. })));
+    }
+
+    #[test]
+    fn eval_unbound_global_preserves_source_span() {
+        let (mut st, vm, bs, cfg, fenv, mut gs, generics) = test_ctx();
+        let action = ferric_parser::ActionExpr::GlobalVariable("count".to_string(), dummy_span());
+        let runtime = from_action_expr(&action, &mut st, &cfg).unwrap();
+
+        let mut ctx = EvalContext {
+            bindings: &bs,
+            var_map: &vm,
+            symbol_table: &mut st,
+            config: &cfg,
+            functions: &fenv,
+            globals: &mut gs,
+            generics: &generics,
+            call_depth: 0,
+        };
+
+        match eval(&mut ctx, &runtime).unwrap_err() {
+            EvalError::UnboundGlobal {
+                span: Some(span), ..
+            } => {
+                assert_eq!(span.line, 1);
+                assert_eq!(span.column, 1);
+            }
+            other => panic!("expected UnboundGlobal with span, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1634,7 +1737,14 @@ mod tests {
             generics: &generics,
             call_depth: 0,
         };
-        let result = eval(&mut ctx, &RuntimeExpr::GlobalVar("count".to_string())).unwrap();
+        let result = eval(
+            &mut ctx,
+            &RuntimeExpr::GlobalVar {
+                name: "count".to_string(),
+                span: None,
+            },
+        )
+        .unwrap();
         assert!(result.structural_eq(&Value::Integer(42)));
     }
 
@@ -1657,7 +1767,13 @@ mod tests {
         };
         let expr = call(
             "bind",
-            vec![RuntimeExpr::GlobalVar("x".to_string()), int(99)],
+            vec![
+                RuntimeExpr::GlobalVar {
+                    name: "x".to_string(),
+                    span: None,
+                },
+                int(99),
+            ],
         );
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(result.structural_eq(&Value::Integer(99)));
@@ -1688,7 +1804,13 @@ mod tests {
 
     #[test]
     fn bind_arity_error() {
-        let result = eval_expr(&call("bind", vec![RuntimeExpr::GlobalVar("x".to_string())]));
+        let result = eval_expr(&call(
+            "bind",
+            vec![RuntimeExpr::GlobalVar {
+                name: "x".to_string(),
+                span: None,
+            }],
+        ));
         assert!(matches!(result, Err(EvalError::ArityMismatch { .. })));
     }
 
@@ -2605,7 +2727,13 @@ mod tests {
         let (mut st, _, _, cfg, _, _, _) = test_ctx();
         let action = ferric_parser::ActionExpr::Variable("x".to_string(), dummy_span());
         let runtime = from_action_expr(&action, &mut st, &cfg).unwrap();
-        assert!(matches!(runtime, RuntimeExpr::BoundVar(ref n) if n == "x"));
+        assert!(matches!(
+            runtime,
+            RuntimeExpr::BoundVar {
+                ref name,
+                span: Some(_),
+            } if name == "x"
+        ));
     }
 
     #[test]
@@ -2613,7 +2741,13 @@ mod tests {
         let (mut st, _, _, cfg, _, _, _) = test_ctx();
         let action = ferric_parser::ActionExpr::GlobalVariable("count".to_string(), dummy_span());
         let runtime = from_action_expr(&action, &mut st, &cfg).unwrap();
-        assert!(matches!(runtime, RuntimeExpr::GlobalVar(ref n) if n == "count"));
+        assert!(matches!(
+            runtime,
+            RuntimeExpr::GlobalVar {
+                ref name,
+                span: Some(_),
+            } if name == "count"
+        ));
     }
 
     #[test]

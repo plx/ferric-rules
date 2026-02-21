@@ -15,9 +15,9 @@
 #[cfg(test)]
 mod tests {
     use crate::test_helpers::{
-        assert_fact_count, assert_has_fact_with_relation, assert_no_fact_with_relation,
-        assert_rete_consistent, find_facts_by_relation, get_ordered_fields, load_fixture, load_ok,
-        new_utf8_engine, run_to_completion,
+        assert_engine_consistent, assert_fact_count, assert_has_fact_with_relation,
+        assert_no_fact_with_relation, assert_rete_consistent, find_facts_by_relation,
+        get_ordered_fields, load_fixture, load_ok, new_utf8_engine, run_to_completion,
     };
 
     // =======================================================================
@@ -688,6 +688,26 @@ mod tests {
     }
 
     #[test]
+    fn printout_channel_must_be_literal() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r#"
+            (defrule show (channel ?ch) => (printout ?ch "hello"))
+            (deffacts startup (channel t))
+        "#,
+        );
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 1);
+
+        // No output should be produced because the channel argument is invalid.
+        assert!(engine.get_output("t").is_none());
+        assert!(engine.action_diagnostics().iter().any(|e| {
+            matches!(e, crate::actions::ActionError::EvalError(msg) if msg.contains("printout: channel must be a literal"))
+        }));
+    }
+
+    #[test]
     fn printout_empty_after_reset() {
         let mut engine = new_utf8_engine();
         load_ok(
@@ -1057,6 +1077,24 @@ mod tests {
     }
 
     #[test]
+    fn focus_unknown_module_produces_action_diagnostic() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule kickoff (start) => (focus MISSING))
+            (deffacts startup (start))
+        ",
+        );
+
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 1);
+        assert!(engine.action_diagnostics().iter().any(|e| {
+            matches!(e, crate::actions::ActionError::EvalError(msg) if msg.contains("focus: unknown module `MISSING`"))
+        }));
+    }
+
+    #[test]
     fn focus_stack_pops_back_to_main() {
         let mut engine = new_utf8_engine();
         load_ok(
@@ -1088,6 +1126,24 @@ mod tests {
     }
 
     #[test]
+    fn set_focus_replaces_existing_focus_stack() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defmodule A)
+            (defmodule B)
+        ",
+        );
+        engine.push_focus("A").unwrap();
+        engine.push_focus("B").unwrap();
+
+        engine.set_focus("A").unwrap();
+        assert_eq!(engine.get_focus(), Some("A"));
+        assert_eq!(engine.get_focus_stack(), vec!["A"]);
+    }
+
+    #[test]
     fn push_focus_unknown_module_returns_error() {
         let mut engine = new_utf8_engine();
         let result = engine.push_focus("NONEXISTENT");
@@ -1111,7 +1167,6 @@ mod tests {
         load_ok(
             &mut engine,
             r"
-            (defmodule SENSOR)
             (deffacts sensor-data (reading (value 42)))
         ",
         );
@@ -1171,6 +1226,32 @@ mod tests {
         // init-chain (MAIN) → focus A → a-work (A) → focus B → b-work (B) → done
         assert_eq!(result.rules_fired, 3);
         assert_has_fact_with_relation(&engine, "b-done");
+    }
+
+    #[test]
+    fn engine_debug_consistency_includes_phase3_registries() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defglobal ?*offset* = 1)
+            (deffunction inc (?x) (+ ?x ?*offset*))
+            (defgeneric tag)
+            (defmethod tag ((?x INTEGER)) ?x)
+            (defmodule WORK)
+            (defrule run (go ?x) => (assert (done (inc (tag ?x)))))
+            (deffacts startup (go 41))
+        ",
+        );
+        assert_engine_consistent(&engine);
+
+        engine.set_focus("WORK").unwrap();
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 1);
+        assert_engine_consistent(&engine);
+
+        engine.reset().unwrap();
+        assert_engine_consistent(&engine);
     }
 
     // =======================================================================
@@ -1474,6 +1555,45 @@ mod tests {
             "forall should be vacuously true with no items"
         );
         assert_has_fact_with_relation(&engine, "all-complete");
+    }
+
+    #[test]
+    fn forall_vacuous_truth_and_retraction_cycle_contract() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule all-checked
+                (forall (item ?id) (checked ?id))
+                =>
+                (assert (all-complete)))
+        ",
+        );
+
+        // Step 2: Empty WM -> vacuous truth.
+        engine.reset().unwrap();
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 1);
+
+        // Step 3: Assert unchecked item -> unsatisfied.
+        let item_fid = load_ok(&mut engine, "(assert (item 1))").asserted_facts[0];
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 0);
+
+        // Step 4: Add checked fact -> satisfied again.
+        let checked_fid = load_ok(&mut engine, "(assert (checked 1))").asserted_facts[0];
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 1);
+
+        // Step 5: Retract checked -> unsatisfied.
+        engine.retract(checked_fid).unwrap();
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 0);
+
+        // Step 6: Retract item -> vacuous truth restored.
+        engine.retract(item_fid).unwrap();
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 1);
     }
 
     #[test]

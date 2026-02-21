@@ -2971,7 +2971,9 @@ Phase 2 baseline note:
 - Stage 2 interpretation is the default path for `defrule`, `deftemplate`,
   and `deffacts` in runtime loading.
 - Additional top-level constructs (`deffunction`, `defglobal`, `defmodule`,
-  `defgeneric`, `defmethod`) remain Phase 3 scope.
+  `defgeneric`, `defmethod`) are now interpreted and executable in runtime
+  load/execute flows (Phase 3 closure); unsupported sentinel coverage for this
+  area moved to out-of-scope constructs such as `defclass`.
 - `Engine::load_str` / `Engine::load_file` return
   `Result<LoadResult, Vec<LoadError>>`, where `LoadResult` carries asserted
   facts, typed constructs, and warnings.
@@ -3213,9 +3215,14 @@ baseline notes:
 
 - `run` / `step` / `halt` / `reset` are implemented.
 - RHS action execution is live for `assert`, `retract`, and `halt`.
-- `modify` / `duplicate` currently use ordered-fact-oriented behavior;
-  template-aware slot updates are planned in Phase 3.
-- `printout` remains a placeholder until Phase 3 I/O/runtime completion work.
+- `modify` / `duplicate` are template-aware for ordered and template facts.
+- `printout` is implemented with per-channel output routing.
+- `printout` channel contract: first argument must be a literal symbol/string;
+  non-literal channel forms emit a diagnostic.
+- Focus query/set contract: `set_focus` replaces the stack with one module;
+  `get_focus` returns the top module name; `get_focus_stack` returns names
+  bottom-to-top. `run` pops transient focus frames when empty but preserves
+  the final baseline focus frame across runs; `reset` restores `[MAIN]`.
 - Function-call expressions route through the runtime function registry;
   broad built-in coverage is phased in via Sections 10 and 15.
 
@@ -3345,6 +3352,12 @@ impl Engine {
 
     /// Set the current module focus
     pub fn set_focus(&mut self, module: &str) -> Result<(), ModuleError>;
+
+    /// Get the current focus module name (top of focus stack)
+    pub fn get_focus(&self) -> Option<&str>;
+
+    /// Get the full focus stack (bottom to top)
+    pub fn get_focus_stack(&self) -> Vec<&str>;
 
     /// Get the current module
     pub fn current_module(&self) -> &str;
@@ -3480,8 +3493,8 @@ The standard library is implemented in phases. v10 locks a concrete minimum surf
 | Math | `+`, `-`, `*`, `/`, `mod`, `abs`, `min`, `max` | Numeric ops only; overflow/NaN semantics documented |
 | String/Symbol | `str-cat`, `str-length`, `sub-string`, `sym-cat` | Must follow encoding semantics from §2.4.1 |
 | Multifield | `create$`, `length$`, `nth$`, `member$`, `subsetp` | No implicit flattening beyond CLIPS behavior |
-| Fact Ops | `assert`, `retract`, `modify`, `duplicate` | `assert`/`retract` are fully operational; template-aware `modify`/`duplicate` closes in Phase 3 |
-| I/O | `printout` | Placeholder in Phase 2; completed in Phase 3/4 runtime + stdlib work |
+| Fact Ops | `assert`, `retract`, `modify`, `duplicate` | `assert`/`retract` are fully operational; template-aware `modify`/`duplicate` implemented in Phase 3 |
+| I/O | `printout` | Implemented in Phase 3 runtime; channel argument is literal symbol/string only (non-literal yields diagnostic). Phase 4 extends broader I/O surface (`format`, `read`, `readline`) |
 | Agenda Ops | `run`, `halt`, `focus`, `get-focus`, `agenda` | Must not bypass agenda invariants |
 | Environment | `reset`, `clear` | Administrative controls |
 
@@ -4249,6 +4262,9 @@ Phase 1 baseline status: consistency checks now cover token, alpha, beta, and
 agenda internals, plus rete-level cross-structure integrity checks exercised in
 retraction-oriented tests. Negative/NCC/exists-specific invariants remain
 Phase 2+ as those structures are introduced.
+Phase 3 extension status: `debug_assert_consistency()` also checks module/focus
+registry integrity, function/global/generic registries, and rule/template
+module mappings.
 
 ### Phase 1: Foundation (Weeks 1-10)
 
@@ -4323,6 +4339,16 @@ Carry-forward baseline for remaining phases:
 - Good error messages with source locations
 - Unsupported constructs rejected with stable, source-located diagnostics (no silent degradation)
 
+**Phase 3 remediation closure (2026-02-19):**
+- R1 resolved: forall vacuous-truth/retraction-cycle regression contract is fully enforced by active 6-step integration tests.
+- R2 resolved: RHS `focus` now emits explicit diagnostics for unknown modules (no silent drops).
+- R3 resolved: duplicate-definition checks with source-located diagnostics cover `defglobal`, `defmodule`, `defgeneric`, and duplicate explicit `defmethod` indices.
+- R4 resolved: evaluator carries source spans for variable/global references and surfaces them in unbound-variable/global diagnostics.
+- R5 explicitly deferred to Phase 4: enforce module visibility for cross-module `deffunction` and `defglobal` resolution paths.
+- R6 resolved: public focus APIs (`set_focus`, `get_focus`, `get_focus_stack`) match runtime behavior; `run` preserves a baseline focus frame across calls and `reset` restores `[MAIN]`.
+- R8 resolved: `printout` channel remains literal-only (`symbol`/`string`) with diagnostics for non-literal forms.
+- R9 resolved: consistency checks include Phase 3 registries/mappings (module/focus, function/global/generic, rule/template module links).
+
 ### Phase 4: Standard Library (Weeks 27-32)
 
 **Goal:** Fill out built-in function breadth on top of Phase 3 function execution plumbing.
@@ -4332,6 +4358,10 @@ Carry-forward baseline for remaining phases:
 | 27-28 | Predicate and math functions, integrated with runtime function evaluator |
 | 29-30 | String/symbol and multifield functions aligned with §2.4.1 encoding semantics |
 | 31-32 | I/O + environment/fact/agenda function surface, including full `printout` behavior validation |
+
+Phase 4 explicit deferral carryover (R5): enforce `defmodule` import/export
+visibility for cross-module `deffunction` calls and `defglobal` reads/writes,
+with source-located diagnostics and integration tests.
 
 **Exit Criteria:**
 - All documented functions implemented

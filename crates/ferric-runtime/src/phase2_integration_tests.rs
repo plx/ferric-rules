@@ -900,7 +900,7 @@ mod tests {
             )
             .unwrap();
 
-        // Empty working memory → forall is vacuously true → rule fires
+        // Step 2: Empty working memory -> forall is vacuously true -> rule fires
         engine.reset().unwrap();
         let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
         assert_eq!(
@@ -908,6 +908,41 @@ mod tests {
             "forall should be vacuously true with no items"
         );
         assert_has_fact_with_relation(&engine, "all-complete");
+
+        // Step 3: Assert (item 1), run -> forall unsatisfied (missing (checked 1)).
+        let item_fid = engine.load_str("(assert (item 1))").unwrap().asserted_facts[0];
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(
+            result.rules_fired, 0,
+            "forall should be unsatisfied when an item is unchecked"
+        );
+
+        // Step 4: Assert (checked 1), run -> forall satisfied again.
+        let checked_fid = engine
+            .load_str("(assert (checked 1))")
+            .unwrap()
+            .asserted_facts[0];
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(
+            result.rules_fired, 1,
+            "forall should be satisfied once all items are checked"
+        );
+
+        // Step 5: Retract (checked 1), run -> forall unsatisfied again.
+        engine.retract(checked_fid).unwrap();
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(
+            result.rules_fired, 0,
+            "forall should become unsatisfied after retracting required checked fact"
+        );
+
+        // Step 6: Retract (item 1), run -> vacuous truth restored.
+        engine.retract(item_fid).unwrap();
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert_eq!(
+            result.rules_fired, 1,
+            "forall should become vacuously true again with zero items"
+        );
     }
 
     // -----------------------------------------------------------------------

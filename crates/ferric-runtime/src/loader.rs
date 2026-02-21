@@ -17,7 +17,7 @@
 //! - `test` CE compilation (currently returns compile error).
 //! - Template pattern compilation (currently returns compile error).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use thiserror::Error;
 
@@ -273,20 +273,46 @@ impl Engine {
                         result.globals.push(global);
                     }
                     Construct::Module(module) => {
-                        let module_id = self.module_registry.register(
-                            &module.name,
-                            module.exports.clone(),
-                            module.imports.clone(),
-                        );
-                        self.module_registry.set_current_module(module_id);
-                        result.modules.push(module);
+                        if self.module_registry.get_by_name(&module.name).is_some() {
+                            errors.push(Self::duplicate_definition_error(
+                                "defmodule",
+                                &module.name,
+                                &module.span,
+                            ));
+                        } else {
+                            let module_id = self.module_registry.register(
+                                &module.name,
+                                module.exports.clone(),
+                                module.imports.clone(),
+                            );
+                            self.module_registry.set_current_module(module_id);
+                            result.modules.push(module);
+                        }
                     }
                     Construct::Generic(generic) => {
-                        // Register the generic function declaration.
-                        self.generics.register_generic(&generic.name);
-                        result.generics.push(generic);
+                        if self.generics.contains(&generic.name) {
+                            errors.push(Self::duplicate_definition_error(
+                                "defgeneric",
+                                &generic.name,
+                                &generic.span,
+                            ));
+                        } else {
+                            // Register the generic function declaration.
+                            self.generics.register_generic(&generic.name);
+                            result.generics.push(generic);
+                        }
                     }
                     Construct::Method(method) => {
+                        if let Some(index) = method.index {
+                            if self.generics.has_method_index(&method.name, index) {
+                                errors.push(Self::duplicate_method_index_error(
+                                    &method.name,
+                                    index,
+                                    &method.span,
+                                ));
+                                continue;
+                            }
+                        }
                         // Register the method in the generic registry.
                         // Extract parameter names and type restrictions from MethodParameter structs.
                         let param_names: Vec<String> =
@@ -564,7 +590,16 @@ impl Engine {
     /// Process a `GlobalConstruct`: evaluate each initial value expression and
     /// register it in both the active global store and the snapshot used for reset.
     fn process_global_construct(&mut self, global: &GlobalConstruct) -> Result<(), LoadError> {
+        let mut seen_in_construct = HashSet::new();
         for def in &global.globals {
+            if !seen_in_construct.insert(def.name.clone()) || self.globals.contains(&def.name) {
+                return Err(Self::duplicate_definition_error(
+                    "defglobal",
+                    &def.name,
+                    &def.span,
+                ));
+            }
+
             // Translate the init-value expression.  This must happen before we
             // construct the EvalContext because from_action_expr also needs
             // &mut symbol_table.
@@ -1223,6 +1258,28 @@ impl Engine {
 
     fn compile_string(&self, value: &str) -> Result<FerricString, LoadError> {
         FerricString::new(value, self.config.string_encoding).map_err(Self::compile_encoding_error)
+    }
+
+    fn duplicate_definition_error(
+        construct: &str,
+        name: &str,
+        span: &ferric_parser::Span,
+    ) -> LoadError {
+        LoadError::Compile(format!(
+            "duplicate {construct} `{name}` at line {}, column {}",
+            span.start.line, span.start.column
+        ))
+    }
+
+    fn duplicate_method_index_error(
+        generic_name: &str,
+        index: i32,
+        span: &ferric_parser::Span,
+    ) -> LoadError {
+        LoadError::Compile(format!(
+            "duplicate defmethod index {index} for `{generic_name}` at line {}, column {}",
+            span.start.line, span.start.column
+        ))
     }
 
     fn warn_at_line(result: &mut LoadResult, line: u32, message: &str) {
@@ -1983,6 +2040,91 @@ mod tests {
             .expect("load should succeed");
         assert_eq!(result.methods.len(), 1);
         assert_eq!(result.methods[0].index, Some(1));
+    }
+
+    #[test]
+    fn duplicate_defglobal_reports_source_location() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str(
+                r"
+            (defglobal ?*count* = 1)
+            (defglobal ?*count* = 2)
+        ",
+            )
+            .unwrap_err();
+
+        let has_duplicate_error = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg) if msg.contains("duplicate defglobal `count`") && msg.contains("line"))
+        });
+        assert!(
+            has_duplicate_error,
+            "expected duplicate defglobal error with location, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_defmodule_reports_source_location() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str(
+                r"
+            (defmodule SENSOR)
+            (defmodule SENSOR)
+        ",
+            )
+            .unwrap_err();
+
+        let has_duplicate_error = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg) if msg.contains("duplicate defmodule `SENSOR`") && msg.contains("line"))
+        });
+        assert!(
+            has_duplicate_error,
+            "expected duplicate defmodule error with location, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_defgeneric_reports_source_location() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str(
+                r"
+            (defgeneric display)
+            (defgeneric display)
+        ",
+            )
+            .unwrap_err();
+
+        let has_duplicate_error = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg) if msg.contains("duplicate defgeneric `display`") && msg.contains("line"))
+        });
+        assert!(
+            has_duplicate_error,
+            "expected duplicate defgeneric error with location, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_defmethod_explicit_index_reports_source_location() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str(
+                r"
+            (defgeneric describe)
+            (defmethod describe 1 ((?x INTEGER)) ?x)
+            (defmethod describe 1 ((?x FLOAT)) ?x)
+        ",
+            )
+            .unwrap_err();
+
+        let has_duplicate_error = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg) if msg.contains("duplicate defmethod index 1 for `describe`") && msg.contains("line"))
+        });
+        assert!(
+            has_duplicate_error,
+            "expected duplicate defmethod index error with location, got: {errors:?}"
+        );
     }
 }
 

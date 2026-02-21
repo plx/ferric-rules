@@ -16,6 +16,7 @@ use ferric_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
 
 use crate::config::EngineConfig;
 use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore};
+use crate::modules::ModuleRegistry;
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
 
@@ -84,6 +85,7 @@ pub(crate) fn execute_actions(
     globals: &mut GlobalStore,
     focus_requests: &mut Vec<String>,
     generics: &GenericRegistry,
+    module_registry: &ModuleRegistry,
 ) -> (bool, Vec<ActionError>) {
     let mut errors = Vec::new();
 
@@ -129,6 +131,7 @@ pub(crate) fn execute_actions(
             globals,
             focus_requests,
             generics,
+            module_registry,
         ) {
             errors.push(e);
         }
@@ -153,6 +156,7 @@ fn execute_single_action(
     globals: &mut GlobalStore,
     focus_requests: &mut Vec<String>,
     generics: &GenericRegistry,
+    module_registry: &ModuleRegistry,
 ) -> Result<(), ActionError> {
     match call.name.as_str() {
         "assert" => execute_assert(
@@ -219,6 +223,7 @@ fn execute_single_action(
             functions,
             globals,
             generics,
+            module_registry,
         ),
         // For any other call, try evaluating it as an expression (e.g., bind).
         _ => {
@@ -255,6 +260,7 @@ fn execute_focus(
     functions: &FunctionEnv,
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
+    module_registry: &ModuleRegistry,
 ) -> Result<(), ActionError> {
     for arg in args {
         let value = eval_expr(
@@ -270,6 +276,11 @@ fn execute_focus(
         match value {
             Value::Symbol(sym) => {
                 if let Some(name) = symbol_table.resolve_symbol_str(sym) {
+                    if module_registry.get_by_name(name).is_none() {
+                        return Err(ActionError::EvalError(format!(
+                            "focus: unknown module `{name}`"
+                        )));
+                    }
                     focus_requests.push(name.to_string());
                 }
             }
@@ -285,9 +296,9 @@ fn execute_focus(
 
 /// Execute a `printout` action.
 ///
-/// The first argument is the channel name (typically `t`). Remaining arguments
-/// are evaluated and formatted, with the special symbols `crlf`, `tab`, and
-/// `ff` producing `\n`, `\t`, and `\x0C` respectively.
+/// The first argument is the channel name (typically `t`) and must be a literal.
+/// Remaining arguments are evaluated and formatted, with the special symbols
+/// `crlf`, `tab`, and `ff` producing `\n`, `\t`, and `\x0C` respectively.
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
 fn execute_printout(
     symbol_table: &mut SymbolTable,
@@ -306,35 +317,17 @@ fn execute_printout(
         ));
     }
 
-    // First argument is the channel name — expected to be a bare symbol like `t`.
-    // We extract it without evaluation to avoid spending an intern slot unnecessarily.
+    // First argument is the channel name and must be a literal token.
     let channel = match &args[0] {
         ActionExpr::Literal(lit) => match &lit.value {
             LiteralKind::Symbol(s) | LiteralKind::String(s) => s.clone(),
             LiteralKind::Integer(n) => n.to_string(),
             LiteralKind::Float(f) => f.to_string(),
         },
-        // If the channel is a variable or nested call, evaluate it and use the
-        // string representation as the channel name.
-        other => {
-            let v = eval_expr(
-                token,
-                rule_info,
-                symbol_table,
-                config,
-                other,
-                functions,
-                globals,
-                generics,
-            )?;
-            match v {
-                Value::Symbol(sym) => symbol_table
-                    .resolve_symbol_str(sym)
-                    .unwrap_or("t")
-                    .to_string(),
-                Value::String(s) => s.as_str().to_string(),
-                _ => "t".to_string(),
-            }
+        _ => {
+            return Err(ActionError::EvalError(
+                "printout: channel must be a literal symbol or string".to_string(),
+            ))
         }
     };
 

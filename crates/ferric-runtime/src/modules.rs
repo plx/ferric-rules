@@ -133,6 +133,12 @@ impl ModuleRegistry {
         self.focus_stack.push(id);
     }
 
+    /// Replace the focus stack with a single module.
+    pub fn set_focus(&mut self, id: ModuleId) {
+        self.focus_stack.clear();
+        self.focus_stack.push(id);
+    }
+
     /// Pop the top module from the focus stack.
     pub fn pop_focus(&mut self) -> Option<ModuleId> {
         self.focus_stack.pop()
@@ -142,6 +148,12 @@ impl ModuleRegistry {
     #[must_use]
     pub fn current_focus(&self) -> Option<ModuleId> {
         self.focus_stack.last().copied()
+    }
+
+    /// Get the full focus stack (bottom to top).
+    #[must_use]
+    pub fn focus_stack(&self) -> &[ModuleId] {
+        &self.focus_stack
     }
 
     /// Reset the focus stack to contain only MAIN and set current module to MAIN.
@@ -211,6 +223,59 @@ impl ModuleRegistry {
                 } => ct == construct_type && names.iter().any(|n| n == construct_name),
             }
         })
+    }
+
+    /// Debug-only structural checks for module/focus bookkeeping.
+    pub fn debug_assert_consistency(&self) {
+        assert!(
+            self.modules.contains_key(&self.main_module_id),
+            "module registry missing MAIN module id {:?}",
+            self.main_module_id
+        );
+        assert!(
+            self.name_to_id.get(MAIN_MODULE_NAME) == Some(&self.main_module_id),
+            "name_to_id missing MAIN -> {:?}",
+            self.main_module_id
+        );
+        assert!(
+            self.modules.contains_key(&self.current_module),
+            "current_module {:?} missing from modules",
+            self.current_module
+        );
+        assert!(
+            !self.focus_stack.is_empty(),
+            "focus stack must never be empty during consistency checks"
+        );
+        for &module_id in &self.focus_stack {
+            assert!(
+                self.modules.contains_key(&module_id),
+                "focus stack contains unknown module id {:?}",
+                module_id
+            );
+        }
+
+        for (name, id) in &self.name_to_id {
+            let module = self
+                .modules
+                .get(id)
+                .unwrap_or_else(|| panic!("name_to_id points to unknown module id {:?}", id));
+            assert_eq!(
+                module.name, *name,
+                "name_to_id key `{name}` does not match module.name `{}`",
+                module.name
+            );
+        }
+
+        for (id, module) in &self.modules {
+            let mapped = self.name_to_id.get(&module.name);
+            assert_eq!(
+                mapped,
+                Some(id),
+                "module `{}` id {:?} missing reverse mapping",
+                module.name,
+                id
+            );
+        }
     }
 }
 
@@ -282,6 +347,16 @@ mod tests {
     }
 
     #[test]
+    fn set_focus_replaces_stack() {
+        let mut registry = ModuleRegistry::new();
+        let sensor_id = registry.register("SENSOR", vec![], vec![]);
+        registry.push_focus(sensor_id);
+        registry.set_focus(sensor_id);
+        assert_eq!(registry.focus_stack(), &[sensor_id]);
+        assert_eq!(registry.current_focus(), Some(sensor_id));
+    }
+
+    #[test]
     fn visibility_same_module_always_visible() {
         let registry = ModuleRegistry::new();
         let main = registry.main_module_id();
@@ -343,5 +418,13 @@ mod tests {
         let main = registry.main_module_id();
         // MAIN has no imports from SENSOR
         assert!(!registry.is_construct_visible(main, sensor_id, "deftemplate", "reading"));
+    }
+
+    #[test]
+    fn debug_consistency_passes_on_valid_registry() {
+        let mut registry = ModuleRegistry::new();
+        let sensor_id = registry.register("SENSOR", vec![ModuleSpec::All], vec![]);
+        registry.push_focus(sensor_id);
+        registry.debug_assert_consistency();
     }
 }

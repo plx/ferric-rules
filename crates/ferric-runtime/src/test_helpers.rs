@@ -242,6 +242,11 @@ pub fn assert_rete_consistent(rete: &ReteNetwork) {
     rete.debug_assert_consistency();
 }
 
+/// Assert full engine consistency, including Phase 3 registries.
+pub fn assert_engine_consistent(engine: &Engine) {
+    engine.debug_assert_consistency();
+}
+
 /// Assert that the rete network is fully clean (no tokens, no activations).
 pub fn assert_rete_clean(rete: &ReteNetwork) {
     assert!(rete.token_store.is_empty(), "token store should be empty");

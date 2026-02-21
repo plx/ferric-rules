@@ -12,8 +12,10 @@ Pass 001: Phase 3 Baseline and Harness Alignment
       assert_has_fact_with_relation, assert_no_fact_with_relation,
       load_fixture, assert_unsupported_form.
     - Created phase3_integration_tests.rs with:
-      - 5 unsupported-form diagnostic tests (deffunction, defglobal,
-        defmodule, defgeneric, defmethod)
+      - 5 unsupported-form diagnostic baseline tests at phase start
+        (deffunction, defglobal, defmodule, defgeneric, defmethod);
+        superseded by later passes where these constructs load/execute
+        and `defclass` is the unsupported sentinel.
       - 6 Phase 2 behavior preservation ("canary") tests
       - Commented-out scaffolding for passes 002-010
     - Created 7 fixture .clp files for Phase 3 constructs:

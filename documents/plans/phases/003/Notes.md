@@ -25,7 +25,7 @@
 
 ### Lingering questions
 - The `forall_vacuous_truth.clp` fixture from Phase 2 is commented out. Pass 010 should decide whether to enable it or replace it with the new `phase3_forall.clp`.
-- The invariant harness (`debug_assert_consistency()`) does not yet have extension points for function environments, modules, or global storage. These will need to be added as those subsystems are implemented.
+- Historical note (Pass 001 baseline): the invariant harness (`debug_assert_consistency()`) did not yet have extension points for function environments, modules, or global storage at pass start. This was resolved in later passes; see remediation item R9.
 
 ### Process notes
 - Used agent team approach: two background agents (fixtures-agent, docs-agent) worked in parallel while team lead handled test helpers and integration tests. The parallel work completed efficiently with no conflicts.
@@ -369,3 +369,15 @@ Phase 3 is complete. The engine now supports the full CLIPS language subset plan
 - `return` for early function return
 - String/multifield manipulation builtins
 - `if`/`while`/`loop-for-count` control flow in function bodies
+
+## Remediation Addendum (2026-02-19)
+
+- **R1 — forall vacuous-truth/retraction-cycle contract:** **Resolved.** The full 6-step regression contract is now enforced by active integration tests in both Phase 2 and Phase 3 harnesses (`forall_vacuous_truth_and_retraction_cycle` and `forall_vacuous_truth_and_retraction_cycle_contract`).
+- **R2 — RHS `focus` unknown-module diagnostics:** **Resolved.** Unknown modules in `focus` now emit explicit non-fatal action diagnostics (`focus: unknown module \`...\``) instead of silent no-op behavior.
+- **R3 — duplicate-definition diagnostics:** **Resolved.** Loader validates duplicate `defglobal`, `defmodule`, `defgeneric`, and duplicate explicit `defmethod` indices, emitting source-located load errors.
+- **R4 — evaluator spans for unbound variable/global errors:** **Resolved.** Evaluator translation preserves source spans for bound/global variable references and propagates them through `UnboundVariable`/`UnboundGlobal` diagnostics.
+- **R5 — function/global cross-module visibility enforcement:** **Deferred to Phase 4.** Phase 3 enforces module visibility for templates/rules/focus, but not yet for cross-module `deffunction` calls or `defglobal` reads/writes. Downstream Phase 4 tasks: enforce import/export checks in function/global lookup paths, emit source-located visibility diagnostics, and add integration coverage for visible/not-visible cross-module cases.
+- **R6 — focus API parity and baseline behavior:** **Resolved in Phase 3.** Runtime semantics are now explicit: `set_focus(module)` replaces the stack with exactly `[module]`; `get_focus()` returns the top module name (or `None` if empty); `get_focus_stack()` returns names bottom-to-top. During `run()`, empty focused modules are popped, but the final baseline focus frame is preserved across runs; `reset()` restores `[MAIN]`.
+- **R7 — unsupported-form baseline wording:** **Resolved (wording corrected).** Pass 001 unsupported-form entries were bootstrap baselines only. As of Passes 005/007/011, `deffunction`/`defglobal`/`defmodule`/`defgeneric`/`defmethod` load and execute in Phase 3; the unsupported sentinel is now `defclass`.
+- **R8 — printout channel contract:** **Resolved in Pass 004 runtime behavior.** `printout` channel is a literal-only token (`symbol` or `string`) and is not evaluated as an expression. Non-literal channel forms emit a diagnostic (`printout: channel must be a literal symbol or string`).
+- **R9 — consistency checker coverage:** **Resolved.** `debug_assert_consistency()` now extends beyond rete indices to Phase 3 registries and mappings (module/focus registry, function env, global store, generic registry, rule/module and template/module links).

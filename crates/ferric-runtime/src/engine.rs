@@ -4,7 +4,7 @@
 //! for embedding applications. Phase 1 includes basic fact assertion/retraction
 //! and thread affinity checking.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::thread::ThreadId;
 use thiserror::Error;
@@ -15,7 +15,7 @@ use ferric_core::{
     SymbolTable, TemplateId, Value,
 };
 
-use crate::actions::{self, CompiledRuleInfo};
+use crate::actions::{self, ActionError, CompiledRuleInfo};
 use crate::config::EngineConfig;
 use crate::execution::{FiredRule, HaltReason, RunLimit, RunResult};
 use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore};
@@ -87,6 +87,8 @@ pub struct Engine {
     /// top-level NCC/negation/forall CEs (mirroring CLIPS' built-in mechanism).
     /// It is tracked here so that `facts()` can exclude it from user-visible results.
     pub(crate) initial_fact_id: Option<FactId>,
+    /// Non-fatal action diagnostics captured during execution.
+    action_diagnostics: Vec<ActionError>,
     /// Whether a halt has been requested.
     halted: bool,
     creator_thread: ThreadId,
@@ -119,6 +121,7 @@ impl Engine {
             rule_modules: HashMap::new(),
             template_modules: HashMap::new(),
             initial_fact_id: None,
+            action_diagnostics: Vec::new(),
             halted: false,
             creator_thread: std::thread::current().id(),
             _not_send_sync: PhantomData,
@@ -300,7 +303,7 @@ impl Engine {
         if let Some(token) = self.rete.token_store.get(token_id).cloned() {
             if let Some(info) = self.rule_info.get(&rule_id).cloned() {
                 let mut focus_requests = Vec::new();
-                let (fired, _errors) = actions::execute_actions(
+                let (fired, mut errors) = actions::execute_actions(
                     &mut self.fact_base,
                     &mut self.rete,
                     &mut self.symbol_table,
@@ -314,15 +317,20 @@ impl Engine {
                     &mut self.globals,
                     &mut focus_requests,
                     &self.generics,
+                    &self.module_registry,
                 );
 
                 // Apply focus requests (push in reverse order so first arg is on top)
                 for module_name in focus_requests.iter().rev() {
-                    if let Some(id) = self.module_registry.get_by_name(module_name) {
-                        self.module_registry.push_focus(id);
-                    }
+                    match self.module_registry.get_by_name(module_name) {
+                        Some(id) => self.module_registry.push_focus(id),
+                        None => errors.push(ActionError::EvalError(format!(
+                            "focus: unknown module `{module_name}`"
+                        ))),
+                    };
                 }
 
+                self.action_diagnostics.extend(errors);
                 return fired;
             }
         }
@@ -351,6 +359,7 @@ impl Engine {
     /// Returns an error if the engine is called from the wrong thread.
     pub fn step(&mut self) -> Result<Option<FiredRule>, EngineError> {
         self.check_thread_affinity()?;
+        self.action_diagnostics.clear();
 
         let Some(activation) = self.rete.agenda.pop() else {
             return Ok(None);
@@ -377,8 +386,9 @@ impl Engine {
     /// Rule selection is focus-aware: only activations belonging to the module
     /// at the top of the focus stack are eligible to fire. When no eligible
     /// activations remain for the current focus module, the focus stack is
-    /// popped and the next module is tried. When the focus stack is empty the
-    /// run halts with `AgendaEmpty`.
+    /// popped and the next module is tried. The final baseline focus is
+    /// preserved across runs; if it has no matching activations, execution
+    /// halts with `AgendaEmpty`.
     ///
     /// # Errors
     ///
@@ -386,6 +396,7 @@ impl Engine {
     pub fn run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
         self.check_thread_affinity()?;
         self.halted = false;
+        self.action_diagnostics.clear();
 
         let max_fires = match limit {
             RunLimit::Unlimited => usize::MAX,
@@ -423,8 +434,18 @@ impl Engine {
                     break act;
                 }
 
-                // No activations for this module; pop focus and try next.
-                self.module_registry.pop_focus();
+                // No activations for this module. Pop to the next focus module,
+                // but preserve the final baseline focus so subsequent run() calls
+                // still have a stable module context.
+                if self.module_registry.focus_stack().len() > 1 {
+                    self.module_registry.pop_focus();
+                    continue;
+                }
+
+                return Ok(RunResult {
+                    rules_fired,
+                    halt_reason: HaltReason::AgendaEmpty,
+                });
             };
 
             let logically_fired =
@@ -464,6 +485,7 @@ impl Engine {
         self.fact_base = FactBase::new();
         self.rete.clear_working_memory();
         self.router.clear();
+        self.action_diagnostics.clear();
         self.halted = false;
 
         // Reset focus stack to [MAIN] and current module to MAIN
@@ -532,6 +554,17 @@ impl Engine {
         self.router.get_output(channel)
     }
 
+    /// Get non-fatal action diagnostics captured during the most recent run/step call.
+    #[must_use]
+    pub fn action_diagnostics(&self) -> &[ActionError] {
+        &self.action_diagnostics
+    }
+
+    /// Clear accumulated action diagnostics.
+    pub fn clear_action_diagnostics(&mut self) {
+        self.action_diagnostics.clear();
+    }
+
     /// Get the current value of a global variable by name.
     ///
     /// Returns `None` if the variable has not been set.
@@ -548,6 +581,38 @@ impl Engine {
             .unwrap_or("MAIN")
     }
 
+    /// Get the current focus module name (top of focus stack).
+    #[must_use]
+    pub fn get_focus(&self) -> Option<&str> {
+        self.module_registry
+            .current_focus()
+            .and_then(|id| self.module_registry.module_name(id))
+    }
+
+    /// Get the full focus stack as module names (bottom to top).
+    #[must_use]
+    pub fn get_focus_stack(&self) -> Vec<&str> {
+        self.module_registry
+            .focus_stack()
+            .iter()
+            .filter_map(|id| self.module_registry.module_name(*id))
+            .collect()
+    }
+
+    /// Set focus to exactly one module, replacing the previous focus stack.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ModuleNotFound` if the module has not been registered.
+    pub fn set_focus(&mut self, module_name: &str) -> Result<(), EngineError> {
+        let module_id = self
+            .module_registry
+            .get_by_name(module_name)
+            .ok_or_else(|| EngineError::ModuleNotFound(module_name.to_string()))?;
+        self.module_registry.set_focus(module_id);
+        Ok(())
+    }
+
     /// Push a module onto the focus stack by name.
     ///
     /// # Errors
@@ -560,6 +625,53 @@ impl Engine {
             .ok_or_else(|| EngineError::ModuleNotFound(module_name.to_string()))?;
         self.module_registry.push_focus(module_id);
         Ok(())
+    }
+
+    /// Verify engine-level structural consistency.
+    ///
+    /// This extends rete consistency checks with Phase 3 registries
+    /// (modules/focus, functions, globals, generics).
+    pub fn debug_assert_consistency(&self) {
+        self.rete.debug_assert_consistency();
+        self.module_registry.debug_assert_consistency();
+        self.functions.debug_assert_consistency();
+        self.globals.debug_assert_consistency();
+        self.generics.debug_assert_consistency();
+
+        for (rule_id, module_id) in &self.rule_modules {
+            assert!(
+                self.module_registry.get(*module_id).is_some(),
+                "rule {:?} points to unknown module {:?}",
+                rule_id,
+                module_id
+            );
+        }
+
+        for (template_id, module_id) in &self.template_modules {
+            assert!(
+                self.template_defs.contains_key(template_id),
+                "template_modules contains unknown template id {:?}",
+                template_id
+            );
+            assert!(
+                self.module_registry.get(*module_id).is_some(),
+                "template {:?} points to unknown module {:?}",
+                template_id,
+                module_id
+            );
+        }
+
+        let mut seen_globals = HashSet::new();
+        for (name, _value) in &self.registered_globals {
+            assert!(
+                seen_globals.insert(name.as_str()),
+                "duplicate registered global definition `{name}`"
+            );
+            assert!(
+                self.globals.contains(name),
+                "registered global `{name}` missing from runtime global store"
+            );
+        }
     }
 }
 

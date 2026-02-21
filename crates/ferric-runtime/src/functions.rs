@@ -50,6 +50,23 @@ impl FunctionEnv {
     pub fn get(&self, name: &str) -> Option<&UserFunction> {
         self.functions.get(name)
     }
+
+    /// Check whether a function with this name exists.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.functions.contains_key(name)
+    }
+
+    /// Debug-only structural checks for function registry bookkeeping.
+    pub fn debug_assert_consistency(&self) {
+        for (name, func) in &self.functions {
+            assert_eq!(
+                &func.name, name,
+                "function registry key `{name}` does not match function.name `{}`",
+                func.name
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +97,12 @@ impl GlobalStore {
         self.values.get(name)
     }
 
+    /// Check whether a global has a value.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.values.contains_key(name)
+    }
+
     /// Set the value of a global variable.
     ///
     /// If the variable was previously set, its value is replaced.
@@ -90,6 +113,16 @@ impl GlobalStore {
     /// Clear all global variables (used during engine reset).
     pub fn clear(&mut self) {
         self.values.clear();
+    }
+
+    /// Debug-only structural checks for global store bookkeeping.
+    pub fn debug_assert_consistency(&self) {
+        for name in self.values.keys() {
+            assert!(
+                !name.is_empty(),
+                "global store contains an empty-name entry"
+            );
+        }
     }
 }
 
@@ -200,6 +233,39 @@ impl GenericRegistry {
     pub fn get(&self, name: &str) -> Option<&GenericFunction> {
         self.generics.get(name)
     }
+
+    /// Check whether a generic with this name exists.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.generics.contains_key(name)
+    }
+
+    /// Check whether a generic already has a method with the given index.
+    #[must_use]
+    pub fn has_method_index(&self, name: &str, index: i32) -> bool {
+        self.generics
+            .get(name)
+            .is_some_and(|g| g.methods.iter().any(|m| m.index == index))
+    }
+
+    /// Debug-only structural checks for generic/method bookkeeping.
+    pub fn debug_assert_consistency(&self) {
+        for (name, generic) in &self.generics {
+            assert_eq!(
+                &generic.name, name,
+                "generic registry key `{name}` does not match generic.name `{}`",
+                generic.name
+            );
+            for w in generic.methods.windows(2) {
+                assert!(
+                    w[0].index < w[1].index,
+                    "generic `{name}` has non-increasing/duplicate method indices: {} then {}",
+                    w[0].index,
+                    w[1].index
+                );
+            }
+        }
+    }
 }
 
 // ===========================================================================
@@ -235,6 +301,19 @@ mod tests {
     fn function_env_get_missing_returns_none() {
         let env = FunctionEnv::new();
         assert!(env.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn function_env_contains_reports_presence() {
+        let mut env = FunctionEnv::new();
+        env.register(UserFunction {
+            name: "f".to_string(),
+            parameters: vec![],
+            wildcard_parameter: None,
+            body: vec![],
+        });
+        assert!(env.contains("f"));
+        assert!(!env.contains("missing"));
     }
 
     #[test]
@@ -330,6 +409,14 @@ mod tests {
             .structural_eq(&Value::Integer(0)));
     }
 
+    #[test]
+    fn global_store_contains_reports_presence() {
+        let mut store = GlobalStore::new();
+        store.set("x", Value::Integer(1));
+        assert!(store.contains("x"));
+        assert!(!store.contains("missing"));
+    }
+
     // -----------------------------------------------------------------------
     // GenericRegistry tests
     // -----------------------------------------------------------------------
@@ -346,6 +433,14 @@ mod tests {
     fn generic_registry_get_missing_returns_none() {
         let reg = GenericRegistry::new();
         assert!(reg.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn generic_registry_contains_reports_presence() {
+        let mut reg = GenericRegistry::new();
+        reg.register_generic("display");
+        assert!(reg.contains("display"));
+        assert!(!reg.contains("missing"));
     }
 
     #[test]
@@ -436,5 +531,35 @@ mod tests {
         );
         let method = &reg.get("f").unwrap().methods[0];
         assert_eq!(method.wildcard_parameter, Some("rest".into()));
+    }
+
+    #[test]
+    fn generic_registry_has_method_index() {
+        let mut reg = GenericRegistry::new();
+        reg.register_method("f", Some(3), vec!["x".into()], vec![vec![]], None, vec![]);
+        assert!(reg.has_method_index("f", 3));
+        assert!(!reg.has_method_index("f", 2));
+        assert!(!reg.has_method_index("missing", 3));
+    }
+
+    #[test]
+    fn debug_consistency_checks_pass_for_valid_state() {
+        let mut fenv = FunctionEnv::new();
+        fenv.register(UserFunction {
+            name: "f".to_string(),
+            parameters: vec![],
+            wildcard_parameter: None,
+            body: vec![],
+        });
+        fenv.debug_assert_consistency();
+
+        let mut globals = GlobalStore::new();
+        globals.set("g", Value::Integer(1));
+        globals.debug_assert_consistency();
+
+        let mut reg = GenericRegistry::new();
+        reg.register_method("m", Some(1), vec!["x".into()], vec![vec![]], None, vec![]);
+        reg.register_method("m", Some(2), vec!["x".into()], vec![vec![]], None, vec![]);
+        reg.debug_assert_consistency();
     }
 }
