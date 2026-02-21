@@ -345,7 +345,7 @@ impl Engine {
                 None => errors.push(ActionError::EvalError(format!(
                     "focus: unknown module `{module_name}`"
                 ))),
-            };
+            }
         }
 
         self.action_diagnostics.extend(errors);
@@ -651,23 +651,18 @@ impl Engine {
         for (rule_id, module_id) in &self.rule_modules {
             assert!(
                 self.module_registry.get(*module_id).is_some(),
-                "rule {:?} points to unknown module {:?}",
-                rule_id,
-                module_id
+                "rule {rule_id:?} points to unknown module {module_id:?}"
             );
         }
 
         for (template_id, module_id) in &self.template_modules {
             assert!(
                 self.template_defs.contains_key(template_id),
-                "template_modules contains unknown template id {:?}",
-                template_id
+                "template_modules contains unknown template id {template_id:?}"
             );
             assert!(
                 self.module_registry.get(*module_id).is_some(),
-                "template {:?} points to unknown module {:?}",
-                template_id,
-                module_id
+                "template {template_id:?} points to unknown module {module_id:?}"
             );
         }
 

@@ -249,8 +249,7 @@ impl ModuleRegistry {
         for &module_id in &self.focus_stack {
             assert!(
                 self.modules.contains_key(&module_id),
-                "focus stack contains unknown module id {:?}",
-                module_id
+                "focus stack contains unknown module id {module_id:?}"
             );
         }
 
@@ -258,7 +257,7 @@ impl ModuleRegistry {
             let module = self
                 .modules
                 .get(id)
-                .unwrap_or_else(|| panic!("name_to_id points to unknown module id {:?}", id));
+                .unwrap_or_else(|| panic!("name_to_id points to unknown module id {id:?}"));
             assert_eq!(
                 module.name, *name,
                 "name_to_id key `{name}` does not match module.name `{}`",
