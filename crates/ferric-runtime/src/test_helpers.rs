@@ -1,8 +1,17 @@
-//! Shared test helpers for Phase 2 integration tests.
+//! Shared test helpers for integration tests.
 //!
 //! These helpers provide reusable building blocks for the full pipeline:
-//! parse → interpret → compile → run. They are extended incrementally as
-//! Phase 2 passes add new capabilities.
+//! parse → interpret → compile → run. Originally established in Phase 2
+//! and extended incrementally as new capabilities land.
+//!
+//! ## Phase 3 extensions
+//!
+//! - `run_to_completion`: Run engine until halt or agenda exhaustion.
+//! - `load_and_run`: Convenience for load + run in one call.
+//! - `assert_fact_count`: Verify expected fact count.
+//! - `find_facts_by_relation`: Query facts by relation name.
+//! - `assert_has_fact_with_relation`: Assert a fact with given relation exists.
+//! - `load_fixture`: Load a `.clp` fixture file by name.
 
 use ferric_core::beta::RuleId;
 use ferric_core::{
@@ -233,6 +242,11 @@ pub fn assert_rete_consistent(rete: &ReteNetwork) {
     rete.debug_assert_consistency();
 }
 
+/// Assert full engine consistency, including Phase 3 registries.
+pub fn assert_engine_consistent(engine: &Engine) {
+    engine.debug_assert_consistency();
+}
+
 /// Assert that the rete network is fully clean (no tokens, no activations).
 pub fn assert_rete_clean(rete: &ReteNetwork) {
     assert!(rete.token_store.is_empty(), "token store should be empty");
@@ -275,16 +289,195 @@ pub fn interpret_ok(source: &str) -> Vec<ferric_parser::Construct> {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 2 pipeline stubs (filled in by later passes)
+// Execution helpers (Phase 3)
 // ---------------------------------------------------------------------------
 
-// The following will be added as Phase 2 passes land:
-//
-// - `compile_rules(engine, constructs) -> ReteNetwork`
-//     Compiles interpreted rule constructs into a shared rete network.
-//
-// - `run_to_completion(engine, rete) -> RunResult`
-//     Executes the engine loop until halt or agenda exhaustion.
-//
-// - `step_once(engine, rete) -> StepResult`
-//     Fires a single activation and returns the result.
+/// Run the engine until the agenda is empty or halt is requested.
+///
+/// # Panics
+///
+/// Panics if the engine returns an error.
+#[allow(dead_code)] // Will be used as Phase 3 passes land
+pub fn run_to_completion(engine: &mut Engine) -> crate::execution::RunResult {
+    engine
+        .run(crate::execution::RunLimit::Unlimited)
+        .expect("run should succeed in test helper")
+}
+
+/// Load source, then run to completion. Returns `(LoadResult, RunResult)`.
+///
+/// # Panics
+///
+/// Panics if loading or running produces errors.
+#[allow(dead_code)] // Will be used as Phase 3 passes land
+pub fn load_and_run(
+    engine: &mut Engine,
+    source: &str,
+) -> (LoadResult, crate::execution::RunResult) {
+    let load_result = load_ok(engine, source);
+    let run_result = run_to_completion(engine);
+    (load_result, run_result)
+}
+
+// ---------------------------------------------------------------------------
+// Fact query helpers (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Assert that the engine contains exactly `expected` facts.
+///
+/// # Panics
+///
+/// Panics if the count doesn't match.
+#[allow(dead_code)] // Will be used as Phase 3 passes land
+pub fn assert_fact_count(engine: &Engine, expected: usize) {
+    let actual = engine.facts().unwrap().count();
+    assert_eq!(
+        actual, expected,
+        "expected {expected} facts, found {actual}"
+    );
+}
+
+/// Find all fact IDs whose relation matches the given name.
+///
+/// Works with ordered facts only. Uses `intern_symbol` (which is idempotent)
+/// to resolve the relation name to a `Symbol` for comparison.
+#[allow(dead_code)] // Will be used as Phase 3 passes land
+pub fn find_facts_by_relation(engine: &Engine, relation: &str) -> Vec<ferric_core::FactId> {
+    // Try to find the symbol without mutating - check if any fact has a matching relation
+    // by resolving symbol names from the table
+    engine
+        .facts()
+        .unwrap()
+        .filter_map(|(fid, fact)| {
+            if let ferric_core::Fact::Ordered(ordered) = fact {
+                if let Some(name) = engine.symbol_table.resolve_symbol_str(ordered.relation) {
+                    if name == relation {
+                        return Some(fid);
+                    }
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// Assert that at least one fact with the given relation name exists.
+///
+/// # Panics
+///
+/// Panics if no matching fact is found.
+#[allow(dead_code)] // Will be used as Phase 3 passes land
+pub fn assert_has_fact_with_relation(engine: &Engine, relation: &str) {
+    let facts = find_facts_by_relation(engine, relation);
+    assert!(
+        !facts.is_empty(),
+        "expected at least one fact with relation `{relation}`"
+    );
+}
+
+/// Assert that no fact with the given relation name exists.
+///
+/// # Panics
+///
+/// Panics if a matching fact is found.
+#[allow(dead_code)] // Will be used as Phase 3 passes land
+pub fn assert_no_fact_with_relation(engine: &Engine, relation: &str) {
+    let facts = find_facts_by_relation(engine, relation);
+    assert!(
+        facts.is_empty(),
+        "expected no facts with relation `{relation}`, found {}",
+        facts.len()
+    );
+}
+
+/// Get the first ordered fact matching the given relation, returning its fields.
+///
+/// # Panics
+///
+/// Panics if no matching fact is found or if the fact is not ordered.
+#[allow(dead_code)] // Will be used as Phase 3 passes land
+pub fn get_ordered_fields(engine: &Engine, relation: &str) -> Vec<ferric_core::Value> {
+    let facts = find_facts_by_relation(engine, relation);
+    assert!(
+        !facts.is_empty(),
+        "expected at least one `{relation}` fact for field inspection"
+    );
+    let entry = engine
+        .fact_base
+        .get(facts[0])
+        .expect("fact should exist in test helper");
+    match &entry.fact {
+        ferric_core::Fact::Ordered(ordered) => ordered.fields.to_vec(),
+        ferric_core::Fact::Template(_) => {
+            panic!("expected ordered fact for `{relation}`, found template")
+        }
+    }
+}
+
+/// Get the ordered fields of a specific fact by its `FactId`.
+///
+/// # Panics
+///
+/// Panics if the fact does not exist or is not an ordered fact.
+#[allow(dead_code)] // Used by Phase 3 generic dispatch tests
+pub fn get_ordered_fields_for_fact(
+    engine: &Engine,
+    fact_id: ferric_core::FactId,
+) -> Vec<ferric_core::Value> {
+    let entry = engine
+        .fact_base
+        .get(fact_id)
+        .expect("fact should exist in test helper");
+    match &entry.fact {
+        ferric_core::Fact::Ordered(ordered) => ordered.fields.to_vec(),
+        ferric_core::Fact::Template(_) => {
+            panic!("expected ordered fact for fact_id {fact_id:?}, found template")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fixture loading helpers (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Load a `.clp` fixture file by name from the `tests/fixtures/` directory.
+///
+/// # Panics
+///
+/// Panics if the file cannot be loaded.
+#[allow(dead_code)] // Will be used as Phase 3 passes land
+pub fn load_fixture(engine: &mut Engine, fixture_name: &str) -> LoadResult {
+    let path = std::path::Path::new("tests/fixtures").join(fixture_name);
+    engine
+        .load_file(&path)
+        .unwrap_or_else(|errors| panic!("fixture load failed for {fixture_name}: {errors:?}"))
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic assertion helpers (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Load source and assert it fails with exactly one `UnsupportedForm` error
+/// whose name matches `expected_form`.
+///
+/// # Panics
+///
+/// Panics if the load succeeds, or if the error doesn't match.
+#[allow(dead_code)] // Will be used as Phase 3 passes land
+pub fn assert_unsupported_form(engine: &mut Engine, source: &str, expected_form: &str) {
+    let errors = load_err(engine, source);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error for unsupported form `{expected_form}`, got {errors:?}"
+    );
+    match &errors[0] {
+        crate::loader::LoadError::UnsupportedForm { name, .. } => {
+            assert_eq!(
+                name, expected_form,
+                "expected unsupported form `{expected_form}`, got `{name}`"
+            );
+        }
+        other => panic!("expected UnsupportedForm error for `{expected_form}`, got {other:?}"),
+    }
+}

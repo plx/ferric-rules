@@ -86,7 +86,13 @@ impl ReteNetwork {
             let neg_nodes = self.beta.negative_nodes_for_alpha(alpha_mem_id).to_vec();
 
             for neg_node_id in neg_nodes {
-                self.negative_right_activate(neg_node_id, fact_id, fact, fact_base);
+                self.negative_right_activate(
+                    neg_node_id,
+                    fact_id,
+                    fact,
+                    fact_base,
+                    &mut new_activations,
+                );
             }
         }
 
@@ -174,7 +180,12 @@ impl ReteNetwork {
 
         // 6b. Handle exists node support removal: fact retraction may remove support.
         // If support count goes to 0, pass-through is retracted.
-        self.exists_handle_retraction(fact_id, &affected_alpha_mems, fact_base);
+        self.exists_handle_retraction(
+            fact_id,
+            &affected_alpha_mems,
+            fact_base,
+            &mut new_activations,
+        );
 
         // 7. Remove from alpha memories
         self.alpha.retract_fact(fact_id, fact);
@@ -524,7 +535,8 @@ impl ReteNetwork {
         neg_node_id: NodeId,
         fact_id: FactId,
         fact: &Fact,
-        _fact_base: &FactBase,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
     ) {
         let Some(neg_node) = self.beta.get_node(neg_node_id) else {
             return;
@@ -567,8 +579,10 @@ impl ReteNetwork {
                 neg_mem.add_blocker(parent_token_id, fact_id);
             }
 
-            // Cascade-retract the pass-through token (removes from beta memory, cleans downstream)
-            self.retract_token_cascade(passthrough_id, beta_memory_id);
+            // Cascade-retract the pass-through token (removes from beta memory, cleans downstream).
+            // If the pass-through was an NCC subnetwork result, retract_token_cascade also
+            // decrements the NCC result count and potentially unblocks the NCC parent.
+            self.retract_token_cascade(passthrough_id, beta_memory_id, fact_base, new_activations);
         }
     }
 
@@ -654,11 +668,26 @@ impl ReteNetwork {
     /// Cascade-retract a single token and all its descendants.
     ///
     /// Removes tokens from the token store, cleans up beta memories and agenda.
-    /// Used by negative node blocking to retract pass-through tokens.
-    fn retract_token_cascade(&mut self, token_id: TokenId, _owner_memory: BetaMemoryId) {
+    /// Handles NCC result retraction: if a removed token was tracked as an NCC
+    /// subnetwork result, decrements the result count and re-unblocks the NCC
+    /// parent token if the count reaches zero.
+    ///
+    /// Used by negative node blocking and NCC partner blocking to retract pass-through tokens.
+    fn retract_token_cascade(
+        &mut self,
+        token_id: TokenId,
+        _owner_memory: BetaMemoryId,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
+    ) {
         let removed = self.token_store.remove_cascade(token_id);
 
         for (tid, token) in removed {
+            // If this token was an NCC subnetwork result, update the NCC result count.
+            // This handles the forall(P, Q) case where a negated subpattern inside the
+            // NCC subnetwork retracts its pass-through when a blocking fact arrives.
+            self.ncc_handle_result_retraction(tid, fact_base, new_activations);
+
             // Remove activations for this token
             self.agenda.remove_activations_for_token(tid);
 
@@ -778,7 +807,8 @@ impl ReteNetwork {
         &mut self,
         partner_node_id: NodeId,
         result_token_id: TokenId,
-        _fact_base: &FactBase,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
     ) {
         let Some(partner_node) = self.beta.get_node(partner_node_id) else {
             return;
@@ -818,7 +848,9 @@ impl ReteNetwork {
                 .get_ncc_memory_mut(ncc_memory_id)
                 .and_then(|mem| mem.remove_unblocked(parent_token_id));
             if let Some(pt_id) = passthrough_id {
-                self.retract_token_cascade(pt_id, beta_memory_id);
+                // The NCC's own pass-through is not tracked as an NCC subnetwork result,
+                // so retract_token_cascade's ncc_handle_result_retraction call is a no-op here.
+                self.retract_token_cascade(pt_id, beta_memory_id, fact_base, new_activations);
             }
         }
     }
@@ -1132,7 +1164,8 @@ impl ReteNetwork {
         &mut self,
         fact_id: FactId,
         affected_alpha_mems: &[AlphaMemoryId],
-        _fact_base: &FactBase,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
     ) {
         for &alpha_mem_id in affected_alpha_mems {
             let exists_nodes = self.beta.exists_nodes_for_alpha(alpha_mem_id).to_vec();
@@ -1168,7 +1201,12 @@ impl ReteNetwork {
                     if was_removed && new_count == 0 {
                         // Support count went N→0: retract pass-through
                         if let Some(passthrough_id) = exists_mem.remove_satisfied(parent_token_id) {
-                            self.retract_token_cascade(passthrough_id, beta_memory_id);
+                            self.retract_token_cascade(
+                                passthrough_id,
+                                beta_memory_id,
+                                fact_base,
+                                new_activations,
+                            );
                         }
                     }
                 }
@@ -1254,7 +1292,7 @@ impl ReteNetwork {
                 BetaNode::NccPartner { .. } => {
                     // NCC partner nodes receive tokens from subnetwork joins.
                     // Signal the NCC node about this result.
-                    self.ncc_partner_receive_result(child_id, token_id, fact_base);
+                    self.ncc_partner_receive_result(child_id, token_id, fact_base, new_activations);
                 }
                 BetaNode::Exists { .. } => {
                     // Perform exists left activation: token enters as parent for

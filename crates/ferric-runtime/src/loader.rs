@@ -1,13 +1,23 @@
 //! Source code loader for CLIPS-compatible syntax.
 //!
 //! This module provides functionality to load CLIPS source code from strings
-//! or files and convert it into engine-level constructs. Phase 1 supports:
-//! - `(assert ...)` forms — load facts into working memory
-//! - `(defrule ...)` forms — store raw rule definitions for later compilation
+//! or files and convert it into engine-level constructs.
 //!
-//! Full rule compilation and pattern matching will be added in later phases.
+//! ## Phase 2 state
+//!
+//! - Full Stage 2 interpretation for `defrule`, `deftemplate`, `deffacts`.
+//! - Rule compilation from Stage 2 AST into rete network.
+//! - Pattern validation (nesting depth, unsupported combinations).
+//! - `(assert ...)` top-level forms for loading facts into working memory.
+//!
+//! ## Phase 3 scope
+//!
+//! - Add support for `deffunction`, `defglobal`, `defmodule`, `defgeneric`,
+//!   `defmethod` top-level forms.
+//! - `test` CE compilation (currently returns compile error).
+//! - Template pattern compilation (currently returns compile error).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use thiserror::Error;
 
@@ -17,12 +27,16 @@ use ferric_core::{
 };
 use ferric_parser::{
     interpret_constructs, parse_sexprs, Atom, Constraint, Construct, FactBody, FactValue, FileId,
-    InterpreterConfig, LiteralKind, OrderedFactBody, Pattern, RuleConstruct, SExpr,
+    FunctionConstruct, GenericConstruct, GlobalConstruct, InterpreterConfig, LiteralKind,
+    MethodConstruct, ModuleConstruct, OrderedFactBody, Pattern, RuleConstruct, SExpr,
     TemplateConstruct, TemplateFactBody,
 };
 
 use crate::actions::CompiledRuleInfo;
 use crate::engine::{Engine, EngineError};
+use crate::functions::UserFunction;
+use crate::templates::RegisteredTemplate;
+// GenericRegistry accessed via self.generics (field on Engine)
 
 /// Translated rule data including fact-address variable bindings.
 struct TranslatedRule {
@@ -30,6 +44,8 @@ struct TranslatedRule {
     salience: i32,
     conditions: Vec<CompilableCondition>,
     fact_address_vars: HashMap<String, usize>,
+    /// Test CE expressions (not compiled into Rete; evaluated at firing time).
+    test_conditions: Vec<crate::evaluator::RuntimeExpr>,
 }
 
 /// Errors that can occur during source loading.
@@ -92,6 +108,16 @@ pub struct LoadResult {
     pub rules: Vec<RuleConstruct>,
     /// Templates registered during loading.
     pub templates: Vec<TemplateConstruct>,
+    /// Functions parsed during loading (not yet executable; Pass 006 adds execution).
+    pub functions: Vec<FunctionConstruct>,
+    /// Globals parsed during loading (not yet active; Pass 006 adds execution).
+    pub globals: Vec<GlobalConstruct>,
+    /// Modules parsed during loading.
+    pub modules: Vec<ModuleConstruct>,
+    /// Generic function declarations parsed during loading.
+    pub generics: Vec<GenericConstruct>,
+    /// Method definitions parsed during loading.
+    pub methods: Vec<MethodConstruct>,
     /// Warnings/diagnostics (non-fatal).
     pub warnings: Vec<String>,
 }
@@ -120,6 +146,7 @@ impl Engine {
     /// let result = engine.load_str("(assert (person John 30))").unwrap();
     /// assert_eq!(result.asserted_facts.len(), 1);
     /// ```
+    #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         self.check_thread_affinity()
             .map_err(|e| vec![LoadError::Engine(e)])?;
@@ -152,7 +179,16 @@ impl Engine {
                 } else if !list.is_empty()
                     && matches!(
                         list[0].as_symbol(),
-                        Some("defrule" | "deftemplate" | "deffacts")
+                        Some(
+                            "defrule"
+                                | "deftemplate"
+                                | "deffacts"
+                                | "deffunction"
+                                | "defglobal"
+                                | "defmodule"
+                                | "defgeneric"
+                                | "defmethod"
+                        )
                     )
                 {
                     construct_forms.push(expr.clone());
@@ -193,31 +229,137 @@ impl Engine {
                 }
             }
 
-            // Collect constructs by type (don't assert deffacts yet)
+            // Collect constructs by type (don't assert deffacts yet).
+            //
+            // Rules are collected with their owning module captured at the
+            // time they appear in source so that defmodule statements
+            // interleaved with defrule statements are respected.
             let mut deffacts_constructs = Vec::new();
+            let mut rules_with_module = Vec::new();
             for construct in interpret_result.constructs {
                 match construct {
                     Construct::Rule(rule) => {
-                        result.rules.push(rule);
+                        // Capture the current module at the point the rule is
+                        // encountered, before any subsequent defmodule changes it.
+                        let owning_module = self.module_registry.current_module();
+                        rules_with_module.push((rule, owning_module));
                     }
                     Construct::Template(template) => {
+                        // Register template BEFORE compiling rules so that
+                        // rules referencing this template can resolve the ID.
+                        if let Err(e) = self.register_template(&template, &mut result) {
+                            errors.push(e);
+                        }
                         result.templates.push(template);
                     }
                     Construct::Facts(facts) => {
                         deffacts_constructs.push(facts);
                     }
+                    Construct::Function(func) => {
+                        // Register in the function environment for runtime use.
+                        self.functions.register(UserFunction {
+                            name: func.name.clone(),
+                            parameters: func.parameters.clone(),
+                            wildcard_parameter: func.wildcard_parameter.clone(),
+                            body: func.body.clone(),
+                        });
+                        result.functions.push(func);
+                    }
+                    Construct::Global(global) => {
+                        // Evaluate initial values and store in the global store.
+                        if let Err(e) = self.process_global_construct(&global) {
+                            errors.push(e);
+                        }
+                        result.globals.push(global);
+                    }
+                    Construct::Module(module) => {
+                        if self.module_registry.get_by_name(&module.name).is_some() {
+                            errors.push(Self::duplicate_definition_error(
+                                "defmodule",
+                                &module.name,
+                                &module.span,
+                            ));
+                        } else {
+                            let module_id = self.module_registry.register(
+                                &module.name,
+                                module.exports.clone(),
+                                module.imports.clone(),
+                            );
+                            self.module_registry.set_current_module(module_id);
+                            result.modules.push(module);
+                        }
+                    }
+                    Construct::Generic(generic) => {
+                        if self.generics.contains(&generic.name) {
+                            errors.push(Self::duplicate_definition_error(
+                                "defgeneric",
+                                &generic.name,
+                                &generic.span,
+                            ));
+                        } else {
+                            // Register the generic function declaration.
+                            self.generics.register_generic(&generic.name);
+                            result.generics.push(generic);
+                        }
+                    }
+                    Construct::Method(method) => {
+                        if let Some(index) = method.index {
+                            if self.generics.has_method_index(&method.name, index) {
+                                errors.push(Self::duplicate_method_index_error(
+                                    &method.name,
+                                    index,
+                                    &method.span,
+                                ));
+                                continue;
+                            }
+                        }
+                        // Register the method in the generic registry.
+                        // Extract parameter names and type restrictions from MethodParameter structs.
+                        let param_names: Vec<String> =
+                            method.parameters.iter().map(|p| p.name.clone()).collect();
+                        let type_restrictions: Vec<Vec<String>> = method
+                            .parameters
+                            .iter()
+                            .map(|p| p.type_restrictions.clone())
+                            .collect();
+                        self.generics.register_method(
+                            &method.name,
+                            method.index,
+                            param_names,
+                            type_restrictions,
+                            method.wildcard_parameter.clone(),
+                            method.body.clone(),
+                        );
+                        result.methods.push(method);
+                    }
                 }
             }
 
-            // Compile rules first so rete has patterns before facts arrive
-            for rule in &result.rules {
+            // Compile rules so rete has patterns before facts arrive.
+            // Templates are already registered at this point.
+            // Restore each rule's owning module before compiling so that
+            // cross-module template visibility checks use the correct module.
+            let saved_module = self.module_registry.current_module();
+            for (rule, owning_module) in &rules_with_module {
+                self.module_registry.set_current_module(*owning_module);
                 match self.compile_rule_construct(rule) {
                     Ok(_) => {}
                     Err(e) => errors.push(e),
                 }
+                result.rules.push(rule.clone());
+            }
+            self.module_registry.set_current_module(saved_module);
+
+            // Ensure (initial-fact) is present AFTER rules are compiled but BEFORE
+            // deffacts are asserted.  This mirrors CLIPS' built-in (initial-fact)
+            // mechanism: it provides the root token required by top-level NCC/forall
+            // subnetworks so that items asserted through deffacts are properly evaluated.
+            // Asserted only once; subsequent load_str calls skip if already present.
+            if let Err(e) = self.ensure_initial_fact() {
+                errors.push(e);
             }
 
-            // Now process deffacts (facts will flow through compiled rete via assert_ordered)
+            // Now process deffacts (facts will flow through compiled rete via assert_ordered).
             for facts in &deffacts_constructs {
                 if let Err(e) = self.process_deffacts_construct(facts, &mut result) {
                     errors.push(e);
@@ -239,6 +381,35 @@ impl Engine {
         } else {
             Err(errors)
         }
+    }
+
+    /// Ensure `(initial-fact)` is present in working memory.
+    ///
+    /// `(initial-fact)` provides the root token for top-level NCC/negation/forall CEs,
+    /// mirroring CLIPS' built-in `(initial-fact)` mechanism.  It is asserted once;
+    /// subsequent calls are no-ops if it is already present.
+    ///
+    /// The `FactId` is stored in `self.initial_fact_id` so that `facts()` can
+    /// exclude it from user-visible results.
+    fn ensure_initial_fact(&mut self) -> Result<(), LoadError> {
+        // Already asserted in a previous load_str call.
+        if self.initial_fact_id.is_some() {
+            return Ok(());
+        }
+
+        let initial_sym = self
+            .symbol_table
+            .intern_symbol("initial-fact", self.config.string_encoding)
+            .map_err(|e| LoadError::Compile(format!("initial-fact symbol: {e}")))?;
+
+        let fid = self
+            .fact_base
+            .assert_ordered(initial_sym, smallvec::SmallVec::new());
+        let stored = self.fact_base.get(fid).unwrap().fact.clone();
+        self.rete.assert_fact(fid, &stored, &self.fact_base);
+        self.initial_fact_id = Some(fid);
+
+        Ok(())
     }
 
     /// Load CLIPS source code from a file.
@@ -310,17 +481,161 @@ impl Engine {
         template: &TemplateFactBody,
         result: &mut LoadResult,
     ) -> Result<FactId, LoadError> {
-        // For Phase 2, we treat template facts as ordered facts with the slot values
-        // Full template support with slot matching will be added in later phases
-        let mut fields = Vec::new();
-        for slot_value in &template.slot_values {
-            if let Some(value) = self.fact_value_to_value(&slot_value.value, result) {
-                fields.push(value);
+        let template_id = self
+            .template_ids
+            .get(&template.template)
+            .copied()
+            .ok_or_else(|| {
+                LoadError::Compile(format!(
+                    "unknown template `{}` in deffacts",
+                    template.template
+                ))
+            })?;
+
+        let registered = self
+            .template_defs
+            .get(&template_id)
+            .cloned()
+            .ok_or_else(|| {
+                LoadError::Compile(format!(
+                    "template `{}` not found in registry",
+                    template.template
+                ))
+            })?;
+
+        // Start with defaults.
+        let mut slots: Vec<Value> = registered.defaults.clone();
+
+        // Apply slot values from the deffacts body.
+        for slot_val in &template.slot_values {
+            let slot_idx = registered
+                .slot_index
+                .get(&slot_val.name)
+                .copied()
+                .ok_or_else(|| {
+                    LoadError::Compile(format!(
+                        "unknown slot `{}` in template `{}`",
+                        slot_val.name, template.template
+                    ))
+                })?;
+
+            if let Some(value) = self.fact_value_to_value(&slot_val.value, result) {
+                slots[slot_idx] = value;
             }
         }
 
-        self.assert_ordered(&template.template, fields)
-            .map_err(LoadError::Engine)
+        // Assert as a proper template fact.
+        let fact_id = self
+            .fact_base
+            .assert_template(template_id, slots.into_boxed_slice());
+
+        // Propagate through rete.
+        let fact = self
+            .fact_base
+            .get(fact_id)
+            .expect("just-asserted fact must exist")
+            .fact
+            .clone();
+        self.rete.assert_fact(fact_id, &fact, &self.fact_base);
+
+        Ok(fact_id)
+    }
+
+    /// Register a `TemplateConstruct` in the engine's template registry.
+    ///
+    /// Allocates a fresh `TemplateId`, builds slot metadata, and stores both
+    /// the name→id mapping and the `RegisteredTemplate`.
+    #[allow(clippy::unnecessary_wraps)] // Result return kept for future error paths
+    fn register_template(
+        &mut self,
+        template: &TemplateConstruct,
+        result: &mut LoadResult,
+    ) -> Result<(), LoadError> {
+        // Allocate a new TemplateId.
+        let template_id = self.template_id_alloc.insert(());
+
+        let slot_count = template.slots.len();
+        let mut slot_names = Vec::with_capacity(slot_count);
+        let mut slot_index = HashMap::with_capacity(slot_count);
+        let mut defaults = Vec::with_capacity(slot_count);
+
+        for (i, slot_def) in template.slots.iter().enumerate() {
+            slot_names.push(slot_def.name.clone());
+            slot_index.insert(slot_def.name.clone(), i);
+
+            let default_val = match &slot_def.default {
+                Some(ferric_parser::DefaultValue::Value(lit)) => self
+                    .literal_to_value(&lit.value, lit.span.start.line, result)
+                    .unwrap_or(Value::Void),
+                // ?NONE, ?DERIVE, or no default: use Void as placeholder.
+                _ => Value::Void,
+            };
+            defaults.push(default_val);
+        }
+
+        let registered = RegisteredTemplate {
+            name: template.name.clone(),
+            slot_names,
+            slot_index,
+            defaults,
+        };
+
+        self.template_ids.insert(template.name.clone(), template_id);
+        self.template_defs.insert(template_id, registered);
+        self.template_modules
+            .insert(template_id, self.module_registry.current_module());
+
+        Ok(())
+    }
+
+    /// Process a `GlobalConstruct`: evaluate each initial value expression and
+    /// register it in both the active global store and the snapshot used for reset.
+    fn process_global_construct(&mut self, global: &GlobalConstruct) -> Result<(), LoadError> {
+        let mut seen_in_construct = HashSet::new();
+        for def in &global.globals {
+            if !seen_in_construct.insert(def.name.clone()) || self.globals.contains(&def.name) {
+                return Err(Self::duplicate_definition_error(
+                    "defglobal",
+                    &def.name,
+                    &def.span,
+                ));
+            }
+
+            // Translate the init-value expression.  This must happen before we
+            // construct the EvalContext because from_action_expr also needs
+            // &mut symbol_table.
+            let runtime_expr = crate::evaluator::from_action_expr(
+                &def.value,
+                &mut self.symbol_table,
+                &self.config,
+            )
+            .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?;
+
+            // Evaluate with empty bindings (globals are initialized at load time
+            // without any rule context).  The block scope ensures the mutable
+            // borrows on symbol_table and globals are released before the
+            // subsequent self.globals.set() / self.registered_globals.push().
+            let value = {
+                let empty_bindings = ferric_core::binding::BindingSet::new();
+                let empty_var_map = ferric_core::binding::VarMap::new();
+                let mut ctx = crate::evaluator::EvalContext {
+                    bindings: &empty_bindings,
+                    var_map: &empty_var_map,
+                    symbol_table: &mut self.symbol_table,
+                    config: &self.config,
+                    functions: &self.functions,
+                    globals: &mut self.globals,
+                    generics: &self.generics,
+                    call_depth: 0,
+                };
+                crate::evaluator::eval(&mut ctx, &runtime_expr)
+                    .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
+            };
+
+            self.globals.set(&def.name, value.clone());
+            self.registered_globals.push((def.name.clone(), value));
+        }
+        Ok(())
     }
 
     /// Convert a `FactValue` to an engine Value.
@@ -502,8 +817,13 @@ impl Engine {
             var_map: compile_result.var_map.clone(),
             fact_address_vars: translated.fact_address_vars,
             salience: rule.salience,
+            test_conditions: translated.test_conditions,
         };
         self.rule_info.insert(compile_result.rule_id, info);
+        self.rule_modules.insert(
+            compile_result.rule_id,
+            self.module_registry.current_module(),
+        );
 
         Ok(compile_result)
     }
@@ -516,9 +836,21 @@ impl Engine {
         let rule_id = self.compiler.allocate_rule_id();
         let mut conditions = Vec::new();
         let mut fact_address_vars = HashMap::new();
+        let mut test_conditions = Vec::new();
         let mut fact_index = 0usize;
 
         for pattern in &rule.patterns {
+            // Test CEs are handled separately: they do not generate alpha/beta
+            // nodes in the Rete network, and they do not consume a fact index.
+            // Instead they are collected and evaluated at rule-firing time.
+            if let Pattern::Test(sexpr, _span) = pattern {
+                let runtime_expr =
+                    crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
+                        .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
+                test_conditions.push(runtime_expr);
+                continue;
+            }
+
             // Check for Pattern::Assigned to track fact-address variables
             let (var_name, is_negated) = match pattern {
                 Pattern::Assigned {
@@ -546,11 +878,32 @@ impl Engine {
             conditions.push(condition);
         }
 
+        // If the first condition is an NCC (e.g., forall or not/and as the leading CE),
+        // the NCC requires a parent token in the beta chain to produce pass-through tokens.
+        // To support vacuous truth and standalone forall/negation, inject an implicit
+        // (initial-fact) join as the first condition, mirroring CLIPS' built-in
+        // (initial-fact) mechanism.
+        if matches!(conditions.first(), Some(CompilableCondition::Ncc(_))) {
+            let initial_sym = self
+                .symbol_table
+                .intern_symbol("initial-fact", self.config.string_encoding)
+                .map_err(|e| LoadError::Compile(format!("initial-fact symbol: {e}")))?;
+            let initial_pattern = CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(initial_sym),
+                constant_tests: Vec::new(),
+                variable_slots: Vec::new(),
+                negated: false,
+                exists: false,
+            };
+            conditions.insert(0, CompilableCondition::Pattern(initial_pattern));
+        }
+
         Ok(TranslatedRule {
             rule_id,
             salience: rule.salience,
             conditions,
             fact_address_vars,
+            test_conditions,
         })
     }
 
@@ -593,6 +946,49 @@ impl Engine {
                     Ok(CompilableCondition::Pattern(compilable))
                 }
             }
+            Pattern::Forall(sub_patterns, span) => {
+                // Phase 3 restriction: exactly 2 sub-patterns (condition + then-clause).
+                if sub_patterns.len() != 2 {
+                    return Err(Self::unsupported_pattern(
+                        "forall",
+                        span,
+                        &format!(
+                            "Phase 3 forall supports exactly one condition and one then-clause, got {} sub-patterns",
+                            sub_patterns.len()
+                        ),
+                    ));
+                }
+
+                // Validate sub-patterns are simple (no nested CEs).
+                for sub in sub_patterns {
+                    match sub {
+                        Pattern::Ordered(_) | Pattern::Template(_) => {}
+                        Pattern::Forall(_, inner_span) => {
+                            return Err(Self::unsupported_pattern(
+                                "forall",
+                                inner_span,
+                                "nested forall is not supported",
+                            ));
+                        }
+                        _ => {
+                            return Err(Self::unsupported_pattern(
+                                "forall",
+                                span,
+                                "forall sub-patterns must be simple fact patterns (ordered or template)",
+                            ));
+                        }
+                    }
+                }
+
+                // Desugar forall(P, Q) → NCC([P, neg(Q)]).
+                // Compile condition (P) as positive pattern.
+                let condition = self.translate_pattern(&sub_patterns[0])?;
+                // Compile then-clause (Q) as negated pattern.
+                let mut then_clause = self.translate_pattern(&sub_patterns[1])?;
+                then_clause.negated = true;
+
+                Ok(CompilableCondition::Ncc(vec![condition, then_clause]))
+            }
             Pattern::And(_, span) => Err(Self::unsupported_pattern(
                 "and",
                 span,
@@ -605,6 +1001,7 @@ impl Engine {
     }
 
     /// Translate a single `Pattern` into a `CompilablePattern`.
+    #[allow(clippy::too_many_lines)] // Template pattern arm adds lines but is clear as-is
     fn translate_pattern(&mut self, pattern: &Pattern) -> Result<CompilablePattern, LoadError> {
         match pattern {
             Pattern::Ordered(ordered) => {
@@ -658,18 +1055,108 @@ impl Engine {
                     ))
                 }
             }
-            Pattern::Test(_, span) => Err(Self::unsupported_pattern(
-                "test",
+            Pattern::Test(_, span) => {
+                // Safety net: test CEs should be intercepted in translate_rule_construct
+                // before reaching translate_pattern.  If we get here something has gone wrong.
+                Err(Self::unsupported_pattern(
+                    "test",
+                    span,
+                    "test CE reached translate_pattern unexpectedly (should be handled earlier)",
+                ))
+            }
+            Pattern::Template(template) => {
+                let template_id = self
+                    .template_ids
+                    .get(&template.template)
+                    .copied()
+                    .ok_or_else(|| {
+                        Self::unsupported_pattern(
+                            "template",
+                            &template.span,
+                            &format!("unknown template `{}`", template.template),
+                        )
+                    })?;
+
+                let registered =
+                    self.template_defs
+                        .get(&template_id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            Self::unsupported_pattern(
+                                "template",
+                                &template.span,
+                                &format!("template `{}` not found in registry", template.template),
+                            )
+                        })?;
+
+                // Check module visibility for cross-module template references.
+                let current_module = self.module_registry.current_module();
+                let template_module = self
+                    .template_modules
+                    .get(&template_id)
+                    .copied()
+                    .unwrap_or_else(|| self.module_registry.main_module_id());
+
+                if !self.module_registry.is_construct_visible(
+                    current_module,
+                    template_module,
+                    "deftemplate",
+                    &template.template,
+                ) {
+                    return Err(Self::unsupported_pattern(
+                        "template",
+                        &template.span,
+                        &format!(
+                            "template `{}` is not visible from module `{}`",
+                            template.template,
+                            self.module_registry
+                                .module_name(current_module)
+                                .unwrap_or("?")
+                        ),
+                    ));
+                }
+
+                let entry_type = AlphaEntryType::Template(template_id);
+                let mut constant_tests = Vec::new();
+                let mut variable_slots = Vec::new();
+
+                for slot_constraint in &template.slot_constraints {
+                    let slot_idx = registered
+                        .slot_index
+                        .get(&slot_constraint.slot_name)
+                        .copied()
+                        .ok_or_else(|| {
+                            Self::unsupported_pattern(
+                                "template",
+                                &slot_constraint.span,
+                                &format!(
+                                    "unknown slot `{}` in template `{}`",
+                                    slot_constraint.slot_name, template.template
+                                ),
+                            )
+                        })?;
+
+                    let slot = SlotIndex::Template(slot_idx);
+                    self.translate_constraint(
+                        &slot_constraint.constraint,
+                        slot,
+                        &mut constant_tests,
+                        &mut variable_slots,
+                    )?;
+                }
+
+                Ok(CompilablePattern {
+                    entry_type,
+                    constant_tests,
+                    variable_slots,
+                    negated: false,
+                    exists: false,
+                })
+            }
+            Pattern::Forall(_, span) => Err(Self::unsupported_pattern(
+                "forall",
                 span,
-                "test conditional elements are not supported yet",
-            )),
-            Pattern::Template(template) => Err(Self::unsupported_pattern(
-                "template",
-                &template.span,
-                &format!(
-                    "template pattern `{}` is not supported yet",
-                    template.template
-                ),
+                "forall CE reached translate_pattern unexpectedly (should be handled in translate_condition)",
             )),
             Pattern::And(_, span) => Err(Self::unsupported_pattern(
                 "and",
@@ -772,6 +1259,28 @@ impl Engine {
 
     fn compile_string(&self, value: &str) -> Result<FerricString, LoadError> {
         FerricString::new(value, self.config.string_encoding).map_err(Self::compile_encoding_error)
+    }
+
+    fn duplicate_definition_error(
+        construct: &str,
+        name: &str,
+        span: &ferric_parser::Span,
+    ) -> LoadError {
+        LoadError::Compile(format!(
+            "duplicate {construct} `{name}` at line {}, column {}",
+            span.start.line, span.start.column
+        ))
+    }
+
+    fn duplicate_method_index_error(
+        generic_name: &str,
+        index: i32,
+        span: &ferric_parser::Span,
+    ) -> LoadError {
+        LoadError::Compile(format!(
+            "duplicate defmethod index {index} for `{generic_name}` at line {}, column {}",
+            span.start.line, span.start.column
+        ))
     }
 
     fn warn_at_line(result: &mut LoadResult, line: u32, message: &str) {
@@ -907,6 +1416,26 @@ fn validate_pattern_recursive(
         Pattern::And(inner_patterns, _) => {
             for inner in inner_patterns {
                 validate_pattern_recursive(inner, depth, max_depth, errors);
+            }
+        }
+
+        Pattern::Forall(sub_patterns, span) => {
+            let new_depth = depth + 1;
+            if new_depth > max_depth {
+                let kind = ferric_core::PatternViolation::NestingTooDeep {
+                    depth: new_depth,
+                    max: max_depth,
+                };
+                let location = Some(span_to_source_location(span));
+                let error = ferric_core::PatternValidationError::new(
+                    kind,
+                    location,
+                    ferric_core::ValidationStage::AstInterpretation,
+                );
+                errors.push(error);
+            }
+            for sub in sub_patterns {
+                validate_pattern_recursive(sub, new_depth, max_depth, errors);
             }
         }
 
@@ -1051,23 +1580,47 @@ mod tests {
     }
 
     #[test]
-    fn load_rule_with_test_pattern_returns_compile_error() {
+    fn load_rule_with_test_pattern_compiles_successfully() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let errors = engine
-            .load_str("(defrule t (test (> 1 0)) => (assert (ok)))")
-            .unwrap_err();
-
-        assert_single_compile_error_contains(&errors, "unsupported pattern form `test`");
+        let result = engine
+            .load_str("(defrule t (value ?x) (test (> ?x 0)) => (assert (ok)))")
+            .unwrap();
+        assert_eq!(result.rules.len(), 1);
     }
 
     #[test]
-    fn load_rule_with_template_pattern_returns_compile_error() {
+    fn load_rule_with_template_pattern_compiles_with_defined_template() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str(
+                r"
+                (deftemplate person (slot name))
+                (defrule t (person (name Alice)) => (assert (ok)))
+            ",
+            )
+            .unwrap();
+        assert_eq!(result.rules.len(), 1);
+    }
+
+    #[test]
+    fn load_rule_with_undefined_template_pattern_returns_error() {
         let mut engine = Engine::new(EngineConfig::utf8());
         let errors = engine
             .load_str("(defrule t (person (name Alice)) => (assert (ok)))")
             .unwrap_err();
 
-        assert_single_compile_error_contains(&errors, "unsupported pattern form `template`");
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got {errors:?}"
+        );
+        match &errors[0] {
+            LoadError::Compile(msg) => assert!(
+                msg.contains("unknown template"),
+                "expected 'unknown template' in error message, got: `{msg}`"
+            ),
+            other => panic!("expected compile error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1233,16 +1786,68 @@ mod tests {
 
     #[test]
     fn load_unsupported_form_returns_error() {
+        // defclass is not yet supported; verify the UnsupportedForm error fires
         let mut engine = Engine::new(EngineConfig::utf8());
-        let errors = engine.load_str("(deffunction foo () (+ 1 2))").unwrap_err();
+        let errors = engine
+            .load_str("(defclass Sensor (is-a USER))")
+            .unwrap_err();
 
         assert_eq!(errors.len(), 1);
         match &errors[0] {
             LoadError::UnsupportedForm { name, .. } => {
-                assert_eq!(name, "deffunction");
+                assert_eq!(name, "defclass");
             }
             _ => panic!("expected UnsupportedForm error"),
         }
+    }
+
+    #[test]
+    fn load_deffunction_succeeds() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str("(deffunction add-one (?x) (+ ?x 1))")
+            .unwrap();
+
+        assert_eq!(result.functions.len(), 1);
+        assert_eq!(result.functions[0].name, "add-one");
+        assert!(result.rules.is_empty());
+        assert!(result.asserted_facts.is_empty());
+    }
+
+    #[test]
+    fn load_defglobal_succeeds() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine.load_str("(defglobal ?*threshold* = 50)").unwrap();
+
+        assert_eq!(result.globals.len(), 1);
+        assert_eq!(result.globals[0].globals.len(), 1);
+        assert_eq!(result.globals[0].globals[0].name, "threshold");
+        assert!(result.rules.is_empty());
+        assert!(result.asserted_facts.is_empty());
+    }
+
+    #[test]
+    fn load_deffunction_with_comment_succeeds() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str(r#"(deffunction inc "Increment" (?x) (+ ?x 1))"#)
+            .unwrap();
+
+        assert_eq!(result.functions.len(), 1);
+        assert_eq!(result.functions[0].comment, Some("Increment".to_string()));
+    }
+
+    #[test]
+    fn load_defglobal_multiple_globals_succeeds() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str("(defglobal ?*pi* = 3.14159 ?*e* = 2.71828)")
+            .unwrap();
+
+        assert_eq!(result.globals.len(), 1);
+        assert_eq!(result.globals[0].globals.len(), 2);
+        assert_eq!(result.globals[0].globals[0].name, "pi");
+        assert_eq!(result.globals[0].globals[1].name, "e");
     }
 
     #[test]
@@ -1392,6 +1997,135 @@ mod tests {
 
         assert_eq!(errors.len(), 1);
         assert!(matches!(errors[0], LoadError::Io(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 007: defmodule / defgeneric / defmethod loader tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn load_defmodule_succeeds() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str("(defmodule SENSOR (export ?ALL))")
+            .expect("load should succeed");
+        assert_eq!(result.modules.len(), 1);
+        assert_eq!(result.modules[0].name, "SENSOR");
+    }
+
+    #[test]
+    fn load_defgeneric_succeeds() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str("(defgeneric display)")
+            .expect("load should succeed");
+        assert_eq!(result.generics.len(), 1);
+        assert_eq!(result.generics[0].name, "display");
+    }
+
+    #[test]
+    fn load_defmethod_succeeds() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str("(defmethod display ((?x INTEGER)) ?x)")
+            .expect("load should succeed");
+        assert_eq!(result.methods.len(), 1);
+        assert_eq!(result.methods[0].name, "display");
+    }
+
+    #[test]
+    fn load_defmethod_with_index_succeeds() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str("(defmethod display 1 ((?x)) ?x)")
+            .expect("load should succeed");
+        assert_eq!(result.methods.len(), 1);
+        assert_eq!(result.methods[0].index, Some(1));
+    }
+
+    #[test]
+    fn duplicate_defglobal_reports_source_location() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str(
+                r"
+            (defglobal ?*count* = 1)
+            (defglobal ?*count* = 2)
+        ",
+            )
+            .unwrap_err();
+
+        let has_duplicate_error = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg) if msg.contains("duplicate defglobal `count`") && msg.contains("line"))
+        });
+        assert!(
+            has_duplicate_error,
+            "expected duplicate defglobal error with location, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_defmodule_reports_source_location() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str(
+                r"
+            (defmodule SENSOR)
+            (defmodule SENSOR)
+        ",
+            )
+            .unwrap_err();
+
+        let has_duplicate_error = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg) if msg.contains("duplicate defmodule `SENSOR`") && msg.contains("line"))
+        });
+        assert!(
+            has_duplicate_error,
+            "expected duplicate defmodule error with location, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_defgeneric_reports_source_location() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str(
+                r"
+            (defgeneric display)
+            (defgeneric display)
+        ",
+            )
+            .unwrap_err();
+
+        let has_duplicate_error = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg) if msg.contains("duplicate defgeneric `display`") && msg.contains("line"))
+        });
+        assert!(
+            has_duplicate_error,
+            "expected duplicate defgeneric error with location, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_defmethod_explicit_index_reports_source_location() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str(
+                r"
+            (defgeneric describe)
+            (defmethod describe 1 ((?x INTEGER)) ?x)
+            (defmethod describe 1 ((?x FLOAT)) ?x)
+        ",
+            )
+            .unwrap_err();
+
+        let has_duplicate_error = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg) if msg.contains("duplicate defmethod index 1 for `describe`") && msg.contains("line"))
+        });
+        assert!(
+            has_duplicate_error,
+            "expected duplicate defmethod index error with location, got: {errors:?}"
+        );
     }
 }
 

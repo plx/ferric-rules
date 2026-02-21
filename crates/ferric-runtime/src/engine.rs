@@ -4,7 +4,7 @@
 //! for embedding applications. Phase 1 includes basic fact assertion/retraction
 //! and thread affinity checking.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::thread::ThreadId;
 use thiserror::Error;
@@ -12,32 +12,52 @@ use thiserror::Error;
 use ferric_core::beta::RuleId;
 use ferric_core::{
     EncodingError, Fact, FactBase, FactId, FerricString, ReteCompiler, ReteNetwork, Symbol,
-    SymbolTable, Value,
+    SymbolTable, TemplateId, Value,
 };
 
-use crate::actions::{self, CompiledRuleInfo};
+use crate::actions::{self, ActionError, CompiledRuleInfo};
 use crate::config::EngineConfig;
 use crate::execution::{FiredRule, HaltReason, RunLimit, RunResult};
+use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore};
+use crate::modules::{ModuleId, ModuleRegistry};
+use crate::router::OutputRouter;
+use crate::templates::RegisteredTemplate;
+
+fn propagate_fact_assertion(rete: &mut ReteNetwork, fact_base: &FactBase, fact_id: FactId) {
+    let fact = fact_base
+        .get(fact_id)
+        .expect("asserted fact should exist in fact base")
+        .fact
+        .clone();
+    rete.assert_fact(fact_id, &fact, fact_base);
+}
 
 /// The Ferric rules engine.
 ///
 /// This is the main entry point for embedding applications. The engine is
 /// not `Send` or `Sync` — it must remain on the thread that created it.
 ///
-/// ## Phase 1 API surface
+/// ## Phase 2 complete
 ///
 /// - Fact assertion/retraction (`assert_ordered`, `assert`, `retract`)
 /// - Fact query (`get_fact`, `facts`)
 /// - Symbol interning and string creation
-/// - Source loading (`load_str`, `load_file`) — returns `RuleDef` placeholders
-/// - Thread affinity enforcement with `unsafe move_to_current_thread`
-///
-/// ## Phase 2 additions (planned)
-///
+/// - Source loading (`load_str`, `load_file`) with Stage 2 interpretation
 /// - Rule compilation from Stage 2 AST into shared rete network
 /// - Execution loop (`run`, `step`, `halt`, `reset`)
-/// - RHS action execution (`assert`, `retract`, `modify`, `duplicate`)
-/// - Agenda conflict strategy selection
+/// - RHS action execution (`assert`, `retract`, `modify`, `duplicate`, `halt`)
+/// - Agenda conflict strategy selection (Depth, Breadth, LEX, MEA)
+/// - Thread affinity enforcement with `unsafe move_to_current_thread`
+///
+/// ## Phase 3 planned
+///
+/// - Template-aware `modify`/`duplicate`
+/// - Real `printout` with output routing
+/// - Expression evaluator for nested function calls in RHS
+/// - `deffunction`/`defglobal` support
+/// - `defmodule` import/export
+/// - `defgeneric`/`defmethod` dispatch
+/// - `forall` CE
 pub struct Engine {
     pub(crate) fact_base: FactBase,
     pub(crate) symbol_table: SymbolTable,
@@ -48,6 +68,36 @@ pub struct Engine {
     pub(crate) registered_deffacts: Vec<Vec<Fact>>,
     /// Compiled rule info for action execution.
     pub(crate) rule_info: HashMap<RuleId, CompiledRuleInfo>,
+    /// Registered template definitions: name → `TemplateId`.
+    pub(crate) template_ids: HashMap<String, TemplateId>,
+    /// Template slot metadata indexed by `TemplateId`.
+    pub(crate) template_defs: HashMap<TemplateId, RegisteredTemplate>,
+    /// Allocator for `TemplateId` keys.
+    pub(crate) template_id_alloc: slotmap::SlotMap<TemplateId, ()>,
+    /// Output router for capturing `printout` and related I/O.
+    pub(crate) router: OutputRouter,
+    /// Registry of user-defined functions loaded via `deffunction`.
+    pub(crate) functions: FunctionEnv,
+    /// Runtime storage for `defglobal` variables.
+    pub(crate) globals: GlobalStore,
+    /// Snapshot of global initial values for re-initialization on reset.
+    pub(crate) registered_globals: Vec<(String, Value)>,
+    /// Registry of generic functions and methods loaded via `defgeneric`/`defmethod`.
+    pub(crate) generics: GenericRegistry,
+    /// Module registry: module definitions, focus stack, visibility.
+    pub(crate) module_registry: ModuleRegistry,
+    /// Rule-to-module association for focus-aware execution.
+    pub(crate) rule_modules: HashMap<RuleId, ModuleId>,
+    /// Template-to-module association for visibility checking.
+    pub(crate) template_modules: HashMap<ferric_core::TemplateId, ModuleId>,
+    /// The `FactId` of the synthetic `(initial-fact)` in working memory, if present.
+    ///
+    /// `(initial-fact)` is asserted by the engine to provide a root token for
+    /// top-level NCC/negation/forall CEs (mirroring CLIPS' built-in mechanism).
+    /// It is tracked here so that `facts()` can exclude it from user-visible results.
+    pub(crate) initial_fact_id: Option<FactId>,
+    /// Non-fatal action diagnostics captured during execution.
+    action_diagnostics: Vec<ActionError>,
     /// Whether a halt has been requested.
     halted: bool,
     creator_thread: ThreadId,
@@ -68,6 +118,19 @@ impl Engine {
             compiler: ReteCompiler::new(),
             registered_deffacts: Vec::new(),
             rule_info: HashMap::new(),
+            template_ids: HashMap::new(),
+            template_defs: HashMap::new(),
+            template_id_alloc: slotmap::SlotMap::with_key(),
+            router: OutputRouter::new(),
+            functions: FunctionEnv::new(),
+            globals: GlobalStore::new(),
+            registered_globals: Vec::new(),
+            generics: GenericRegistry::new(),
+            module_registry: ModuleRegistry::new(),
+            rule_modules: HashMap::new(),
+            template_modules: HashMap::new(),
+            initial_fact_id: None,
+            action_diagnostics: Vec::new(),
             halted: false,
             creator_thread: std::thread::current().id(),
             _not_send_sync: PhantomData,
@@ -98,8 +161,7 @@ impl Engine {
         let id = self.fact_base.assert_ordered(relation_sym, fields_small);
 
         // Propagate through rete network
-        let fact = self.fact_base.get(id).unwrap().fact.clone();
-        self.rete.assert_fact(id, &fact, &self.fact_base);
+        propagate_fact_assertion(&mut self.rete, &self.fact_base, id);
 
         Ok(id)
     }
@@ -122,8 +184,7 @@ impl Engine {
         };
 
         // Propagate through rete network
-        let fact = self.fact_base.get(id).unwrap().fact.clone();
-        self.rete.assert_fact(id, &fact, &self.fact_base);
+        propagate_fact_assertion(&mut self.rete, &self.fact_base, id);
 
         Ok(id)
     }
@@ -166,9 +227,11 @@ impl Engine {
         Ok(self.fact_base.get(fact_id).map(|entry| &entry.fact))
     }
 
-    /// Iterate over all facts in working memory.
+    /// Iterate over all user-visible facts in working memory.
     ///
-    /// Returns an iterator of `(FactId, &Fact)` pairs.
+    /// Returns an iterator of `(FactId, &Fact)` pairs. The synthetic
+    /// `(initial-fact)` inserted by the engine for internal NCC/forall support
+    /// is excluded from the results.
     ///
     /// # Errors
     ///
@@ -176,7 +239,12 @@ impl Engine {
     pub fn facts(&self) -> Result<impl Iterator<Item = (FactId, &Fact)>, EngineError> {
         self.check_thread_affinity()?;
 
-        Ok(self.fact_base.iter().map(|(id, entry)| (id, &entry.fact)))
+        let exclude_id = self.initial_fact_id;
+        Ok(self
+            .fact_base
+            .iter()
+            .filter(move |(id, _)| Some(*id) != exclude_id)
+            .map(|(id, entry)| (id, &entry.fact)))
     }
 
     /// Intern a symbol.
@@ -229,24 +297,59 @@ impl Engine {
         Ok(())
     }
 
+    /// Execute RHS actions for a rule activation.
+    ///
+    /// Returns `true` if the rule logically fired (all test CEs passed and
+    /// actions were executed), `false` if a test CE caused the rule to be
+    /// suppressed.
     fn execute_activation_actions(
         &mut self,
         rule_id: RuleId,
         token_id: ferric_core::token::TokenId,
-    ) {
-        if let Some(token) = self.rete.token_store.get(token_id).cloned() {
-            if let Some(info) = self.rule_info.get(&rule_id).cloned() {
-                let _errors = actions::execute_actions(
-                    &mut self.fact_base,
-                    &mut self.rete,
-                    &mut self.symbol_table,
-                    &mut self.halted,
-                    &self.config,
-                    &token,
-                    &info,
-                );
+    ) -> bool {
+        let Some(token) = self.rete.token_store.get(token_id).cloned() else {
+            // No token — treat as not fired.
+            return false;
+        };
+
+        let (fired, mut errors, focus_requests) = {
+            let Some(info) = self.rule_info.get(&rule_id) else {
+                // No compiled rule info — treat as not fired.
+                return false;
+            };
+
+            let mut focus_requests = Vec::new();
+            let (fired, errors) = actions::execute_actions(
+                &mut self.fact_base,
+                &mut self.rete,
+                &mut self.symbol_table,
+                &mut self.halted,
+                &self.config,
+                &token,
+                info,
+                &self.template_defs,
+                &mut self.router,
+                &self.functions,
+                &mut self.globals,
+                &mut focus_requests,
+                &self.generics,
+                &self.module_registry,
+            );
+            (fired, errors, focus_requests)
+        };
+
+        // Apply focus requests (push in reverse order so first arg is on top)
+        for module_name in focus_requests.iter().rev() {
+            match self.module_registry.get_by_name(module_name) {
+                Some(id) => self.module_registry.push_focus(id),
+                None => errors.push(ActionError::EvalError(format!(
+                    "focus: unknown module `{module_name}`"
+                ))),
             }
         }
+
+        self.action_diagnostics.extend(errors);
+        fired
     }
 
     /// Transfer ownership of this engine to the current thread.
@@ -260,21 +363,48 @@ impl Engine {
         self.creator_thread = std::thread::current().id();
     }
 
+    /// Pop the next activation eligible under current focus semantics.
+    ///
+    /// Selection is module-aware: only activations whose rule belongs to the
+    /// current focus module are eligible. If the current focus module has no
+    /// eligible activations and there are stacked focuses, the top focus is
+    /// popped and selection continues. The final baseline focus is preserved.
+    fn pop_next_focus_activation(&mut self) -> Option<ferric_core::Activation> {
+        loop {
+            let focus_module = self.module_registry.current_focus()?;
+            let rule_modules = &self.rule_modules;
+
+            if let Some(activation) = self
+                .rete
+                .agenda
+                .pop_matching(|a| rule_modules.get(&a.rule).copied() == Some(focus_module))
+            {
+                return Some(activation);
+            }
+
+            if self.module_registry.focus_stack().len() > 1 {
+                self.module_registry.pop_focus();
+                continue;
+            }
+
+            return None;
+        }
+    }
+
     /// Fire a single rule activation from the agenda.
     ///
-    /// Returns `None` if the agenda is empty. Otherwise pops the highest-priority
-    /// activation and fires it.
-    ///
-    /// Note: In Phase 2 Pass 008, "firing" pops the activation but does not
-    /// execute RHS actions (action execution is added in Pass 009).
+    /// Returns `None` when no activation is eligible under current focus
+    /// semantics. Otherwise pops the highest-priority eligible activation and
+    /// fires it (executing RHS actions if all test CEs pass).
     ///
     /// # Errors
     ///
     /// Returns an error if the engine is called from the wrong thread.
     pub fn step(&mut self) -> Result<Option<FiredRule>, EngineError> {
         self.check_thread_affinity()?;
+        self.action_diagnostics.clear();
 
-        let Some(activation) = self.rete.agenda.pop() else {
+        let Some(activation) = self.pop_next_focus_activation() else {
             return Ok(None);
         };
 
@@ -283,9 +413,10 @@ impl Engine {
             token_id: activation.token,
         };
 
-        self.execute_activation_actions(activation.rule, activation.token);
-        // For Phase 2, action errors are silently ignored.
-        // Future phases can report them.
+        // Execute actions (errors are currently silently ignored).
+        // The boolean return indicates whether test CEs passed, but step()
+        // always returns Some(fired) to indicate an activation was processed.
+        let _ = self.execute_activation_actions(activation.rule, activation.token);
 
         Ok(Some(fired))
     }
@@ -295,12 +426,20 @@ impl Engine {
     ///
     /// Clears any previous halt request before starting.
     ///
+    /// Rule selection is focus-aware: only activations belonging to the module
+    /// at the top of the focus stack are eligible to fire. When no eligible
+    /// activations remain for the current focus module, the focus stack is
+    /// popped and the next module is tried. The final baseline focus is
+    /// preserved across runs; if it has no matching activations, execution
+    /// halts with `AgendaEmpty`.
+    ///
     /// # Errors
     ///
     /// Returns an error if the engine is called from the wrong thread.
     pub fn run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
         self.check_thread_affinity()?;
         self.halted = false;
+        self.action_diagnostics.clear();
 
         let max_fires = match limit {
             RunLimit::Unlimited => usize::MAX,
@@ -317,16 +456,21 @@ impl Engine {
                 });
             }
 
-            let Some(activation) = self.rete.agenda.pop() else {
+            // Focus-aware activation selection preserves the final baseline
+            // focus when no activations are eligible.
+            let Some(activation) = self.pop_next_focus_activation() else {
                 return Ok(RunResult {
                     rules_fired,
                     halt_reason: HaltReason::AgendaEmpty,
                 });
             };
 
-            self.execute_activation_actions(activation.rule, activation.token);
+            let logically_fired =
+                self.execute_activation_actions(activation.rule, activation.token);
 
-            rules_fired += 1;
+            if logically_fired {
+                rules_fired += 1;
+            }
         }
 
         Ok(RunResult {
@@ -357,10 +501,21 @@ impl Engine {
         // Clear all runtime state
         self.fact_base = FactBase::new();
         self.rete.clear_working_memory();
+        self.router.clear();
+        self.action_diagnostics.clear();
         self.halted = false;
 
+        // Reset focus stack to [MAIN] and current module to MAIN
+        self.module_registry.reset_focus();
+
+        // Re-initialize globals from registered initial values
+        self.globals.clear();
+        for (name, value) in &self.registered_globals {
+            self.globals.set(name, value.clone());
+        }
+
         // Re-assert registered deffacts
-        for deffacts in &self.registered_deffacts.clone() {
+        for deffacts in &self.registered_deffacts {
             for fact in deffacts {
                 let fact_id = match fact {
                     Fact::Ordered(ordered) => self
@@ -371,10 +526,22 @@ impl Engine {
                         .assert_template(template.template_id, template.slots.clone()),
                 };
                 // Propagate through rete
-                let stored_fact = self.fact_base.get(fact_id).unwrap().fact.clone();
-                self.rete
-                    .assert_fact(fact_id, &stored_fact, &self.fact_base);
+                propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
             }
+        }
+
+        // Re-assert (initial-fact) to restore the root token needed by NCC/forall CEs.
+        // Update initial_fact_id so that facts() continues to exclude it.
+        if self.initial_fact_id.is_some() {
+            let initial_sym = self
+                .symbol_table
+                .intern_symbol("initial-fact", self.config.string_encoding)
+                .expect("initial-fact symbol interning must succeed");
+            let initial_fid = self
+                .fact_base
+                .assert_ordered(initial_sym, smallvec::SmallVec::new());
+            propagate_fact_assertion(&mut self.rete, &self.fact_base, initial_fid);
+            self.initial_fact_id = Some(initial_fid);
         }
 
         Ok(())
@@ -390,6 +557,129 @@ impl Engine {
     #[must_use]
     pub fn agenda_len(&self) -> usize {
         self.rete.agenda.len()
+    }
+
+    /// Get captured output for a named `printout` channel.
+    ///
+    /// Returns `None` if nothing has been written to that channel.
+    #[must_use]
+    pub fn get_output(&self, channel: &str) -> Option<&str> {
+        self.router.get_output(channel)
+    }
+
+    /// Get non-fatal action diagnostics captured during the most recent run/step call.
+    #[must_use]
+    pub fn action_diagnostics(&self) -> &[ActionError] {
+        &self.action_diagnostics
+    }
+
+    /// Clear accumulated action diagnostics.
+    pub fn clear_action_diagnostics(&mut self) {
+        self.action_diagnostics.clear();
+    }
+
+    /// Get the current value of a global variable by name.
+    ///
+    /// Returns `None` if the variable has not been set.
+    #[must_use]
+    pub fn get_global(&self, name: &str) -> Option<&Value> {
+        self.globals.get(name)
+    }
+
+    /// Get the name of the current module.
+    #[must_use]
+    pub fn current_module(&self) -> &str {
+        self.module_registry
+            .module_name(self.module_registry.current_module())
+            .unwrap_or("MAIN")
+    }
+
+    /// Get the current focus module name (top of focus stack).
+    #[must_use]
+    pub fn get_focus(&self) -> Option<&str> {
+        self.module_registry
+            .current_focus()
+            .and_then(|id| self.module_registry.module_name(id))
+    }
+
+    /// Get the full focus stack as module names (bottom to top).
+    #[must_use]
+    pub fn get_focus_stack(&self) -> Vec<&str> {
+        self.module_registry
+            .focus_stack()
+            .iter()
+            .filter_map(|id| self.module_registry.module_name(*id))
+            .collect()
+    }
+
+    /// Set focus to exactly one module, replacing the previous focus stack.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ModuleNotFound` if the module has not been registered.
+    pub fn set_focus(&mut self, module_name: &str) -> Result<(), EngineError> {
+        let module_id = self
+            .module_registry
+            .get_by_name(module_name)
+            .ok_or_else(|| EngineError::ModuleNotFound(module_name.to_string()))?;
+        self.module_registry.set_focus(module_id);
+        Ok(())
+    }
+
+    /// Push a module onto the focus stack by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ModuleNotFound` if the module has not been registered.
+    pub fn push_focus(&mut self, module_name: &str) -> Result<(), EngineError> {
+        let module_id = self
+            .module_registry
+            .get_by_name(module_name)
+            .ok_or_else(|| EngineError::ModuleNotFound(module_name.to_string()))?;
+        self.module_registry.push_focus(module_id);
+        Ok(())
+    }
+
+    /// Verify engine-level structural consistency.
+    ///
+    /// This extends rete consistency checks with Phase 3 registries
+    /// (modules/focus, functions, globals, generics).
+    pub fn debug_assert_consistency(&self) {
+        self.rete.debug_assert_consistency();
+        self.module_registry.debug_assert_consistency();
+        self.functions.debug_assert_consistency();
+        self.globals.debug_assert_consistency();
+        self.generics.debug_assert_consistency();
+
+        for (rule_id, module_id) in &self.rule_modules {
+            assert!(
+                self.module_registry.get(*module_id).is_some(),
+                "rule {rule_id:?} points to unknown module {module_id:?}"
+            );
+        }
+
+        for (template_id, module_id) in &self.template_modules {
+            assert!(
+                self.template_defs.contains_key(template_id),
+                "template_modules contains unknown template id {template_id:?}"
+            );
+            assert!(
+                self.module_registry.get(*module_id).is_some(),
+                "template {template_id:?} points to unknown module {module_id:?}"
+            );
+        }
+
+        let mut seen_globals = HashSet::new();
+        for (name, _value) in &self.registered_globals {
+            assert!(
+                seen_globals.insert(name.as_str()),
+                "duplicate registered global definition `{name}`"
+            );
+            assert!(
+                self.globals.contains(name),
+                "registered global `{name}` missing from runtime global store"
+            );
+        }
     }
 }
 
@@ -407,6 +697,9 @@ pub enum EngineError {
         creator: ThreadId,
         current: ThreadId,
     },
+
+    #[error("module not found: {0}")]
+    ModuleNotFound(String),
 }
 
 #[cfg(test)]
@@ -752,6 +1045,55 @@ mod tests {
         assert!(step_result.is_some());
         assert_eq!(run_result.rules_fired, 1);
         assert_eq!(engine1.rete.agenda.len(), engine2.rete.agenda.len());
+    }
+
+    #[test]
+    fn step_respects_focus_filter_like_run_count_1() {
+        use crate::execution::RunLimit;
+
+        let program = r"
+            (defrule main-high
+                (declare (salience 10))
+                (go)
+                =>
+                (assert (main-fired)))
+
+            (defmodule SENSOR (export ?ALL))
+            (defrule sensor-low
+                (go)
+                =>
+                (assert (sensor-fired)))
+        ";
+
+        let mut step_engine = Engine::new(EngineConfig::utf8());
+        step_engine.load_str(program).unwrap();
+        step_engine.load_str("(assert (go))").unwrap();
+        step_engine.push_focus("SENSOR").unwrap();
+
+        let mut run_engine = Engine::new(EngineConfig::utf8());
+        run_engine.load_str(program).unwrap();
+        run_engine.load_str("(assert (go))").unwrap();
+        run_engine.push_focus("SENSOR").unwrap();
+
+        let step_result = step_engine.step().unwrap();
+        let run_result = run_engine.run(RunLimit::Count(1)).unwrap();
+
+        let has_relation = |engine: &Engine, relation: &str| {
+            engine.facts().unwrap().any(|(_, fact)| match fact {
+                Fact::Ordered(ordered) => engine
+                    .symbol_table
+                    .resolve_symbol_str(ordered.relation)
+                    .is_some_and(|name| name == relation),
+                Fact::Template(_) => false,
+            })
+        };
+
+        assert!(step_result.is_some());
+        assert_eq!(run_result.rules_fired, 1);
+        assert!(has_relation(&step_engine, "sensor-fired"));
+        assert!(!has_relation(&step_engine, "main-fired"));
+        assert!(has_relation(&run_engine, "sensor-fired"));
+        assert!(!has_relation(&run_engine, "main-fired"));
     }
 
     #[test]

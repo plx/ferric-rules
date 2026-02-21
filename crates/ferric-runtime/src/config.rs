@@ -4,11 +4,16 @@ use ferric_core::{ConflictResolutionStrategy, StringEncoding};
 
 /// Engine configuration.
 ///
-/// Includes encoding mode and conflict resolution strategy.
+/// Includes encoding mode, conflict resolution strategy, and recursion limits.
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
     pub string_encoding: StringEncoding,
     pub strategy: ConflictResolutionStrategy,
+    /// Maximum call depth for user-defined function recursion.
+    ///
+    /// Calls that exceed this depth return a `RecursionLimit` error rather than
+    /// overflowing the stack.
+    pub max_call_depth: usize,
 }
 
 impl EngineConfig {
@@ -18,6 +23,7 @@ impl EngineConfig {
         Self {
             string_encoding: StringEncoding::Ascii,
             strategy: ConflictResolutionStrategy::default(),
+            max_call_depth: 256,
         }
     }
 
@@ -27,6 +33,7 @@ impl EngineConfig {
         Self {
             string_encoding: StringEncoding::Utf8,
             strategy: ConflictResolutionStrategy::default(),
+            max_call_depth: 256,
         }
     }
 
@@ -36,6 +43,7 @@ impl EngineConfig {
         Self {
             string_encoding: StringEncoding::AsciiSymbolsUtf8Strings,
             strategy: ConflictResolutionStrategy::default(),
+            max_call_depth: 256,
         }
     }
 
@@ -58,6 +66,7 @@ impl From<StringEncoding> for EngineConfig {
         Self {
             string_encoding,
             strategy: ConflictResolutionStrategy::default(),
+            max_call_depth: 256,
         }
     }
 }

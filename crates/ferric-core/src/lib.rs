@@ -5,7 +5,7 @@
 //! This crate is not intended for direct use by end-users; prefer the
 //! `ferric` facade crate instead.
 //!
-//! ## Phase 1 baseline (ownership and layout)
+//! ## Architecture
 //!
 //! - Value/symbol/string/encoding primitives live here in `ferric-core`, not in
 //!   `ferric-runtime`. This was an intentional cycle-breaking decision.
@@ -16,13 +16,18 @@
 //! - Consistency checks (`debug_assert_consistency`) are available on
 //!   `TokenStore`, `AlphaNetwork`, `BetaNetwork`, `Agenda`, and `ReteNetwork`.
 //!
-//! ## Phase 2 additions (planned)
+//! ## Phase 2 complete
 //!
-//! - Stage 2 construct AST and interpreter (deftemplate/defrule/deffacts).
 //! - Rule compilation from interpreted constructs into shared rete network.
 //! - Negative, NCC, and exists node types.
 //! - Full agenda conflict strategies (Depth, Breadth, LEX, MEA).
-//! - Engine execution loop (run/step/halt/reset) and RHS action execution.
+//! - Pattern validation (nesting depth, unsupported nesting combinations).
+//!
+//! ## Phase 3 scope
+//!
+//! - Template pattern compilation support.
+//! - `forall` CE node type.
+//! - Expression evaluation infrastructure for `test` CE and RHS functions.
 
 pub mod agenda;
 pub mod alpha;
