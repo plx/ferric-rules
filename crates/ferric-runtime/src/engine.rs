@@ -98,7 +98,7 @@ pub struct Engine {
     /// Runtime storage for `defglobal` variables.
     pub(crate) globals: GlobalStore,
     /// Snapshot of global initial values for re-initialization on reset.
-    pub(crate) registered_globals: Vec<(String, Value)>,
+    pub(crate) registered_globals: Vec<(ModuleId, String, Value)>,
     /// Registry of generic functions and methods loaded via `defgeneric`/`defmethod`.
     pub(crate) generics: GenericRegistry,
     /// Module registry: module definitions, focus stack, visibility.
@@ -107,12 +107,12 @@ pub struct Engine {
     pub(crate) rule_modules: HashMap<RuleId, ModuleId>,
     /// Template-to-module association for visibility checking.
     pub(crate) template_modules: HashMap<ferric_core::TemplateId, ModuleId>,
-    /// Function-to-module association for visibility checking.
-    pub(crate) function_modules: HashMap<String, ModuleId>,
-    /// Global-to-module association for visibility checking.
-    pub(crate) global_modules: HashMap<String, ModuleId>,
-    /// Generic-to-module association for visibility checking.
-    pub(crate) generic_modules: HashMap<String, ModuleId>,
+    /// Function-to-module association for consistency-check bookkeeping.
+    pub(crate) function_modules: HashMap<(ModuleId, String), ModuleId>,
+    /// Global-to-module association for consistency-check bookkeeping.
+    pub(crate) global_modules: HashMap<(ModuleId, String), ModuleId>,
+    /// Generic-to-module association for consistency-check bookkeeping.
+    pub(crate) generic_modules: HashMap<(ModuleId, String), ModuleId>,
     /// The `FactId` of the synthetic `(initial-fact)` in working memory, if present.
     ///
     /// `(initial-fact)` is asserted by the engine to provide a root token for
@@ -580,8 +580,8 @@ impl Engine {
 
         // Re-initialize globals from registered initial values
         self.globals.clear();
-        for (name, value) in &self.registered_globals {
-            self.globals.set(name, value.clone());
+        for (module_id, name, value) in &self.registered_globals {
+            self.globals.set(*module_id, name, value.clone());
         }
 
         // Re-assert registered deffacts
@@ -692,7 +692,30 @@ impl Engine {
     /// Returns `None` if the variable has not been set.
     #[must_use]
     pub fn get_global(&self, name: &str) -> Option<&Value> {
-        self.globals.get(name)
+        let current_module = self.module_registry.current_module();
+        if let Some(value) = self.globals.get(current_module, name) {
+            return Some(value);
+        }
+
+        let mut visible_modules: Vec<ModuleId> = self
+            .globals
+            .modules_for_name(name)
+            .into_iter()
+            .filter(|module_id| {
+                self.module_registry.is_construct_visible(
+                    current_module,
+                    *module_id,
+                    "defglobal",
+                    name,
+                )
+            })
+            .collect();
+        visible_modules.sort_by_key(|module_id| module_id.0);
+        visible_modules.dedup();
+        match visible_modules.as_slice() {
+            [module_id] => self.globals.get(*module_id, name),
+            _ => None,
+        }
     }
 
     /// Get the name of the current module.
@@ -779,56 +802,57 @@ impl Engine {
         }
 
         let mut seen_globals = HashSet::new();
-        for (name, _value) in &self.registered_globals {
+        for (module_id, name, _) in &self.registered_globals {
             assert!(
-                seen_globals.insert(name.as_str()),
-                "duplicate registered global definition `{name}`"
+                seen_globals.insert((*module_id, name.as_str())),
+                "duplicate registered global definition `{name}` in module {module_id:?}"
             );
             assert!(
-                self.globals.contains(name),
-                "registered global `{name}` missing from runtime global store"
+                self.globals.contains(*module_id, name),
+                "registered global `{name}` in module {module_id:?} missing from runtime global store"
             );
         }
 
         // Verify function module associations
-        for name in self.functions.functions.keys() {
+        for (module_id, name) in self.functions.functions.keys() {
             assert!(
-                self.function_modules.contains_key(name),
-                "function `{name}` missing from function_modules"
+                self.function_modules
+                    .contains_key(&(*module_id, name.clone())),
+                "function `{name}` in module {module_id:?} missing from function_modules"
             );
         }
-        for (name, &module_id) in &self.function_modules {
+        for ((module_id, name), &owner_module) in &self.function_modules {
             assert!(
-                self.functions.contains(name),
-                "function_modules contains `{name}` but function not registered"
+                self.functions.contains(*module_id, name),
+                "function_modules contains `{name}` in module {module_id:?} but function not registered"
             );
             assert!(
-                self.module_registry.get(module_id).is_some(),
-                "function `{name}` points to unknown module {module_id:?}"
+                self.module_registry.get(owner_module).is_some(),
+                "function `{name}` points to unknown module {owner_module:?}"
             );
         }
 
         // Verify global module associations
-        for (name, &module_id) in &self.global_modules {
+        for ((module_id, name), &owner_module) in &self.global_modules {
             assert!(
-                self.globals.contains(name),
-                "global_modules contains `{name}` but global not registered"
+                self.globals.contains(*module_id, name),
+                "global_modules contains `{name}` in module {module_id:?} but global not registered"
             );
             assert!(
-                self.module_registry.get(module_id).is_some(),
-                "global `{name}` points to unknown module {module_id:?}"
+                self.module_registry.get(owner_module).is_some(),
+                "global `{name}` points to unknown module {owner_module:?}"
             );
         }
 
         // Verify generic module associations
-        for (name, &module_id) in &self.generic_modules {
+        for ((module_id, name), &owner_module) in &self.generic_modules {
             assert!(
-                self.generics.contains(name),
-                "generic_modules contains `{name}` but generic not registered"
+                self.generics.contains(*module_id, name),
+                "generic_modules contains `{name}` in module {module_id:?} but generic not registered"
             );
             assert!(
-                self.module_registry.get(module_id).is_some(),
-                "generic `{name}` points to unknown module {module_id:?}"
+                self.module_registry.get(owner_module).is_some(),
+                "generic `{name}` points to unknown module {owner_module:?}"
             );
         }
     }

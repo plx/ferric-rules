@@ -154,6 +154,8 @@ pub enum RuntimeExpr {
 pub struct MethodChain {
     /// Name of the generic function being dispatched.
     pub generic_name: String,
+    /// Module where the generic is defined.
+    pub generic_module: crate::modules::ModuleId,
     /// All applicable methods, sorted most-specific-first.
     pub applicable_methods: Vec<crate::functions::RegisteredMethod>,
     /// Index of the currently executing method in `applicable_methods`.
@@ -183,15 +185,55 @@ pub struct EvalContext<'a> {
     /// Module registry for visibility checks.
     pub module_registry: &'a crate::modules::ModuleRegistry,
     /// Function-to-module map for visibility checking.
-    pub function_modules: &'a std::collections::HashMap<String, crate::modules::ModuleId>,
+    pub function_modules:
+        &'a std::collections::HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
     /// Global-to-module map for visibility checking.
-    pub global_modules: &'a std::collections::HashMap<String, crate::modules::ModuleId>,
+    pub global_modules:
+        &'a std::collections::HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
     /// Generic-to-module map for visibility checking.
-    pub generic_modules: &'a std::collections::HashMap<String, crate::modules::ModuleId>,
+    pub generic_modules:
+        &'a std::collections::HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
     /// Active method dispatch chain for `call-next-method` (None when not inside a generic method).
     pub method_chain: Option<MethodChain>,
     /// Input buffer for `read`/`readline`. `None` when no input source is connected.
     pub input_buffer: Option<&'a mut VecDeque<String>>,
+}
+
+fn module_label(ctx: &EvalContext<'_>, module_id: crate::modules::ModuleId) -> String {
+    ctx.module_registry
+        .module_name(module_id)
+        .unwrap_or("?")
+        .to_string()
+}
+
+fn sorted_dedup_modules(
+    mut modules: Vec<crate::modules::ModuleId>,
+) -> Vec<crate::modules::ModuleId> {
+    modules.sort_by_key(|m| m.0);
+    modules.dedup();
+    modules
+}
+
+fn visible_modules_for_construct(
+    ctx: &EvalContext<'_>,
+    modules: &[crate::modules::ModuleId],
+    construct_type: &str,
+    local_name: &str,
+) -> Vec<crate::modules::ModuleId> {
+    sorted_dedup_modules(
+        modules
+            .iter()
+            .copied()
+            .filter(|module_id| {
+                ctx.module_registry.is_construct_visible(
+                    ctx.current_module,
+                    *module_id,
+                    construct_type,
+                    local_name,
+                )
+            })
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -231,38 +273,43 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
             if name.contains("::") {
                 return resolve_qualified_global(ctx, name, span.clone());
             }
-            // Check global visibility before accessing.
-            if let Some(&owning_module) = ctx.global_modules.get(name) {
-                if !ctx.module_registry.is_construct_visible(
-                    ctx.current_module,
-                    owning_module,
-                    "defglobal",
-                    name,
-                ) {
-                    return Err(EvalError::NotVisible {
-                        name: format!("?*{name}*"),
-                        construct_type: "defglobal".to_string(),
-                        from_module: ctx
-                            .module_registry
-                            .module_name(ctx.current_module)
-                            .unwrap_or("?")
-                            .to_string(),
-                        owning_module: ctx
-                            .module_registry
-                            .module_name(owning_module)
-                            .unwrap_or("?")
-                            .to_string(),
-                        span: span.clone(),
-                    });
-                }
+            if let Some(value) = ctx.globals.get(ctx.current_module, name).cloned() {
+                return Ok(value);
             }
-            ctx.globals
-                .get(name)
-                .cloned()
-                .ok_or_else(|| EvalError::UnboundGlobal {
+
+            let all_modules = sorted_dedup_modules(ctx.globals.modules_for_name(name));
+            if all_modules.is_empty() {
+                return Err(EvalError::UnboundGlobal {
                     name: name.clone(),
                     span: span.clone(),
-                })
+                });
+            }
+
+            let visible = visible_modules_for_construct(ctx, &all_modules, "defglobal", name);
+            match visible.as_slice() {
+                [owner] => {
+                    ctx.globals
+                        .get(*owner, name)
+                        .cloned()
+                        .ok_or_else(|| EvalError::UnboundGlobal {
+                            name: name.clone(),
+                            span: span.clone(),
+                        })
+                }
+                [] => Err(EvalError::NotVisible {
+                    name: format!("?*{name}*"),
+                    construct_type: "defglobal".to_string(),
+                    from_module: module_label(ctx, ctx.current_module),
+                    owning_module: module_label(ctx, all_modules[0]),
+                    span: span.clone(),
+                }),
+                _ => Err(EvalError::TypeError {
+                    function: format!("?*{name}*"),
+                    expected: "unambiguous global resolution".to_string(),
+                    actual: "multiple visible globals; use MODULE::name".to_string(),
+                    span: span.clone(),
+                }),
+            }
         }
         RuntimeExpr::Call { name, args, span } => {
             // call-next-method: advance to next method in the dispatch chain.
@@ -277,69 +324,93 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
             match dispatch_builtin(ctx, name, args, span.clone()) {
                 Ok(v) => Ok(v),
                 Err(EvalError::UnknownFunction { .. }) => {
-                    // Try user-defined function first.
-                    // Clone to avoid holding a borrow on ctx.functions while
-                    // needing &mut ctx for evaluation.
-                    if let Some(func) = ctx.functions.get(name).cloned() {
-                        // Check visibility before dispatching.
-                        if let Some(&owning_module) = ctx.function_modules.get(name) {
-                            if !ctx.module_registry.is_construct_visible(
-                                ctx.current_module,
-                                owning_module,
+                    let function_modules =
+                        sorted_dedup_modules(ctx.functions.modules_for_name(name));
+                    if !function_modules.is_empty() {
+                        let target_module = if ctx.functions.contains(ctx.current_module, name) {
+                            Ok(ctx.current_module)
+                        } else {
+                            let visible = visible_modules_for_construct(
+                                ctx,
+                                &function_modules,
                                 "deffunction",
                                 name,
-                            ) {
-                                return Err(EvalError::NotVisible {
+                            );
+                            match visible.as_slice() {
+                                [owner] => Ok(*owner),
+                                [] => Err(EvalError::NotVisible {
                                     name: name.clone(),
                                     construct_type: "deffunction".to_string(),
-                                    from_module: ctx
-                                        .module_registry
-                                        .module_name(ctx.current_module)
-                                        .unwrap_or("?")
-                                        .to_string(),
-                                    owning_module: ctx
-                                        .module_registry
-                                        .module_name(owning_module)
-                                        .unwrap_or("?")
+                                    from_module: module_label(ctx, ctx.current_module),
+                                    owning_module: module_label(ctx, function_modules[0]),
+                                    span: span.clone(),
+                                }),
+                                _ => Err(EvalError::TypeError {
+                                    function: name.clone(),
+                                    expected: "unambiguous deffunction resolution".to_string(),
+                                    actual: "multiple visible deffunctions; use MODULE::name"
                                         .to_string(),
                                     span: span.clone(),
-                                });
+                                }),
                             }
+                        }?;
+
+                        if let Some(func) = ctx.functions.get(target_module, name).cloned() {
+                            return dispatch_user_function(
+                                ctx,
+                                &func,
+                                target_module,
+                                args,
+                                span.clone(),
+                            );
                         }
-                        dispatch_user_function(ctx, &func, args, span.clone())
-                    } else if let Some(generic) = ctx.generics.get(name).cloned() {
-                        // Check visibility before dispatching.
-                        if let Some(&owning_module) = ctx.generic_modules.get(name) {
-                            if !ctx.module_registry.is_construct_visible(
-                                ctx.current_module,
-                                owning_module,
+                    }
+
+                    let generic_modules = sorted_dedup_modules(ctx.generics.modules_for_name(name));
+                    if !generic_modules.is_empty() {
+                        let target_module = if ctx.generics.contains(ctx.current_module, name) {
+                            Ok(ctx.current_module)
+                        } else {
+                            let visible = visible_modules_for_construct(
+                                ctx,
+                                &generic_modules,
                                 "defgeneric",
                                 name,
-                            ) {
-                                return Err(EvalError::NotVisible {
+                            );
+                            match visible.as_slice() {
+                                [owner] => Ok(*owner),
+                                [] => Err(EvalError::NotVisible {
                                     name: name.clone(),
                                     construct_type: "defgeneric".to_string(),
-                                    from_module: ctx
-                                        .module_registry
-                                        .module_name(ctx.current_module)
-                                        .unwrap_or("?")
-                                        .to_string(),
-                                    owning_module: ctx
-                                        .module_registry
-                                        .module_name(owning_module)
-                                        .unwrap_or("?")
+                                    from_module: module_label(ctx, ctx.current_module),
+                                    owning_module: module_label(ctx, generic_modules[0]),
+                                    span: span.clone(),
+                                }),
+                                _ => Err(EvalError::TypeError {
+                                    function: name.clone(),
+                                    expected: "unambiguous defgeneric resolution".to_string(),
+                                    actual: "multiple visible defgenerics; use MODULE::name"
                                         .to_string(),
                                     span: span.clone(),
-                                });
+                                }),
                             }
+                        }?;
+
+                        if let Some(generic) = ctx.generics.get(target_module, name).cloned() {
+                            return dispatch_generic(
+                                ctx,
+                                &generic,
+                                target_module,
+                                args,
+                                span.clone(),
+                            );
                         }
-                        dispatch_generic(ctx, &generic, args, span.clone())
-                    } else {
-                        Err(EvalError::UnknownFunction {
-                            name: name.clone(),
-                            span: span.clone(),
-                        })
                     }
+
+                    Err(EvalError::UnknownFunction {
+                        name: name.clone(),
+                        span: span.clone(),
+                    })
                 }
                 Err(e) => Err(e),
             }
@@ -361,20 +432,16 @@ fn dispatch_qualified_call(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let qualified = crate::qualified_name::parse_qualified_name(raw_name).map_err(|msg| {
-        EvalError::TypeError {
-            function: raw_name.to_string(),
-            expected: "valid MODULE::name form".to_string(),
-            actual: msg,
-            span: span.clone(),
-        }
+    let qualified = parse_qualified_name(raw_name).map_err(|msg| EvalError::TypeError {
+        function: raw_name.to_string(),
+        expected: "valid MODULE::name form".to_string(),
+        actual: msg,
+        span: span.clone(),
     })?;
 
     let (module_name, local_name) = match &qualified {
-        crate::qualified_name::QualifiedName::Qualified { module, name } => {
-            (module.as_str(), name.as_str())
-        }
-        crate::qualified_name::QualifiedName::Unqualified(_) => {
+        QualifiedName::Qualified { module, name } => (module.as_str(), name.as_str()),
+        QualifiedName::Unqualified(_) => {
             // Should not reach here since we checked for "::" in eval(), but
             // handle gracefully.
             return Err(EvalError::UnknownFunction {
@@ -396,67 +463,41 @@ fn dispatch_qualified_call(
         })?;
 
     // Try user-defined function first.
-    if let Some(func) = ctx.functions.get(local_name).cloned() {
-        if let Some(&owning_module) = ctx.function_modules.get(local_name) {
-            // Verify the function belongs to the specified module.
-            if owning_module != target_module_id {
-                return Err(EvalError::UnknownFunction {
-                    name: raw_name.to_string(),
-                    span,
-                });
-            }
-            // Check visibility from the calling module.
-            if !ctx.module_registry.is_construct_visible(
-                ctx.current_module,
-                owning_module,
-                "deffunction",
-                local_name,
-            ) {
-                return Err(EvalError::NotVisible {
-                    name: raw_name.to_string(),
-                    construct_type: "deffunction".to_string(),
-                    from_module: ctx
-                        .module_registry
-                        .module_name(ctx.current_module)
-                        .unwrap_or("?")
-                        .to_string(),
-                    owning_module: module_name.to_string(),
-                    span,
-                });
-            }
+    if let Some(func) = ctx.functions.get(target_module_id, local_name).cloned() {
+        if !ctx.module_registry.is_construct_visible(
+            ctx.current_module,
+            target_module_id,
+            "deffunction",
+            local_name,
+        ) {
+            return Err(EvalError::NotVisible {
+                name: raw_name.to_string(),
+                construct_type: "deffunction".to_string(),
+                from_module: module_label(ctx, ctx.current_module),
+                owning_module: module_name.to_string(),
+                span,
+            });
         }
-        return dispatch_user_function(ctx, &func, args, span);
+        return dispatch_user_function(ctx, &func, target_module_id, args, span);
     }
 
     // Try generic function.
-    if let Some(generic) = ctx.generics.get(local_name).cloned() {
-        if let Some(&owning_module) = ctx.generic_modules.get(local_name) {
-            if owning_module != target_module_id {
-                return Err(EvalError::UnknownFunction {
-                    name: raw_name.to_string(),
-                    span,
-                });
-            }
-            if !ctx.module_registry.is_construct_visible(
-                ctx.current_module,
-                owning_module,
-                "defgeneric",
-                local_name,
-            ) {
-                return Err(EvalError::NotVisible {
-                    name: raw_name.to_string(),
-                    construct_type: "defgeneric".to_string(),
-                    from_module: ctx
-                        .module_registry
-                        .module_name(ctx.current_module)
-                        .unwrap_or("?")
-                        .to_string(),
-                    owning_module: module_name.to_string(),
-                    span,
-                });
-            }
+    if let Some(generic) = ctx.generics.get(target_module_id, local_name).cloned() {
+        if !ctx.module_registry.is_construct_visible(
+            ctx.current_module,
+            target_module_id,
+            "defgeneric",
+            local_name,
+        ) {
+            return Err(EvalError::NotVisible {
+                name: raw_name.to_string(),
+                construct_type: "defgeneric".to_string(),
+                from_module: module_label(ctx, ctx.current_module),
+                owning_module: module_name.to_string(),
+                span,
+            });
         }
-        return dispatch_generic(ctx, &generic, args, span);
+        return dispatch_generic(ctx, &generic, target_module_id, args, span);
     }
 
     Err(EvalError::UnknownFunction {
@@ -471,20 +512,16 @@ fn resolve_qualified_global(
     raw_name: &str,
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let qualified = crate::qualified_name::parse_qualified_name(raw_name).map_err(|msg| {
-        EvalError::TypeError {
-            function: format!("?*{raw_name}*"),
-            expected: "valid MODULE::name form".to_string(),
-            actual: msg,
-            span: span.clone(),
-        }
+    let qualified = parse_qualified_name(raw_name).map_err(|msg| EvalError::TypeError {
+        function: format!("?*{raw_name}*"),
+        expected: "valid MODULE::name form".to_string(),
+        actual: msg,
+        span: span.clone(),
     })?;
 
     let (module_name, local_name) = match &qualified {
-        crate::qualified_name::QualifiedName::Qualified { module, name } => {
-            (module.as_str(), name.as_str())
-        }
-        crate::qualified_name::QualifiedName::Unqualified(_) => {
+        QualifiedName::Qualified { module, name } => (module.as_str(), name.as_str()),
+        QualifiedName::Unqualified(_) => {
             return Err(EvalError::UnboundGlobal {
                 name: raw_name.to_string(),
                 span,
@@ -503,36 +540,30 @@ fn resolve_qualified_global(
             span: span.clone(),
         })?;
 
-    // Check the global belongs to the stated module and is visible.
-    if let Some(&owning_module) = ctx.global_modules.get(local_name) {
-        if owning_module != target_module_id {
-            return Err(EvalError::UnboundGlobal {
-                name: raw_name.to_string(),
-                span,
-            });
-        }
-        if !ctx.module_registry.is_construct_visible(
-            ctx.current_module,
-            owning_module,
-            "defglobal",
-            local_name,
-        ) {
-            return Err(EvalError::NotVisible {
-                name: format!("?*{raw_name}*"),
-                construct_type: "defglobal".to_string(),
-                from_module: ctx
-                    .module_registry
-                    .module_name(ctx.current_module)
-                    .unwrap_or("?")
-                    .to_string(),
-                owning_module: module_name.to_string(),
-                span,
-            });
-        }
+    if !ctx.globals.contains(target_module_id, local_name) {
+        return Err(EvalError::UnboundGlobal {
+            name: raw_name.to_string(),
+            span,
+        });
+    }
+
+    if !ctx.module_registry.is_construct_visible(
+        ctx.current_module,
+        target_module_id,
+        "defglobal",
+        local_name,
+    ) {
+        return Err(EvalError::NotVisible {
+            name: format!("?*{raw_name}*"),
+            construct_type: "defglobal".to_string(),
+            from_module: module_label(ctx, ctx.current_module),
+            owning_module: module_name.to_string(),
+            span,
+        });
     }
 
     ctx.globals
-        .get(local_name)
+        .get(target_module_id, local_name)
         .cloned()
         .ok_or_else(|| EvalError::UnboundGlobal {
             name: raw_name.to_string(),
@@ -549,6 +580,7 @@ fn resolve_qualified_global(
 fn dispatch_user_function(
     ctx: &mut EvalContext<'_>,
     func: &UserFunction,
+    fn_module: crate::modules::ModuleId,
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
@@ -608,11 +640,6 @@ fn dispatch_user_function(
     // recursive calls and calls to other user-defined functions work correctly.
     // The function body executes in the function's own module context so that
     // cross-module visibility is evaluated from the function's definition site.
-    let fn_module = ctx
-        .function_modules
-        .get(&func.name)
-        .copied()
-        .unwrap_or(ctx.current_module);
     let mut result = Value::Void;
     {
         let mut inner_ctx = EvalContext {
@@ -630,7 +657,7 @@ fn dispatch_user_function(
             global_modules: ctx.global_modules,
             generic_modules: ctx.generic_modules,
             method_chain: None,
-            input_buffer: None,
+            input_buffer: ctx.input_buffer.as_deref_mut(),
         };
         for body_expr in &body_exprs {
             result = eval(&mut inner_ctx, body_expr)?;
@@ -827,6 +854,7 @@ fn method_applicable(method: &crate::functions::RegisteredMethod, arg_values: &[
 fn dispatch_generic(
     ctx: &mut EvalContext<'_>,
     generic: &GenericFunction,
+    generic_module: crate::modules::ModuleId,
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
@@ -865,6 +893,7 @@ fn dispatch_generic(
     // Build the dispatch chain for call-next-method support.
     let chain = MethodChain {
         generic_name: generic.name.clone(),
+        generic_module,
         applicable_methods: applicable,
         current_index: 0,
         arg_values: arg_values.clone(),
@@ -889,11 +918,6 @@ fn dispatch_generic(
 
     // Evaluate body expressions sequentially in the method's binding frame.
     // The method body executes in the generic's own module context.
-    let generic_module = ctx
-        .generic_modules
-        .get(&generic.name)
-        .copied()
-        .unwrap_or(ctx.current_module);
     let mut result = Value::Void;
     {
         let mut inner_ctx = EvalContext {
@@ -911,7 +935,7 @@ fn dispatch_generic(
             global_modules: ctx.global_modules,
             generic_modules: ctx.generic_modules,
             method_chain: Some(chain),
-            input_buffer: None,
+            input_buffer: ctx.input_buffer.as_deref_mut(),
         };
         for expr in &body_exprs {
             result = eval(&mut inner_ctx, expr)?;
@@ -987,14 +1011,9 @@ fn dispatch_call_next_method(
     }
 
     // Execute next method body with updated chain position.
-    let generic_module = ctx
-        .generic_modules
-        .get(&chain.generic_name)
-        .copied()
-        .unwrap_or(ctx.current_module);
-
     let next_chain = MethodChain {
         generic_name: chain.generic_name.clone(),
+        generic_module: chain.generic_module,
         applicable_methods: chain.applicable_methods.clone(),
         current_index: next_index,
         arg_values: chain.arg_values.clone(),
@@ -1011,13 +1030,13 @@ fn dispatch_call_next_method(
             globals: ctx.globals,
             generics: ctx.generics,
             call_depth: ctx.call_depth + 1,
-            current_module: generic_module,
+            current_module: chain.generic_module,
             module_registry: ctx.module_registry,
             function_modules: ctx.function_modules,
             global_modules: ctx.global_modules,
             generic_modules: ctx.generic_modules,
             method_chain: Some(next_chain),
-            input_buffer: None,
+            input_buffer: ctx.input_buffer.as_deref_mut(),
         };
         for expr in &body_exprs {
             result = eval(&mut inner_ctx, expr)?;
@@ -1499,7 +1518,92 @@ fn dispatch_bind(
         RuntimeExpr::GlobalVar { name, .. } => {
             let name = name.clone();
             let value = eval(ctx, &args[1])?;
-            ctx.globals.set(&name, value.clone());
+            let target_module = if name.contains("::") {
+                let qualified =
+                    parse_qualified_name(&name).map_err(|msg| EvalError::TypeError {
+                        function: "bind".to_string(),
+                        expected: "valid MODULE::name form".to_string(),
+                        actual: msg,
+                        span: span.cloned(),
+                    })?;
+                let (module_name, local_name) = match &qualified {
+                    QualifiedName::Qualified { module, name } => (module.as_str(), name.as_str()),
+                    QualifiedName::Unqualified(_) => {
+                        return Err(EvalError::UnboundGlobal {
+                            name,
+                            span: span.cloned(),
+                        })
+                    }
+                };
+                let module_id = ctx
+                    .module_registry
+                    .get_by_name(module_name)
+                    .ok_or_else(|| EvalError::TypeError {
+                        function: "bind".to_string(),
+                        expected: format!("existing module `{module_name}`"),
+                        actual: "unknown module".to_string(),
+                        span: span.cloned(),
+                    })?;
+                if !ctx.globals.contains(module_id, local_name) {
+                    return Err(EvalError::UnboundGlobal {
+                        name,
+                        span: span.cloned(),
+                    });
+                }
+                if !ctx.module_registry.is_construct_visible(
+                    ctx.current_module,
+                    module_id,
+                    "defglobal",
+                    local_name,
+                ) {
+                    return Err(EvalError::NotVisible {
+                        name: format!("?*{name}*"),
+                        construct_type: "defglobal".to_string(),
+                        from_module: module_label(ctx, ctx.current_module),
+                        owning_module: module_name.to_string(),
+                        span: span.cloned(),
+                    });
+                }
+                module_id
+            } else if ctx.globals.contains(ctx.current_module, &name) {
+                ctx.current_module
+            } else {
+                let all_modules = sorted_dedup_modules(ctx.globals.modules_for_name(&name));
+                if all_modules.is_empty() {
+                    return Err(EvalError::UnboundGlobal {
+                        name,
+                        span: span.cloned(),
+                    });
+                }
+                let visible = visible_modules_for_construct(ctx, &all_modules, "defglobal", &name);
+                match visible.as_slice() {
+                    [module_id] => *module_id,
+                    [] => {
+                        return Err(EvalError::NotVisible {
+                            name: format!("?*{name}*"),
+                            construct_type: "defglobal".to_string(),
+                            from_module: module_label(ctx, ctx.current_module),
+                            owning_module: module_label(ctx, all_modules[0]),
+                            span: span.cloned(),
+                        })
+                    }
+                    _ => {
+                        return Err(EvalError::TypeError {
+                            function: "bind".to_string(),
+                            expected: "unambiguous global reference".to_string(),
+                            actual: "multiple visible globals; use MODULE::name".to_string(),
+                            span: span.cloned(),
+                        })
+                    }
+                }
+            };
+
+            let local_name = if let Some((_, local_name)) = name.split_once("::") {
+                local_name
+            } else {
+                name.as_str()
+            };
+            ctx.globals.set(target_module, local_name, value.clone());
             Ok(value)
         }
         _ => Err(EvalError::TypeError {
@@ -3091,7 +3195,7 @@ mod tests {
         GlobalStore,
         GenericRegistry,
         crate::modules::ModuleRegistry,
-        std::collections::HashMap<String, crate::modules::ModuleId>,
+        std::collections::HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
     ) {
         let symbol_table = SymbolTable::new();
         let var_map = VarMap::new();
@@ -3101,8 +3205,10 @@ mod tests {
         let globals = GlobalStore::new();
         let generics = GenericRegistry::new();
         let module_registry = crate::modules::ModuleRegistry::new();
-        let empty_modules: std::collections::HashMap<String, crate::modules::ModuleId> =
-            std::collections::HashMap::new();
+        let empty_modules: std::collections::HashMap<
+            (crate::modules::ModuleId, String),
+            crate::modules::ModuleId,
+        > = std::collections::HashMap::new();
         (
             symbol_table,
             var_map,
@@ -3331,7 +3437,7 @@ mod tests {
     #[test]
     fn eval_global_variable_returns_value_when_set() {
         let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
-        gs.set("count", Value::Integer(42));
+        gs.set(mr.main_module_id(), "count", Value::Integer(42));
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
@@ -3365,8 +3471,9 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn bind_sets_global_variable() {
+    fn bind_sets_existing_global_variable() {
         let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        gs.set(mr.main_module_id(), "x", Value::Integer(0));
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
@@ -3398,7 +3505,7 @@ mod tests {
         assert!(result.structural_eq(&Value::Integer(99)));
         assert!(ctx
             .globals
-            .get("x")
+            .get(mr.main_module_id(), "x")
             .unwrap()
             .structural_eq(&Value::Integer(99)));
     }
@@ -3469,7 +3576,7 @@ mod tests {
     #[test]
     fn user_function_simple_call() {
         let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(make_double_func());
+        fenv.register(mr.main_module_id(), make_double_func());
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
@@ -3511,7 +3618,7 @@ mod tests {
             )],
         };
         let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(func);
+        fenv.register(mr.main_module_id(), func);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
@@ -3537,7 +3644,7 @@ mod tests {
     #[test]
     fn user_function_wrong_arity_returns_error() {
         let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(make_double_func());
+        fenv.register(mr.main_module_id(), make_double_func());
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
@@ -3574,7 +3681,7 @@ mod tests {
             )],
         };
         let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(func);
+        fenv.register(mr.main_module_id(), func);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
@@ -3617,7 +3724,7 @@ mod tests {
         };
         let (mut st, vm, bs, mut cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
         cfg.max_call_depth = 10; // Low limit for the test
-        fenv.register(func);
+        fenv.register(mr.main_module_id(), func);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
@@ -3662,7 +3769,7 @@ mod tests {
             )],
         };
         let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(func);
+        fenv.register(mr.main_module_id(), func);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
@@ -3711,8 +3818,8 @@ mod tests {
             )],
         };
         let (mut st, vm, bs, cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
-        fenv.register(double);
-        fenv.register(quadruple);
+        fenv.register(mr.main_module_id(), double);
+        fenv.register(mr.main_module_id(), quadruple);
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,

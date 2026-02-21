@@ -1269,7 +1269,10 @@ mod tests {
         load_ok(&mut engine, "(defgeneric describe)");
         // The generic is registered; calling it from a rule should give NoApplicableMethod.
         // Here we just verify loading doesn't panic.
-        assert!(engine.generics.get("describe").is_some());
+        assert!(engine
+            .generics
+            .get(engine.module_registry.main_module_id(), "describe")
+            .is_some());
     }
 
     #[test]

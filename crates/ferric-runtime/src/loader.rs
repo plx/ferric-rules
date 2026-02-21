@@ -260,9 +260,10 @@ impl Engine {
                         deffacts_constructs.push(facts);
                     }
                     Construct::Function(func) => {
+                        let owning_module = self.module_registry.current_module();
                         // Conflict check: a deffunction cannot share a name with
                         // an existing defgeneric (or vice versa).
-                        if self.generics.contains(&func.name) {
+                        if self.generics.contains(owning_module, &func.name) {
                             errors.push(Self::construct_conflict_error(
                                 "deffunction",
                                 "defgeneric",
@@ -271,24 +272,26 @@ impl Engine {
                             ));
                             continue;
                         }
-                        // Record the owning module before registering.
-                        let owning_module = self.module_registry.current_module();
                         self.function_modules
-                            .insert(func.name.clone(), owning_module);
+                            .insert((owning_module, func.name.clone()), owning_module);
                         // Register in the function environment for runtime use.
-                        self.functions.register(UserFunction {
-                            name: func.name.clone(),
-                            parameters: func.parameters.clone(),
-                            wildcard_parameter: func.wildcard_parameter.clone(),
-                            body: func.body.clone(),
-                        });
+                        self.functions.register(
+                            owning_module,
+                            UserFunction {
+                                name: func.name.clone(),
+                                parameters: func.parameters.clone(),
+                                wildcard_parameter: func.wildcard_parameter.clone(),
+                                body: func.body.clone(),
+                            },
+                        );
                         result.functions.push(func);
                     }
                     Construct::Global(global) => {
                         // Record the owning module for each global defined in this construct.
                         let owning_module = self.module_registry.current_module();
                         for def in &global.globals {
-                            self.global_modules.insert(def.name.clone(), owning_module);
+                            self.global_modules
+                                .insert((owning_module, def.name.clone()), owning_module);
                         }
                         // Evaluate initial values and store in the global store.
                         if let Err(e) = self.process_global_construct(&global) {
@@ -310,13 +313,14 @@ impl Engine {
                         result.modules.push(module);
                     }
                     Construct::Generic(generic) => {
-                        if self.generics.contains(&generic.name) {
+                        let owning_module = self.module_registry.current_module();
+                        if self.generics.contains(owning_module, &generic.name) {
                             errors.push(Self::duplicate_definition_error(
                                 "defgeneric",
                                 &generic.name,
                                 &generic.span,
                             ));
-                        } else if self.functions.contains(&generic.name) {
+                        } else if self.functions.contains(owning_module, &generic.name) {
                             // Conflict check: a defgeneric cannot share a name with
                             // an existing deffunction.
                             errors.push(Self::construct_conflict_error(
@@ -326,20 +330,19 @@ impl Engine {
                                 &generic.span,
                             ));
                         } else {
-                            // Record the owning module for this generic.
-                            let owning_module = self.module_registry.current_module();
                             self.generic_modules
-                                .insert(generic.name.clone(), owning_module);
+                                .insert((owning_module, generic.name.clone()), owning_module);
                             // Register the generic function declaration.
-                            self.generics.register_generic(&generic.name);
+                            self.generics.register_generic(owning_module, &generic.name);
                             result.generics.push(generic);
                         }
                     }
                     Construct::Method(method) => {
+                        let owning_module = self.module_registry.current_module();
                         // Conflict check: a defmethod that would auto-create a
                         // generic cannot share a name with an existing deffunction.
-                        if !self.generics.contains(&method.name)
-                            && self.functions.contains(&method.name)
+                        if !self.generics.contains(owning_module, &method.name)
+                            && self.functions.contains(owning_module, &method.name)
                         {
                             errors.push(Self::construct_conflict_error(
                                 "defmethod",
@@ -350,7 +353,10 @@ impl Engine {
                             continue;
                         }
                         if let Some(index) = method.index {
-                            if self.generics.has_method_index(&method.name, index) {
+                            if self
+                                .generics
+                                .has_method_index(owning_module, &method.name, index)
+                            {
                                 errors.push(Self::duplicate_method_index_error(
                                     &method.name,
                                     index,
@@ -361,10 +367,12 @@ impl Engine {
                         }
                         // Auto-create the generic module entry if it doesn't exist yet
                         // (a defmethod with no preceding defgeneric auto-creates the generic).
-                        if !self.generic_modules.contains_key(&method.name) {
-                            let owning_module = self.module_registry.current_module();
+                        if !self
+                            .generic_modules
+                            .contains_key(&(owning_module, method.name.clone()))
+                        {
                             self.generic_modules
-                                .insert(method.name.clone(), owning_module);
+                                .insert((owning_module, method.name.clone()), owning_module);
                         }
                         // Register the method in the generic registry.
                         // Extract parameter names and type restrictions from MethodParameter structs.
@@ -376,6 +384,7 @@ impl Engine {
                             .map(|p| p.type_restrictions.clone())
                             .collect();
                         self.generics.register_method(
+                            owning_module,
                             &method.name,
                             method.index,
                             param_names,
@@ -644,9 +653,12 @@ impl Engine {
     /// Process a `GlobalConstruct`: evaluate each initial value expression and
     /// register it in both the active global store and the snapshot used for reset.
     fn process_global_construct(&mut self, global: &GlobalConstruct) -> Result<(), LoadError> {
+        let current_module = self.module_registry.current_module();
         let mut seen_in_construct = HashSet::new();
         for def in &global.globals {
-            if !seen_in_construct.insert(def.name.clone()) || self.globals.contains(&def.name) {
+            if !seen_in_construct.insert(def.name.clone())
+                || self.globals.contains(current_module, &def.name)
+            {
                 return Err(Self::duplicate_definition_error(
                     "defglobal",
                     &def.name,
@@ -692,8 +704,9 @@ impl Engine {
                     .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
             };
 
-            self.globals.set(&def.name, value.clone());
-            self.registered_globals.push((def.name.clone(), value));
+            self.globals.set(current_module, &def.name, value.clone());
+            self.registered_globals
+                .push((current_module, def.name.clone(), value));
         }
         Ok(())
     }

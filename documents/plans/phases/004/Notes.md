@@ -69,7 +69,7 @@
 
 ### What was done
 - Added `dispatch_qualified_call()` function to evaluator.rs for resolving `MODULE::name` function/generic calls
-- Added `resolve_qualified_global()` function to evaluator.rs for resolving `MODULE::?*name*` global references
+- Added `resolve_qualified_global()` function to evaluator.rs for resolving `?*MODULE::name*` global references
 - Early `if name.contains("::")` guard in Call arm prevents qualified names from reaching `dispatch_builtin` (MAIN::+ does NOT resolve to builtin +)
 - Qualified calls validate: module exists, function belongs to stated module, visibility from caller's module
 - Added 5 new integration tests covering: qualified resolution, unknown module, wrong module, not-visible, generic resolution
@@ -199,7 +199,7 @@
 - **`format` is evaluator-only**: Channel parameter is accepted but ignored for output (evaluator has no router access). Returns formatted string. `(format nil "..." args)` and `(format t "..." args)` both return the string without printing.
 - **`read`/`readline` use VecDeque input buffer**: `Engine::push_input()` queues lines. `read` pops front, parses first whitespace-delimited token as typed value (integer → float → quoted string → symbol). `readline` pops front, returns whole line as STRING.
 - **EOF convention**: Both `read` and `readline` return `Symbol("EOF")` when no input available (or buffer is None).
-- **`reset`/`clear` are deferred actions**: Like `halt`, they set a flag during action execution. The engine checks the flag after the current activation completes. `reset` calls `Engine::reset()` then continues the run loop. `clear` calls `Engine::clear()` and returns immediately (halts execution).
+- **`reset`/`clear` are deferred actions**: Like `halt`, they set a flag during action execution. The engine checks the flag after the current activation completes. Both `reset` and `clear` return from the current `run()` invocation after applying the requested operation.
 - **`reset` does not clear input buffer**: Input buffer is considered live I/O state, not working memory state. `clear` does clear it.
 
 ### Remaining TODOs
@@ -258,6 +258,30 @@
    - Type conversion: integer, float
    - String/Symbol: str-cat, sym-cat, str-length, sub-string
    - Multifield: create$, length$, nth$, member$, subsetp
+
+## Remediation Addendum (Post-Review)
+
+### What changed
+- Construct registries were made module-scoped: `deffunction`, `defglobal`, and `defgeneric` are keyed by `(ModuleId, local-name)` instead of unqualified name.
+- Loader conflict checks were made module-aware, allowing same local names across different modules.
+- Qualified global syntax is now lexer-supported as `?*MODULE::name*`.
+- Evaluator resolution now handles:
+  - exact module-qualified lookup,
+  - caller-module-first unqualified lookup,
+  - visibility enforcement for reads and writes,
+  - ambiguity diagnostics when multiple visible constructs share a local name.
+- `bind` now rejects undeclared globals and enforces visibility/ownership rules.
+- Nested deffunction/defmethod/call-next-method frames now propagate `read`/`readline` input buffer access.
+- Default `max_call_depth` was reduced to 64 to ensure recursion-limit errors are raised before stack overflow in default test-thread stack sizes.
+
+### Validation snapshot
+- `cargo test -p ferric-parser`: pass
+- `cargo test -p ferric-runtime`: pass
+- Added new Phase 4 integration coverage for:
+  - qualified global reads,
+  - bind undeclared/not-visible failures,
+  - same-name callable/global coexistence across modules,
+  - unqualified ambiguity diagnostics.
    - I/O: printout, format, read, readline
    - Agenda: run, halt, focus, get-focus, get-focus-stack, list-focus-stack, agenda
    - Environment: reset, clear

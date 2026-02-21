@@ -23,7 +23,7 @@ impl EngineConfig {
         Self {
             string_encoding: StringEncoding::Ascii,
             strategy: ConflictResolutionStrategy::default(),
-            max_call_depth: 256,
+            max_call_depth: 64,
         }
     }
 
@@ -33,7 +33,7 @@ impl EngineConfig {
         Self {
             string_encoding: StringEncoding::Utf8,
             strategy: ConflictResolutionStrategy::default(),
-            max_call_depth: 256,
+            max_call_depth: 64,
         }
     }
 
@@ -43,7 +43,7 @@ impl EngineConfig {
         Self {
             string_encoding: StringEncoding::AsciiSymbolsUtf8Strings,
             strategy: ConflictResolutionStrategy::default(),
-            max_call_depth: 256,
+            max_call_depth: 64,
         }
     }
 
@@ -66,7 +66,7 @@ impl From<StringEncoding> for EngineConfig {
         Self {
             string_encoding,
             strategy: ConflictResolutionStrategy::default(),
-            max_call_depth: 256,
+            max_call_depth: 64,
         }
     }
 }

@@ -3081,6 +3081,22 @@ mod tests {
     }
 
     #[test]
+    fn interpret_deffunction_qualified_global_reference() {
+        let result = interpret_source_inner("(deffunction get-threshold () ?*CONFIG::threshold*)");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.constructs[0] {
+            Construct::Function(func) => {
+                assert_eq!(func.body.len(), 1);
+                assert!(matches!(
+                    &func.body[0],
+                    ActionExpr::GlobalVariable(name, _) if name == "CONFIG::threshold"
+                ));
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn interpret_deffunction_missing_name_errors() {
         let result = interpret_source_inner("(deffunction)");
         assert!(!result.errors.is_empty());

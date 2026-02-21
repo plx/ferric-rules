@@ -293,10 +293,22 @@ impl<'a> Lexer<'a> {
         if self.chars.peek().map(|&(_, ch)| ch) == Some('*') {
             self.advance(); // consume *
             let mut name = String::new();
+            let mut saw_module_separator = false;
             while let Some(&(_, ch)) = self.chars.peek() {
                 if ch == '*' {
                     self.advance();
                     break;
+                } else if ch == ':'
+                    && !saw_module_separator
+                    && self.peek_ahead(1) == Some(':')
+                    && !name.is_empty()
+                    && self.peek_ahead(2).is_some_and(is_symbol_char)
+                {
+                    saw_module_separator = true;
+                    name.push(':');
+                    self.advance(); // consume first ':'
+                    name.push(':');
+                    self.advance(); // consume second ':'
                 } else if is_symbol_char(ch) {
                     name.push(ch);
                     self.advance();
@@ -638,6 +650,16 @@ mod tests {
         let tokens = lex("?*global*", file()).unwrap();
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].token, Token::GlobalVar(ref s) if s == "global"));
+    }
+
+    #[test]
+    fn lex_global_var_module_qualified() {
+        let tokens = lex("?*CONFIG::threshold*", file()).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(
+            tokens[0].token,
+            Token::GlobalVar(ref s) if s == "CONFIG::threshold"
+        ));
     }
 
     #[test]

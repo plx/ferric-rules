@@ -252,6 +252,166 @@ fn no_silent_fallback_to_builtin() {
     );
 }
 
+#[test]
+fn qualified_global_reference_resolves() {
+    let mut engine = new_utf8_engine();
+    let source = r"
+(defmodule CONFIG (export defglobal ?ALL))
+(defglobal ?*threshold* = 100)
+
+(defmodule MAIN (import CONFIG defglobal ?ALL))
+(defrule test-global (go) => (printout t ?*CONFIG::threshold* crlf))
+(deffacts startup (go))
+";
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert_eq!(output.trim(), "100");
+}
+
+#[test]
+fn qualified_global_reference_not_visible() {
+    let mut engine = new_utf8_engine();
+    let source = r"
+(defmodule CONFIG (export ?NONE))
+(defglobal ?*threshold* = 100)
+
+(defmodule MAIN)
+(defrule test-global (go) => (printout t ?*CONFIG::threshold* crlf))
+(deffacts startup (go))
+";
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    let _result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+    let diagnostics = engine.action_diagnostics();
+    assert!(
+        diagnostics.iter().any(|d| {
+            let msg = format!("{d}");
+            msg.contains("not visible")
+                || msg.contains("not accessible")
+                || msg.contains("NotVisible")
+        }),
+        "expected visibility error for qualified global, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn bind_rejects_undeclared_global() {
+    let mut engine = new_utf8_engine();
+    let source = r"
+(defrule test-bind (go) => (bind ?*missing* 1))
+(deffacts startup (go))
+";
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    let _result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+    let diagnostics = engine.action_diagnostics();
+    assert!(
+        diagnostics.iter().any(|d| format!("{d}")
+            .to_ascii_lowercase()
+            .contains("unbound global")),
+        "expected unbound-global error for bind to undeclared global, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn bind_respects_qualified_global_visibility() {
+    let mut engine = new_utf8_engine();
+    let source = r"
+(defmodule CONFIG (export ?NONE))
+(defglobal ?*counter* = 0)
+
+(defmodule MAIN)
+(defrule test-bind (go) => (bind ?*CONFIG::counter* 10))
+(deffacts startup (go))
+";
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    let _result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+    let diagnostics = engine.action_diagnostics();
+    assert!(
+        diagnostics.iter().any(|d| {
+            let msg = format!("{d}");
+            msg.contains("not visible")
+                || msg.contains("not accessible")
+                || msg.contains("NotVisible")
+        }),
+        "expected visibility error for bind to qualified global, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn same_name_functions_can_coexist_across_modules() {
+    let mut engine = new_utf8_engine();
+    let source = r#"
+(defmodule A (export deffunction ?ALL))
+(deffunction f () 1)
+
+(defmodule B (export deffunction ?ALL))
+(deffunction f () 2)
+
+(defmodule MAIN (import A deffunction ?ALL) (import B deffunction ?ALL))
+(defrule test-call (go) => (printout t (A::f) " " (B::f) crlf))
+(deffacts startup (go))
+"#;
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert_eq!(output.trim(), "1 2");
+}
+
+#[test]
+fn unqualified_function_call_is_ambiguous_when_multiple_visible() {
+    let mut engine = new_utf8_engine();
+    let source = r"
+(defmodule A (export deffunction ?ALL))
+(deffunction f () 1)
+
+(defmodule B (export deffunction ?ALL))
+(deffunction f () 2)
+
+(defmodule MAIN (import A deffunction ?ALL) (import B deffunction ?ALL))
+(defrule test-call (go) => (printout t (f) crlf))
+(deffacts startup (go))
+";
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    let _result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+    let diagnostics = engine.action_diagnostics();
+    assert!(
+        diagnostics.iter().any(|d| {
+            let msg = format!("{d}");
+            msg.to_ascii_lowercase()
+                .contains("multiple visible deffunctions")
+                || msg.to_ascii_lowercase().contains("unambiguous")
+        }),
+        "expected ambiguity diagnostic for unqualified f(), got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn same_name_globals_can_coexist_across_modules() {
+    let mut engine = new_utf8_engine();
+    let source = r#"
+(defmodule A (export defglobal ?ALL))
+(defglobal ?*g* = 1)
+
+(defmodule B (export defglobal ?ALL))
+(defglobal ?*g* = 2)
+
+(defmodule MAIN (import A defglobal ?ALL) (import B defglobal ?ALL))
+(defrule test-global (go) => (printout t ?*A::g* " " ?*B::g* crlf))
+(deffacts startup (go))
+"#;
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert_eq!(output.trim(), "1 2");
+}
+
 // ===========================================================================
 // Cross-module function/global visibility (pass 003)
 // ===========================================================================
