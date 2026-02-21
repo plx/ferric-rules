@@ -33,12 +33,23 @@
 //! - `forall` CE: limited subset (single condition + single then-clause),
 //!   desugared to NCC, vacuous truth, initial-fact support (Pass 010).
 //!
-//! ## Phase 3 known limitations
+//! ## Phase 4 complete
 //!
-//! - Module-qualified names (e.g., `MAIN::template`) not yet supported.
+//! - Module-qualified `MODULE::name` resolution for callables and globals.
+//! - Cross-module `deffunction`/`defglobal` visibility enforcement.
+//! - `deffunction`/`defgeneric` same-name conflict diagnostics.
+//! - CLIPS-style generic specificity ranking and `call-next-method`.
+//! - Full Section 10.2 builtin surface: predicate/math/type, string/symbol,
+//!   multifield, I/O (`format`, `read`, `readline`), environment (`reset`,
+//!   `clear`), agenda/focus query functions.
+//!
+//! ## Known limitations
+//!
 //! - `forall` limited to single condition + single then-clause.
 //! - No truth maintenance / logical support.
 //! - `defclass`/`definstances`/`defmessage-handler` not implemented.
+//! - `if`/`then`/`else` expression form not supported.
+//! - `sub-string` uses byte indices (not Unicode codepoints).
 
 pub mod actions;
 pub mod config;
@@ -48,6 +59,7 @@ pub mod execution;
 pub mod functions;
 pub mod loader;
 pub mod modules;
+pub mod qualified_name;
 pub mod router;
 pub(crate) mod templates;
 
@@ -57,6 +69,8 @@ mod integration_tests;
 mod phase2_integration_tests;
 #[cfg(test)]
 mod phase3_integration_tests;
+#[cfg(test)]
+mod phase4_integration_tests;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
@@ -74,6 +88,7 @@ pub use execution::{FiredRule, HaltReason, RunLimit, RunResult};
 pub use functions::{FunctionEnv, GenericRegistry, GlobalStore};
 pub use loader::{LoadError, LoadResult, RuleDef};
 pub use modules::{ModuleId, ModuleRegistry};
+pub use qualified_name::{parse_qualified_name, QualifiedName};
 
 // Re-export Stage 2 AST types for working with loaded constructs
 pub use ferric_parser::{

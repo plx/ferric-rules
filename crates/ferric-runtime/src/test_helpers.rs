@@ -481,3 +481,161 @@ pub fn assert_unsupported_form(engine: &mut Engine, source: &str, expected_form:
         other => panic!("expected UnsupportedForm error for `{expected_form}`, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4: Module-qualified name and visibility helpers
+// ---------------------------------------------------------------------------
+
+/// Load source and assert it fails, returning the error messages as strings.
+#[allow(dead_code)]
+pub fn load_err_messages(engine: &mut Engine, source: &str) -> Vec<String> {
+    let errors = load_err(engine, source);
+    errors.iter().map(|e| format!("{e}")).collect()
+}
+
+/// Assert that loading source produces an error containing the given substring.
+#[allow(dead_code)]
+pub fn assert_load_error_contains(engine: &mut Engine, source: &str, expected_substring: &str) {
+    let errors = load_err(engine, source);
+    let messages: Vec<String> = errors.iter().map(|e| format!("{e}")).collect();
+    assert!(
+        messages.iter().any(|m| m.contains(expected_substring)),
+        "expected error containing `{expected_substring}`, got: {messages:?}"
+    );
+}
+
+/// Load source, run to completion, and return captured output for a channel.
+#[allow(dead_code)]
+pub fn load_run_output(engine: &mut Engine, source: &str, channel: &str) -> String {
+    load_ok(engine, source);
+    run_to_completion(engine);
+    engine.get_output(channel).unwrap_or("").to_string()
+}
+
+/// Load source, run to completion, and return the stdout output (alias for "t" channel).
+#[allow(dead_code)]
+pub fn load_run_stdout(engine: &mut Engine, source: &str) -> String {
+    load_run_output(engine, source, "t")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: Evaluator/expression test helpers
+// ---------------------------------------------------------------------------
+
+/// Load a deffunction and a rule that calls it, run, and return the output.
+///
+/// The rule asserts `(go)`, the function is called in RHS via printout.
+/// Returns the captured "t" channel output.
+#[allow(dead_code)]
+pub fn eval_function_via_rule(
+    engine: &mut Engine,
+    function_source: &str,
+    call_expr: &str,
+) -> String {
+    let source = format!(
+        r"
+{function_source}
+(defrule test-call
+    (go)
+    =>
+    (printout t {call_expr} crlf))
+(deffacts startup (go))
+"
+    );
+    load_ok(engine, &source);
+    engine.reset().expect("reset should succeed");
+    run_to_completion(engine);
+    engine.get_output("t").unwrap_or("").to_string()
+}
+
+/// Evaluate an expression by embedding it in printout and capturing the output.
+///
+/// Wraps the expression in a rule RHS that prints the result.
+/// Returns the captured "t" channel output (trimmed of trailing newline).
+#[allow(dead_code)]
+pub fn eval_expr_via_printout(engine: &mut Engine, expr: &str) -> String {
+    let source = format!(
+        r"
+(defrule eval-test
+    (go)
+    =>
+    (printout t {expr} crlf))
+(deffacts startup (go))
+"
+    );
+    load_ok(engine, &source);
+    engine.reset().expect("reset should succeed");
+    run_to_completion(engine);
+    let output = engine.get_output("t").unwrap_or("");
+    output.trim_end_matches('\n').to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: Generic dispatch test helpers
+// ---------------------------------------------------------------------------
+
+/// Assert that calling a generic function with given arguments produces the
+/// expected output value (printed to "t" channel).
+#[allow(dead_code)]
+pub fn assert_generic_dispatch_output(
+    engine: &mut Engine,
+    generic_source: &str,
+    call_expr: &str,
+    expected_output: &str,
+) {
+    let source = format!(
+        r"
+{generic_source}
+(defrule test-generic
+    (go)
+    =>
+    (printout t {call_expr} crlf))
+(deffacts startup (go))
+"
+    );
+    load_ok(engine, &source);
+    engine.reset().expect("reset should succeed");
+    run_to_completion(engine);
+    let output = engine.get_output("t").unwrap_or("").trim_end_matches('\n');
+    assert_eq!(
+        output, expected_output,
+        "generic dispatch output mismatch for `{call_expr}`"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: Fact inspection helpers
+// ---------------------------------------------------------------------------
+
+/// Find all template facts for a given template name and return their slot maps.
+#[allow(dead_code)]
+pub fn find_template_facts(
+    engine: &Engine,
+    template_name: &str,
+) -> Vec<Vec<(String, ferric_core::Value)>> {
+    let Some(template_id) = engine.template_ids.get(template_name) else {
+        return Vec::new();
+    };
+    engine
+        .facts()
+        .unwrap()
+        .filter_map(|(_fid, fact)| {
+            if let ferric_core::Fact::Template(tf) = fact {
+                if tf.template_id == *template_id {
+                    let mut slots: Vec<(String, ferric_core::Value)> = Vec::new();
+                    if let Some(def) = engine.template_defs.get(template_id) {
+                        for name in &def.slot_names {
+                            if let Some(&idx) = def.slot_index.get(name) {
+                                if let Some(val) = tf.slots.get(idx) {
+                                    slots.push((name.clone(), val.clone()));
+                                }
+                            }
+                        }
+                    }
+                    return Some(slots);
+                }
+            }
+            None
+        })
+        .collect()
+}

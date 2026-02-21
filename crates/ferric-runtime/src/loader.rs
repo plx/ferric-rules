@@ -21,6 +21,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use thiserror::Error;
 
+// Qualified name utilities: wired into construct loading in passes 003/004.
+#[allow(unused_imports)]
+use crate::qualified_name::{parse_qualified_name, QualifiedName};
+
 use ferric_core::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult, ConstantTest,
     ConstantTestType, FactId, FerricString, RuleId, SlotIndex, Value,
@@ -256,6 +260,21 @@ impl Engine {
                         deffacts_constructs.push(facts);
                     }
                     Construct::Function(func) => {
+                        // Conflict check: a deffunction cannot share a name with
+                        // an existing defgeneric (or vice versa).
+                        if self.generics.contains(&func.name) {
+                            errors.push(Self::construct_conflict_error(
+                                "deffunction",
+                                "defgeneric",
+                                &func.name,
+                                &func.span,
+                            ));
+                            continue;
+                        }
+                        // Record the owning module before registering.
+                        let owning_module = self.module_registry.current_module();
+                        self.function_modules
+                            .insert(func.name.clone(), owning_module);
                         // Register in the function environment for runtime use.
                         self.functions.register(UserFunction {
                             name: func.name.clone(),
@@ -266,6 +285,11 @@ impl Engine {
                         result.functions.push(func);
                     }
                     Construct::Global(global) => {
+                        // Record the owning module for each global defined in this construct.
+                        let owning_module = self.module_registry.current_module();
+                        for def in &global.globals {
+                            self.global_modules.insert(def.name.clone(), owning_module);
+                        }
                         // Evaluate initial values and store in the global store.
                         if let Err(e) = self.process_global_construct(&global) {
                             errors.push(e);
@@ -273,21 +297,17 @@ impl Engine {
                         result.globals.push(global);
                     }
                     Construct::Module(module) => {
-                        if self.module_registry.get_by_name(&module.name).is_some() {
-                            errors.push(Self::duplicate_definition_error(
-                                "defmodule",
-                                &module.name,
-                                &module.span,
-                            ));
-                        } else {
-                            let module_id = self.module_registry.register(
-                                &module.name,
-                                module.exports.clone(),
-                                module.imports.clone(),
-                            );
-                            self.module_registry.set_current_module(module_id);
-                            result.modules.push(module);
-                        }
+                        // Register the module (or update its exports/imports if it already
+                        // exists). Re-defining a module (including MAIN) is allowed in CLIPS
+                        // to set up imports and exports; only truly conflicting definitions
+                        // (handled elsewhere) are rejected.
+                        let module_id = self.module_registry.register(
+                            &module.name,
+                            module.exports.clone(),
+                            module.imports.clone(),
+                        );
+                        self.module_registry.set_current_module(module_id);
+                        result.modules.push(module);
                     }
                     Construct::Generic(generic) => {
                         if self.generics.contains(&generic.name) {
@@ -296,13 +316,39 @@ impl Engine {
                                 &generic.name,
                                 &generic.span,
                             ));
+                        } else if self.functions.contains(&generic.name) {
+                            // Conflict check: a defgeneric cannot share a name with
+                            // an existing deffunction.
+                            errors.push(Self::construct_conflict_error(
+                                "defgeneric",
+                                "deffunction",
+                                &generic.name,
+                                &generic.span,
+                            ));
                         } else {
+                            // Record the owning module for this generic.
+                            let owning_module = self.module_registry.current_module();
+                            self.generic_modules
+                                .insert(generic.name.clone(), owning_module);
                             // Register the generic function declaration.
                             self.generics.register_generic(&generic.name);
                             result.generics.push(generic);
                         }
                     }
                     Construct::Method(method) => {
+                        // Conflict check: a defmethod that would auto-create a
+                        // generic cannot share a name with an existing deffunction.
+                        if !self.generics.contains(&method.name)
+                            && self.functions.contains(&method.name)
+                        {
+                            errors.push(Self::construct_conflict_error(
+                                "defmethod",
+                                "deffunction",
+                                &method.name,
+                                &method.span,
+                            ));
+                            continue;
+                        }
                         if let Some(index) = method.index {
                             if self.generics.has_method_index(&method.name, index) {
                                 errors.push(Self::duplicate_method_index_error(
@@ -312,6 +358,13 @@ impl Engine {
                                 ));
                                 continue;
                             }
+                        }
+                        // Auto-create the generic module entry if it doesn't exist yet
+                        // (a defmethod with no preceding defgeneric auto-creates the generic).
+                        if !self.generic_modules.contains_key(&method.name) {
+                            let owning_module = self.module_registry.current_module();
+                            self.generic_modules
+                                .insert(method.name.clone(), owning_module);
                         }
                         // Register the method in the generic registry.
                         // Extract parameter names and type restrictions from MethodParameter structs.
@@ -627,6 +680,13 @@ impl Engine {
                     globals: &mut self.globals,
                     generics: &self.generics,
                     call_depth: 0,
+                    current_module: self.module_registry.current_module(),
+                    module_registry: &self.module_registry,
+                    function_modules: &self.function_modules,
+                    global_modules: &self.global_modules,
+                    generic_modules: &self.generic_modules,
+                    method_chain: None,
+                    input_buffer: None,
                 };
                 crate::evaluator::eval(&mut ctx, &runtime_expr)
                     .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
@@ -1268,6 +1328,18 @@ impl Engine {
     ) -> LoadError {
         LoadError::Compile(format!(
             "duplicate {construct} `{name}` at line {}, column {}",
+            span.start.line, span.start.column
+        ))
+    }
+
+    fn construct_conflict_error(
+        new_construct: &str,
+        existing_construct: &str,
+        name: &str,
+        span: &ferric_parser::Span,
+    ) -> LoadError {
+        LoadError::Compile(format!(
+            "cannot define {new_construct} `{name}`: a {existing_construct} with the same name already exists at line {}, column {}",
             span.start.line, span.start.column
         ))
     }
@@ -2065,24 +2137,145 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_defmodule_reports_source_location() {
+    fn duplicate_defmodule_is_allowed_as_update() {
+        // Re-defining a module updates its import/export specs rather than erroring.
+        // This follows CLIPS semantics where (defmodule MAIN (import X ...)) is a
+        // standard way to set up module visibility.
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine.load_str(
+            r"
+            (defmodule SENSOR)
+            (defmodule SENSOR (export ?ALL))
+        ",
+        );
+        assert!(
+            result.is_ok(),
+            "re-defining a module should succeed, got: {result:?}"
+        );
+        // Verify the module's exports were updated to the last definition.
+        let sensor_id = engine
+            .module_registry
+            .get_by_name("SENSOR")
+            .expect("SENSOR should be registered");
+        let sensor = engine
+            .module_registry
+            .get(sensor_id)
+            .expect("SENSOR module should be found");
+        assert!(
+            matches!(sensor.exports[0], ferric_parser::ModuleSpec::All),
+            "expected SENSOR to export ?ALL after re-definition"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 005: deffunction/defgeneric conflict diagnostics
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deffunction_then_defgeneric_same_name_errors() {
         let mut engine = Engine::new(EngineConfig::utf8());
         let errors = engine
             .load_str(
                 r"
-            (defmodule SENSOR)
-            (defmodule SENSOR)
+            (deffunction display (?x) ?x)
+            (defgeneric display)
         ",
             )
             .unwrap_err();
 
-        let has_duplicate_error = errors.iter().any(|e| {
-            matches!(e, LoadError::Compile(msg) if msg.contains("duplicate defmodule `SENSOR`") && msg.contains("line"))
+        let has_conflict = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg)
+                if msg.contains("cannot define defgeneric `display`")
+                    && msg.contains("deffunction with the same name"))
         });
         assert!(
-            has_duplicate_error,
-            "expected duplicate defmodule error with location, got: {errors:?}"
+            has_conflict,
+            "expected defgeneric/deffunction conflict error, got: {errors:?}"
         );
+    }
+
+    #[test]
+    fn defgeneric_then_deffunction_same_name_errors() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str(
+                r"
+            (defgeneric display)
+            (deffunction display (?x) ?x)
+        ",
+            )
+            .unwrap_err();
+
+        let has_conflict = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg)
+                if msg.contains("cannot define deffunction `display`")
+                    && msg.contains("defgeneric with the same name"))
+        });
+        assert!(
+            has_conflict,
+            "expected deffunction/defgeneric conflict error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn defmethod_autocreate_conflicts_with_deffunction() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let errors = engine
+            .load_str(
+                r"
+            (deffunction display (?x) ?x)
+            (defmethod display ((?x INTEGER)) ?x)
+        ",
+            )
+            .unwrap_err();
+
+        let has_conflict = errors.iter().any(|e| {
+            matches!(e, LoadError::Compile(msg)
+                if msg.contains("cannot define defmethod `display`")
+                    && msg.contains("deffunction with the same name"))
+        });
+        assert!(
+            has_conflict,
+            "expected defmethod/deffunction conflict error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn deffunction_and_defgeneric_different_names_ok() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str(
+                r"
+            (deffunction add-one (?x) (+ ?x 1))
+            (defgeneric display)
+            (defmethod display ((?x INTEGER)) ?x)
+        ",
+            )
+            .expect("different names should not conflict");
+
+        assert_eq!(result.functions.len(), 1);
+        assert_eq!(result.generics.len(), 1);
+        assert_eq!(result.methods.len(), 1);
+    }
+
+    #[test]
+    fn defmethod_with_existing_generic_not_conflicting_with_deffunction() {
+        // If a defgeneric already exists, a defmethod for that generic should
+        // succeed even if a deffunction with a different name exists.
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let result = engine
+            .load_str(
+                r"
+            (deffunction helper (?x) ?x)
+            (defgeneric display)
+            (defmethod display ((?x INTEGER)) ?x)
+        ",
+            )
+            .expect("defmethod for existing generic should succeed");
+
+        assert_eq!(result.functions.len(), 1);
+        assert_eq!(result.generics.len(), 1);
+        assert_eq!(result.methods.len(), 1);
     }
 
     #[test]

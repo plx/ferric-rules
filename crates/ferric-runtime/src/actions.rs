@@ -6,9 +6,10 @@
 //! - `modify`/`duplicate` support template-aware slot overrides (Pass 003).
 //! - `printout` with per-channel output capture via `OutputRouter` (Pass 004).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as FmtWrite;
 
+use ferric_core::beta::RuleId;
 use ferric_core::binding::VarMap;
 use ferric_core::token::Token;
 use ferric_core::{Fact, FactBase, FactId, ReteNetwork, Symbol, SymbolTable, TemplateId, Value};
@@ -65,10 +66,12 @@ pub enum ActionError {
 ///
 /// This is called with all the data needed pre-extracted to avoid borrow issues.
 ///
-/// Returns `(fired, errors)` where:
+/// Returns `(fired, reset_requested, clear_requested, errors)` where:
 /// - `fired` is `true` if test CE conditions all passed and actions were executed,
 ///   `false` if a test CE was falsy (actions are skipped and the rule is not
 ///   counted as having fired).
+/// - `reset_requested` is `true` if a `(reset)` action was executed.
+/// - `clear_requested` is `true` if a `(clear)` action was executed.
 /// - `errors` is a list of non-fatal action errors that occurred during execution.
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
 pub(crate) fn execute_actions(
@@ -86,8 +89,16 @@ pub(crate) fn execute_actions(
     focus_requests: &mut Vec<String>,
     generics: &GenericRegistry,
     module_registry: &ModuleRegistry,
-) -> (bool, Vec<ActionError>) {
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    input_buffer: &mut VecDeque<String>,
+    all_rule_info: &HashMap<RuleId, CompiledRuleInfo>,
+) -> (bool, bool, bool, Vec<ActionError>) {
     let mut errors = Vec::new();
+    let mut reset_requested = false;
+    let mut clear_requested = false;
 
     // Evaluate test conditions first — if any is falsy, skip all actions and
     // signal to the caller that the rule did NOT logically fire.
@@ -101,16 +112,23 @@ pub(crate) fn execute_actions(
             globals,
             generics,
             call_depth: 0,
+            current_module,
+            module_registry,
+            function_modules,
+            global_modules,
+            generic_modules,
+            method_chain: None,
+            input_buffer: Some(input_buffer),
         };
         match crate::evaluator::eval(&mut ctx, test_expr) {
             Ok(value) => {
                 if !crate::evaluator::is_truthy(&value, ctx.symbol_table) {
-                    return (false, errors); // Test CE falsy — rule did not fire
+                    return (false, false, false, errors); // Test CE falsy — rule did not fire
                 }
             }
             Err(e) => {
                 errors.push(ActionError::EvalError(format!("{e}")));
-                return (false, errors);
+                return (false, false, false, errors);
             }
         }
     }
@@ -121,6 +139,8 @@ pub(crate) fn execute_actions(
             rete,
             symbol_table,
             halted,
+            &mut reset_requested,
+            &mut clear_requested,
             config,
             token,
             rule_info,
@@ -132,20 +152,32 @@ pub(crate) fn execute_actions(
             focus_requests,
             generics,
             module_registry,
+            current_module,
+            function_modules,
+            global_modules,
+            generic_modules,
+            input_buffer,
+            all_rule_info,
         ) {
             errors.push(e);
         }
+        // Stop executing further actions if clear/reset was requested.
+        if clear_requested || reset_requested {
+            break;
+        }
     }
 
-    (true, errors)
+    (true, reset_requested, clear_requested, errors)
 }
 
-#[allow(clippy::too_many_arguments)] // Context requires all these parameters
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Context requires all these parameters
 fn execute_single_action(
     fact_base: &mut FactBase,
     rete: &mut ReteNetwork,
     symbol_table: &mut SymbolTable,
     halted: &mut bool,
+    reset_requested: &mut bool,
+    clear_requested: &mut bool,
     config: &EngineConfig,
     token: &Token,
     rule_info: &CompiledRuleInfo,
@@ -157,6 +189,12 @@ fn execute_single_action(
     focus_requests: &mut Vec<String>,
     generics: &GenericRegistry,
     module_registry: &ModuleRegistry,
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    input_buffer: &mut VecDeque<String>,
+    all_rule_info: &HashMap<RuleId, CompiledRuleInfo>,
 ) -> Result<(), ActionError> {
     match call.name.as_str() {
         "assert" => execute_assert(
@@ -170,6 +208,12 @@ fn execute_single_action(
             functions,
             globals,
             generics,
+            current_module,
+            function_modules,
+            global_modules,
+            generic_modules,
+            module_registry,
+            input_buffer,
         ),
         "retract" => execute_retract(fact_base, rete, token, rule_info, &call.args),
         "modify" => execute_modify(
@@ -184,6 +228,12 @@ fn execute_single_action(
             functions,
             globals,
             generics,
+            current_module,
+            function_modules,
+            global_modules,
+            generic_modules,
+            module_registry,
+            input_buffer,
         ),
         "duplicate" => execute_duplicate(
             fact_base,
@@ -197,9 +247,23 @@ fn execute_single_action(
             functions,
             globals,
             generics,
+            current_module,
+            function_modules,
+            global_modules,
+            generic_modules,
+            module_registry,
+            input_buffer,
         ),
         "halt" => {
             *halted = true;
+            Ok(())
+        }
+        "reset" => {
+            *reset_requested = true;
+            Ok(())
+        }
+        "clear" => {
+            *clear_requested = true;
             Ok(())
         }
         "printout" => execute_printout(
@@ -212,6 +276,12 @@ fn execute_single_action(
             functions,
             globals,
             generics,
+            current_module,
+            function_modules,
+            global_modules,
+            generic_modules,
+            module_registry,
+            input_buffer,
         ),
         "focus" => execute_focus(
             symbol_table,
@@ -224,7 +294,19 @@ fn execute_single_action(
             globals,
             generics,
             module_registry,
+            current_module,
+            function_modules,
+            global_modules,
+            generic_modules,
+            input_buffer,
         ),
+        "list-focus-stack" => execute_list_focus_stack(router, module_registry),
+        "agenda" => execute_agenda(rete, router, all_rule_info),
+        "run" => {
+            // (run) from within a rule RHS is a no-op — the engine is already running.
+            // CLIPS allows this but it's unusual. We silently ignore it.
+            Ok(())
+        }
         // For any other call, try evaluating it as an expression (e.g., bind).
         _ => {
             let action_expr = ActionExpr::FunctionCall(call.clone());
@@ -237,6 +319,12 @@ fn execute_single_action(
                 functions,
                 globals,
                 generics,
+                current_module,
+                function_modules,
+                global_modules,
+                generic_modules,
+                module_registry,
+                input_buffer,
             )
             .map(|_| ())
             .map_err(|e| ActionError::UnknownAction(format!("{}: {e}", call.name)))
@@ -261,6 +349,11 @@ fn execute_focus(
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
     module_registry: &ModuleRegistry,
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    input_buffer: &mut VecDeque<String>,
 ) -> Result<(), ActionError> {
     for arg in args {
         let value = eval_expr(
@@ -272,6 +365,12 @@ fn execute_focus(
             functions,
             globals,
             generics,
+            current_module,
+            function_modules,
+            global_modules,
+            generic_modules,
+            module_registry,
+            input_buffer,
         )?;
         match value {
             Value::Symbol(sym) => {
@@ -294,6 +393,50 @@ fn execute_focus(
     Ok(())
 }
 
+/// Execute a `list-focus-stack` action: print the focus stack to the `t` channel.
+///
+/// Prints each module name on its own line, top of stack first.
+#[allow(clippy::unnecessary_wraps)] // Consistent with other action-handler return type
+fn execute_list_focus_stack(
+    router: &mut OutputRouter,
+    module_registry: &ModuleRegistry,
+) -> Result<(), ActionError> {
+    let stack = module_registry.focus_stack();
+    let mut output = String::new();
+    // Print top-first (reverse of internal order)
+    for &module_id in stack.iter().rev() {
+        let name = module_registry.module_name(module_id).unwrap_or("???");
+        output.push_str(name);
+        output.push('\n');
+    }
+    router.write("t", &output);
+    Ok(())
+}
+
+/// Execute an `agenda` action: print the current agenda to the `t` channel.
+///
+/// Format: one line per activation showing `salience rule-name`.
+/// When the agenda is empty, prints `(no activations)`.
+#[allow(clippy::unnecessary_wraps)] // Consistent with other action-handler return type
+fn execute_agenda(
+    rete: &ReteNetwork,
+    router: &mut OutputRouter,
+    all_rule_info: &HashMap<RuleId, CompiledRuleInfo>,
+) -> Result<(), ActionError> {
+    let mut output = String::new();
+    for activation in rete.agenda.iter_activations() {
+        let rule_name = all_rule_info
+            .get(&activation.rule)
+            .map_or("???", |info| info.name.as_str());
+        let _ = writeln!(output, "{} {rule_name}", activation.salience);
+    }
+    if output.is_empty() {
+        output.push_str("(no activations)\n");
+    }
+    router.write("t", &output);
+    Ok(())
+}
+
 /// Execute a `printout` action.
 ///
 /// The first argument is the channel name (typically `t`) and must be a literal.
@@ -310,6 +453,12 @@ fn execute_printout(
     functions: &FunctionEnv,
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    module_registry: &ModuleRegistry,
+    input_buffer: &mut VecDeque<String>,
 ) -> Result<(), ActionError> {
     if args.is_empty() {
         return Err(ActionError::EvalError(
@@ -343,6 +492,12 @@ fn execute_printout(
             functions,
             globals,
             generics,
+            current_module,
+            function_modules,
+            global_modules,
+            generic_modules,
+            module_registry,
+            input_buffer,
         )?;
         format_printout_value(&value, symbol_table, &mut output);
     }
@@ -407,6 +562,12 @@ fn execute_assert(
     functions: &FunctionEnv,
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    module_registry: &ModuleRegistry,
+    input_buffer: &mut VecDeque<String>,
 ) -> Result<(), ActionError> {
     // Each argument to assert should be a "function call" representing a fact pattern
     // e.g., (assert (relation val1 val2)) → args = [FunctionCall("relation", [val1, val2])]
@@ -429,6 +590,12 @@ fn execute_assert(
                         functions,
                         globals,
                         generics,
+                        current_module,
+                        function_modules,
+                        global_modules,
+                        generic_modules,
+                        module_registry,
+                        input_buffer,
                     )?;
                     fields.push(value);
                 }
@@ -475,6 +642,12 @@ fn execute_modify(
     functions: &FunctionEnv,
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    module_registry: &ModuleRegistry,
+    input_buffer: &mut VecDeque<String>,
 ) -> Result<(), ActionError> {
     execute_fact_mutation(
         fact_base,
@@ -489,6 +662,12 @@ fn execute_modify(
         globals,
         generics,
         FactMutationMode::Modify,
+        current_module,
+        function_modules,
+        global_modules,
+        generic_modules,
+        module_registry,
+        input_buffer,
     )
 }
 
@@ -505,6 +684,12 @@ fn execute_duplicate(
     functions: &FunctionEnv,
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    module_registry: &ModuleRegistry,
+    input_buffer: &mut VecDeque<String>,
 ) -> Result<(), ActionError> {
     execute_fact_mutation(
         fact_base,
@@ -519,6 +704,12 @@ fn execute_duplicate(
         globals,
         generics,
         FactMutationMode::Duplicate,
+        current_module,
+        function_modules,
+        global_modules,
+        generic_modules,
+        module_registry,
+        input_buffer,
     )
 }
 
@@ -548,6 +739,12 @@ fn execute_fact_mutation(
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
     mode: FactMutationMode,
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    module_registry: &ModuleRegistry,
+    input_buffer: &mut VecDeque<String>,
 ) -> Result<(), ActionError> {
     let fact_id = resolve_target_fact_id(args, token, rule_info)?;
     let original_fact = get_fact_or_error(fact_base, fact_id)?;
@@ -566,6 +763,12 @@ fn execute_fact_mutation(
                 functions,
                 globals,
                 generics,
+                current_module,
+                function_modules,
+                global_modules,
+                generic_modules,
+                module_registry,
+                input_buffer,
             )?;
             if mode.retract_original() {
                 retract_original_fact(fact_base, rete, fact_id, &original_fact);
@@ -591,6 +794,12 @@ fn execute_fact_mutation(
                 functions,
                 globals,
                 generics,
+                current_module,
+                function_modules,
+                global_modules,
+                generic_modules,
+                module_registry,
+                input_buffer,
             )?;
             if mode.retract_original() {
                 retract_original_fact(fact_base, rete, fact_id, &original_fact);
@@ -682,6 +891,12 @@ fn apply_ordered_slot_overrides(
     functions: &FunctionEnv,
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    module_registry: &ModuleRegistry,
+    input_buffer: &mut VecDeque<String>,
 ) -> Result<(), ActionError> {
     // In CLIPS, modify uses (slot-name value) syntax. For ordered facts in Phase 2,
     // we interpret FunctionCall args as positional overrides where the "name" is the index.
@@ -708,6 +923,12 @@ fn apply_ordered_slot_overrides(
                 functions,
                 globals,
                 generics,
+                current_module,
+                function_modules,
+                global_modules,
+                generic_modules,
+                module_registry,
+                input_buffer,
             )?;
         }
     }
@@ -732,6 +953,12 @@ fn apply_template_slot_overrides(
     functions: &FunctionEnv,
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    module_registry: &ModuleRegistry,
+    input_buffer: &mut VecDeque<String>,
 ) -> Result<(), ActionError> {
     for slot_override in slot_overrides {
         let ActionExpr::FunctionCall(fc) = slot_override else {
@@ -766,6 +993,12 @@ fn apply_template_slot_overrides(
                 functions,
                 globals,
                 generics,
+                current_module,
+                function_modules,
+                global_modules,
+                generic_modules,
+                module_registry,
+                input_buffer,
             )?;
         }
     }
@@ -807,6 +1040,12 @@ fn eval_expr(
     functions: &FunctionEnv,
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<String, crate::modules::ModuleId>,
+    global_modules: &HashMap<String, crate::modules::ModuleId>,
+    generic_modules: &HashMap<String, crate::modules::ModuleId>,
+    module_registry: &ModuleRegistry,
+    input_buffer: &mut VecDeque<String>,
 ) -> Result<Value, ActionError> {
     let runtime_expr = crate::evaluator::from_action_expr(expr, symbol_table, config)
         .map_err(|e| ActionError::EvalError(format!("{e}")))?;
@@ -819,6 +1058,13 @@ fn eval_expr(
         globals,
         generics,
         call_depth: 0,
+        current_module,
+        module_registry,
+        function_modules,
+        global_modules,
+        generic_modules,
+        method_chain: None,
+        input_buffer: Some(input_buffer),
     };
     crate::evaluator::eval(&mut ctx, &runtime_expr)
         .map_err(|e| ActionError::EvalError(format!("{e}")))
