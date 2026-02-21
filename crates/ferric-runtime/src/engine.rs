@@ -23,6 +23,15 @@ use crate::modules::{ModuleId, ModuleRegistry};
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
 
+fn propagate_fact_assertion(rete: &mut ReteNetwork, fact_base: &FactBase, fact_id: FactId) {
+    let fact = fact_base
+        .get(fact_id)
+        .expect("asserted fact should exist in fact base")
+        .fact
+        .clone();
+    rete.assert_fact(fact_id, &fact, fact_base);
+}
+
 /// The Ferric rules engine.
 ///
 /// This is the main entry point for embedding applications. The engine is
@@ -152,8 +161,7 @@ impl Engine {
         let id = self.fact_base.assert_ordered(relation_sym, fields_small);
 
         // Propagate through rete network
-        let fact = self.fact_base.get(id).unwrap().fact.clone();
-        self.rete.assert_fact(id, &fact, &self.fact_base);
+        propagate_fact_assertion(&mut self.rete, &self.fact_base, id);
 
         Ok(id)
     }
@@ -176,8 +184,7 @@ impl Engine {
         };
 
         // Propagate through rete network
-        let fact = self.fact_base.get(id).unwrap().fact.clone();
-        self.rete.assert_fact(id, &fact, &self.fact_base);
+        propagate_fact_assertion(&mut self.rete, &self.fact_base, id);
 
         Ok(id)
     }
@@ -300,42 +307,49 @@ impl Engine {
         rule_id: RuleId,
         token_id: ferric_core::token::TokenId,
     ) -> bool {
-        if let Some(token) = self.rete.token_store.get(token_id).cloned() {
-            if let Some(info) = self.rule_info.get(&rule_id).cloned() {
-                let mut focus_requests = Vec::new();
-                let (fired, mut errors) = actions::execute_actions(
-                    &mut self.fact_base,
-                    &mut self.rete,
-                    &mut self.symbol_table,
-                    &mut self.halted,
-                    &self.config,
-                    &token,
-                    &info,
-                    &self.template_defs,
-                    &mut self.router,
-                    &self.functions,
-                    &mut self.globals,
-                    &mut focus_requests,
-                    &self.generics,
-                    &self.module_registry,
-                );
+        let Some(token) = self.rete.token_store.get(token_id).cloned() else {
+            // No token — treat as not fired.
+            return false;
+        };
 
-                // Apply focus requests (push in reverse order so first arg is on top)
-                for module_name in focus_requests.iter().rev() {
-                    match self.module_registry.get_by_name(module_name) {
-                        Some(id) => self.module_registry.push_focus(id),
-                        None => errors.push(ActionError::EvalError(format!(
-                            "focus: unknown module `{module_name}`"
-                        ))),
-                    };
-                }
+        let (fired, mut errors, focus_requests) = {
+            let Some(info) = self.rule_info.get(&rule_id) else {
+                // No compiled rule info — treat as not fired.
+                return false;
+            };
 
-                self.action_diagnostics.extend(errors);
-                return fired;
-            }
+            let mut focus_requests = Vec::new();
+            let (fired, errors) = actions::execute_actions(
+                &mut self.fact_base,
+                &mut self.rete,
+                &mut self.symbol_table,
+                &mut self.halted,
+                &self.config,
+                &token,
+                info,
+                &self.template_defs,
+                &mut self.router,
+                &self.functions,
+                &mut self.globals,
+                &mut focus_requests,
+                &self.generics,
+                &self.module_registry,
+            );
+            (fired, errors, focus_requests)
+        };
+
+        // Apply focus requests (push in reverse order so first arg is on top)
+        for module_name in focus_requests.iter().rev() {
+            match self.module_registry.get_by_name(module_name) {
+                Some(id) => self.module_registry.push_focus(id),
+                None => errors.push(ActionError::EvalError(format!(
+                    "focus: unknown module `{module_name}`"
+                ))),
+            };
         }
-        // No token or no rule info — treat as not fired
-        false
+
+        self.action_diagnostics.extend(errors);
+        fired
     }
 
     /// Transfer ownership of this engine to the current thread.
@@ -498,7 +512,7 @@ impl Engine {
         }
 
         // Re-assert registered deffacts
-        for deffacts in &self.registered_deffacts.clone() {
+        for deffacts in &self.registered_deffacts {
             for fact in deffacts {
                 let fact_id = match fact {
                     Fact::Ordered(ordered) => self
@@ -509,9 +523,7 @@ impl Engine {
                         .assert_template(template.template_id, template.slots.clone()),
                 };
                 // Propagate through rete
-                let stored_fact = self.fact_base.get(fact_id).unwrap().fact.clone();
-                self.rete
-                    .assert_fact(fact_id, &stored_fact, &self.fact_base);
+                propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
             }
         }
 
@@ -525,9 +537,7 @@ impl Engine {
             let initial_fid = self
                 .fact_base
                 .assert_ordered(initial_sym, smallvec::SmallVec::new());
-            let initial_stored = self.fact_base.get(initial_fid).unwrap().fact.clone();
-            self.rete
-                .assert_fact(initial_fid, &initial_stored, &self.fact_base);
+            propagate_fact_assertion(&mut self.rete, &self.fact_base, initial_fid);
             self.initial_fact_id = Some(initial_fid);
         }
 

@@ -476,62 +476,20 @@ fn execute_modify(
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
 ) -> Result<(), ActionError> {
-    let fact_id = resolve_target_fact_id(args, token, rule_info)?;
-    let original_fact = get_fact_or_error(fact_base, fact_id)?;
-
-    match &original_fact {
-        Fact::Ordered(ordered) => {
-            let relation = ordered.relation;
-            let mut fields = ordered.fields.clone();
-            apply_ordered_slot_overrides(
-                &mut fields,
-                &args[1..],
-                token,
-                rule_info,
-                symbol_table,
-                config,
-                functions,
-                globals,
-                generics,
-            )?;
-            rete.retract_fact(fact_id, &original_fact, fact_base);
-            fact_base.retract(fact_id);
-            assert_ordered_and_propagate(fact_base, rete, relation, fields);
-        }
-        Fact::Template(template) => {
-            let registered = template_defs.get(&template.template_id).ok_or_else(|| {
-                ActionError::UnknownAction(format!(
-                    "template ID {:?} not found in registry",
-                    template.template_id
-                ))
-            })?;
-            let mut slots = template.slots.to_vec();
-            apply_template_slot_overrides(
-                &mut slots,
-                &args[1..],
-                registered,
-                token,
-                rule_info,
-                symbol_table,
-                config,
-                functions,
-                globals,
-                generics,
-            )?;
-            rete.retract_fact(fact_id, &original_fact, fact_base);
-            fact_base.retract(fact_id);
-            let template_id = template.template_id;
-            let new_id = fact_base.assert_template(template_id, slots.into_boxed_slice());
-            let new_fact = fact_base
-                .get(new_id)
-                .expect("asserted fact should be present in fact base")
-                .fact
-                .clone();
-            rete.assert_fact(new_id, &new_fact, fact_base);
-        }
-    }
-
-    Ok(())
+    execute_fact_mutation(
+        fact_base,
+        rete,
+        symbol_table,
+        config,
+        token,
+        rule_info,
+        args,
+        template_defs,
+        functions,
+        globals,
+        generics,
+        FactMutationMode::Modify,
+    )
 }
 
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
@@ -547,6 +505,49 @@ fn execute_duplicate(
     functions: &FunctionEnv,
     globals: &mut GlobalStore,
     generics: &GenericRegistry,
+) -> Result<(), ActionError> {
+    execute_fact_mutation(
+        fact_base,
+        rete,
+        symbol_table,
+        config,
+        token,
+        rule_info,
+        args,
+        template_defs,
+        functions,
+        globals,
+        generics,
+        FactMutationMode::Duplicate,
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FactMutationMode {
+    Modify,
+    Duplicate,
+}
+
+impl FactMutationMode {
+    fn retract_original(self) -> bool {
+        matches!(self, Self::Modify)
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // Context requires all these parameters
+fn execute_fact_mutation(
+    fact_base: &mut FactBase,
+    rete: &mut ReteNetwork,
+    symbol_table: &mut SymbolTable,
+    config: &EngineConfig,
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    args: &[ActionExpr],
+    template_defs: &HashMap<TemplateId, RegisteredTemplate>,
+    functions: &FunctionEnv,
+    globals: &mut GlobalStore,
+    generics: &GenericRegistry,
+    mode: FactMutationMode,
 ) -> Result<(), ActionError> {
     let fact_id = resolve_target_fact_id(args, token, rule_info)?;
     let original_fact = get_fact_or_error(fact_base, fact_id)?;
@@ -566,7 +567,9 @@ fn execute_duplicate(
                 globals,
                 generics,
             )?;
-            // Assert duplicate (original stays)
+            if mode.retract_original() {
+                retract_original_fact(fact_base, rete, fact_id, &original_fact);
+            }
             assert_ordered_and_propagate(fact_base, rete, relation, fields);
         }
         Fact::Template(template) => {
@@ -589,15 +592,15 @@ fn execute_duplicate(
                 globals,
                 generics,
             )?;
-            let template_id = template.template_id;
-            // Assert duplicate (original stays)
-            let new_id = fact_base.assert_template(template_id, slots.into_boxed_slice());
-            let new_fact = fact_base
-                .get(new_id)
-                .expect("asserted fact should be present in fact base")
-                .fact
-                .clone();
-            rete.assert_fact(new_id, &new_fact, fact_base);
+            if mode.retract_original() {
+                retract_original_fact(fact_base, rete, fact_id, &original_fact);
+            }
+            assert_template_and_propagate(
+                fact_base,
+                rete,
+                template.template_id,
+                slots.into_boxed_slice(),
+            );
         }
     }
 
@@ -618,6 +621,32 @@ fn assert_ordered_and_propagate(
         .clone();
     rete.assert_fact(fact_id, &fact, fact_base);
     fact_id
+}
+
+fn assert_template_and_propagate(
+    fact_base: &mut FactBase,
+    rete: &mut ReteNetwork,
+    template_id: TemplateId,
+    slots: Box<[Value]>,
+) -> FactId {
+    let fact_id = fact_base.assert_template(template_id, slots);
+    let fact = fact_base
+        .get(fact_id)
+        .expect("asserted fact should be present in fact base")
+        .fact
+        .clone();
+    rete.assert_fact(fact_id, &fact, fact_base);
+    fact_id
+}
+
+fn retract_original_fact(
+    fact_base: &mut FactBase,
+    rete: &mut ReteNetwork,
+    fact_id: FactId,
+    fact: &Fact,
+) {
+    rete.retract_fact(fact_id, fact, fact_base);
+    fact_base.retract(fact_id);
 }
 
 fn get_fact_or_error(fact_base: &FactBase, fact_id: FactId) -> Result<Fact, ActionError> {

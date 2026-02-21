@@ -9,6 +9,7 @@
 
 use smallvec::SmallVec;
 use std::ffi::c_void;
+use std::ops::{Deref, DerefMut};
 
 use crate::string::FerricString;
 use crate::symbol::Symbol;
@@ -77,6 +78,32 @@ impl Multifield {
     /// Iterate over values by mutable reference.
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, Value> {
         self.values.iter_mut()
+    }
+}
+
+impl AsRef<[Value]> for Multifield {
+    fn as_ref(&self) -> &[Value] {
+        self.as_slice()
+    }
+}
+
+impl AsMut<[Value]> for Multifield {
+    fn as_mut(&mut self) -> &mut [Value] {
+        self.values.as_mut_slice()
+    }
+}
+
+impl Deref for Multifield {
+    type Target = [Value];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl DerefMut for Multifield {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.values.as_mut_slice()
     }
 }
 

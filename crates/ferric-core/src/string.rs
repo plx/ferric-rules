@@ -110,6 +110,18 @@ impl std::fmt::Display for FerricString {
     }
 }
 
+impl AsRef<str> for FerricString {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::borrow::Borrow<str> for FerricString {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -256,58 +256,14 @@ fn dispatch_user_function(
     }
 
     // Build a fresh binding frame for the function call.
-    let mut fn_var_map = VarMap::new();
-    let mut fn_bindings = BindingSet::new();
-
-    // Bind regular parameters.
-    for (i, param) in func.parameters.iter().enumerate() {
-        let sym = ctx
-            .symbol_table
-            .intern_symbol(param, ctx.config.string_encoding)
-            .map_err(|_| EvalError::TypeError {
-                function: func.name.clone(),
-                expected: "valid parameter name".to_string(),
-                actual: param.clone(),
-                span: span_ref.cloned(),
-            })?;
-        let var_id = fn_var_map
-            .get_or_create(sym)
-            .map_err(|_| EvalError::TypeError {
-                function: func.name.clone(),
-                expected: "bindable variable".to_string(),
-                actual: param.clone(),
-                span: span_ref.cloned(),
-            })?;
-        fn_bindings.set(var_id, std::rc::Rc::new(arg_values[i].clone()));
-    }
-
-    // Bind wildcard parameter (collects remaining args into a Multifield).
-    if let Some(wildcard) = &func.wildcard_parameter {
-        let rest: Vec<Value> = arg_values[required..].to_vec();
-        let sym = ctx
-            .symbol_table
-            .intern_symbol(wildcard, ctx.config.string_encoding)
-            .map_err(|_| EvalError::TypeError {
-                function: func.name.clone(),
-                expected: "valid parameter name".to_string(),
-                actual: wildcard.clone(),
-                span: span_ref.cloned(),
-            })?;
-        let var_id = fn_var_map
-            .get_or_create(sym)
-            .map_err(|_| EvalError::TypeError {
-                function: func.name.clone(),
-                expected: "bindable variable".to_string(),
-                actual: wildcard.clone(),
-                span: span_ref.cloned(),
-            })?;
-        fn_bindings.set(
-            var_id,
-            std::rc::Rc::new(Value::Multifield(Box::new(
-                rest.into_iter().collect::<ferric_core::Multifield>(),
-            ))),
-        );
-    }
+    let (fn_var_map, fn_bindings) = bind_callable_arguments(
+        ctx,
+        &func.name,
+        &func.parameters,
+        func.wildcard_parameter.as_deref(),
+        &arg_values,
+        span_ref,
+    )?;
 
     // Translate body expressions (ActionExpr → RuntimeExpr) BEFORE constructing
     // the inner EvalContext, because from_action_expr also needs &mut symbol_table.
@@ -412,10 +368,7 @@ fn dispatch_generic(
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
     // Evaluate all arguments first (eager evaluation).
-    let mut arg_values = Vec::with_capacity(args.len());
-    for arg in args {
-        arg_values.push(eval(ctx, arg)?);
-    }
+    let arg_values = eval_args(ctx, args)?;
 
     // Find the first applicable method (methods are sorted by index ascending).
     let applicable_method = generic
@@ -444,59 +397,14 @@ fn dispatch_generic(
     }
 
     // Build parameter bindings for the selected method.
-    let mut fn_var_map = VarMap::new();
-    let mut fn_bindings = BindingSet::new();
-
-    for (i, param_name) in method.parameters.iter().enumerate() {
-        let sym = ctx
-            .symbol_table
-            .intern_symbol(param_name, ctx.config.string_encoding)
-            .map_err(|_| EvalError::TypeError {
-                function: generic.name.clone(),
-                expected: "valid parameter name".to_string(),
-                actual: param_name.clone(),
-                span: span.clone(),
-            })?;
-        let var_id = fn_var_map
-            .get_or_create(sym)
-            .map_err(|_| EvalError::TypeError {
-                function: generic.name.clone(),
-                expected: "bindable variable".to_string(),
-                actual: param_name.clone(),
-                span: span.clone(),
-            })?;
-        fn_bindings.set(var_id, std::rc::Rc::new(arg_values[i].clone()));
-    }
-
-    // Bind wildcard parameter if present.
-    if let Some(ref wildcard_name) = method.wildcard_parameter {
-        let extra_values: Vec<Value> = arg_values[method.parameters.len()..].to_vec();
-        let sym = ctx
-            .symbol_table
-            .intern_symbol(wildcard_name, ctx.config.string_encoding)
-            .map_err(|_| EvalError::TypeError {
-                function: generic.name.clone(),
-                expected: "valid parameter name".to_string(),
-                actual: wildcard_name.clone(),
-                span: span.clone(),
-            })?;
-        let var_id = fn_var_map
-            .get_or_create(sym)
-            .map_err(|_| EvalError::TypeError {
-                function: generic.name.clone(),
-                expected: "bindable variable".to_string(),
-                actual: wildcard_name.clone(),
-                span: span.clone(),
-            })?;
-        fn_bindings.set(
-            var_id,
-            std::rc::Rc::new(Value::Multifield(Box::new(
-                extra_values
-                    .into_iter()
-                    .collect::<ferric_core::Multifield>(),
-            ))),
-        );
-    }
+    let (fn_var_map, fn_bindings) = bind_callable_arguments(
+        ctx,
+        &generic.name,
+        &method.parameters,
+        method.wildcard_parameter.as_deref(),
+        &arg_values,
+        span.as_ref(),
+    )?;
 
     // Translate body expressions (ActionExpr → RuntimeExpr) BEFORE constructing
     // the inner EvalContext, because from_action_expr also needs &mut symbol_table.
@@ -524,6 +432,78 @@ fn dispatch_generic(
     }
 
     Ok(result)
+}
+
+fn bind_callable_arguments(
+    ctx: &mut EvalContext<'_>,
+    callable_name: &str,
+    parameters: &[String],
+    wildcard_parameter: Option<&str>,
+    arg_values: &[Value],
+    span: Option<&SourceSpan>,
+) -> Result<(VarMap, BindingSet), EvalError> {
+    let mut var_map = VarMap::new();
+    let mut bindings = BindingSet::new();
+
+    for (param_name, value) in parameters.iter().zip(arg_values.iter()) {
+        bind_parameter(
+            ctx,
+            callable_name,
+            &mut var_map,
+            &mut bindings,
+            param_name,
+            value.clone(),
+            span,
+        )?;
+    }
+
+    if let Some(wildcard_name) = wildcard_parameter {
+        let extra_values = arg_values[parameters.len()..]
+            .iter()
+            .cloned()
+            .collect::<ferric_core::Multifield>();
+        bind_parameter(
+            ctx,
+            callable_name,
+            &mut var_map,
+            &mut bindings,
+            wildcard_name,
+            Value::Multifield(Box::new(extra_values)),
+            span,
+        )?;
+    }
+
+    Ok((var_map, bindings))
+}
+
+fn bind_parameter(
+    ctx: &mut EvalContext<'_>,
+    callable_name: &str,
+    var_map: &mut VarMap,
+    bindings: &mut BindingSet,
+    parameter_name: &str,
+    value: Value,
+    span: Option<&SourceSpan>,
+) -> Result<(), EvalError> {
+    let sym = ctx
+        .symbol_table
+        .intern_symbol(parameter_name, ctx.config.string_encoding)
+        .map_err(|_| EvalError::TypeError {
+            function: callable_name.to_string(),
+            expected: "valid parameter name".to_string(),
+            actual: parameter_name.to_string(),
+            span: span.cloned(),
+        })?;
+    let var_id = var_map
+        .get_or_create(sym)
+        .map_err(|_| EvalError::TypeError {
+            function: callable_name.to_string(),
+            expected: "bindable variable".to_string(),
+            actual: parameter_name.to_string(),
+            span: span.cloned(),
+        })?;
+    bindings.set(var_id, std::rc::Rc::new(value));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

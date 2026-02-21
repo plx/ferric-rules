@@ -247,7 +247,7 @@ impl Engine {
                     Construct::Template(template) => {
                         // Register template BEFORE compiling rules so that
                         // rules referencing this template can resolve the ID.
-                        if let Err(e) = self.register_template(&template) {
+                        if let Err(e) = self.register_template(&template, &mut result) {
                             errors.push(e);
                         }
                         result.templates.push(template);
@@ -546,7 +546,11 @@ impl Engine {
     /// Allocates a fresh `TemplateId`, builds slot metadata, and stores both
     /// the name→id mapping and the `RegisteredTemplate`.
     #[allow(clippy::unnecessary_wraps)] // Result return kept for future error paths
-    fn register_template(&mut self, template: &TemplateConstruct) -> Result<(), LoadError> {
+    fn register_template(
+        &mut self,
+        template: &TemplateConstruct,
+        result: &mut LoadResult,
+    ) -> Result<(), LoadError> {
         // Allocate a new TemplateId.
         let template_id = self.template_id_alloc.insert(());
 
@@ -560,12 +564,9 @@ impl Engine {
             slot_index.insert(slot_def.name.clone(), i);
 
             let default_val = match &slot_def.default {
-                Some(ferric_parser::DefaultValue::Value(lit)) => {
-                    // Use a temporary LoadResult so warnings go somewhere safe.
-                    let mut dummy = LoadResult::default();
-                    self.literal_to_value(&lit.value, lit.span.start.line, &mut dummy)
-                        .unwrap_or(Value::Void)
-                }
+                Some(ferric_parser::DefaultValue::Value(lit)) => self
+                    .literal_to_value(&lit.value, lit.span.start.line, result)
+                    .unwrap_or(Value::Void),
                 // ?NONE, ?DERIVE, or no default: use Void as placeholder.
                 _ => Value::Void,
             };

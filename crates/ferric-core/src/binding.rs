@@ -171,6 +171,18 @@ impl Default for BindingSet {
     }
 }
 
+impl AsRef<[Option<ValueRef>]> for BindingSet {
+    fn as_ref(&self) -> &[Option<ValueRef>] {
+        &self.bindings
+    }
+}
+
+impl AsMut<[Option<ValueRef>]> for BindingSet {
+    fn as_mut(&mut self) -> &mut [Option<ValueRef>] {
+        &mut self.bindings
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
