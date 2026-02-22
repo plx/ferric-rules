@@ -19,6 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::rc::Rc;
 use thiserror::Error;
 
 // Qualified name utilities: wired into construct loading in passes 003/004.
@@ -892,7 +893,7 @@ impl Engine {
             salience: rule.salience,
             test_conditions: translated.test_conditions,
         };
-        self.rule_info.insert(compile_result.rule_id, info);
+        self.rule_info.insert(compile_result.rule_id, Rc::new(info));
         self.rule_modules.insert(
             compile_result.rule_id,
             self.module_registry.current_module(),

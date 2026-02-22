@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
+use std::rc::Rc;
 use std::thread::ThreadId;
 use thiserror::Error;
 
@@ -84,7 +85,7 @@ pub struct Engine {
     /// Registered deffacts for re-assertion on reset.
     pub(crate) registered_deffacts: Vec<Vec<Fact>>,
     /// Compiled rule info for action execution.
-    pub(crate) rule_info: HashMap<RuleId, CompiledRuleInfo>,
+    pub(crate) rule_info: HashMap<RuleId, Rc<CompiledRuleInfo>>,
     /// Registered template definitions: name → `TemplateId`.
     pub(crate) template_ids: HashMap<String, TemplateId>,
     /// Template slot metadata indexed by `TemplateId`.
@@ -342,8 +343,8 @@ impl Engine {
             return (false, false, false);
         };
 
-        // Clone the CompiledRuleInfo so we can pass both `&info` and `&self.rule_info`
-        // to execute_actions without a double borrow.
+        // Clone the handle so we can pass both this rule and the full map to
+        // action helpers without deep-cloning `CompiledRuleInfo`.
         let Some(info) = self.rule_info.get(&rule_id).cloned() else {
             // No compiled rule info — treat as not fired.
             return (false, false, false);
@@ -363,7 +364,7 @@ impl Engine {
             &mut self.halted,
             &self.config,
             &token,
-            &info,
+            info.as_ref(),
             &self.template_defs,
             &mut self.router,
             &self.functions,

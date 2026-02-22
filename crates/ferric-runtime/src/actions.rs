@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as FmtWrite;
+use std::rc::Rc;
 
 use ferric_core::beta::RuleId;
 use ferric_core::binding::VarMap;
@@ -140,7 +141,7 @@ pub(crate) fn execute_actions(
     global_modules: &HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
     generic_modules: &HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
     input_buffer: &mut VecDeque<String>,
-    all_rule_info: &HashMap<RuleId, CompiledRuleInfo>,
+    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
 ) -> (bool, bool, bool, Vec<ActionError>) {
     let mut errors = Vec::new();
     let mut reset_requested = false;
@@ -233,7 +234,7 @@ fn execute_single_action(
     router: &mut OutputRouter,
     focus_requests: &mut Vec<String>,
     eval_env: &mut ActionEvalEnv<'_>,
-    all_rule_info: &HashMap<RuleId, CompiledRuleInfo>,
+    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
 ) -> Result<(), ActionError> {
     match call.name.as_str() {
         "assert" => execute_assert(fact_base, rete, token, rule_info, &call.args, eval_env),
@@ -352,7 +353,7 @@ fn execute_list_focus_stack(
 fn execute_agenda(
     rete: &ReteNetwork,
     router: &mut OutputRouter,
-    all_rule_info: &HashMap<RuleId, CompiledRuleInfo>,
+    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
 ) -> Result<(), ActionError> {
     let mut output = String::new();
     for activation in rete.agenda.iter_activations() {
