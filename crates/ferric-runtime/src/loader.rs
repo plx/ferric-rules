@@ -176,7 +176,7 @@ impl Engine {
         let mut assert_forms = Vec::new();
         let mut construct_forms = Vec::new();
 
-        for expr in &parse_result.exprs {
+        for expr in parse_result.exprs {
             if let Some(list) = expr.as_list() {
                 if !list.is_empty() && list[0].as_symbol() == Some("assert") {
                     assert_forms.push(expr);
@@ -195,7 +195,7 @@ impl Engine {
                         )
                     )
                 {
-                    construct_forms.push(expr.clone());
+                    construct_forms.push(expr);
                 } else {
                     // Unknown top-level form
                     let (name, line, column) = if let Some(head) = list.first() {

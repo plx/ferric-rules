@@ -12,6 +12,16 @@ use ferric_parser::ActionExpr;
 
 use crate::modules::ModuleId;
 
+fn modules_for_name_from_keys<T>(
+    entries: &HashMap<(ModuleId, String), T>,
+    name: &str,
+) -> Vec<ModuleId> {
+    entries
+        .keys()
+        .filter_map(|(module_id, local_name)| (local_name == name).then_some(*module_id))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // User-defined functions
 // ---------------------------------------------------------------------------
@@ -63,10 +73,7 @@ impl FunctionEnv {
     /// Return all module IDs that define a function with this local name.
     #[must_use]
     pub fn modules_for_name(&self, name: &str) -> Vec<ModuleId> {
-        self.functions
-            .keys()
-            .filter_map(|(module_id, local_name)| (local_name == name).then_some(*module_id))
-            .collect()
+        modules_for_name_from_keys(&self.functions, name)
     }
 
     /// Debug-only structural checks for function registry bookkeeping.
@@ -118,10 +125,7 @@ impl GlobalStore {
     /// Return all module IDs that define a global with this local name.
     #[must_use]
     pub fn modules_for_name(&self, name: &str) -> Vec<ModuleId> {
-        self.values
-            .keys()
-            .filter_map(|(module_id, local_name)| (local_name == name).then_some(*module_id))
-            .collect()
+        modules_for_name_from_keys(&self.values, name)
     }
 
     /// Set the value of a global variable.
@@ -265,10 +269,7 @@ impl GenericRegistry {
     /// Return all module IDs that define a generic with this local name.
     #[must_use]
     pub fn modules_for_name(&self, name: &str) -> Vec<ModuleId> {
-        self.generics
-            .keys()
-            .filter_map(|(module_id, local_name)| (local_name == name).then_some(*module_id))
-            .collect()
+        modules_for_name_from_keys(&self.generics, name)
     }
 
     /// Check whether a generic already has a method with the given index.

@@ -261,34 +261,48 @@ impl AtomKey {
     /// Convert from a [`Value`], if the value is an atom (not `Multifield` or `Void`).
     #[must_use]
     pub fn from_value(value: &Value) -> Option<Self> {
-        match value {
-            Value::Symbol(s) => Some(Self::Symbol(*s)),
-            Value::String(s) => Some(Self::String(s.clone())),
-            Value::Integer(i) => Some(Self::Integer(*i)),
-            Value::Float(f) => Some(Self::FloatBits(f.to_bits())),
-            Value::ExternalAddress(ea) => Some(Self::ExternalAddress {
-                type_id: ea.type_id,
-                pointer: ea.pointer as usize,
-            }),
-            Value::Multifield(_) | Value::Void => None,
-        }
+        Self::try_from(value).ok()
     }
 
     /// Convert back to a [`Value`].
-    #[allow(unsafe_code)]
     #[must_use]
     pub fn to_value(&self) -> Value {
-        match self {
-            Self::Symbol(s) => Value::Symbol(*s),
-            Self::String(s) => Value::String(s.clone()),
-            Self::Integer(i) => Value::Integer(*i),
-            Self::FloatBits(bits) => Value::Float(f64::from_bits(*bits)),
-            Self::ExternalAddress { type_id, pointer } => {
+        self.clone().into()
+    }
+}
+
+impl TryFrom<&Value> for AtomKey {
+    type Error = ();
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Symbol(s) => Ok(Self::Symbol(*s)),
+            Value::String(s) => Ok(Self::String(s.clone())),
+            Value::Integer(i) => Ok(Self::Integer(*i)),
+            Value::Float(f) => Ok(Self::FloatBits(f.to_bits())),
+            Value::ExternalAddress(ea) => Ok(Self::ExternalAddress {
+                type_id: ea.type_id,
+                pointer: ea.pointer as usize,
+            }),
+            Value::Multifield(_) | Value::Void => Err(()),
+        }
+    }
+}
+
+impl From<AtomKey> for Value {
+    #[allow(unsafe_code)]
+    fn from(value: AtomKey) -> Self {
+        match value {
+            AtomKey::Symbol(s) => Value::Symbol(s),
+            AtomKey::String(s) => Value::String(s),
+            AtomKey::Integer(i) => Value::Integer(i),
+            AtomKey::FloatBits(bits) => Value::Float(f64::from_bits(bits)),
+            AtomKey::ExternalAddress { type_id, pointer } => {
                 Value::ExternalAddress(ExternalAddress {
-                    type_id: *type_id,
+                    type_id,
                     // Casting usize back to pointer requires allowing unsafe_code lint,
                     // though the cast itself is not an unsafe operation.
-                    pointer: *pointer as *mut c_void,
+                    pointer: pointer as *mut c_void,
                 })
             }
         }
@@ -372,6 +386,12 @@ mod tests {
     fn atom_key_from_integer() {
         let key = AtomKey::from_value(&Value::Integer(42)).unwrap();
         assert_eq!(key, AtomKey::Integer(42));
+    }
+
+    #[test]
+    fn atom_key_try_from_value() {
+        let key = AtomKey::try_from(&Value::Integer(7)).unwrap();
+        assert_eq!(key, AtomKey::Integer(7));
     }
 
     #[test]
@@ -490,6 +510,12 @@ mod tests {
         let v = Value::Integer(-42);
         let key = AtomKey::from_value(&v).unwrap();
         assert!(key.to_value().structural_eq(&v));
+    }
+
+    #[test]
+    fn atom_key_into_value() {
+        let value: Value = AtomKey::Integer(99).into();
+        assert!(value.structural_eq(&Value::Integer(99)));
     }
 
     #[test]

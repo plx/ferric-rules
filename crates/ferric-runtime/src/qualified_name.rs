@@ -4,6 +4,8 @@
 //! This module provides shared utilities for splitting, validating,
 //! and resolving qualified names throughout the runtime.
 
+use std::str::FromStr;
+
 /// A parsed module-qualified name.
 ///
 /// Names can be either unqualified (`name`) or qualified (`MODULE::name`).
@@ -54,6 +56,45 @@ impl std::fmt::Display for QualifiedName {
     }
 }
 
+impl FromStr for QualifiedName {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let Some((module, name)) = s.split_once("::") else {
+            return Ok(Self::Unqualified(s.to_string()));
+        };
+
+        if module.is_empty() {
+            return Err(format!("malformed qualified name `{s}`: empty module name"));
+        }
+
+        if name.contains("::") {
+            return Err(format!(
+                "malformed qualified name `{s}`: multiple `::` separators"
+            ));
+        }
+
+        if name.is_empty() {
+            return Err(format!(
+                "malformed qualified name `{s}`: empty name after `{module}::`"
+            ));
+        }
+
+        Ok(Self::Qualified {
+            module: module.to_string(),
+            name: name.to_string(),
+        })
+    }
+}
+
+impl TryFrom<&str> for QualifiedName {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
 /// Parse a name string into a [`QualifiedName`].
 ///
 /// Recognizes `MODULE::name` syntax. The `::` must appear exactly once.
@@ -66,37 +107,7 @@ impl std::fmt::Display for QualifiedName {
 /// - Empty local name (`MODULE::`)
 /// - Multiple `::` separators (`A::B::C`)
 pub fn parse_qualified_name(s: &str) -> Result<QualifiedName, String> {
-    // Look for the first occurrence of `::`
-    let Some(pos) = s.find("::") else {
-        return Ok(QualifiedName::Unqualified(s.to_string()));
-    };
-
-    let module = &s[..pos];
-    let rest = &s[pos + 2..];
-
-    // Validate module part is non-empty
-    if module.is_empty() {
-        return Err(format!("malformed qualified name `{s}`: empty module name"));
-    }
-
-    // Check for additional `::` in the rest
-    if rest.contains("::") {
-        return Err(format!(
-            "malformed qualified name `{s}`: multiple `::` separators"
-        ));
-    }
-
-    // Validate name part is non-empty
-    if rest.is_empty() {
-        return Err(format!(
-            "malformed qualified name `{s}`: empty name after `{module}::`"
-        ));
-    }
-
-    Ok(QualifiedName::Qualified {
-        module: module.to_string(),
-        name: rest.to_string(),
-    })
+    s.parse()
 }
 
 #[cfg(test)]
@@ -204,6 +215,20 @@ mod tests {
         let result = parse_qualified_name("foo:bar").unwrap();
         // Treated as unqualified since there's no `::` separator
         assert!(!result.is_qualified());
+    }
+
+    #[test]
+    fn from_str_parses_qualified_names() {
+        let parsed: QualifiedName = "MAIN::person".parse().unwrap();
+        assert_eq!(parsed.module_name(), Some("MAIN"));
+        assert_eq!(parsed.local_name(), "person");
+    }
+
+    #[test]
+    fn try_from_str_parses_unqualified_names() {
+        let parsed = QualifiedName::try_from("person").unwrap();
+        assert!(!parsed.is_qualified());
+        assert_eq!(parsed.local_name(), "person");
     }
 }
 

@@ -187,6 +187,17 @@ impl ModuleRegistry {
         names.iter().any(|name| name == construct_name)
     }
 
+    fn spec_matches(spec: &ModuleSpec, construct_type: &str, construct_name: &str) -> bool {
+        match spec {
+            ModuleSpec::All => true,
+            ModuleSpec::None => false,
+            ModuleSpec::Specific {
+                construct_type: ct,
+                names,
+            } => Self::specific_spec_matches(ct, names, construct_type, construct_name),
+        }
+    }
+
     /// Check if a construct is visible from `from_module`.
     ///
     /// A construct is visible if:
@@ -208,14 +219,10 @@ impl ModuleRegistry {
             return false;
         };
 
-        let exported = owner.exports.iter().any(|spec| match spec {
-            ModuleSpec::All => true,
-            ModuleSpec::None => false,
-            ModuleSpec::Specific {
-                construct_type: ct,
-                names,
-            } => Self::specific_spec_matches(ct, names, construct_type, construct_name),
-        });
+        let exported = owner
+            .exports
+            .iter()
+            .any(|spec| Self::spec_matches(spec, construct_type, construct_name));
 
         if !exported {
             return false;
@@ -232,14 +239,7 @@ impl ModuleRegistry {
             if import_from_id != owning_module {
                 return false;
             }
-            match &import.spec {
-                ModuleSpec::All => true,
-                ModuleSpec::None => false,
-                ModuleSpec::Specific {
-                    construct_type: ct,
-                    names,
-                } => Self::specific_spec_matches(ct, names, construct_type, construct_name),
-            }
+            Self::spec_matches(&import.spec, construct_type, construct_name)
         })
     }
 
