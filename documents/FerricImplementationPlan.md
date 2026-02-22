@@ -2,7 +2,7 @@
 
 ## Implementation Plan
 
-**Version:** 10.0  
+**Version:** 10.1  
 **Date:** February 2026  
 **Status:** Final
 
@@ -1346,6 +1346,11 @@ The Rete algorithm is the heart of Ferric's pattern matching. It compiles rules 
 
 **Design Principle:** Nodes are identified by their semantic content, enabling automatic sharing.
 
+Current sharing guarantees are explicit: alpha paths and positive join nodes are
+canonicalized and reused across rules. Specialized control-flow nodes
+(`Negative`, `Ncc`, `Exists`) use semantic runtime memories and are not treated
+as interchangeable with positive joins.
+
 ```rust
 /// Unique identifier for a node in the network
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1369,6 +1374,8 @@ pub struct JoinNodeKey {
     pub alpha_memory: AlphaMemoryId,
     /// Join tests performed
     pub tests: Vec<JoinTest>,
+    /// Newly-bound variables extracted from the right fact
+    pub bindings: Vec<(SlotIndex, VarId)>,
 }
 ```
 
@@ -1879,49 +1886,47 @@ If a deployment requires replay-identical ordering, rule authors must encode exp
 
 ### 6.7 Network Compilation
 
-The compiler maps rules to Rete nodes, sharing common substructure:
+The compilation pipeline is intentionally layered to keep `ferric-core`
+parser-agnostic while still preserving rich source diagnostics:
+
+1. `ferric-parser` Stage 2 produces typed constructs (`RuleConstruct`, etc.).
+2. `ferric-runtime` translates those constructs into
+   `ferric-core` compile models (`CompilableRule` / `CompilableCondition`).
+3. `ferric-core::ReteCompiler` performs authoritative validation and network
+   construction, sharing common substructure across rules.
 
 ```rust
 pub struct ReteCompiler {
-    /// Existing alpha nodes keyed by test path
-    alpha_nodes: HashMap<AlphaTestKey, NodeId>,
-    
-    /// Existing join nodes keyed by structure
-    join_nodes: HashMap<JoinNodeKey, NodeId>,
-    
-    /// The network being built
-    network: ReteNetwork,
-    
-    /// Pattern restriction validator (see Section 7.7)
-    validator: PatternValidator,
+    /// Existing alpha paths keyed by canonical structure.
+    alpha_path_cache: HashMap<AlphaPathKey, AlphaMemoryId>,
+    /// Existing positive join nodes keyed by canonical structure.
+    join_node_cache: HashMap<JoinNodeKey, NodeId>,
+    /// Rule ID allocator.
+    next_rule_id: u32,
 }
 
 impl ReteCompiler {
-    /// Compile a rule into the network
-    pub fn compile_rule(&mut self, rule: &Rule) -> Result<(), CompileError> {
-        // 0. Validate pattern restrictions (nesting, forall constraints)
-        self.validator.validate_patterns(&rule.patterns)?;
-        
-        // 1. For each pattern, find or create alpha path
-        let alpha_entries = self.compile_alpha_paths(&rule.patterns)?;
-        
-        // 2. Build beta network (joins)
-        let terminal = self.compile_beta_path(rule, &alpha_entries)?;
-        
-        // 3. Connect terminal node
-        self.network.terminals.insert(rule.id, terminal);
-        
-        Ok(())
+    /// Compile a translated rule into the network.
+    pub fn compile_rule(
+        &mut self,
+        rete: &mut ReteNetwork,
+        rule: &CompilableRule,
+    ) -> Result<CompileResult, CompileError> {
+        Self::validate_rule_patterns(&rule.patterns)?;
+        let conditions = Self::patterns_as_conditions(&rule.patterns);
+        self.compile_conditions_unchecked(rete, rule.rule_id, rule.salience, &conditions)
     }
 
-    fn get_or_create_alpha_node(&mut self, key: AlphaTestKey) -> NodeId {
-        if let Some(&existing) = self.alpha_nodes.get(&key) {
-            return existing;
-        }
-        
-        let node_id = self.network.create_alpha_node(&key);
-        self.alpha_nodes.insert(key, node_id);
-        node_id
+    /// Compile translated conditions (used by runtime translation path).
+    pub fn compile_conditions(
+        &mut self,
+        rete: &mut ReteNetwork,
+        rule_id: RuleId,
+        salience: i32,
+        conditions: &[CompilableCondition],
+    ) -> Result<CompileResult, CompileError> {
+        Self::validate_conditions(conditions)?;
+        self.compile_conditions_unchecked(rete, rule_id, salience, conditions)
     }
 }
 ```
@@ -2237,6 +2242,11 @@ This method is called automatically in the retraction invariants test suite (§1
 
 For `(not (and <p1> <p2> ...))`, we need an NCC (Negated Conjunctive Condition) structure. This requires a subnetwork that produces matches for the conjunction, which then block the parent tokens.
 
+Phase 2 establishes full NCC runtime semantics (partner result accounting plus
+assert/retract unblock-reblock transitions). Phase 3+ features that rely on
+conjunction negation (notably limited `forall`) build on this implementation,
+not on alternate lowering strategies.
+
 ```rust
 /// Subnetwork definition for NCC
 pub struct NccSubnetwork {
@@ -2330,7 +2340,10 @@ impl NccMemory {
 
 ### 7.4 Exists Pattern
 
-`(exists <pattern>)` is semantically equivalent to `(not (not <pattern>))` but can be implemented more efficiently:
+`(exists <pattern>)` is implemented as a dedicated support-counting Exists node.
+While it is semantically equivalent to `(not (not <pattern>))`, Ferric treats
+this dedicated node as the canonical implementation path (not merely an
+optimization), and later features must interoperate with this memory model.
 
 - When the first matching fact appears, the exists condition is satisfied
 - Additional matches don't create additional activations
@@ -2453,7 +2466,7 @@ This is a common implementation pitfall — modeling forall as "at least one con
     (assert (all-items-complete)))
 ```
 
-**Required regression test (implement in Phase 2, before building on forall):**
+**Required regression contract (fixture scaffolded in Phase 2; fully enabled in Phase 3 before forall sign-off):**
 
 ```
 Test: forall_vacuous_truth_and_retraction_cycle
@@ -2483,6 +2496,10 @@ Step 6: Retract (item 1). Run engine.
 ```
 
 This test flushes out three common forall implementation bugs: (a) failing to fire on empty condition set, (b) failing to retract on partial mismatch, and (c) failing to re-satisfy after retraction returns to vacuous state. It should be implemented early (Phase 2) before any features are built on top of forall.
+
+**Implementation note (Phase 3 closure):** Ferric uses an internal hidden
+`(initial-fact)` to enable standalone negation/forall activation behavior
+without requiring user-authored trigger facts.
 
 **Not supported (with clear error messages):**
 
@@ -2520,7 +2537,12 @@ The compatibility documentation will include examples of how to refactor unsuppo
 
 ### 7.7 Compile-Time Validation of Pattern Restrictions
 
-All restrictions from Sections 7.5 and 7.6 are enforced at **Rete compilation time** (i.e., when `ReteCompiler::compile_rule` is called), before any network nodes are constructed. This ensures violations are always caught as explicit errors rather than silently producing incorrect runtime behavior ("why didn't my rule ever fire?").
+All restrictions from Sections 7.5 and 7.6 are enforced before network nodes
+are constructed. The authoritative gate is the core compiler entry points
+(`ReteCompiler::compile_rule` / `compile_conditions`), while runtime-level
+pre-validation may be performed for earlier source-located diagnostics. This
+ensures violations are caught as explicit errors rather than silently producing
+incorrect runtime behavior ("why didn't my rule ever fire?").
 
 ```rust
 /// Validates pattern restrictions before Rete node construction.
@@ -2789,9 +2811,11 @@ impl PatternValidator {
 | Stage | What is validated | Effect of violation |
 |-------|-------------------|---------------------|
 | Stage 2 (AST interpretation) | Syntactic validity: correct keyword usage, balanced parens, valid variable references | `InterpretError` with source span |
-| Rete compilation | Semantic restrictions: nesting depth, forall constraints, variable scoping across patterns | `PatternValidationError` with source span (if available) and refactoring suggestions |
+| Runtime translation (loader) | Construct-shape checks and source-aware pre-validation before translation into compiler models | Load fails with explicit validation/compile errors |
+| Core compilation | Semantic restrictions: nesting depth, NCC/exists/forall constraints, variable scoping across patterns | `CompileError::Validation` / `PatternValidationError` with stable codes |
 
-Both stages produce errors with source locations where available. No unsupported pattern ever silently enters the Rete network.
+All stages produce errors with source locations where available. No unsupported
+pattern ever silently enters the Rete network.
 
 ---
 
@@ -2832,6 +2856,14 @@ Source Code
     │
     ▼
   Typed AST (Vec<Construct>)
+    │
+    ▼
+  Runtime Translation
+  (CompilableRule / CompilableCondition)
+    │
+    ▼
+  Core ReteCompiler
+  (parser-agnostic validation + compilation)
 ```
 
 ### 8.2 Stage 1: Lexer and S-Expressions
@@ -2848,7 +2880,7 @@ pub enum Token {
     Symbol(String),
     SingleVar(String),    // ?name
     MultiVar(String),     // $?name
-    GlobalVar(String),    // ?*name*
+    GlobalVar(String),    // ?*MODULE::name* (MODULE optional for current-module lookup)
     Ampersand,            // &
     Pipe,                 // |
     Tilde,                // ~
@@ -2872,7 +2904,7 @@ pub enum Atom {
     Symbol(String),
     SingleVar(String),
     MultiVar(String),
-    GlobalVar(String),
+    GlobalVar(String),     // ?*MODULE::name* (MODULE optional for current-module lookup)
     Connective(Connective),  // & | ~ : = <-
 }
 
@@ -2938,57 +2970,52 @@ The S-expression parser implements recovery strategies:
 
 ### 8.3 Stage 2: Construct Interpretation
 
-Phase 1 baseline note:
+Phase 2 baseline note:
 
-- Stage 2 interpretation is not yet the default load path.
-- `Engine::load_str` / `Engine::load_file` currently return
-  `Result<LoadResult, Vec<LoadError>>`.
-- `LoadResult` carries asserted fact IDs, collected S-expression-level
-  `RuleDef` values, and warnings.
-- `deffacts` is currently accepted as batch assert behavior.
+- Stage 2 interpretation is the default path for `defrule`, `deftemplate`,
+  and `deffacts` in runtime loading.
+- Additional top-level constructs (`deffunction`, `defglobal`, `defmodule`,
+  `defgeneric`, `defmethod`) are now interpreted and executable in runtime
+  load/execute flows (Phase 3 closure); unsupported sentinel coverage for this
+  area moved to out-of-scope constructs such as `defclass`.
+- `Engine::load_str` / `Engine::load_file` return
+  `Result<LoadResult, Vec<LoadError>>`, where `LoadResult` carries asserted
+  facts, typed constructs, and warnings.
+- Runtime translates Stage 2 constructs into parser-agnostic compiler models
+  before calling `ferric-core::ReteCompiler`.
+- Unsupported pattern/constraint forms fail with explicit validation/compile
+  diagnostics; they are never silently dropped.
 
 ```rust
 /// Top-level construct
 #[derive(Clone, Debug)]
 pub enum Construct {
-    Rule(RuleDefinition),
-    Template(TemplateDefinition),
-    Facts(FactsDefinition),
-    Function(FunctionDefinition),
-    Global(GlobalDefinition),
-    Module(ModuleDefinition),
-    Generic(GenericDefinition),
-    Method(MethodDefinition),
+    Rule(RuleConstruct),
+    Template(TemplateConstruct),
+    Facts(FactsConstruct),
 }
 
 /// Interpret S-expressions into constructs
 pub fn interpret_constructs(
     sexprs: &[SExpr],
-    config: &ParserConfig,
-) -> Result<Vec<Construct>, Vec<InterpretError>> {
-    let mut constructs = Vec::new();
-    let mut errors = Vec::new();
-
+    config: &InterpreterConfig,
+) -> InterpretResult {
+    let mut out = InterpretResult::default();
     for sexpr in sexprs {
         match interpret_one(sexpr, config) {
-            Ok(construct) => constructs.push(construct),
+            Ok(c) => out.constructs.push(c),
             Err(e) => {
-                errors.push(e);
+                out.errors.push(e);
                 if config.strict {
-                    break; // Stop on first error in strict mode
+                    break;
                 }
             }
         }
     }
-
-    if errors.is_empty() {
-        Ok(constructs)
-    } else {
-        Err(errors)
-    }
+    out
 }
 
-fn interpret_one(sexpr: &SExpr, config: &ParserConfig) -> Result<Construct, InterpretError> {
+fn interpret_one(sexpr: &SExpr, config: &InterpreterConfig) -> Result<Construct, InterpretError> {
     let list = sexpr.as_list().ok_or_else(|| {
         InterpretError::expected("construct", sexpr.span())
     })?;
@@ -3005,11 +3032,6 @@ fn interpret_one(sexpr: &SExpr, config: &ParserConfig) -> Result<Construct, Inte
         "defrule" => interpret_rule(&list[1..], sexpr.span()),
         "deftemplate" => interpret_template(&list[1..], sexpr.span()),
         "deffacts" => interpret_facts(&list[1..], sexpr.span()),
-        "deffunction" => interpret_function(&list[1..], sexpr.span()),
-        "defglobal" => interpret_global(&list[1..], sexpr.span()),
-        "defmodule" => interpret_module(&list[1..], sexpr.span()),
-        "defgeneric" => interpret_generic(&list[1..], sexpr.span()),
-        "defmethod" => interpret_method(&list[1..], sexpr.span()),
         _ => Err(InterpretError::unknown_construct(keyword, head.span())),
     }
 }
@@ -3119,6 +3141,8 @@ defglobal = "(" "defglobal" [module-name]
             global-assignment* ")" ;
 
 global-assignment = global-variable "=" expression ;
+(* global-variable uses canonical '?*MODULE::name*' syntax; omitting MODULE
+   binds/reads the current module's local global namespace. *)
 
 (* Modules *)
 defmodule = "(" "defmodule" module-name [comment]
@@ -3149,6 +3173,10 @@ pub struct EngineConfig {
 
     /// Tracing/logging configuration
     pub tracing: TracingConfig,
+
+    /// Maximum callable depth (`deffunction` / `defmethod` / `call-next-method`)
+    /// before recursion-limit diagnostics are raised.
+    pub max_call_depth: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -3188,14 +3216,37 @@ impl EngineConfig {
     pub fn classic() -> Self { ... }  // CLIPS-compatible defaults
     pub fn strict() -> Self { ... }   // Modern strict defaults
 }
+
+// Constructor defaults:
+// - new() / classic() / strict() all initialize max_call_depth = 64.
 ```
 
 ### 9.2 Engine API
 
-The API below combines the long-term target surface with explicit Phase 1
-baseline notes. Phase 1 currently implements loading/assert/retract/query
-building blocks and thread-affinity controls; rule execution surfaces
-(`run`, `step`, module/function management) remain Phase 2+ work.
+The API below combines the long-term target surface with explicit post-Phase-2
+baseline notes:
+
+- `run` / `step` / `halt` / `reset` are implemented.
+- `reset` / `clear` are deferred until the current action batch completes;
+  once applied, the current `run()` invocation returns so callers observe the
+  new post-reset/clear state before any subsequent firing cycle.
+- RHS action execution is live for `assert`, `retract`, and `halt`.
+- `modify` / `duplicate` are template-aware for ordered and template facts.
+- `printout` is implemented with per-channel output routing.
+- `printout` channel contract: first argument must be a literal symbol/string;
+  non-literal channel forms emit a diagnostic.
+- Focus query/set contract: `set_focus` replaces the stack with one module;
+  `get_focus` returns the top module name; `get_focus_stack` returns names
+  bottom-to-top. `run` pops transient focus frames when empty but preserves
+  the final baseline focus frame across runs; `reset` restores `[MAIN]`.
+- Generic dispatch baseline is deterministic by method index order. Auto-index
+  assignment is registration-order-based in Phase 3; CLIPS-style specificity
+  ranking and `call-next-method` are explicit Phase 4 compatibility work.
+- Name-collision policy transition: Phase 3 currently allows `deffunction`
+  precedence over same-name `defgeneric`; Phase 4 tightens this to CLIPS-style
+  definition-time conflict diagnostics.
+- Function-call expressions route through the runtime function registry;
+  broad built-in coverage is phased in via Sections 10 and 15.
 
 ```rust
 /// The main Ferric engine
@@ -3317,12 +3368,22 @@ impl Engine {
     pub fn get_global(&self, name: &str) -> Option<&Value>;
 
     /// Set a global variable value
+    ///
+    /// `bind` follows the same visibility contract as `get_global`: it may
+    /// only target globals visible from the current module and must report an
+    /// error for undeclared globals (no implicit global creation).
     pub fn set_global(&mut self, name: &str, value: Value) -> Result<(), GlobalError>;
 
     // === Modules ===
 
     /// Set the current module focus
     pub fn set_focus(&mut self, module: &str) -> Result<(), ModuleError>;
+
+    /// Get the current focus module name (top of focus stack)
+    pub fn get_focus(&self) -> Option<&str>;
+
+    /// Get the full focus stack (bottom to top)
+    pub fn get_focus_stack(&self) -> Vec<&str>;
 
     /// Get the current module
     pub fn current_module(&self) -> &str;
@@ -3458,8 +3519,9 @@ The standard library is implemented in phases. v10 locks a concrete minimum surf
 | Math | `+`, `-`, `*`, `/`, `mod`, `abs`, `min`, `max` | Numeric ops only; overflow/NaN semantics documented |
 | String/Symbol | `str-cat`, `str-length`, `sub-string`, `sym-cat` | Must follow encoding semantics from §2.4.1 |
 | Multifield | `create$`, `length$`, `nth$`, `member$`, `subsetp` | No implicit flattening beyond CLIPS behavior |
-| Fact Ops | `assert`, `retract`, `modify`, `duplicate` | Wired to core engine APIs |
-| Agenda Ops | `run`, `halt`, `focus`, `get-focus`, `agenda` | Must not bypass agenda invariants |
+| Fact Ops | `assert`, `retract`, `modify`, `duplicate` | `assert`/`retract` are fully operational; template-aware `modify`/`duplicate` implemented in Phase 3 |
+| I/O | `printout` | Implemented in Phase 3 runtime; channel argument is literal symbol/string only (non-literal yields diagnostic). Phase 4 extends broader I/O surface (`format`, `read`, `readline`) and propagates `read`/`readline` input buffering through nested `deffunction` / `defmethod` / `call-next-method` frames |
+| Agenda Ops | `run`, `halt`, `focus`, `get-focus`, `get-focus-stack`, `list-focus-stack`, `agenda` | Must not bypass agenda invariants; query-surface parity is completed in Phase 4 |
 | Environment | `reset`, `clear` | Administrative controls |
 
 Functions outside this table are explicitly deferred until they are listed in this document with tests and compatibility notes.
@@ -4226,6 +4288,9 @@ Phase 1 baseline status: consistency checks now cover token, alpha, beta, and
 agenda internals, plus rete-level cross-structure integrity checks exercised in
 retraction-oriented tests. Negative/NCC/exists-specific invariants remain
 Phase 2+ as those structures are introduced.
+Phase 3 extension status: `debug_assert_consistency()` also checks module/focus
+registry integrity, function/global/generic registries, and rule/template
+module mappings.
 
 ### Phase 1: Foundation (Weeks 1-10)
 
@@ -4270,39 +4335,71 @@ explicitly Phase 2 scope.
 - Pattern restriction violations are caught at compile time with source-located errors
 - Integration tests pass with real CLIPS files
 
+Carry-forward baseline for remaining phases:
+- Parser Stage 2 produces typed constructs; runtime owns translation into
+  parser-agnostic core compile models.
+- NCC conjunction negation semantics are complete and are the baseline for
+  future `forall` work.
+- `exists` uses dedicated support-counting memory as the canonical
+  implementation.
+- Unsupported constructs must fail with explicit diagnostics (never silently
+  dropped).
+- Core compiler entry points are the authoritative validation gate.
+- RHS actions are live with a narrowed subset (`assert`/`retract`/`halt` fully
+  operational; template-aware `modify`/`duplicate` and `printout` deferred).
+
 ### Phase 3: Language Completion (Weeks 21-26)
 
-**Goal:** Full supported language subset
+**Goal:** Complete language/runtime semantics deferred from Phase 2 and land the remaining supported construct set.
 
 | Week | Deliverables |
 |------|--------------|
-| 21-22 | deffunction, defglobal |
-| 23-24 | defmodule, import/export |
-| 25-26 | defgeneric, defmethod; forall (limited) |
+| 21-22 | Runtime carryover closure: template-aware `modify`/`duplicate`, non-placeholder `printout`, function-call evaluation path for RHS/test expressions |
+| 23-24 | `deffunction`, `defglobal`; function environment wiring for user-defined calls |
+| 25-26 | `defmodule` import/export, `defgeneric`/`defmethod`, `forall` (limited) built on existing NCC/exists semantics and vacuous-truth contract |
 
 **Exit Criteria:**
-- All supported constructs implemented
+- Phase 2 carryover action semantics are complete (`modify`/`duplicate` template-aware, `printout` implemented)
+- `forall` limited subset is implemented with regression coverage (including vacuous-truth + retraction cycle)
+- Remaining supported constructs (`deffunction`, `defglobal`, `defmodule`, `defgeneric`, `defmethod`) are implemented
 - Good error messages with source locations
-- Unsupported constructs rejected with clear messages
+- Unsupported constructs rejected with stable, source-located diagnostics (no silent degradation)
+
+**Phase 3 remediation closure (2026-02-19):**
+- R1 resolved: forall vacuous-truth/retraction-cycle regression contract is fully enforced by active 6-step integration tests.
+- R2 resolved: RHS `focus` now emits explicit diagnostics for unknown modules (no silent drops).
+- R3 resolved: duplicate-definition checks with source-located diagnostics cover `defglobal`, `defmodule`, `defgeneric`, and duplicate explicit `defmethod` indices.
+- R4 resolved: evaluator carries source spans for variable/global references and surfaces them in unbound-variable/global diagnostics.
+- R5 explicitly deferred to Phase 4: enforce module visibility for cross-module `deffunction` and `defglobal` resolution paths, including module-qualified `MODULE::name` references.
+- R6 resolved: public focus APIs (`set_focus`, `get_focus`, `get_focus_stack`) match runtime behavior; `run` preserves a baseline focus frame across calls and `reset` restores `[MAIN]`.
+- R8 resolved: `printout` channel remains literal-only (`symbol`/`string`) with diagnostics for non-literal forms.
+- R9 resolved: consistency checks include Phase 3 registries/mappings (module/focus, function/global/generic, rule/template module links).
+- Phase 3 post-review carryover: generic dispatch remains index-order deterministic with registration-order auto-indexing; Phase 4 finalizes CLIPS specificity ranking and `call-next-method`.
+- Phase 3 post-review carryover: same-name `deffunction`/`defgeneric` currently uses precedence behavior; Phase 4 replaces this with explicit definition-time conflict diagnostics.
 
 ### Phase 4: Standard Library (Weeks 27-32)
 
-**Goal:** Built-in functions
+**Goal:** Fill out built-in function breadth and close remaining language-compatibility carryovers discovered during Phase 3.
 
 | Week | Deliverables |
 |------|--------------|
-| 27-28 | Predicate and math functions |
-| 29-30 | String and multifield functions |
-| 31-32 | I/O, fact ops, agenda ops |
+| 27-28 | Module-resolution completion: enforce `defmodule` import/export visibility for cross-module `deffunction` calls and `defglobal` reads/writes, and add module-qualified `MODULE::name` resolution with source-located diagnostics |
+| 29-30 | Generic-dispatch compatibility closure: CLIPS-style specificity ranking, `call-next-method`, and finalized definition-time conflict diagnostics for same-name `deffunction`/`defgeneric` |
+| 31-32 | Standard-library breadth: predicate/math/string/symbol/multifield and I/O/environment/fact/agenda surfaces (`format`, `read`, `readline`, focus query functions), including full `printout` behavior validation |
 
 **Exit Criteria:**
 - All documented functions implemented
-- Function tests pass
+- Callable/global registries are keyed by `(ModuleId, local-name)` so identical local names can coexist across modules without clobbering
+- Module-qualified and cross-module callable/global resolution paths honor import/export visibility with source-located diagnostics (`?*MODULE::name*` canonical form for qualified globals)
+- Unqualified resolution is caller-module-first, then visible imports; ambiguous multiple-visible matches emit explicit diagnostics (no arbitrary fallback)
+- Generic dispatch behavior matches documented specificity/`call-next-method` contract
+- Same-name `deffunction`/`defgeneric` definitions fail with explicit conflict diagnostics
+- Function tests pass through both direct calls and RHS expression execution paths
 - Can run standard CLIPS examples
 
 ### Phase 5: FFI & CLI (Weeks 33-38)
 
-**Goal:** External interfaces
+**Goal:** External interfaces built on Phase 4's finalized module/global resolution and diagnostic contracts.
 
 | Week | Deliverables |
 |------|--------------|
@@ -4314,6 +4411,9 @@ explicitly Phase 2 scope.
 - C programs can embed Ferric
 - Error handling works correctly (thread-local + per-engine + copy-to-buffer variants)
 - Thread safety contract is documented prominently in the generated C header
+- Validation and action-execution diagnostics are surfaced consistently through FFI and CLI
+- Phase 4 module/generic diagnostics (visibility, module-qualified names, dispatch/conflict errors) are surfaced through FFI and CLI without loss of source context
+- Phase 4 module/global ambiguity and visibility diagnostics are treated as stable external contract (no CLI/FFI-layer reinterpretation)
 - CLI runs on all platforms
 - REPL is functional
 
@@ -4330,8 +4430,13 @@ explicitly Phase 2 scope.
 **Exit Criteria:**
 - CLIPS compatibility tests pass
 - Performance within target range
-- Documentation complete (including string comparison semantics, pattern restriction rationale)
+- Documentation complete (including string comparison semantics, pattern restriction rationale, canonical `?*MODULE::name*` global syntax, and `bind` non-creation semantics)
 - Ready for release
+
+Phase 4 follow-through requirements for subsequent phases:
+- Phase 5 surface design must keep Phase 4 module/visibility/ambiguity diagnostics intact and source-located.
+- Phase 6 compatibility documentation must reflect canonical qualified global syntax and bind write semantics exactly as implemented.
+- Regression coverage for module namespace collisions and qualified-global paths remains mandatory for future refactors.
 
 ### Timeline Summary
 

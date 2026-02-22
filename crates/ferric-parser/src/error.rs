@@ -15,37 +15,46 @@ fn display_error(f: &mut fmt::Formatter<'_>, span: Span, message: &str) -> fmt::
     write!(f, "{}:{}: {}", span.start.line, span.start.column, message)
 }
 
-/// A parse error with location information.
-#[derive(Clone, Debug)]
-pub struct ParseError {
-    /// Human-readable error message.
-    pub message: String,
-    /// Location of the error in source code.
-    pub span: Span,
-    /// Category of error for programmatic handling.
-    pub kind: ParseErrorKind,
-}
-
-impl ParseError {
-    /// Creates a new parse error.
-    #[must_use]
-    pub fn new(message: impl Into<String>, span: Span, kind: ParseErrorKind) -> Self {
-        let (message, span, kind) = error_fields(message, span, kind);
-        Self {
-            message,
-            span,
-            kind,
+macro_rules! define_diagnostic_error {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Clone, Debug)]
+        pub struct $name {
+            /// Human-readable error message.
+            pub message: String,
+            /// Location of the error in source code.
+            pub span: Span,
+            /// Category of error for programmatic handling.
+            pub kind: ParseErrorKind,
         }
-    }
+
+        impl $name {
+            /// Creates a new error with location information.
+            #[must_use]
+            pub fn new(message: impl Into<String>, span: Span, kind: ParseErrorKind) -> Self {
+                let (message, span, kind) = error_fields(message, span, kind);
+                Self {
+                    message,
+                    span,
+                    kind,
+                }
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                display_error(f, self.span, &self.message)
+            }
+        }
+
+        impl std::error::Error for $name {}
+    };
 }
 
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        display_error(f, self.span, &self.message)
-    }
-}
-
-impl std::error::Error for ParseError {}
+define_diagnostic_error!(
+    /// A parse error with location information.
+    ParseError
+);
 
 /// Categories of parse errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,37 +73,10 @@ pub enum ParseErrorKind {
     UnexpectedCloseParen,
 }
 
-/// A lexical error encountered during tokenization.
-#[derive(Clone, Debug)]
-pub struct LexError {
-    /// Human-readable error message.
-    pub message: String,
-    /// Location of the error in source code.
-    pub span: Span,
-    /// Category of error.
-    pub kind: ParseErrorKind,
-}
-
-impl LexError {
-    /// Creates a new lexical error.
-    #[must_use]
-    pub fn new(message: impl Into<String>, span: Span, kind: ParseErrorKind) -> Self {
-        let (message, span, kind) = error_fields(message, span, kind);
-        Self {
-            message,
-            span,
-            kind,
-        }
-    }
-}
-
-impl fmt::Display for LexError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        display_error(f, self.span, &self.message)
-    }
-}
-
-impl std::error::Error for LexError {}
+define_diagnostic_error!(
+    /// A lexical error encountered during tokenization.
+    LexError
+);
 
 impl From<LexError> for ParseError {
     fn from(value: LexError) -> Self {

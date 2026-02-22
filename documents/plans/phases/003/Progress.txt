@@ -1,0 +1,333 @@
+Phase 003 Progress
+==================
+
+Pass 001: Phase 3 Baseline and Harness Alignment
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Updated crate-level doc comments across all 4 crates to reflect Phase 3
+      starting contracts and Phase 2 completion status.
+    - Extended test_helpers.rs with Phase 3 helpers: run_to_completion,
+      load_and_run, assert_fact_count, find_facts_by_relation,
+      assert_has_fact_with_relation, assert_no_fact_with_relation,
+      load_fixture, assert_unsupported_form.
+    - Created phase3_integration_tests.rs with:
+      - 5 unsupported-form diagnostic baseline tests at phase start
+        (deffunction, defglobal, defmodule, defgeneric, defmethod);
+        superseded by later passes where these constructs load/execute
+        and `defclass` is the unsupported sentinel.
+      - 6 Phase 2 behavior preservation ("canary") tests
+      - Commented-out scaffolding for passes 002-010
+    - Created 7 fixture .clp files for Phase 3 constructs:
+      phase3_deffunction.clp, phase3_defglobal.clp, phase3_defmodule.clp,
+      phase3_defgeneric.clp, phase3_forall.clp, phase3_printout.clp,
+      phase3_expression_eval.clp
+    - All tests pass: 141 tests (up from 130), clippy clean, fmt clean.
+
+Pass 002: Expression Evaluation Path for RHS and Test
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Created evaluator.rs (~1100 lines) with:
+      - RuntimeExpr normalized expression model (Literal, BoundVar, GlobalVar, Call)
+      - EvalContext struct for evaluation against token bindings
+      - eval() main evaluation entry point
+      - from_action_expr() translator (ActionExpr → RuntimeExpr)
+      - from_sexpr() translator (SExpr → RuntimeExpr) for test CEs
+      - connective_to_function_name() mapping parser connectives to builtin names
+      - Built-in functions: arithmetic (+,-,*,/,div,mod,abs,min,max),
+        comparison (>,<,>=,<=,=,!=,eq,neq), boolean (and,or,not),
+        type predicates (integerp,floatp,numberp,symbolp,stringp)
+      - is_truthy(), clips_true(), clips_false() truth helpers
+      - SourceSpan-based error diagnostics
+      - 60 unit tests
+    - Refactored actions.rs:
+      - Added test_conditions field to CompiledRuleInfo
+      - Added EvalError variant to ActionError
+      - execute_actions now returns (bool, Vec<ActionError>) indicating logical fire
+      - Replaced inline eval_expr with evaluator pipeline (from_action_expr + eval)
+      - Test CEs evaluated before RHS actions; falsy = rule not fired
+      - Removed superseded literal_to_value function
+    - Updated loader.rs:
+      - TranslatedRule now carries test_conditions
+      - translate_rule_construct intercepts Pattern::Test early, translates via
+        from_sexpr, and collects separately (no rete pattern generated)
+      - Test CE patterns don't increment fact_index
+      - Updated test: test pattern now compiles successfully
+    - Updated engine.rs:
+      - execute_activation_actions returns bool (logically fired)
+      - run() only increments rules_fired for logically-fired rules
+    - Added get_ordered_fields() test helper for field value inspection
+    - Added 12 integration tests for Pass 002 (test CE filtering, nested calls,
+      arithmetic, interleaved patterns, reset cycles, equality, not function)
+    - All tests pass: 607 tests (up from 141), clippy clean.
+
+Pass 003: Template-Aware Modify and Duplicate Semantics
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Created templates.rs module with RegisteredTemplate struct (name,
+      slot_names, slot_index map, defaults).
+    - Added template registry to Engine: template_ids (name→TemplateId),
+      template_defs (TemplateId→RegisteredTemplate), template_id_alloc.
+    - Implemented register_template() in loader.rs: allocates TemplateId,
+      builds slot metadata, stores in engine's template registry.
+    - Fixed process_template_fact_body to create proper Fact::Template
+      instead of faking as ordered facts. Uses template registry for
+      slot name→index mapping and default values.
+    - Enabled template pattern compilation: Pattern::Template now resolves
+      template name→TemplateId, creates AlphaEntryType::Template entry,
+      and translates slot constraints with SlotIndex::Template.
+    - Template-aware modify: retract+assert with slot name resolution via
+      RegisteredTemplate. Handles both Ordered and Template facts.
+    - Template-aware duplicate: copy+assert with slot overrides, original
+      preserved. Handles both Ordered and Template facts.
+    - Added apply_template_slot_overrides helper for slot-name-based updates.
+    - Added template_defs parameter threading through execute_actions chain.
+    - Added 7 integration tests (template modify, duplicate, unknown slot,
+      defaults, constant pattern matching, deffacts template, unknown
+      template error).
+    - Updated 2 loader tests for template pattern compilation.
+    - All tests pass: 615 tests (up from 607), clippy clean.
+
+Pass 004: Printout Runtime and Router Integration
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Created router.rs with OutputRouter: per-channel string capture,
+      write/get_output/clear API, 5 unit tests.
+    - Added router field to Engine, initialized in new(), cleared in reset().
+    - Added Engine::get_output() public accessor for test output inspection.
+    - Implemented execute_printout in actions.rs: channel extraction from
+      first argument, value evaluation via evaluator, special symbol expansion
+      (crlf→\n, tab→\t, ff→\x0C), proper formatting for all value types.
+    - Threaded router through execute_actions call chain.
+    - Added format_printout_value helper for CLIPS-compatible value formatting
+      (strings without quotes, floats with decimal point, symbol expansion).
+    - Added 6 integration tests (channel capture, integer formatting, crlf,
+      tab, expression arguments, post-reset clearing).
+    - All tests pass: 626 tests (up from 615), clippy clean.
+
+Pass 005: Stage 2 Deffunction and Defglobal Interpretation
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Added FunctionConstruct, GlobalConstruct, GlobalDefinition types
+      to ferric-parser Stage 2 AST.
+    - Implemented interpret_function: name, optional comment, parameter
+      list with wildcard support, body expressions via ActionExpr.
+    - Implemented interpret_global: repeating ?*name* = expr triplets,
+      supports Connective::Equals and Symbol("=") for the equals sign.
+    - Extended Construct enum with Function and Global variants.
+    - Updated interpret_constructs dispatcher to handle deffunction/defglobal.
+    - Extended LoadResult with functions and globals fields.
+    - Updated loader to recognize and pass through deffunction/defglobal.
+    - Re-exported new types from ferric-parser and ferric-runtime.
+    - Updated unsupported-form tests: deffunction/defglobal now load
+      successfully; unsupported-form tests use defmodule instead.
+    - Added 21 parser tests covering all aspects of deffunction/defglobal
+      interpretation including error cases.
+    - Added 4 loader tests for deffunction/defglobal loading.
+    - All tests pass: 651 tests (up from 626), clippy clean.
+
+Pass 006: User-Defined Function Environment and Execution
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Created functions.rs module with:
+      - UserFunction struct (name, parameters, wildcard_parameter, body)
+      - FunctionEnv registry (HashMap-backed, register/get API)
+      - GlobalStore (HashMap-backed, get/set/clear API)
+      - 9 unit tests
+    - Added max_call_depth to EngineConfig (default: 256).
+    - Extended EvalContext with functions (&FunctionEnv), globals (&mut GlobalStore),
+      call_depth (usize).
+    - Added RecursionLimit error variant to EvalError.
+    - Implemented GlobalVar evaluation: reads from GlobalStore, returns
+      UnboundGlobal when not set.
+    - Implemented user-defined function dispatch: when builtin dispatch returns
+      UnknownFunction, tries user-defined lookup in FunctionEnv, creates call
+      frame with parameter bindings, evaluates body sequentially, returns last
+      value. Respects max_call_depth.
+    - Implemented bind special form: first arg is unevaluated GlobalVar reference,
+      second arg is evaluated and stored in GlobalStore.
+    - Wildcard parameter support: excess arguments collected into Multifield.
+    - Added functions (FunctionEnv), globals (GlobalStore), registered_globals
+      fields to Engine.
+    - Added Engine::get_global() public accessor.
+    - Updated reset() to reinitialize globals from registered initial values.
+    - Threaded functions and globals through entire execute_actions call chain
+      (actions.rs: execute_actions, execute_single_action, eval_expr,
+      execute_printout, execute_assert, execute_modify, execute_duplicate,
+      apply_ordered_slot_overrides, apply_template_slot_overrides).
+    - Updated loader.rs: deffunction registered in FunctionEnv, defglobal
+      initial values evaluated and stored in GlobalStore and registered_globals.
+    - Added 13 integration tests (user function from RHS, multiple params,
+      wildcard params, nested calls, function-calling-function, recursion limit,
+      global read in RHS, global read in test CE, global bind, global reset,
+      wrong arity, initial expression, printout with function).
+    - Updated all existing evaluator unit tests (~60) for new EvalContext fields.
+    - All tests pass: 682 tests (up from 651), clippy clean.
+
+Pass 007: Stage 2 Defmodule/Defgeneric/Defmethod Interpretation
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Added AST types to ferric-parser Stage 2:
+      - ModuleSpec enum (All, None, Specific {construct_type, names})
+      - ImportSpec struct (module_name, spec, span)
+      - ModuleConstruct (name, span, comment, exports, imports)
+      - GenericConstruct (name, span, comment)
+      - MethodParameter (name, type_restrictions, span)
+      - MethodConstruct (name, span, index, parameters, wildcard_parameter, body)
+    - Extended Construct enum with Module, Generic, Method variants.
+    - Implemented interpret_module with helpers interpret_module_spec and
+      interpret_import_spec: handles export/import ?ALL, ?NONE, and specific
+      construct-type + names.
+    - Implemented interpret_generic: name and optional comment.
+    - Implemented interpret_method: name, optional index, parameter restrictions
+      with type constraints, wildcard param, body expressions.
+    - Updated interpret_constructs dispatch for defmodule/defgeneric/defmethod.
+    - Extended LoadResult with modules, generics, methods fields.
+    - Updated loader to recognize and pass through all three constructs.
+    - Re-exported new types from ferric-parser and ferric-runtime.
+    - Updated unsupported-form tests: defmodule/defgeneric/defmethod now load
+      successfully; unsupported-form tests use defclass instead.
+    - Added 27 parser tests (defmodule with various export/import combos,
+      defgeneric simple and with comment, defmethod with typed/untyped params,
+      multi-type restrictions, wildcard, explicit index, error cases).
+    - Added 4 loader tests for defmodule/defgeneric/defmethod loading.
+    - All tests pass: 711 tests (up from 682), clippy clean.
+
+Pass 008: Defmodule Import/Export and Focus Semantics
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Created modules.rs with ModuleId(u32) newtype, RuntimeModule struct,
+      ModuleRegistry (module registry + focus stack + visibility checking).
+    - MAIN module auto-created with export ?ALL on registry construction.
+    - Added pop_matching() and has_matching() to Agenda (ferric-core) for
+      focus-aware activation selection with predicate-based filtering.
+    - Engine gains module_registry, rule_modules (RuleId→ModuleId),
+      template_modules (TemplateId→ModuleId) fields.
+    - Focus-aware run(): only fires activations from current focus module;
+      when focus module's agenda is empty, pops focus stack; when stack
+      empty, returns AgendaEmpty.
+    - Focus RHS action: (focus A B C) collects module names as deferred
+      requests, applied after all actions complete (pushed in reverse
+      order so first arg is on top of stack).
+    - Loader registers defmodule constructs in ModuleRegistry, tracks
+      current module during construct processing. Two-pass bug fixed:
+      rules captured as (RuleConstruct, ModuleId) tuples during collection
+      to preserve correct module association across multiple defmodules.
+    - Template visibility checking: Pattern::Template compilation verifies
+      is_construct_visible() before proceeding; clear diagnostic on failure.
+    - reset() calls module_registry.reset_focus() to restore [MAIN] stack.
+    - Added 10 integration tests (module registration, default MAIN,
+      focus-aware firing, focus from RHS, focus stack pop, reset focus,
+      unknown module error, cross-module template visibility, template
+      not visible without import, multi-module focus chain).
+    - Added 3 agenda unit tests (pop_matching, no match, has_matching).
+    - Added 8 module registry unit tests.
+    - All tests pass: 733 tests (up from 711), clippy clean.
+
+Pass 009: Defgeneric/Defmethod Dispatch Runtime
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Added RegisteredMethod, GenericFunction, GenericRegistry types to
+      functions.rs for generic function/method storage and dispatch ordering.
+    - Methods sorted by index (ascending); auto-index assignment when no
+      explicit index provided (increments from max existing + 1).
+    - Added NoApplicableMethod error variant to EvalError with argument
+      type reporting.
+    - Added generics: &GenericRegistry field to EvalContext.
+    - Integrated generic dispatch into eval() Call arm: builtins → user-defined
+      → generic dispatch → UnknownFunction error.
+    - Implemented dispatch_generic: eager argument evaluation, method
+      applicability check (arity + type restrictions), first-applicable
+      method fires, body evaluated with parameter bindings (same pattern
+      as dispatch_user_function).
+    - Implemented value_matches_type for CLIPS type checking: INTEGER, FLOAT,
+      NUMBER (int|float), SYMBOL, STRING, LEXEME (sym|str), MULTIFIELD,
+      EXTERNAL-ADDRESS.
+    - Added generics: GenericRegistry field to Engine, initialized in new().
+    - Threaded generics through entire execute_actions call chain in actions.rs
+      (9 functions updated).
+    - Loader: Construct::Generic registers in engine's GenericRegistry;
+      Construct::Method extracts param names, type restrictions, wildcard,
+      body and registers via register_method.
+    - Added GenericRegistry to lib.rs re-exports.
+    - Added 7 unit tests (registry, method sorting, auto-index, wildcard).
+    - Added 11 integration tests (single typed dispatch, float dispatch,
+      catch-all, index ordering, no-applicable-method, return value usage,
+      wildcard params, NUMBER type, LEXEME type, auto-created generic,
+      called from deffunction via printout).
+    - All tests pass: 751 tests (up from 733), clippy clean.
+
+Pass 010: Forall Limited Semantics and Regression Contract
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Added Pattern::Forall(Vec<Pattern>, Span) variant to parser's Pattern enum.
+    - Added "forall" arm in interpret_pattern with minimum 2 sub-patterns
+      validation.
+    - Changed NCC subpattern validation in compiler.rs to allow negated
+      subpatterns (allow_negated: true), enabling forall(P, not(Q)) desugaring.
+    - Loader translate_condition handles Pattern::Forall: validates Phase 3
+      restrictions (exactly 2 sub-patterns, both simple, no nested forall),
+      desugars to CompilableCondition::Ncc([P, neg(Q)]).
+    - Added initial-fact mechanism: loader's ensure_initial_fact() asserts
+      (initial-fact) after rules compile, engine tracks initial_fact_id,
+      reset() re-asserts it, facts() filters it from user-visible results.
+    - Loader injects implicit (initial-fact) join when first condition is NCC,
+      enabling standalone forall/negation rules.
+    - CRITICAL BUG FIX: retract_token_cascade in rete.rs was not calling
+      ncc_handle_result_retraction. Fixed by threading fact_base and
+      new_activations through the call chain. This fix enables correct
+      NCC result count management during token cascade retraction —
+      essential for forall to correctly fire/unfire as facts change.
+    - Updated negative_right_activate, ncc_partner_receive_result,
+      exists_handle_retraction, assert_fact, propagate_token in rete.rs
+      to thread new parameters.
+    - Added 8 integration tests (all items satisfied, unchecked item,
+      vacuous truth, multiple items, missing item, forall with trigger,
+      nested forall error, three-pattern error).
+    - Enabled forall_vacuous_truth_and_retraction_cycle regression test
+      in phase2_integration_tests.rs.
+    - Added 2 parser tests (basic forall, too-few-patterns error).
+    - All tests pass: 762 tests (up from 751), clippy clean.
+
+Pass 011: Phase 3 Integration and Exit Validation
+  Status: COMPLETE
+  Date: 2026-02-17
+  Summary:
+    - Updated 3 fixture .clp files to match implemented syntax:
+      phase3_defgeneric.clp (removed parameter from defgeneric, pure method
+      bodies), phase3_defglobal.clp (replaced field constraint with test CE),
+      phase3_defmodule.clp (replaced module-qualified names with focus-based
+      module isolation).
+    - Added 7 fixture-driven integration tests verifying all Phase 3
+      fixture files load and execute correctly.
+    - Added 6 cross-feature interaction tests:
+      deffunction+defglobal, generic+printout, forall+template,
+      deffunction calling generic, test CE with deffunction,
+      global bind+printout.
+    - Added unsupported construct diagnostic test (defclass).
+    - Updated lib.rs doc comments: "Phase 3 complete" section listing
+      all passes, "Phase 3 known limitations" section.
+    - Full quality gate: fmt clean, clippy clean (all targets),
+      check clean (all targets), 776 tests passing.
+
+Phase 003 Status: COMPLETE
+  All 11 passes implemented successfully.
+  Total test count: 776 (up from 130 at phase start).
+  Phase 3 Definition of Done satisfied:
+    1. modify/duplicate are template-aware (Pass 003)
+    2. printout implemented with output routing (Pass 004)
+    3. Shared expression evaluation across RHS/test/callables (Pass 002)
+    4. deffunction/defglobal loadable and executable (Passes 005-006)
+    5. defmodule import/export and focus (Pass 008)
+    6. defgeneric/defmethod dispatch (Pass 009)
+    7. Limited forall with vacuous truth (Pass 010)
+    8. All workspace quality gates clean (Pass 011)

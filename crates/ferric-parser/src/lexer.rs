@@ -293,10 +293,22 @@ impl<'a> Lexer<'a> {
         if self.chars.peek().map(|&(_, ch)| ch) == Some('*') {
             self.advance(); // consume *
             let mut name = String::new();
+            let mut saw_module_separator = false;
             while let Some(&(_, ch)) = self.chars.peek() {
                 if ch == '*' {
                     self.advance();
                     break;
+                } else if ch == ':'
+                    && !saw_module_separator
+                    && self.peek_ahead(1) == Some(':')
+                    && !name.is_empty()
+                    && self.peek_ahead(2).is_some_and(is_symbol_char)
+                {
+                    saw_module_separator = true;
+                    name.push(':');
+                    self.advance(); // consume first ':'
+                    name.push(':');
+                    self.advance(); // consume second ':'
                 } else if is_symbol_char(ch) {
                     name.push(ch);
                     self.advance();
@@ -431,6 +443,21 @@ impl<'a> Lexer<'a> {
             if is_symbol_char(ch) {
                 symbol.push(ch);
                 self.advance();
+            } else if ch == ':' {
+                // Check for module-qualified name: SYMBOL::SYMBOL
+                // peek_ahead(0) == ch == ':' (the first colon)
+                // peek_ahead(1) is the character after the first colon
+                // peek_ahead(2) is the character after that
+                if self.peek_ahead(1) == Some(':') && self.peek_ahead(2).is_some_and(is_symbol_char)
+                {
+                    symbol.push(':');
+                    self.advance(); // consume first ':'
+                    symbol.push(':');
+                    self.advance(); // consume second ':'
+                                    // Continue scanning the rest as part of the same symbol
+                } else {
+                    break;
+                }
             } else {
                 break;
             }
@@ -626,6 +653,16 @@ mod tests {
     }
 
     #[test]
+    fn lex_global_var_module_qualified() {
+        let tokens = lex("?*CONFIG::threshold*", file()).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(
+            tokens[0].token,
+            Token::GlobalVar(ref s) if s == "CONFIG::threshold"
+        ));
+    }
+
+    #[test]
     fn lex_connectives() {
         let tokens = lex("& | ~ : =", file()).unwrap();
         assert_eq!(tokens.len(), 5);
@@ -713,6 +750,68 @@ mod tests {
         let tokens = lex("=>", file()).unwrap();
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].token, Token::Symbol(ref s) if s == "=>"));
+    }
+
+    #[test]
+    fn lex_module_qualified_symbol() {
+        let tokens = lex("SENSOR::reading", file()).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].token, Token::Symbol(ref s) if s == "SENSOR::reading"));
+    }
+
+    #[test]
+    fn lex_module_qualified_symbol_in_parens() {
+        let tokens = lex("(SENSOR::reading)", file()).unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0].token, Token::LeftParen));
+        assert!(matches!(tokens[1].token, Token::Symbol(ref s) if s == "SENSOR::reading"));
+        assert!(matches!(tokens[2].token, Token::RightParen));
+    }
+
+    #[test]
+    fn lex_module_qualified_main() {
+        let tokens = lex("MAIN::person", file()).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].token, Token::Symbol(ref s) if s == "MAIN::person"));
+    }
+
+    #[test]
+    fn lex_single_colon_not_qualified() {
+        // Single colon between symbols still produces separate tokens
+        let tokens = lex("foo:bar", file()).unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0].token, Token::Symbol(ref s) if s == "foo"));
+        assert!(matches!(tokens[1].token, Token::Colon));
+        assert!(matches!(tokens[2].token, Token::Symbol(ref s) if s == "bar"));
+    }
+
+    #[test]
+    fn lex_double_colon_no_following_symbol() {
+        // `FOO::` followed by a space should NOT form a qualified name
+        // (no symbol char immediately after the second colon)
+        let tokens = lex("FOO:: bar", file()).unwrap();
+        // Should be: Symbol("FOO"), Colon, Colon, Symbol("bar")
+        assert_eq!(tokens.len(), 4);
+        assert!(matches!(tokens[0].token, Token::Symbol(ref s) if s == "FOO"));
+        assert!(matches!(tokens[1].token, Token::Colon));
+        assert!(matches!(tokens[2].token, Token::Colon));
+        assert!(matches!(tokens[3].token, Token::Symbol(ref s) if s == "bar"));
+    }
+
+    #[test]
+    fn lex_module_qualified_in_function_call() {
+        let tokens = lex("(MATH::add 1 2)", file()).unwrap();
+        assert_eq!(tokens.len(), 5);
+        assert!(matches!(tokens[1].token, Token::Symbol(ref s) if s == "MATH::add"));
+    }
+
+    #[test]
+    fn lex_module_qualified_preserves_span() {
+        // "SENSOR::reading" is 15 characters; start col=1, end col=16
+        let tokens = lex("SENSOR::reading", file()).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].span.start.column, 1);
+        assert_eq!(tokens[0].span.end.column, 16);
     }
 }
 

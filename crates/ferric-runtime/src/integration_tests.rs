@@ -1,104 +1,34 @@
 //! Integration tests for the full pipeline: parser → loader → engine → Rete → activation.
 //!
 //! These tests exercise the complete flow from CLIPS source code to rule activations.
+//! Phase 1 tests use manual rete construction. Phase 2 tests will use the
+//! compiler pipeline via shared helpers in `test_helpers`.
 
 #[cfg(test)]
 mod tests {
     use ferric_core::beta::RuleId;
-    use ferric_core::{
-        AlphaEntryType, AtomKey, ConstantTest, ConstantTestType, FactId, ReteNetwork, SlotIndex,
-        StringEncoding,
+    use ferric_core::{AtomKey, ConstantTest, ConstantTestType, SlotIndex};
+
+    use crate::test_helpers::{
+        assert_facts_into_rete, assert_rete_clean, assert_rete_consistent,
+        build_constant_test_rete, build_single_pattern_rete, intern, load_ok, new_utf8_engine,
+        retract_one_fact,
     };
-
-    use crate::engine::Engine;
-    use crate::EngineConfig;
-
-    fn intern_symbol(engine: &mut Engine, symbol: &str) -> ferric_core::Symbol {
-        engine
-            .symbol_table
-            .intern_symbol(symbol, StringEncoding::Utf8)
-            .expect("symbol interning should succeed")
-    }
-
-    fn build_ordered_relation_rete(
-        engine: &mut Engine,
-        relation: &str,
-        rule_id: RuleId,
-    ) -> ReteNetwork {
-        let mut rete = ReteNetwork::new();
-        let relation_sym = intern_symbol(engine, relation);
-
-        let entry_node = rete
-            .alpha
-            .create_entry_node(AlphaEntryType::OrderedRelation(relation_sym));
-        let alpha_mem_id = rete.alpha.create_memory(entry_node);
-
-        let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
-
-        rete
-    }
-
-    fn build_constant_test_rete(
-        engine: &mut Engine,
-        relation: &str,
-        test: ConstantTest,
-        rule_id: RuleId,
-    ) -> ReteNetwork {
-        let mut rete = ReteNetwork::new();
-        let relation_sym = intern_symbol(engine, relation);
-
-        let entry_node = rete
-            .alpha
-            .create_entry_node(AlphaEntryType::OrderedRelation(relation_sym));
-        let test_node = rete.alpha.create_constant_test_node(entry_node, test);
-        let alpha_mem_id = rete.alpha.create_memory(test_node);
-
-        let root_id = rete.beta.root_id();
-        let (join_id, _join_mem_id) = rete.beta.create_join_node(root_id, alpha_mem_id, vec![]);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id);
-
-        rete
-    }
-
-    fn assert_facts_into_rete(
-        rete: &mut ReteNetwork,
-        engine: &Engine,
-        fact_ids: &[FactId],
-    ) -> usize {
-        let mut activation_count = 0;
-        for &fact_id in fact_ids {
-            let fact = engine.fact_base.get(fact_id).expect("Fact should exist");
-            activation_count += rete
-                .assert_fact(fact_id, &fact.fact, &engine.fact_base)
-                .len();
-        }
-        activation_count
-    }
 
     #[test]
     fn integration_parse_load_assert_match() {
-        // Parse and load a simple fact
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let source = "(assert (person Alice 25))";
+        let mut engine = new_utf8_engine();
+        let result = load_ok(&mut engine, "(assert (person Alice 25))");
 
-        let result = engine.load_str(source);
-        assert!(result.is_ok());
-        let load_result = result.unwrap();
-
-        // Should have 1 asserted fact, 0 rules
-        assert_eq!(load_result.asserted_facts.len(), 1);
-        assert_eq!(load_result.rules.len(), 0);
-        assert!(load_result.warnings.is_empty());
+        assert_eq!(result.asserted_facts.len(), 1);
+        assert_eq!(result.rules.len(), 0);
+        assert!(result.warnings.is_empty());
 
         let rule_id = RuleId(1);
-        let mut rete = build_ordered_relation_rete(&mut engine, "person", rule_id);
+        let mut rete = build_single_pattern_rete(&mut engine, "person", rule_id);
 
-        // Assert the loaded fact into the Rete network
-        let activations = assert_facts_into_rete(&mut rete, &engine, &load_result.asserted_facts);
+        let activations = assert_facts_into_rete(&mut rete, &engine, &result.asserted_facts);
 
-        // Verify one activation is produced
         assert_eq!(activations, 1);
         assert_eq!(rete.agenda.len(), 1);
 
@@ -108,81 +38,54 @@ mod tests {
 
     #[test]
     fn integration_retract_removes_activation() {
-        // Load a fact
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let source = "(assert (person Bob 30))";
-
-        let result = engine.load_str(source).unwrap();
+        let mut engine = new_utf8_engine();
+        let result = load_ok(&mut engine, "(assert (person Bob 30))");
         assert_eq!(result.asserted_facts.len(), 1);
 
         let rule_id = RuleId(1);
-        let mut rete = build_ordered_relation_rete(&mut engine, "person", rule_id);
-
-        // Assert the loaded fact into the Rete
+        let mut rete = build_single_pattern_rete(&mut engine, "person", rule_id);
         let fact_id = result.asserted_facts[0];
-        let fact = engine
-            .fact_base
-            .get(fact_id)
-            .expect("Fact should exist")
-            .fact
-            .clone();
 
-        let activations = rete.assert_fact(fact_id, &fact, &engine.fact_base);
-        assert_eq!(activations.len(), 1);
+        let acts = assert_facts_into_rete(&mut rete, &engine, &[fact_id]);
+        assert_eq!(acts, 1);
         assert_eq!(rete.agenda.len(), 1);
 
-        // Retract the fact from both FactBase and Rete
-        engine.fact_base.retract(fact_id).expect("Retract failed");
-        let removed = rete.retract_fact(fact_id, &fact);
-
-        // Verify the activation is removed
+        let removed = retract_one_fact(&mut rete, &mut engine, fact_id);
         assert_eq!(removed.len(), 1);
-        assert!(rete.agenda.is_empty());
-
-        // Verify no tokens remain for this fact
-        let tokens_for_fact: Vec<_> = rete.token_store.tokens_containing(fact_id).collect();
-        assert!(tokens_for_fact.is_empty());
+        assert_rete_clean(&rete);
     }
 
     #[test]
     fn integration_multiple_facts_multiple_activations() {
-        // Load multiple facts
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let source = r"
             (assert (person Alice))
             (assert (person Bob))
             (assert (person Carol))
         ";
-
-        let result = engine.load_str(source).unwrap();
+        let result = load_ok(&mut engine, source);
         assert_eq!(result.asserted_facts.len(), 3);
 
         let rule_id = RuleId(1);
-        let mut rete = build_ordered_relation_rete(&mut engine, "person", rule_id);
+        let mut rete = build_single_pattern_rete(&mut engine, "person", rule_id);
 
-        // Assert each fact into the Rete
         let activation_count = assert_facts_into_rete(&mut rete, &engine, &result.asserted_facts);
-
-        // Verify 3 activations are produced
         assert_eq!(activation_count, 3);
         assert_eq!(rete.agenda.len(), 3);
     }
 
     #[test]
     fn integration_constant_test_filters_facts() {
-        // Load multiple facts with different values
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let source = r"
             (assert (color red))
             (assert (color blue))
             (assert (color green))
         ";
-
-        let result = engine.load_str(source).unwrap();
+        let result = load_ok(&mut engine, source);
         assert_eq!(result.asserted_facts.len(), 3);
 
-        let red_sym = intern_symbol(&mut engine, "red");
-
+        let red_sym = intern(&mut engine, "red");
         let red_test = ConstantTest {
             slot: SlotIndex::Ordered(0),
             test_type: ConstantTestType::Equal(AtomKey::Symbol(red_sym)),
@@ -190,18 +93,14 @@ mod tests {
         let rule_id = RuleId(1);
         let mut rete = build_constant_test_rete(&mut engine, "color", red_test, rule_id);
 
-        // Assert all facts into the Rete
         let activation_count = assert_facts_into_rete(&mut rete, &engine, &result.asserted_facts);
-
-        // Verify only 1 activation (for red)
         assert_eq!(activation_count, 1);
         assert_eq!(rete.agenda.len(), 1);
     }
 
     #[test]
     fn integration_loader_and_rete_roundtrip() {
-        // Use loader to parse realistic CLIPS source
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let source = r"
             (deffacts startup
                 (animal dog)
@@ -213,32 +112,51 @@ mod tests {
                 =>
                 (printout t ?x crlf))
         ";
+        let result = load_ok(&mut engine, source);
 
-        let result = engine.load_str(source).unwrap();
-
-        // Verify the loader produces 3 asserted facts and 1 rule definition
         assert_eq!(result.asserted_facts.len(), 3);
         assert_eq!(result.rules.len(), 1);
 
         let rule_id = RuleId(1);
-        let mut rete = build_ordered_relation_rete(&mut engine, "animal", rule_id);
+        let mut rete = build_single_pattern_rete(&mut engine, "animal", rule_id);
 
-        // Assert all facts into the Rete
         let activation_count = assert_facts_into_rete(&mut rete, &engine, &result.asserted_facts);
-
-        // Verify 3 activations
         assert_eq!(activation_count, 3);
         assert_eq!(rete.agenda.len(), 3);
 
-        // Pop one activation and verify agenda has 2 remaining
         let first_act = rete.agenda.pop();
         assert!(first_act.is_some());
         assert_eq!(rete.agenda.len(), 2);
 
-        // Verify the rule definition
         let rule_def = &result.rules[0];
         assert_eq!(rule_def.name, "match-animal");
-        assert_eq!(rule_def.lhs.len(), 1);
-        assert_eq!(rule_def.rhs.len(), 1);
+        assert_eq!(rule_def.patterns.len(), 1);
+        assert_eq!(rule_def.actions.len(), 1);
+    }
+
+    #[test]
+    fn integration_assert_retract_cycle_with_consistency_checks() {
+        let mut engine = new_utf8_engine();
+        let rule_id = RuleId(1);
+        let mut rete = build_single_pattern_rete(&mut engine, "item", rule_id);
+
+        // Assert several facts, checking consistency after each
+        let mut fact_ids = Vec::new();
+        for i in 0..5 {
+            let result = load_ok(&mut engine, &format!("(assert (item v{i}))"));
+            let fid = result.asserted_facts[0];
+            assert_facts_into_rete(&mut rete, &engine, &[fid]);
+            fact_ids.push(fid);
+            assert_rete_consistent(&rete);
+        }
+        assert_eq!(rete.agenda.len(), 5);
+
+        // Retract all, checking consistency after each
+        for fid in fact_ids {
+            retract_one_fact(&mut rete, &mut engine, fid);
+            assert_rete_consistent(&rete);
+        }
+
+        assert_rete_clean(&rete);
     }
 }

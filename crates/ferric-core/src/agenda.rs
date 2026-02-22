@@ -8,6 +8,7 @@ use smallvec::SmallVec;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::beta::RuleId;
+use crate::strategy::ConflictResolutionStrategy;
 use crate::token::TokenId;
 
 slotmap::new_key_type! {
@@ -40,27 +41,44 @@ pub struct Activation {
     pub salience: i32,
     pub timestamp: u64,
     pub activation_seq: u64,
+    /// Recency vector: timestamps of facts in pattern order (for LEX/MEA strategies).
+    pub recency: SmallVec<[u64; 4]>,
+}
+
+/// Strategy-specific ordering component for agenda keys.
+///
+/// The ordering is designed so that `BTreeMap` naturally pops the highest-priority
+/// activation first (using `pop_first`).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum StrategyOrd {
+    Depth(std::cmp::Reverse<u64>),              // Higher timestamp first
+    Breadth(u64),                               // Lower timestamp first
+    Lex(std::cmp::Reverse<SmallVec<[u64; 4]>>), // Lexicographic recency (most recent first)
+    Mea {
+        first_recency: std::cmp::Reverse<u64>,
+        rest_recency: std::cmp::Reverse<SmallVec<[u64; 4]>>,
+    },
 }
 
 /// The ordering key for agenda activations.
 ///
-/// Phase 1 uses depth strategy: higher salience first, then most recent
-/// (higher timestamp) first, then higher activation sequence.
+/// Provides total ordering across all conflict resolution strategies:
+/// salience > strategy-specific ordering > activation sequence.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AgendaKey {
     /// Higher salience first (Reverse).
     pub salience: std::cmp::Reverse<i32>,
-    /// Higher timestamp first (Reverse) — depth strategy.
-    pub timestamp: std::cmp::Reverse<u64>,
-    /// Higher seq first (Reverse) — tiebreaker.
+    /// Strategy-specific ordering component.
+    pub strategy_ord: StrategyOrd,
+    /// Higher seq first (Reverse) — final tiebreaker.
     pub seq: std::cmp::Reverse<u64>,
 }
 
 /// The agenda: stores and prioritizes rule activations.
 ///
-/// Activations are ordered by salience (priority), timestamp (recency),
-/// and sequence (tiebreaker). The depth strategy fires the most recent
-/// activations first within the same salience level.
+/// Activations are ordered by salience (priority), strategy-specific ordering,
+/// and sequence (tiebreaker). The conflict resolution strategy determines how
+/// activations with the same salience are ordered.
 pub struct Agenda {
     /// Ordered activations: key -> `ActivationId`.
     ordering: BTreeMap<AgendaKey, ActivationId>,
@@ -72,18 +90,57 @@ pub struct Agenda {
     token_to_activations: HashMap<TokenId, SmallVec<[ActivationId; 2]>>,
     /// Next activation sequence number.
     next_seq: u64,
+    /// Conflict resolution strategy.
+    strategy: ConflictResolutionStrategy,
 }
 
 impl Agenda {
-    /// Create a new, empty agenda.
+    /// Create a new, empty agenda with the default (Depth) strategy.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_strategy(ConflictResolutionStrategy::default())
+    }
+
+    /// Create a new, empty agenda with the given conflict resolution strategy.
+    #[must_use]
+    pub fn with_strategy(strategy: ConflictResolutionStrategy) -> Self {
         Self {
             ordering: BTreeMap::new(),
             activations: SlotMap::with_key(),
             id_to_key: HashMap::new(),
             token_to_activations: HashMap::new(),
             next_seq: 0,
+            strategy,
+        }
+    }
+
+    /// Build an `AgendaKey` for the given activation.
+    ///
+    /// The key is constructed based on the agenda's conflict resolution strategy.
+    fn build_key(&self, activation: &Activation) -> AgendaKey {
+        let strategy_ord = match self.strategy {
+            ConflictResolutionStrategy::Depth => {
+                StrategyOrd::Depth(std::cmp::Reverse(activation.timestamp))
+            }
+            ConflictResolutionStrategy::Breadth => StrategyOrd::Breadth(activation.timestamp),
+            ConflictResolutionStrategy::Lex => {
+                StrategyOrd::Lex(std::cmp::Reverse(activation.recency.clone()))
+            }
+            ConflictResolutionStrategy::Mea => {
+                let first_recency = activation.recency.first().copied().unwrap_or(0);
+                let rest_recency: SmallVec<[u64; 4]> =
+                    activation.recency.iter().skip(1).copied().collect();
+                StrategyOrd::Mea {
+                    first_recency: std::cmp::Reverse(first_recency),
+                    rest_recency: std::cmp::Reverse(rest_recency),
+                }
+            }
+        };
+
+        AgendaKey {
+            salience: std::cmp::Reverse(activation.salience),
+            strategy_ord,
+            seq: std::cmp::Reverse(activation.activation_seq),
         }
     }
 
@@ -95,19 +152,12 @@ impl Agenda {
         activation.activation_seq = self.next_seq;
         self.next_seq += 1;
 
-        let key = AgendaKey {
-            salience: std::cmp::Reverse(activation.salience),
-            timestamp: std::cmp::Reverse(activation.timestamp),
-            seq: std::cmp::Reverse(activation.activation_seq),
-        };
-
+        let key = self.build_key(&activation);
         let token = activation.token;
-        let id = self.activations.insert(activation);
-
-        // Update the activation's ID field
-        if let Some(act) = self.activations.get_mut(id) {
-            act.id = id;
-        }
+        let id = self.activations.insert_with_key(|id| {
+            activation.id = id;
+            activation
+        });
 
         self.ordering.insert(key.clone(), id);
         self.id_to_key.insert(id, key);
@@ -131,6 +181,41 @@ impl Agenda {
         remove_from_token_index(&mut self.token_to_activations, activation.token, id);
 
         Some(activation)
+    }
+
+    /// Pop the highest-priority activation matching the given predicate.
+    ///
+    /// Scans from highest to lowest priority and returns the first activation
+    /// for which `predicate` returns `true`. Returns `None` if no matching
+    /// activation exists.
+    pub fn pop_matching(&mut self, predicate: impl Fn(&Activation) -> bool) -> Option<Activation> {
+        let mut target_key = None;
+        let mut target_id = None;
+
+        for (key, &id) in &self.ordering {
+            if let Some(activation) = self.activations.get(id) {
+                if predicate(activation) {
+                    target_key = Some(key.clone());
+                    target_id = Some(id);
+                    break;
+                }
+            }
+        }
+
+        let key = target_key?;
+        let id = target_id?;
+
+        self.ordering.remove(&key);
+        self.id_to_key.remove(&id);
+        let activation = self.activations.remove(id)?;
+        remove_from_token_index(&mut self.token_to_activations, activation.token, id);
+
+        Some(activation)
+    }
+
+    /// Check whether any activation matches the given predicate.
+    pub fn has_matching(&self, predicate: impl Fn(&Activation) -> bool) -> bool {
+        self.activations.values().any(predicate)
     }
 
     /// Remove all activations for a given token.
@@ -172,6 +257,27 @@ impl Agenda {
     #[must_use]
     pub fn get(&self, id: ActivationId) -> Option<&Activation> {
         self.activations.get(id)
+    }
+
+    /// Iterate over all activations.
+    pub fn iter_activations(&self) -> impl Iterator<Item = &Activation> {
+        self.activations.values()
+    }
+
+    /// Get the current conflict resolution strategy.
+    #[must_use]
+    pub fn strategy(&self) -> ConflictResolutionStrategy {
+        self.strategy
+    }
+
+    /// Clear all activations, preserving the strategy.
+    pub fn clear(&mut self) {
+        self.ordering.clear();
+        self.activations.clear();
+        self.id_to_key.clear();
+        self.token_to_activations.clear();
+        // Reset next_seq to 0 since this is a full clear
+        self.next_seq = 0;
     }
 
     /// Verify internal consistency of agenda indices.
@@ -303,6 +409,7 @@ mod tests {
             salience: 0,
             timestamp: 100,
             activation_seq: 0, // Will be overwritten
+            recency: SmallVec::new(),
         };
 
         let id = agenda.add(activation);
@@ -332,6 +439,7 @@ mod tests {
             salience: 0,
             timestamp: 100,
             activation_seq: 0,
+            recency: SmallVec::new(),
         });
 
         let id2 = agenda.add(Activation {
@@ -341,6 +449,7 @@ mod tests {
             salience: 10, // Highest
             timestamp: 100,
             activation_seq: 0,
+            recency: SmallVec::new(),
         });
 
         let _id3 = agenda.add(Activation {
@@ -350,6 +459,7 @@ mod tests {
             salience: -5, // Lowest
             timestamp: 100,
             activation_seq: 0,
+            recency: SmallVec::new(),
         });
 
         assert_eq!(agenda.len(), 3);
@@ -375,6 +485,7 @@ mod tests {
             salience: 0,
             timestamp: 100,
             activation_seq: 0,
+            recency: SmallVec::new(),
         });
 
         let id2 = agenda.add(Activation {
@@ -384,6 +495,7 @@ mod tests {
             salience: 0,
             timestamp: 200, // Most recent
             activation_seq: 0,
+            recency: SmallVec::new(),
         });
 
         let _id3 = agenda.add(Activation {
@@ -393,6 +505,7 @@ mod tests {
             salience: 0,
             timestamp: 150,
             activation_seq: 0,
+            recency: SmallVec::new(),
         });
 
         assert_eq!(agenda.len(), 3);
@@ -418,6 +531,7 @@ mod tests {
             salience: 0,
             timestamp: 100,
             activation_seq: 0,
+            recency: SmallVec::new(),
         });
 
         let id2 = agenda.add(Activation {
@@ -427,6 +541,7 @@ mod tests {
             salience: 5,
             timestamp: 200,
             activation_seq: 0,
+            recency: SmallVec::new(),
         });
 
         let id3 = agenda.add(Activation {
@@ -436,6 +551,7 @@ mod tests {
             salience: 0,
             timestamp: 150,
             activation_seq: 0,
+            recency: SmallVec::new(),
         });
 
         assert_eq!(agenda.len(), 3);
@@ -453,5 +569,793 @@ mod tests {
         let remaining = agenda.pop().expect("Should have activation");
         assert_eq!(remaining.id, id3);
         assert!(agenda.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Conflict resolution strategy tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn depth_most_recent_first() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Depth);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        // Add activations with same salience, different timestamps
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 300, // Most recent
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let _id3 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(3),
+            token: t3,
+            salience: 0,
+            timestamp: 200,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        // Depth strategy: most recent timestamp first
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id2);
+        assert_eq!(popped.timestamp, 300);
+    }
+
+    #[test]
+    fn breadth_oldest_first() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Breadth);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        // Add activations with same salience, different timestamps
+        let id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100, // Oldest
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 300,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let _id3 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(3),
+            token: t3,
+            salience: 0,
+            timestamp: 200,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        // Breadth strategy: oldest timestamp first
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id1);
+        assert_eq!(popped.timestamp, 100);
+    }
+
+    #[test]
+    fn lex_compares_recency_vectors() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Lex);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        // Add activations with same salience, different recency vectors
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 300,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 200, 300], // [100, 200, 300]
+        });
+
+        let id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 300,
+            activation_seq: 0,
+            recency: smallvec::smallvec![400, 100, 100], // [400, ...] wins lexicographically
+        });
+
+        let _id3 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(3),
+            token: t3,
+            salience: 0,
+            timestamp: 300,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 300, 100], // [100, 300, ...]
+        });
+
+        // LEX strategy: lexicographic comparison of recency vectors (most recent first per position)
+        // [400, ...] > [100, 300, ...] > [100, 200, ...]
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id2);
+    }
+
+    #[test]
+    fn mea_first_pattern_recency_dominates() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Mea);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        // Add activations with same salience, different first-pattern recency
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 300,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 500], // First pattern: 100
+        });
+
+        let id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 300,
+            activation_seq: 0,
+            recency: smallvec::smallvec![400, 100], // First pattern: 400 (highest)
+        });
+
+        let _id3 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(3),
+            token: t3,
+            salience: 0,
+            timestamp: 300,
+            activation_seq: 0,
+            recency: smallvec::smallvec![200, 800], // First pattern: 200
+        });
+
+        // MEA strategy: first pattern recency dominates
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id2);
+    }
+
+    #[test]
+    fn mea_falls_back_to_lex_on_tie() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Mea);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        // Add activations with same salience and same first-pattern recency
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 300,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 200, 300], // First: 100, rest: [200, 300]
+        });
+
+        let id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 300,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 500, 100], // First: 100, rest: [500, 100] wins
+        });
+
+        let _id3 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(3),
+            token: t3,
+            salience: 0,
+            timestamp: 300,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 300, 200], // First: 100, rest: [300, 200]
+        });
+
+        // MEA strategy: same first-pattern recency (100), so LEX tiebreak on rest
+        // [500, 100] > [300, 200] > [200, 300]
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id2);
+    }
+
+    #[test]
+    fn salience_dominates_all_strategies_depth() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Depth);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 500, // Higher timestamp
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 10, // Higher salience wins
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id2);
+        assert_eq!(popped.salience, 10);
+    }
+
+    #[test]
+    fn salience_dominates_all_strategies_breadth() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Breadth);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+
+        let id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 5, // Higher salience wins
+            timestamp: 500,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 100, // Lower timestamp (would win in breadth, but salience dominates)
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id1);
+        assert_eq!(popped.salience, 5);
+    }
+
+    #[test]
+    fn salience_dominates_all_strategies_lex() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Lex);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![500, 500, 500], // Higher recency vector
+        });
+
+        let id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 8, // Higher salience wins
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 100, 100],
+        });
+
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id2);
+        assert_eq!(popped.salience, 8);
+    }
+
+    #[test]
+    fn salience_dominates_all_strategies_mea() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Mea);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: -1,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![500, 500], // Higher first recency
+        });
+
+        let id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 3, // Higher salience wins
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 100],
+        });
+
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id2);
+        assert_eq!(popped.salience, 3);
+    }
+
+    #[test]
+    fn activation_seq_breaks_ties_depth() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Depth);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        // Add activations with identical salience and timestamp
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0, // Will be 0
+            recency: SmallVec::new(),
+        });
+
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0, // Will be 1
+            recency: SmallVec::new(),
+        });
+
+        let id3 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(3),
+            token: t3,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0, // Will be 2 (highest seq)
+            recency: SmallVec::new(),
+        });
+
+        // Highest activation_seq should win
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id3);
+        assert_eq!(popped.activation_seq, 2);
+    }
+
+    #[test]
+    fn activation_seq_breaks_ties_breadth() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Breadth);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let id3 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(3),
+            token: t3,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id3);
+        assert_eq!(popped.activation_seq, 2);
+    }
+
+    #[test]
+    fn activation_seq_breaks_ties_lex() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Lex);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 200],
+        });
+
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 200], // Same recency
+        });
+
+        let id3 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(3),
+            token: t3,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 200], // Same recency
+        });
+
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id3);
+        assert_eq!(popped.activation_seq, 2);
+    }
+
+    #[test]
+    fn activation_seq_breaks_ties_mea() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Mea);
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        let _id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 200],
+        });
+
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 200], // Same recency
+        });
+
+        let id3 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(3),
+            token: t3,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 200], // Same recency
+        });
+
+        let popped = agenda.pop().expect("Should have activation");
+        assert_eq!(popped.id, id3);
+        assert_eq!(popped.activation_seq, 2);
+    }
+
+    #[test]
+    fn pop_matching_finds_highest_priority_match() {
+        let mut agenda = Agenda::new();
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+        let t3 = make_token_id();
+
+        agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 10, // highest salience
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t3,
+            salience: 5,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        // Only match rule 2
+        let popped = agenda.pop_matching(|a| a.rule == RuleId(2)).unwrap();
+        assert_eq!(popped.id, id2);
+        assert_eq!(popped.salience, 10);
+        assert_eq!(agenda.len(), 2);
+    }
+
+    #[test]
+    fn pop_matching_returns_none_when_no_match() {
+        let mut agenda = Agenda::new();
+        let t1 = make_token_id();
+
+        agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let result = agenda.pop_matching(|a| a.rule == RuleId(99));
+        assert!(result.is_none());
+        assert_eq!(agenda.len(), 1); // Not removed
+    }
+
+    #[test]
+    fn has_matching_checks_predicate() {
+        let mut agenda = Agenda::new();
+        let t1 = make_token_id();
+
+        agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(5),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        assert!(agenda.has_matching(|a| a.rule == RuleId(5)));
+        assert!(!agenda.has_matching(|a| a.rule == RuleId(99)));
+    }
+
+    #[test]
+    fn strategy_switch_changes_ordering() {
+        let t1 = make_token_id();
+        let t2 = make_token_id();
+
+        // Test with Depth: most recent first
+        let mut agenda_depth = Agenda::with_strategy(ConflictResolutionStrategy::Depth);
+        let _id1_depth = agenda_depth.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+        let id2_depth = agenda_depth.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 200, // Most recent
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let popped_depth = agenda_depth.pop().unwrap();
+        assert_eq!(popped_depth.id, id2_depth);
+        assert_eq!(popped_depth.timestamp, 200);
+
+        // Test with Breadth: oldest first
+        let mut agenda_breadth = Agenda::with_strategy(ConflictResolutionStrategy::Breadth);
+        let id1_breadth = agenda_breadth.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100, // Oldest
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+        let _id2_breadth = agenda_breadth.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 200,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let popped_breadth = agenda_breadth.pop().unwrap();
+        assert_eq!(popped_breadth.id, id1_breadth);
+        assert_eq!(popped_breadth.timestamp, 100);
+    }
+
+    #[test]
+    fn remove_activations_for_token_works_with_depth() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Depth);
+        let mut temp: SlotMap<TokenId, ()> = SlotMap::with_key();
+        let t1 = temp.insert(());
+        let t2 = temp.insert(());
+
+        let id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 200,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let removed = agenda.remove_activations_for_token(t1);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].id, id1);
+        assert_eq!(agenda.len(), 1);
+    }
+
+    #[test]
+    fn remove_activations_for_token_works_with_breadth() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Breadth);
+        let mut temp: SlotMap<TokenId, ()> = SlotMap::with_key();
+        let t1 = temp.insert(());
+        let t2 = temp.insert(());
+
+        let id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 200,
+            activation_seq: 0,
+            recency: SmallVec::new(),
+        });
+
+        let removed = agenda.remove_activations_for_token(t1);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].id, id1);
+        assert_eq!(agenda.len(), 1);
+    }
+
+    #[test]
+    fn remove_activations_for_token_works_with_lex() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Lex);
+        let mut temp: SlotMap<TokenId, ()> = SlotMap::with_key();
+        let t1 = temp.insert(());
+        let t2 = temp.insert(());
+
+        let id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 200],
+        });
+
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 200,
+            activation_seq: 0,
+            recency: smallvec::smallvec![200, 300],
+        });
+
+        let removed = agenda.remove_activations_for_token(t1);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].id, id1);
+        assert_eq!(agenda.len(), 1);
+    }
+
+    #[test]
+    fn remove_activations_for_token_works_with_mea() {
+        let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Mea);
+        let mut temp: SlotMap<TokenId, ()> = SlotMap::with_key();
+        let t1 = temp.insert(());
+        let t2 = temp.insert(());
+
+        let id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(1),
+            token: t1,
+            salience: 0,
+            timestamp: 100,
+            activation_seq: 0,
+            recency: smallvec::smallvec![100, 200],
+        });
+
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(2),
+            token: t2,
+            salience: 0,
+            timestamp: 200,
+            activation_seq: 0,
+            recency: smallvec::smallvec![200, 300],
+        });
+
+        let removed = agenda.remove_activations_for_token(t1);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].id, id1);
+        assert_eq!(agenda.len(), 1);
     }
 }

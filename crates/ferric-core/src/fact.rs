@@ -90,19 +90,22 @@ impl FactBase {
         }
     }
 
+    fn insert_fact(&mut self, fact: Fact) -> FactId {
+        let timestamp = self.next_timestamp;
+        self.next_timestamp += 1;
+
+        self.facts.insert_with_key(|id| FactEntry {
+            fact,
+            id,
+            timestamp,
+        })
+    }
+
     /// Assert an ordered fact into working memory.
     ///
     /// Returns the unique `FactId` assigned to the fact.
     pub fn assert_ordered(&mut self, relation: Symbol, fields: SmallVec<[Value; 8]>) -> FactId {
-        let timestamp = self.next_timestamp;
-        self.next_timestamp += 1;
-
-        let fact = Fact::Ordered(OrderedFact { relation, fields });
-        let id = self.facts.insert_with_key(|id| FactEntry {
-            fact,
-            id,
-            timestamp,
-        });
+        let id = self.insert_fact(Fact::Ordered(OrderedFact { relation, fields }));
 
         // Update relation index
         self.by_relation.entry(relation).or_default().insert(id);
@@ -114,15 +117,7 @@ impl FactBase {
     ///
     /// Returns the unique `FactId` assigned to the fact.
     pub fn assert_template(&mut self, template_id: TemplateId, slots: Box<[Value]>) -> FactId {
-        let timestamp = self.next_timestamp;
-        self.next_timestamp += 1;
-
-        let fact = Fact::Template(TemplateFact { template_id, slots });
-        let id = self.facts.insert_with_key(|id| FactEntry {
-            fact,
-            id,
-            timestamp,
-        });
+        let id = self.insert_fact(Fact::Template(TemplateFact { template_id, slots }));
 
         // Update template index
         self.by_template.entry(template_id).or_default().insert(id);

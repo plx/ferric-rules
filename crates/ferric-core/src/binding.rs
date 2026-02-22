@@ -20,6 +20,7 @@ pub struct VarId(pub u16);
 /// Maps variable names (symbols) to their IDs.
 ///
 /// Used during pattern compilation to assign stable IDs to variables.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VarMap {
     by_name: HashMap<Symbol, VarId>,
     by_id: Vec<Symbol>,
@@ -167,6 +168,18 @@ impl BindingSet {
 impl Default for BindingSet {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl AsRef<[Option<ValueRef>]> for BindingSet {
+    fn as_ref(&self) -> &[Option<ValueRef>] {
+        &self.bindings
+    }
+}
+
+impl AsMut<[Option<ValueRef>]> for BindingSet {
+    fn as_mut(&mut self) -> &mut [Option<ValueRef>] {
+        &mut self.bindings
     }
 }
 

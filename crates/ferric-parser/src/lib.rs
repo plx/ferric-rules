@@ -3,11 +3,18 @@
 //! Lexer, S-expression parser, and AST for CLIPS-compatible rule syntax.
 //!
 //! This crate provides a two-stage parser:
-//! - **Stage 1 (this module)**: Lexical analysis and S-expression parsing
-//! - **Stage 2 (future)**: AST construction and semantic validation
+//! - **Stage 1 (implemented)**: Lexical analysis and S-expression parsing
+//! - **Stage 2 (Phase 2)**: AST construction and semantic validation for
+//!   `deftemplate`, `defrule`, and `deffacts` constructs
 //!
 //! This crate is not intended for direct use by end-users; prefer the
 //! `ferric` facade crate instead.
+//!
+//! ## Phase 1 baseline (parser API)
+//!
+//! Stage 1 exposes `parse_sexprs(...) -> ParseResult { exprs, errors }`.
+//! Lex errors short-circuit into parse errors (no partial token-stream parse
+//! attempt). Stage 2 construct interpretation consumes `ParseResult` directly.
 //!
 //! # Examples
 //!
@@ -28,14 +35,26 @@
 
 pub mod error;
 pub mod lexer;
+pub mod qualified_name;
 pub mod sexpr;
 pub mod span;
+pub mod stage2;
 
 // Re-export commonly used types for convenience
 pub use error::{LexError, ParseError, ParseErrorKind};
 pub use lexer::{lex, SpannedToken, Token};
+pub use qualified_name::{parse_qualified_name, QualifiedName};
 pub use sexpr::{parse_sexprs, Atom, Connective, ParseResult, SExpr};
 pub use span::{FileId, Position, Span};
+pub use stage2::{
+    interpret_constructs, Action, ActionExpr, Constraint, Construct, DefaultValue, FactBody,
+    FactSlotValue, FactValue, FactsConstruct, FunctionCall, FunctionConstruct, GenericConstruct,
+    GlobalConstruct, GlobalDefinition, ImportSpec, InterpretError, InterpretErrorKind,
+    InterpretResult, InterpreterConfig, LiteralKind, LiteralValue, MethodConstruct,
+    MethodParameter, ModuleConstruct, ModuleSpec, OrderedFactBody, OrderedPattern, Pattern,
+    RuleConstruct, SlotConstraint, SlotDefinition, SlotType, TemplateConstruct, TemplateFactBody,
+    TemplatePattern,
+};
 
 #[cfg(test)]
 mod tests {

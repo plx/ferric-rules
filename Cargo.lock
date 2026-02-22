@@ -97,6 +97,7 @@ dependencies = [
  "ferric-core",
  "ferric-parser",
  "proptest",
+ "slotmap",
  "smallvec",
  "tempfile",
  "thiserror",

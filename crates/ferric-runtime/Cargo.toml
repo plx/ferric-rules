@@ -12,6 +12,7 @@ ferric-core = { workspace = true }
 ferric-parser = { workspace = true }
 thiserror = { workspace = true }
 smallvec = { workspace = true }
+slotmap = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
