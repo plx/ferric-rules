@@ -408,10 +408,19 @@ pub enum InterpretErrorKind {
 impl InterpretError {
     /// Creates an error for expecting a specific element.
     pub fn expected(what: &str, span: Span) -> Self {
+        Self::expected_with_kind(what, span, InterpretErrorKind::InvalidStructure)
+    }
+
+    /// Creates an error for expecting a top-level construct.
+    pub fn expected_construct(what: &str, span: Span) -> Self {
+        Self::expected_with_kind(what, span, InterpretErrorKind::ExpectedConstruct)
+    }
+
+    fn expected_with_kind(what: &str, span: Span, kind: InterpretErrorKind) -> Self {
         Self {
             message: format!("expected {what}"),
             span,
-            kind: InterpretErrorKind::ExpectedConstruct,
+            kind,
             suggestions: Vec::new(),
         }
     }
@@ -492,7 +501,7 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
     for sexpr in sexprs {
         // Each top-level element must be a list
         let Some(list) = sexpr.as_list() else {
-            result.errors.push(InterpretError::expected(
+            result.errors.push(InterpretError::expected_construct(
                 "a construct (list starting with defrule, deftemplate, or deffacts)",
                 sexpr.span(),
             ));
