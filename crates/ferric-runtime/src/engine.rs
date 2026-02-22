@@ -4,7 +4,7 @@
 //! for embedding applications. Phase 1 includes basic fact assertion/retraction
 //! and thread affinity checking.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::thread::ThreadId;
@@ -309,6 +309,15 @@ impl Engine {
         Ok(FerricString::new(s, self.config.string_encoding)?)
     }
 
+    /// Resolve a [`Symbol`] to its string representation.
+    ///
+    /// Returns `None` if the symbol is not in this engine's symbol table.
+    /// No thread-affinity check — symbol table contents are immutable once interned.
+    #[must_use]
+    pub fn resolve_symbol(&self, sym: Symbol) -> Option<&str> {
+        self.symbol_table.resolve_symbol_str(sym)
+    }
+
     /// Access the engine's Rete network for inspection.
     #[must_use]
     pub fn rete(&self) -> &ReteNetwork {
@@ -316,7 +325,7 @@ impl Engine {
     }
 
     /// Check that the current thread is the same as the creator thread.
-    pub(crate) fn check_thread_affinity(&self) -> Result<(), EngineError> {
+    pub fn check_thread_affinity(&self) -> Result<(), EngineError> {
         let current = std::thread::current().id();
         if current != self.creator_thread {
             return Err(EngineError::WrongThread {
@@ -777,7 +786,9 @@ impl Engine {
     ///
     /// This extends rete consistency checks with Phase 3 registries
     /// (modules/focus, functions, globals, generics).
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
+        use std::collections::HashSet;
         self.rete.debug_assert_consistency();
         self.module_registry.debug_assert_consistency();
         self.functions.debug_assert_consistency();

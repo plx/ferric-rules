@@ -244,6 +244,7 @@ impl ModuleRegistry {
     }
 
     /// Debug-only structural checks for module/focus bookkeeping.
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
         assert!(
             self.modules.contains_key(&self.main_module_id),

@@ -1,0 +1,26 @@
+[package]
+name = "ferric-cli"
+description = "Command-line interface for the Ferric rules engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ferric"
+path = "src/main.rs"
+
+[dependencies]
+ferric-core = { workspace = true }
+ferric-parser = { workspace = true }
+ferric-runtime = { workspace = true }
+rustyline = { workspace = true }
+slotmap = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = "3.8"
+
+[lints]
+workspace = true

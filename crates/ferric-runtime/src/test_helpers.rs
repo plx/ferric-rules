@@ -238,11 +238,13 @@ pub fn retract_one_fact(
 /// This calls `debug_assert_consistency()` on the rete network, which checks
 /// token store, alpha network, beta network, agenda, and cross-structure
 /// invariants (including any Phase 2 extensions as they are added).
+#[cfg(any(test, debug_assertions))]
 pub fn assert_rete_consistent(rete: &ReteNetwork) {
     rete.debug_assert_consistency();
 }
 
 /// Assert full engine consistency, including Phase 3 registries.
+#[cfg(any(test, debug_assertions))]
 pub fn assert_engine_consistent(engine: &Engine) {
     engine.debug_assert_consistency();
 }

@@ -244,9 +244,23 @@ impl Engine {
             for construct in interpret_result.constructs {
                 match construct {
                     Construct::Rule(rule) => {
-                        // Capture the current module at the point the rule is
-                        // encountered, before any subsequent defmodule changes it.
-                        let owning_module = self.module_registry.current_module();
+                        // Determine the owning module for this rule. If the rule
+                        // name is module-qualified (e.g. `MAIN::start`), the
+                        // declared module takes precedence over the current module
+                        // so that rules like `(defrule MAIN::foo ...)` appearing
+                        // inside a `(defmodule REPORT ...)` section still belong
+                        // to MAIN for focus-aware dispatch.
+                        let owning_module = if let Ok(qn) = parse_qualified_name(&rule.name) {
+                            if let Some(mod_name) = qn.module_name() {
+                                self.module_registry
+                                    .get_by_name(mod_name)
+                                    .unwrap_or_else(|| self.module_registry.current_module())
+                            } else {
+                                self.module_registry.current_module()
+                            }
+                        } else {
+                            self.module_registry.current_module()
+                        };
                         rules_with_module.push((rule, owning_module));
                     }
                     Construct::Template(template) => {

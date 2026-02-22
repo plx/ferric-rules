@@ -77,6 +77,7 @@ impl FunctionEnv {
     }
 
     /// Debug-only structural checks for function registry bookkeeping.
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
         for ((_, name), func) in &self.functions {
             assert_eq!(
@@ -141,6 +142,7 @@ impl GlobalStore {
     }
 
     /// Debug-only structural checks for global store bookkeeping.
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
         for (_, name) in self.values.keys() {
             assert!(
@@ -282,6 +284,7 @@ impl GenericRegistry {
     }
 
     /// Debug-only structural checks for generic/method bookkeeping.
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
         for ((_, name), generic) in &self.generics {
             assert_eq!(

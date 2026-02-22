@@ -1,7 +1,9 @@
 [workspace]
 members = [
     "crates/ferric",
+    "crates/ferric-cli",
     "crates/ferric-core",
+    "crates/ferric-ffi",
     "crates/ferric-parser",
     "crates/ferric-runtime",
 ]
@@ -18,6 +20,12 @@ repository = "https://github.com/prb/ferric-rules"
 # Error handling
 thiserror = "2"
 
+# Line editing for interactive REPL
+rustyline = "17"
+
+# C header generation (build-time only)
+cbindgen = "0.29"
+
 # Slot-based storage
 slotmap = "1"
 
@@ -30,6 +38,8 @@ proptest = "1"
 # Internal crates
 ferric = { path = "crates/ferric" }
 ferric-core = { path = "crates/ferric-core" }
+ferric-ffi = { path = "crates/ferric-ffi" }
+ferric-cli = { path = "crates/ferric-cli" }
 ferric-parser = { path = "crates/ferric-parser" }
 ferric-runtime = { path = "crates/ferric-runtime" }
 
@@ -44,3 +54,13 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+
+# FFI profile: development builds with panic=abort for C ABI safety
+[profile.ffi-dev]
+inherits = "dev"
+panic = "abort"
+
+# FFI profile: release builds with panic=abort for C ABI safety
+[profile.ffi-release]
+inherits = "release"
+panic = "abort"
