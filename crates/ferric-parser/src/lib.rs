@@ -35,6 +35,7 @@
 
 pub mod error;
 pub mod lexer;
+pub mod qualified_name;
 pub mod sexpr;
 pub mod span;
 pub mod stage2;
@@ -42,6 +43,7 @@ pub mod stage2;
 // Re-export commonly used types for convenience
 pub use error::{LexError, ParseError, ParseErrorKind};
 pub use lexer::{lex, SpannedToken, Token};
+pub use qualified_name::{parse_qualified_name, QualifiedName};
 pub use sexpr::{parse_sexprs, Atom, Connective, ParseResult, SExpr};
 pub use span::{FileId, Position, Span};
 pub use stage2::{
