@@ -4149,6 +4149,7 @@ Testing is layered to catch logic errors early, especially around retraction and
 - Negative/NCC/exists cleanup idempotence suite
 - Forall vacuous-truth cycle suite (`forall_vacuous_truth_and_retraction_cycle`)
 - FFI error-API contract suite (including copy-to-buffer edge cases)
+- External-surface compatibility suite (FFI/CLI): canonical `ferric_engine_*` naming, `FerricConfig` lifecycle path, thread-affinity contract + diagnostic exceptions, assert/retract fact-id round trip, runtime action-diagnostic retrieval APIs, and CLI `--json` diagnostics output contract
 
 ### 13.3 CI Gates
 
@@ -4423,20 +4424,26 @@ Carry-forward baseline for remaining phases:
 
 | Week | Deliverables |
 |------|--------------|
-| 39-40 | CLIPS compatibility test suite |
+| 39-40 | CLIPS compatibility test suite + external-surface compatibility lock suite (FFI/CLI contract regressions) |
 | 41-42 | Performance optimization, benchmarking |
-| 43-44 | Documentation, examples, compatibility doc (including string comparison semantics examples) |
+| 43-44 | Documentation, examples, and compatibility doc updates (including string comparison semantics, FFI wrapper guidance, and machine-readable CLI diagnostics contract examples) |
 
 **Exit Criteria:**
 - CLIPS compatibility tests pass
+- External-surface compatibility suite passes, including canonical `ferric_engine_*` naming usage, `ferric_engine_new_with_config`/`FerricConfig` lifecycle coverage, copy-to-buffer contract behavior, thread-affinity contract + diagnostic exceptions, assert/retract fact-id round trip behavior, runtime action-diagnostic retrieval APIs, and CLI `run/check --json` diagnostics coverage
 - Performance within target range
-- Documentation complete (including string comparison semantics, pattern restriction rationale, canonical `?*MODULE::name*` global syntax, and `bind` non-creation semantics)
+- Documentation complete (including string comparison semantics, pattern restriction rationale, canonical `?*MODULE::name*` global syntax, `bind` non-creation semantics, FFI embedding/wrapper guidance, and machine-readable CLI diagnostics contract details)
 - Ready for release
 
-Phase 4 follow-through requirements for subsequent phases:
+Phase 4 and Phase 5 follow-through requirements for subsequent phases:
 - Phase 5 surface design must keep Phase 4 module/visibility/ambiguity diagnostics intact and source-located.
 - Phase 6 compatibility documentation must reflect canonical qualified global syntax and bind write semantics exactly as implemented.
 - Regression coverage for module namespace collisions and qualified-global paths remains mandatory for future refactors.
+- Wrapper-facing docs/examples must use canonical exported API names (`ferric_engine_*`) and the configured lifecycle constructor path (`ferric_engine_new_with_config`, `FerricConfig`, `FerricStringEncoding`, `FerricConflictStrategy`), not legacy unprefixed aliases.
+- Copy-to-buffer semantics are stable contract: `out_len` is required, the size-query path remains `buf = NULL` + `buf_len = 0`, and required-size reporting uses NUL-inclusive lengths in the query/truncation paths. Any optional-`out_len` behavior must be additive via new APIs (no silent semantic change to existing functions).
+- Thread-affinity behavior is stable contract: mutable entry points must check affinity before mutation and return `FERRIC_ERROR_THREAD_VIOLATION` on mismatch; diagnostic read exceptions are limited to `ferric_engine_last_error` and `ferric_engine_last_error_copy`.
+- Runtime action diagnostics (`ferric_engine_action_diagnostic_count`, `ferric_engine_action_diagnostic_copy`, `ferric_engine_clear_action_diagnostics`) are a supported embedding surface and must be included in wrapper guidance/regression coverage.
+- CLI machine-friendly diagnostics are stable contract: `ferric run --json` and `ferric check --json` behavior must remain parseable and documented with examples.
 
 ### Timeline Summary
 
@@ -4496,6 +4503,30 @@ Documentation must explicitly state:
 - Ferric guarantees total ordering of activations at runtime but does not guarantee cross-run replay-identical order.
 - Semantic compatibility expectations should focus on final working-memory outcomes for order-insensitive rule sets.
 - For order-sensitive side effects, users must encode precedence explicitly (salience, focus, phase facts).
+
+### 16.7 External Interface Contracts (FFI + Embedding)
+
+Compatibility documentation must include a dedicated external-interface contract section covering:
+
+- Canonical exported entry-point naming (`ferric_engine_*`) and lifecycle APIs, including configured construction (`ferric_engine_new_with_config`) and `FerricConfig`/enum usage expectations for wrappers.
+- Thread-affinity behavior at the ABI boundary: mismatch return code (`FERRIC_ERROR_THREAD_VIOLATION`), no-mutation guarantee on mismatch, and the exact diagnostic API exceptions (`ferric_engine_last_error`, `ferric_engine_last_error_copy`).
+- Error-copy API semantics as implemented: `out_len` required, `NOT_FOUND` no-error precedence, size-query/truncation behavior, and NUL-inclusive required-size reporting in the query/truncation paths.
+- Fact lifecycle round trip: `ferric_engine_assert_string` returns usable fact IDs when assertions are produced, enabling retract round-trip flows through `ferric_engine_retract`.
+- Runtime action-diagnostic retrieval lifecycle (`count`/`copy`/`clear`) and how wrappers should surface these diagnostics distinctly from fatal call-return errors.
+
+### 16.8 Machine-Readable CLI Diagnostics
+
+Compatibility documentation must define the machine-friendly diagnostics contract for:
+
+- `ferric run --json <file>`
+- `ferric check --json <file>`
+
+The doc must provide:
+
+- A stable JSON shape description for top-level output and per-diagnostic entries.
+- Field-preservation expectations for parse/compile/runtime/action diagnostics (including source-location fields when available).
+- Additive-evolution rules (new fields may be added; existing documented fields are not repurposed).
+- End-to-end examples suitable for CI parsing and regression fixtures.
 
 ---
 
