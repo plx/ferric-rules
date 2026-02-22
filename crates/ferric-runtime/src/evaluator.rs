@@ -575,6 +575,47 @@ fn resolve_qualified_global(
 // User-defined function dispatch
 // ---------------------------------------------------------------------------
 
+fn execute_callable_body(
+    ctx: &mut EvalContext<'_>,
+    var_map: &VarMap,
+    bindings: &BindingSet,
+    body: &[ferric_parser::ActionExpr],
+    current_module: crate::modules::ModuleId,
+    method_chain: Option<MethodChain>,
+) -> Result<Value, EvalError> {
+    // Translate body expressions (ActionExpr → RuntimeExpr) BEFORE constructing
+    // the inner EvalContext, because from_action_expr also needs &mut symbol_table.
+    let mut body_exprs = Vec::with_capacity(body.len());
+    for body_expr in body {
+        body_exprs.push(from_action_expr(body_expr, ctx.symbol_table, ctx.config)?);
+    }
+
+    // Execute body expressions in an inner frame that inherits shared runtime state.
+    let mut inner_ctx = EvalContext {
+        bindings,
+        var_map,
+        symbol_table: ctx.symbol_table,
+        config: ctx.config,
+        functions: ctx.functions,
+        globals: ctx.globals,
+        generics: ctx.generics,
+        call_depth: ctx.call_depth + 1,
+        current_module,
+        module_registry: ctx.module_registry,
+        function_modules: ctx.function_modules,
+        global_modules: ctx.global_modules,
+        generic_modules: ctx.generic_modules,
+        method_chain,
+        input_buffer: ctx.input_buffer.as_deref_mut(),
+    };
+
+    let mut result = Value::Void;
+    for body_expr in &body_exprs {
+        result = eval(&mut inner_ctx, body_expr)?;
+    }
+    Ok(result)
+}
+
 /// Dispatch a call to a user-defined function.
 #[allow(clippy::too_many_lines)]
 fn dispatch_user_function(
@@ -627,44 +668,9 @@ fn dispatch_user_function(
         &arg_values,
         span_ref,
     )?;
-
-    // Translate body expressions (ActionExpr → RuntimeExpr) BEFORE constructing
-    // the inner EvalContext, because from_action_expr also needs &mut symbol_table.
-    let mut body_exprs = Vec::with_capacity(func.body.len());
-    for body_expr in &func.body {
-        body_exprs.push(from_action_expr(body_expr, ctx.symbol_table, ctx.config)?);
-    }
-
-    // Evaluate body expressions sequentially in the function's binding frame.
-    // The inner context shares globals and the function environment so that
-    // recursive calls and calls to other user-defined functions work correctly.
-    // The function body executes in the function's own module context so that
-    // cross-module visibility is evaluated from the function's definition site.
-    let mut result = Value::Void;
-    {
-        let mut inner_ctx = EvalContext {
-            bindings: &fn_bindings,
-            var_map: &fn_var_map,
-            symbol_table: ctx.symbol_table,
-            config: ctx.config,
-            functions: ctx.functions,
-            globals: ctx.globals,
-            generics: ctx.generics,
-            call_depth: ctx.call_depth + 1,
-            current_module: fn_module,
-            module_registry: ctx.module_registry,
-            function_modules: ctx.function_modules,
-            global_modules: ctx.global_modules,
-            generic_modules: ctx.generic_modules,
-            method_chain: None,
-            input_buffer: ctx.input_buffer.as_deref_mut(),
-        };
-        for body_expr in &body_exprs {
-            result = eval(&mut inner_ctx, body_expr)?;
-        }
-    }
-
-    Ok(result)
+    // Execute in the function's definition module so visibility is checked from
+    // the function's definition site.
+    execute_callable_body(ctx, &fn_var_map, &fn_bindings, &func.body, fn_module, None)
 }
 
 // ---------------------------------------------------------------------------
@@ -908,41 +914,15 @@ fn dispatch_generic(
         &arg_values,
         span.as_ref(),
     )?;
-
-    // Translate body expressions (ActionExpr → RuntimeExpr) BEFORE constructing
-    // the inner EvalContext, because from_action_expr also needs &mut symbol_table.
-    let mut body_exprs = Vec::with_capacity(method.body.len());
-    for body_expr in &method.body {
-        body_exprs.push(from_action_expr(body_expr, ctx.symbol_table, ctx.config)?);
-    }
-
-    // Evaluate body expressions sequentially in the method's binding frame.
-    // The method body executes in the generic's own module context.
-    let mut result = Value::Void;
-    {
-        let mut inner_ctx = EvalContext {
-            bindings: &fn_bindings,
-            var_map: &fn_var_map,
-            symbol_table: ctx.symbol_table,
-            config: ctx.config,
-            functions: ctx.functions,
-            globals: ctx.globals,
-            generics: ctx.generics,
-            call_depth: ctx.call_depth + 1,
-            current_module: generic_module,
-            module_registry: ctx.module_registry,
-            function_modules: ctx.function_modules,
-            global_modules: ctx.global_modules,
-            generic_modules: ctx.generic_modules,
-            method_chain: Some(chain),
-            input_buffer: ctx.input_buffer.as_deref_mut(),
-        };
-        for expr in &body_exprs {
-            result = eval(&mut inner_ctx, expr)?;
-        }
-    }
-
-    Ok(result)
+    // The method body executes in the generic's definition module.
+    execute_callable_body(
+        ctx,
+        &fn_var_map,
+        &fn_bindings,
+        &method.body,
+        generic_module,
+        Some(chain),
+    )
 }
 
 /// Handle `(call-next-method)` — advance to the next method in the generic dispatch chain.
@@ -1004,12 +984,6 @@ fn dispatch_call_next_method(
         span.as_ref(),
     )?;
 
-    // Translate body expressions.
-    let mut body_exprs = Vec::with_capacity(next_method.body.len());
-    for body_expr in &next_method.body {
-        body_exprs.push(from_action_expr(body_expr, ctx.symbol_table, ctx.config)?);
-    }
-
     // Execute next method body with updated chain position.
     let next_chain = MethodChain {
         generic_name: chain.generic_name.clone(),
@@ -1018,32 +992,14 @@ fn dispatch_call_next_method(
         current_index: next_index,
         arg_values: chain.arg_values.clone(),
     };
-
-    let mut result = Value::Void;
-    {
-        let mut inner_ctx = EvalContext {
-            bindings: &fn_bindings,
-            var_map: &fn_var_map,
-            symbol_table: ctx.symbol_table,
-            config: ctx.config,
-            functions: ctx.functions,
-            globals: ctx.globals,
-            generics: ctx.generics,
-            call_depth: ctx.call_depth + 1,
-            current_module: chain.generic_module,
-            module_registry: ctx.module_registry,
-            function_modules: ctx.function_modules,
-            global_modules: ctx.global_modules,
-            generic_modules: ctx.generic_modules,
-            method_chain: Some(next_chain),
-            input_buffer: ctx.input_buffer.as_deref_mut(),
-        };
-        for expr in &body_exprs {
-            result = eval(&mut inner_ctx, expr)?;
-        }
-    }
-
-    Ok(result)
+    execute_callable_body(
+        ctx,
+        &fn_var_map,
+        &fn_bindings,
+        &next_method.body,
+        chain.generic_module,
+        Some(next_chain),
+    )
 }
 
 fn bind_callable_arguments(
