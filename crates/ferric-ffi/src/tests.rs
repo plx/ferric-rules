@@ -25,6 +25,9 @@ mod lifecycle;
 mod execution;
 
 #[cfg(test)]
+mod action_diagnostics;
+
+#[cfg(test)]
 mod copy_error;
 
 #[cfg(test)]

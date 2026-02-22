@@ -565,6 +565,102 @@ pub unsafe extern "C" fn ferric_engine_get_output(
     }
 }
 
+/// Get the number of action diagnostics captured during recent execution.
+///
+/// Diagnostics are collected by `run`/`step` when non-fatal action errors occur
+/// (for example module visibility failures surfaced as warnings).
+///
+/// # Safety
+///
+/// - `engine` must be a valid engine pointer.
+/// - `out_count` must be a valid pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_engine_action_diagnostic_count(
+    engine: *const FerricEngine,
+    out_count: *mut usize,
+) -> FerricError {
+    let handle = match validate_engine_ptr(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    if out_count.is_null() {
+        set_global_error("out_count pointer is null".to_string());
+        return FerricError::NullPointer;
+    }
+    if let Err(code) = check_thread_affinity(handle) {
+        return code;
+    }
+
+    *out_count = handle.engine.action_diagnostics().len();
+    FerricError::Ok
+}
+
+/// Copy one action diagnostic message into a caller-provided buffer.
+///
+/// Message selection is by zero-based index into the current action-diagnostic list.
+/// The copy contract matches `ferric_last_error_global_copy`.
+///
+/// # Safety
+///
+/// - `engine` must be a valid engine pointer.
+/// - `buf` must point to `buf_len` writable bytes, or be null for size query.
+/// - `out_len` must be a valid pointer (non-null).
+#[no_mangle]
+pub unsafe extern "C" fn ferric_engine_action_diagnostic_copy(
+    engine: *const FerricEngine,
+    index: usize,
+    buf: *mut c_char,
+    buf_len: usize,
+    out_len: *mut usize,
+) -> FerricError {
+    if out_len.is_null() {
+        return FerricError::InvalidArgument;
+    }
+
+    let handle = match validate_engine_ptr(engine) {
+        Ok(h) => h,
+        Err(code) => {
+            *out_len = 0;
+            return code;
+        }
+    };
+    if let Err(code) = check_thread_affinity(handle) {
+        *out_len = 0;
+        return code;
+    }
+
+    let message = handle
+        .engine
+        .action_diagnostics()
+        .get(index)
+        .map(ToString::to_string);
+    copy_error_to_buffer(message.as_deref(), buf, buf_len, out_len)
+}
+
+/// Clear all stored action diagnostics.
+///
+/// # Safety
+///
+/// - `engine` must be a valid engine pointer or null (null returns `NullPointer`).
+#[no_mangle]
+pub unsafe extern "C" fn ferric_engine_clear_action_diagnostics(
+    engine: *mut FerricEngine,
+) -> FerricError {
+    let handle = match validate_engine_ptr(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    if let Err(code) = check_thread_affinity(handle) {
+        return code;
+    }
+    let handle = match validate_engine_ptr_mut(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    handle.engine.clear_action_diagnostics();
+    FerricError::Ok
+}
+
 // ---------------------------------------------------------------------------
 // C API: Fact and value queries
 // ---------------------------------------------------------------------------

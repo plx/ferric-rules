@@ -318,6 +318,41 @@ enum FerricError ferric_engine_retract(struct FerricEngine *engine, uint64_t fac
 // - `channel` must be a valid NUL-terminated UTF-8 string or null.
 const char *ferric_engine_get_output(const struct FerricEngine *engine, const char *channel);
 
+// Get the number of action diagnostics captured during recent execution.
+//
+// Diagnostics are collected by `run`/`step` when non-fatal action errors occur
+// (for example module visibility failures surfaced as warnings).
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_count` must be a valid pointer.
+enum FerricError ferric_engine_action_diagnostic_count(const struct FerricEngine *engine,
+                                                       uintptr_t *out_count);
+
+// Copy one action diagnostic message into a caller-provided buffer.
+//
+// Message selection is by zero-based index into the current action-diagnostic list.
+// The copy contract matches `ferric_last_error_global_copy`.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `buf` must point to `buf_len` writable bytes, or be null for size query.
+// - `out_len` must be a valid pointer (non-null).
+enum FerricError ferric_engine_action_diagnostic_copy(const struct FerricEngine *engine,
+                                                      uintptr_t index,
+                                                      char *buf,
+                                                      uintptr_t buf_len,
+                                                      uintptr_t *out_len);
+
+// Clear all stored action diagnostics.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer or null (null returns `NullPointer`).
+enum FerricError ferric_engine_clear_action_diagnostics(struct FerricEngine *engine);
+
 // Get the count of user-visible facts in working memory.
 //
 // The synthetic `(initial-fact)` is excluded from the count.

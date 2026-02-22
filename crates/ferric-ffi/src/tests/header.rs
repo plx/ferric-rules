@@ -241,6 +241,18 @@ fn header_contains_execution_functions() {
 fn header_contains_query_functions() {
     let header = read_committed_header();
     assert!(
+        header.contains("ferric_engine_action_diagnostic_count"),
+        "Missing ferric_engine_action_diagnostic_count"
+    );
+    assert!(
+        header.contains("ferric_engine_action_diagnostic_copy"),
+        "Missing ferric_engine_action_diagnostic_copy"
+    );
+    assert!(
+        header.contains("ferric_engine_clear_action_diagnostics"),
+        "Missing ferric_engine_clear_action_diagnostics"
+    );
+    assert!(
         header.contains("ferric_engine_fact_count"),
         "Missing ferric_engine_fact_count"
     );

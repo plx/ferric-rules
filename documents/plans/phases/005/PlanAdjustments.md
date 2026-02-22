@@ -56,7 +56,15 @@ Section 11.2 currently describes debug assertion-abort vs release error-code beh
 
 Reason: this was an intentional FFI safety choice and should be reflected in the master plan.
 
+## 8) FFI Runtime Action-Diagnostic Retrieval Surface
+Add an explicit FFI diagnostic-retrieval subsection for non-fatal runtime action diagnostics produced by execution:
+- `ferric_engine_action_diagnostic_count`
+- `ferric_engine_action_diagnostic_copy`
+- `ferric_engine_clear_action_diagnostics`
+
+Reason: this is now implemented and is required to satisfy the Phase 5 diagnostic-parity contract for runtime warnings/errors surfaced during `run`/`step`.
+
 ## Implications For Subsequent Phases
 1. Wrapper work should target the actual exported `ferric_engine_*` API names and the new `FerricConfig` constructor path.
 2. If optional-`out_len` semantics are desired for wrappers later, introduce additive v2 copy APIs rather than silently changing existing behavior.
-3. Phase 6 should include a dedicated FFI action-diagnostic retrieval API so Phase 4 runtime diagnostic parity is complete through FFI (not only through CLI).
+3. Wrapper documentation in Phase 6 should include guidance for consuming action diagnostics through the new count/copy/clear API family.
