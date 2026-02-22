@@ -49,7 +49,7 @@
 //! - No truth maintenance / logical support.
 //! - `defclass`/`definstances`/`defmessage-handler` not implemented.
 //! - `if`/`then`/`else` expression form not supported.
-//! - `sub-string` uses byte indices (not Unicode codepoints).
+//! - `sub-string` uses Unicode scalar value positions (not grapheme clusters).
 
 pub mod actions;
 pub mod config;

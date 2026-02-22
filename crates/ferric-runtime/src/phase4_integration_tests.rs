@@ -1116,6 +1116,23 @@ fn str_length_of_empty_string_is_zero() {
 }
 
 #[test]
+fn str_length_counts_utf8_characters() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+        (defrule test (go)
+            => (printout t (str-length "é") crlf))
+        (deffacts startup (go))
+    "#,
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert_eq!(output.trim(), "1");
+}
+
+#[test]
 fn sub_string_extracts_middle() {
     let mut engine = new_utf8_engine();
     load_ok(
@@ -1133,6 +1150,23 @@ fn sub_string_extracts_middle() {
 }
 
 #[test]
+fn sub_string_uses_character_positions_for_utf8() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+        (defrule test (go)
+            => (printout t (sub-string 2 2 "héllo") crlf))
+        (deffacts startup (go))
+    "#,
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert_eq!(output.trim(), "é");
+}
+
+#[test]
 fn sub_string_out_of_range_returns_empty() {
     let mut engine = new_utf8_engine();
     load_ok(
@@ -1140,6 +1174,23 @@ fn sub_string_out_of_range_returns_empty() {
         r#"
         (defrule test (go)
             => (printout t "|" (sub-string 10 20 "hello") "|" crlf))
+        (deffacts startup (go))
+    "#,
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert_eq!(output.trim(), "||");
+}
+
+#[test]
+fn sub_string_utf8_out_of_range_returns_empty() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+        (defrule test (go)
+            => (printout t "|" (sub-string 2 2 "é") "|" crlf))
         (deffacts startup (go))
     "#,
     );

@@ -2388,8 +2388,10 @@ fn builtin_str_length(
     check_arity_exact("str-length", args, 1, span)?;
     let val = eval(ctx, &args[0])?;
     match &val {
-        #[allow(clippy::cast_possible_wrap)] // string length fits in i64 in practice
-        Value::String(s) => Ok(Value::Integer(s.as_str().len() as i64)),
+        Value::String(s) => {
+            let char_len = i64::try_from(s.as_str().chars().count()).unwrap_or(i64::MAX);
+            Ok(Value::Integer(char_len))
+        }
         _ => Err(EvalError::TypeError {
             function: "str-length".to_string(),
             expected: "STRING".to_string(),
@@ -2435,7 +2437,7 @@ fn builtin_sub_string(
         }
     };
     let s = match &values[2] {
-        Value::String(s) => s.as_str().to_string(),
+        Value::String(s) => s.as_str(),
         _ => {
             return Err(EvalError::TypeError {
                 function: "sub-string".to_string(),
@@ -2456,22 +2458,34 @@ fn builtin_sub_string(
         })
     };
 
-    // We've already validated start >= 1 and end >= 1 in the guards below,
-    // so the try_from conversions below are guaranteed to succeed after
-    // the out-of-range check.
-    #[allow(clippy::cast_possible_wrap)] // usize→i64: string len fits in i64
-    let len = s.len() as i64;
-    if start < 1 || end < 1 || start > len || end < start {
+    let char_len = s.chars().count();
+    let char_len_i64 = i64::try_from(char_len).unwrap_or(i64::MAX);
+    if start < 1 || end < 1 || end < start || start > char_len_i64 {
         let fs = make_empty_string(ctx)?;
         return Ok(Value::String(fs));
     }
 
-    // Safety: start >= 1, so start - 1 >= 0; both fit in usize after the bound check.
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let start_idx = (start - 1) as usize;
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let end_idx = std::cmp::min(end as usize, s.len());
-    let substr = &s[start_idx..end_idx];
+    let Ok(start_char_idx) = usize::try_from(start - 1) else {
+        let fs = make_empty_string(ctx)?;
+        return Ok(Value::String(fs));
+    };
+    let end_char_exclusive = usize::try_from(end).unwrap_or(usize::MAX).min(char_len);
+
+    let mut start_byte_idx = None;
+    let mut end_byte_idx = None;
+    for (char_idx, (byte_idx, _)) in s.char_indices().enumerate() {
+        if char_idx == start_char_idx {
+            start_byte_idx = Some(byte_idx);
+        }
+        if char_idx == end_char_exclusive {
+            end_byte_idx = Some(byte_idx);
+            break;
+        }
+    }
+
+    let start_byte_idx = start_byte_idx.unwrap_or(s.len());
+    let end_byte_idx = end_byte_idx.unwrap_or(s.len());
+    let substr = &s[start_byte_idx..end_byte_idx];
 
     let fs = FerricString::new(substr, ctx.config.string_encoding).map_err(|e| {
         EvalError::TypeError {
@@ -5444,6 +5458,13 @@ mod tests {
     }
 
     #[test]
+    fn str_length_counts_utf8_characters() {
+        let expr = call("str-length", vec![str_lit("é")]);
+        let result = eval_expr(&expr).unwrap();
+        assert!(result.structural_eq(&Value::Integer(1)));
+    }
+
+    #[test]
     fn str_length_arity_error_no_args() {
         let expr = call("str-length", vec![]);
         let result = eval_expr(&expr);
@@ -5526,6 +5547,26 @@ mod tests {
         let result = eval_expr(&expr).unwrap();
         match result {
             Value::String(s) => assert_eq!(s.as_str(), "llo"),
+            other => panic!("expected STRING, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sub_string_uses_character_positions_for_utf8() {
+        let expr = call("sub-string", vec![int(2), int(2), str_lit("héllo")]);
+        let result = eval_expr(&expr).unwrap();
+        match result {
+            Value::String(s) => assert_eq!(s.as_str(), "é"),
+            other => panic!("expected STRING, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sub_string_utf8_out_of_range_start_returns_empty() {
+        let expr = call("sub-string", vec![int(2), int(2), str_lit("é")]);
+        let result = eval_expr(&expr).unwrap();
+        match result {
+            Value::String(s) => assert_eq!(s.as_str(), ""),
             other => panic!("expected STRING, got {other:?}"),
         }
     }
