@@ -4,6 +4,77 @@ use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
+use ferric_core::{ConflictResolutionStrategy, StringEncoding};
+use ferric_runtime::{Engine, EngineConfig};
+
+/// C-facing string-encoding configuration for `FerricConfig`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FerricStringEncoding {
+    Ascii = 0,
+    Utf8 = 1,
+    AsciiSymbolsUtf8Strings = 2,
+}
+
+impl From<FerricStringEncoding> for StringEncoding {
+    fn from(value: FerricStringEncoding) -> Self {
+        match value {
+            FerricStringEncoding::Ascii => Self::Ascii,
+            FerricStringEncoding::Utf8 => Self::Utf8,
+            FerricStringEncoding::AsciiSymbolsUtf8Strings => Self::AsciiSymbolsUtf8Strings,
+        }
+    }
+}
+
+/// C-facing conflict-resolution strategy for `FerricConfig`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FerricConflictStrategy {
+    Depth = 0,
+    Breadth = 1,
+    Lex = 2,
+    Mea = 3,
+}
+
+impl From<FerricConflictStrategy> for ConflictResolutionStrategy {
+    fn from(value: FerricConflictStrategy) -> Self {
+        match value {
+            FerricConflictStrategy::Depth => Self::Depth,
+            FerricConflictStrategy::Breadth => Self::Breadth,
+            FerricConflictStrategy::Lex => Self::Lex,
+            FerricConflictStrategy::Mea => Self::Mea,
+        }
+    }
+}
+
+/// C-facing engine configuration used by `ferric_engine_new_with_config`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FerricConfig {
+    pub string_encoding: FerricStringEncoding,
+    pub strategy: FerricConflictStrategy,
+    pub max_call_depth: usize,
+}
+
+impl Default for FerricConfig {
+    fn default() -> Self {
+        Self {
+            string_encoding: FerricStringEncoding::Utf8,
+            strategy: FerricConflictStrategy::Depth,
+            max_call_depth: 64,
+        }
+    }
+}
+
+/// Convert a C-facing config into runtime `EngineConfig`.
+pub(crate) fn engine_config_from_ffi(config: &FerricConfig) -> EngineConfig {
+    EngineConfig {
+        string_encoding: config.string_encoding.into(),
+        strategy: config.strategy.into(),
+        max_call_depth: config.max_call_depth,
+    }
+}
+
 /// C-facing value type discriminant.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +144,6 @@ impl FerricValue {
 // ---------------------------------------------------------------------------
 
 use ferric_core::Value;
-use ferric_runtime::Engine;
 
 /// Convert a Rust `Value` to a C-facing `FerricValue`.
 ///

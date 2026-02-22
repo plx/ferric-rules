@@ -153,8 +153,29 @@ fn assert_string_ordered_fact() {
         ferric_engine_reset(engine);
 
         let source = std::ffi::CString::new("(assert (color red))").unwrap();
-        let result = ferric_engine_assert_string(engine, source.as_ptr(), std::ptr::null_mut());
+        let mut fact_id: u64 = 0;
+        let result = ferric_engine_assert_string(engine, source.as_ptr(), &mut fact_id);
         assert_eq!(result, FerricError::Ok);
+        assert_ne!(fact_id, 0, "assert should return a non-zero fact id");
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn assert_string_fact_id_can_be_retracted() {
+    unsafe {
+        let engine = ferric_engine_new();
+        ferric_engine_reset(engine);
+
+        let source = std::ffi::CString::new("(assert (item widget))").unwrap();
+        let mut fact_id: u64 = 0;
+        let result = ferric_engine_assert_string(engine, source.as_ptr(), &mut fact_id);
+        assert_eq!(result, FerricError::Ok);
+        assert_ne!(fact_id, 0);
+
+        let retract_result = ferric_engine_retract(engine, fact_id);
+        assert_eq!(retract_result, FerricError::Ok);
 
         ferric_engine_free(engine);
     }

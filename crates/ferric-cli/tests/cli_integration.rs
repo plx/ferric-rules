@@ -271,6 +271,105 @@ fn check_invalid_source_shows_diagnostic() {
     );
 }
 
+#[test]
+fn run_invalid_source_json_mode_shows_machine_diagnostic() {
+    let path = fixture_path(fixtures::CHECK_INVALID);
+    let output = run_ferric(&["run", "--json", path.to_str().unwrap()]);
+    assert_exit_code(&output, 1);
+    let stderr = stderr_str(&output);
+    assert!(
+        stderr.contains("\"command\":\"run\""),
+        "expected run command key in JSON stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"level\":\"error\""),
+        "expected error level in JSON stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"kind\":\"load_error\""),
+        "expected load_error kind in JSON stderr: {stderr}"
+    );
+}
+
+#[test]
+fn check_invalid_source_json_mode_shows_machine_diagnostic() {
+    let path = fixture_path(fixtures::CHECK_INVALID);
+    let output = run_ferric(&["check", "--json", path.to_str().unwrap()]);
+    assert_exit_code(&output, 1);
+    let stderr = stderr_str(&output);
+    assert!(
+        stderr.contains("\"command\":\"check\""),
+        "expected check command key in JSON stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"level\":\"error\""),
+        "expected error level in JSON stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"kind\":\"load_error\""),
+        "expected load_error kind in JSON stderr: {stderr}"
+    );
+}
+
+#[test]
+fn check_conflict_source_shows_phase4_conflict_diagnostic() {
+    use std::io::Write;
+
+    let mut temp = tempfile::NamedTempFile::new().expect("create temp clp");
+    writeln!(
+        temp,
+        "(deffunction compute (?x) (+ ?x 1))\n(defgeneric compute)"
+    )
+    .expect("write temp clp");
+    let path = temp.path().to_str().expect("utf8 temp path");
+
+    let output = run_ferric(&["check", path]);
+    assert_exit_code(&output, 1);
+    let stderr = stderr_str(&output);
+    assert!(
+        stderr.contains("compute"),
+        "expected diagnostic to include conflicting name: {stderr}"
+    );
+    assert!(
+        stderr.contains("deffunction") || stderr.contains("defgeneric"),
+        "expected diagnostic to include conflict context: {stderr}"
+    );
+}
+
+#[test]
+fn run_phase4_visibility_warning_is_surfaced() {
+    use std::io::Write;
+
+    let mut temp = tempfile::NamedTempFile::new().expect("create temp clp");
+    writeln!(
+        temp,
+        r"
+        (defmodule MATH (export ?NONE))
+        (deffunction add (?x ?y) (+ ?x ?y))
+
+        (defmodule MAIN)
+        (defrule test-call (go) => (printout t (MATH::add 3 4) crlf))
+        (deffacts startup (go))
+        "
+    )
+    .expect("write temp clp");
+    let path = temp.path().to_str().expect("utf8 temp path");
+
+    let output = run_ferric(&["run", path]);
+    assert_exit_code(&output, 0);
+    let stderr = stderr_str(&output);
+    assert!(
+        stderr.contains("warning"),
+        "expected warning output for visibility diagnostic: {stderr}"
+    );
+    assert!(
+        stderr.contains("not visible")
+            || stderr.contains("not accessible")
+            || stderr.contains("NotVisible"),
+        "expected visibility diagnostic wording in stderr: {stderr}"
+    );
+}
+
 // ---- check command tests ----
 
 #[test]

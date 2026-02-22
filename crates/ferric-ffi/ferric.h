@@ -62,6 +62,21 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+// C-facing string-encoding configuration for `FerricConfig`.
+typedef enum FerricStringEncoding {
+    FERRIC_STRING_ENCODING_ASCII = 0,
+    FERRIC_STRING_ENCODING_UTF8 = 1,
+    FERRIC_STRING_ENCODING_ASCII_SYMBOLS_UTF8_STRINGS = 2,
+} FerricStringEncoding;
+
+// C-facing conflict-resolution strategy for `FerricConfig`.
+typedef enum FerricConflictStrategy {
+    FERRIC_CONFLICT_STRATEGY_DEPTH = 0,
+    FERRIC_CONFLICT_STRATEGY_BREADTH = 1,
+    FERRIC_CONFLICT_STRATEGY_LEX = 2,
+    FERRIC_CONFLICT_STRATEGY_MEA = 3,
+} FerricConflictStrategy;
+
 // C-facing error codes returned by all fallible FFI entry points.
 //
 // Stable numeric values — new codes may be added but existing values
@@ -108,6 +123,13 @@ typedef enum FerricValueType {
 // C code receives `*mut FerricEngine` as an opaque pointer.
 typedef struct FerricEngine FerricEngine;
 
+// C-facing engine configuration used by `ferric_engine_new_with_config`.
+typedef struct FerricConfig {
+    enum FerricStringEncoding string_encoding;
+    enum FerricConflictStrategy strategy;
+    uintptr_t max_call_depth;
+} FerricConfig;
+
 // C-facing value representation.
 //
 // ## Ownership
@@ -152,6 +174,16 @@ typedef struct FerricValue {
 // The returned pointer must be freed with `ferric_engine_free`.
 // The engine is bound to the creating thread.
 struct FerricEngine *ferric_engine_new(void);
+
+// Create a new engine with optional caller-provided configuration.
+//
+// If `config` is null, defaults are used.
+//
+// # Safety
+//
+// - `config` may be null.
+// - Returned pointer must be freed with `ferric_engine_free`.
+struct FerricEngine *ferric_engine_new_with_config(const struct FerricConfig *config);
 
 // Free an engine handle.
 //
@@ -254,8 +286,8 @@ enum FerricError ferric_engine_step(struct FerricEngine *engine, int32_t *out_st
 // Assert a fact from a CLIPS source string (e.g., `"(assert (color red))"`).
 //
 // The source is parsed as a top-level CLIPS form and evaluated. If
-// `out_fact_id` is non-null, it receives `0` (fact IDs are not yet returned
-// through this API).
+// `out_fact_id` is non-null and an assert occurred, it receives the first
+// asserted fact's opaque ID. If no fact was asserted, `0` is written.
 //
 // # Safety
 //

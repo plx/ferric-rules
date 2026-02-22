@@ -16,7 +16,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::ptr;
 
-use crate::types::{value_to_ferric, FerricValue};
+use crate::types::{engine_config_from_ffi, value_to_ferric, FerricConfig, FerricValue};
 
 use crate::error::{
     copy_error_to_buffer, set_engine_error_global, set_global_error, set_load_error_global,
@@ -99,7 +99,28 @@ fn check_thread_affinity(handle: &FerricEngine) -> Result<(), FerricError> {
 /// The engine is bound to the creating thread.
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_new() -> *mut FerricEngine {
-    let engine = Engine::new(EngineConfig::default());
+    ferric_engine_new_with_config(ptr::null())
+}
+
+/// Create a new engine with optional caller-provided configuration.
+///
+/// If `config` is null, defaults are used.
+///
+/// # Safety
+///
+/// - `config` may be null.
+/// - Returned pointer must be freed with `ferric_engine_free`.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_engine_new_with_config(
+    config: *const FerricConfig,
+) -> *mut FerricEngine {
+    let engine_config = if config.is_null() {
+        EngineConfig::default()
+    } else {
+        engine_config_from_ffi(&*config)
+    };
+
+    let engine = Engine::new(engine_config);
     let handle = FerricEngine {
         engine,
         error_state: EngineErrorState::new(),
@@ -264,6 +285,13 @@ pub unsafe extern "C" fn ferric_engine_last_error_copy(
 /// - `engine` must be a valid engine pointer or null (null returns `NullPointer`).
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_clear_error(engine: *mut FerricEngine) -> FerricError {
+    let handle = match validate_engine_ptr(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    if let Err(code) = check_thread_affinity(handle) {
+        return code;
+    }
     let handle = match validate_engine_ptr_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
@@ -401,8 +429,8 @@ pub unsafe extern "C" fn ferric_engine_step(
 /// Assert a fact from a CLIPS source string (e.g., `"(assert (color red))"`).
 ///
 /// The source is parsed as a top-level CLIPS form and evaluated. If
-/// `out_fact_id` is non-null, it receives `0` (fact IDs are not yet returned
-/// through this API).
+/// `out_fact_id` is non-null and an assert occurred, it receives the first
+/// asserted fact's opaque ID. If no fact was asserted, `0` is written.
 ///
 /// # Safety
 ///
@@ -415,6 +443,8 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
     source: *const c_char,
     out_fact_id: *mut u64,
 ) -> FerricError {
+    use slotmap::Key as _;
+
     let handle = match validate_engine_ptr(engine) {
         Ok(h) => h,
         Err(code) => return code,
@@ -441,9 +471,12 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
     };
 
     match handle.engine.load_str(source_str) {
-        Ok(_) => {
+        Ok(load_result) => {
             if !out_fact_id.is_null() {
-                *out_fact_id = 0;
+                *out_fact_id = load_result
+                    .asserted_facts
+                    .first()
+                    .map_or(0, |fid| fid.data().as_ffi());
             }
             FerricError::Ok
         }

@@ -49,6 +49,41 @@ fn compile_error_preserves_diagnostic() {
 }
 
 #[test]
+fn phase4_deffunction_defgeneric_conflict_preserves_diagnostic() {
+    unsafe {
+        let engine = ferric_engine_new();
+        let source = CString::new(
+            r"
+            (deffunction compute (?x) (+ ?x 1))
+            (defgeneric compute)
+            ",
+        )
+        .unwrap();
+
+        let result = ferric_engine_load_string(engine, source.as_ptr());
+        assert_ne!(result, FerricError::Ok);
+        assert!(
+            result == FerricError::CompileError || result == FerricError::ParseError,
+            "expected compile/parse style diagnostic, got {result:?}"
+        );
+
+        let err_ptr = ferric_last_error_global();
+        assert!(!err_ptr.is_null());
+        let err_msg = CStr::from_ptr(err_ptr).to_str().unwrap();
+        assert!(
+            err_msg.contains("compute"),
+            "diagnostic should mention conflicting symbol name: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("defgeneric") || err_msg.contains("deffunction"),
+            "diagnostic should mention construct conflict context: {err_msg}"
+        );
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
 fn ffi_end_to_end_load_run_get_output() {
     // Full C embedding flow: create → load → reset → run → get output → free
     unsafe {

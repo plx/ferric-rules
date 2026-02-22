@@ -19,6 +19,9 @@ parse_deps = false
 # an opaque forward declaration rather than trying to expand its fields.
 include = [
     "FerricError",
+    "FerricStringEncoding",
+    "FerricConflictStrategy",
+    "FerricConfig",
     "FerricValueType",
     "FerricValue",
 ]

@@ -129,6 +129,28 @@ fn header_contains_ferric_value_type_enum() {
 }
 
 #[test]
+fn header_contains_config_types() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("FerricStringEncoding"),
+        "Missing FerricStringEncoding type"
+    );
+    assert!(
+        header.contains("FerricConflictStrategy"),
+        "Missing FerricConflictStrategy type"
+    );
+    assert!(header.contains("FerricConfig"), "Missing FerricConfig type");
+    assert!(
+        header.contains("string_encoding"),
+        "FerricConfig is missing string_encoding field"
+    );
+    assert!(
+        header.contains("max_call_depth"),
+        "FerricConfig is missing max_call_depth field"
+    );
+}
+
+#[test]
 fn header_contains_ferric_value_struct() {
     let header = read_committed_header();
     assert!(header.contains("FerricValue"), "Missing FerricValue struct");
@@ -175,6 +197,10 @@ fn header_contains_engine_lifecycle_functions() {
     assert!(
         header.contains("ferric_engine_new"),
         "Missing ferric_engine_new"
+    );
+    assert!(
+        header.contains("ferric_engine_new_with_config"),
+        "Missing ferric_engine_new_with_config"
     );
     assert!(
         header.contains("ferric_engine_free"),

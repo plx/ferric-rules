@@ -2,14 +2,39 @@
 
 use crate::engine::{
     ferric_engine_clear_error, ferric_engine_free, ferric_engine_last_error,
-    ferric_engine_load_string, ferric_engine_new, ferric_engine_reset,
+    ferric_engine_load_string, ferric_engine_new, ferric_engine_new_with_config,
+    ferric_engine_reset,
 };
 use crate::error::{ferric_last_error_global, FerricError};
+use crate::types::{FerricConfig, FerricConflictStrategy, FerricStringEncoding};
 
 #[test]
 fn engine_new_returns_non_null() {
     unsafe {
         let engine = ferric_engine_new();
+        assert!(!engine.is_null());
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn engine_new_with_null_config_returns_non_null() {
+    unsafe {
+        let engine = ferric_engine_new_with_config(std::ptr::null());
+        assert!(!engine.is_null());
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn engine_new_with_custom_config_returns_non_null() {
+    unsafe {
+        let config = FerricConfig {
+            string_encoding: FerricStringEncoding::Ascii,
+            strategy: FerricConflictStrategy::Breadth,
+            max_call_depth: 32,
+        };
+        let engine = ferric_engine_new_with_config(&config);
         assert!(!engine.is_null());
         ferric_engine_free(engine);
     }
@@ -162,6 +187,32 @@ fn thread_violation_from_other_thread_via_raw_pointer() {
         assert_eq!(result, FerricError::ThreadViolation);
 
         // Free from the correct (creating) thread
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn clear_error_rejects_other_thread_before_mutation() {
+    unsafe {
+        let engine = ferric_engine_new();
+        (*engine).error_state.set("sticky error".to_string());
+
+        let engine_addr = engine as usize;
+        let result = std::thread::spawn(move || {
+            let engine = engine_addr as *mut crate::engine::FerricEngine;
+            ferric_engine_clear_error(engine)
+        })
+        .join()
+        .unwrap();
+
+        assert_eq!(result, FerricError::ThreadViolation);
+
+        let err_ptr = ferric_engine_last_error(engine);
+        assert!(
+            !err_ptr.is_null(),
+            "error should remain set after violation"
+        );
+
         ferric_engine_free(engine);
     }
 }
