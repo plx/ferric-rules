@@ -62,21 +62,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-// C-facing string-encoding configuration for `FerricConfig`.
-typedef enum FerricStringEncoding {
-    FERRIC_STRING_ENCODING_ASCII = 0,
-    FERRIC_STRING_ENCODING_UTF8 = 1,
-    FERRIC_STRING_ENCODING_ASCII_SYMBOLS_UTF8_STRINGS = 2,
-} FerricStringEncoding;
-
-// C-facing conflict-resolution strategy for `FerricConfig`.
-typedef enum FerricConflictStrategy {
-    FERRIC_CONFLICT_STRATEGY_DEPTH = 0,
-    FERRIC_CONFLICT_STRATEGY_BREADTH = 1,
-    FERRIC_CONFLICT_STRATEGY_LEX = 2,
-    FERRIC_CONFLICT_STRATEGY_MEA = 3,
-} FerricConflictStrategy;
-
 // C-facing error codes returned by all fallible FFI entry points.
 //
 // Stable numeric values — new codes may be added but existing values
@@ -117,6 +102,21 @@ typedef enum FerricValueType {
     FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6,
 } FerricValueType;
 
+// C-facing string-encoding configuration for `FerricConfig`.
+typedef enum FerricStringEncoding {
+    FERRIC_STRING_ENCODING_ASCII = 0,
+    FERRIC_STRING_ENCODING_UTF8 = 1,
+    FERRIC_STRING_ENCODING_ASCII_SYMBOLS_UTF8_STRINGS = 2,
+} FerricStringEncoding;
+
+// C-facing conflict-resolution strategy for `FerricConfig`.
+typedef enum FerricConflictStrategy {
+    FERRIC_CONFLICT_STRATEGY_DEPTH = 0,
+    FERRIC_CONFLICT_STRATEGY_BREADTH = 1,
+    FERRIC_CONFLICT_STRATEGY_LEX = 2,
+    FERRIC_CONFLICT_STRATEGY_MEA = 3,
+} FerricConflictStrategy;
+
 // Opaque engine handle exposed to C.
 //
 // Contains the Rust [`Engine`] plus per-engine error state.
@@ -125,8 +125,10 @@ typedef struct FerricEngine FerricEngine;
 
 // C-facing engine configuration used by `ferric_engine_new_with_config`.
 typedef struct FerricConfig {
-    enum FerricStringEncoding string_encoding;
-    enum FerricConflictStrategy strategy;
+    // Raw `FerricStringEncoding` discriminant.
+    uint32_t string_encoding;
+    // Raw `FerricConflictStrategy` discriminant.
+    uint32_t strategy;
     uintptr_t max_call_depth;
 } FerricConfig;
 

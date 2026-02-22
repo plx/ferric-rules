@@ -239,14 +239,19 @@ fn visible_modules_for_construct(
     )
 }
 
+#[derive(Clone, Copy)]
+struct AmbiguityMessages<'a> {
+    expected: &'a str,
+    actual: &'a str,
+}
+
 fn resolve_visible_owner_module(
     ctx: &EvalContext<'_>,
     all_modules: &[crate::modules::ModuleId],
     construct_type: &str,
     local_name: &str,
     display_name: &str,
-    ambiguity_expected: &str,
-    ambiguity_actual: &str,
+    ambiguity: AmbiguityMessages<'_>,
     span: Option<SourceSpan>,
 ) -> Result<crate::modules::ModuleId, EvalError> {
     let visible = visible_modules_for_construct(ctx, all_modules, construct_type, local_name);
@@ -261,22 +266,20 @@ fn resolve_visible_owner_module(
         }),
         _ => Err(EvalError::TypeError {
             function: display_name.to_string(),
-            expected: ambiguity_expected.to_string(),
-            actual: ambiguity_actual.to_string(),
+            expected: ambiguity.expected.to_string(),
+            actual: ambiguity.actual.to_string(),
             span,
         }),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn resolve_unqualified_callable_module(
     ctx: &EvalContext<'_>,
     name: &str,
     construct_type: &str,
-    modules_for_name: Vec<crate::modules::ModuleId>,
+    modules_for_name: &[crate::modules::ModuleId],
     local_binding_exists: bool,
-    ambiguity_expected: &str,
-    ambiguity_actual: &str,
+    ambiguity: AmbiguityMessages<'_>,
     span: Option<SourceSpan>,
 ) -> Result<Option<crate::modules::ModuleId>, EvalError> {
     if modules_for_name.is_empty() {
@@ -287,12 +290,11 @@ fn resolve_unqualified_callable_module(
     }
     let owner = resolve_visible_owner_module(
         ctx,
-        &modules_for_name,
+        modules_for_name,
         construct_type,
         name,
         name,
-        ambiguity_expected,
-        ambiguity_actual,
+        ambiguity,
         span,
     )?;
     Ok(Some(owner))
@@ -353,8 +355,10 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                 "defglobal",
                 name,
                 &format!("?*{name}*"),
-                "unambiguous global resolution",
-                "multiple visible globals; use MODULE::name",
+                AmbiguityMessages {
+                    expected: "unambiguous global resolution",
+                    actual: "multiple visible globals; use MODULE::name",
+                },
                 span.clone(),
             )?;
             ctx.globals
@@ -384,10 +388,12 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                         ctx,
                         name,
                         "deffunction",
-                        function_modules,
+                        &function_modules,
                         ctx.functions.contains(ctx.current_module, name),
-                        "unambiguous deffunction resolution",
-                        "multiple visible deffunctions; use MODULE::name",
+                        AmbiguityMessages {
+                            expected: "unambiguous deffunction resolution",
+                            actual: "multiple visible deffunctions; use MODULE::name",
+                        },
                         span.clone(),
                     )? {
                         if let Some(func) = ctx.functions.get(target_module, name).cloned() {
@@ -406,10 +412,12 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                         ctx,
                         name,
                         "defgeneric",
-                        generic_modules,
+                        &generic_modules,
                         ctx.generics.contains(ctx.current_module, name),
-                        "unambiguous defgeneric resolution",
-                        "multiple visible defgenerics; use MODULE::name",
+                        AmbiguityMessages {
+                            expected: "unambiguous defgeneric resolution",
+                            actual: "multiple visible defgenerics; use MODULE::name",
+                        },
                         span.clone(),
                     )? {
                         if let Some(generic) = ctx.generics.get(target_module, name).cloned() {

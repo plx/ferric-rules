@@ -266,10 +266,3 @@ pub(crate) fn set_engine_error_global(err: &EngineError) -> FerricError {
     set_global_error(err.to_string());
     code
 }
-
-/// Map a [`LoadError`] to [`FerricError`], storing the message in the global channel.
-pub(crate) fn set_load_error_global(err: &LoadError) -> FerricError {
-    let code = map_load_error(err);
-    set_global_error(err.to_string());
-    code
-}

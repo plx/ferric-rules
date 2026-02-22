@@ -26,6 +26,24 @@ impl From<FerricStringEncoding> for StringEncoding {
     }
 }
 
+impl FerricStringEncoding {
+    /// Integer discriminant used in `FerricConfig`.
+    #[must_use]
+    pub const fn as_raw(self) -> u32 {
+        self as u32
+    }
+
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Ascii),
+            1 => Some(Self::Utf8),
+            2 => Some(Self::AsciiSymbolsUtf8Strings),
+            _ => None,
+        }
+    }
+}
+
 /// C-facing conflict-resolution strategy for `FerricConfig`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,32 +65,67 @@ impl From<FerricConflictStrategy> for ConflictResolutionStrategy {
     }
 }
 
+impl FerricConflictStrategy {
+    /// Integer discriminant used in `FerricConfig`.
+    #[must_use]
+    pub const fn as_raw(self) -> u32 {
+        self as u32
+    }
+
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Depth),
+            1 => Some(Self::Breadth),
+            2 => Some(Self::Lex),
+            3 => Some(Self::Mea),
+            _ => None,
+        }
+    }
+}
+
 /// C-facing engine configuration used by `ferric_engine_new_with_config`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FerricConfig {
-    pub string_encoding: FerricStringEncoding,
-    pub strategy: FerricConflictStrategy,
+    /// Raw `FerricStringEncoding` discriminant.
+    pub string_encoding: u32,
+    /// Raw `FerricConflictStrategy` discriminant.
+    pub strategy: u32,
     pub max_call_depth: usize,
 }
 
 impl Default for FerricConfig {
     fn default() -> Self {
         Self {
-            string_encoding: FerricStringEncoding::Utf8,
-            strategy: FerricConflictStrategy::Depth,
+            string_encoding: FerricStringEncoding::Utf8.as_raw(),
+            strategy: FerricConflictStrategy::Depth.as_raw(),
             max_call_depth: 64,
         }
     }
 }
 
 /// Convert a C-facing config into runtime `EngineConfig`.
-pub(crate) fn engine_config_from_ffi(config: &FerricConfig) -> EngineConfig {
-    EngineConfig {
-        string_encoding: config.string_encoding.into(),
-        strategy: config.strategy.into(),
+pub(crate) fn engine_config_from_ffi(config: &FerricConfig) -> Result<EngineConfig, String> {
+    let string_encoding =
+        FerricStringEncoding::from_raw(config.string_encoding).ok_or_else(|| {
+            format!(
+                "invalid string_encoding value: {} (expected 0..=2)",
+                config.string_encoding
+            )
+        })?;
+    let strategy = FerricConflictStrategy::from_raw(config.strategy).ok_or_else(|| {
+        format!(
+            "invalid strategy value: {} (expected 0..=3)",
+            config.strategy
+        )
+    })?;
+
+    Ok(EngineConfig {
+        string_encoding: string_encoding.into(),
+        strategy: strategy.into(),
         max_call_depth: config.max_call_depth,
-    }
+    })
 }
 
 /// C-facing value type discriminant.

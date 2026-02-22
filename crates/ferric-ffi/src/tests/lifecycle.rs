@@ -30,13 +30,33 @@ fn engine_new_with_null_config_returns_non_null() {
 fn engine_new_with_custom_config_returns_non_null() {
     unsafe {
         let config = FerricConfig {
-            string_encoding: FerricStringEncoding::Ascii,
-            strategy: FerricConflictStrategy::Breadth,
+            string_encoding: FerricStringEncoding::Ascii.as_raw(),
+            strategy: FerricConflictStrategy::Breadth.as_raw(),
             max_call_depth: 32,
         };
         let engine = ferric_engine_new_with_config(&config);
         assert!(!engine.is_null());
         ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn engine_new_with_invalid_config_returns_null() {
+    unsafe {
+        let config = FerricConfig {
+            string_encoding: 999,
+            strategy: FerricConflictStrategy::Depth.as_raw(),
+            max_call_depth: 32,
+        };
+        let engine = ferric_engine_new_with_config(&config);
+        assert!(engine.is_null());
+        let err = ferric_last_error_global();
+        assert!(!err.is_null(), "global error should be populated");
+        let msg = std::ffi::CStr::from_ptr(err).to_string_lossy();
+        assert!(
+            msg.contains("invalid string_encoding"),
+            "error should explain invalid discriminant, got: {msg}"
+        );
     }
 }
 
@@ -80,6 +100,9 @@ fn engine_load_invalid_source() {
         // Error should be stored in global channel
         let err = ferric_last_error_global();
         assert!(!err.is_null());
+        // ...and mirrored in the per-engine channel.
+        let engine_err = ferric_engine_last_error(engine);
+        assert!(!engine_err.is_null());
         ferric_engine_free(engine);
     }
 }
@@ -230,6 +253,30 @@ fn multiple_engines_independent() {
         let src = std::ffi::CString::new(r#"(defrule r1 (initial-fact) => (printout t "1" crlf))"#)
             .unwrap();
         assert_eq!(ferric_engine_load_string(e1, src.as_ptr()), FerricError::Ok);
+
+        ferric_engine_free(e1);
+        ferric_engine_free(e2);
+    }
+}
+
+#[test]
+fn engine_last_error_pointer_storage_is_per_engine() {
+    unsafe {
+        let e1 = ferric_engine_new();
+        let e2 = ferric_engine_new();
+        (*e1).error_state.set("engine one".to_string());
+        (*e2).error_state.set("engine two".to_string());
+
+        let p1 = ferric_engine_last_error(e1);
+        assert!(!p1.is_null());
+        assert_eq!(std::ffi::CStr::from_ptr(p1).to_str().unwrap(), "engine one");
+
+        let p2 = ferric_engine_last_error(e2);
+        assert!(!p2.is_null());
+        assert_eq!(std::ffi::CStr::from_ptr(p2).to_str().unwrap(), "engine two");
+
+        // The first pointer should still read engine one's message after querying engine two.
+        assert_eq!(std::ffi::CStr::from_ptr(p1).to_str().unwrap(), "engine one");
 
         ferric_engine_free(e1);
         ferric_engine_free(e2);

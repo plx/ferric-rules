@@ -250,6 +250,7 @@ pub(crate) fn execute_actions(
     (true, reset_requested, clear_requested, errors)
 }
 
+#[allow(clippy::too_many_arguments)] // Action dispatch needs full mutable engine/action context.
 fn execute_single_action(
     fact_base: &mut FactBase,
     rete: &mut ReteNetwork,

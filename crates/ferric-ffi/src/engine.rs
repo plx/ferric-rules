@@ -20,10 +20,11 @@ use std::ptr;
 use crate::types::{engine_config_from_ffi, value_to_ferric, FerricConfig, FerricValue};
 
 use crate::error::{
-    copy_error_to_buffer, set_engine_error_global, set_global_error, set_load_error_global,
-    EngineErrorState, FerricError,
+    copy_error_to_buffer, map_engine_error, map_load_error, set_engine_error_global,
+    set_global_error, EngineErrorState, FerricError,
 };
 use ferric_runtime::engine::EngineError;
+use ferric_runtime::loader::LoadError;
 use ferric_runtime::{Engine, EngineConfig, RunLimit};
 
 /// Opaque engine handle exposed to C.
@@ -33,10 +34,10 @@ use ferric_runtime::{Engine, EngineConfig, RunLimit};
 pub struct FerricEngine {
     pub(crate) engine: Engine,
     pub(crate) error_state: EngineErrorState,
+    pub(crate) error_cstring: RefCell<Option<CString>>,
 }
 
 thread_local! {
-    static ENGINE_ERR_CSTRING: RefCell<Option<CString>> = const { RefCell::new(None) };
     static OUTPUT_CSTRING: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
@@ -117,6 +118,24 @@ unsafe fn c_str_to_str<'a>(ptr: *const c_char, label: &str) -> Result<&'a str, F
     })
 }
 
+fn set_engine_error_message(
+    handle: &mut FerricEngine,
+    code: FerricError,
+    message: String,
+) -> FerricError {
+    handle.error_state.set(message.clone());
+    set_global_error(message);
+    code
+}
+
+fn set_engine_runtime_error(handle: &mut FerricEngine, err: &EngineError) -> FerricError {
+    set_engine_error_message(handle, map_engine_error(err), err.to_string())
+}
+
+fn set_engine_load_error(handle: &mut FerricEngine, err: &LoadError) -> FerricError {
+    set_engine_error_message(handle, map_load_error(err), err.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // C API: Engine lifecycle
 // ---------------------------------------------------------------------------
@@ -151,13 +170,20 @@ pub unsafe extern "C" fn ferric_engine_new_with_config(
     let engine_config = if config.is_null() {
         EngineConfig::default()
     } else {
-        engine_config_from_ffi(&*config)
+        match engine_config_from_ffi(&*config) {
+            Ok(cfg) => cfg,
+            Err(message) => {
+                set_global_error(message);
+                return ptr::null_mut();
+            }
+        }
     };
 
     let engine = Engine::new(engine_config);
     let handle = FerricEngine {
         engine,
         error_state: EngineErrorState::new(),
+        error_cstring: RefCell::new(None),
     };
     Box::into_raw(Box::new(handle))
 }
@@ -212,9 +238,13 @@ pub unsafe extern "C" fn ferric_engine_load_string(
         Ok(_) => FerricError::Ok,
         Err(errors) => {
             if let Some(first) = errors.first() {
-                set_load_error_global(first)
+                set_engine_load_error(handle, first)
             } else {
-                FerricError::InternalError
+                set_engine_error_message(
+                    handle,
+                    FerricError::InternalError,
+                    "internal error: load failed without diagnostics".to_string(),
+                )
             }
         }
     }
@@ -239,10 +269,9 @@ pub unsafe extern "C" fn ferric_engine_last_error(engine: *const FerricEngine) -
     match handle.error_state.message() {
         Some(msg) => {
             let cstring = CString::new(msg).unwrap_or_default();
-            ENGINE_ERR_CSTRING.with(|c| {
-                *c.borrow_mut() = Some(cstring);
-                c.borrow().as_ref().map_or(ptr::null(), |cs| cs.as_ptr())
-            })
+            let mut slot = handle.error_cstring.borrow_mut();
+            *slot = Some(cstring);
+            slot.as_ref().map_or(ptr::null(), |cs| cs.as_ptr())
         }
         None => ptr::null(),
     }
@@ -319,7 +348,7 @@ pub unsafe extern "C" fn ferric_engine_reset(engine: *mut FerricEngine) -> Ferri
 
     match handle.engine.reset() {
         Ok(()) => FerricError::Ok,
-        Err(ref err) => set_engine_error_global(err),
+        Err(ref err) => set_engine_runtime_error(handle, err),
     }
 }
 
@@ -364,7 +393,7 @@ pub unsafe extern "C" fn ferric_engine_run(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_error_global(err),
+        Err(ref err) => set_engine_runtime_error(handle, err),
     }
 }
 
@@ -406,7 +435,7 @@ pub unsafe extern "C" fn ferric_engine_step(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_error_global(err),
+        Err(ref err) => set_engine_runtime_error(handle, err),
     }
 }
 
@@ -453,9 +482,13 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
         }
         Err(errors) => {
             if let Some(first) = errors.first() {
-                set_load_error_global(first)
+                set_engine_load_error(handle, first)
             } else {
-                FerricError::InternalError
+                set_engine_error_message(
+                    handle,
+                    FerricError::InternalError,
+                    "internal error: load failed without diagnostics".to_string(),
+                )
             }
         }
     }
@@ -482,7 +515,7 @@ pub unsafe extern "C" fn ferric_engine_retract(
 
     match handle.engine.retract(fid) {
         Ok(()) => FerricError::Ok,
-        Err(ref err) => set_engine_error_global(err),
+        Err(ref err) => set_engine_runtime_error(handle, err),
     }
 }
 
