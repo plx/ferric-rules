@@ -47,6 +47,17 @@ When intentionally truncating `i64` to `i32`, use `#[allow(clippy::cast_possible
 ### Boolean to Int Conversion
 Prefer `usize::from(boolean)` over if-else for 0/1 conversion.
 
+## Benchmarking (Phase 6)
+
+- Benchmark suite lives in `crates/ferric/benches/engine_bench.rs`
+- `criterion = { version = "0.5", features = ["html_reports"] }` in workspace deps
+- `engine.run()` takes `RunLimit::Unlimited` (enum), NOT an integer like `-1`
+- `engine.reset()` returns `Result<(), EngineError>` — must `.unwrap()` in benchmarks
+- `criterion 0.5` does NOT support `--quick` flag; use `-- --test` for smoke-runs
+- Raw string literals with no embedded `"`: use `r"..."` not `r#"..."#` (clippy: `needless_raw_string_hashes`)
+- Run benches: `cargo bench -p ferric`; smoke-run: `cargo bench -p ferric --bench engine_bench -- --test`
+- HTML reports in `target/criterion/`
+
 ## Phase 3 Patterns
 
 See `phase3-pass-notes.md` for detailed notes on each Phase 3 pass.
@@ -192,3 +203,19 @@ See `phase5-pass-notes.md` for detailed notes on each Phase 5 pass.
 - `cargo fmt` auto-applies after writing: always run `cargo fmt --all` then `cargo fmt --all --check`
 - Do NOT leave stray `let _ = ();` lines from edit mistakes — re-read after every Edit
 - Total test count: 1200 after pass 012
+
+## Phase 6 Benchmarks
+
+### Constraint Limitations (for benchmark CLIPS source)
+- **`?nh&~?ph` compound constraints NOT supported**: The parser returns an error for connective atoms in constraints. Use `test (neq ?nh ?ph)` as a workaround.
+- **`~literal` IS supported**: `(slot ~value)` compiles to `ConstantTestType::NotEqual` — works fine.
+- **`not` with template patterns IS supported**: `(not (edge (label unknown)))` works correctly.
+- **`modify` IS supported**: Tested in phase3 integration tests and benchmark smoke-runs.
+- **Template pattern with wildcard slot IS supported**: `(not (seating (seat ?) (guest ?next)))` works.
+
+### Waltz and Manners Benchmark Files
+- `crates/ferric/benches/waltz_bench.rs` — 5-junction scene, labels edges convex/concave/boundary
+- `crates/ferric/benches/manners_bench.rs` — 8-guest seating, uses `test (neq ...)` instead of `&~`
+- Both registered in `crates/ferric/Cargo.toml` as `[[bench]]` entries with `harness = false`
+- Each exposes two benchmarks: full load+reset+run, and reset+run-only variants
+- Smoke-test: `cargo bench -p ferric --bench waltz_bench -- --test`

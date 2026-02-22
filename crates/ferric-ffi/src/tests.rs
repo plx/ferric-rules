@@ -38,3 +38,6 @@ mod build_matrix;
 
 #[cfg(test)]
 mod diagnostic_parity;
+
+#[cfg(test)]
+mod contract_lock;
