@@ -32,12 +32,15 @@ pub struct SourceSpan {
     pub column: u32,
 }
 
+impl std::fmt::Display for SourceSpan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "line {}:{}", self.line, self.column)
+    }
+}
+
 /// Format an optional source span for error messages.
 fn format_span(span: Option<&SourceSpan>) -> String {
-    match span {
-        Some(s) => format!("line {}:{}", s.line, s.column),
-        None => "unknown location".to_string(),
-    }
+    span.map_or_else(|| "unknown location".to_string(), ToString::to_string)
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +239,67 @@ fn visible_modules_for_construct(
     )
 }
 
+#[derive(Clone, Copy)]
+struct AmbiguityMessages<'a> {
+    expected: &'a str,
+    actual: &'a str,
+}
+
+fn resolve_visible_owner_module(
+    ctx: &EvalContext<'_>,
+    all_modules: &[crate::modules::ModuleId],
+    construct_type: &str,
+    local_name: &str,
+    display_name: &str,
+    ambiguity: AmbiguityMessages<'_>,
+    span: Option<SourceSpan>,
+) -> Result<crate::modules::ModuleId, EvalError> {
+    let visible = visible_modules_for_construct(ctx, all_modules, construct_type, local_name);
+    match visible.as_slice() {
+        [owner] => Ok(*owner),
+        [] => Err(EvalError::NotVisible {
+            name: display_name.to_string(),
+            construct_type: construct_type.to_string(),
+            from_module: module_label(ctx, ctx.current_module),
+            owning_module: module_label(ctx, all_modules[0]),
+            span,
+        }),
+        _ => Err(EvalError::TypeError {
+            function: display_name.to_string(),
+            expected: ambiguity.expected.to_string(),
+            actual: ambiguity.actual.to_string(),
+            span,
+        }),
+    }
+}
+
+fn resolve_unqualified_callable_module(
+    ctx: &EvalContext<'_>,
+    name: &str,
+    construct_type: &str,
+    modules_for_name: &[crate::modules::ModuleId],
+    local_binding_exists: bool,
+    ambiguity: AmbiguityMessages<'_>,
+    span: Option<SourceSpan>,
+) -> Result<Option<crate::modules::ModuleId>, EvalError> {
+    if modules_for_name.is_empty() {
+        return Ok(None);
+    }
+    if local_binding_exists {
+        return Ok(Some(ctx.current_module));
+    }
+    let owner = resolve_visible_owner_module(
+        ctx,
+        modules_for_name,
+        construct_type,
+        name,
+        name,
+        ambiguity,
+        span,
+    )?;
+    Ok(Some(owner))
+}
+
 // ---------------------------------------------------------------------------
 // Main evaluation function
 // ---------------------------------------------------------------------------
@@ -285,31 +349,25 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                 });
             }
 
-            let visible = visible_modules_for_construct(ctx, &all_modules, "defglobal", name);
-            match visible.as_slice() {
-                [owner] => {
-                    ctx.globals
-                        .get(*owner, name)
-                        .cloned()
-                        .ok_or_else(|| EvalError::UnboundGlobal {
-                            name: name.clone(),
-                            span: span.clone(),
-                        })
-                }
-                [] => Err(EvalError::NotVisible {
-                    name: format!("?*{name}*"),
-                    construct_type: "defglobal".to_string(),
-                    from_module: module_label(ctx, ctx.current_module),
-                    owning_module: module_label(ctx, all_modules[0]),
+            let owner = resolve_visible_owner_module(
+                ctx,
+                &all_modules,
+                "defglobal",
+                name,
+                &format!("?*{name}*"),
+                AmbiguityMessages {
+                    expected: "unambiguous global resolution",
+                    actual: "multiple visible globals; use MODULE::name",
+                },
+                span.clone(),
+            )?;
+            ctx.globals
+                .get(owner, name)
+                .cloned()
+                .ok_or_else(|| EvalError::UnboundGlobal {
+                    name: name.clone(),
                     span: span.clone(),
-                }),
-                _ => Err(EvalError::TypeError {
-                    function: format!("?*{name}*"),
-                    expected: "unambiguous global resolution".to_string(),
-                    actual: "multiple visible globals; use MODULE::name".to_string(),
-                    span: span.clone(),
-                }),
-            }
+                })
         }
         RuntimeExpr::Call { name, args, span } => {
             // call-next-method: advance to next method in the dispatch chain.
@@ -326,35 +384,18 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                 Err(EvalError::UnknownFunction { .. }) => {
                     let function_modules =
                         sorted_dedup_modules(ctx.functions.modules_for_name(name));
-                    if !function_modules.is_empty() {
-                        let target_module = if ctx.functions.contains(ctx.current_module, name) {
-                            Ok(ctx.current_module)
-                        } else {
-                            let visible = visible_modules_for_construct(
-                                ctx,
-                                &function_modules,
-                                "deffunction",
-                                name,
-                            );
-                            match visible.as_slice() {
-                                [owner] => Ok(*owner),
-                                [] => Err(EvalError::NotVisible {
-                                    name: name.clone(),
-                                    construct_type: "deffunction".to_string(),
-                                    from_module: module_label(ctx, ctx.current_module),
-                                    owning_module: module_label(ctx, function_modules[0]),
-                                    span: span.clone(),
-                                }),
-                                _ => Err(EvalError::TypeError {
-                                    function: name.clone(),
-                                    expected: "unambiguous deffunction resolution".to_string(),
-                                    actual: "multiple visible deffunctions; use MODULE::name"
-                                        .to_string(),
-                                    span: span.clone(),
-                                }),
-                            }
-                        }?;
-
+                    if let Some(target_module) = resolve_unqualified_callable_module(
+                        ctx,
+                        name,
+                        "deffunction",
+                        &function_modules,
+                        ctx.functions.contains(ctx.current_module, name),
+                        AmbiguityMessages {
+                            expected: "unambiguous deffunction resolution",
+                            actual: "multiple visible deffunctions; use MODULE::name",
+                        },
+                        span.clone(),
+                    )? {
                         if let Some(func) = ctx.functions.get(target_module, name).cloned() {
                             return dispatch_user_function(
                                 ctx,
@@ -367,35 +408,18 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                     }
 
                     let generic_modules = sorted_dedup_modules(ctx.generics.modules_for_name(name));
-                    if !generic_modules.is_empty() {
-                        let target_module = if ctx.generics.contains(ctx.current_module, name) {
-                            Ok(ctx.current_module)
-                        } else {
-                            let visible = visible_modules_for_construct(
-                                ctx,
-                                &generic_modules,
-                                "defgeneric",
-                                name,
-                            );
-                            match visible.as_slice() {
-                                [owner] => Ok(*owner),
-                                [] => Err(EvalError::NotVisible {
-                                    name: name.clone(),
-                                    construct_type: "defgeneric".to_string(),
-                                    from_module: module_label(ctx, ctx.current_module),
-                                    owning_module: module_label(ctx, generic_modules[0]),
-                                    span: span.clone(),
-                                }),
-                                _ => Err(EvalError::TypeError {
-                                    function: name.clone(),
-                                    expected: "unambiguous defgeneric resolution".to_string(),
-                                    actual: "multiple visible defgenerics; use MODULE::name"
-                                        .to_string(),
-                                    span: span.clone(),
-                                }),
-                            }
-                        }?;
-
+                    if let Some(target_module) = resolve_unqualified_callable_module(
+                        ctx,
+                        name,
+                        "defgeneric",
+                        &generic_modules,
+                        ctx.generics.contains(ctx.current_module, name),
+                        AmbiguityMessages {
+                            expected: "unambiguous defgeneric resolution",
+                            actual: "multiple visible defgenerics; use MODULE::name",
+                        },
+                        span.clone(),
+                    )? {
                         if let Some(generic) = ctx.generics.get(target_module, name).cloned() {
                             return dispatch_generic(
                                 ctx,

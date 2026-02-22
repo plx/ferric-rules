@@ -44,6 +44,18 @@ pub struct OrderedFact {
     pub fields: SmallVec<[Value; 8]>,
 }
 
+impl AsRef<[Value]> for OrderedFact {
+    fn as_ref(&self) -> &[Value] {
+        self.fields.as_slice()
+    }
+}
+
+impl AsMut<[Value]> for OrderedFact {
+    fn as_mut(&mut self) -> &mut [Value] {
+        self.fields.as_mut_slice()
+    }
+}
+
 /// A template fact: template ID + slot values.
 ///
 /// The template defines the slot names and types; this fact holds the values.
@@ -51,6 +63,18 @@ pub struct OrderedFact {
 pub struct TemplateFact {
     pub template_id: TemplateId,
     pub slots: Box<[Value]>,
+}
+
+impl AsRef<[Value]> for TemplateFact {
+    fn as_ref(&self) -> &[Value] {
+        self.slots.as_ref()
+    }
+}
+
+impl AsMut<[Value]> for TemplateFact {
+    fn as_mut(&mut self) -> &mut [Value] {
+        self.slots.as_mut()
+    }
 }
 
 /// A fact: either ordered or template-based.

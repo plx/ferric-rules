@@ -171,3 +171,24 @@ See `phase3-pass-notes.md` and `phase4-pass-notes.md` for detailed notes.
 - **Borrow fix in engine.rs**: `.cloned()` on `self.rule_info.get(&rule_id)` so `&self.rule_info` can be passed as `all_rule_info`
 - **Clippy**: `#[allow(clippy::unnecessary_wraps)]` for helpers that always return `Ok(())`; use `.map_or()` not `.map().unwrap_or()`
 - Test count: 569 ferric-runtime (1015+ total) after pass 012
+
+## Phase 5 Notes
+
+See `phase5-pass-notes.md` for detailed notes on each Phase 5 pass.
+
+### Key Phase 5 Patterns
+
+- Two-step borrow pattern (engine.rs): validate ptr (shared ref) → thread check → validate ptr (mut ref)
+- Read-only fact queries (`fact_count`, `get_fact_field`) use shared ref only; `facts()` does its own thread check
+- `FerricValue::void()` used as `..FerricValue::void()` struct base for type conversions
+- Multifield box-slice allocation: `into_boxed_slice()` → `Box::into_raw()` → `.cast::<FerricValue>()` (NOT `as *mut`)
+- FactId to u64 in tests: `fact_id.data().as_ffi()` (requires `slotmap::Key as _` import)
+- Test count: 110 ferric-ffi after pass 009
+
+### Pass 012: Phase 5 Integration and Exit Validation
+- Added `crates/ferric-ffi/src/tests/diagnostic_parity.rs` with 6 FFI tests
+- Registered as `mod diagnostic_parity;` in `crates/ferric-ffi/src/tests.rs`
+- Added 2 CLI diagnostic parity tests to `crates/ferric-cli/tests/cli_integration.rs`
+- `cargo fmt` auto-applies after writing: always run `cargo fmt --all` then `cargo fmt --all --check`
+- Do NOT leave stray `let _ = ();` lines from edit mistakes — re-read after every Edit
+- Total test count: 1200 after pass 012

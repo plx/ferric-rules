@@ -54,6 +54,12 @@ impl Default for Position {
     }
 }
 
+impl std::fmt::Display for Position {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.line, self.column)
+    }
+}
+
 /// A span of source code (start..end).
 ///
 /// Represents a half-open range `[start, end)` in a source file.
@@ -109,6 +115,12 @@ impl Span {
             end,
             file_id: self.file_id,
         }
+    }
+}
+
+impl std::fmt::Display for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", self.start, self.end)
     }
 }
 

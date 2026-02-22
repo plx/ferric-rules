@@ -88,11 +88,25 @@ pub enum Connective {
     Assign,
 }
 
+impl std::fmt::Display for Connective {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let symbol = match self {
+            Self::And => "&",
+            Self::Or => "|",
+            Self::Not => "~",
+            Self::Colon => ":",
+            Self::Equals => "=",
+            Self::Assign => "<-",
+        };
+        f.write_str(symbol)
+    }
+}
+
 /// Result of parsing S-expressions.
 ///
 /// Contains both successfully parsed expressions and any errors encountered.
 /// The parser attempts error recovery to parse as much as possible.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ParseResult {
     /// Successfully parsed S-expressions.
     pub exprs: Vec<SExpr>,
@@ -248,8 +262,7 @@ impl Parser {
                 if matches!(token.token, Token::RightParen) {
                     let end_span = token.span;
                     self.advance();
-                    let span = start_span.merge(end_span);
-                    return Some(SExpr::List(items, span));
+                    return Some(build_list_expr(items, start_span, end_span));
                 }
             } else {
                 // EOF without closing paren
@@ -264,16 +277,7 @@ impl Parser {
             if let Some(expr) = self.parse_expr() {
                 items.push(expr);
             } else {
-                // Unexpected token (likely a stray right paren)
-                if let Some(token) = self.current() {
-                    if matches!(token.token, Token::RightParen) {
-                        // This is the closing paren for this list
-                        let end_span = token.span;
-                        self.advance();
-                        let span = start_span.merge(end_span);
-                        return Some(SExpr::List(items, span));
-                    }
-                }
+                // Unexpected token; caller handles recovery.
                 break;
             }
         }
@@ -281,6 +285,10 @@ impl Parser {
         // Should not reach here in normal cases
         Some(SExpr::List(items, start_span))
     }
+}
+
+fn build_list_expr(items: Vec<SExpr>, start_span: Span, end_span: Span) -> SExpr {
+    SExpr::List(items, start_span.merge(end_span))
 }
 
 #[cfg(test)]

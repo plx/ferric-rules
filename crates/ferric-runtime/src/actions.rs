@@ -25,6 +25,27 @@ use crate::templates::RegisteredTemplate;
 type OrderedFields = smallvec::SmallVec<[Value; 8]>;
 type ModuleLookup = HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>;
 
+pub(crate) struct ActionExecutionContext<'a> {
+    pub fact_base: &'a mut FactBase,
+    pub rete: &'a mut ReteNetwork,
+    pub halted: &'a mut bool,
+    pub symbol_table: &'a mut SymbolTable,
+    pub config: &'a EngineConfig,
+    pub template_defs: &'a HashMap<TemplateId, RegisteredTemplate>,
+    pub router: &'a mut OutputRouter,
+    pub functions: &'a FunctionEnv,
+    pub globals: &'a mut GlobalStore,
+    pub focus_requests: &'a mut Vec<String>,
+    pub generics: &'a GenericRegistry,
+    pub module_registry: &'a ModuleRegistry,
+    pub current_module: crate::modules::ModuleId,
+    pub function_modules: &'a ModuleLookup,
+    pub global_modules: &'a ModuleLookup,
+    pub generic_modules: &'a ModuleLookup,
+    pub input_buffer: &'a mut VecDeque<String>,
+    pub all_rule_info: &'a HashMap<RuleId, Rc<CompiledRuleInfo>>,
+}
+
 struct ActionEvalEnv<'a> {
     symbol_table: &'a mut SymbolTable,
     config: &'a EngineConfig,
@@ -40,15 +61,12 @@ struct ActionEvalEnv<'a> {
 }
 
 impl ActionEvalEnv<'_> {
-    fn eval_expr(
-        &mut self,
-        token: &Token,
-        rule_info: &CompiledRuleInfo,
-        expr: &ActionExpr,
-    ) -> Result<Value, ActionError> {
-        let runtime_expr = crate::evaluator::from_action_expr(expr, self.symbol_table, self.config)
-            .map_err(|e| ActionError::EvalError(format!("{e}")))?;
-        let mut ctx = crate::evaluator::EvalContext {
+    fn make_eval_context<'ctx>(
+        &'ctx mut self,
+        token: &'ctx Token,
+        rule_info: &'ctx CompiledRuleInfo,
+    ) -> crate::evaluator::EvalContext<'ctx> {
+        crate::evaluator::EvalContext {
             bindings: &token.bindings,
             var_map: &rule_info.var_map,
             symbol_table: self.symbol_table,
@@ -64,9 +82,28 @@ impl ActionEvalEnv<'_> {
             generic_modules: self.generic_modules,
             method_chain: None,
             input_buffer: Some(self.input_buffer),
-        };
-        crate::evaluator::eval(&mut ctx, &runtime_expr)
-            .map_err(|e| ActionError::EvalError(format!("{e}")))
+        }
+    }
+
+    fn eval_runtime_expr(
+        &mut self,
+        token: &Token,
+        rule_info: &CompiledRuleInfo,
+        runtime_expr: &crate::evaluator::RuntimeExpr,
+    ) -> Result<Value, ActionError> {
+        let mut ctx = self.make_eval_context(token, rule_info);
+        crate::evaluator::eval(&mut ctx, runtime_expr).map_err(ActionError::from)
+    }
+
+    fn eval_expr(
+        &mut self,
+        token: &Token,
+        rule_info: &CompiledRuleInfo,
+        expr: &ActionExpr,
+    ) -> Result<Value, ActionError> {
+        let runtime_expr = crate::evaluator::from_action_expr(expr, self.symbol_table, self.config)
+            .map_err(ActionError::from)?;
+        self.eval_runtime_expr(token, rule_info, &runtime_expr)
     }
 }
 
@@ -88,6 +125,8 @@ pub(crate) struct CompiledRuleInfo {
     pub salience: i32,
     /// Pre-translated test CE expressions, evaluated at firing time.
     pub test_conditions: Vec<crate::evaluator::RuntimeExpr>,
+    /// Pre-translated RHS action call expressions.
+    pub runtime_actions: Vec<Option<crate::evaluator::RuntimeExpr>>,
 }
 
 /// Errors that can occur during action execution.
@@ -107,6 +146,8 @@ pub enum ActionError {
     Encoding(String),
     #[error("expression evaluation error: {0}")]
     EvalError(String),
+    #[error("expression evaluation error: {0}")]
+    Evaluator(#[from] crate::evaluator::EvalError),
 }
 
 /// Execute actions for a fired rule.
@@ -120,29 +161,30 @@ pub enum ActionError {
 /// - `reset_requested` is `true` if a `(reset)` action was executed.
 /// - `clear_requested` is `true` if a `(clear)` action was executed.
 /// - `errors` is a list of non-fatal action errors that occurred during execution.
-#[allow(clippy::too_many_arguments)] // Context requires all these parameters
 pub(crate) fn execute_actions(
-    fact_base: &mut FactBase,
-    rete: &mut ReteNetwork,
-    symbol_table: &mut SymbolTable,
-    halted: &mut bool,
-    config: &EngineConfig,
     token: &Token,
     rule_info: &CompiledRuleInfo,
-    template_defs: &HashMap<TemplateId, RegisteredTemplate>,
-    router: &mut OutputRouter,
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
-    focus_requests: &mut Vec<String>,
-    generics: &GenericRegistry,
-    module_registry: &ModuleRegistry,
-    current_module: crate::modules::ModuleId,
-    function_modules: &HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
-    global_modules: &HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
-    generic_modules: &HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
-    input_buffer: &mut VecDeque<String>,
-    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
+    context: &mut ActionExecutionContext<'_>,
 ) -> (bool, bool, bool, Vec<ActionError>) {
+    let fact_base = &mut *context.fact_base;
+    let rete = &mut *context.rete;
+    let halted = &mut *context.halted;
+    let symbol_table = &mut *context.symbol_table;
+    let globals = &mut *context.globals;
+    let router = &mut *context.router;
+    let focus_requests = &mut *context.focus_requests;
+    let input_buffer = &mut *context.input_buffer;
+    let config = context.config;
+    let template_defs = context.template_defs;
+    let functions = context.functions;
+    let generics = context.generics;
+    let module_registry = context.module_registry;
+    let current_module = context.current_module;
+    let function_modules = context.function_modules;
+    let global_modules = context.global_modules;
+    let generic_modules = context.generic_modules;
+    let all_rule_info = context.all_rule_info;
+
     let mut errors = Vec::new();
     let mut reset_requested = false;
     let mut clear_requested = false;
@@ -163,37 +205,24 @@ pub(crate) fn execute_actions(
     // Evaluate test conditions first — if any is falsy, skip all actions and
     // signal to the caller that the rule did NOT logically fire.
     for test_expr in &rule_info.test_conditions {
-        let mut ctx = crate::evaluator::EvalContext {
-            bindings: &token.bindings,
-            var_map: &rule_info.var_map,
-            symbol_table: eval_env.symbol_table,
-            config: eval_env.config,
-            functions: eval_env.functions,
-            globals: eval_env.globals,
-            generics: eval_env.generics,
-            call_depth: 0,
-            current_module: eval_env.current_module,
-            module_registry: eval_env.module_registry,
-            function_modules: eval_env.function_modules,
-            global_modules: eval_env.global_modules,
-            generic_modules: eval_env.generic_modules,
-            method_chain: None,
-            input_buffer: Some(eval_env.input_buffer),
-        };
-        match crate::evaluator::eval(&mut ctx, test_expr) {
+        match eval_env.eval_runtime_expr(token, rule_info, test_expr) {
             Ok(value) => {
-                if !crate::evaluator::is_truthy(&value, ctx.symbol_table) {
+                if !crate::evaluator::is_truthy(&value, eval_env.symbol_table) {
                     return (false, false, false, errors); // Test CE falsy — rule did not fire
                 }
             }
             Err(e) => {
-                errors.push(ActionError::EvalError(format!("{e}")));
+                errors.push(e);
                 return (false, false, false, errors);
             }
         }
     }
 
-    for action in &rule_info.actions {
+    for (index, action) in rule_info.actions.iter().enumerate() {
+        let runtime_call = rule_info
+            .runtime_actions
+            .get(index)
+            .and_then(Option::as_ref);
         if let Err(e) = execute_single_action(
             fact_base,
             rete,
@@ -203,11 +232,12 @@ pub(crate) fn execute_actions(
             token,
             rule_info,
             &action.call,
+            runtime_call,
             template_defs,
             router,
             focus_requests,
-            &mut eval_env,
             all_rule_info,
+            &mut eval_env,
         ) {
             errors.push(e);
         }
@@ -220,7 +250,7 @@ pub(crate) fn execute_actions(
     (true, reset_requested, clear_requested, errors)
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Context requires all these parameters
+#[allow(clippy::too_many_arguments)] // Action dispatch needs full mutable engine/action context.
 fn execute_single_action(
     fact_base: &mut FactBase,
     rete: &mut ReteNetwork,
@@ -230,11 +260,12 @@ fn execute_single_action(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     call: &FunctionCall,
+    runtime_call: Option<&crate::evaluator::RuntimeExpr>,
     template_defs: &HashMap<TemplateId, RegisteredTemplate>,
     router: &mut OutputRouter,
     focus_requests: &mut Vec<String>,
-    eval_env: &mut ActionEvalEnv<'_>,
     all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
+    eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     match call.name.as_str() {
         "assert" => execute_assert(fact_base, rete, token, rule_info, &call.args, eval_env),
@@ -280,9 +311,13 @@ fn execute_single_action(
         }
         // For any other call, try evaluating it as an expression (e.g., bind).
         _ => {
-            let action_expr = ActionExpr::FunctionCall(call.clone());
-            eval_env
-                .eval_expr(token, rule_info, &action_expr)
+            let eval_result = if let Some(runtime_expr) = runtime_call {
+                eval_env.eval_runtime_expr(token, rule_info, runtime_expr)
+            } else {
+                let action_expr = ActionExpr::FunctionCall(call.clone());
+                eval_env.eval_expr(token, rule_info, &action_expr)
+            };
+            eval_result
                 .map(|_| ())
                 .map_err(|e| ActionError::UnknownAction(format!("{}: {e}", call.name)))
         }

@@ -4,7 +4,7 @@
 //! for embedding applications. Phase 1 includes basic fact assertion/retraction
 //! and thread affinity checking.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::thread::ThreadId;
@@ -31,6 +31,12 @@ fn propagate_fact_assertion(rete: &mut ReteNetwork, fact_base: &FactBase, fact_i
         .fact
         .clone();
     rete.assert_fact(fact_id, &fact, fact_base);
+}
+
+fn sorted_unique_modules(mut modules: Vec<ModuleId>) -> Vec<ModuleId> {
+    modules.sort_by_key(|module_id| module_id.0);
+    modules.dedup();
+    modules
 }
 
 /// The Ferric rules engine.
@@ -309,6 +315,15 @@ impl Engine {
         Ok(FerricString::new(s, self.config.string_encoding)?)
     }
 
+    /// Resolve a [`Symbol`] to its string representation.
+    ///
+    /// Returns `None` if the symbol is not in this engine's symbol table.
+    /// No thread-affinity check — symbol table contents are immutable once interned.
+    #[must_use]
+    pub fn resolve_symbol(&self, sym: Symbol) -> Option<&str> {
+        self.symbol_table.resolve_symbol_str(sym)
+    }
+
     /// Access the engine's Rete network for inspection.
     #[must_use]
     pub fn rete(&self) -> &ReteNetwork {
@@ -316,7 +331,7 @@ impl Engine {
     }
 
     /// Check that the current thread is the same as the creator thread.
-    pub(crate) fn check_thread_affinity(&self) -> Result<(), EngineError> {
+    pub fn check_thread_affinity(&self) -> Result<(), EngineError> {
         let current = std::thread::current().id();
         if current != self.creator_thread {
             return Err(EngineError::WrongThread {
@@ -357,34 +372,34 @@ impl Engine {
             .unwrap_or_else(|| self.module_registry.main_module_id());
 
         let mut focus_requests = Vec::new();
-        let (fired, reset_requested, clear_requested, mut errors) = actions::execute_actions(
-            &mut self.fact_base,
-            &mut self.rete,
-            &mut self.symbol_table,
-            &mut self.halted,
-            &self.config,
-            &token,
-            info.as_ref(),
-            &self.template_defs,
-            &mut self.router,
-            &self.functions,
-            &mut self.globals,
-            &mut focus_requests,
-            &self.generics,
-            &self.module_registry,
+        let mut action_context = actions::ActionExecutionContext {
+            fact_base: &mut self.fact_base,
+            rete: &mut self.rete,
+            halted: &mut self.halted,
+            symbol_table: &mut self.symbol_table,
+            config: &self.config,
+            template_defs: &self.template_defs,
+            router: &mut self.router,
+            functions: &self.functions,
+            globals: &mut self.globals,
+            focus_requests: &mut focus_requests,
+            generics: &self.generics,
+            module_registry: &self.module_registry,
             current_module,
-            &self.function_modules,
-            &self.global_modules,
-            &self.generic_modules,
-            &mut self.input_buffer,
-            &self.rule_info,
-        );
+            function_modules: &self.function_modules,
+            global_modules: &self.global_modules,
+            generic_modules: &self.generic_modules,
+            input_buffer: &mut self.input_buffer,
+            all_rule_info: &self.rule_info,
+        };
+        let (fired, reset_requested, clear_requested, mut errors) =
+            actions::execute_actions(&token, info.as_ref(), &mut action_context);
 
         // Apply focus requests (push in reverse order so first arg is on top)
         for module_name in focus_requests.iter().rev() {
-            match self.module_registry.get_by_name(module_name) {
-                Some(id) => self.module_registry.push_focus(id),
-                None => errors.push(ActionError::EvalError(format!(
+            match self.resolve_focus_module(module_name) {
+                Ok(id) => self.module_registry.push_focus(id),
+                Err(_) => errors.push(ActionError::EvalError(format!(
                     "focus: unknown module `{module_name}`"
                 ))),
             }
@@ -698,21 +713,20 @@ impl Engine {
             return Some(value);
         }
 
-        let mut visible_modules: Vec<ModuleId> = self
-            .globals
-            .modules_for_name(name)
-            .into_iter()
-            .filter(|module_id| {
-                self.module_registry.is_construct_visible(
-                    current_module,
-                    *module_id,
-                    "defglobal",
-                    name,
-                )
-            })
-            .collect();
-        visible_modules.sort_by_key(|module_id| module_id.0);
-        visible_modules.dedup();
+        let visible_modules: Vec<ModuleId> = sorted_unique_modules(
+            self.globals
+                .modules_for_name(name)
+                .into_iter()
+                .filter(|module_id| {
+                    self.module_registry.is_construct_visible(
+                        current_module,
+                        *module_id,
+                        "defglobal",
+                        name,
+                    )
+                })
+                .collect(),
+        );
         match visible_modules.as_slice() {
             [module_id] => self.globals.get(*module_id, name),
             _ => None,
@@ -751,10 +765,7 @@ impl Engine {
     ///
     /// Returns `ModuleNotFound` if the module has not been registered.
     pub fn set_focus(&mut self, module_name: &str) -> Result<(), EngineError> {
-        let module_id = self
-            .module_registry
-            .get_by_name(module_name)
-            .ok_or_else(|| EngineError::ModuleNotFound(module_name.to_string()))?;
+        let module_id = self.resolve_focus_module(module_name)?;
         self.module_registry.set_focus(module_id);
         Ok(())
     }
@@ -765,19 +776,24 @@ impl Engine {
     ///
     /// Returns `ModuleNotFound` if the module has not been registered.
     pub fn push_focus(&mut self, module_name: &str) -> Result<(), EngineError> {
-        let module_id = self
-            .module_registry
-            .get_by_name(module_name)
-            .ok_or_else(|| EngineError::ModuleNotFound(module_name.to_string()))?;
+        let module_id = self.resolve_focus_module(module_name)?;
         self.module_registry.push_focus(module_id);
         Ok(())
+    }
+
+    fn resolve_focus_module(&self, module_name: &str) -> Result<ModuleId, EngineError> {
+        self.module_registry
+            .get_by_name(module_name)
+            .ok_or_else(|| EngineError::ModuleNotFound(module_name.to_string()))
     }
 
     /// Verify engine-level structural consistency.
     ///
     /// This extends rete consistency checks with Phase 3 registries
     /// (modules/focus, functions, globals, generics).
+    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
+        use std::collections::HashSet;
         self.rete.debug_assert_consistency();
         self.module_registry.debug_assert_consistency();
         self.functions.debug_assert_consistency();
