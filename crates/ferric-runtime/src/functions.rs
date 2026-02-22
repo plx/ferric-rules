@@ -230,6 +230,7 @@ impl GenericRegistry {
     }
 
     /// Register a method. Auto-creates the generic if it doesn't exist.
+    #[allow(clippy::too_many_arguments)]
     pub fn register_method(
         &mut self,
         module: ModuleId,

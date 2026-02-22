@@ -640,14 +640,19 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
 }
 
 fn parse_optional_comment(elements: &[SExpr], idx: &mut usize) -> Option<String> {
-    elements
+    let comment = elements
         .get(*idx)
         .and_then(SExpr::as_atom)
         .and_then(|atom| match atom {
             Atom::String(s) => Some(s.clone()),
             _ => None,
-        })
-        .inspect(|_| *idx += 1)
+        });
+
+    if comment.is_some() {
+        *idx += 1;
+    }
+
+    comment
 }
 
 /// Interprets a `defrule` construct.

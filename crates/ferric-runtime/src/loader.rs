@@ -368,13 +368,9 @@ impl Engine {
                         }
                         // Auto-create the generic module entry if it doesn't exist yet
                         // (a defmethod with no preceding defgeneric auto-creates the generic).
-                        if !self
-                            .generic_modules
-                            .contains_key(&(owning_module, method.name.clone()))
-                        {
-                            self.generic_modules
-                                .insert((owning_module, method.name.clone()), owning_module);
-                        }
+                        self.generic_modules
+                            .entry((owning_module, method.name.clone()))
+                            .or_insert(owning_module);
                         // Register the method in the generic registry.
                         // Extract parameter names and type restrictions from MethodParameter structs.
                         let param_names: Vec<String> =

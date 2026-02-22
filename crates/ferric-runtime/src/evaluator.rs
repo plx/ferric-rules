@@ -3141,8 +3141,9 @@ mod tests {
     use ferric_core::binding::{BindingSet, VarMap};
     use std::rc::Rc;
 
-    /// Create a default test context tuple.
-    fn test_ctx() -> (
+    type ModuleNameMap =
+        std::collections::HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>;
+    type TestCtx = (
         SymbolTable,
         VarMap,
         BindingSet,
@@ -3151,8 +3152,11 @@ mod tests {
         GlobalStore,
         GenericRegistry,
         crate::modules::ModuleRegistry,
-        std::collections::HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
-    ) {
+        ModuleNameMap,
+    );
+
+    /// Create a default test context tuple.
+    fn test_ctx() -> TestCtx {
         let symbol_table = SymbolTable::new();
         let var_map = VarMap::new();
         let bindings = BindingSet::new();
@@ -3161,10 +3165,7 @@ mod tests {
         let globals = GlobalStore::new();
         let generics = GenericRegistry::new();
         let module_registry = crate::modules::ModuleRegistry::new();
-        let empty_modules: std::collections::HashMap<
-            (crate::modules::ModuleId, String),
-            crate::modules::ModuleId,
-        > = std::collections::HashMap::new();
+        let empty_modules: ModuleNameMap = std::collections::HashMap::new();
         (
             symbol_table,
             var_map,
