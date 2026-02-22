@@ -20,7 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo check --workspace
+      - run: ./scripts/preflight.sh check
 
   fmt:
     name: Format
@@ -31,7 +31,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt
-      - run: cargo fmt --all --check
+      - run: ./scripts/preflight.sh fmt
 
   clippy:
     name: Clippy
@@ -42,7 +42,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: ./scripts/preflight.sh clippy
 
   test:
     name: Test
@@ -52,4 +52,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo test --workspace
+      - run: ./scripts/preflight.sh test

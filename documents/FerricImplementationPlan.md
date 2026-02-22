@@ -2880,7 +2880,7 @@ pub enum Token {
     Symbol(String),
     SingleVar(String),    // ?name
     MultiVar(String),     // $?name
-    GlobalVar(String),    // ?*name*
+    GlobalVar(String),    // ?*MODULE::name* (MODULE optional for current-module lookup)
     Ampersand,            // &
     Pipe,                 // |
     Tilde,                // ~
@@ -2904,7 +2904,7 @@ pub enum Atom {
     Symbol(String),
     SingleVar(String),
     MultiVar(String),
-    GlobalVar(String),
+    GlobalVar(String),     // ?*MODULE::name* (MODULE optional for current-module lookup)
     Connective(Connective),  // & | ~ : = <-
 }
 
@@ -3141,6 +3141,8 @@ defglobal = "(" "defglobal" [module-name]
             global-assignment* ")" ;
 
 global-assignment = global-variable "=" expression ;
+(* global-variable uses canonical '?*MODULE::name*' syntax; omitting MODULE
+   binds/reads the current module's local global namespace. *)
 
 (* Modules *)
 defmodule = "(" "defmodule" module-name [comment]
@@ -3171,6 +3173,10 @@ pub struct EngineConfig {
 
     /// Tracing/logging configuration
     pub tracing: TracingConfig,
+
+    /// Maximum callable depth (`deffunction` / `defmethod` / `call-next-method`)
+    /// before recursion-limit diagnostics are raised.
+    pub max_call_depth: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -3210,6 +3216,9 @@ impl EngineConfig {
     pub fn classic() -> Self { ... }  // CLIPS-compatible defaults
     pub fn strict() -> Self { ... }   // Modern strict defaults
 }
+
+// Constructor defaults:
+// - new() / classic() / strict() all initialize max_call_depth = 64.
 ```
 
 ### 9.2 Engine API
@@ -3218,6 +3227,9 @@ The API below combines the long-term target surface with explicit post-Phase-2
 baseline notes:
 
 - `run` / `step` / `halt` / `reset` are implemented.
+- `reset` / `clear` are deferred until the current action batch completes;
+  once applied, the current `run()` invocation returns so callers observe the
+  new post-reset/clear state before any subsequent firing cycle.
 - RHS action execution is live for `assert`, `retract`, and `halt`.
 - `modify` / `duplicate` are template-aware for ordered and template facts.
 - `printout` is implemented with per-channel output routing.
@@ -3356,6 +3368,10 @@ impl Engine {
     pub fn get_global(&self, name: &str) -> Option<&Value>;
 
     /// Set a global variable value
+    ///
+    /// `bind` follows the same visibility contract as `get_global`: it may
+    /// only target globals visible from the current module and must report an
+    /// error for undeclared globals (no implicit global creation).
     pub fn set_global(&mut self, name: &str, value: Value) -> Result<(), GlobalError>;
 
     // === Modules ===
@@ -3504,7 +3520,7 @@ The standard library is implemented in phases. v10 locks a concrete minimum surf
 | String/Symbol | `str-cat`, `str-length`, `sub-string`, `sym-cat` | Must follow encoding semantics from §2.4.1 |
 | Multifield | `create$`, `length$`, `nth$`, `member$`, `subsetp` | No implicit flattening beyond CLIPS behavior |
 | Fact Ops | `assert`, `retract`, `modify`, `duplicate` | `assert`/`retract` are fully operational; template-aware `modify`/`duplicate` implemented in Phase 3 |
-| I/O | `printout` | Implemented in Phase 3 runtime; channel argument is literal symbol/string only (non-literal yields diagnostic). Phase 4 extends broader I/O surface (`format`, `read`, `readline`) |
+| I/O | `printout` | Implemented in Phase 3 runtime; channel argument is literal symbol/string only (non-literal yields diagnostic). Phase 4 extends broader I/O surface (`format`, `read`, `readline`) and propagates `read`/`readline` input buffering through nested `deffunction` / `defmethod` / `call-next-method` frames |
 | Agenda Ops | `run`, `halt`, `focus`, `get-focus`, `get-focus-stack`, `list-focus-stack`, `agenda` | Must not bypass agenda invariants; query-surface parity is completed in Phase 4 |
 | Environment | `reset`, `clear` | Administrative controls |
 
@@ -4373,7 +4389,9 @@ Carry-forward baseline for remaining phases:
 
 **Exit Criteria:**
 - All documented functions implemented
-- Module-qualified and cross-module callable/global resolution paths honor import/export visibility with source-located diagnostics
+- Callable/global registries are keyed by `(ModuleId, local-name)` so identical local names can coexist across modules without clobbering
+- Module-qualified and cross-module callable/global resolution paths honor import/export visibility with source-located diagnostics (`?*MODULE::name*` canonical form for qualified globals)
+- Unqualified resolution is caller-module-first, then visible imports; ambiguous multiple-visible matches emit explicit diagnostics (no arbitrary fallback)
 - Generic dispatch behavior matches documented specificity/`call-next-method` contract
 - Same-name `deffunction`/`defgeneric` definitions fail with explicit conflict diagnostics
 - Function tests pass through both direct calls and RHS expression execution paths
@@ -4381,7 +4399,7 @@ Carry-forward baseline for remaining phases:
 
 ### Phase 5: FFI & CLI (Weeks 33-38)
 
-**Goal:** External interfaces
+**Goal:** External interfaces built on Phase 4's finalized module/global resolution and diagnostic contracts.
 
 | Week | Deliverables |
 |------|--------------|
@@ -4395,6 +4413,7 @@ Carry-forward baseline for remaining phases:
 - Thread safety contract is documented prominently in the generated C header
 - Validation and action-execution diagnostics are surfaced consistently through FFI and CLI
 - Phase 4 module/generic diagnostics (visibility, module-qualified names, dispatch/conflict errors) are surfaced through FFI and CLI without loss of source context
+- Phase 4 module/global ambiguity and visibility diagnostics are treated as stable external contract (no CLI/FFI-layer reinterpretation)
 - CLI runs on all platforms
 - REPL is functional
 
@@ -4411,8 +4430,13 @@ Carry-forward baseline for remaining phases:
 **Exit Criteria:**
 - CLIPS compatibility tests pass
 - Performance within target range
-- Documentation complete (including string comparison semantics, pattern restriction rationale, and no-open-TODO status for required semantics)
+- Documentation complete (including string comparison semantics, pattern restriction rationale, canonical `?*MODULE::name*` global syntax, and `bind` non-creation semantics)
 - Ready for release
+
+Phase 4 follow-through requirements for subsequent phases:
+- Phase 5 surface design must keep Phase 4 module/visibility/ambiguity diagnostics intact and source-located.
+- Phase 6 compatibility documentation must reflect canonical qualified global syntax and bind write semantics exactly as implemented.
+- Regression coverage for module namespace collisions and qualified-global paths remains mandatory for future refactors.
 
 ### Timeline Summary
 

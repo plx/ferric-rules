@@ -408,10 +408,19 @@ pub enum InterpretErrorKind {
 impl InterpretError {
     /// Creates an error for expecting a specific element.
     pub fn expected(what: &str, span: Span) -> Self {
+        Self::expected_with_kind(what, span, InterpretErrorKind::InvalidStructure)
+    }
+
+    /// Creates an error for expecting a top-level construct.
+    pub fn expected_construct(what: &str, span: Span) -> Self {
+        Self::expected_with_kind(what, span, InterpretErrorKind::ExpectedConstruct)
+    }
+
+    fn expected_with_kind(what: &str, span: Span, kind: InterpretErrorKind) -> Self {
         Self {
             message: format!("expected {what}"),
             span,
-            kind: InterpretErrorKind::ExpectedConstruct,
+            kind,
             suggestions: Vec::new(),
         }
     }
@@ -492,7 +501,7 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
     for sexpr in sexprs {
         // Each top-level element must be a list
         let Some(list) = sexpr.as_list() else {
-            result.errors.push(InterpretError::expected(
+            result.errors.push(InterpretError::expected_construct(
                 "a construct (list starting with defrule, deftemplate, or deffacts)",
                 sexpr.span(),
             ));
@@ -630,6 +639,22 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
     result
 }
 
+fn parse_optional_comment(elements: &[SExpr], idx: &mut usize) -> Option<String> {
+    let comment = elements
+        .get(*idx)
+        .and_then(SExpr::as_atom)
+        .and_then(|atom| match atom {
+            Atom::String(s) => Some(s.clone()),
+            _ => None,
+        });
+
+    if comment.is_some() {
+        *idx += 1;
+    }
+
+    comment
+}
+
 /// Interprets a `defrule` construct.
 ///
 /// Expects elements after the `defrule` keyword:
@@ -651,16 +676,10 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
         .to_string();
 
     let mut idx = 1;
-    let mut comment = None;
     let mut salience = 0;
 
     // Check for optional comment (string as second element)
-    if idx < elements.len() {
-        if let Some(Atom::String(s)) = elements[idx].as_atom() {
-            comment = Some(s.clone());
-            idx += 1;
-        }
-    }
+    let comment = parse_optional_comment(elements, &mut idx);
 
     // Check for optional declare forms
     while idx < elements.len() {
@@ -756,15 +775,7 @@ fn interpret_template(elements: &[SExpr], span: Span) -> Result<TemplateConstruc
         .to_string();
 
     let mut idx = 1;
-    let mut comment = None;
-
-    // Check for optional comment (string as second element)
-    if idx < elements.len() {
-        if let Some(Atom::String(s)) = elements[idx].as_atom() {
-            comment = Some(s.clone());
-            idx += 1;
-        }
-    }
+    let comment = parse_optional_comment(elements, &mut idx);
 
     // Parse slot definitions
     let mut slots = Vec::new();
@@ -798,15 +809,7 @@ fn interpret_facts(elements: &[SExpr], span: Span) -> Result<FactsConstruct, Int
         .to_string();
 
     let mut idx = 1;
-    let mut comment = None;
-
-    // Check for optional comment (string as second element)
-    if idx < elements.len() {
-        if let Some(Atom::String(s)) = elements[idx].as_atom() {
-            comment = Some(s.clone());
-            idx += 1;
-        }
-    }
+    let comment = parse_optional_comment(elements, &mut idx);
 
     // Parse fact bodies
     let mut facts = Vec::new();
@@ -857,16 +860,7 @@ fn interpret_function(elements: &[SExpr], span: Span) -> Result<FunctionConstruc
     let mut idx = 1;
 
     // Optional doc comment (string literal immediately after the name)
-    let comment = if idx < elements.len() {
-        if let Some(Atom::String(s)) = elements[idx].as_atom() {
-            idx += 1;
-            Some(s.clone())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let comment = parse_optional_comment(elements, &mut idx);
 
     // Parameter list (required; must be a list)
     if idx >= elements.len() {
@@ -1072,16 +1066,7 @@ fn interpret_module(elements: &[SExpr], span: Span) -> Result<ModuleConstruct, I
     let mut idx = 1;
 
     // Optional comment
-    let comment = if idx < elements.len() {
-        if let Some(Atom::String(s)) = elements[idx].as_atom() {
-            idx += 1;
-            Some(s.clone())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let comment = parse_optional_comment(elements, &mut idx);
 
     let mut exports = Vec::new();
     let mut imports = Vec::new();
@@ -1249,16 +1234,7 @@ fn interpret_generic(elements: &[SExpr], span: Span) -> Result<GenericConstruct,
     let mut idx = 1;
 
     // Optional comment
-    let comment = if idx < elements.len() {
-        if let Some(Atom::String(s)) = elements[idx].as_atom() {
-            idx += 1;
-            Some(s.clone())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let comment = parse_optional_comment(elements, &mut idx);
 
     // defgeneric should have no more elements after name and optional comment
     if idx < elements.len() {
@@ -3075,6 +3051,22 @@ mod tests {
                 assert!(func.parameters.is_empty());
                 assert!(func.wildcard_parameter.is_none());
                 assert_eq!(func.body.len(), 1);
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_deffunction_qualified_global_reference() {
+        let result = interpret_source_inner("(deffunction get-threshold () ?*CONFIG::threshold*)");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match &result.constructs[0] {
+            Construct::Function(func) => {
+                assert_eq!(func.body.len(), 1);
+                assert!(matches!(
+                    &func.body[0],
+                    ActionExpr::GlobalVariable(name, _) if name == "CONFIG::threshold"
+                ));
             }
             other => panic!("expected Function, got {other:?}"),
         }

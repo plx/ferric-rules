@@ -28,7 +28,7 @@ pub enum HaltReason {
 }
 
 /// Result of an execution run.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct RunResult {
     /// Number of rules fired during this run.
     pub rules_fired: usize,

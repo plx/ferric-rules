@@ -153,14 +153,11 @@ impl Agenda {
         self.next_seq += 1;
 
         let key = self.build_key(&activation);
-
         let token = activation.token;
-        let id = self.activations.insert(activation);
-
-        // Update the activation's ID field
-        if let Some(act) = self.activations.get_mut(id) {
-            act.id = id;
-        }
+        let id = self.activations.insert_with_key(|id| {
+            activation.id = id;
+            activation
+        });
 
         self.ordering.insert(key.clone(), id);
         self.id_to_key.insert(id, key);

@@ -4,8 +4,9 @@
 //! for embedding applications. Phase 1 includes basic fact assertion/retraction
 //! and thread affinity checking.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
+use std::rc::Rc;
 use std::thread::ThreadId;
 use thiserror::Error;
 
@@ -49,15 +50,32 @@ fn propagate_fact_assertion(rete: &mut ReteNetwork, fact_base: &FactBase, fact_i
 /// - Agenda conflict strategy selection (Depth, Breadth, LEX, MEA)
 /// - Thread affinity enforcement with `unsafe move_to_current_thread`
 ///
-/// ## Phase 3 planned
+/// ## Phase 3 complete
 ///
-/// - Template-aware `modify`/`duplicate`
-/// - Real `printout` with output routing
-/// - Expression evaluator for nested function calls in RHS
-/// - `deffunction`/`defglobal` support
-/// - `defmodule` import/export
-/// - `defgeneric`/`defmethod` dispatch
-/// - `forall` CE
+/// - Expression evaluator for nested function calls in RHS and test CEs.
+/// - Template-aware `modify`/`duplicate` with slot validation.
+/// - `printout` with per-channel output capture via `OutputRouter`.
+/// - `deffunction` runtime: user-defined functions with parameter binding and
+///   recursion limits.
+/// - `defglobal` runtime: global variable read/write via `bind`, with reset
+///   re-initialization.
+/// - `defmodule` runtime: module registry, focus stack, focus-aware `run()`,
+///   `focus` RHS action, and cross-module template visibility.
+/// - `defgeneric`/`defmethod` runtime: type-based method dispatch with
+///   index ordering and auto-index assignment.
+/// - `forall` CE (limited): single condition + single then-clause,
+///   desugared to NCC, with vacuous truth and initial-fact support.
+///
+/// ## Phase 4 complete
+///
+/// - Module-qualified `MODULE::name` resolution for callables and globals.
+/// - Cross-module `deffunction`/`defglobal` visibility enforcement.
+/// - `deffunction`/`defgeneric` same-name conflict diagnostics.
+/// - CLIPS-style generic specificity ranking and `call-next-method`.
+/// - Full Section 10.2 builtin surface: predicate/math/type, string/symbol,
+///   multifield, I/O (`format`, `read`, `readline`), environment (`reset`,
+///   `clear`), agenda/focus query functions (`get-focus`, `get-focus-stack`,
+///   `list-focus-stack`, `agenda`).
 pub struct Engine {
     pub(crate) fact_base: FactBase,
     pub(crate) symbol_table: SymbolTable,
@@ -67,7 +85,7 @@ pub struct Engine {
     /// Registered deffacts for re-assertion on reset.
     pub(crate) registered_deffacts: Vec<Vec<Fact>>,
     /// Compiled rule info for action execution.
-    pub(crate) rule_info: HashMap<RuleId, CompiledRuleInfo>,
+    pub(crate) rule_info: HashMap<RuleId, Rc<CompiledRuleInfo>>,
     /// Registered template definitions: name → `TemplateId`.
     pub(crate) template_ids: HashMap<String, TemplateId>,
     /// Template slot metadata indexed by `TemplateId`.
@@ -81,7 +99,7 @@ pub struct Engine {
     /// Runtime storage for `defglobal` variables.
     pub(crate) globals: GlobalStore,
     /// Snapshot of global initial values for re-initialization on reset.
-    pub(crate) registered_globals: Vec<(String, Value)>,
+    pub(crate) registered_globals: Vec<(ModuleId, String, Value)>,
     /// Registry of generic functions and methods loaded via `defgeneric`/`defmethod`.
     pub(crate) generics: GenericRegistry,
     /// Module registry: module definitions, focus stack, visibility.
@@ -90,6 +108,12 @@ pub struct Engine {
     pub(crate) rule_modules: HashMap<RuleId, ModuleId>,
     /// Template-to-module association for visibility checking.
     pub(crate) template_modules: HashMap<ferric_core::TemplateId, ModuleId>,
+    /// Function-to-module association for consistency-check bookkeeping.
+    pub(crate) function_modules: HashMap<(ModuleId, String), ModuleId>,
+    /// Global-to-module association for consistency-check bookkeeping.
+    pub(crate) global_modules: HashMap<(ModuleId, String), ModuleId>,
+    /// Generic-to-module association for consistency-check bookkeeping.
+    pub(crate) generic_modules: HashMap<(ModuleId, String), ModuleId>,
     /// The `FactId` of the synthetic `(initial-fact)` in working memory, if present.
     ///
     /// `(initial-fact)` is asserted by the engine to provide a root token for
@@ -100,6 +124,8 @@ pub struct Engine {
     action_diagnostics: Vec<ActionError>,
     /// Whether a halt has been requested.
     halted: bool,
+    /// Input buffer for `read`/`readline` calls from rules.
+    pub(crate) input_buffer: VecDeque<String>,
     creator_thread: ThreadId,
     // Marker to ensure Engine is !Send + !Sync
     _not_send_sync: PhantomData<*mut ()>,
@@ -129,9 +155,13 @@ impl Engine {
             module_registry: ModuleRegistry::new(),
             rule_modules: HashMap::new(),
             template_modules: HashMap::new(),
+            function_modules: HashMap::new(),
+            global_modules: HashMap::new(),
+            generic_modules: HashMap::new(),
             initial_fact_id: None,
             action_diagnostics: Vec::new(),
             halted: false,
+            input_buffer: VecDeque::new(),
             creator_thread: std::thread::current().id(),
             _not_send_sync: PhantomData,
         }
@@ -299,44 +329,56 @@ impl Engine {
 
     /// Execute RHS actions for a rule activation.
     ///
-    /// Returns `true` if the rule logically fired (all test CEs passed and
-    /// actions were executed), `false` if a test CE caused the rule to be
-    /// suppressed.
+    /// Returns `(logically_fired, reset_requested, clear_requested)`.
+    /// - `logically_fired` is `true` if all test CEs passed and actions were executed.
+    /// - `reset_requested` is `true` if a `(reset)` action was executed in the RHS.
+    /// - `clear_requested` is `true` if a `(clear)` action was executed in the RHS.
     fn execute_activation_actions(
         &mut self,
         rule_id: RuleId,
         token_id: ferric_core::token::TokenId,
-    ) -> bool {
+    ) -> (bool, bool, bool) {
         let Some(token) = self.rete.token_store.get(token_id).cloned() else {
             // No token — treat as not fired.
-            return false;
+            return (false, false, false);
         };
 
-        let (fired, mut errors, focus_requests) = {
-            let Some(info) = self.rule_info.get(&rule_id) else {
-                // No compiled rule info — treat as not fired.
-                return false;
-            };
-
-            let mut focus_requests = Vec::new();
-            let (fired, errors) = actions::execute_actions(
-                &mut self.fact_base,
-                &mut self.rete,
-                &mut self.symbol_table,
-                &mut self.halted,
-                &self.config,
-                &token,
-                info,
-                &self.template_defs,
-                &mut self.router,
-                &self.functions,
-                &mut self.globals,
-                &mut focus_requests,
-                &self.generics,
-                &self.module_registry,
-            );
-            (fired, errors, focus_requests)
+        // Clone the handle so we can pass both this rule and the full map to
+        // action helpers without deep-cloning `CompiledRuleInfo`.
+        let Some(info) = self.rule_info.get(&rule_id).cloned() else {
+            // No compiled rule info — treat as not fired.
+            return (false, false, false);
         };
+
+        let current_module = self
+            .rule_modules
+            .get(&rule_id)
+            .copied()
+            .unwrap_or_else(|| self.module_registry.main_module_id());
+
+        let mut focus_requests = Vec::new();
+        let (fired, reset_requested, clear_requested, mut errors) = actions::execute_actions(
+            &mut self.fact_base,
+            &mut self.rete,
+            &mut self.symbol_table,
+            &mut self.halted,
+            &self.config,
+            &token,
+            info.as_ref(),
+            &self.template_defs,
+            &mut self.router,
+            &self.functions,
+            &mut self.globals,
+            &mut focus_requests,
+            &self.generics,
+            &self.module_registry,
+            current_module,
+            &self.function_modules,
+            &self.global_modules,
+            &self.generic_modules,
+            &mut self.input_buffer,
+            &self.rule_info,
+        );
 
         // Apply focus requests (push in reverse order so first arg is on top)
         for module_name in focus_requests.iter().rev() {
@@ -349,7 +391,7 @@ impl Engine {
         }
 
         self.action_diagnostics.extend(errors);
-        fired
+        (fired, reset_requested, clear_requested)
     }
 
     /// Transfer ownership of this engine to the current thread.
@@ -416,7 +458,16 @@ impl Engine {
         // Execute actions (errors are currently silently ignored).
         // The boolean return indicates whether test CEs passed, but step()
         // always returns Some(fired) to indicate an activation was processed.
-        let _ = self.execute_activation_actions(activation.rule, activation.token);
+        let (_, reset_requested, clear_requested) =
+            self.execute_activation_actions(activation.rule, activation.token);
+
+        if clear_requested {
+            self.clear();
+        } else if reset_requested {
+            let _ = self.reset();
+        }
+        // After reset or clear, the engine is in a new state.
+        // step() still returns the FiredRule indicating what fired.
 
         Ok(Some(fired))
     }
@@ -465,11 +516,29 @@ impl Engine {
                 });
             };
 
-            let logically_fired =
+            let (logically_fired, reset_requested, clear_requested) =
                 self.execute_activation_actions(activation.rule, activation.token);
 
             if logically_fired {
                 rules_fired += 1;
+            }
+
+            if clear_requested {
+                self.clear();
+                return Ok(RunResult {
+                    rules_fired,
+                    halt_reason: HaltReason::HaltRequested,
+                });
+            }
+
+            if reset_requested {
+                let _ = self.reset();
+                // Stop execution after reset — the caller can invoke run() again
+                // with the freshly-reset working memory.
+                return Ok(RunResult {
+                    rules_fired,
+                    halt_reason: HaltReason::HaltRequested,
+                });
             }
         }
 
@@ -504,14 +573,16 @@ impl Engine {
         self.router.clear();
         self.action_diagnostics.clear();
         self.halted = false;
+        // Note: input_buffer is intentionally NOT cleared on reset.
+        // Input is live I/O state that should persist across resets.
 
         // Reset focus stack to [MAIN] and current module to MAIN
         self.module_registry.reset_focus();
 
         // Re-initialize globals from registered initial values
         self.globals.clear();
-        for (name, value) in &self.registered_globals {
-            self.globals.set(name, value.clone());
+        for (module_id, name, value) in &self.registered_globals {
+            self.globals.set(*module_id, name, value.clone());
         }
 
         // Re-assert registered deffacts
@@ -545,6 +616,45 @@ impl Engine {
         }
 
         Ok(())
+    }
+
+    /// Push a line of input for `read`/`readline` to consume.
+    ///
+    /// Lines are consumed in FIFO order. Each call to `(read)` or `(readline)`
+    /// in a rule RHS pops one entry from this buffer.
+    pub fn push_input(&mut self, line: &str) {
+        self.input_buffer.push_back(line.to_string());
+    }
+
+    /// Clear the engine: remove all rules, facts, templates, functions, globals,
+    /// and module definitions. Returns the engine to its initial empty state.
+    ///
+    /// Unlike `reset()`, which preserves compiled rules and templates,
+    /// `clear()` removes everything.
+    pub fn clear(&mut self) {
+        self.fact_base = FactBase::new();
+        self.rete = ReteNetwork::with_strategy(self.config.strategy);
+        self.compiler = ReteCompiler::new();
+        self.registered_deffacts.clear();
+        self.rule_info.clear();
+        self.template_ids.clear();
+        self.template_defs.clear();
+        self.template_id_alloc = slotmap::SlotMap::with_key();
+        self.router.clear();
+        self.functions = FunctionEnv::new();
+        self.globals = GlobalStore::new();
+        self.registered_globals.clear();
+        self.generics = GenericRegistry::new();
+        self.module_registry = ModuleRegistry::new();
+        self.rule_modules.clear();
+        self.template_modules.clear();
+        self.function_modules.clear();
+        self.global_modules.clear();
+        self.generic_modules.clear();
+        self.initial_fact_id = None;
+        self.action_diagnostics.clear();
+        self.halted = false;
+        self.input_buffer.clear();
     }
 
     /// Check whether the engine is currently halted.
@@ -583,7 +693,30 @@ impl Engine {
     /// Returns `None` if the variable has not been set.
     #[must_use]
     pub fn get_global(&self, name: &str) -> Option<&Value> {
-        self.globals.get(name)
+        let current_module = self.module_registry.current_module();
+        if let Some(value) = self.globals.get(current_module, name) {
+            return Some(value);
+        }
+
+        let mut visible_modules: Vec<ModuleId> = self
+            .globals
+            .modules_for_name(name)
+            .into_iter()
+            .filter(|module_id| {
+                self.module_registry.is_construct_visible(
+                    current_module,
+                    *module_id,
+                    "defglobal",
+                    name,
+                )
+            })
+            .collect();
+        visible_modules.sort_by_key(|module_id| module_id.0);
+        visible_modules.dedup();
+        match visible_modules.as_slice() {
+            [module_id] => self.globals.get(*module_id, name),
+            _ => None,
+        }
     }
 
     /// Get the name of the current module.
@@ -670,14 +803,57 @@ impl Engine {
         }
 
         let mut seen_globals = HashSet::new();
-        for (name, _value) in &self.registered_globals {
+        for (module_id, name, _) in &self.registered_globals {
             assert!(
-                seen_globals.insert(name.as_str()),
-                "duplicate registered global definition `{name}`"
+                seen_globals.insert((*module_id, name.as_str())),
+                "duplicate registered global definition `{name}` in module {module_id:?}"
             );
             assert!(
-                self.globals.contains(name),
-                "registered global `{name}` missing from runtime global store"
+                self.globals.contains(*module_id, name),
+                "registered global `{name}` in module {module_id:?} missing from runtime global store"
+            );
+        }
+
+        // Verify function module associations
+        for (module_id, name) in self.functions.functions.keys() {
+            assert!(
+                self.function_modules
+                    .contains_key(&(*module_id, name.clone())),
+                "function `{name}` in module {module_id:?} missing from function_modules"
+            );
+        }
+        for ((module_id, name), &owner_module) in &self.function_modules {
+            assert!(
+                self.functions.contains(*module_id, name),
+                "function_modules contains `{name}` in module {module_id:?} but function not registered"
+            );
+            assert!(
+                self.module_registry.get(owner_module).is_some(),
+                "function `{name}` points to unknown module {owner_module:?}"
+            );
+        }
+
+        // Verify global module associations
+        for ((module_id, name), &owner_module) in &self.global_modules {
+            assert!(
+                self.globals.contains(*module_id, name),
+                "global_modules contains `{name}` in module {module_id:?} but global not registered"
+            );
+            assert!(
+                self.module_registry.get(owner_module).is_some(),
+                "global `{name}` points to unknown module {owner_module:?}"
+            );
+        }
+
+        // Verify generic module associations
+        for ((module_id, name), &owner_module) in &self.generic_modules {
+            assert!(
+                self.generics.contains(*module_id, name),
+                "generic_modules contains `{name}` in module {module_id:?} but generic not registered"
+            );
+            assert!(
+                self.module_registry.get(owner_module).is_some(),
+                "generic `{name}` points to unknown module {owner_module:?}"
             );
         }
     }

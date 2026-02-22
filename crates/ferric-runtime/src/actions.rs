@@ -6,9 +6,11 @@
 //! - `modify`/`duplicate` support template-aware slot overrides (Pass 003).
 //! - `printout` with per-channel output capture via `OutputRouter` (Pass 004).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as FmtWrite;
+use std::rc::Rc;
 
+use ferric_core::beta::RuleId;
 use ferric_core::binding::VarMap;
 use ferric_core::token::Token;
 use ferric_core::{Fact, FactBase, FactId, ReteNetwork, Symbol, SymbolTable, TemplateId, Value};
@@ -21,6 +23,52 @@ use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
 
 type OrderedFields = smallvec::SmallVec<[Value; 8]>;
+type ModuleLookup = HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>;
+
+struct ActionEvalEnv<'a> {
+    symbol_table: &'a mut SymbolTable,
+    config: &'a EngineConfig,
+    functions: &'a FunctionEnv,
+    globals: &'a mut GlobalStore,
+    generics: &'a GenericRegistry,
+    module_registry: &'a ModuleRegistry,
+    current_module: crate::modules::ModuleId,
+    function_modules: &'a ModuleLookup,
+    global_modules: &'a ModuleLookup,
+    generic_modules: &'a ModuleLookup,
+    input_buffer: &'a mut VecDeque<String>,
+}
+
+impl ActionEvalEnv<'_> {
+    fn eval_expr(
+        &mut self,
+        token: &Token,
+        rule_info: &CompiledRuleInfo,
+        expr: &ActionExpr,
+    ) -> Result<Value, ActionError> {
+        let runtime_expr = crate::evaluator::from_action_expr(expr, self.symbol_table, self.config)
+            .map_err(|e| ActionError::EvalError(format!("{e}")))?;
+        let mut ctx = crate::evaluator::EvalContext {
+            bindings: &token.bindings,
+            var_map: &rule_info.var_map,
+            symbol_table: self.symbol_table,
+            config: self.config,
+            functions: self.functions,
+            globals: self.globals,
+            generics: self.generics,
+            call_depth: 0,
+            current_module: self.current_module,
+            module_registry: self.module_registry,
+            function_modules: self.function_modules,
+            global_modules: self.global_modules,
+            generic_modules: self.generic_modules,
+            method_chain: None,
+            input_buffer: Some(self.input_buffer),
+        };
+        crate::evaluator::eval(&mut ctx, &runtime_expr)
+            .map_err(|e| ActionError::EvalError(format!("{e}")))
+    }
+}
 
 /// Compiled rule metadata stored for action execution.
 #[derive(Clone, Debug)]
@@ -65,10 +113,12 @@ pub enum ActionError {
 ///
 /// This is called with all the data needed pre-extracted to avoid borrow issues.
 ///
-/// Returns `(fired, errors)` where:
+/// Returns `(fired, reset_requested, clear_requested, errors)` where:
 /// - `fired` is `true` if test CE conditions all passed and actions were executed,
 ///   `false` if a test CE was falsy (actions are skipped and the rule is not
 ///   counted as having fired).
+/// - `reset_requested` is `true` if a `(reset)` action was executed.
+/// - `clear_requested` is `true` if a `(clear)` action was executed.
 /// - `errors` is a list of non-fatal action errors that occurred during execution.
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
 pub(crate) fn execute_actions(
@@ -86,8 +136,29 @@ pub(crate) fn execute_actions(
     focus_requests: &mut Vec<String>,
     generics: &GenericRegistry,
     module_registry: &ModuleRegistry,
-) -> (bool, Vec<ActionError>) {
+    current_module: crate::modules::ModuleId,
+    function_modules: &HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
+    global_modules: &HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
+    generic_modules: &HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
+    input_buffer: &mut VecDeque<String>,
+    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
+) -> (bool, bool, bool, Vec<ActionError>) {
     let mut errors = Vec::new();
+    let mut reset_requested = false;
+    let mut clear_requested = false;
+    let mut eval_env = ActionEvalEnv {
+        symbol_table,
+        config,
+        functions,
+        globals,
+        generics,
+        module_registry,
+        current_module,
+        function_modules,
+        global_modules,
+        generic_modules,
+        input_buffer,
+    };
 
     // Evaluate test conditions first — if any is falsy, skip all actions and
     // signal to the caller that the rule did NOT logically fire.
@@ -95,22 +166,29 @@ pub(crate) fn execute_actions(
         let mut ctx = crate::evaluator::EvalContext {
             bindings: &token.bindings,
             var_map: &rule_info.var_map,
-            symbol_table,
-            config,
-            functions,
-            globals,
-            generics,
+            symbol_table: eval_env.symbol_table,
+            config: eval_env.config,
+            functions: eval_env.functions,
+            globals: eval_env.globals,
+            generics: eval_env.generics,
             call_depth: 0,
+            current_module: eval_env.current_module,
+            module_registry: eval_env.module_registry,
+            function_modules: eval_env.function_modules,
+            global_modules: eval_env.global_modules,
+            generic_modules: eval_env.generic_modules,
+            method_chain: None,
+            input_buffer: Some(eval_env.input_buffer),
         };
         match crate::evaluator::eval(&mut ctx, test_expr) {
             Ok(value) => {
                 if !crate::evaluator::is_truthy(&value, ctx.symbol_table) {
-                    return (false, errors); // Test CE falsy — rule did not fire
+                    return (false, false, false, errors); // Test CE falsy — rule did not fire
                 }
             }
             Err(e) => {
                 errors.push(ActionError::EvalError(format!("{e}")));
-                return (false, errors);
+                return (false, false, false, errors);
             }
         }
     }
@@ -119,127 +197,94 @@ pub(crate) fn execute_actions(
         if let Err(e) = execute_single_action(
             fact_base,
             rete,
-            symbol_table,
             halted,
-            config,
+            &mut reset_requested,
+            &mut clear_requested,
             token,
             rule_info,
             &action.call,
             template_defs,
             router,
-            functions,
-            globals,
             focus_requests,
-            generics,
-            module_registry,
+            &mut eval_env,
+            all_rule_info,
         ) {
             errors.push(e);
         }
+        // Stop executing further actions if clear/reset was requested.
+        if clear_requested || reset_requested {
+            break;
+        }
     }
 
-    (true, errors)
+    (true, reset_requested, clear_requested, errors)
 }
 
-#[allow(clippy::too_many_arguments)] // Context requires all these parameters
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Context requires all these parameters
 fn execute_single_action(
     fact_base: &mut FactBase,
     rete: &mut ReteNetwork,
-    symbol_table: &mut SymbolTable,
     halted: &mut bool,
-    config: &EngineConfig,
+    reset_requested: &mut bool,
+    clear_requested: &mut bool,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     call: &FunctionCall,
     template_defs: &HashMap<TemplateId, RegisteredTemplate>,
     router: &mut OutputRouter,
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
     focus_requests: &mut Vec<String>,
-    generics: &GenericRegistry,
-    module_registry: &ModuleRegistry,
+    eval_env: &mut ActionEvalEnv<'_>,
+    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
 ) -> Result<(), ActionError> {
     match call.name.as_str() {
-        "assert" => execute_assert(
-            fact_base,
-            rete,
-            symbol_table,
-            config,
-            token,
-            rule_info,
-            &call.args,
-            functions,
-            globals,
-            generics,
-        ),
+        "assert" => execute_assert(fact_base, rete, token, rule_info, &call.args, eval_env),
         "retract" => execute_retract(fact_base, rete, token, rule_info, &call.args),
         "modify" => execute_modify(
             fact_base,
             rete,
-            symbol_table,
-            config,
             token,
             rule_info,
             &call.args,
             template_defs,
-            functions,
-            globals,
-            generics,
+            eval_env,
         ),
         "duplicate" => execute_duplicate(
             fact_base,
             rete,
-            symbol_table,
-            config,
             token,
             rule_info,
             &call.args,
             template_defs,
-            functions,
-            globals,
-            generics,
+            eval_env,
         ),
         "halt" => {
             *halted = true;
             Ok(())
         }
-        "printout" => execute_printout(
-            symbol_table,
-            config,
-            token,
-            rule_info,
-            &call.args,
-            router,
-            functions,
-            globals,
-            generics,
-        ),
-        "focus" => execute_focus(
-            symbol_table,
-            config,
-            token,
-            rule_info,
-            &call.args,
-            focus_requests,
-            functions,
-            globals,
-            generics,
-            module_registry,
-        ),
+        "reset" => {
+            *reset_requested = true;
+            Ok(())
+        }
+        "clear" => {
+            *clear_requested = true;
+            Ok(())
+        }
+        "printout" => execute_printout(token, rule_info, &call.args, router, eval_env),
+        "focus" => execute_focus(token, rule_info, &call.args, focus_requests, eval_env),
+        "list-focus-stack" => execute_list_focus_stack(router, eval_env.module_registry),
+        "agenda" => execute_agenda(rete, router, all_rule_info),
+        "run" => {
+            // (run) from within a rule RHS is a no-op — the engine is already running.
+            // CLIPS allows this but it's unusual. We silently ignore it.
+            Ok(())
+        }
         // For any other call, try evaluating it as an expression (e.g., bind).
         _ => {
             let action_expr = ActionExpr::FunctionCall(call.clone());
-            eval_expr(
-                token,
-                rule_info,
-                symbol_table,
-                config,
-                &action_expr,
-                functions,
-                globals,
-                generics,
-            )
-            .map(|_| ())
-            .map_err(|e| ActionError::UnknownAction(format!("{}: {e}", call.name)))
+            eval_env
+                .eval_expr(token, rule_info, &action_expr)
+                .map(|_| ())
+                .map_err(|e| ActionError::UnknownAction(format!("{}: {e}", call.name)))
         }
     }
 }
@@ -251,32 +296,18 @@ fn execute_single_action(
 /// order so the first argument becomes the top of the focus stack.
 #[allow(clippy::too_many_arguments)]
 fn execute_focus(
-    symbol_table: &mut SymbolTable,
-    config: &EngineConfig,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
     focus_requests: &mut Vec<String>,
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
-    generics: &GenericRegistry,
-    module_registry: &ModuleRegistry,
+    eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     for arg in args {
-        let value = eval_expr(
-            token,
-            rule_info,
-            symbol_table,
-            config,
-            arg,
-            functions,
-            globals,
-            generics,
-        )?;
+        let value = eval_env.eval_expr(token, rule_info, arg)?;
         match value {
             Value::Symbol(sym) => {
-                if let Some(name) = symbol_table.resolve_symbol_str(sym) {
-                    if module_registry.get_by_name(name).is_none() {
+                if let Some(name) = eval_env.symbol_table.resolve_symbol_str(sym) {
+                    if eval_env.module_registry.get_by_name(name).is_none() {
                         return Err(ActionError::EvalError(format!(
                             "focus: unknown module `{name}`"
                         )));
@@ -294,6 +325,50 @@ fn execute_focus(
     Ok(())
 }
 
+/// Execute a `list-focus-stack` action: print the focus stack to the `t` channel.
+///
+/// Prints each module name on its own line, top of stack first.
+#[allow(clippy::unnecessary_wraps)] // Consistent with other action-handler return type
+fn execute_list_focus_stack(
+    router: &mut OutputRouter,
+    module_registry: &ModuleRegistry,
+) -> Result<(), ActionError> {
+    let stack = module_registry.focus_stack();
+    let mut output = String::new();
+    // Print top-first (reverse of internal order)
+    for &module_id in stack.iter().rev() {
+        let name = module_registry.module_name(module_id).unwrap_or("???");
+        output.push_str(name);
+        output.push('\n');
+    }
+    router.write("t", &output);
+    Ok(())
+}
+
+/// Execute an `agenda` action: print the current agenda to the `t` channel.
+///
+/// Format: one line per activation showing `salience rule-name`.
+/// When the agenda is empty, prints `(no activations)`.
+#[allow(clippy::unnecessary_wraps)] // Consistent with other action-handler return type
+fn execute_agenda(
+    rete: &ReteNetwork,
+    router: &mut OutputRouter,
+    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
+) -> Result<(), ActionError> {
+    let mut output = String::new();
+    for activation in rete.agenda.iter_activations() {
+        let rule_name = all_rule_info
+            .get(&activation.rule)
+            .map_or("???", |info| info.name.as_str());
+        let _ = writeln!(output, "{} {rule_name}", activation.salience);
+    }
+    if output.is_empty() {
+        output.push_str("(no activations)\n");
+    }
+    router.write("t", &output);
+    Ok(())
+}
+
 /// Execute a `printout` action.
 ///
 /// The first argument is the channel name (typically `t`) and must be a literal.
@@ -301,15 +376,11 @@ fn execute_focus(
 /// `crlf`, `tab`, and `ff` producing `\n`, `\t`, and `\x0C` respectively.
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
 fn execute_printout(
-    symbol_table: &mut SymbolTable,
-    config: &EngineConfig,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
     router: &mut OutputRouter,
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
-    generics: &GenericRegistry,
+    eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     if args.is_empty() {
         return Err(ActionError::EvalError(
@@ -334,17 +405,8 @@ fn execute_printout(
     // Evaluate and format remaining arguments.
     let mut output = String::new();
     for arg in &args[1..] {
-        let value = eval_expr(
-            token,
-            rule_info,
-            symbol_table,
-            config,
-            arg,
-            functions,
-            globals,
-            generics,
-        )?;
-        format_printout_value(&value, symbol_table, &mut output);
+        let value = eval_env.eval_expr(token, rule_info, arg)?;
+        format_printout_value(&value, eval_env.symbol_table, &mut output);
     }
 
     router.write(&channel, &output);
@@ -399,14 +461,10 @@ fn format_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut
 fn execute_assert(
     fact_base: &mut FactBase,
     rete: &mut ReteNetwork,
-    symbol_table: &mut SymbolTable,
-    config: &EngineConfig,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
-    generics: &GenericRegistry,
+    eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     // Each argument to assert should be a "function call" representing a fact pattern
     // e.g., (assert (relation val1 val2)) → args = [FunctionCall("relation", [val1, val2])]
@@ -414,22 +472,14 @@ fn execute_assert(
         match arg {
             ActionExpr::FunctionCall(fact_pattern) => {
                 let relation = &fact_pattern.name;
-                let relation_sym = symbol_table
-                    .intern_symbol(relation, config.string_encoding)
+                let relation_sym = eval_env
+                    .symbol_table
+                    .intern_symbol(relation, eval_env.config.string_encoding)
                     .map_err(|e| ActionError::Encoding(format!("{e}")))?;
 
                 let mut fields = smallvec::SmallVec::new();
                 for field_expr in &fact_pattern.args {
-                    let value = eval_expr(
-                        token,
-                        rule_info,
-                        symbol_table,
-                        config,
-                        field_expr,
-                        functions,
-                        globals,
-                        generics,
-                    )?;
+                    let value = eval_env.eval_expr(token, rule_info, field_expr)?;
                     fields.push(value);
                 }
 
@@ -466,29 +516,21 @@ fn execute_retract(
 fn execute_modify(
     fact_base: &mut FactBase,
     rete: &mut ReteNetwork,
-    symbol_table: &mut SymbolTable,
-    config: &EngineConfig,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
     template_defs: &HashMap<TemplateId, RegisteredTemplate>,
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
-    generics: &GenericRegistry,
+    eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     execute_fact_mutation(
         fact_base,
         rete,
-        symbol_table,
-        config,
         token,
         rule_info,
         args,
         template_defs,
-        functions,
-        globals,
-        generics,
         FactMutationMode::Modify,
+        eval_env,
     )
 }
 
@@ -496,29 +538,21 @@ fn execute_modify(
 fn execute_duplicate(
     fact_base: &mut FactBase,
     rete: &mut ReteNetwork,
-    symbol_table: &mut SymbolTable,
-    config: &EngineConfig,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
     template_defs: &HashMap<TemplateId, RegisteredTemplate>,
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
-    generics: &GenericRegistry,
+    eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     execute_fact_mutation(
         fact_base,
         rete,
-        symbol_table,
-        config,
         token,
         rule_info,
         args,
         template_defs,
-        functions,
-        globals,
-        generics,
         FactMutationMode::Duplicate,
+        eval_env,
     )
 }
 
@@ -538,16 +572,12 @@ impl FactMutationMode {
 fn execute_fact_mutation(
     fact_base: &mut FactBase,
     rete: &mut ReteNetwork,
-    symbol_table: &mut SymbolTable,
-    config: &EngineConfig,
     token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
     template_defs: &HashMap<TemplateId, RegisteredTemplate>,
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
-    generics: &GenericRegistry,
     mode: FactMutationMode,
+    eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     let fact_id = resolve_target_fact_id(args, token, rule_info)?;
     let original_fact = get_fact_or_error(fact_base, fact_id)?;
@@ -556,17 +586,7 @@ fn execute_fact_mutation(
         Fact::Ordered(ordered) => {
             let relation = ordered.relation;
             let mut fields = ordered.fields.clone();
-            apply_ordered_slot_overrides(
-                &mut fields,
-                &args[1..],
-                token,
-                rule_info,
-                symbol_table,
-                config,
-                functions,
-                globals,
-                generics,
-            )?;
+            apply_ordered_slot_overrides(&mut fields, &args[1..], token, rule_info, eval_env)?;
             if mode.retract_original() {
                 retract_original_fact(fact_base, rete, fact_id, &original_fact);
             }
@@ -586,11 +606,7 @@ fn execute_fact_mutation(
                 registered,
                 token,
                 rule_info,
-                symbol_table,
-                config,
-                functions,
-                globals,
-                generics,
+                eval_env,
             )?;
             if mode.retract_original() {
                 retract_original_fact(fact_base, rete, fact_id, &original_fact);
@@ -677,11 +693,7 @@ fn apply_ordered_slot_overrides(
     slot_overrides: &[ActionExpr],
     token: &Token,
     rule_info: &CompiledRuleInfo,
-    symbol_table: &mut SymbolTable,
-    config: &EngineConfig,
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
-    generics: &GenericRegistry,
+    eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     // In CLIPS, modify uses (slot-name value) syntax. For ordered facts in Phase 2,
     // we interpret FunctionCall args as positional overrides where the "name" is the index.
@@ -699,16 +711,7 @@ fn apply_ordered_slot_overrides(
         }
 
         if let Some(first_arg) = fc.args.first() {
-            fields[index] = eval_expr(
-                token,
-                rule_info,
-                symbol_table,
-                config,
-                first_arg,
-                functions,
-                globals,
-                generics,
-            )?;
+            fields[index] = eval_env.eval_expr(token, rule_info, first_arg)?;
         }
     }
 
@@ -727,11 +730,7 @@ fn apply_template_slot_overrides(
     registered: &RegisteredTemplate,
     token: &Token,
     rule_info: &CompiledRuleInfo,
-    symbol_table: &mut SymbolTable,
-    config: &EngineConfig,
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
-    generics: &GenericRegistry,
+    eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     for slot_override in slot_overrides {
         let ActionExpr::FunctionCall(fc) = slot_override else {
@@ -757,16 +756,7 @@ fn apply_template_slot_overrides(
         }
 
         if let Some(first_arg) = fc.args.first() {
-            slots[slot_idx] = eval_expr(
-                token,
-                rule_info,
-                symbol_table,
-                config,
-                first_arg,
-                functions,
-                globals,
-                generics,
-            )?;
+            slots[slot_idx] = eval_env.eval_expr(token, rule_info, first_arg)?;
         }
     }
 
@@ -788,40 +778,6 @@ fn resolve_fact_address(
     } else {
         Err(ActionError::UnboundVariable(var_name.to_string()))
     }
-}
-
-/// Evaluate an action expression to a Value via the evaluator pipeline.
-///
-/// Translates the `ActionExpr` to a `RuntimeExpr` first (which only requires
-/// `&mut SymbolTable`), then evaluates it with a freshly constructed
-/// `EvalContext`.  This two-step approach avoids the double-borrow that would
-/// arise if we tried to hold an `EvalContext` (which mutably borrows
-/// `symbol_table`) while also passing `symbol_table` to `from_action_expr`.
-#[allow(clippy::too_many_arguments)] // Context requires all these parameters
-fn eval_expr(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    symbol_table: &mut SymbolTable,
-    config: &EngineConfig,
-    expr: &ActionExpr,
-    functions: &FunctionEnv,
-    globals: &mut GlobalStore,
-    generics: &GenericRegistry,
-) -> Result<Value, ActionError> {
-    let runtime_expr = crate::evaluator::from_action_expr(expr, symbol_table, config)
-        .map_err(|e| ActionError::EvalError(format!("{e}")))?;
-    let mut ctx = crate::evaluator::EvalContext {
-        bindings: &token.bindings,
-        var_map: &rule_info.var_map,
-        symbol_table,
-        config,
-        functions,
-        globals,
-        generics,
-        call_depth: 0,
-    };
-    crate::evaluator::eval(&mut ctx, &runtime_expr)
-        .map_err(|e| ActionError::EvalError(format!("{e}")))
 }
 
 #[cfg(test)]
