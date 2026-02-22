@@ -12,7 +12,8 @@
 //! The internal `unsafe fn move_to_current_thread` is deliberately NOT
 //! exposed through the C API.
 
-use std::ffi::CStr;
+use std::cell::RefCell;
+use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
@@ -32,6 +33,11 @@ use ferric_runtime::{Engine, EngineConfig, RunLimit};
 pub struct FerricEngine {
     pub(crate) engine: Engine,
     pub(crate) error_state: EngineErrorState,
+}
+
+thread_local! {
+    static ENGINE_ERR_CSTRING: RefCell<Option<CString>> = const { RefCell::new(None) };
+    static OUTPUT_CSTRING: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +87,34 @@ fn check_thread_affinity(handle: &FerricEngine) -> Result<(), FerricError> {
             Err(FerricError::InternalError)
         }
     }
+}
+
+unsafe fn borrow_engine_mut<'a>(
+    engine: *mut FerricEngine,
+) -> Result<&'a mut FerricEngine, FerricError> {
+    let handle = validate_engine_ptr(engine)?;
+    check_thread_affinity(handle)?;
+    validate_engine_ptr_mut(engine)
+}
+
+unsafe fn borrow_engine_checked<'a>(
+    engine: *const FerricEngine,
+) -> Result<&'a FerricEngine, FerricError> {
+    let handle = validate_engine_ptr(engine)?;
+    check_thread_affinity(handle)?;
+    Ok(handle)
+}
+
+unsafe fn c_str_to_str<'a>(ptr: *const c_char, label: &str) -> Result<&'a str, FerricError> {
+    if ptr.is_null() {
+        set_global_error(format!("{label} pointer is null"));
+        return Err(FerricError::NullPointer);
+    }
+    let c_str = CStr::from_ptr(ptr);
+    c_str.to_str().map_err(|e| {
+        set_global_error(format!("{label} is not valid UTF-8: {e}"));
+        FerricError::InvalidArgument
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -162,34 +196,16 @@ pub unsafe extern "C" fn ferric_engine_load_string(
     engine: *mut FerricEngine,
     source: *const c_char,
 ) -> FerricError {
-    // Step 1: validate engine pointer (shared ref for thread check)
-    let handle = match validate_engine_ptr(engine) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
-    if source.is_null() {
-        set_global_error("source string pointer is null".to_string());
-        return FerricError::NullPointer;
-    }
-
-    // Step 2: thread check (shared ref)
-    if let Err(code) = check_thread_affinity(handle) {
+    if let Err(code) = validate_engine_ptr(engine) {
         return code;
     }
-
-    // Step 3: mutable access (safe after thread check)
-    let handle = match validate_engine_ptr_mut(engine) {
-        Ok(h) => h,
+    let source_str = match c_str_to_str(source, "source string") {
+        Ok(s) => s,
         Err(code) => return code,
     };
-
-    let c_str = CStr::from_ptr(source);
-    let source_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_global_error(format!("source string is not valid UTF-8: {e}"));
-            return FerricError::InvalidArgument;
-        }
+    let handle = match borrow_engine_mut(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
     };
 
     match handle.engine.load_str(source_str) {
@@ -222,11 +238,7 @@ pub unsafe extern "C" fn ferric_engine_last_error(engine: *const FerricEngine) -
 
     match handle.error_state.message() {
         Some(msg) => {
-            thread_local! {
-                static ENGINE_ERR_CSTRING: std::cell::RefCell<Option<std::ffi::CString>> =
-                    const { std::cell::RefCell::new(None) };
-            }
-            let cstring = std::ffi::CString::new(msg).unwrap_or_default();
+            let cstring = CString::new(msg).unwrap_or_default();
             ENGINE_ERR_CSTRING.with(|c| {
                 *c.borrow_mut() = Some(cstring);
                 c.borrow().as_ref().map_or(ptr::null(), |cs| cs.as_ptr())
@@ -285,14 +297,7 @@ pub unsafe extern "C" fn ferric_engine_last_error_copy(
 /// - `engine` must be a valid engine pointer or null (null returns `NullPointer`).
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_clear_error(engine: *mut FerricEngine) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
-    if let Err(code) = check_thread_affinity(handle) {
-        return code;
-    }
-    let handle = match validate_engine_ptr_mut(engine) {
+    let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
@@ -307,14 +312,7 @@ pub unsafe extern "C" fn ferric_engine_clear_error(engine: *mut FerricEngine) ->
 /// - `engine` must be a valid engine pointer.
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_reset(engine: *mut FerricEngine) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
-    if let Err(code) = check_thread_affinity(handle) {
-        return code;
-    }
-    let handle = match validate_engine_ptr_mut(engine) {
+    let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
@@ -347,14 +345,7 @@ pub unsafe extern "C" fn ferric_engine_run(
     limit: i64,
     out_fired: *mut u64,
 ) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
-    if let Err(code) = check_thread_affinity(handle) {
-        return code;
-    }
-    let handle = match validate_engine_ptr_mut(engine) {
+    let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
@@ -393,14 +384,7 @@ pub unsafe extern "C" fn ferric_engine_step(
     engine: *mut FerricEngine,
     out_status: *mut i32,
 ) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
-    if let Err(code) = check_thread_affinity(handle) {
-        return code;
-    }
-    let handle = match validate_engine_ptr_mut(engine) {
+    let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
@@ -445,29 +429,16 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
 ) -> FerricError {
     use slotmap::Key as _;
 
-    let handle = match validate_engine_ptr(engine) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
-    if source.is_null() {
-        set_global_error("source string pointer is null".to_string());
-        return FerricError::NullPointer;
-    }
-    if let Err(code) = check_thread_affinity(handle) {
+    if let Err(code) = validate_engine_ptr(engine) {
         return code;
     }
-    let handle = match validate_engine_ptr_mut(engine) {
-        Ok(h) => h,
+    let source_str = match c_str_to_str(source, "source string") {
+        Ok(s) => s,
         Err(code) => return code,
     };
-
-    let c_str = CStr::from_ptr(source);
-    let source_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_global_error(format!("source string is not valid UTF-8: {e}"));
-            return FerricError::InvalidArgument;
-        }
+    let handle = match borrow_engine_mut(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
     };
 
     match handle.engine.load_str(source_str) {
@@ -501,14 +472,7 @@ pub unsafe extern "C" fn ferric_engine_retract(
     engine: *mut FerricEngine,
     fact_id: u64,
 ) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
-    if let Err(code) = check_thread_affinity(handle) {
-        return code;
-    }
-    let handle = match validate_engine_ptr_mut(engine) {
+    let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
@@ -544,18 +508,13 @@ pub unsafe extern "C" fn ferric_engine_get_output(
         return ptr::null();
     }
 
-    let c_str = CStr::from_ptr(channel);
-    let Ok(channel_str) = c_str.to_str() else {
+    let Ok(channel_str) = CStr::from_ptr(channel).to_str() else {
         return ptr::null();
     };
 
     match handle.engine.get_output(channel_str) {
         Some(output) if !output.is_empty() => {
-            thread_local! {
-                static OUTPUT_CSTRING: std::cell::RefCell<Option<std::ffi::CString>> =
-                    const { std::cell::RefCell::new(None) };
-            }
-            let cstring = std::ffi::CString::new(output).unwrap_or_default();
+            let cstring = CString::new(output).unwrap_or_default();
             OUTPUT_CSTRING.with(|c| {
                 *c.borrow_mut() = Some(cstring);
                 c.borrow().as_ref().map_or(ptr::null(), |cs| cs.as_ptr())
@@ -579,7 +538,7 @@ pub unsafe extern "C" fn ferric_engine_action_diagnostic_count(
     engine: *const FerricEngine,
     out_count: *mut usize,
 ) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
+    let handle = match borrow_engine_checked(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
@@ -587,10 +546,6 @@ pub unsafe extern "C" fn ferric_engine_action_diagnostic_count(
         set_global_error("out_count pointer is null".to_string());
         return FerricError::NullPointer;
     }
-    if let Err(code) = check_thread_affinity(handle) {
-        return code;
-    }
-
     *out_count = handle.engine.action_diagnostics().len();
     FerricError::Ok
 }
@@ -617,17 +572,13 @@ pub unsafe extern "C" fn ferric_engine_action_diagnostic_copy(
         return FerricError::InvalidArgument;
     }
 
-    let handle = match validate_engine_ptr(engine) {
+    let handle = match borrow_engine_checked(engine) {
         Ok(h) => h,
         Err(code) => {
             *out_len = 0;
             return code;
         }
     };
-    if let Err(code) = check_thread_affinity(handle) {
-        *out_len = 0;
-        return code;
-    }
 
     let message = handle
         .engine
@@ -646,14 +597,7 @@ pub unsafe extern "C" fn ferric_engine_action_diagnostic_copy(
 pub unsafe extern "C" fn ferric_engine_clear_action_diagnostics(
     engine: *mut FerricEngine,
 ) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
-    if let Err(code) = check_thread_affinity(handle) {
-        return code;
-    }
-    let handle = match validate_engine_ptr_mut(engine) {
+    let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
@@ -814,29 +758,20 @@ pub unsafe extern "C" fn ferric_engine_get_global(
     name: *const c_char,
     out_value: *mut FerricValue,
 ) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
-        Ok(h) => h,
+    if let Err(code) = validate_engine_ptr(engine) {
+        return code;
+    }
+    let name_str = match c_str_to_str(name, "name") {
+        Ok(s) => s,
         Err(code) => return code,
     };
-    if name.is_null() {
-        set_global_error("name pointer is null".to_string());
-        return FerricError::NullPointer;
-    }
     if out_value.is_null() {
         set_global_error("out_value pointer is null".to_string());
         return FerricError::NullPointer;
     }
-    if let Err(code) = check_thread_affinity(handle) {
-        return code;
-    }
-
-    let c_str = CStr::from_ptr(name);
-    let name_str = match c_str.to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_global_error(format!("name is not valid UTF-8: {e}"));
-            return FerricError::InvalidArgument;
-        }
+    let handle = match borrow_engine_checked(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
     };
 
     if let Some(val) = handle.engine.get_global(name_str) {

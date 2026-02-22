@@ -31,9 +31,9 @@ use ferric_core::{
     ConstantTestType, FactId, FerricString, RuleId, SlotIndex, Value,
 };
 use ferric_parser::{
-    interpret_constructs, parse_sexprs, Atom, Constraint, Construct, FactBody, FactValue, FileId,
-    FunctionConstruct, GenericConstruct, GlobalConstruct, InterpreterConfig, LiteralKind,
-    MethodConstruct, ModuleConstruct, OrderedFactBody, Pattern, RuleConstruct, SExpr,
+    interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
+    FactValue, FileId, FunctionConstruct, GenericConstruct, GlobalConstruct, InterpreterConfig,
+    LiteralKind, MethodConstruct, ModuleConstruct, OrderedFactBody, Pattern, RuleConstruct, SExpr,
     TemplateConstruct, TemplateFactBody,
 };
 
@@ -894,6 +894,15 @@ impl Engine {
             )
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
 
+        let runtime_actions = rule
+            .actions
+            .iter()
+            .map(|action| {
+                let expr = ActionExpr::FunctionCall(action.call.clone());
+                crate::evaluator::from_action_expr(&expr, &mut self.symbol_table, &self.config).ok()
+            })
+            .collect();
+
         // Store rule info for action execution
         let info = CompiledRuleInfo {
             name: rule.name.clone(),
@@ -902,6 +911,7 @@ impl Engine {
             fact_address_vars: translated.fact_address_vars,
             salience: rule.salience,
             test_conditions: translated.test_conditions,
+            runtime_actions,
         };
         self.rule_info.insert(compile_result.rule_id, Rc::new(info));
         self.rule_modules.insert(
@@ -1454,17 +1464,13 @@ fn validate_pattern_recursive(
         Pattern::Not(inner, span) => {
             let new_depth = depth + 1;
             if new_depth > max_depth {
-                let kind = ferric_core::PatternViolation::NestingTooDeep {
-                    depth: new_depth,
-                    max: max_depth,
-                };
-                let location = Some(span_to_source_location(span));
-                let error = ferric_core::PatternValidationError::new(
-                    kind,
-                    location,
+                push_nesting_depth_error(
+                    errors,
+                    span,
+                    new_depth,
+                    max_depth,
                     ferric_core::ValidationStage::ReteCompilation,
                 );
-                errors.push(error);
             }
             // Continue validating the inner pattern regardless of depth violation
             validate_pattern_recursive(inner, new_depth, max_depth, errors);
@@ -1473,17 +1479,13 @@ fn validate_pattern_recursive(
         Pattern::Exists(inner_patterns, span) => {
             let new_depth = depth + 1;
             if new_depth > max_depth {
-                let kind = ferric_core::PatternViolation::NestingTooDeep {
-                    depth: new_depth,
-                    max: max_depth,
-                };
-                let location = Some(span_to_source_location(span));
-                let error = ferric_core::PatternValidationError::new(
-                    kind,
-                    location,
+                push_nesting_depth_error(
+                    errors,
+                    span,
+                    new_depth,
+                    max_depth,
                     ferric_core::ValidationStage::ReteCompilation,
                 );
-                errors.push(error);
             }
 
             // Check for unsupported combination: exists containing not
@@ -1518,17 +1520,13 @@ fn validate_pattern_recursive(
         Pattern::Forall(sub_patterns, span) => {
             let new_depth = depth + 1;
             if new_depth > max_depth {
-                let kind = ferric_core::PatternViolation::NestingTooDeep {
-                    depth: new_depth,
-                    max: max_depth,
-                };
-                let location = Some(span_to_source_location(span));
-                let error = ferric_core::PatternValidationError::new(
-                    kind,
-                    location,
+                push_nesting_depth_error(
+                    errors,
+                    span,
+                    new_depth,
+                    max_depth,
                     ferric_core::ValidationStage::AstInterpretation,
                 );
-                errors.push(error);
             }
             for sub in sub_patterns {
                 validate_pattern_recursive(sub, new_depth, max_depth, errors);
@@ -1539,6 +1537,21 @@ fn validate_pattern_recursive(
             // Leaf patterns - nothing to validate at this level
         }
     }
+}
+
+fn push_nesting_depth_error(
+    errors: &mut Vec<ferric_core::PatternValidationError>,
+    span: &ferric_parser::Span,
+    depth: usize,
+    max: usize,
+    stage: ferric_core::ValidationStage,
+) {
+    let error = ferric_core::PatternValidationError::new(
+        ferric_core::PatternViolation::NestingTooDeep { depth, max },
+        Some(span_to_source_location(span)),
+        stage,
+    );
+    errors.push(error);
 }
 
 /// Convert a parser `Span` to a core `SourceLocation`.

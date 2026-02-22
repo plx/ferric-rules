@@ -22,6 +22,10 @@ fn modules_for_name_from_keys<T>(
         .collect()
 }
 
+fn module_name_key(module: ModuleId, name: &str) -> (ModuleId, String) {
+    (module, name.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // User-defined functions
 // ---------------------------------------------------------------------------
@@ -61,13 +65,13 @@ impl FunctionEnv {
     /// Look up a user-defined function by module and local name.
     #[must_use]
     pub fn get(&self, module: ModuleId, name: &str) -> Option<&UserFunction> {
-        self.functions.get(&(module, name.to_string()))
+        self.functions.get(&module_name_key(module, name))
     }
 
     /// Check whether a function with this local name exists in the given module.
     #[must_use]
     pub fn contains(&self, module: ModuleId, name: &str) -> bool {
-        self.functions.contains_key(&(module, name.to_string()))
+        self.functions.contains_key(&module_name_key(module, name))
     }
 
     /// Return all module IDs that define a function with this local name.
@@ -114,13 +118,13 @@ impl GlobalStore {
     /// Returns `None` if the variable has not been set.
     #[must_use]
     pub fn get(&self, module: ModuleId, name: &str) -> Option<&Value> {
-        self.values.get(&(module, name.to_string()))
+        self.values.get(&module_name_key(module, name))
     }
 
     /// Check whether a global has a value in the given module.
     #[must_use]
     pub fn contains(&self, module: ModuleId, name: &str) -> bool {
-        self.values.contains_key(&(module, name.to_string()))
+        self.values.contains_key(&module_name_key(module, name))
     }
 
     /// Return all module IDs that define a global with this local name.
@@ -227,7 +231,7 @@ impl GenericRegistry {
     /// Register a generic function declaration. If already exists, this is a no-op.
     pub fn register_generic(&mut self, module: ModuleId, name: &str) {
         self.generics
-            .entry((module, name.to_string()))
+            .entry(module_name_key(module, name))
             .or_insert_with(|| GenericFunction::new(name.to_string()));
     }
 
@@ -245,7 +249,7 @@ impl GenericRegistry {
     ) {
         let generic = self
             .generics
-            .entry((module, name.to_string()))
+            .entry(module_name_key(module, name))
             .or_insert_with(|| GenericFunction::new(name.to_string()));
         let actual_index = index.unwrap_or_else(|| generic.next_auto_index());
         generic.add_method(RegisteredMethod {
@@ -260,13 +264,13 @@ impl GenericRegistry {
     /// Look up a generic function by name.
     #[must_use]
     pub fn get(&self, module: ModuleId, name: &str) -> Option<&GenericFunction> {
-        self.generics.get(&(module, name.to_string()))
+        self.generics.get(&module_name_key(module, name))
     }
 
     /// Check whether a generic with this local name exists in the given module.
     #[must_use]
     pub fn contains(&self, module: ModuleId, name: &str) -> bool {
-        self.generics.contains_key(&(module, name.to_string()))
+        self.generics.contains_key(&module_name_key(module, name))
     }
 
     /// Return all module IDs that define a generic with this local name.
@@ -279,7 +283,7 @@ impl GenericRegistry {
     #[must_use]
     pub fn has_method_index(&self, module: ModuleId, name: &str, index: i32) -> bool {
         self.generics
-            .get(&(module, name.to_string()))
+            .get(&module_name_key(module, name))
             .is_some_and(|g| g.methods.iter().any(|m| m.index == index))
     }
 

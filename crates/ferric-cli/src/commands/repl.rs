@@ -243,9 +243,9 @@ fn print_output(engine: &Engine) {
 fn print_facts(engine: &Engine) {
     match engine.facts() {
         Ok(iter) => {
-            let facts: Vec<_> = iter.collect();
-            let count = facts.len();
-            for (id, fact) in &facts {
+            let mut count = 0usize;
+            for (id, fact) in iter {
+                count += 1;
                 let id_num = {
                     use slotmap::Key as _;
                     id.data().as_ffi()

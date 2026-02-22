@@ -41,6 +41,7 @@ pub enum FerricError {
 
 thread_local! {
     static LAST_ERROR_GLOBAL: RefCell<Option<String>> = const { RefCell::new(None) };
+    static LAST_CSTRING: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
 /// Store a global (thread-local) error message.
@@ -111,6 +112,8 @@ pub(crate) fn map_engine_error(err: &EngineError) -> FerricError {
         EngineError::WrongThread { .. } => FerricError::ThreadViolation,
         EngineError::FactNotFound(_) | EngineError::ModuleNotFound(_) => FerricError::NotFound,
         EngineError::Encoding(_) => FerricError::InvalidArgument,
+        #[allow(unreachable_patterns)]
+        _ => FerricError::InternalError,
     }
 }
 
@@ -144,10 +147,6 @@ pub(crate) fn map_load_error(err: &LoadError) -> FerricError {
 /// used after any subsequent FFI call that may modify the error channel.
 #[no_mangle]
 pub unsafe extern "C" fn ferric_last_error_global() -> *const c_char {
-    thread_local! {
-        static LAST_CSTRING: RefCell<Option<CString>> = const { RefCell::new(None) };
-    }
-
     with_global_error(|msg| match msg {
         Some(msg) => {
             let cstring = CString::new(msg).unwrap_or_default();

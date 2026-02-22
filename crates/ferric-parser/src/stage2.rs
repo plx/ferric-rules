@@ -493,6 +493,15 @@ pub struct InterpretResult {
     pub errors: Vec<InterpretError>,
 }
 
+fn push_interpret_error(
+    result: &mut InterpretResult,
+    config: &InterpreterConfig,
+    error: InterpretError,
+) -> bool {
+    result.errors.push(error);
+    config.strict
+}
+
 /// Interpret a slice of S-expressions into typed constructs.
 #[allow(clippy::too_many_lines)] // Dispatch table grows as constructs are added; each arm is small
 pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> InterpretResult {
@@ -501,11 +510,14 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
     for sexpr in sexprs {
         // Each top-level element must be a list
         let Some(list) = sexpr.as_list() else {
-            result.errors.push(InterpretError::expected_construct(
-                "a construct (list starting with defrule, deftemplate, or deffacts)",
-                sexpr.span(),
-            ));
-            if config.strict {
+            if push_interpret_error(
+                &mut result,
+                config,
+                InterpretError::expected_construct(
+                    "a construct (list starting with defrule, deftemplate, or deffacts)",
+                    sexpr.span(),
+                ),
+            ) {
                 return result;
             }
             continue;
@@ -513,10 +525,11 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
 
         // List must be non-empty
         if list.is_empty() {
-            result
-                .errors
-                .push(InterpretError::empty_construct(sexpr.span()));
-            if config.strict {
+            if push_interpret_error(
+                &mut result,
+                config,
+                InterpretError::empty_construct(sexpr.span()),
+            ) {
                 return result;
             }
             continue;
@@ -524,13 +537,18 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
 
         // First element must be a symbol (the keyword)
         let Some(keyword) = list[0].as_symbol() else {
-            result.errors.push(InterpretError {
-                message: "expected construct keyword (symbol), got something else".to_string(),
-                span: list[0].span(),
-                kind: InterpretErrorKind::ExpectedKeyword,
-                suggestions: vec!["construct keywords: defrule, deftemplate, deffacts".to_string()],
-            });
-            if config.strict {
+            if push_interpret_error(
+                &mut result,
+                config,
+                InterpretError {
+                    message: "expected construct keyword (symbol), got something else".to_string(),
+                    span: list[0].span(),
+                    kind: InterpretErrorKind::ExpectedKeyword,
+                    suggestions: vec![
+                        "construct keywords: defrule, deftemplate, deffacts".to_string()
+                    ],
+                },
+            ) {
                 return result;
             }
             continue;
@@ -541,8 +559,7 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
             "defrule" => match interpret_rule(&list[1..], sexpr.span()) {
                 Ok(construct) => result.constructs.push(Construct::Rule(construct)),
                 Err(err) => {
-                    result.errors.push(err);
-                    if config.strict {
+                    if push_interpret_error(&mut result, config, err) {
                         return result;
                     }
                 }
@@ -550,8 +567,7 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
             "deftemplate" => match interpret_template(&list[1..], sexpr.span()) {
                 Ok(construct) => result.constructs.push(Construct::Template(construct)),
                 Err(err) => {
-                    result.errors.push(err);
-                    if config.strict {
+                    if push_interpret_error(&mut result, config, err) {
                         return result;
                     }
                 }
@@ -559,8 +575,7 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
             "deffacts" => match interpret_facts(&list[1..], sexpr.span()) {
                 Ok(construct) => result.constructs.push(Construct::Facts(construct)),
                 Err(err) => {
-                    result.errors.push(err);
-                    if config.strict {
+                    if push_interpret_error(&mut result, config, err) {
                         return result;
                     }
                 }
@@ -568,8 +583,7 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
             "deffunction" => match interpret_function(&list[1..], sexpr.span()) {
                 Ok(construct) => result.constructs.push(Construct::Function(construct)),
                 Err(err) => {
-                    result.errors.push(err);
-                    if config.strict {
+                    if push_interpret_error(&mut result, config, err) {
                         return result;
                     }
                 }
@@ -577,8 +591,7 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
             "defglobal" => match interpret_global(&list[1..], sexpr.span()) {
                 Ok(construct) => result.constructs.push(Construct::Global(construct)),
                 Err(err) => {
-                    result.errors.push(err);
-                    if config.strict {
+                    if push_interpret_error(&mut result, config, err) {
                         return result;
                     }
                 }
@@ -586,8 +599,7 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
             "defmodule" => match interpret_module(&list[1..], sexpr.span()) {
                 Ok(construct) => result.constructs.push(Construct::Module(construct)),
                 Err(err) => {
-                    result.errors.push(err);
-                    if config.strict {
+                    if push_interpret_error(&mut result, config, err) {
                         return result;
                     }
                 }
@@ -595,8 +607,7 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
             "defgeneric" => match interpret_generic(&list[1..], sexpr.span()) {
                 Ok(construct) => result.constructs.push(Construct::Generic(construct)),
                 Err(err) => {
-                    result.errors.push(err);
-                    if config.strict {
+                    if push_interpret_error(&mut result, config, err) {
                         return result;
                     }
                 }
@@ -604,32 +615,35 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
             "defmethod" => match interpret_method(&list[1..], sexpr.span()) {
                 Ok(construct) => result.constructs.push(Construct::Method(construct)),
                 Err(err) => {
-                    result.errors.push(err);
-                    if config.strict {
+                    if push_interpret_error(&mut result, config, err) {
                         return result;
                     }
                 }
             },
             // Known CLIPS keywords that are not yet supported
             "defclass" | "definstances" | "defmessage-handler" => {
-                result.errors.push(InterpretError {
-                    message: format!("{keyword} is not yet supported"),
-                    span: list[0].span(),
-                    kind: InterpretErrorKind::UnknownConstruct,
-                    suggestions: vec![
-                        "currently supported: defrule, deftemplate, deffacts, deffunction, defglobal, defmodule, defgeneric, defmethod".to_string()
-                    ],
-                });
-                if config.strict {
+                if push_interpret_error(
+                    &mut result,
+                    config,
+                    InterpretError {
+                        message: format!("{keyword} is not yet supported"),
+                        span: list[0].span(),
+                        kind: InterpretErrorKind::UnknownConstruct,
+                        suggestions: vec![
+                            "currently supported: defrule, deftemplate, deffacts, deffunction, defglobal, defmodule, defgeneric, defmethod".to_string()
+                        ],
+                    },
+                ) {
                     return result;
                 }
             }
             // Unknown keyword
             _ => {
-                result
-                    .errors
-                    .push(InterpretError::unknown_construct(keyword, list[0].span()));
-                if config.strict {
+                if push_interpret_error(
+                    &mut result,
+                    config,
+                    InterpretError::unknown_construct(keyword, list[0].span()),
+                ) {
                     return result;
                 }
             }
