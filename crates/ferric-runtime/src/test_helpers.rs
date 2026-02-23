@@ -341,21 +341,17 @@ pub fn assert_fact_count(engine: &Engine, expected: usize) {
 
 /// Find all fact IDs whose relation matches the given name.
 ///
-/// Works with ordered facts only. Uses `intern_symbol` (which is idempotent)
-/// to resolve the relation name to a `Symbol` for comparison.
+/// Works with ordered facts only.
 #[allow(dead_code)] // Will be used as Phase 3 passes land
 pub fn find_facts_by_relation(engine: &Engine, relation: &str) -> Vec<ferric_core::FactId> {
-    // Try to find the symbol without mutating - check if any fact has a matching relation
-    // by resolving symbol names from the table
+    let relation_bytes = relation.as_bytes();
     engine
         .facts()
         .unwrap()
         .filter_map(|(fid, fact)| {
             if let ferric_core::Fact::Ordered(ordered) = fact {
-                if let Some(name) = engine.symbol_table.resolve_symbol_str(ordered.relation) {
-                    if name == relation {
-                        return Some(fid);
-                    }
+                if engine.symbol_table.resolve_symbol(ordered.relation) == relation_bytes {
+                    return Some(fid);
                 }
             }
             None
