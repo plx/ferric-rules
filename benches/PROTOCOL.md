@@ -47,7 +47,8 @@ These provide good signal for microbenchmarks while keeping total run time under
 3. Use `--test` mode for smoke checks (verifies benchmarks compile and execute,
    does not measure performance).
 4. For regression detection, compare baseline JSON files rather than raw timing
-   (Criterion supports `--save-baseline` and `--baseline` flags).
+   (Criterion supports `--save-baseline` and `--baseline` flags), and run the
+   threshold gate script used by CI.
 
 ## Anti-Flake Recommendations
 
@@ -82,5 +83,10 @@ cargo bench -p ferric --bench engine_bench -- --baseline phase6-start
 
 ## CI Integration
 
-The CI pipeline includes a `bench-smoke` job that runs `--test` mode on every PR.
-For full regression detection, see `docs/benchmark-policy.md`.
+The CI pipeline includes:
+- `bench-smoke`: `cargo bench -p ferric -- --test`
+- `bench-thresholds`: `./scripts/bench-thresholds.sh`
+
+The threshold job publishes `target/bench-threshold-report.json` and
+`target/bench-threshold-report.md` artifacts, plus selected Criterion estimate
+JSON files. See `docs/benchmark-policy.md` for threshold values and policy.

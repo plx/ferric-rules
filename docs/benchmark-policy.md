@@ -2,64 +2,64 @@
 
 ## Overview
 
-Benchmark smoke tests block PRs; full measurement is advisory.
+Benchmark validation is now enforced with two blocking CI layers:
 
-The `bench-smoke` CI job verifies that benchmarks compile and execute on every
-push and pull request. It runs in `--test` mode so it adds minimal time to the
-pipeline. Full criterion measurement runs are performed on-demand by developers
-and are not gating.
+1. `bench-smoke` verifies benchmark targets compile and execute (`--test` mode).
+2. `bench-thresholds` runs Criterion measurements and enforces absolute
+   pass/fail thresholds for key workloads and selected microbenchmarks.
+
+The threshold gate is implemented by `scripts/bench-thresholds.sh`.
 
 ## Threshold Definitions
 
-Criterion's built-in regression detection is used for microbenchmarks. Criterion
-compares new measurements against the most recent saved baseline and reports
-confidence intervals. A change is flagged as a regression when the estimated
-difference exceeds the noise threshold (configured at 1% — see
-`benches/PROTOCOL.md` for defaults).
+Thresholds are evaluated against Criterion `median.point_estimate` (ns) from
+`target/criterion/**/new/estimates.json`.
 
-Sub-1% changes are noise and should be ignored. See the anti-flake guidance
-below before reporting any regression.
+| Benchmark | Threshold (ns) | Rationale |
+|---|---:|---|
+| `waltz_100_junctions` | `10_000_000_000` | Section 14 target: Waltz <= 10s |
+| `manners_64_guests` | `5_000_000_000` | Section 14 target: Manners 64 <= 5s |
+| `engine_create` | `5_000_000` | Micro guardrail for lifecycle path |
+| `load_and_run_simple` | `50_000_000` | Micro guardrail for end-to-end simple pipeline |
+| `reset_run_retract_3` | `50_000_000` | Micro guardrail for retraction-sensitive path |
+| `compile_template_rule` | `50_000_000` | Micro guardrail for parse/load hot path |
+
+These thresholds are intentionally conservative to minimize CI flake while still
+failing catastrophic regressions deterministically.
 
 ## CI Integration
 
 | Job | Trigger | Mode | Blocking? |
 |-----|---------|------|-----------|
-| `bench-smoke` | Every push / PR | `--test` (compile + execute, no measurement) | Yes |
-| Full measurement | On-demand (local or manual workflow dispatch) | Default criterion run | No |
+| `bench-smoke` | Every push / PR | `cargo bench -p ferric -- --test` | Yes |
+| `bench-thresholds` | Every push / PR | `./scripts/bench-thresholds.sh` | Yes |
 
-The smoke job ensures benchmarks remain buildable and runnable. It does not
-produce performance numbers, so it cannot detect regressions on its own.
+`bench-thresholds` publishes:
+- `target/bench-threshold-report.json`
+- `target/bench-threshold-report.md`
+- selected Criterion `new/estimates.json` artifacts
 
-For regression detection, developers should run the full suite locally and
-compare against a saved baseline (see Updating Baselines below).
+## Local Validation
 
-## Updating Baselines
+Run the same threshold gate locally:
 
-When you make an intentional performance change (optimization or known
-trade-off):
+```sh
+./scripts/bench-thresholds.sh
+```
 
-1. Run the full benchmark suite before your change:
-   ```sh
-   cargo bench -p ferric --bench engine_bench -- --save-baseline before
-   ```
-2. Apply your change and run again:
-   ```sh
-   cargo bench -p ferric --bench engine_bench -- --baseline before
-   ```
-3. Review the criterion comparison output. If the change is expected, save a
-   new baseline:
-   ```sh
-   cargo bench -p ferric --bench engine_bench -- --save-baseline main
-   ```
+For deeper analysis of intentional performance work, use baseline comparisons:
+
+```sh
+cargo bench -p ferric --bench engine_bench -- --save-baseline before
+cargo bench -p ferric --bench engine_bench -- --baseline before
+```
 
 ## Anti-Flake Guidance
 
-- Sub-1% changes are noise — do not report them as regressions.
-- Run benchmarks at least twice before reporting a regression.
-- Check confidence intervals in `target/criterion/<name>/new/estimates.json`
-  rather than relying on a single mean value.
-- Do not compare results across different hardware or OS versions.
-- Close unnecessary applications and plug in power when benchmarking locally.
+- Treat sub-1% differences as noise unless repeated across runs.
+- Run full local measurements at least twice before concluding a regression.
+- Compare results only on like-for-like hardware/OS.
+- Use the generated threshold report artifacts to review outliers before
+  adjusting thresholds.
 
-See `benches/PROTOCOL.md` for the full measurement protocol and environment
-guidance.
+See `benches/PROTOCOL.md` for the execution protocol and environment guidance.
