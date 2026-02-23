@@ -130,6 +130,28 @@ fn run_compat_with_guard(engine: &mut Engine, context: &str) -> usize {
     run_result.rules_fired
 }
 
+/// Build and execute a fresh compatibility engine, returning it for inspection.
+fn run_clips_compat_engine(source: &str, context: &str) -> CompatEngine {
+    let mut engine = Engine::new(EngineConfig::utf8());
+
+    engine
+        .load_str(source)
+        .unwrap_or_else(|errors| panic!("{context} load_str failed: {errors:?}"));
+
+    engine
+        .reset()
+        .unwrap_or_else(|_| panic!("{context} reset failed"));
+
+    let rules_fired = run_compat_with_guard(&mut engine, context);
+    let output = engine.get_output("t").unwrap_or("").to_string();
+
+    CompatEngine {
+        engine,
+        rules_fired,
+        output,
+    }
+}
+
 /// Run CLIPS source through a fresh engine and return the compatibility result.
 ///
 /// The sequence is:
@@ -143,23 +165,16 @@ fn run_compat_with_guard(engine: &mut Engine, context: &str) -> usize {
 ///
 /// Panics if loading, reset, or run returns an error.
 pub fn run_clips_compat(source: &str) -> CompatResult {
-    let mut engine = Engine::new(EngineConfig::utf8());
-
-    engine
-        .load_str(source)
-        .unwrap_or_else(|errors| panic!("clips_compat load_str failed: {errors:?}"));
-
-    engine.reset().expect("clips_compat reset failed");
-
-    let rules_fired = run_compat_with_guard(&mut engine, "clips_compat");
-
-    let output = engine.get_output("t").unwrap_or("").to_string();
-
-    let fact_count = engine.facts().expect("clips_compat facts() failed").count();
+    let compat = run_clips_compat_engine(source, "clips_compat");
+    let fact_count = compat
+        .engine
+        .facts()
+        .expect("clips_compat facts() failed")
+        .count();
 
     CompatResult {
-        rules_fired,
-        output,
+        rules_fired: compat.rules_fired,
+        output: compat.output,
         fact_count,
     }
 }
@@ -173,23 +188,7 @@ pub fn run_clips_compat(source: &str) -> CompatResult {
 ///
 /// Panics if loading, reset, or run returns an error.
 pub fn run_clips_compat_full(source: &str) -> CompatEngine {
-    let mut engine = Engine::new(EngineConfig::utf8());
-
-    engine
-        .load_str(source)
-        .unwrap_or_else(|errors| panic!("run_clips_compat_full load_str failed: {errors:?}"));
-
-    engine.reset().expect("run_clips_compat_full reset failed");
-
-    let rules_fired = run_compat_with_guard(&mut engine, "run_clips_compat_full");
-
-    let output = engine.get_output("t").unwrap_or("").to_string();
-
-    CompatEngine {
-        engine,
-        rules_fired,
-        output,
-    }
+    run_clips_compat_engine(source, "run_clips_compat_full")
 }
 
 /// Run CLIPS source and assert the `t` channel output equals `expected`.
@@ -198,12 +197,7 @@ pub fn run_clips_compat_full(source: &str) -> CompatEngine {
 ///
 /// Panics if the output does not match.
 pub fn assert_clips_compat(source: &str, expected: &str) {
-    let result = run_clips_compat(source);
-    assert_eq!(
-        result.output, expected,
-        "CLIPS compat output mismatch\n  expected: {expected:?}\n  actual:   {:?}",
-        result.output,
-    );
+    let _ = assert_clips_compat_returns(source, expected);
 }
 
 /// Run a fixture `.clp` file relative to `tests/clips_compat/fixtures/` and
