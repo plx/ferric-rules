@@ -6,7 +6,7 @@ Deliver release-grade documentation and examples aligned to implemented behavior
 
 ## Scope
 
-- `docs/compatibility.md` covering Sections 16.1-16.8.
+- `docs/compatibility.md` covering the required Section 16 compatibility topics (independent of exact heading numbering).
 - Migration guidance for CLIPS users.
 - Embedding and CLI JSON examples aligned to current FFI/CLI surfaces.
 

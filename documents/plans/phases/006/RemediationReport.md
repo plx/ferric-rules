@@ -13,10 +13,10 @@ Phase 6 is mostly consistent with the planned deliverables:
 - CLIPS compatibility suite exists and passes (`58` tests).
 - FFI contract lock suite exists and passes (`17` tests).
 - CLI JSON contract lock suite exists and passes (`10` tests).
-- Benchmark suites/workloads exist and run in CI smoke mode (`19` benchmarks across 3 suites).
+- Benchmark suites/workloads exist with CI smoke + threshold gates (`19` benchmarks across 3 suites).
 - Compatibility and migration documentation are present and substantially complete.
 
-Material consistency gaps remain in CI policy enforcement and plan-to-doc structure alignment (detailed below).
+Material consistency gaps identified in review have been remediated (details below).
 
 ## Verification Evidence
 Executed during this review:
@@ -27,6 +27,7 @@ Executed during this review:
 - `cargo bench -p ferric --bench engine_bench -- --test --noplot` (passes)
 - `cargo bench -p ferric --bench waltz_bench -- --test --noplot` (passes)
 - `cargo bench -p ferric --bench manners_bench -- --test --noplot` (passes)
+- `./scripts/bench-thresholds.sh` (passes; report emitted at `target/bench-threshold-report.{json,md}`)
 
 ## Findings
 
@@ -34,7 +35,7 @@ Executed during this review:
 |---|---|---|---|---|
 | R6-01 | High | Closed | Added deterministic benchmark-threshold enforcement in CI via a blocking `bench-thresholds` job that runs `scripts/bench-thresholds.sh` and uploads evaluation artifacts. | `documents/plans/phases/006/passes/011-PerformanceRegressionPolicyAndCiBenchmarkGates.md`, `docs/benchmark-policy.md`, `.github/workflows/ci.yml`, `scripts/bench-thresholds.sh` |
 | R6-02 | Medium | Closed | Added a dedicated CLIPS-compatibility CI gate (`cargo test -p ferric --test clips_compat`) while keeping the workspace test job intact. | `documents/FerricImplementationPlan.md` (§13.3), `.github/workflows/ci.yml` |
-| R6-03 | Medium | Open | Compatibility documentation structure diverged from the master-plan Section 16 taxonomy (`16.1-16.8` conceptual buckets) to a construct-first `16.1-16.14` layout. Content is present, but plan references now mismatch actual doc organization. | `documents/FerricImplementationPlan.md` (§16), `docs/compatibility.md`, `documents/plans/phases/006/Notes.md` |
+| R6-03 | Medium | Closed | Master-plan and Phase 6 references now treat Section 16 as topic-based coverage (heading-numbering independent), aligning with the implemented construct-first compatibility document structure. | `documents/FerricImplementationPlan.md` (§16), `documents/plans/phases/006/Plan.md`, `documents/plans/phases/006/passes/012-CompatibilityDocumentationMigrationAndExamples.md`, `docs/compatibility.md` |
 | R6-04 | Medium | Closed | Documented “full benchmark” verification command paths were corrected to executable per-benchmark forms (`engine_bench`, `waltz_bench`, `manners_bench`). | `benches/PROTOCOL.md`, `documents/plans/phases/006/passes/007-BenchmarkHarnessAndMeasurementProtocol.md`, `documents/plans/phases/006/passes/008-WaltzAndMannersBenchmarkWorkloads.md`, `documents/plans/phases/006/passes/009-PerformanceProfilingAndBudgetGapAnalysis.md`, `documents/plans/phases/006/passes/010-TargetedHotPathOptimizationImplementation.md`, `documents/plans/phases/006/passes/011-PerformanceRegressionPolicyAndCiBenchmarkGates.md`, `documents/plans/phases/006/passes/013-Phase6IntegrationAndReleaseReadinessValidation.md` |
 
 ## Resolved During Remediation
@@ -43,6 +44,7 @@ Executed during this review:
 |---|---|---|
 | R6-05 | Closed | Added a compatibility-harness run guard in `crates/ferric/tests/clips_compat.rs`: runs now use a bounded `RunLimit::Count` (default `10_000`) and fail fast on `HaltReason::LimitReached` with explicit non-quiescence diagnostics. Added local override (`FERRIC_COMPAT_RUN_LIMIT`) documentation in `tests/clips_compat/README.md`. This prevents runaway `clips_compat-*` binaries from spinning indefinitely on non-terminating fixtures/regressions. |
 | R6-01 | Closed | Implemented deterministic threshold gating in CI with `scripts/bench-thresholds.sh`, including explicit thresholds for Section 14 workloads (`waltz_100_junctions`, `manners_64_guests`) and selected microbenchmarks (`engine_create`, `load_and_run_simple`, `reset_run_retract_3`, `compile_template_rule`). Added artifact publishing for threshold evaluation evidence (`target/bench-threshold-report.{json,md}` and Criterion estimate files). |
+| R6-03 | Closed | Updated `documents/FerricImplementationPlan.md` Section 16 to define numbered items as normative coverage topics rather than a required heading taxonomy, and aligned Phase 6 planning references to that topic-based model. This reconciles the plan with the implemented `docs/compatibility.md` construct-first organization (`16.1-16.14`). |
 | R6-04 | Closed | Updated benchmark verification commands to valid target names and invocation forms. Replaced invalid/no-op forms such as `cargo bench -- --noplot`, `cargo bench --bench rete_bench -- --noplot`, `cargo bench --bench waltz -- --noplot`, and `cargo bench --bench manners -- --noplot` with executable `cargo bench -p ferric --bench <engine_bench\|waltz_bench\|manners_bench> -- --noplot` commands. |
 | R6-02 | Closed | Added a dedicated `clips-compat` CI job in `.github/workflows/ci.yml` that runs `cargo test -p ferric --test clips_compat`. This makes CLIPS compatibility a visible first-class gate rather than an implicit subset of the broader workspace test job. |
 
@@ -55,12 +57,12 @@ Executed during this review:
 
 ## Required Remediation To Reach A Consistent State
 
-1. Align master-plan Section 16 references with implemented compatibility-doc structure (R6-03).
-   - Either: re-map `docs/compatibility.md` headings back to the conceptual `16.1-16.8` scheme.
-   - Or (preferred): update `documents/FerricImplementationPlan.md` to define the construct-first layout as canonical while preserving required content obligations.
+None.
 
 ## Consistency Exit Criteria For This Remediation
 This phase should be considered fully consistent when:
 - Benchmark regressions can fail CI against explicit thresholds (not advisory-only).
 - CLIPS compatibility has a dedicated CI gate.
 - Master-plan Section 16 references match the published compatibility document structure.
+
+Current status: all criteria above are satisfied.

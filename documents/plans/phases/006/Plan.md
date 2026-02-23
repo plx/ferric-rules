@@ -22,7 +22,7 @@ By the end of this phase, the project should satisfy:
 5. Benchmark harness and canonical workloads (`waltz`, `manners`, plus targeted microbenchmarks) exist and are reproducible.
 6. Measured performance is within documented target range or accompanied by explicit tracked deltas and optimization follow-up.
 7. Benchmark CI policy is upgraded from early smoke posture to blocking release posture for defined benchmark gates.
-8. Compatibility documentation is complete for Sections 16.1-16.8, including external interface and machine-readable diagnostics contracts.
+8. Compatibility documentation is complete for the required Section 16 coverage topics (supported/unsupported surface, restrictions, string semantics, migration, activation ordering, and external FFI/CLI contracts including machine-readable diagnostics).
 9. User-facing examples and migration guidance are complete enough for initial release adoption.
 
 ## Pass Breakdown
@@ -67,5 +67,5 @@ Phase 6 is complete when:
 2. FFI/CLI contracts from Phase 5 are explicitly locked by regression tests (including `--json` diagnostics mode).
 3. Benchmark workloads are implemented, repeatable, and used in CI with blocking policy where defined.
 4. Performance is validated against documented targets with no semantic regressions.
-5. `docs/compatibility.md` fully covers Sections 16.1-16.8, and migration/examples documentation is publication-ready.
+5. `docs/compatibility.md` fully covers the required Section 16 compatibility topics (regardless of heading taxonomy), and migration/examples documentation is publication-ready.
 6. Workspace quality gates are clean (`fmt`, `clippy`, `test`, `check`) with benchmark/compatibility evidence suitable for release sign-off.
