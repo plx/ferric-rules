@@ -524,6 +524,28 @@ pub fn load_run_stdout(engine: &mut Engine, source: &str) -> String {
 // Phase 4: Evaluator/expression test helpers
 // ---------------------------------------------------------------------------
 
+fn run_printout_expr_rule(
+    engine: &mut Engine,
+    setup_source: &str,
+    rule_name: &str,
+    expr: &str,
+) -> String {
+    let source = format!(
+        r"
+{setup_source}
+(defrule {rule_name}
+    (go)
+    =>
+    (printout t {expr} crlf))
+(deffacts startup (go))
+"
+    );
+    load_ok(engine, &source);
+    engine.reset().expect("reset should succeed");
+    run_to_completion(engine);
+    engine.get_output("t").unwrap_or("").to_string()
+}
+
 /// Load a deffunction and a rule that calls it, run, and return the output.
 ///
 /// The rule asserts `(go)`, the function is called in RHS via printout.
@@ -534,20 +556,7 @@ pub fn eval_function_via_rule(
     function_source: &str,
     call_expr: &str,
 ) -> String {
-    let source = format!(
-        r"
-{function_source}
-(defrule test-call
-    (go)
-    =>
-    (printout t {call_expr} crlf))
-(deffacts startup (go))
-"
-    );
-    load_ok(engine, &source);
-    engine.reset().expect("reset should succeed");
-    run_to_completion(engine);
-    engine.get_output("t").unwrap_or("").to_string()
+    run_printout_expr_rule(engine, function_source, "test-call", call_expr)
 }
 
 /// Evaluate an expression by embedding it in printout and capturing the output.
@@ -556,20 +565,9 @@ pub fn eval_function_via_rule(
 /// Returns the captured "t" channel output (trimmed of trailing newline).
 #[allow(dead_code)]
 pub fn eval_expr_via_printout(engine: &mut Engine, expr: &str) -> String {
-    let source = format!(
-        r"
-(defrule eval-test
-    (go)
-    =>
-    (printout t {expr} crlf))
-(deffacts startup (go))
-"
-    );
-    load_ok(engine, &source);
-    engine.reset().expect("reset should succeed");
-    run_to_completion(engine);
-    let output = engine.get_output("t").unwrap_or("");
-    output.trim_end_matches('\n').to_string()
+    run_printout_expr_rule(engine, "", "eval-test", expr)
+        .trim_end_matches('\n')
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -585,20 +583,8 @@ pub fn assert_generic_dispatch_output(
     call_expr: &str,
     expected_output: &str,
 ) {
-    let source = format!(
-        r"
-{generic_source}
-(defrule test-generic
-    (go)
-    =>
-    (printout t {call_expr} crlf))
-(deffacts startup (go))
-"
-    );
-    load_ok(engine, &source);
-    engine.reset().expect("reset should succeed");
-    run_to_completion(engine);
-    let output = engine.get_output("t").unwrap_or("").trim_end_matches('\n');
+    let output = run_printout_expr_rule(engine, generic_source, "test-generic", call_expr);
+    let output = output.trim_end_matches('\n');
     assert_eq!(
         output, expected_output,
         "generic dispatch output mismatch for `{call_expr}`"
