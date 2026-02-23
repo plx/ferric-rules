@@ -33,12 +33,6 @@ fn propagate_fact_assertion(rete: &mut ReteNetwork, fact_base: &FactBase, fact_i
     rete.assert_fact(fact_id, &fact, fact_base);
 }
 
-fn sorted_unique_modules(mut modules: Vec<ModuleId>) -> Vec<ModuleId> {
-    modules.sort_by_key(|module_id| module_id.0);
-    modules.dedup();
-    modules
-}
-
 /// The Ferric rules engine.
 ///
 /// This is the main entry point for embedding applications. The engine is
@@ -713,24 +707,25 @@ impl Engine {
             return Some(value);
         }
 
-        let visible_modules: Vec<ModuleId> = sorted_unique_modules(
-            self.globals
-                .modules_for_name(name)
-                .into_iter()
-                .filter(|module_id| {
-                    self.module_registry.is_construct_visible(
-                        current_module,
-                        *module_id,
-                        "defglobal",
-                        name,
-                    )
-                })
-                .collect(),
-        );
-        match visible_modules.as_slice() {
-            [module_id] => self.globals.get(*module_id, name),
-            _ => None,
+        let mut visible_module = None;
+        for module_id in self.globals.modules_for_name(name) {
+            if !self.module_registry.is_construct_visible(
+                current_module,
+                module_id,
+                "defglobal",
+                name,
+            ) {
+                continue;
+            }
+
+            match visible_module {
+                None => visible_module = Some(module_id),
+                Some(existing) if existing == module_id => {}
+                Some(_) => return None,
+            }
         }
+
+        visible_module.and_then(|module_id| self.globals.get(module_id, name))
     }
 
     /// Get the name of the current module.
