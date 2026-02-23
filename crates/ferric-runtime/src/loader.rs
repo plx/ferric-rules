@@ -1568,6 +1568,7 @@ fn span_to_source_location(span: &ferric_parser::Span) -> ferric_core::SourceLoc
 mod tests {
     use super::*;
     use crate::config::EngineConfig;
+    use crate::test_helpers::{load_err, load_ok, new_utf8_engine};
     use ferric_core::Fact;
 
     fn assert_single_compile_error_contains(errors: &[LoadError], expected: &str) {
@@ -1598,8 +1599,8 @@ mod tests {
 
     #[test]
     fn load_empty_string_returns_empty_result() {
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let result = engine.load_str("").unwrap();
+        let mut engine = new_utf8_engine();
+        let result = load_ok(&mut engine, "");
         assert!(result.asserted_facts.is_empty());
         assert!(result.rules.is_empty());
         assert!(result.warnings.is_empty());
@@ -1607,8 +1608,8 @@ mod tests {
 
     #[test]
     fn load_single_assert_form() {
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let result = engine.load_str("(assert (person John 30))").unwrap();
+        let mut engine = new_utf8_engine();
+        let result = load_ok(&mut engine, "(assert (person John 30))");
 
         assert_eq!(result.asserted_facts.len(), 1);
         assert!(result.rules.is_empty());
@@ -1625,13 +1626,13 @@ mod tests {
 
     #[test]
     fn load_multiple_assert_forms() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let source = r"
             (assert (person Alice 25))
             (assert (person Bob 30))
             (assert (person Carol 35))
         ";
-        let result = engine.load_str(source).unwrap();
+        let result = load_ok(&mut engine, source);
 
         assert_eq!(result.asserted_facts.len(), 3);
         assert!(result.rules.is_empty());
@@ -1639,7 +1640,7 @@ mod tests {
 
     #[test]
     fn load_assert_with_multiple_facts() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str("(assert (person Alice) (person Bob))")
             .unwrap();
@@ -1649,7 +1650,7 @@ mod tests {
 
     #[test]
     fn load_assert_with_various_value_types() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str(r#"(assert (data 42 3.14 "hello" world))"#)
             .unwrap();
@@ -1674,7 +1675,7 @@ mod tests {
 
     #[test]
     fn load_simple_defrule() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str("(defrule test (person ?x) => (printout t ?x crlf))")
             .unwrap();
@@ -1690,7 +1691,7 @@ mod tests {
 
     #[test]
     fn load_rule_with_test_pattern_compiles_successfully() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str("(defrule t (value ?x) (test (> ?x 0)) => (assert (ok)))")
             .unwrap();
@@ -1699,7 +1700,7 @@ mod tests {
 
     #[test]
     fn load_rule_with_template_pattern_compiles_with_defined_template() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str(
                 r"
@@ -1713,7 +1714,7 @@ mod tests {
 
     #[test]
     fn load_rule_with_undefined_template_pattern_returns_error() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str("(defrule t (person (name Alice)) => (assert (ok)))")
             .unwrap_err();
@@ -1734,7 +1735,7 @@ mod tests {
 
     #[test]
     fn load_rule_with_multi_pattern_exists_returns_compile_error() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str("(defrule t (exists (a) (b)) => (assert (ok)))")
             .unwrap_err();
@@ -1744,7 +1745,7 @@ mod tests {
 
     #[test]
     fn load_rule_with_not_and_compiles() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine.load_str(
             "(defrule t (item ?x) (not (and (block ?x) (reason ?x))) => (assert (ok ?x)))",
         );
@@ -1754,7 +1755,7 @@ mod tests {
 
     #[test]
     fn load_rule_with_multivariable_constraint_returns_compile_error() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str("(defrule t (items $?values) => (assert (ok)))")
             .unwrap_err();
@@ -1767,7 +1768,7 @@ mod tests {
 
     #[test]
     fn translate_or_constraint_returns_compile_error() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let mut constant_tests = Vec::new();
         let mut variable_slots = Vec::new();
         let span = test_span(9, 4);
@@ -1793,7 +1794,7 @@ mod tests {
 
     #[test]
     fn translate_negated_non_literal_constraint_returns_compile_error() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let mut constant_tests = Vec::new();
         let mut variable_slots = Vec::new();
         let outer_span = test_span(7, 2);
@@ -1823,7 +1824,7 @@ mod tests {
 
     #[test]
     fn translate_negated_literal_constraint_still_compiles() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let mut constant_tests = Vec::new();
         let mut variable_slots = Vec::new();
         let span = test_span(3, 8);
@@ -1851,7 +1852,7 @@ mod tests {
 
     #[test]
     fn load_defrule_with_multiple_patterns() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let source = r"
             (defrule match-pair
                 (person ?x)
@@ -1859,7 +1860,7 @@ mod tests {
                 =>
                 (assert (pair ?x ?y)))
         ";
-        let result = engine.load_str(source).unwrap();
+        let result = load_ok(&mut engine, source);
 
         assert_eq!(result.rules.len(), 1);
         let rule = &result.rules[0];
@@ -1870,13 +1871,13 @@ mod tests {
 
     #[test]
     fn load_mixed_assert_and_defrule() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let source = r#"
             (assert (person Alice))
             (defrule greet (person ?x) => (printout t "Hello " ?x crlf))
             (assert (person Bob))
         "#;
-        let result = engine.load_str(source).unwrap();
+        let result = load_ok(&mut engine, source);
 
         assert_eq!(result.asserted_facts.len(), 2);
         assert_eq!(result.rules.len(), 1);
@@ -1884,8 +1885,8 @@ mod tests {
 
     #[test]
     fn load_deftemplate() {
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let result = engine.load_str("(deftemplate person (slot name))").unwrap();
+        let mut engine = new_utf8_engine();
+        let result = load_ok(&mut engine, "(deftemplate person (slot name))");
 
         assert_eq!(result.templates.len(), 1);
         assert_eq!(result.templates[0].name, "person");
@@ -1896,7 +1897,7 @@ mod tests {
     #[test]
     fn load_unsupported_form_returns_error() {
         // defclass is not yet supported; verify the UnsupportedForm error fires
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str("(defclass Sensor (is-a USER))")
             .unwrap_err();
@@ -1912,7 +1913,7 @@ mod tests {
 
     #[test]
     fn load_deffunction_succeeds() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str("(deffunction add-one (?x) (+ ?x 1))")
             .unwrap();
@@ -1925,8 +1926,8 @@ mod tests {
 
     #[test]
     fn load_defglobal_succeeds() {
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let result = engine.load_str("(defglobal ?*threshold* = 50)").unwrap();
+        let mut engine = new_utf8_engine();
+        let result = load_ok(&mut engine, "(defglobal ?*threshold* = 50)");
 
         assert_eq!(result.globals.len(), 1);
         assert_eq!(result.globals[0].globals.len(), 1);
@@ -1937,7 +1938,7 @@ mod tests {
 
     #[test]
     fn load_deffunction_with_comment_succeeds() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str(r#"(deffunction inc "Increment" (?x) (+ ?x 1))"#)
             .unwrap();
@@ -1948,7 +1949,7 @@ mod tests {
 
     #[test]
     fn load_defglobal_multiple_globals_succeeds() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str("(defglobal ?*pi* = 3.14159 ?*e* = 2.71828)")
             .unwrap();
@@ -1961,8 +1962,8 @@ mod tests {
 
     #[test]
     fn load_empty_top_level_list_returns_error_not_panic() {
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let errors = engine.load_str("()").unwrap_err();
+        let mut engine = new_utf8_engine();
+        let errors = load_err(&mut engine, "()");
 
         assert_eq!(errors.len(), 1);
         match &errors[0] {
@@ -1976,8 +1977,8 @@ mod tests {
 
     #[test]
     fn load_invalid_assert_empty_fact() {
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let errors = engine.load_str("(assert ())").unwrap_err();
+        let mut engine = new_utf8_engine();
+        let errors = load_err(&mut engine, "(assert ())");
 
         assert_eq!(errors.len(), 1);
         assert!(matches!(errors[0], LoadError::InvalidAssert(_)));
@@ -1985,8 +1986,8 @@ mod tests {
 
     #[test]
     fn load_invalid_assert_non_symbol_relation() {
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let errors = engine.load_str("(assert (42 value))").unwrap_err();
+        let mut engine = new_utf8_engine();
+        let errors = load_err(&mut engine, "(assert (42 value))");
 
         assert_eq!(errors.len(), 1);
         assert!(matches!(errors[0], LoadError::InvalidAssert(_)));
@@ -1994,8 +1995,8 @@ mod tests {
 
     #[test]
     fn load_invalid_defrule_missing_name() {
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let errors = engine.load_str("(defrule)").unwrap_err();
+        let mut engine = new_utf8_engine();
+        let errors = load_err(&mut engine, "(defrule)");
 
         assert_eq!(errors.len(), 1);
         assert!(matches!(errors[0], LoadError::Interpret(_)));
@@ -2003,7 +2004,7 @@ mod tests {
 
     #[test]
     fn load_invalid_defrule_missing_arrow() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str("(defrule test (person ?x) (printout t ?x))")
             .unwrap_err();
@@ -2014,7 +2015,7 @@ mod tests {
 
     #[test]
     fn load_invalid_defrule_non_symbol_name() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str("(defrule 123 (person ?x) => (printout t ?x))")
             .unwrap_err();
@@ -2025,7 +2026,7 @@ mod tests {
 
     #[test]
     fn load_invalid_defrule_not_with_multiple_patterns() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str("(defrule test (not (a) (b)) => (printout t ok))")
             .unwrap_err();
@@ -2043,8 +2044,8 @@ mod tests {
 
     #[test]
     fn load_parse_error() {
-        let mut engine = Engine::new(EngineConfig::utf8());
-        let errors = engine.load_str("(assert (person)").unwrap_err();
+        let mut engine = new_utf8_engine();
+        let errors = load_err(&mut engine, "(assert (person)");
 
         assert_eq!(errors.len(), 1);
         assert!(matches!(errors[0], LoadError::Parse(_)));
@@ -2052,13 +2053,13 @@ mod tests {
 
     #[test]
     fn load_deffacts() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let source = r"
             (deffacts startup
                 (person Alice)
                 (person Bob))
         ";
-        let result = engine.load_str(source).unwrap();
+        let result = load_ok(&mut engine, source);
 
         assert_eq!(result.asserted_facts.len(), 2);
         assert!(result.rules.is_empty());
@@ -2066,9 +2067,9 @@ mod tests {
 
     #[test]
     fn load_nested_fact_produces_warning() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let source = r#"(assert (person (name "John") (age 30)))"#;
-        let result = engine.load_str(source).unwrap();
+        let result = load_ok(&mut engine, source);
 
         // The nested lists will be skipped with warnings
         assert_eq!(result.asserted_facts.len(), 1);
@@ -2079,7 +2080,7 @@ mod tests {
     fn load_encoding_error_produces_warning() {
         let mut engine = Engine::new(EngineConfig::ascii());
         let source = "(assert (person \"héllo\"))";
-        let result = engine.load_str(source).unwrap();
+        let result = load_ok(&mut engine, source);
 
         // The invalid string should produce a warning and be skipped
         assert_eq!(result.asserted_facts.len(), 1);
@@ -2092,7 +2093,7 @@ mod tests {
         let mut temp = tempfile::NamedTempFile::new().unwrap();
         write!(temp, "(assert (test 123))").unwrap();
 
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine.load_file(temp.path()).unwrap();
 
         assert_eq!(result.asserted_facts.len(), 1);
@@ -2100,7 +2101,7 @@ mod tests {
 
     #[test]
     fn load_nonexistent_file_returns_error() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_file(Path::new("/nonexistent/path"))
             .unwrap_err();
@@ -2115,7 +2116,7 @@ mod tests {
 
     #[test]
     fn load_defmodule_succeeds() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str("(defmodule SENSOR (export ?ALL))")
             .expect("load should succeed");
@@ -2125,7 +2126,7 @@ mod tests {
 
     #[test]
     fn load_defgeneric_succeeds() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str("(defgeneric display)")
             .expect("load should succeed");
@@ -2135,7 +2136,7 @@ mod tests {
 
     #[test]
     fn load_defmethod_succeeds() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str("(defmethod display ((?x INTEGER)) ?x)")
             .expect("load should succeed");
@@ -2145,7 +2146,7 @@ mod tests {
 
     #[test]
     fn load_defmethod_with_index_succeeds() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str("(defmethod display 1 ((?x)) ?x)")
             .expect("load should succeed");
@@ -2155,7 +2156,7 @@ mod tests {
 
     #[test]
     fn duplicate_defglobal_reports_source_location() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str(
                 r"
@@ -2179,7 +2180,7 @@ mod tests {
         // Re-defining a module updates its import/export specs rather than erroring.
         // This follows CLIPS semantics where (defmodule MAIN (import X ...)) is a
         // standard way to set up module visibility.
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine.load_str(
             r"
             (defmodule SENSOR)
@@ -2211,7 +2212,7 @@ mod tests {
 
     #[test]
     fn deffunction_then_defgeneric_same_name_errors() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str(
                 r"
@@ -2234,7 +2235,7 @@ mod tests {
 
     #[test]
     fn defgeneric_then_deffunction_same_name_errors() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str(
                 r"
@@ -2257,7 +2258,7 @@ mod tests {
 
     #[test]
     fn defmethod_autocreate_conflicts_with_deffunction() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str(
                 r"
@@ -2280,7 +2281,7 @@ mod tests {
 
     #[test]
     fn deffunction_and_defgeneric_different_names_ok() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str(
                 r"
@@ -2300,7 +2301,7 @@ mod tests {
     fn defmethod_with_existing_generic_not_conflicting_with_deffunction() {
         // If a defgeneric already exists, a defmethod for that generic should
         // succeed even if a deffunction with a different name exists.
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let result = engine
             .load_str(
                 r"
@@ -2318,7 +2319,7 @@ mod tests {
 
     #[test]
     fn duplicate_defgeneric_reports_source_location() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str(
                 r"
@@ -2339,7 +2340,7 @@ mod tests {
 
     #[test]
     fn duplicate_defmethod_explicit_index_reports_source_location() {
-        let mut engine = Engine::new(EngineConfig::utf8());
+        let mut engine = new_utf8_engine();
         let errors = engine
             .load_str(
                 r"
@@ -2362,8 +2363,7 @@ mod tests {
 
 #[cfg(test)]
 mod proptests {
-    use super::*;
-    use crate::config::EngineConfig;
+    use crate::test_helpers::new_utf8_engine;
     use proptest::prelude::*;
 
     proptest! {
@@ -2373,7 +2373,7 @@ mod proptests {
             relation in "[a-z][a-z0-9]{0,10}",
             values in prop::collection::vec(0i64..=100, 0..5)
         ) {
-            let mut engine = Engine::new(EngineConfig::utf8());
+            let mut engine = new_utf8_engine();
             let fields = values.iter()
                 .map(std::string::ToString::to_string)
                 .collect::<Vec<_>>()
@@ -2391,7 +2391,7 @@ mod proptests {
         fn rule_name_preserved(
             name in "[a-z][a-z0-9-]{0,15}",
         ) {
-            let mut engine = Engine::new(EngineConfig::utf8());
+            let mut engine = new_utf8_engine();
             let source = format!("(defrule {name} (item ?x) => (assert (result ?x)))");
 
             if let Ok(result) = engine.load_str(&source) {
@@ -2403,7 +2403,7 @@ mod proptests {
         /// The loader should never panic on arbitrary input.
         #[test]
         fn loader_never_panics(source in "[\\x20-\\x7e]{0,200}") {
-            let mut engine = Engine::new(EngineConfig::utf8());
+            let mut engine = new_utf8_engine();
             let _ = engine.load_str(&source);
         }
     }
