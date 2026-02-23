@@ -13,7 +13,9 @@ use std::rc::Rc;
 use ferric_core::beta::RuleId;
 use ferric_core::binding::VarMap;
 use ferric_core::token::Token;
-use ferric_core::{Fact, FactBase, FactId, ReteNetwork, Symbol, SymbolTable, TemplateId, Value};
+use ferric_core::{
+    EncodingError, Fact, FactBase, FactId, ReteNetwork, Symbol, SymbolTable, TemplateId, Value,
+};
 use ferric_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
 
 use crate::config::EngineConfig;
@@ -143,7 +145,7 @@ pub enum ActionError {
     #[error("invalid retract: expected variable argument")]
     InvalidRetract,
     #[error("encoding error: {0}")]
-    Encoding(String),
+    Encoding(#[from] EncodingError),
     #[error("expression evaluation error: {0}")]
     EvalError(String),
     #[error("expression evaluation error: {0}")]
@@ -510,7 +512,7 @@ fn execute_assert(
                 let relation_sym = eval_env
                     .symbol_table
                     .intern_symbol(relation, eval_env.config.string_encoding)
-                    .map_err(|e| ActionError::Encoding(format!("{e}")))?;
+                    .map_err(ActionError::from)?;
 
                 let mut fields = smallvec::SmallVec::new();
                 for field_expr in &fact_pattern.args {

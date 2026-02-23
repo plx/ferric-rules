@@ -4156,6 +4156,7 @@ Testing is layered to catch logic errors early, especially around retraction and
 - `cargo test --workspace` for unit/integration/regression suites
 - Dedicated CLIPS compatibility job
 - Benchmark smoke job (non-blocking early, blocking in Phase 6)
+- Benchmark-threshold gate in Phase 6 for key workloads/microbenchmarks, with published criterion estimate artifacts
 - FFI subprocess tests for abort-policy verification in `ffi-*` profiles
 
 ### 13.4 Test Philosophy
@@ -4179,6 +4180,10 @@ Based on project requirements, Ferric should perform within 10x of CLIPS:
 | Fact retractions/sec | 200,000 | ≥20,000 |
 | Waltz benchmark | 1.0s | ≤10s |
 | Manners 64 | 0.5s | ≤5s |
+
+Phase 6 benchmark workloads may use scaled/simplified benchmark fixtures that
+exercise the same hot paths (matching/join/negation/retraction) as canonical
+CLIPS workloads; documentation and reports must label this explicitly.
 
 ### 14.2 Retraction-Specific Optimizations
 
@@ -4464,6 +4469,11 @@ Phase 4 and Phase 5 follow-through requirements for subsequent phases:
 
 Ferric will maintain a living document (`docs/compatibility.md`) detailing:
 
+**Organization note:** the compatibility document may be organized in a
+construct-first layout with finer-grained headings (for example, the current
+Phase 6 layout uses `16.1-16.14`). The numbered items below are normative
+coverage topics, not a required one-to-one heading scheme.
+
 ### 16.1 Supported Constructs
 
 Full list of supported CLIPS constructs with notes on any behavioral differences.
@@ -4527,6 +4537,10 @@ The doc must provide:
 - Field-preservation expectations for parse/compile/runtime/action diagnostics (including source-location fields when available).
 - Additive-evolution rules (new fields may be added; existing documented fields are not repurposed).
 - End-to-end examples suitable for CI parsing and regression fixtures.
+
+These coverage topics may be satisfied across a different heading taxonomy in
+`docs/compatibility.md` as long as the content obligations are complete and
+kept in sync with tests and external contracts.
 
 ---
 

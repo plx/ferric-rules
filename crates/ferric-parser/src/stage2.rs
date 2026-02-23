@@ -486,6 +486,8 @@ impl fmt::Display for InterpretError {
     }
 }
 
+impl std::error::Error for InterpretError {}
+
 /// Result of Stage 2 interpretation.
 #[derive(Clone, Debug, Default)]
 pub struct InterpretResult {

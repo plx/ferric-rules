@@ -45,6 +45,11 @@ impl OutputRouter {
     pub fn clear(&mut self) {
         self.buffers.clear();
     }
+
+    /// Clear captured output for a single channel.
+    pub fn clear_channel(&mut self, channel: &str) {
+        self.buffers.remove(channel);
+    }
 }
 
 #[cfg(test)]
@@ -87,5 +92,17 @@ mod tests {
         router.write("t", "data");
         router.clear();
         assert!(router.get_output("t").is_none());
+    }
+
+    #[test]
+    fn clear_channel_removes_only_target_channel() {
+        let mut router = OutputRouter::new();
+        router.write("t", "stdout");
+        router.write("stderr", "error");
+
+        router.clear_channel("t");
+
+        assert!(router.get_output("t").is_none());
+        assert_eq!(router.get_output("stderr"), Some("error"));
     }
 }

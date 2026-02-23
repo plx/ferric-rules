@@ -25,7 +25,7 @@ Create a reproducible benchmark harness and measurement protocol suitable for Ph
 
 ## Verification Commands
 
-- `cargo bench --bench rete_bench -- --noplot`
+- `cargo bench -p ferric --bench engine_bench -- --noplot`
 - `cargo check --workspace --all-targets`
 
 ## Handoff State

@@ -25,7 +25,9 @@ Profile current performance and produce a prioritized gap analysis against Secti
 
 ## Verification Commands
 
-- `cargo bench -- --noplot`
+- `cargo bench -p ferric --bench engine_bench -- --noplot`
+- `cargo bench -p ferric --bench waltz_bench -- --noplot`
+- `cargo bench -p ferric --bench manners_bench -- --noplot`
 - `cargo test --workspace`
 
 ## Handoff State

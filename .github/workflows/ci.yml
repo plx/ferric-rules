@@ -53,3 +53,40 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: ./scripts/preflight.sh test
+
+  clips-compat:
+    name: CLIPS Compat
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: cargo test -p ferric --test clips_compat
+
+  bench-smoke:
+    name: Bench Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: cargo bench -p ferric -- --test
+
+  bench-thresholds:
+    name: Bench Thresholds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: ./scripts/bench-thresholds.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-threshold-report
+          path: |
+            target/bench-threshold-report.json
+            target/bench-threshold-report.md
+            target/criterion/**/new/estimates.json

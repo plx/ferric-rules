@@ -25,8 +25,8 @@ Implement canonical workload benchmarks used by the implementation plan performa
 
 ## Verification Commands
 
-- `cargo bench --bench waltz -- --noplot`
-- `cargo bench --bench manners -- --noplot`
+- `cargo bench -p ferric --bench waltz_bench -- --noplot`
+- `cargo bench -p ferric --bench manners_bench -- --noplot`
 
 ## Handoff State
 

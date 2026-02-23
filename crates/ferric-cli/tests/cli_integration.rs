@@ -393,3 +393,282 @@ fn check_missing_file_exits_one() {
     assert_exit_code(&output, 1);
     assert_stderr_contains(&output, "file not found");
 }
+
+// ---- JSON contract lock tests ----
+//
+// These tests document and lock the machine-readable CLI diagnostics contract.
+// The `--json` mode emits one JSON object per line on stderr; engine output
+// (printout) goes to stdout.  The required top-level fields are:
+//   "command", "level", "kind", "message"
+//
+// New fields MAY be added in the future; existing fields MUST NOT be removed
+// or repurposed (additive-evolution guarantee).
+
+/// Parse every non-empty line of `stderr` as a JSON object, asserting no
+/// parse failures, and return the collected values.
+fn parse_json_lines(stderr: &str) -> Vec<serde_json::Value> {
+    stderr
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("stderr line is not valid JSON: {e}\nline: {line}"))
+        })
+        .collect()
+}
+
+/// Assert that a JSON value has a string field equal to `expected`.
+fn assert_json_field_eq(v: &serde_json::Value, field: &str, expected: &str) {
+    let actual = v
+        .get(field)
+        .unwrap_or_else(|| panic!("missing field '{field}' in JSON object: {v}"))
+        .as_str()
+        .unwrap_or_else(|| panic!("field '{field}' is not a string in: {v}"));
+    assert_eq!(
+        actual, expected,
+        "field '{field}' expected '{expected}', got '{actual}'"
+    );
+}
+
+#[test]
+fn contract_lock_run_json_success_shape() {
+    // A successful run produces no error diagnostics on stderr.
+    // Engine output goes to stdout.
+    let path = fixture_path(fixtures::HELLO);
+    let output = run_ferric(&["run", "--json", path.to_str().unwrap()]);
+    assert_exit_code(&output, 0);
+
+    // Any JSON lines that do appear must be well-formed.
+    let stderr = stderr_str(&output);
+    let diags = parse_json_lines(&stderr);
+
+    // On success there must be no error-level diagnostics.
+    for diag in &diags {
+        let level = diag.get("level").and_then(|v| v.as_str()).unwrap_or("");
+        assert_ne!(
+            level, "error",
+            "unexpected error diagnostic on successful run: {diag}"
+        );
+    }
+}
+
+#[test]
+fn contract_lock_run_json_error_shape() {
+    // A load failure with `--json` emits one JSON object per error on stderr.
+    // Required fields: command, level, kind, message.
+    let path = fixture_path(fixtures::CHECK_INVALID);
+    let output = run_ferric(&["run", "--json", path.to_str().unwrap()]);
+    assert_exit_code(&output, 1);
+
+    let stderr = stderr_str(&output);
+    let diags = parse_json_lines(&stderr);
+    assert!(
+        !diags.is_empty(),
+        "expected at least one JSON diagnostic on stderr for a load error, got nothing"
+    );
+
+    for diag in &diags {
+        assert!(
+            diag.get("command").is_some(),
+            "missing 'command' field: {diag}"
+        );
+        assert!(diag.get("level").is_some(), "missing 'level' field: {diag}");
+        assert!(diag.get("kind").is_some(), "missing 'kind' field: {diag}");
+        assert!(
+            diag.get("message").is_some(),
+            "missing 'message' field: {diag}"
+        );
+    }
+}
+
+#[test]
+fn contract_lock_check_json_success() {
+    // A valid file checked with `--json` exits 0 with no error diagnostics.
+    let path = fixture_path(fixtures::CHECK_VALID);
+    let output = run_ferric(&["check", "--json", path.to_str().unwrap()]);
+    assert_exit_code(&output, 0);
+
+    let stderr = stderr_str(&output);
+    let diags = parse_json_lines(&stderr);
+    for diag in &diags {
+        let level = diag.get("level").and_then(|v| v.as_str()).unwrap_or("");
+        assert_ne!(
+            level, "error",
+            "unexpected error diagnostic on successful check: {diag}"
+        );
+    }
+}
+
+#[test]
+fn contract_lock_check_json_error_shape() {
+    // An invalid file checked with `--json` exits 1.
+    // Required fields: command, level, kind, message.
+    let path = fixture_path(fixtures::CHECK_INVALID);
+    let output = run_ferric(&["check", "--json", path.to_str().unwrap()]);
+    assert_exit_code(&output, 1);
+
+    let stderr = stderr_str(&output);
+    let diags = parse_json_lines(&stderr);
+    assert!(
+        !diags.is_empty(),
+        "expected at least one JSON diagnostic on stderr for a check error"
+    );
+
+    for diag in &diags {
+        assert!(
+            diag.get("command").is_some(),
+            "missing 'command' field: {diag}"
+        );
+        assert!(diag.get("level").is_some(), "missing 'level' field: {diag}");
+        assert!(diag.get("kind").is_some(), "missing 'kind' field: {diag}");
+        assert!(
+            diag.get("message").is_some(),
+            "missing 'message' field: {diag}"
+        );
+    }
+}
+
+#[test]
+fn contract_lock_json_command_field_matches_invocation() {
+    // `run --json` diagnostics carry `"command":"run"`.
+    {
+        let path = fixture_path(fixtures::CHECK_INVALID);
+        let output = run_ferric(&["run", "--json", path.to_str().unwrap()]);
+        let stderr = stderr_str(&output);
+        let diags = parse_json_lines(&stderr);
+        for diag in &diags {
+            assert_json_field_eq(diag, "command", "run");
+        }
+    }
+
+    // `check --json` diagnostics carry `"command":"check"`.
+    {
+        let path = fixture_path(fixtures::CHECK_INVALID);
+        let output = run_ferric(&["check", "--json", path.to_str().unwrap()]);
+        let stderr = stderr_str(&output);
+        let diags = parse_json_lines(&stderr);
+        for diag in &diags {
+            assert_json_field_eq(diag, "command", "check");
+        }
+    }
+}
+
+#[test]
+fn contract_lock_json_level_field_is_error_or_warning() {
+    // The `level` field MUST be exactly "error" or "warning" — no other values.
+    let path = fixture_path(fixtures::CHECK_INVALID);
+    let output = run_ferric(&["run", "--json", path.to_str().unwrap()]);
+    let stderr = stderr_str(&output);
+    let diags = parse_json_lines(&stderr);
+    for diag in &diags {
+        let level = diag
+            .get("level")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("missing 'level' field: {diag}"));
+        assert!(
+            level == "error" || level == "warning",
+            "level field must be 'error' or 'warning', got '{level}' in: {diag}"
+        );
+    }
+}
+
+#[test]
+fn contract_lock_json_kind_field_is_present() {
+    // The `kind` field documents the diagnostic category (e.g. "load_error",
+    // "io_error", "runtime_error", "action_warning").  It must always be present.
+    let path = fixture_path(fixtures::CHECK_INVALID);
+    let output = run_ferric(&["run", "--json", path.to_str().unwrap()]);
+    let stderr = stderr_str(&output);
+    let diags = parse_json_lines(&stderr);
+    assert!(
+        !diags.is_empty(),
+        "expected diagnostics for an invalid file"
+    );
+    for diag in &diags {
+        let kind = diag
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("missing 'kind' field: {diag}"));
+        assert!(!kind.is_empty(), "'kind' field must not be empty: {diag}");
+    }
+}
+
+#[test]
+fn contract_lock_exit_codes() {
+    // Exit codes are the same regardless of --json mode.
+    // 0 = success, 1 = runtime/load error, 2 = usage error.
+
+    // 0: valid file, plain mode
+    {
+        let path = fixture_path(fixtures::HELLO);
+        assert_exit_code(&run_ferric(&["run", path.to_str().unwrap()]), 0);
+        assert_exit_code(&run_ferric(&["run", "--json", path.to_str().unwrap()]), 0);
+    }
+
+    // 1: load error, both modes
+    {
+        let path = fixture_path(fixtures::CHECK_INVALID);
+        assert_exit_code(&run_ferric(&["run", path.to_str().unwrap()]), 1);
+        assert_exit_code(&run_ferric(&["run", "--json", path.to_str().unwrap()]), 1);
+        assert_exit_code(&run_ferric(&["check", path.to_str().unwrap()]), 1);
+        assert_exit_code(&run_ferric(&["check", "--json", path.to_str().unwrap()]), 1);
+    }
+
+    // 2: usage error (no file), both modes
+    {
+        assert_exit_code(&run_ferric(&["run"]), 2);
+        assert_exit_code(&run_ferric(&["check"]), 2);
+        assert_exit_code(&run_ferric(&[]), 2);
+    }
+}
+
+#[test]
+fn contract_lock_json_mode_diagnostics_on_stderr() {
+    // In --json mode: diagnostics go to stderr, engine output to stdout.
+    let path = fixture_path(fixtures::HELLO);
+    let output = run_ferric(&["run", "--json", path.to_str().unwrap()]);
+    assert_exit_code(&output, 0);
+
+    // Engine printout lands on stdout.
+    let stdout = stdout_str(&output);
+    assert!(
+        stdout.contains("Hello, Ferric!"),
+        "expected engine output on stdout: {stdout}"
+    );
+
+    // stderr either empty or contains only valid JSON (no human-readable prefix).
+    let stderr = stderr_str(&output);
+    for line in stderr.lines().filter(|l| !l.is_empty()) {
+        let _: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|e| {
+            panic!("non-JSON content on stderr in --json mode: {e}\nline: {line}")
+        });
+    }
+}
+
+#[test]
+fn contract_lock_json_additive_evolution_baseline() {
+    // Document the required baseline fields.  New fields may be added in future
+    // releases, but these four MUST remain present and MUST remain strings.
+    const REQUIRED_FIELDS: &[&str] = &["command", "level", "kind", "message"];
+
+    let path = fixture_path(fixtures::CHECK_INVALID);
+    let output = run_ferric(&["run", "--json", path.to_str().unwrap()]);
+    let stderr = stderr_str(&output);
+    let diags = parse_json_lines(&stderr);
+    assert!(
+        !diags.is_empty(),
+        "expected at least one JSON diagnostic for additive-evolution baseline check"
+    );
+
+    for diag in &diags {
+        for field in REQUIRED_FIELDS {
+            let value = diag
+                .get(*field)
+                .unwrap_or_else(|| panic!("baseline field '{field}' missing from: {diag}"));
+            assert!(
+                value.is_string(),
+                "baseline field '{field}' must be a string, got: {value}"
+            );
+        }
+    }
+}

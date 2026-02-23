@@ -44,6 +44,15 @@ impl FerricStringEncoding {
     }
 }
 
+impl TryFrom<u32> for FerricStringEncoding {
+    type Error = String;
+
+    fn try_from(raw: u32) -> Result<Self, Self::Error> {
+        Self::from_raw(raw)
+            .ok_or_else(|| format!("invalid string_encoding value: {raw} (expected 0..=2)"))
+    }
+}
+
 /// C-facing conflict-resolution strategy for `FerricConfig`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +93,14 @@ impl FerricConflictStrategy {
     }
 }
 
+impl TryFrom<u32> for FerricConflictStrategy {
+    type Error = String;
+
+    fn try_from(raw: u32) -> Result<Self, Self::Error> {
+        Self::from_raw(raw).ok_or_else(|| format!("invalid strategy value: {raw} (expected 0..=3)"))
+    }
+}
+
 /// C-facing engine configuration used by `ferric_engine_new_with_config`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,27 +122,24 @@ impl Default for FerricConfig {
     }
 }
 
+impl TryFrom<&FerricConfig> for EngineConfig {
+    type Error = String;
+
+    fn try_from(config: &FerricConfig) -> Result<Self, Self::Error> {
+        let string_encoding = FerricStringEncoding::try_from(config.string_encoding)?;
+        let strategy = FerricConflictStrategy::try_from(config.strategy)?;
+
+        Ok(Self {
+            string_encoding: string_encoding.into(),
+            strategy: strategy.into(),
+            max_call_depth: config.max_call_depth,
+        })
+    }
+}
+
 /// Convert a C-facing config into runtime `EngineConfig`.
 pub(crate) fn engine_config_from_ffi(config: &FerricConfig) -> Result<EngineConfig, String> {
-    let string_encoding =
-        FerricStringEncoding::from_raw(config.string_encoding).ok_or_else(|| {
-            format!(
-                "invalid string_encoding value: {} (expected 0..=2)",
-                config.string_encoding
-            )
-        })?;
-    let strategy = FerricConflictStrategy::from_raw(config.strategy).ok_or_else(|| {
-        format!(
-            "invalid strategy value: {} (expected 0..=3)",
-            config.strategy
-        )
-    })?;
-
-    Ok(EngineConfig {
-        string_encoding: string_encoding.into(),
-        strategy: strategy.into(),
-        max_call_depth: config.max_call_depth,
-    })
+    EngineConfig::try_from(config)
 }
 
 /// C-facing value type discriminant.

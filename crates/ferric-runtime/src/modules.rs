@@ -89,13 +89,14 @@ impl ModuleRegistry {
 
         let id = ModuleId(self.next_id);
         self.next_id += 1;
+        let name_owned = name.to_string();
         let module = RuntimeModule {
-            name: name.to_string(),
+            name: name_owned.clone(),
             exports,
             imports,
         };
         self.modules.insert(id, module);
-        self.name_to_id.insert(name.to_string(), id);
+        self.name_to_id.insert(name_owned, id);
         id
     }
 
@@ -178,13 +179,20 @@ impl ModuleRegistry {
         if spec_construct_type != construct_type {
             return false;
         }
-        if names.iter().any(|name| name == "?ALL") {
-            return true;
+        let mut has_none = false;
+        let mut has_name_match = false;
+        for name in names {
+            match name.as_str() {
+                "?ALL" => return true,
+                "?NONE" => has_none = true,
+                _ if name == construct_name => has_name_match = true,
+                _ => {}
+            }
         }
-        if names.iter().any(|name| name == "?NONE") {
+        if has_none {
             return false;
         }
-        names.iter().any(|name| name == construct_name)
+        has_name_match
     }
 
     fn spec_matches(spec: &ModuleSpec, construct_type: &str, construct_name: &str) -> bool {

@@ -25,7 +25,7 @@ Finalize benchmark-based CI policy for Phase 6 so performance regressions are ca
 
 ## Verification Commands
 
-- `cargo bench -- --noplot`
+- `./scripts/bench-thresholds.sh`
 - `cargo test --workspace`
 - CI workflow dry-run/equivalent local checks
 

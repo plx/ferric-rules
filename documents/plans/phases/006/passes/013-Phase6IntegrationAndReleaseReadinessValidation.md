@@ -30,7 +30,7 @@ Consolidate all Phase 6 work into a stable release-ready baseline that explicitl
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
 - `cargo check --workspace --all-targets`
-- `cargo bench -- --noplot`
+- `./scripts/bench-thresholds.sh`
 
 ## Handoff State
 

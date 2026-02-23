@@ -1,0 +1,89 @@
+Phase 006 Progress
+==================
+
+Pass 001 - Phase6BaselineAndHarnessAlignment
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1220 (up from 1216 baseline; +4 compat harness smoke tests)
+  Notes: See Notes.md for details
+
+Pass 002 - ClipsCompatHarnessScaffoldAndFixtureCuration
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1243 (up from 1220; +23 compat tests across 5 domains)
+  Notes: See Notes.md for details
+
+Pass 003 - ClipsCompatCoreExecutionSemanticsSuite
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1254 (up from 1243; +11 deep core/negation compat tests)
+  Notes: See Notes.md for details
+
+Pass 004 - ClipsCompatLanguageModuleAndStdlibSemanticsSuite
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1265 (up from 1254; +11 deep language/module/stdlib compat tests)
+  Notes: See Notes.md for details
+
+Pass 005 - ExternalSurfaceCompatibilityFfiContractLockSuite
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1282 (up from 1265; +17 FFI contract lock tests)
+  Notes: See Notes.md for details
+
+Pass 006 - ExternalSurfaceCompatibilityCliJsonContractSuite
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1292 (up from 1282; +10 CLI JSON contract lock tests)
+  Notes: See Notes.md for details
+
+Pass 007 - BenchmarkHarnessAndMeasurementProtocol
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1301 total (also includes +9 compat tests from worktree merges)
+  Benchmarks: 9 benchmarks in engine_bench (lifecycle, load+run, reset+run, compile)
+  Notes: See Notes.md for details
+
+Pass 008 - WaltzAndMannersBenchmarkWorkloads
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1304 (unchanged; benchmarks are separate from test count)
+  Benchmarks: +10 benchmarks (5 waltz scaling + 5 manners scaling)
+  Notes: See Notes.md for details
+
+Pass 009 - PerformanceProfilingAndBudgetGapAnalysis
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1304 (unchanged)
+  Notes: All Section 14 targets exceeded by 36-117x. See docs/performance-analysis.md
+
+Pass 010 - TargetedHotPathOptimizationImplementation
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1304 (unchanged)
+  Optimization: Alpha memory reverse index (FactId->Vec<AlphaMemoryId>)
+  Impact: Retraction paths improved 1.5-2.2%, assertion paths +1-4% overhead
+  Notes: See Notes.md and docs/performance-analysis.md for details
+
+Pass 011 - PerformanceRegressionPolicyAndCiBenchmarkGates
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1304 (unchanged)
+  CI: bench-smoke job added to .github/workflows/ci.yml
+  Docs: docs/benchmark-policy.md created
+  Notes: See Notes.md for details
+
+Pass 012 - CompatibilityDocumentationMigrationAndExamples
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1304 (unchanged)
+  Docs: docs/compatibility.md (878 lines), docs/migration.md (210 lines)
+  Notes: See Notes.md for details
+
+Pass 013 - Phase6IntegrationAndReleaseReadinessValidation
+  Status: COMPLETE
+  Date: 2026-02-22
+  Tests: 1304 total
+  Benchmarks: 19 benchmarks across 3 suites (engine, waltz, manners)
+  Quality Gates: All green (fmt, clippy, test, check, bench --test)
+  Notes: See Notes.md for Phase 6 exit checklist
