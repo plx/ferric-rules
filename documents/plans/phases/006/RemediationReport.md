@@ -33,13 +33,14 @@ Executed during this review:
 | R6-01 | High | Open | Benchmark regression thresholds are not CI-enforced deterministically, despite Pass 011 objective/DoD requiring automatic regression catching. Current policy is smoke-blocking plus advisory full runs. | `documents/plans/phases/006/passes/011-PerformanceRegressionPolicyAndCiBenchmarkGates.md`, `docs/benchmark-policy.md`, `.github/workflows/ci.yml` |
 | R6-02 | Medium | Open | No dedicated CLIPS-compatibility CI job is present, while master-plan CI gates call for one. Compatibility currently runs only via the broad workspace test job. | `documents/FerricImplementationPlan.md` (§13.3), `.github/workflows/ci.yml` |
 | R6-03 | Medium | Open | Compatibility documentation structure diverged from the master-plan Section 16 taxonomy (`16.1-16.8` conceptual buckets) to a construct-first `16.1-16.14` layout. Content is present, but plan references now mismatch actual doc organization. | `documents/FerricImplementationPlan.md` (§16), `docs/compatibility.md`, `documents/plans/phases/006/Notes.md` |
-| R6-04 | Medium | Open | Documented “full benchmark” verification command path is not currently executable as written (`cargo bench -p ferric -- --noplot` forwards `--noplot` to the lib bench harness and fails). | `benches/PROTOCOL.md`, `documents/plans/phases/006/passes/011-PerformanceRegressionPolicyAndCiBenchmarkGates.md`, `documents/plans/phases/006/passes/013-Phase6IntegrationAndReleaseReadinessValidation.md` |
+| R6-04 | Medium | Closed | Documented “full benchmark” verification command paths were corrected to executable per-benchmark forms (`engine_bench`, `waltz_bench`, `manners_bench`). | `benches/PROTOCOL.md`, `documents/plans/phases/006/passes/007-BenchmarkHarnessAndMeasurementProtocol.md`, `documents/plans/phases/006/passes/008-WaltzAndMannersBenchmarkWorkloads.md`, `documents/plans/phases/006/passes/009-PerformanceProfilingAndBudgetGapAnalysis.md`, `documents/plans/phases/006/passes/010-TargetedHotPathOptimizationImplementation.md`, `documents/plans/phases/006/passes/011-PerformanceRegressionPolicyAndCiBenchmarkGates.md`, `documents/plans/phases/006/passes/013-Phase6IntegrationAndReleaseReadinessValidation.md` |
 
 ## Resolved During Remediation
 
 | ID | Status | Remediation Completed |
 |---|---|---|
 | R6-05 | Closed | Added a compatibility-harness run guard in `crates/ferric/tests/clips_compat.rs`: runs now use a bounded `RunLimit::Count` (default `10_000`) and fail fast on `HaltReason::LimitReached` with explicit non-quiescence diagnostics. Added local override (`FERRIC_COMPAT_RUN_LIMIT`) documentation in `tests/clips_compat/README.md`. This prevents runaway `clips_compat-*` binaries from spinning indefinitely on non-terminating fixtures/regressions. |
+| R6-04 | Closed | Updated benchmark verification commands to valid target names and invocation forms. Replaced invalid/no-op forms such as `cargo bench -- --noplot`, `cargo bench --bench rete_bench -- --noplot`, `cargo bench --bench waltz -- --noplot`, and `cargo bench --bench manners -- --noplot` with executable `cargo bench -p ferric --bench <engine_bench\|waltz_bench\|manners_bench> -- --noplot` commands. |
 
 ## Documented Divergences Assessed As Acceptable
 
@@ -63,12 +64,8 @@ Executed during this review:
    - Either: re-map `docs/compatibility.md` headings back to the conceptual `16.1-16.8` scheme.
    - Or (preferred): update `documents/FerricImplementationPlan.md` to define the construct-first layout as canonical while preserving required content obligations.
 
-4. Correct benchmark verification command paths in docs/plans (R6-04).
-   - Replace `cargo bench -p ferric -- --noplot` with executable per-benchmark forms (for example, `cargo bench -p ferric --bench engine_bench -- --noplot` and equivalent Waltz/Manners commands), or remove the non-criterion lib bench from the full-bench command path.
-
 ## Consistency Exit Criteria For This Remediation
 This phase should be considered fully consistent when:
 - Benchmark regressions can fail CI against explicit thresholds (not advisory-only).
 - CLIPS compatibility has a dedicated CI gate.
 - Master-plan Section 16 references match the published compatibility document structure.
-- Published benchmark verification commands execute as documented.

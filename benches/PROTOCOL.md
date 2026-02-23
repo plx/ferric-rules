@@ -14,7 +14,9 @@ cargo bench -p ferric -- --test
 
 ### No-plot run (CI-friendly, suppresses HTML report generation)
 ```sh
-cargo bench -p ferric -- --noplot
+cargo bench -p ferric --bench engine_bench -- --noplot
+cargo bench -p ferric --bench waltz_bench -- --noplot
+cargo bench -p ferric --bench manners_bench -- --noplot
 ```
 
 ## Criterion Configuration

@@ -30,7 +30,9 @@ Consolidate all Phase 6 work into a stable release-ready baseline that explicitl
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
 - `cargo check --workspace --all-targets`
-- `cargo bench -- --noplot`
+- `cargo bench -p ferric --bench engine_bench -- --noplot`
+- `cargo bench -p ferric --bench waltz_bench -- --noplot`
+- `cargo bench -p ferric --bench manners_bench -- --noplot`
 
 ## Handoff State
 

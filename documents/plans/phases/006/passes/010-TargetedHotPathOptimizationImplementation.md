@@ -27,7 +27,9 @@ Implement prioritized, low-risk hot-path optimizations identified in profiling w
 ## Verification Commands
 
 - `cargo test --workspace`
-- `cargo bench -- --noplot`
+- `cargo bench -p ferric --bench engine_bench -- --noplot`
+- `cargo bench -p ferric --bench waltz_bench -- --noplot`
+- `cargo bench -p ferric --bench manners_bench -- --noplot`
 - `cargo check --workspace --all-targets`
 
 ## Handoff State
