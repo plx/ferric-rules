@@ -394,30 +394,36 @@ fn assert_clips_compat_returns(source: &str, expected: &str) -> CompatResult {
     result
 }
 
+/// Run a fixture file and assert exact rule/output expectations.
+fn assert_fixture_output(
+    fixture_name: &str,
+    expected_rules_fired: usize,
+    expected_output: &str,
+) -> CompatResult {
+    let result = run_clips_compat_file(fixture_name);
+    assert_rules_fired(&result, expected_rules_fired);
+    assert_output_exact(&result, expected_output);
+    result
+}
+
 // ===========================================================================
 // Module domain compatibility tests
 // ===========================================================================
 
 #[test]
 fn test_compat_modules_basic_module() {
-    let result = run_clips_compat_file("modules/basic_module.clp");
-    assert_eq!(result.rules_fired, 1, "expected 1 rule to fire");
-    assert_eq!(result.output, "Sensor temp = 72\n");
+    let _ = assert_fixture_output("modules/basic_module.clp", 1, "Sensor temp = 72\n");
 }
 
 #[test]
 fn test_compat_modules_global_scope() {
-    let result = run_clips_compat_file("modules/global_scope.clp");
-    assert_eq!(result.rules_fired, 2, "expected 2 rules to fire");
     // Both items fire; counter increments 0->1 then 1->2.
-    assert_eq!(result.output, "count = 1\ncount = 2\n");
+    let _ = assert_fixture_output("modules/global_scope.clp", 2, "count = 1\ncount = 2\n");
 }
 
 #[test]
 fn test_compat_modules_qualified_names() {
-    let result = run_clips_compat_file("modules/qualified_names.clp");
-    assert_eq!(result.rules_fired, 1, "expected 1 rule to fire");
-    assert_eq!(result.output, "sum: 7\nthreshold: 10\n");
+    let _ = assert_fixture_output("modules/qualified_names.clp", 1, "sum: 7\nthreshold: 10\n");
 }
 
 // ===========================================================================
@@ -443,12 +449,7 @@ fn test_compat_generics_basic_dispatch() {
 
 #[test]
 fn test_compat_generics_specificity() {
-    let result = run_clips_compat_file("generics/specificity.clp");
-    assert_eq!(result.rules_fired, 1, "expected 1 rule to fire");
-    assert_eq!(
-        result.output, "integer\n",
-        "INTEGER method should win over NUMBER method"
-    );
+    let _ = assert_fixture_output("generics/specificity.clp", 1, "integer\n");
 }
 
 // ===========================================================================
@@ -457,37 +458,39 @@ fn test_compat_generics_specificity() {
 
 #[test]
 fn test_compat_stdlib_math_ops() {
-    let result = run_clips_compat_file("stdlib/math_ops.clp");
-    assert_eq!(result.rules_fired, 1, "expected 1 rule to fire");
-    assert_eq!(
-        result.output,
+    let _ = assert_fixture_output(
+        "stdlib/math_ops.clp",
+        1,
         // Note: Ferric returns 25.0 for (/ 100 4) — division always returns float.
-        "add: 30\nsub: 42\nmul: 42\ndiv: 25.0\nmod: 2\nabs: 42\nmin: 1\nmax: 9\n"
+        "add: 30\nsub: 42\nmul: 42\ndiv: 25.0\nmod: 2\nabs: 42\nmin: 1\nmax: 9\n",
     );
 }
 
 #[test]
 fn test_compat_stdlib_string_ops() {
-    let result = run_clips_compat_file("stdlib/string_ops.clp");
-    assert_eq!(result.rules_fired, 1, "expected 1 rule to fire");
-    assert_eq!(result.output, "cat: hello world\nlen: 5\nsub: hel\n");
+    let _ = assert_fixture_output(
+        "stdlib/string_ops.clp",
+        1,
+        "cat: hello world\nlen: 5\nsub: hel\n",
+    );
 }
 
 #[test]
 fn test_compat_stdlib_multifield_ops() {
-    let result = run_clips_compat_file("stdlib/multifield_ops.clp");
-    assert_eq!(result.rules_fired, 1, "expected 1 rule to fire");
-    // length$ = 4, nth$ 2 = b, member$ b = 2 (1-based position)
-    assert_eq!(result.output, "len: 4\nnth: b\nmember: 2\n");
+    let _ = assert_fixture_output(
+        "stdlib/multifield_ops.clp",
+        1,
+        // length$ = 4, nth$ 2 = b, member$ b = 2 (1-based position)
+        "len: 4\nnth: b\nmember: 2\n",
+    );
 }
 
 #[test]
 fn test_compat_stdlib_predicate_ops() {
-    let result = run_clips_compat_file("stdlib/predicate_ops.clp");
-    assert_eq!(result.rules_fired, 1, "expected 1 rule to fire");
-    assert_eq!(
-        result.output,
-        "int? TRUE\nfloat? TRUE\nsym? TRUE\nstr? TRUE\nnum? TRUE\neq: TRUE\n"
+    let _ = assert_fixture_output(
+        "stdlib/predicate_ops.clp",
+        1,
+        "int? TRUE\nfloat? TRUE\nsym? TRUE\nstr? TRUE\nnum? TRUE\neq: TRUE\n",
     );
 }
 
@@ -497,39 +500,33 @@ fn test_compat_stdlib_predicate_ops() {
 
 #[test]
 fn test_compat_core_basic_match() {
-    let result = run_clips_compat_file("core/basic_match.clp");
-    assert_eq!(result.rules_fired, 3);
-    // Depth strategy: most recently asserted facts match first (reverse assertion order)
-    assert_eq!(result.output, "Color: green\nColor: blue\nColor: red\n");
+    let _ = assert_fixture_output(
+        "core/basic_match.clp",
+        3,
+        // Depth strategy: most recently asserted facts match first (reverse assertion order)
+        "Color: green\nColor: blue\nColor: red\n",
+    );
 }
 
 #[test]
 fn test_compat_core_retract_cycle() {
-    let result = run_clips_compat_file("core/retract_cycle.clp");
-    assert_eq!(result.rules_fired, 1);
+    let result = assert_fixture_output("core/retract_cycle.clp", 1, "");
     assert_eq!(result.fact_count, 1); // processed fact remains
-    assert_eq!(result.output, "");
 }
 
 #[test]
 fn test_compat_core_salience_order() {
-    let result = run_clips_compat_file("core/salience_order.clp");
-    assert_eq!(result.rules_fired, 2);
-    assert_eq!(result.output, "high\nlow\n");
+    let _ = assert_fixture_output("core/salience_order.clp", 2, "high\nlow\n");
 }
 
 #[test]
 fn test_compat_core_chain_rules() {
-    let result = run_clips_compat_file("core/chain_rules.clp");
-    assert_eq!(result.rules_fired, 3);
-    assert_eq!(result.output, "1->2\n2->3\ndone\n");
+    let _ = assert_fixture_output("core/chain_rules.clp", 3, "1->2\n2->3\ndone\n");
 }
 
 #[test]
 fn test_compat_core_modify_duplicate() {
-    let result = run_clips_compat_file("core/modify_duplicate.clp");
-    assert_eq!(result.rules_fired, 1);
-    assert_eq!(result.output, "Alice is now 31\n");
+    let _ = assert_fixture_output("core/modify_duplicate.clp", 1, "Alice is now 31\n");
 }
 
 // ===========================================================================
@@ -538,37 +535,31 @@ fn test_compat_core_modify_duplicate() {
 
 #[test]
 fn test_compat_negation_simple_not() {
-    let result = run_clips_compat_file("negation/simple_not.clp");
-    assert_eq!(result.rules_fired, 1);
-    assert_eq!(result.output, "lamp is safe\n");
+    let _ = assert_fixture_output("negation/simple_not.clp", 1, "lamp is safe\n");
 }
 
 #[test]
 fn test_compat_negation_not_retract() {
-    let result = run_clips_compat_file("negation/not_retract.clp");
-    assert_eq!(result.rules_fired, 2);
-    assert_eq!(result.output, "danger removed\nlamp is safe\n");
+    let _ = assert_fixture_output(
+        "negation/not_retract.clp",
+        2,
+        "danger removed\nlamp is safe\n",
+    );
 }
 
 #[test]
 fn test_compat_negation_exists() {
-    let result = run_clips_compat_file("negation/exists_ce.clp");
-    assert_eq!(result.rules_fired, 1);
-    assert_eq!(result.output, "signal detected\n");
+    let _ = assert_fixture_output("negation/exists_ce.clp", 1, "signal detected\n");
 }
 
 #[test]
 fn test_compat_negation_forall_basic() {
-    let result = run_clips_compat_file("negation/forall_basic.clp");
-    assert_eq!(result.rules_fired, 1);
-    assert_eq!(result.output, "all items checked\n");
+    let _ = assert_fixture_output("negation/forall_basic.clp", 1, "all items checked\n");
 }
 
 #[test]
 fn test_compat_negation_forall_fail() {
-    let result = run_clips_compat_file("negation/forall_fail.clp");
-    assert_eq!(result.rules_fired, 0);
-    assert_eq!(result.output, "");
+    let _ = assert_fixture_output("negation/forall_fail.clp", 0, "");
 }
 
 // ===========================================================================
