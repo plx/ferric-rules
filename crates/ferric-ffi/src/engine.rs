@@ -13,6 +13,7 @@
 //! exposed through the C API.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
@@ -38,7 +39,13 @@ pub struct FerricEngine {
 }
 
 thread_local! {
-    static OUTPUT_CSTRING: RefCell<Option<CString>> = const { RefCell::new(None) };
+    static OUTPUT_CSTRINGS: RefCell<HashMap<String, CachedOutputCString>> =
+        RefCell::new(HashMap::new());
+}
+
+struct CachedOutputCString {
+    snapshot: String,
+    cstring: CString,
 }
 
 // ---------------------------------------------------------------------------
@@ -534,7 +541,7 @@ pub unsafe extern "C" fn ferric_engine_get_output(
     engine: *const FerricEngine,
     channel: *const c_char,
 ) -> *const c_char {
-    let Ok(handle) = validate_engine_ptr(engine) else {
+    let Ok(handle) = borrow_engine_checked(engine) else {
         return ptr::null();
     };
     if channel.is_null() {
@@ -546,17 +553,32 @@ pub unsafe extern "C" fn ferric_engine_get_output(
     };
 
     match handle.engine.get_output(channel_str) {
-        Some(output) if !output.is_empty() => {
-            let cstring = CString::new(output).unwrap_or_default();
-            OUTPUT_CSTRING.with(|c| {
-                *c.borrow_mut() = Some(cstring);
-                c.borrow().as_ref().map_or(ptr::null(), |cs| cs.as_ptr())
-            })
-        }
+        Some(output) if !output.is_empty() => OUTPUT_CSTRINGS.with(|cache| {
+            use std::collections::hash_map::Entry;
+
+            let mut cache = cache.borrow_mut();
+            match cache.entry(channel_str.to_string()) {
+                Entry::Occupied(mut entry) => {
+                    if entry.get().snapshot != output {
+                        entry.insert(CachedOutputCString {
+                            snapshot: output.to_string(),
+                            cstring: CString::new(output).unwrap_or_default(),
+                        });
+                    }
+                    entry.get().cstring.as_ptr()
+                }
+                Entry::Vacant(entry) => {
+                    let slot = entry.insert(CachedOutputCString {
+                        snapshot: output.to_string(),
+                        cstring: CString::new(output).unwrap_or_default(),
+                    });
+                    slot.cstring.as_ptr()
+                }
+            }
+        }),
         _ => ptr::null(),
     }
 }
-
 /// Get the number of action diagnostics captured during recent execution.
 ///
 /// Diagnostics are collected by `run`/`step` when non-fatal action errors occur

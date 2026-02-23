@@ -231,12 +231,13 @@ fn run_engine(engine: &mut Engine, limit: RunLimit) {
 }
 
 /// Print everything written to the `"t"` output channel, then clear it.
-fn print_output(engine: &Engine) {
+fn print_output(engine: &mut Engine) {
     if let Some(output) = engine.get_output("t") {
         if !output.is_empty() {
             print!("{output}");
         }
     }
+    engine.clear_output_channel("t");
 }
 
 /// List all facts in working memory.
@@ -361,5 +362,23 @@ mod tests {
     fn balanced_string_with_escaped_quote() {
         // Escaped quote inside a string should not end the string.
         assert!(parens_balanced(r#"(assert (msg "say \"hi\""))"#));
+    }
+
+    #[test]
+    fn print_output_clears_t_channel() {
+        let mut engine = Engine::new(Default::default());
+        let src =
+            r#"(defrule emit (initial-fact) => (printout t "hello" crlf) (printout stderr "err"))"#;
+        assert!(engine.load_str(src).is_ok());
+        assert!(engine.reset().is_ok());
+        assert!(engine.run(RunLimit::Unlimited).is_ok());
+
+        assert_eq!(engine.get_output("t"), Some("hello\n"));
+        assert_eq!(engine.get_output("stderr"), Some("err"));
+
+        print_output(&mut engine);
+
+        assert!(engine.get_output("t").is_none());
+        assert_eq!(engine.get_output("stderr"), Some("err"));
     }
 }

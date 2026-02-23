@@ -294,3 +294,90 @@ fn full_load_reset_run_get_output_cycle() {
         ferric_engine_free(engine);
     }
 }
+
+#[test]
+fn get_output_pointer_stays_stable_across_reads_without_writes() {
+    unsafe {
+        let engine = ferric_engine_new();
+        let source = std::ffi::CString::new(
+            r#"(defrule emit (initial-fact) => (printout t "hello") (printout stderr "err"))"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ferric_engine_load_string(engine, source.as_ptr()),
+            FerricError::Ok
+        );
+        assert_eq!(ferric_engine_reset(engine), FerricError::Ok);
+
+        let mut fired: u64 = 0;
+        assert_eq!(ferric_engine_run(engine, -1, &mut fired), FerricError::Ok);
+        assert_eq!(fired, 1);
+
+        let t_channel = std::ffi::CString::new("t").unwrap();
+        let stderr_channel = std::ffi::CString::new("stderr").unwrap();
+
+        let t_ptr_first = ferric_engine_get_output(engine, t_channel.as_ptr());
+        assert!(!t_ptr_first.is_null());
+        assert_eq!(
+            std::ffi::CStr::from_ptr(t_ptr_first).to_str().unwrap(),
+            "hello"
+        );
+
+        let stderr_ptr = ferric_engine_get_output(engine, stderr_channel.as_ptr());
+        assert!(!stderr_ptr.is_null());
+        assert_eq!(
+            std::ffi::CStr::from_ptr(stderr_ptr).to_str().unwrap(),
+            "err"
+        );
+
+        // Reading another channel must not invalidate an earlier channel pointer.
+        assert_eq!(
+            std::ffi::CStr::from_ptr(t_ptr_first).to_str().unwrap(),
+            "hello"
+        );
+
+        let t_ptr_second = ferric_engine_get_output(engine, t_channel.as_ptr());
+        assert_eq!(t_ptr_first, t_ptr_second);
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn get_output_rejects_cross_thread_access() {
+    unsafe {
+        let engine = ferric_engine_new();
+        let source =
+            std::ffi::CString::new(r#"(defrule emit (initial-fact) => (printout t "hello"))"#)
+                .unwrap();
+        assert_eq!(
+            ferric_engine_load_string(engine, source.as_ptr()),
+            FerricError::Ok
+        );
+        assert_eq!(ferric_engine_reset(engine), FerricError::Ok);
+
+        let mut fired: u64 = 0;
+        assert_eq!(ferric_engine_run(engine, -1, &mut fired), FerricError::Ok);
+        assert_eq!(fired, 1);
+
+        let channel = std::ffi::CString::new("t").unwrap();
+        let owner_ptr = ferric_engine_get_output(engine, channel.as_ptr());
+        assert!(!owner_ptr.is_null());
+
+        let engine_addr = engine as usize;
+        let cross_thread_is_null = std::thread::spawn(move || {
+            let engine = engine_addr as *const crate::engine::FerricEngine;
+            let channel = std::ffi::CString::new("t").unwrap();
+            ferric_engine_get_output(engine, channel.as_ptr()).is_null()
+        })
+        .join()
+        .unwrap();
+
+        assert!(
+            cross_thread_is_null,
+            "cross-thread get_output must fail with null pointer"
+        );
+
+        ferric_engine_free(engine);
+    }
+}

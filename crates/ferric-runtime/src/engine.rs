@@ -686,6 +686,11 @@ impl Engine {
         self.router.get_output(channel)
     }
 
+    /// Clear captured output for a named `printout` channel.
+    pub fn clear_output_channel(&mut self, channel: &str) {
+        self.router.clear_channel(channel);
+    }
+
     /// Get non-fatal action diagnostics captured during the most recent run/step call.
     #[must_use]
     pub fn action_diagnostics(&self) -> &[ActionError] {
