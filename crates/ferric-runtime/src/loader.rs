@@ -665,9 +665,9 @@ impl Engine {
     /// register it in both the active global store and the snapshot used for reset.
     fn process_global_construct(&mut self, global: &GlobalConstruct) -> Result<(), LoadError> {
         let current_module = self.module_registry.current_module();
-        let mut seen_in_construct = HashSet::new();
+        let mut seen_in_construct: HashSet<&str> = HashSet::new();
         for def in &global.globals {
-            if !seen_in_construct.insert(def.name.clone())
+            if !seen_in_construct.insert(def.name.as_str())
                 || self.globals.contains(current_module, &def.name)
             {
                 return Err(Self::duplicate_definition_error(
