@@ -89,13 +89,14 @@ impl ModuleRegistry {
 
         let id = ModuleId(self.next_id);
         self.next_id += 1;
+        let name_owned = name.to_string();
         let module = RuntimeModule {
-            name: name.to_string(),
+            name: name_owned.clone(),
             exports,
             imports,
         };
         self.modules.insert(id, module);
-        self.name_to_id.insert(name.to_string(), id);
+        self.name_to_id.insert(name_owned, id);
         id
     }
 
