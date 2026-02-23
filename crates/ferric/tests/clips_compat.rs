@@ -5,7 +5,7 @@
 //! validate the harness itself before compatibility fixtures are added.
 
 use ferric::core::Fact;
-use ferric::runtime::{Engine, EngineConfig, LoadError, RunLimit};
+use ferric::runtime::{Engine, EngineConfig, HaltReason, LoadError, RunLimit};
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -85,13 +85,58 @@ impl CompatEngine {
 // Core harness helpers
 // ---------------------------------------------------------------------------
 
+/// Default maximum rule firings per compatibility fixture run.
+///
+/// A finite ceiling prevents runaway fixtures from spinning forever and leaking
+/// long-lived `clips_compat-*` processes.
+const DEFAULT_COMPAT_RUN_LIMIT: usize = 10_000;
+
+/// Environment variable for overriding the compatibility run limit locally.
+const COMPAT_RUN_LIMIT_ENV: &str = "FERRIC_COMPAT_RUN_LIMIT";
+
+/// Resolve the compatibility run limit from environment (or default).
+fn compat_run_limit_count() -> usize {
+    match std::env::var(COMPAT_RUN_LIMIT_ENV) {
+        Ok(raw) => {
+            let parsed = raw.trim().parse::<usize>().unwrap_or_else(|_| {
+                panic!("{COMPAT_RUN_LIMIT_ENV} must be a positive integer, got {raw:?}")
+            });
+            assert!(
+                parsed > 0,
+                "{COMPAT_RUN_LIMIT_ENV} must be > 0, got {parsed}"
+            );
+            parsed
+        }
+        Err(std::env::VarError::NotPresent) => DEFAULT_COMPAT_RUN_LIMIT,
+        Err(err) => panic!("failed to read {COMPAT_RUN_LIMIT_ENV}: {err}"),
+    }
+}
+
+/// Run with the compatibility fixture safety limit and fail fast on non-quiescence.
+fn run_compat_with_guard(engine: &mut Engine, context: &str) -> usize {
+    let limit = compat_run_limit_count();
+    let run_result = engine
+        .run(RunLimit::Count(limit))
+        .unwrap_or_else(|err| panic!("{context} run failed: {err:?}"));
+
+    assert_ne!(
+        run_result.halt_reason,
+        HaltReason::LimitReached,
+        "{context} reached compatibility run limit ({limit}). \
+         Possible non-quiescing fixture/regression. \
+         Increase {COMPAT_RUN_LIMIT_ENV} for local debugging if needed."
+    );
+
+    run_result.rules_fired
+}
+
 /// Run CLIPS source through a fresh engine and return the compatibility result.
 ///
 /// The sequence is:
 /// 1. Create a new UTF-8 engine.
 /// 2. Load `source` via `load_str`.
 /// 3. Call `reset()` to assert deffacts and initialise globals.
-/// 4. Call `run(Unlimited)` to fire all eligible rules.
+/// 4. Call `run(Count(limit))` to fire all eligible rules with a safety ceiling.
 /// 5. Capture output from the `t` channel and count facts.
 ///
 /// # Panics
@@ -106,16 +151,14 @@ pub fn run_clips_compat(source: &str) -> CompatResult {
 
     engine.reset().expect("clips_compat reset failed");
 
-    let run_result = engine
-        .run(RunLimit::Unlimited)
-        .expect("clips_compat run failed");
+    let rules_fired = run_compat_with_guard(&mut engine, "clips_compat");
 
     let output = engine.get_output("t").unwrap_or("").to_string();
 
     let fact_count = engine.facts().expect("clips_compat facts() failed").count();
 
     CompatResult {
-        rules_fired: run_result.rules_fired,
+        rules_fired,
         output,
         fact_count,
     }
@@ -138,15 +181,13 @@ pub fn run_clips_compat_full(source: &str) -> CompatEngine {
 
     engine.reset().expect("run_clips_compat_full reset failed");
 
-    let run_result = engine
-        .run(RunLimit::Unlimited)
-        .expect("run_clips_compat_full run failed");
+    let rules_fired = run_compat_with_guard(&mut engine, "run_clips_compat_full");
 
     let output = engine.get_output("t").unwrap_or("").to_string();
 
     CompatEngine {
         engine,
-        rules_fired: run_result.rules_fired,
+        rules_fired,
         output,
     }
 }

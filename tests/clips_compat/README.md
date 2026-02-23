@@ -60,6 +60,14 @@ for richer post-run inspection:
 | `run_clips_compat_file(name)` | `CompatResult` | Load a `.clp` fixture file |
 | `assert_clips_compat(source, expected)` | `()` | One-liner output assertion |
 
+Compatibility runs use a bounded firing limit to prevent non-quiescing fixtures
+from spinning indefinitely:
+- Default cap: `10_000` rule firings per run
+- Local override: `FERRIC_COMPAT_RUN_LIMIT=<N>`
+
+If a fixture reaches the cap, the harness fails with an explicit
+non-quiescence message.
+
 `run_clips_compat_file` accepts subdirectory paths:
 ```rust
 run_clips_compat_file("core/basic_match.clp")
