@@ -24,14 +24,16 @@ Executed during this review:
 - `cargo test -p ferric-ffi contract_lock` (`17 passed`)
 - `cargo test -p ferric-cli --test cli_integration contract_lock` (`10 passed`)
 - `cargo bench -p ferric -- --test` (all benchmark targets execute successfully in smoke mode)
-- `cargo bench -p ferric -- --noplot` (fails currently due argument forwarding to non-criterion lib bench target)
+- `cargo bench -p ferric --bench engine_bench -- --test --noplot` (passes)
+- `cargo bench -p ferric --bench waltz_bench -- --test --noplot` (passes)
+- `cargo bench -p ferric --bench manners_bench -- --test --noplot` (passes)
 
 ## Findings
 
 | ID | Severity | Status | Finding | Evidence |
 |---|---|---|---|---|
 | R6-01 | High | Open | Benchmark regression thresholds are not CI-enforced deterministically, despite Pass 011 objective/DoD requiring automatic regression catching. Current policy is smoke-blocking plus advisory full runs. | `documents/plans/phases/006/passes/011-PerformanceRegressionPolicyAndCiBenchmarkGates.md`, `docs/benchmark-policy.md`, `.github/workflows/ci.yml` |
-| R6-02 | Medium | Open | No dedicated CLIPS-compatibility CI job is present, while master-plan CI gates call for one. Compatibility currently runs only via the broad workspace test job. | `documents/FerricImplementationPlan.md` (§13.3), `.github/workflows/ci.yml` |
+| R6-02 | Medium | Closed | Added a dedicated CLIPS-compatibility CI gate (`cargo test -p ferric --test clips_compat`) while keeping the workspace test job intact. | `documents/FerricImplementationPlan.md` (§13.3), `.github/workflows/ci.yml` |
 | R6-03 | Medium | Open | Compatibility documentation structure diverged from the master-plan Section 16 taxonomy (`16.1-16.8` conceptual buckets) to a construct-first `16.1-16.14` layout. Content is present, but plan references now mismatch actual doc organization. | `documents/FerricImplementationPlan.md` (§16), `docs/compatibility.md`, `documents/plans/phases/006/Notes.md` |
 | R6-04 | Medium | Closed | Documented “full benchmark” verification command paths were corrected to executable per-benchmark forms (`engine_bench`, `waltz_bench`, `manners_bench`). | `benches/PROTOCOL.md`, `documents/plans/phases/006/passes/007-BenchmarkHarnessAndMeasurementProtocol.md`, `documents/plans/phases/006/passes/008-WaltzAndMannersBenchmarkWorkloads.md`, `documents/plans/phases/006/passes/009-PerformanceProfilingAndBudgetGapAnalysis.md`, `documents/plans/phases/006/passes/010-TargetedHotPathOptimizationImplementation.md`, `documents/plans/phases/006/passes/011-PerformanceRegressionPolicyAndCiBenchmarkGates.md`, `documents/plans/phases/006/passes/013-Phase6IntegrationAndReleaseReadinessValidation.md` |
 
@@ -41,6 +43,7 @@ Executed during this review:
 |---|---|---|
 | R6-05 | Closed | Added a compatibility-harness run guard in `crates/ferric/tests/clips_compat.rs`: runs now use a bounded `RunLimit::Count` (default `10_000`) and fail fast on `HaltReason::LimitReached` with explicit non-quiescence diagnostics. Added local override (`FERRIC_COMPAT_RUN_LIMIT`) documentation in `tests/clips_compat/README.md`. This prevents runaway `clips_compat-*` binaries from spinning indefinitely on non-terminating fixtures/regressions. |
 | R6-04 | Closed | Updated benchmark verification commands to valid target names and invocation forms. Replaced invalid/no-op forms such as `cargo bench -- --noplot`, `cargo bench --bench rete_bench -- --noplot`, `cargo bench --bench waltz -- --noplot`, and `cargo bench --bench manners -- --noplot` with executable `cargo bench -p ferric --bench <engine_bench\|waltz_bench\|manners_bench> -- --noplot` commands. |
+| R6-02 | Closed | Added a dedicated `clips-compat` CI job in `.github/workflows/ci.yml` that runs `cargo test -p ferric --test clips_compat`. This makes CLIPS compatibility a visible first-class gate rather than an implicit subset of the broader workspace test job. |
 
 ## Documented Divergences Assessed As Acceptable
 
@@ -56,11 +59,7 @@ Executed during this review:
    - Emit machine-readable benchmark artifacts for delta review in CI.
    - Update `docs/benchmark-policy.md` and `benches/PROTOCOL.md` to match the enforced workflow.
 
-2. Add a dedicated CLIPS-compatibility CI job (R6-02).
-   - Add explicit job invoking `cargo test -p ferric --test clips_compat`.
-   - Keep workspace test job unchanged; dedicated job is for contract visibility and gate clarity.
-
-3. Align master-plan Section 16 references with implemented compatibility-doc structure (R6-03).
+2. Align master-plan Section 16 references with implemented compatibility-doc structure (R6-03).
    - Either: re-map `docs/compatibility.md` headings back to the conceptual `16.1-16.8` scheme.
    - Or (preferred): update `documents/FerricImplementationPlan.md` to define the construct-first layout as canonical while preserving required content obligations.
 

@@ -54,6 +54,16 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: ./scripts/preflight.sh test
 
+  clips-compat:
+    name: CLIPS Compat
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: cargo test -p ferric --test clips_compat
+
   bench-smoke:
     name: Bench Smoke
     runs-on: ubuntu-latest
