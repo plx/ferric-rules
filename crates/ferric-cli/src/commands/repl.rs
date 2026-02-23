@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn print_output_clears_t_channel() {
-        let mut engine = Engine::new(Default::default());
+        let mut engine = Engine::new(EngineConfig::default());
         let src =
             r#"(defrule emit (initial-fact) => (printout t "hello" crlf) (printout stderr "err"))"#;
         assert!(engine.load_str(src).is_ok());
