@@ -106,8 +106,14 @@ fn map_engine_module_not_found() {
 
 #[test]
 fn map_load_parse_error() {
+    use ferric_parser::{parse_sexprs, FileId};
     use ferric_runtime::loader::LoadError;
-    let err = LoadError::Parse("unexpected token".to_string());
+    let parse = parse_sexprs("(", FileId(0))
+        .errors
+        .into_iter()
+        .next()
+        .expect("expected parse error for malformed source");
+    let err = LoadError::Parse(parse);
     assert_eq!(map_load_error(&err), FerricError::ParseError);
 }
 

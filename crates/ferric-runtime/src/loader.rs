@@ -32,9 +32,9 @@ use ferric_core::{
 };
 use ferric_parser::{
     interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
-    FactValue, FileId, FunctionConstruct, GenericConstruct, GlobalConstruct, InterpreterConfig,
-    LiteralKind, MethodConstruct, ModuleConstruct, OrderedFactBody, Pattern, RuleConstruct, SExpr,
-    TemplateConstruct, TemplateFactBody,
+    FactValue, FileId, FunctionConstruct, GenericConstruct, GlobalConstruct, InterpretError,
+    InterpreterConfig, LiteralKind, MethodConstruct, ModuleConstruct, OrderedFactBody, ParseError,
+    Pattern, RuleConstruct, SExpr, TemplateConstruct, TemplateFactBody,
 };
 
 use crate::actions::CompiledRuleInfo;
@@ -57,10 +57,10 @@ struct TranslatedRule {
 #[derive(Debug, Error)]
 pub enum LoadError {
     #[error("parse error: {0}")]
-    Parse(String),
+    Parse(ParseError),
 
     #[error("interpret error: {0}")]
-    Interpret(String),
+    Interpret(InterpretError),
 
     #[error("unsupported top-level form: {name} at line {line}, column {column}")]
     UnsupportedForm {
@@ -164,7 +164,7 @@ impl Engine {
             let errors = parse_result
                 .errors
                 .into_iter()
-                .map(|e| LoadError::Parse(format!("{e}")))
+                .map(LoadError::Parse)
                 .collect();
             return Err(errors);
         }
@@ -230,7 +230,7 @@ impl Engine {
             // Convert interpret errors to LoadError
             if !interpret_result.errors.is_empty() {
                 for e in interpret_result.errors {
-                    errors.push(LoadError::Interpret(format!("{e}")));
+                    errors.push(LoadError::Interpret(e));
                 }
             }
 
@@ -2032,7 +2032,8 @@ mod tests {
 
         assert_eq!(errors.len(), 1);
         match &errors[0] {
-            LoadError::Interpret(message) => {
+            LoadError::Interpret(error) => {
+                let message = error.to_string();
                 assert!(message.contains("expected exactly one pattern"));
                 assert!(message.contains("line 1, column "));
             }
