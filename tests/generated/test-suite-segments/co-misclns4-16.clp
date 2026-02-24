@@ -1,0 +1,5 @@
+(defmodule MAIN (export ?ALL))
+(defmodule A (import MAIN ?ALL) (export ?ALL))
+(deftemplate A::a (slot x))
+(defmodule B (import MAIN ?ALL) (import A ?ALL) (export ?ALL))
+(deftemplate B::b (slot y))

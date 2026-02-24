@@ -1,0 +1,5 @@
+(defmodule A (export ?ALL))
+(deftemplate A::foo)
+(defmodule MAIN (import A ?ALL) (export ?ALL))
+(defmodule B (import MAIN ?ALL))
+(deftemplate B::foo)

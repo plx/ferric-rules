@@ -1,0 +1,3 @@
+(defrule foo (x ? ? ? ? ?) =>)
+(defrule bar (x ? ? ? ? ?x&:(> ?x 3)) =>)
+(deffacts yak (x a a a a abc))

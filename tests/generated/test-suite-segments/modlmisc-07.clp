@@ -1,0 +1,5 @@
+(defmodule)
+(defmodule ::)
+(defmodule ::xy)
+(defmodule zw::)
+(defmodule qrs::tu)

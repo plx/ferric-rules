@@ -1,0 +1,20 @@
+(deftemplate TAG2100 (slot tag-id))
+(deftemplate TAG2300 (slot parent))
+(deftemplate TAG2500 (slot parent))
+(deftemplate TAG2400 (slot parent))
+(deftemplate GCSS-merge-tag (slot tag-id))
+(defrule load-data
+   =>
+   (assert (TAG2300 (parent "1")))
+   (assert (TAG2370))
+   (assert (TAG2400 (parent "1")));  (matched no)))
+   (assert (GCSS-merge-tag (tag-id "1"))))
+(defrule TAG2400-AA-Update ""
+   (TBX)
+   (TAG2100 (tag-id ?td2))
+   (TAG2500 (parent ?td2))      
+   (exists (GCSS-merge-tag (tag-id ?td3))
+           (TAG2400 (parent ?td2 | ?td3)) 
+           (not (and (TAG2370)
+                     (TAG2300 (parent ?td2 | ?td3)))))
+   =>)

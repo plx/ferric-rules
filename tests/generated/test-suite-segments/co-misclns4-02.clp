@@ -1,0 +1,5 @@
+(defmodule ROOT (export ?ALL))
+(deftemplate A)
+(defmodule CHILD-1 (import ROOT ?ALL) (export ?ALL))
+(defmodule CHILD-2 (import ROOT ?ALL) (export ?ALL))
+(defmodule CHILD-3 (import CHILD-1 ?ALL) (import CHILD-2 ?ALL))
