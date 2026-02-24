@@ -933,7 +933,20 @@ impl Engine {
         let mut test_conditions = Vec::new();
         let mut fact_index = 0usize;
 
+        // Flatten top-level Pattern::And into its children. CLIPS treats (and ...)
+        // as a grouping CE that is equivalent to listing the sub-patterns directly.
+        let mut flat_patterns: Vec<&Pattern> = Vec::new();
         for pattern in &rule.patterns {
+            if let Pattern::And(inner_patterns, _) = pattern {
+                for inner in inner_patterns {
+                    flat_patterns.push(inner);
+                }
+            } else {
+                flat_patterns.push(pattern);
+            }
+        }
+
+        for pattern in &flat_patterns {
             // Test CEs are handled separately: they do not generate alpha/beta
             // nodes in the Rete network, and they do not consume a fact index.
             // Instead they are collected and evaluated at rule-firing time.
@@ -1750,6 +1763,24 @@ mod tests {
             "empty-LHS rule should fire after reset, fired: {}",
             result.rules_fired
         );
+    }
+
+    #[test]
+    fn load_rule_with_toplevel_and_ce_compiles() {
+        let mut engine = new_utf8_engine();
+        let result = engine
+            .load_str("(defrule test (and (data ?x) (info ?y)) => (assert (combined ?x ?y)))")
+            .unwrap();
+        assert_eq!(result.rules.len(), 1);
+    }
+
+    #[test]
+    fn load_rule_with_and_containing_test_compiles() {
+        let mut engine = new_utf8_engine();
+        let result = engine
+            .load_str("(defrule test (and (value ?x) (test (> ?x 0))) => (assert (ok)))")
+            .unwrap();
+        assert_eq!(result.rules.len(), 1);
     }
 
     #[test]
