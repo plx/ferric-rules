@@ -50,6 +50,12 @@
  * 7. Output string pointers: ferric_engine_get_output() returns
  *    a borrowed pointer valid until the next call that writes
  *    to that channel. Do NOT free.
+ *
+ * 8. Bounds annotations: Pointer parameters and struct fields
+ *    carry FERRIC_COUNTED_BY, FERRIC_SIZED_BY, and
+ *    FERRIC_NULL_TERMINATED annotations when compiled with
+ *    Clang -fbounds-safety. Define FERRIC_NO_BOUNDS_ANNOTATIONS
+ *    before including this header to suppress.
  */
 
 #ifndef FERRIC_H
@@ -61,6 +67,39 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+/*
+ * ============================================================
+ * BOUNDS-SAFETY ANNOTATIONS
+ * ============================================================
+ *
+ * When compiled with a supporting compiler (Clang with
+ * -fbounds-safety), pointer parameters, struct fields, and
+ * return types carry bounds annotations that enable static
+ * and runtime checking.
+ *
+ * To disable all annotations, define FERRIC_NO_BOUNDS_ANNOTATIONS
+ * before including this header.
+ */
+
+#ifndef FERRIC_NO_BOUNDS_ANNOTATIONS
+  #if defined(__clang__) && defined(__has_feature)
+    #if __has_feature(bounds_safety)
+      #define FERRIC_COUNTED_BY(N) __counted_by(N)
+      #define FERRIC_SIZED_BY(N) __sized_by(N)
+      #define FERRIC_NULL_TERMINATED __null_terminated
+    #endif
+  #endif
+  #ifndef FERRIC_COUNTED_BY
+    #define FERRIC_COUNTED_BY(N)
+    #define FERRIC_SIZED_BY(N)
+    #define FERRIC_NULL_TERMINATED
+  #endif
+#else
+  #define FERRIC_COUNTED_BY(N)
+  #define FERRIC_SIZED_BY(N)
+  #define FERRIC_NULL_TERMINATED
+#endif
+
 
 // C-facing error codes returned by all fallible FFI entry points.
 //
@@ -158,8 +197,8 @@ typedef struct FerricValue {
     enum FerricValueType value_type;
     int64_t integer;
     double float_;
-    char *string_ptr;
-    struct FerricValue *multifield_ptr;
+    char * FERRIC_NULL_TERMINATED string_ptr;
+    struct FerricValue *multifield_ptr FERRIC_COUNTED_BY(multifield_len);
     uintptr_t multifield_len;
     uint32_t external_type_id;
     void *external_pointer;
@@ -205,7 +244,7 @@ enum FerricError ferric_engine_free(struct FerricEngine *engine);
 //
 // - `engine` must be a valid engine pointer.
 // - `source` must be a valid NUL-terminated UTF-8 string.
-enum FerricError ferric_engine_load_string(struct FerricEngine *engine, const char *source);
+enum FerricError ferric_engine_load_string(struct FerricEngine *engine, const char * FERRIC_NULL_TERMINATED source);
 
 // Retrieve the last per-engine error message.
 //
@@ -215,7 +254,7 @@ enum FerricError ferric_engine_load_string(struct FerricEngine *engine, const ch
 // # Safety
 //
 // - `engine` must be a valid engine pointer or null.
-const char *ferric_engine_last_error(const struct FerricEngine *engine);
+const char * FERRIC_NULL_TERMINATED ferric_engine_last_error(const struct FerricEngine *engine);
 
 // Copy the per-engine error message into a caller-provided buffer.
 //
@@ -240,7 +279,7 @@ const char *ferric_engine_last_error(const struct FerricEngine *engine);
 // - `buf` must point to `buf_len` writable bytes, or be null for size query.
 // - `out_len` must be a valid pointer (non-null).
 enum FerricError ferric_engine_last_error_copy(const struct FerricEngine *engine,
-                                               char *buf,
+                                               char *buf FERRIC_SIZED_BY(buf_len),
                                                uintptr_t buf_len,
                                                uintptr_t *out_len);
 
@@ -297,7 +336,7 @@ enum FerricError ferric_engine_step(struct FerricEngine *engine, int32_t *out_st
 // - `source` must be a valid NUL-terminated UTF-8 string.
 // - `out_fact_id` may be null.
 enum FerricError ferric_engine_assert_string(struct FerricEngine *engine,
-                                             const char *source,
+                                             const char * FERRIC_NULL_TERMINATED source,
                                              uint64_t *out_fact_id);
 
 // Retract a fact by its opaque fact ID obtained from a previous assert.
@@ -318,7 +357,7 @@ enum FerricError ferric_engine_retract(struct FerricEngine *engine, uint64_t fac
 //
 // - `engine` must be a valid engine pointer or null.
 // - `channel` must be a valid NUL-terminated UTF-8 string or null.
-const char *ferric_engine_get_output(const struct FerricEngine *engine, const char *channel);
+const char * FERRIC_NULL_TERMINATED ferric_engine_get_output(const struct FerricEngine *engine, const char * FERRIC_NULL_TERMINATED channel);
 
 // Get the number of action diagnostics captured during recent execution.
 //
@@ -344,7 +383,7 @@ enum FerricError ferric_engine_action_diagnostic_count(const struct FerricEngine
 // - `out_len` must be a valid pointer (non-null).
 enum FerricError ferric_engine_action_diagnostic_copy(const struct FerricEngine *engine,
                                                       uintptr_t index,
-                                                      char *buf,
+                                                      char *buf FERRIC_SIZED_BY(buf_len),
                                                       uintptr_t buf_len,
                                                       uintptr_t *out_len);
 
@@ -410,7 +449,7 @@ enum FerricError ferric_engine_get_fact_field(const struct FerricEngine *engine,
 // - `name` must be a valid NUL-terminated UTF-8 string.
 // - `out_value` must be a valid pointer to a `FerricValue`.
 enum FerricError ferric_engine_get_global(const struct FerricEngine *engine,
-                                          const char *name,
+                                          const char * FERRIC_NULL_TERMINATED name,
                                           struct FerricValue *out_value);
 
 // Retrieve the last global error message as a C string pointer.
@@ -423,7 +462,7 @@ enum FerricError ferric_engine_get_global(const struct FerricEngine *engine,
 //
 // The returned pointer must not be freed by the caller and must not be
 // used after any subsequent FFI call that may modify the error channel.
-const char *ferric_last_error_global(void);
+const char * FERRIC_NULL_TERMINATED ferric_last_error_global(void);
 
 // Clear the global error channel.
 void ferric_clear_error_global(void);
@@ -449,7 +488,7 @@ void ferric_clear_error_global(void);
 //
 // - `buf` must point to `buf_len` writable bytes, or be null for size query.
 // - `out_len` must be a valid pointer (non-null).
-enum FerricError ferric_last_error_global_copy(char *buf, uintptr_t buf_len, uintptr_t *out_len);
+enum FerricError ferric_last_error_global_copy(char *buf FERRIC_SIZED_BY(buf_len), uintptr_t buf_len, uintptr_t *out_len);
 
 // Free a heap-allocated C string returned by the FFI.
 //
@@ -459,7 +498,7 @@ enum FerricError ferric_last_error_global_copy(char *buf, uintptr_t buf_len, uin
 //
 // - `ptr` must be a pointer returned by an FFI function or null.
 // - The pointer must not have been freed already.
-void ferric_string_free(char *ptr);
+void ferric_string_free(char * FERRIC_NULL_TERMINATED ptr);
 
 // Free a `FerricValue` and its owned resources.
 //
@@ -481,6 +520,6 @@ void ferric_value_free(struct FerricValue *value);
 //
 // - `arr` must point to a contiguous array of `len` `FerricValue`s, or be null.
 // - The array must have been allocated by the FFI.
-void ferric_value_array_free(struct FerricValue *arr, uintptr_t len);
+void ferric_value_array_free(struct FerricValue *arr FERRIC_COUNTED_BY(len), uintptr_t len);
 
 #endif  /* FERRIC_H */

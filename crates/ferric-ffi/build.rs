@@ -53,7 +53,142 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * 7. Output string pointers: ferric_engine_get_output() returns
  *    a borrowed pointer valid until the next call that writes
  *    to that channel. Do NOT free.
+ *
+ * 8. Bounds annotations: Pointer parameters and struct fields
+ *    carry FERRIC_COUNTED_BY, FERRIC_SIZED_BY, and
+ *    FERRIC_NULL_TERMINATED annotations when compiled with
+ *    Clang -fbounds-safety. Define FERRIC_NO_BOUNDS_ANNOTATIONS
+ *    before including this header to suppress.
  */";
+
+/// Bounds-safety annotation macros injected after the standard includes.
+///
+/// These macros gate on `__has_feature(bounds_safety)` (Clang with
+/// `-fbounds-safety`) and degrade to empty definitions everywhere else.
+/// Users can also define `FERRIC_NO_BOUNDS_ANNOTATIONS` to suppress
+/// all annotations unconditionally.
+const BOUNDS_SAFETY_MACROS: &str = r"
+/*
+ * ============================================================
+ * BOUNDS-SAFETY ANNOTATIONS
+ * ============================================================
+ *
+ * When compiled with a supporting compiler (Clang with
+ * -fbounds-safety), pointer parameters, struct fields, and
+ * return types carry bounds annotations that enable static
+ * and runtime checking.
+ *
+ * To disable all annotations, define FERRIC_NO_BOUNDS_ANNOTATIONS
+ * before including this header.
+ */
+
+#ifndef FERRIC_NO_BOUNDS_ANNOTATIONS
+  #if defined(__clang__) && defined(__has_feature)
+    #if __has_feature(bounds_safety)
+      #define FERRIC_COUNTED_BY(N) __counted_by(N)
+      #define FERRIC_SIZED_BY(N) __sized_by(N)
+      #define FERRIC_NULL_TERMINATED __null_terminated
+    #endif
+  #endif
+  #ifndef FERRIC_COUNTED_BY
+    #define FERRIC_COUNTED_BY(N)
+    #define FERRIC_SIZED_BY(N)
+    #define FERRIC_NULL_TERMINATED
+  #endif
+#else
+  #define FERRIC_COUNTED_BY(N)
+  #define FERRIC_SIZED_BY(N)
+  #define FERRIC_NULL_TERMINATED
+#endif
+";
+
+/// Deterministic annotation replacements applied to the cbindgen output.
+///
+/// Each `(find, replace)` pair must match exactly once in the generated header.
+/// If cbindgen's output format changes and a pattern no longer matches, the
+/// build will panic with a clear message identifying the stale pattern.
+const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
+    // ── Struct fields ──────────────────────────────────────────────────
+    //
+    // FerricValue.string_ptr: NUL-terminated string when non-null.
+    (
+        "char *string_ptr;",
+        "char * FERRIC_NULL_TERMINATED string_ptr;",
+    ),
+    // FerricValue.multifield_ptr: array of multifield_len elements.
+    (
+        "struct FerricValue *multifield_ptr;",
+        "struct FerricValue *multifield_ptr FERRIC_COUNTED_BY(multifield_len);",
+    ),
+    // ── Return types ───────────────────────────────────────────────────
+    //
+    // ferric_engine_last_error returns a NUL-terminated string (or null).
+    (
+        "const char *ferric_engine_last_error(",
+        "const char * FERRIC_NULL_TERMINATED ferric_engine_last_error(",
+    ),
+    // ferric_engine_get_output returns a NUL-terminated string (or null).
+    (
+        "const char *ferric_engine_get_output(",
+        "const char * FERRIC_NULL_TERMINATED ferric_engine_get_output(",
+    ),
+    // ferric_last_error_global returns a NUL-terminated string (or null).
+    (
+        "const char *ferric_last_error_global(",
+        "const char * FERRIC_NULL_TERMINATED ferric_last_error_global(",
+    ),
+    // ── NUL-terminated string parameters ───────────────────────────────
+    //
+    // ferric_engine_load_string: source is NUL-terminated.
+    (
+        "const char *source);",
+        "const char * FERRIC_NULL_TERMINATED source);",
+    ),
+    // ferric_engine_assert_string: source is NUL-terminated.
+    (
+        "const char *source,",
+        "const char * FERRIC_NULL_TERMINATED source,",
+    ),
+    // ferric_engine_get_output: channel is NUL-terminated.
+    (
+        "const char *channel);",
+        "const char * FERRIC_NULL_TERMINATED channel);",
+    ),
+    // ferric_engine_get_global: name is NUL-terminated.
+    (
+        "const char *name,",
+        "const char * FERRIC_NULL_TERMINATED name,",
+    ),
+    // ferric_string_free: ptr is a NUL-terminated string.
+    (
+        "ferric_string_free(char *ptr)",
+        "ferric_string_free(char * FERRIC_NULL_TERMINATED ptr)",
+    ),
+    // ── Sized / counted buffer parameters ──────────────────────────────
+    //
+    // ferric_value_array_free: arr is an array of len FerricValues.
+    (
+        "ferric_value_array_free(struct FerricValue *arr, uintptr_t len)",
+        "ferric_value_array_free(struct FerricValue *arr FERRIC_COUNTED_BY(len), uintptr_t len)",
+    ),
+    // ferric_last_error_global_copy: buf is a byte buffer of buf_len bytes.
+    (
+        "ferric_last_error_global_copy(char *buf, uintptr_t buf_len,",
+        "ferric_last_error_global_copy(char *buf FERRIC_SIZED_BY(buf_len), uintptr_t buf_len,",
+    ),
+    // ferric_engine_last_error_copy: buf is a byte buffer of buf_len bytes.
+    // (multi-line signature — pattern spans the line break)
+    (
+        "ferric_engine_last_error_copy(const struct FerricEngine *engine,\n                                               char *buf,",
+        "ferric_engine_last_error_copy(const struct FerricEngine *engine,\n                                               char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+    // ferric_engine_action_diagnostic_copy: buf is a byte buffer of buf_len bytes.
+    // (multi-line signature — pattern spans the line break)
+    (
+        "uintptr_t index,\n                                                      char *buf,",
+        "uintptr_t index,\n                                                      char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+];
 
 fn main() {
     let crate_dir =
@@ -62,11 +197,38 @@ fn main() {
     let config = cbindgen::Config::from_file(format!("{crate_dir}/cbindgen.toml"))
         .expect("Failed to read cbindgen.toml");
 
-    cbindgen::Builder::new()
+    // Generate the header into memory so we can post-process it.
+    let bindings = cbindgen::Builder::new()
         .with_crate(&crate_dir)
         .with_config(config)
         .with_header(HEADER_PREAMBLE)
         .generate()
-        .expect("Unable to generate C bindings")
-        .write_to_file(format!("{crate_dir}/ferric.h"));
+        .expect("Unable to generate C bindings");
+
+    let mut buf = Vec::new();
+    bindings.write(&mut buf);
+    let mut header = String::from_utf8(buf).expect("cbindgen output was not valid UTF-8");
+
+    // Inject bounds-safety macro definitions after the standard includes.
+    let inject_marker = "#include <stdlib.h>";
+    let inject_pos = header
+        .find(inject_marker)
+        .expect("Could not find #include <stdlib.h> in generated header")
+        + inject_marker.len();
+    header.insert_str(inject_pos, BOUNDS_SAFETY_MACROS);
+
+    // Apply bounds-safety annotations to struct fields, function parameters,
+    // and return types. Each pattern must match exactly once; if cbindgen's
+    // output drifts, the build fails loudly rather than silently dropping
+    // an annotation.
+    for (find, replace) in BOUNDS_ANNOTATIONS {
+        let count = header.matches(find).count();
+        assert_eq!(
+            count, 1,
+            "bounds-safety annotation: expected exactly 1 match, found {count} for pattern:\n  {find}"
+        );
+        header = header.replacen(find, replace, 1);
+    }
+
+    std::fs::write(format!("{crate_dir}/ferric.h"), header).expect("Failed to write ferric.h");
 }
