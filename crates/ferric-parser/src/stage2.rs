@@ -2105,23 +2105,12 @@ fn interpret_while_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Interp
 
     let condition = interpret_action_expr(&rest[0])?;
 
-    // Find `do` keyword.
-    let do_pos = rest[1..]
-        .iter()
-        .position(|e| e.as_symbol() == Some("do"))
-        .ok_or_else(|| InterpretError::missing("do keyword in (while ... do ...)", span))?;
-    // `do_pos` is relative to `rest[1..]`, absolute index is `do_pos + 1`.
-    let do_abs = do_pos + 1;
+    // The `do` keyword is optional. If present immediately after the condition,
+    // consume it; otherwise body starts right after the condition.
+    let has_do = rest.len() > 1 && rest[1].as_symbol() == Some("do");
+    let body_start = 1 + usize::from(has_do);
 
-    // The condition must be the single element before `do`.
-    if do_abs != 1 {
-        return Err(InterpretError::invalid(
-            "expected 'do' immediately after the while condition",
-            span,
-        ));
-    }
-
-    let body_exprs = &rest[do_abs + 1..];
+    let body_exprs = &rest[body_start..];
     let mut body = Vec::with_capacity(body_exprs.len());
     for e in body_exprs {
         body.push(interpret_action_expr(e)?);
@@ -2294,16 +2283,13 @@ fn interpret_loop_for_count_expr(rest: &[SExpr], span: Span) -> Result<ActionExp
         }
     };
 
-    // Find `do` keyword in the remaining elements.
+    // The `do` keyword is optional. If present immediately after the spec,
+    // consume it; otherwise body starts right after the spec.
     let after_spec = &rest[1..];
-    let do_pos = after_spec
-        .iter()
-        .position(|e| e.as_symbol() == Some("do"))
-        .ok_or_else(|| {
-            InterpretError::missing("do keyword in (loop-for-count ... do ...)", span)
-        })?;
+    let has_do = !after_spec.is_empty() && after_spec[0].as_symbol() == Some("do");
+    let body_start = usize::from(has_do);
 
-    let body_exprs = &after_spec[do_pos + 1..];
+    let body_exprs = &after_spec[body_start..];
     let mut body = Vec::with_capacity(body_exprs.len());
     for e in body_exprs {
         body.push(interpret_action_expr(e)?);
@@ -4871,22 +4857,27 @@ mod tests {
     }
 
     #[test]
-    fn interpret_while_missing_do_is_error() {
+    fn interpret_while_optional_do() {
+        // `do` keyword is optional in while — both forms should parse successfully
         let parsed = parse_sexprs("(defrule test => (while (> ?x 0) (printout t ?x)))", file());
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
-        assert!(!result.errors.is_empty(), "should error on missing do");
+        assert!(result.errors.is_empty(), "while without do should succeed");
     }
 
     #[test]
-    fn interpret_loop_for_count_missing_do_is_error() {
+    fn interpret_loop_for_count_optional_do() {
+        // `do` keyword is optional in loop-for-count — both forms should parse
         let parsed = parse_sexprs(
             "(defrule test => (loop-for-count (?i 1 5) (printout t ?i)))",
             file(),
         );
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
-        assert!(!result.errors.is_empty(), "should error on missing do");
+        assert!(
+            result.errors.is_empty(),
+            "loop-for-count without do should succeed"
+        );
     }
 
     // -----------------------------------------------------------------------
