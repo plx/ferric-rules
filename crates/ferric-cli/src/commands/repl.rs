@@ -26,7 +26,7 @@ const PROMPT: &str = "CLIPS> ";
 const CONTINUATION_PROMPT: &str = "... ";
 
 /// Execute the `repl` subcommand.
-pub fn execute(_args: &[String]) -> i32 {
+pub fn execute() -> i32 {
     let mut engine = Engine::new(EngineConfig::default());
 
     println!("Ferric REPL v{}", env!("CARGO_PKG_VERSION"));

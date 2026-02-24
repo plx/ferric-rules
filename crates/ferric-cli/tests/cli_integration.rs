@@ -39,21 +39,21 @@ fn no_args_exits_usage_error() {
 fn unknown_command_exits_usage_error() {
     let output = run_ferric(&["frobnicate"]);
     assert_exit_code(&output, 2);
-    assert_stderr_contains(&output, "unknown command");
+    assert_stderr_contains(&output, "unrecognized subcommand");
 }
 
 #[test]
 fn run_without_file_exits_usage_error() {
     let output = run_ferric(&["run"]);
     assert_exit_code(&output, 2);
-    assert_stderr_contains(&output, "missing file");
+    assert_stderr_contains(&output, "required arguments");
 }
 
 #[test]
 fn check_without_file_exits_usage_error() {
     let output = run_ferric(&["check"]);
     assert_exit_code(&output, 2);
-    assert_stderr_contains(&output, "missing file");
+    assert_stderr_contains(&output, "required arguments");
 }
 
 #[test]
