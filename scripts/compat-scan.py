@@ -33,7 +33,7 @@ COOL_CONSTRUCTS = [
 ]
 
 UNSUPPORTED_CONTROL = [
-    "if", "foreach", "while", "switch", "loop-for-count", "progn$",
+    "switch",
 ]
 
 UNSUPPORTED_IO = ["open", "close"]
