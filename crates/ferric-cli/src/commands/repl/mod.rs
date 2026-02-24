@@ -49,9 +49,7 @@ pub fn execute(load_files: &[PathBuf]) -> i32 {
     println!("Type (help) for commands, (exit) to quit.");
 
     let helper = FerricHelper;
-    let config = rustyline::Config::builder()
-        .auto_add_history(true)
-        .build();
+    let config = rustyline::Config::builder().auto_add_history(true).build();
 
     let mut editor = match Editor::with_config(config) {
         Ok(e) => e,

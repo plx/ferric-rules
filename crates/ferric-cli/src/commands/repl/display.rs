@@ -53,8 +53,7 @@ pub(crate) fn print_facts(engine: &Engine) {
                 };
                 match fact {
                     Fact::Ordered(o) => {
-                        let relation =
-                            engine.resolve_symbol(o.relation).unwrap_or("<unknown>");
+                        let relation = engine.resolve_symbol(o.relation).unwrap_or("<unknown>");
                         print!("f-{id_num:<5}  ({relation}");
                         for field in &o.fields {
                             print!(" {}", format_value(field, engine));

@@ -54,10 +54,26 @@ pub(crate) fn parse_command(input: &str) -> ReplCommand {
         "(rules)" => return ReplCommand::Rules,
         "(help)" => return ReplCommand::Help,
         "(run)" => return ReplCommand::Run { limit: None },
-        "(watch facts)" => return ReplCommand::Watch { target: WatchTarget::Facts },
-        "(watch rules)" => return ReplCommand::Watch { target: WatchTarget::Rules },
-        "(unwatch facts)" => return ReplCommand::Unwatch { target: WatchTarget::Facts },
-        "(unwatch rules)" => return ReplCommand::Unwatch { target: WatchTarget::Rules },
+        "(watch facts)" => {
+            return ReplCommand::Watch {
+                target: WatchTarget::Facts,
+            }
+        }
+        "(watch rules)" => {
+            return ReplCommand::Watch {
+                target: WatchTarget::Rules,
+            }
+        }
+        "(unwatch facts)" => {
+            return ReplCommand::Unwatch {
+                target: WatchTarget::Facts,
+            }
+        }
+        "(unwatch rules)" => {
+            return ReplCommand::Unwatch {
+                target: WatchTarget::Rules,
+            }
+        }
         _ => {}
     }
 

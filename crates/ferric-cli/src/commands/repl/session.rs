@@ -243,10 +243,7 @@ Keyboard shortcuts:
             match self.engine.step() {
                 Ok(Some(fired)) => {
                     fired_count += 1;
-                    let name = self
-                        .engine
-                        .rule_name(fired.rule_id)
-                        .unwrap_or("<unknown>");
+                    let name = self.engine.rule_name(fired.rule_id).unwrap_or("<unknown>");
                     println!("FIRE  {fired_count}  {name}");
                     display::print_output(&mut self.engine);
                     for diag in self.engine.action_diagnostics() {
