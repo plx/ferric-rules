@@ -885,10 +885,15 @@ impl Engine {
             return Err(LoadError::Validation(validation_errors));
         }
 
+        // Pre-process: distribute or CEs inside NCC/exists contexts.
+        // This transforms patterns like (not (and A (or B C))) into
+        // (and (not (and A B)) (not (and A C))) which can then be flattened.
+        let rule = Self::normalize_nested_or_ces(rule);
+
         // Expand (or ...) CEs via rule duplication: a rule with (or P1 P2) becomes
         // N internal rules, each with one branch substituted. Multiple or CEs produce
         // the Cartesian product.
-        let expanded_rules = Self::expand_or_patterns(rule);
+        let expanded_rules = Self::expand_or_patterns(&rule);
         let mut last_result = None;
 
         for variant in &expanded_rules {
@@ -1090,6 +1095,132 @@ impl Engine {
                 Ok(true)
             }
             _ => Ok(false),
+        }
+    }
+
+    /// Normalize nested or CEs by distributing them across enclosing contexts.
+    ///
+    /// Transforms:
+    /// - `not(and(A, or(B, C), D))` → `and(not(and(A, B, D)), not(and(A, C, D)))`
+    /// - `exists(or(P1, P2))` → `or(exists(P1), exists(P2))`
+    ///
+    /// This runs recursively so that or CEs at any nesting depth are resolved.
+    fn normalize_nested_or_ces(rule: &RuleConstruct) -> RuleConstruct {
+        let patterns = rule
+            .patterns
+            .iter()
+            .flat_map(Self::normalize_pattern)
+            .collect();
+
+        RuleConstruct {
+            name: rule.name.clone(),
+            span: rule.span,
+            comment: rule.comment.clone(),
+            salience: rule.salience,
+            patterns,
+            actions: rule.actions.clone(),
+        }
+    }
+
+    /// Recursively normalize a single pattern, resolving or CEs in nested
+    /// contexts. May return multiple patterns if a `Not(And(...Or...))` is
+    /// distributed.
+    fn normalize_pattern(pattern: &Pattern) -> Vec<Pattern> {
+        match pattern {
+            Pattern::Not(inner, span) => {
+                if let Pattern::And(children, and_span) = inner.as_ref() {
+                    // Check if any child is an Or CE
+                    let or_idx = children.iter().position(|c| matches!(c, Pattern::Or(..)));
+                    if let Some(idx) = or_idx {
+                        if let Pattern::Or(branches, _) = &children[idx] {
+                            // Distribute: not(and(A, or(B, C), D))
+                            // → [not(and(A, B, D)), not(and(A, C, D))]
+                            let mut results = Vec::new();
+                            for branch in branches {
+                                let mut new_children = children.clone();
+                                new_children[idx] = branch.clone();
+                                let new_and = Pattern::And(new_children, *and_span);
+                                let new_not = Pattern::Not(Box::new(new_and), *span);
+                                // Recursively normalize in case there are more or CEs
+                                results.extend(Self::normalize_pattern(&new_not));
+                            }
+                            return results;
+                        }
+                    }
+                    // No or CE found — recurse into children
+                    let normalized_children: Vec<Pattern> = children
+                        .iter()
+                        .flat_map(Self::normalize_pattern)
+                        .collect();
+                    vec![Pattern::Not(
+                        Box::new(Pattern::And(normalized_children, *and_span)),
+                        *span,
+                    )]
+                } else {
+                    // Recurse into the inner pattern
+                    let normalized = Self::normalize_pattern(inner);
+                    if normalized.len() == 1 {
+                        vec![Pattern::Not(
+                            Box::new(normalized.into_iter().next().unwrap()),
+                            *span,
+                        )]
+                    } else {
+                        // Multiple patterns from inner normalization —
+                        // wrap each in Not
+                        normalized
+                            .into_iter()
+                            .map(|p| Pattern::Not(Box::new(p), *span))
+                            .collect()
+                    }
+                }
+            }
+            Pattern::Exists(children, span) => {
+                // Check if any child is an Or CE
+                let or_idx = children.iter().position(|c| matches!(c, Pattern::Or(..)));
+                if let Some(idx) = or_idx {
+                    if let Pattern::Or(branches, _) = &children[idx] {
+                        // exists(A, or(B, C), D) → or(exists(A, B, D), exists(A, C, D))
+                        // This becomes a top-level Or that will be expanded by rule duplication
+                        let mut or_branches = Vec::new();
+                        for branch in branches {
+                            let mut new_children = children.clone();
+                            new_children[idx] = branch.clone();
+                            or_branches.push(Pattern::Exists(new_children, *span));
+                        }
+                        return vec![Pattern::Or(or_branches, *span)];
+                    }
+                }
+                // Recurse into children
+                let normalized: Vec<Pattern> = children
+                    .iter()
+                    .flat_map(Self::normalize_pattern)
+                    .collect();
+                vec![Pattern::Exists(normalized, *span)]
+            }
+            Pattern::And(children, span) => {
+                let normalized: Vec<Pattern> = children
+                    .iter()
+                    .flat_map(Self::normalize_pattern)
+                    .collect();
+                vec![Pattern::And(normalized, *span)]
+            }
+            Pattern::Assigned {
+                variable,
+                pattern: inner,
+                span,
+            } => {
+                let normalized = Self::normalize_pattern(inner);
+                normalized
+                    .into_iter()
+                    .map(|p| Pattern::Assigned {
+                        variable: variable.clone(),
+                        pattern: Box::new(p),
+                        span: *span,
+                    })
+                    .collect()
+            }
+            // All other patterns pass through unchanged
+            _ => vec![pattern.clone()],
         }
     }
 
