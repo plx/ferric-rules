@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as FmtWrite;
 use std::rc::Rc;
 
-use ferric_core::beta::RuleId;
+use ferric_core::beta::{RuleId, Salience};
 use ferric_core::binding::VarMap;
 use ferric_core::token::Token;
 use ferric_core::{
@@ -124,7 +124,7 @@ pub(crate) struct CompiledRuleInfo {
     pub fact_address_vars: HashMap<String, usize>,
     /// Rule salience (stored for informational purposes).
     #[allow(dead_code)] // May be used in future for debugging/logging
-    pub salience: i32,
+    pub salience: Salience,
     /// Pre-translated test CE expressions, evaluated at firing time.
     pub test_conditions: Vec<crate::evaluator::RuntimeExpr>,
     /// Pre-translated RHS action call expressions.
@@ -397,7 +397,7 @@ fn execute_agenda(
         let rule_name = all_rule_info
             .get(&activation.rule)
             .map_or("???", |info| info.name.as_str());
-        let _ = writeln!(output, "{} {rule_name}", activation.salience);
+        let _ = writeln!(output, "{} {rule_name}", activation.salience.get());
     }
     if output.is_empty() {
         output.push_str("(no activations)\n");

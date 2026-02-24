@@ -196,7 +196,7 @@ mod tests {
         // directly through the compiler API.
         use ferric_core::{
             AlphaEntryType, AtomKey, CompilablePattern, CompilableRule, ConstantTest,
-            ConstantTestType, ReteCompiler, ReteNetwork, SlotIndex,
+            ConstantTestType, ReteCompiler, ReteNetwork, Salience, SlotIndex,
         };
 
         let mut engine = new_utf8_engine();
@@ -208,7 +208,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id: compiler.allocate_rule_id(),
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![CompilablePattern {
                 entry_type: AlphaEntryType::OrderedRelation(color_sym),
                 constant_tests: vec![ConstantTest {

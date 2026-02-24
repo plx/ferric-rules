@@ -48,12 +48,14 @@ pub mod validation;
 pub mod value;
 
 // Re-export primary types at crate root for convenience.
-pub use agenda::{Activation, ActivationId, Agenda, AgendaKey, StrategyOrd};
+pub use agenda::{Activation, ActivationId, ActivationSeq, Agenda, AgendaKey, StrategyOrd};
 pub use alpha::{
     AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNetwork, AlphaNode, ConstantTest,
     ConstantTestType, SlotIndex,
 };
-pub use beta::{BetaMemory, BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId};
+pub use beta::{
+    BetaMemory, BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId, Salience,
+};
 pub use binding::{BindingSet, VarId, VarMap};
 pub use compiler::{
     CompilableCondition, CompilablePattern, CompilableRule, CompileError, CompileResult,
@@ -61,7 +63,7 @@ pub use compiler::{
 };
 pub use encoding::{EncodingError, StringEncoding};
 pub use exists::{ExistsMemory, ExistsMemoryId};
-pub use fact::{Fact, FactBase, FactEntry, FactId, OrderedFact, TemplateFact, TemplateId};
+pub use fact::{Fact, FactBase, FactEntry, FactId, OrderedFact, TemplateFact, TemplateId, Timestamp};
 pub use ncc::{NccMemory, NccMemoryId};
 pub use negative::{NegativeMemory, NegativeMemoryId};
 pub use rete::ReteNetwork;

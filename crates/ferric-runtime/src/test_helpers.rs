@@ -13,7 +13,7 @@
 //! - `assert_has_fact_with_relation`: Assert a fact with given relation exists.
 //! - `load_fixture`: Load a `.clp` fixture file by name.
 
-use ferric_core::beta::RuleId;
+use ferric_core::beta::{RuleId, Salience};
 use ferric_core::{
     AlphaEntryType, AlphaMemoryId, ConstantTest, FactId, ReteNetwork, StringEncoding,
 };
@@ -90,7 +90,7 @@ pub fn build_single_pattern_rete(
     let (join_id, _) = rete
         .beta
         .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
-    let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
+    let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
     rete
 }
@@ -117,7 +117,7 @@ pub fn build_constant_test_rete(
     let (join_id, _) = rete
         .beta
         .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
-    let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
+    let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
     rete
 }
@@ -162,7 +162,7 @@ pub fn build_two_pattern_rete(
     let (join2_id, _) = rete
         .beta
         .create_join_node(join1_id, alpha_mem_2, vec![], vec![]);
-    let _terminal = rete.beta.create_terminal_node(join2_id, rule_id, 0);
+    let _terminal = rete.beta.create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
 
     TwoPatternRete {
         rete,

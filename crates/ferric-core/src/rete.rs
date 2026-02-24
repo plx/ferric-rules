@@ -6,11 +6,11 @@
 use slotmap::Key;
 use smallvec::SmallVec;
 
-use crate::agenda::{Activation, ActivationId, Agenda};
+use crate::agenda::{Activation, ActivationId, ActivationSeq, Agenda};
 use crate::alpha::{get_slot_value, AlphaMemoryId, AlphaNetwork};
 use crate::beta::{BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType};
 use crate::binding::BindingSet;
-use crate::fact::{Fact, FactBase, FactId};
+use crate::fact::{Fact, FactBase, FactId, Timestamp};
 use crate::negative::NegativeMemoryId;
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
@@ -1252,7 +1252,7 @@ impl ReteNetwork {
                     };
 
                     // Build recency vector: timestamps of facts in pattern order
-                    let recency: SmallVec<[u64; 4]> = token
+                    let recency: SmallVec<[Timestamp; 4]> = token
                         .facts
                         .iter()
                         .filter_map(|&fid| fact_base.get(fid))
@@ -1260,7 +1260,7 @@ impl ReteNetwork {
                         .collect();
 
                     // Get timestamp from the most recent fact in the token
-                    let timestamp = recency.iter().max().copied().unwrap_or(0);
+                    let timestamp = recency.iter().max().copied().unwrap_or(Timestamp::new(0));
 
                     let activation = Activation {
                         id: ActivationId::default(), // Will be set by agenda.add()
@@ -1268,7 +1268,7 @@ impl ReteNetwork {
                         token: token_id,
                         salience: *salience,
                         timestamp,
-                        activation_seq: 0, // Will be set by agenda.add()
+                        activation_seq: ActivationSeq::ZERO, // Will be set by agenda.add()
                         recency,
                     };
 
@@ -1416,7 +1416,7 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
 mod tests {
     use super::*;
     use crate::alpha::{AlphaEntryType, ConstantTest, ConstantTestType, SlotIndex};
-    use crate::beta::RuleId;
+    use crate::beta::{RuleId, Salience};
     use crate::symbol::{Symbol, SymbolTable};
     use crate::value::Value;
     use smallvec::smallvec;
@@ -1465,7 +1465,7 @@ mod tests {
                 .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
         // Assert a person fact
         let fact_id = fact_base.assert_ordered(person, SmallVec::new());
@@ -1549,7 +1549,7 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, vec![], vec![]);
 
         let rule_id = RuleId(2);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, 0);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
 
         // Assert facts
         let mut person_fields = SmallVec::new();
@@ -1621,7 +1621,7 @@ mod tests {
                 .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
         // Assert a fact
         let fact_id = fact_base.assert_ordered(person, SmallVec::new());
@@ -1670,7 +1670,7 @@ mod tests {
                 .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
         // Assert (person alice) — should match
         let mut alice_fields = SmallVec::new();
@@ -1712,7 +1712,7 @@ mod tests {
                 .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
         // Assert 3 facts, checking consistency after each
         let mut fact_ids = Vec::new();
@@ -1793,7 +1793,7 @@ mod tests {
                 .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, 0);
+        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
         // Assert 5 facts (some matching, some not)
         let mut fact_ids = Vec::new();
@@ -1893,7 +1893,7 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
 
         let rule_id = RuleId(42);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, 0);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
 
         // Assert facts
         // (person alice) — should bind ?x to alice
@@ -2000,7 +2000,7 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
 
         let rule_id = RuleId(42);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, 0);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
 
         // Assert facts IN REVERSE ORDER: age fact first, then person fact
 
@@ -2061,7 +2061,7 @@ mod tests {
                 .create_join_node(root_id, alpha_mem1, vec![], join1_bindings);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join1_id, rule_id, 0);
+        let _terminal_id = rete.beta.create_terminal_node(join1_id, rule_id, Salience::DEFAULT);
 
         // Assert (person alice 42)
         let mut fields = SmallVec::new();
@@ -2138,7 +2138,7 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, 0);
+        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
 
         // Assert facts
         let mut person_fields = SmallVec::new();
@@ -2212,7 +2212,7 @@ mod tests {
 
         // Terminal
         let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(neg_id, rule_id, 0);
+        let _terminal = rete.beta.create_terminal_node(neg_id, rule_id, Salience::DEFAULT);
 
         (rete, pos_alpha, neg_alpha, rule_id)
     }
@@ -2536,7 +2536,7 @@ mod tests {
             .create_negative_node(join_id, exclude_alpha, neg_tests);
 
         let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(neg_id, rule_id, 0);
+        let _terminal = rete.beta.create_terminal_node(neg_id, rule_id, Salience::DEFAULT);
 
         (rete, item_alpha, exclude_alpha, rule_id)
     }
@@ -2681,7 +2681,7 @@ mod tests {
         let (exists_id, _, _) = rete.beta.create_exists_node(join_id, person_alpha, vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(exists_id, rule_id, 0);
+        let _terminal = rete.beta.create_terminal_node(exists_id, rule_id, Salience::DEFAULT);
 
         (rete, trigger_alpha, person_alpha, rule_id)
     }
@@ -2702,7 +2702,7 @@ mod tests {
         let (exists_id, _, _) = rete.beta.create_exists_node(root, person_alpha, vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(exists_id, rule_id, 0);
+        let _terminal = rete.beta.create_terminal_node(exists_id, rule_id, Salience::DEFAULT);
 
         (rete, person_alpha, rule_id)
     }
@@ -3017,7 +3017,7 @@ mod tests {
             CompilableCondition::Ncc(vec![ncc_sub_1, ncc_sub_2]),
         ];
         compiler
-            .compile_conditions(&mut rete, rule_id, 0, &conditions)
+            .compile_conditions(&mut rete, rule_id, Salience::DEFAULT, &conditions)
             .expect("NCC rule should compile");
 
         (rete, item_sym, block_sym, reason_sym)

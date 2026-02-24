@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
-use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId};
+use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
 use crate::rete::ReteNetwork;
 use crate::symbol::Symbol;
@@ -19,7 +19,7 @@ use crate::validation::{PatternValidationError, PatternViolation, ValidationStag
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompilableRule {
     pub rule_id: RuleId,
-    pub salience: i32,
+    pub salience: Salience,
     pub patterns: Vec<CompilablePattern>,
 }
 
@@ -138,7 +138,7 @@ impl ReteCompiler {
         &mut self,
         rete: &mut ReteNetwork,
         rule_id: RuleId,
-        salience: i32,
+        salience: Salience,
         conditions: &[CompilableCondition],
     ) -> Result<CompileResult, CompileError> {
         Self::ensure_non_empty(conditions)?;
@@ -165,7 +165,7 @@ impl ReteCompiler {
         &mut self,
         rete: &mut ReteNetwork,
         rule_id: RuleId,
-        salience: i32,
+        salience: Salience,
         conditions: &[CompilableCondition],
     ) -> Result<CompileResult, CompileError> {
         let mut alpha_memories = Vec::new();
@@ -559,7 +559,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![],
         };
 
@@ -586,7 +586,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern],
         };
 
@@ -632,7 +632,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern],
         };
 
@@ -666,7 +666,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern],
         };
 
@@ -716,7 +716,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1, pattern2],
         };
 
@@ -762,7 +762,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1, pattern2],
         };
 
@@ -792,7 +792,7 @@ mod tests {
         let rule_id1 = compiler.allocate_rule_id();
         let rule1 = CompilableRule {
             rule_id: rule_id1,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern.clone()],
         };
         let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
@@ -801,7 +801,7 @@ mod tests {
         let rule_id2 = compiler.allocate_rule_id();
         let rule2 = CompilableRule {
             rule_id: rule_id2,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern.clone()],
         };
         let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
@@ -839,7 +839,7 @@ mod tests {
         let rule_id1 = compiler.allocate_rule_id();
         let rule1 = CompilableRule {
             rule_id: rule_id1,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1.clone()],
         };
         let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
@@ -848,7 +848,7 @@ mod tests {
         let rule_id2 = compiler.allocate_rule_id();
         let rule2 = CompilableRule {
             rule_id: rule_id2,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern2.clone()],
         };
         let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
@@ -885,7 +885,7 @@ mod tests {
         let rule_id1 = compiler.allocate_rule_id();
         let rule1 = CompilableRule {
             rule_id: rule_id1,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1.clone(), pattern2.clone()],
         };
         let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
@@ -893,7 +893,7 @@ mod tests {
         let rule_id2 = compiler.allocate_rule_id();
         let rule2 = CompilableRule {
             rule_id: rule_id2,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1, pattern2],
         };
         let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
@@ -941,7 +941,7 @@ mod tests {
 
         let rule1 = CompilableRule {
             rule_id: compiler.allocate_rule_id(),
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![CompilablePattern {
                 entry_type: AlphaEntryType::OrderedRelation(relation),
                 constant_tests: vec![],
@@ -953,7 +953,7 @@ mod tests {
 
         let rule2 = CompilableRule {
             rule_id: compiler.allocate_rule_id(),
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![CompilablePattern {
                 entry_type: AlphaEntryType::OrderedRelation(relation),
                 constant_tests: vec![],
@@ -994,7 +994,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern.clone()],
         };
 
@@ -1004,7 +1004,7 @@ mod tests {
         let rule_id2 = compiler.allocate_rule_id();
         let rule2 = CompilableRule {
             rule_id: rule_id2,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern],
         };
         let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
@@ -1042,7 +1042,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern],
         };
 
@@ -1078,7 +1078,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern],
         };
 
@@ -1128,7 +1128,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1, pattern2, pattern3],
         };
 
@@ -1167,7 +1167,7 @@ mod tests {
         let rule_id1 = compiler.allocate_rule_id();
         let rule1 = CompilableRule {
             rule_id: rule_id1,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern.clone()],
         };
         let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
@@ -1176,7 +1176,7 @@ mod tests {
         let rule_id2 = compiler.allocate_rule_id();
         let rule2 = CompilableRule {
             rule_id: rule_id2,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern],
         };
         let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
@@ -1220,7 +1220,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1, pattern2],
         };
 
@@ -1277,7 +1277,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![positive_pattern, negated_pattern],
         };
 
@@ -1329,7 +1329,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1, pattern2],
         };
 
@@ -1382,7 +1382,7 @@ mod tests {
 
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1, pattern2],
         };
 
@@ -1429,7 +1429,7 @@ mod tests {
         };
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1, pattern2],
         };
 
@@ -1472,7 +1472,7 @@ mod tests {
         };
         let rule = CompilableRule {
             rule_id,
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![pattern1, pattern2],
         };
 
@@ -1527,7 +1527,7 @@ mod tests {
         ];
 
         let result = compiler
-            .compile_conditions(&mut rete, rule_id, 0, &conditions)
+            .compile_conditions(&mut rete, rule_id, Salience::DEFAULT, &conditions)
             .unwrap();
 
         let terminal = rete.beta.get_node(result.terminal_node).unwrap();
@@ -1556,7 +1556,7 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let err = compiler
-            .compile_conditions(&mut rete, rule_id, 0, &[CompilableCondition::Ncc(vec![])])
+            .compile_conditions(&mut rete, rule_id, Salience::DEFAULT, &[CompilableCondition::Ncc(vec![])])
             .unwrap_err();
 
         match err {
@@ -1601,7 +1601,7 @@ mod tests {
         let result = compiler.compile_conditions(
             &mut rete,
             rule_id,
-            0,
+            Salience::DEFAULT,
             &[CompilableCondition::Ncc(vec![ncc_positive, ncc_negated])],
         );
         assert!(
@@ -1631,7 +1631,7 @@ mod tests {
         let mut rule_rete = ReteNetwork::new();
         let rule = CompilableRule {
             rule_id: rule_compiler.allocate_rule_id(),
-            salience: 0,
+            salience: Salience::DEFAULT,
             patterns: vec![invalid_pattern.clone()],
         };
         let rule_error = rule_compiler
@@ -1645,7 +1645,7 @@ mod tests {
             .compile_conditions(
                 &mut condition_rete,
                 condition_rule_id,
-                0,
+                Salience::DEFAULT,
                 &[CompilableCondition::Pattern(invalid_pattern)],
             )
             .unwrap_err();
@@ -1693,7 +1693,7 @@ mod tests {
         let mut rule_rete = ReteNetwork::new();
         let rule = CompilableRule {
             rule_id: rule_compiler.allocate_rule_id(),
-            salience: 5,
+            salience: Salience::new(5),
             patterns: vec![pattern_1.clone(), pattern_2.clone()],
         };
         let rule_result = rule_compiler.compile_rule(&mut rule_rete, &rule).unwrap();
@@ -1708,7 +1708,7 @@ mod tests {
             CompilableCondition::Pattern(pattern_2),
         ];
         let condition_result = condition_compiler
-            .compile_conditions(&mut condition_rete, condition_rule_id, 5, &conditions)
+            .compile_conditions(&mut condition_rete, condition_rule_id, Salience::new(5), &conditions)
             .unwrap();
         let condition_join_id = terminal_parent(&condition_rete, condition_result.terminal_node);
         let condition_join = condition_rete.beta.get_node(condition_join_id).unwrap();

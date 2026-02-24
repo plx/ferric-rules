@@ -10,6 +10,34 @@ use std::collections::{HashMap, HashSet};
 use crate::symbol::Symbol;
 use crate::value::Value;
 
+/// Monotonically increasing timestamp assigned to facts as they enter working memory.
+///
+/// Timestamps flow from `FactBase` through `FactEntry` → `Token` (via recency
+/// vectors) → `Activation` → `AgendaKey` → `StrategyOrd`. Wrapping them in a
+/// newtype prevents accidental confusion with other `u64` values such as
+/// `ActivationSeq`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Timestamp(u64);
+
+impl Timestamp {
+    pub const ZERO: Self = Self(0);
+
+    #[must_use]
+    pub const fn new(val: u64) -> Self {
+        Self(val)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    #[must_use]
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
 fn remove_from_set_index<K>(index: &mut HashMap<K, HashSet<FactId>>, key: K, id: FactId)
 where
     K: Copy + Eq + std::hash::Hash,
@@ -89,7 +117,7 @@ pub enum Fact {
 pub struct FactEntry {
     pub fact: Fact,
     pub id: FactId,
-    pub timestamp: u64,
+    pub timestamp: Timestamp,
 }
 
 /// Fact base: storage and indexing for all facts in working memory.
@@ -99,7 +127,7 @@ pub struct FactBase {
     facts: SlotMap<FactId, FactEntry>,
     by_template: HashMap<TemplateId, HashSet<FactId>>,
     by_relation: HashMap<Symbol, HashSet<FactId>>,
-    next_timestamp: u64,
+    next_timestamp: Timestamp,
 }
 
 impl FactBase {
@@ -110,13 +138,13 @@ impl FactBase {
             facts: SlotMap::with_key(),
             by_template: HashMap::new(),
             by_relation: HashMap::new(),
-            next_timestamp: 0,
+            next_timestamp: Timestamp::ZERO,
         }
     }
 
     fn insert_fact(&mut self, fact: Fact) -> FactId {
         let timestamp = self.next_timestamp;
-        self.next_timestamp += 1;
+        self.next_timestamp = self.next_timestamp.next();
 
         self.facts.insert_with_key(|id| FactEntry {
             fact,
@@ -241,7 +269,7 @@ mod tests {
         assert_eq!(fb.len(), 1);
         let entry = fb.get(id).unwrap();
         assert_eq!(entry.id, id);
-        assert_eq!(entry.timestamp, 0);
+        assert_eq!(entry.timestamp, Timestamp::ZERO);
 
         if let Fact::Ordered(ordered) = &entry.fact {
             assert_eq!(ordered.relation, rel);
@@ -260,8 +288,8 @@ mod tests {
         let id1 = fb.assert_ordered(rel, smallvec::smallvec![]);
         let id2 = fb.assert_ordered(rel, smallvec::smallvec![]);
 
-        assert_eq!(fb.get(id1).unwrap().timestamp, 0);
-        assert_eq!(fb.get(id2).unwrap().timestamp, 1);
+        assert_eq!(fb.get(id1).unwrap().timestamp, Timestamp::new(0));
+        assert_eq!(fb.get(id2).unwrap().timestamp, Timestamp::new(1));
     }
 
     #[test]

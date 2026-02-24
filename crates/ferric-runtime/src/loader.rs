@@ -28,7 +28,7 @@ use crate::qualified_name::{parse_qualified_name, QualifiedName};
 
 use ferric_core::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult, ConstantTest,
-    ConstantTestType, FactId, FerricString, RuleId, SlotIndex, Value,
+    ConstantTestType, FactId, FerricString, RuleId, Salience, SlotIndex, Value,
 };
 use ferric_parser::{
     interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
@@ -46,7 +46,7 @@ use crate::templates::RegisteredTemplate;
 /// Translated rule data including fact-address variable bindings.
 struct TranslatedRule {
     rule_id: RuleId,
-    salience: i32,
+    salience: Salience,
     conditions: Vec<CompilableCondition>,
     fact_address_vars: HashMap<String, usize>,
     /// Test CE expressions (not compiled into Rete; evaluated at firing time).
@@ -909,7 +909,7 @@ impl Engine {
             actions: rule.actions.clone(),
             var_map: compile_result.var_map.clone(),
             fact_address_vars: translated.fact_address_vars,
-            salience: rule.salience,
+            salience: Salience::new(rule.salience),
             test_conditions: translated.test_conditions,
             runtime_actions,
         };
@@ -994,7 +994,7 @@ impl Engine {
 
         Ok(TranslatedRule {
             rule_id,
-            salience: rule.salience,
+            salience: Salience::new(rule.salience),
             conditions,
             fact_address_vars,
             test_conditions,
