@@ -44,6 +44,8 @@ pub struct ConstantTest {
 pub enum ConstantTestType {
     Equal(AtomKey),
     NotEqual(AtomKey),
+    /// Disjunctive equality: slot value must equal any one of the keys.
+    EqualAny(Vec<AtomKey>),
 }
 
 /// An alpha network node.
@@ -570,6 +572,7 @@ fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
     match &test.test_type {
         ConstantTestType::Equal(test_key) => slot_key == *test_key,
         ConstantTestType::NotEqual(test_key) => slot_key != *test_key,
+        ConstantTestType::EqualAny(keys) => keys.contains(&slot_key),
     }
 }
 
