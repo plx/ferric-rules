@@ -1981,12 +1981,79 @@ fn interpret_action(expr: &SExpr) -> Result<Action, InterpretError> {
                         },
                     });
                 }
+                // `modify` and `duplicate` use slot-value pair syntax for their
+                // arguments after the fact variable.  We must NOT interpret the
+                // slot name position as a keyword — `(modify ?f (if ?rest))` means
+                // slot name `if`, not an if/then/else construct.
+                Some("modify" | "duplicate") => {
+                    let name = list[0].as_symbol().unwrap().to_string();
+                    let call = interpret_fact_mutation_call(&name, &list[1..], expr.span())?;
+                    return Ok(Action { call });
+                }
                 _ => {}
             }
         }
     }
     let call = interpret_function_call(expr)?;
     Ok(Action { call })
+}
+
+/// Parse a `modify` or `duplicate` action call.
+///
+/// Syntax: `(modify ?var (slot-name value ...) ...)`
+///
+/// The first argument is the fact variable, parsed normally.  The remaining
+/// arguments are slot-value pairs where the first element of each sub-list is
+/// a slot name — which can be ANY symbol, including keywords like `if`, `while`,
+/// etc.  We therefore parse those sub-expressions without keyword interception.
+fn interpret_fact_mutation_call(
+    name: &str,
+    rest: &[SExpr],
+    span: Span,
+) -> Result<FunctionCall, InterpretError> {
+    let mut args = Vec::new();
+
+    // First arg is the fact variable, parse as normal action expression
+    if let Some(first) = rest.first() {
+        args.push(interpret_action_expr(first)?);
+    }
+
+    // Remaining args are slot-value pairs: parse without keyword interception
+    for slot_expr in &rest[1..] {
+        args.push(interpret_action_expr_as_slot_pair(slot_expr)?);
+    }
+
+    Ok(FunctionCall {
+        name: name.to_string(),
+        args,
+        span,
+    })
+}
+
+/// Parse an action expression in slot-value pair context.
+///
+/// If the expression is a list `(name ...)` where `name` is a symbol, treat it
+/// as a function call regardless of whether `name` is a keyword.  This allows
+/// slot names like `if`, `while`, etc. to pass through without being
+/// intercepted as control-flow constructs.
+fn interpret_action_expr_as_slot_pair(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
+    if let Some(list) = expr.as_list() {
+        if !list.is_empty() {
+            if let Some(name) = list[0].as_symbol() {
+                // Build a FunctionCall directly, parsing sub-args normally
+                let mut args = Vec::new();
+                for arg_expr in &list[1..] {
+                    args.push(interpret_action_expr(arg_expr)?);
+                }
+                return Ok(ActionExpr::FunctionCall(FunctionCall {
+                    name: name.to_string(),
+                    args,
+                    span: expr.span(),
+                }));
+            }
+        }
+    }
+    interpret_action_expr(expr)
 }
 
 /// Interpret a function call expression.
