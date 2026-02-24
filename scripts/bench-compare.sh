@@ -371,7 +371,7 @@ jq -s '{
 
             if [[ -n "$clips_val" ]] && [[ "$clips_val" != "null" ]] && \
                [[ -n "$ferric_val" ]] && [[ "$ferric_val" != "null" ]]; then
-                ratio="$(echo "scale=2; $ferric_val / $clips_val" | bc -l 2>/dev/null || echo "n/a")"
+                ratio="$(printf '%.2f' "$(echo "$ferric_val / $clips_val" | bc -l)" 2>/dev/null || echo "n/a")"
                 printf "| %-14s | %-6s | %10.3f | %10.3f | %5sx |\n" \
                     "$workload" "$phase_name" "$clips_val" "$ferric_val" "$ratio"
             fi
@@ -389,7 +389,7 @@ jq -s '{
         ferric_rss="$(jq -r "select(.workload == \"$workload\" and .engine == \"ferric\") | .peak_rss_kb" "$tmp_entries")"
 
         if [[ -n "$clips_rss" ]] && [[ "$clips_rss" != "0" ]] && [[ "$clips_rss" != "null" ]]; then
-            ratio="$(echo "scale=2; $ferric_rss / $clips_rss" | bc -l 2>/dev/null || echo "n/a")"
+            ratio="$(printf '%.2f' "$(echo "$ferric_rss / $clips_rss" | bc -l)" 2>/dev/null || echo "n/a")"
         else
             ratio="n/a"
         fi
