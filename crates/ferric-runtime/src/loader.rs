@@ -933,16 +933,21 @@ impl Engine {
         let mut test_conditions = Vec::new();
         let mut fact_index = 0usize;
 
-        // Flatten top-level Pattern::And into its children. CLIPS treats (and ...)
-        // as a grouping CE that is equivalent to listing the sub-patterns directly.
+        // Flatten top-level Pattern::And and Pattern::Logical into their children.
+        // CLIPS treats (and ...) as a grouping CE equivalent to listing sub-patterns directly.
+        // (logical ...) is a truth-maintenance wrapper; we strip it (no TMS yet) and treat
+        // children as top-level conditions.
         let mut flat_patterns: Vec<&Pattern> = Vec::new();
         for pattern in &rule.patterns {
-            if let Pattern::And(inner_patterns, _) = pattern {
-                for inner in inner_patterns {
-                    flat_patterns.push(inner);
+            match pattern {
+                Pattern::And(inner_patterns, _) | Pattern::Logical(inner_patterns, _) => {
+                    for inner in inner_patterns {
+                        flat_patterns.push(inner);
+                    }
                 }
-            } else {
-                flat_patterns.push(pattern);
+                _ => {
+                    flat_patterns.push(pattern);
+                }
             }
         }
 
@@ -1102,6 +1107,11 @@ impl Engine {
                 "and",
                 span,
                 "standalone and conditional elements are not supported; use (not (and ...))",
+            )),
+            Pattern::Logical(_, span) => Err(Self::unsupported_pattern(
+                "logical",
+                span,
+                "logical CE is only supported at top-level of rule LHS",
             )),
             _ => Ok(CompilableCondition::Pattern(
                 self.translate_pattern(pattern)?,
@@ -1277,6 +1287,11 @@ impl Engine {
                 "and",
                 span,
                 "and conditional elements are only supported inside (not (and ...))",
+            )),
+            Pattern::Logical(_, span) => Err(Self::unsupported_pattern(
+                "logical",
+                span,
+                "logical CE reached translate_pattern unexpectedly (should be flattened at top level)",
             )),
         }
     }
@@ -1545,7 +1560,7 @@ fn validate_pattern_recursive(
             validate_pattern_recursive(inner, depth, max_depth, errors);
         }
 
-        Pattern::And(inner_patterns, _) => {
+        Pattern::And(inner_patterns, _) | Pattern::Logical(inner_patterns, _) => {
             for inner in inner_patterns {
                 validate_pattern_recursive(inner, depth, max_depth, errors);
             }

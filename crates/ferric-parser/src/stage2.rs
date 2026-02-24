@@ -41,6 +41,8 @@ pub enum Pattern {
     Exists(Vec<Pattern>, Span),
     /// Forall CE: (forall <condition> <then-clause>...)
     Forall(Vec<Pattern>, Span),
+    /// Logical CE: (logical <pattern> ...) — truth maintenance wrapper
+    Logical(Vec<Pattern>, Span),
     /// Assigned pattern: ?var <- <pattern>
     Assigned {
         variable: String,
@@ -1537,6 +1539,13 @@ fn interpret_conditional_pattern(
                 patterns.push(interpret_pattern(pattern_expr)?);
             }
             Ok(Some(Pattern::Forall(patterns, expr.span())))
+        }
+        Some("logical") => {
+            let mut patterns = Vec::new();
+            for pattern_expr in &list[1..] {
+                patterns.push(interpret_pattern(pattern_expr)?);
+            }
+            Ok(Some(Pattern::Logical(patterns, expr.span())))
         }
         _ => Ok(None),
     }
