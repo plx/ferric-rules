@@ -1447,12 +1447,13 @@ impl Engine {
             Constraint::Wildcard(_) | Constraint::MultiWildcard(_) => {
                 // No test needed — matches anything
             }
-            Constraint::MultiVariable(name, span) => {
-                return Err(Self::unsupported_constraint(
-                    "multi-variable",
-                    span,
-                    &format!("multi-field variable `$?{name}` is not supported yet"),
-                ));
+            Constraint::MultiVariable(name, _span) => {
+                // Treat $?var the same as ?var: bind to the value at this slot position.
+                // For template slots this is semantically correct (binds to full slot value).
+                // For ordered patterns this is an approximation — true CLIPS multi-field
+                // matching (spanning multiple positions) is not yet implemented.
+                let sym = self.compile_symbol(name)?;
+                variable_slots.push((slot, sym));
             }
             Constraint::Not(inner, span) => match inner.as_ref() {
                 Constraint::Literal(lit) => {
@@ -2034,15 +2035,13 @@ mod tests {
     }
 
     #[test]
-    fn load_rule_with_multivariable_constraint_returns_compile_error() {
+    fn load_rule_with_multivariable_constraint_compiles() {
         let mut engine = new_utf8_engine();
-        let errors = engine
-            .load_str("(defrule t (items $?values) => (assert (ok)))")
-            .unwrap_err();
+        let result = engine.load_str("(defrule t (items $?values) => (assert (ok)))");
 
-        assert_single_compile_error_contains(
-            &errors,
-            "unsupported constraint form `multi-variable`",
+        assert!(
+            result.is_ok(),
+            "$?var in slot constraint should compile: {result:?}"
         );
     }
 
