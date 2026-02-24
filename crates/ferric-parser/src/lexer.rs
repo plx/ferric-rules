@@ -495,6 +495,8 @@ fn is_symbol_char(ch: char) -> bool {
                 | '}'
                 | '['
                 | ']'
+                | '\''
+                | '\\'
         )
 }
 
