@@ -13,6 +13,27 @@ use crate::negative::{NegativeMemory, NegativeMemoryId};
 use crate::token::NodeId;
 use crate::token::TokenId;
 
+/// Rule priority in CLIPS.
+///
+/// Higher salience values indicate higher priority. The default salience is 0.
+/// This newtype prevents accidental mixing with other `i32` values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Salience(i32);
+
+impl Salience {
+    pub const DEFAULT: Self = Self(0);
+
+    #[must_use]
+    pub const fn new(val: i32) -> Self {
+        Self(val)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+}
+
 /// A join test compares a variable binding from the left (token) with
 /// a slot value from the right (fact).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -119,7 +140,7 @@ pub enum BetaNode {
     Terminal {
         parent: NodeId,
         rule: RuleId,
-        salience: i32,
+        salience: Salience,
     },
     /// Negative node: blocks parent tokens when a matching fact exists.
     Negative {
@@ -261,7 +282,12 @@ impl BetaNetwork {
     ///
     /// Returns the new terminal node's ID.
     #[allow(clippy::cast_possible_truncation)] // Node count will never reach u32::MAX in practice.
-    pub fn create_terminal_node(&mut self, parent: NodeId, rule: RuleId, salience: i32) -> NodeId {
+    pub fn create_terminal_node(
+        &mut self,
+        parent: NodeId,
+        rule: RuleId,
+        salience: Salience,
+    ) -> NodeId {
         let node_id = NodeId(self.next_node_id);
         self.next_node_id += 1;
 
@@ -923,7 +949,7 @@ mod tests {
 
         // Create a terminal node
         let rule = RuleId(42);
-        let terminal_id = net.create_terminal_node(join_id, rule, 0);
+        let terminal_id = net.create_terminal_node(join_id, rule, Salience::DEFAULT);
 
         let terminal_node = net
             .get_node(terminal_id)
@@ -936,7 +962,7 @@ mod tests {
         {
             assert_eq!(*parent, join_id);
             assert_eq!(*node_rule, rule);
-            assert_eq!(*salience, 0);
+            assert_eq!(*salience, Salience::DEFAULT);
         } else {
             panic!("Expected Terminal node");
         }
