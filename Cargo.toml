@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/ferric",
+    "crates/ferric-bench-gen",
     "crates/ferric-cli",
     "crates/ferric-core",
     "crates/ferric-ffi",

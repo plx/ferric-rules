@@ -66,9 +66,16 @@ build_command() {
 
   local full_image="${IMAGE_NAME}:${IMAGE_TAG}"
   if [[ "$LOAD_LOCAL" -eq 1 ]]; then
-    echo "Building local image ${full_image} for linux/amd64 (--load)."
+    local host_arch
+    host_arch="$(uname -m)"
+    case "$host_arch" in
+      arm64|aarch64) host_arch="linux/arm64" ;;
+      x86_64|amd64)  host_arch="linux/amd64" ;;
+      *)             host_arch="linux/amd64" ;;
+    esac
+    echo "Building local image ${full_image} for ${host_arch} (--load)."
     docker buildx build \
-      --platform linux/amd64 \
+      --platform "$host_arch" \
       --load \
       -t "$full_image" \
       docker/clips-reference
