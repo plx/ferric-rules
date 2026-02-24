@@ -383,6 +383,42 @@ fn execute_single_action(
                             let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
                             (synthetic, rt)
                         }
+                        ActionExpr::Switch { span, .. } => {
+                            let synthetic = FunctionCall {
+                                name: "switch".to_string(),
+                                args: vec![],
+                                span: *span,
+                            };
+                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                            (synthetic, rt)
+                        }
+                        ActionExpr::While { span, .. } => {
+                            let synthetic = FunctionCall {
+                                name: "while".to_string(),
+                                args: vec![],
+                                span: *span,
+                            };
+                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                            (synthetic, rt)
+                        }
+                        ActionExpr::LoopForCount { span, .. } => {
+                            let synthetic = FunctionCall {
+                                name: "loop-for-count".to_string(),
+                                args: vec![],
+                                span: *span,
+                            };
+                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                            (synthetic, rt)
+                        }
+                        ActionExpr::Progn { span, .. } => {
+                            let synthetic = FunctionCall {
+                                name: "progn$".to_string(),
+                                args: vec![],
+                                span: *span,
+                            };
+                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                            (synthetic, rt)
+                        }
                         _ => {
                             // Literal/variable — evaluate as expression; not an
                             // action but valid in CLIPS (result is discarded).
@@ -578,6 +614,80 @@ fn execute_single_action(
                     .eval_runtime_expr(token, rule_info, runtime_expr)
                     .map(|_| ())
                     .map_err(|e| ActionError::UnknownAction(format!("loop-for-count: {e}")))
+            } else {
+                Ok(())
+            }
+        }
+
+        "switch" => {
+            // `(switch <expr> (case <val> then <action>*) ... [(default <action>*)])` form.
+            let switch_runtime: Option<&crate::evaluator::RuntimeExpr> = match runtime_call {
+                Some(crate::evaluator::RuntimeExpr::Call { args, .. }) => {
+                    args.first().map(|a| a as &crate::evaluator::RuntimeExpr)
+                }
+                Some(rt @ crate::evaluator::RuntimeExpr::Switch { .. }) => Some(rt),
+                _ => None,
+            };
+
+            if let Some(crate::evaluator::RuntimeExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            }) = switch_runtime
+            {
+                // Evaluate the discriminant expression.
+                let disc_value = {
+                    let mut ctx = eval_env.make_eval_context(token, rule_info);
+                    crate::evaluator::eval(&mut ctx, expr).map_err(ActionError::from)?
+                };
+
+                // Find first matching case.
+                let mut matched_body = None;
+                for (test_val_expr, case_body) in cases {
+                    let test_value = {
+                        let mut ctx = eval_env.make_eval_context(token, rule_info);
+                        crate::evaluator::eval(&mut ctx, test_val_expr)
+                            .map_err(ActionError::from)?
+                    };
+                    if disc_value.structural_eq(&test_value) {
+                        matched_body = Some(case_body);
+                        break;
+                    }
+                }
+
+                // Fall to default if no case matched.
+                if matched_body.is_none() {
+                    if let Some(default_body) = default {
+                        matched_body = Some(default_body);
+                    }
+                }
+
+                // Execute matched body.
+                if let Some(body) = matched_body {
+                    execute_loop_body(
+                        fact_base,
+                        rete,
+                        halted,
+                        reset_requested,
+                        clear_requested,
+                        token,
+                        rule_info,
+                        body,
+                        template_defs,
+                        template_ids,
+                        router,
+                        focus_requests,
+                        all_rule_info,
+                        eval_env,
+                    )?;
+                }
+                Ok(())
+            } else if let Some(runtime_expr) = runtime_call {
+                eval_env
+                    .eval_runtime_expr(token, rule_info, runtime_expr)
+                    .map(|_| ())
+                    .map_err(|e| ActionError::UnknownAction(format!("switch: {e}")))
             } else {
                 Ok(())
             }
@@ -859,6 +969,15 @@ fn execute_loop_body(
             ActionExpr::QueryAction { name, span, .. } => {
                 let synthetic = ferric_parser::FunctionCall {
                     name: name.clone(),
+                    args: vec![],
+                    span: *span,
+                };
+                let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                (synthetic, rt)
+            }
+            ActionExpr::Switch { span, .. } => {
+                let synthetic = ferric_parser::FunctionCall {
+                    name: "switch".to_string(),
                     args: vec![],
                     span: *span,
                 };

@@ -193,6 +193,13 @@ pub enum ActionExpr {
         body: Vec<ActionExpr>,
         span: Span,
     },
+    /// CLIPS `(switch <expr> (case <value> then <action>*) ... [(default <action>*)])` form.
+    Switch {
+        expr: Box<ActionExpr>,
+        cases: Vec<(ActionExpr, Vec<ActionExpr>)>,
+        default: Option<Vec<ActionExpr>>,
+        span: Span,
+    },
 }
 
 // ============================================================================
@@ -2107,6 +2114,87 @@ fn interpret_while_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Interp
     })
 }
 
+/// Interpret a CLIPS `(switch <expr> (case <value> then <action>*) ... [(default <action>*)])` form.
+///
+/// `rest` is the elements after the `switch` keyword.
+fn interpret_switch_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    if rest.is_empty() {
+        return Err(InterpretError::missing("expression in (switch ...)", span));
+    }
+
+    // First element is the discriminant expression.
+    let discriminant = interpret_action_expr(&rest[0])?;
+
+    let mut cases = Vec::new();
+    let mut default = None;
+
+    for clause in &rest[1..] {
+        let clause_list = clause
+            .as_list()
+            .ok_or_else(|| InterpretError::expected("case or default clause", clause.span()))?;
+
+        if clause_list.is_empty() {
+            return Err(InterpretError::expected(
+                "case or default clause",
+                clause.span(),
+            ));
+        }
+
+        match clause_list[0].as_symbol() {
+            Some("case") => {
+                // (case <value> then <action>*)
+                if clause_list.len() < 4 {
+                    return Err(InterpretError::missing(
+                        "value and 'then' keyword in case clause",
+                        clause.span(),
+                    ));
+                }
+                let case_value = interpret_action_expr(&clause_list[1])?;
+
+                // Find 'then' keyword
+                if clause_list[2].as_symbol() != Some("then") {
+                    return Err(InterpretError::expected(
+                        "'then' keyword after case value",
+                        clause_list[2].span(),
+                    ));
+                }
+
+                let mut actions = Vec::new();
+                for action_expr in &clause_list[3..] {
+                    actions.push(interpret_action_expr(action_expr)?);
+                }
+                cases.push((case_value, actions));
+            }
+            Some("default") => {
+                if default.is_some() {
+                    return Err(InterpretError::invalid(
+                        "duplicate default clause in switch",
+                        clause.span(),
+                    ));
+                }
+                let mut actions = Vec::new();
+                for action_expr in &clause_list[1..] {
+                    actions.push(interpret_action_expr(action_expr)?);
+                }
+                default = Some(actions);
+            }
+            _ => {
+                return Err(InterpretError::expected(
+                    "case or default clause",
+                    clause.span(),
+                ));
+            }
+        }
+    }
+
+    Ok(ActionExpr::Switch {
+        expr: Box::new(discriminant),
+        cases,
+        default,
+        span,
+    })
+}
+
 /// Interpret a CLIPS `(loop-for-count ...)` form.
 ///
 /// `rest` is the elements after the `loop-for-count` keyword.
@@ -2404,6 +2492,7 @@ fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
                 Some("loop-for-count") => {
                     return interpret_loop_for_count_expr(&list[1..], expr.span())
                 }
+                Some("switch") => return interpret_switch_expr(&list[1..], expr.span()),
                 Some("progn$") => return interpret_progn_dollar_expr(&list[1..], expr.span()),
                 Some("foreach") => return interpret_foreach_expr(&list[1..], expr.span()),
                 Some(

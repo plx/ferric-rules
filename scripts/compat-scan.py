@@ -33,7 +33,6 @@ COOL_CONSTRUCTS = [
 ]
 
 UNSUPPORTED_CONTROL = [
-    "switch",
 ]
 
 UNSUPPORTED_IO = ["open", "close"]

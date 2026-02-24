@@ -221,6 +221,21 @@ pub enum RuntimeExpr {
         body: Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
         span: Option<SourceSpan>,
     },
+    /// CLIPS `(switch <expr> (case <val> then <action>*) ... [(default <action>*)])`.
+    ///
+    /// Evaluates `expr` once, then iterates cases comparing with equality.
+    /// Executes the first matching case body (no fall-through). Falls to
+    /// `default` if no case matches.
+    #[allow(clippy::type_complexity)]
+    Switch {
+        expr: Box<RuntimeExpr>,
+        cases: Vec<(
+            RuntimeExpr,
+            Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
+        )>,
+        default: Option<Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>>,
+        span: Option<SourceSpan>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -785,6 +800,45 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                 }
             }
             Ok(result)
+        }
+        RuntimeExpr::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
+            let disc_value = eval(ctx, expr)?;
+            // Find matching case (equality comparison)
+            for (test_val_expr, case_body) in cases {
+                let test_value = eval(ctx, test_val_expr)?;
+                if disc_value.structural_eq(&test_value) {
+                    let mut result = Value::Void;
+                    for (action_expr, rt_expr) in case_body {
+                        if let Some(rt) = rt_expr {
+                            result = eval(ctx, rt)?;
+                        } else {
+                            let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
+                            result = eval(ctx, &rt)?;
+                        }
+                    }
+                    return Ok(result);
+                }
+            }
+            // No case matched; fall to default
+            if let Some(default_body) = default {
+                let mut result = Value::Void;
+                for (action_expr, rt_expr) in default_body {
+                    if let Some(rt) = rt_expr {
+                        result = eval(ctx, rt)?;
+                    } else {
+                        let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
+                        result = eval(ctx, &rt)?;
+                    }
+                }
+                Ok(result)
+            } else {
+                Ok(Value::Void)
+            }
         }
         RuntimeExpr::QueryAction { name, .. } => {
             // Fact-query macros (`do-for-fact`, `any-factp`, etc.) require
@@ -1620,6 +1674,42 @@ pub fn from_action_expr(
                 bindings: bindings.clone(),
                 query: Box::new(query_rt),
                 body: body_rt,
+                span: Some(SourceSpan {
+                    line: span.start.line,
+                    column: span.start.column,
+                }),
+            })
+        }
+        ferric_parser::ActionExpr::Switch {
+            expr,
+            cases,
+            default,
+            span,
+        } => {
+            let expr_rt = from_action_expr(expr, symbol_table, config)?;
+            let mut cases_rt = Vec::with_capacity(cases.len());
+            for (test_val, actions) in cases {
+                let test_rt = from_action_expr(test_val, symbol_table, config)?;
+                let mut actions_rt = Vec::with_capacity(actions.len());
+                for a in actions {
+                    let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                    actions_rt.push((a.clone(), rt));
+                }
+                cases_rt.push((test_rt, actions_rt));
+            }
+            let default_rt = default.as_ref().map(|actions| {
+                actions
+                    .iter()
+                    .map(|a| {
+                        let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                        (a.clone(), rt)
+                    })
+                    .collect()
+            });
+            Ok(RuntimeExpr::Switch {
+                expr: Box::new(expr_rt),
+                cases: cases_rt,
+                default: default_rt,
                 span: Some(SourceSpan {
                     line: span.start.line,
                     column: span.start.column,
