@@ -78,8 +78,8 @@ pub struct Activation {
 /// activation first (using `pop_first`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StrategyOrd {
-    Depth(std::cmp::Reverse<Timestamp>),              // Higher timestamp first
-    Breadth(Timestamp),                               // Lower timestamp first
+    Depth(std::cmp::Reverse<Timestamp>), // Higher timestamp first
+    Breadth(Timestamp),                  // Lower timestamp first
     Lex(std::cmp::Reverse<SmallVec<[Timestamp; 4]>>), // Lexicographic recency (most recent first)
     Mea {
         first_recency: std::cmp::Reverse<Timestamp>,
@@ -154,7 +154,11 @@ impl Agenda {
                 StrategyOrd::Lex(std::cmp::Reverse(activation.recency.clone()))
             }
             ConflictResolutionStrategy::Mea => {
-                let first_recency = activation.recency.first().copied().unwrap_or(Timestamp::ZERO);
+                let first_recency = activation
+                    .recency
+                    .first()
+                    .copied()
+                    .unwrap_or(Timestamp::ZERO);
                 let rest_recency: SmallVec<[Timestamp; 4]> =
                     activation.recency.iter().skip(1).copied().collect();
                 StrategyOrd::Mea {
@@ -707,7 +711,11 @@ mod tests {
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(200), Timestamp::new(300)], // [100, 200, 300]
+            recency: smallvec::smallvec![
+                Timestamp::new(100),
+                Timestamp::new(200),
+                Timestamp::new(300)
+            ], // [100, 200, 300]
         });
 
         let id2 = agenda.add(Activation {
@@ -717,7 +725,11 @@ mod tests {
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(400), Timestamp::new(100), Timestamp::new(100)], // [400, ...] wins lexicographically
+            recency: smallvec::smallvec![
+                Timestamp::new(400),
+                Timestamp::new(100),
+                Timestamp::new(100)
+            ], // [400, ...] wins lexicographically
         });
 
         let _id3 = agenda.add(Activation {
@@ -727,7 +739,11 @@ mod tests {
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(300), Timestamp::new(100)], // [100, 300, ...]
+            recency: smallvec::smallvec![
+                Timestamp::new(100),
+                Timestamp::new(300),
+                Timestamp::new(100)
+            ], // [100, 300, ...]
         });
 
         // LEX strategy: lexicographic comparison of recency vectors (most recent first per position)
@@ -794,7 +810,11 @@ mod tests {
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(200), Timestamp::new(300)], // First: 100, rest: [200, 300]
+            recency: smallvec::smallvec![
+                Timestamp::new(100),
+                Timestamp::new(200),
+                Timestamp::new(300)
+            ], // First: 100, rest: [200, 300]
         });
 
         let id2 = agenda.add(Activation {
@@ -804,7 +824,11 @@ mod tests {
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(500), Timestamp::new(100)], // First: 100, rest: [500, 100] wins
+            recency: smallvec::smallvec![
+                Timestamp::new(100),
+                Timestamp::new(500),
+                Timestamp::new(100)
+            ], // First: 100, rest: [500, 100] wins
         });
 
         let _id3 = agenda.add(Activation {
@@ -814,7 +838,11 @@ mod tests {
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(300),
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(300), Timestamp::new(200)], // First: 100, rest: [300, 200]
+            recency: smallvec::smallvec![
+                Timestamp::new(100),
+                Timestamp::new(300),
+                Timestamp::new(200)
+            ], // First: 100, rest: [300, 200]
         });
 
         // MEA strategy: same first-pattern recency (100), so LEX tiebreak on rest
@@ -898,7 +926,11 @@ mod tests {
             salience: Salience::DEFAULT,
             timestamp: Timestamp::new(100),
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(500), Timestamp::new(500), Timestamp::new(500)], // Higher recency vector
+            recency: smallvec::smallvec![
+                Timestamp::new(500),
+                Timestamp::new(500),
+                Timestamp::new(500)
+            ], // Higher recency vector
         });
 
         let id2 = agenda.add(Activation {
@@ -908,7 +940,11 @@ mod tests {
             salience: Salience::new(8), // Higher salience wins
             timestamp: Timestamp::new(100),
             activation_seq: ActivationSeq::ZERO,
-            recency: smallvec::smallvec![Timestamp::new(100), Timestamp::new(100), Timestamp::new(100)],
+            recency: smallvec::smallvec![
+                Timestamp::new(100),
+                Timestamp::new(100),
+                Timestamp::new(100)
+            ],
         });
 
         let popped = agenda.pop().expect("Should have activation");

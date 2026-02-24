@@ -90,7 +90,9 @@ pub fn build_single_pattern_rete(
     let (join_id, _) = rete
         .beta
         .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
-    let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
+    let _terminal_id = rete
+        .beta
+        .create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
     rete
 }
@@ -117,7 +119,9 @@ pub fn build_constant_test_rete(
     let (join_id, _) = rete
         .beta
         .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
-    let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
+    let _terminal_id = rete
+        .beta
+        .create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
     rete
 }
@@ -162,7 +166,9 @@ pub fn build_two_pattern_rete(
     let (join2_id, _) = rete
         .beta
         .create_join_node(join1_id, alpha_mem_2, vec![], vec![]);
-    let _terminal = rete.beta.create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
+    let _terminal = rete
+        .beta
+        .create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
 
     TwoPatternRete {
         rete,

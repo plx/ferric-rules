@@ -282,7 +282,12 @@ impl BetaNetwork {
     ///
     /// Returns the new terminal node's ID.
     #[allow(clippy::cast_possible_truncation)] // Node count will never reach u32::MAX in practice.
-    pub fn create_terminal_node(&mut self, parent: NodeId, rule: RuleId, salience: Salience) -> NodeId {
+    pub fn create_terminal_node(
+        &mut self,
+        parent: NodeId,
+        rule: RuleId,
+        salience: Salience,
+    ) -> NodeId {
         let node_id = NodeId(self.next_node_id);
         self.next_node_id += 1;
 

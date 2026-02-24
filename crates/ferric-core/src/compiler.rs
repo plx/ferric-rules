@@ -1556,7 +1556,12 @@ mod tests {
         let rule_id = compiler.allocate_rule_id();
 
         let err = compiler
-            .compile_conditions(&mut rete, rule_id, Salience::DEFAULT, &[CompilableCondition::Ncc(vec![])])
+            .compile_conditions(
+                &mut rete,
+                rule_id,
+                Salience::DEFAULT,
+                &[CompilableCondition::Ncc(vec![])],
+            )
             .unwrap_err();
 
         match err {
@@ -1708,7 +1713,12 @@ mod tests {
             CompilableCondition::Pattern(pattern_2),
         ];
         let condition_result = condition_compiler
-            .compile_conditions(&mut condition_rete, condition_rule_id, Salience::new(5), &conditions)
+            .compile_conditions(
+                &mut condition_rete,
+                condition_rule_id,
+                Salience::new(5),
+                &conditions,
+            )
             .unwrap();
         let condition_join_id = terminal_parent(&condition_rete, condition_result.terminal_node);
         let condition_join = condition_rete.beta.get_node(condition_join_id).unwrap();

@@ -1465,7 +1465,9 @@ mod tests {
                 .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
+        let _terminal_id = rete
+            .beta
+            .create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
         // Assert a person fact
         let fact_id = fact_base.assert_ordered(person, SmallVec::new());
@@ -1549,7 +1551,9 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, vec![], vec![]);
 
         let rule_id = RuleId(2);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
+        let _terminal_id = rete
+            .beta
+            .create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
 
         // Assert facts
         let mut person_fields = SmallVec::new();
@@ -1621,7 +1625,9 @@ mod tests {
                 .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
+        let _terminal_id = rete
+            .beta
+            .create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
         // Assert a fact
         let fact_id = fact_base.assert_ordered(person, SmallVec::new());
@@ -1670,7 +1676,9 @@ mod tests {
                 .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
+        let _terminal_id = rete
+            .beta
+            .create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
         // Assert (person alice) — should match
         let mut alice_fields = SmallVec::new();
@@ -1712,7 +1720,9 @@ mod tests {
                 .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
+        let _terminal_id = rete
+            .beta
+            .create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
         // Assert 3 facts, checking consistency after each
         let mut fact_ids = Vec::new();
@@ -1793,7 +1803,9 @@ mod tests {
                 .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join_id, rule_id, Salience::DEFAULT);
+        let _terminal_id = rete
+            .beta
+            .create_terminal_node(join_id, rule_id, Salience::DEFAULT);
 
         // Assert 5 facts (some matching, some not)
         let mut fact_ids = Vec::new();
@@ -1893,7 +1905,9 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
 
         let rule_id = RuleId(42);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
+        let _terminal_id = rete
+            .beta
+            .create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
 
         // Assert facts
         // (person alice) — should bind ?x to alice
@@ -2000,7 +2014,9 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
 
         let rule_id = RuleId(42);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
+        let _terminal_id = rete
+            .beta
+            .create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
 
         // Assert facts IN REVERSE ORDER: age fact first, then person fact
 
@@ -2061,7 +2077,9 @@ mod tests {
                 .create_join_node(root_id, alpha_mem1, vec![], join1_bindings);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join1_id, rule_id, Salience::DEFAULT);
+        let _terminal_id = rete
+            .beta
+            .create_terminal_node(join1_id, rule_id, Salience::DEFAULT);
 
         // Assert (person alice 42)
         let mut fields = SmallVec::new();
@@ -2138,7 +2156,9 @@ mod tests {
                 .create_join_node(join1_id, alpha_mem2, join2_tests, vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal_id = rete.beta.create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
+        let _terminal_id = rete
+            .beta
+            .create_terminal_node(join2_id, rule_id, Salience::DEFAULT);
 
         // Assert facts
         let mut person_fields = SmallVec::new();
@@ -2212,7 +2232,9 @@ mod tests {
 
         // Terminal
         let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(neg_id, rule_id, Salience::DEFAULT);
+        let _terminal = rete
+            .beta
+            .create_terminal_node(neg_id, rule_id, Salience::DEFAULT);
 
         (rete, pos_alpha, neg_alpha, rule_id)
     }
@@ -2536,7 +2558,9 @@ mod tests {
             .create_negative_node(join_id, exclude_alpha, neg_tests);
 
         let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(neg_id, rule_id, Salience::DEFAULT);
+        let _terminal = rete
+            .beta
+            .create_terminal_node(neg_id, rule_id, Salience::DEFAULT);
 
         (rete, item_alpha, exclude_alpha, rule_id)
     }
@@ -2681,7 +2705,9 @@ mod tests {
         let (exists_id, _, _) = rete.beta.create_exists_node(join_id, person_alpha, vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(exists_id, rule_id, Salience::DEFAULT);
+        let _terminal = rete
+            .beta
+            .create_terminal_node(exists_id, rule_id, Salience::DEFAULT);
 
         (rete, trigger_alpha, person_alpha, rule_id)
     }
@@ -2702,7 +2728,9 @@ mod tests {
         let (exists_id, _, _) = rete.beta.create_exists_node(root, person_alpha, vec![]);
 
         let rule_id = RuleId(1);
-        let _terminal = rete.beta.create_terminal_node(exists_id, rule_id, Salience::DEFAULT);
+        let _terminal = rete
+            .beta
+            .create_terminal_node(exists_id, rule_id, Salience::DEFAULT);
 
         (rete, person_alpha, rule_id)
     }
