@@ -216,6 +216,7 @@ mod tests {
                     test_type: ConstantTestType::NotEqual(AtomKey::Symbol(red_sym)),
                 }],
                 variable_slots: vec![],
+                negated_variable_slots: Vec::new(),
                 negated: false,
                 exists: false,
             }],

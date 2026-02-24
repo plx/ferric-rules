@@ -987,6 +987,7 @@ impl Engine {
                 entry_type: AlphaEntryType::OrderedRelation(initial_sym),
                 constant_tests: Vec::new(),
                 variable_slots: Vec::new(),
+                negated_variable_slots: Vec::new(),
                 negated: false,
                 exists: false,
             };
@@ -1104,6 +1105,7 @@ impl Engine {
                 let entry_type = AlphaEntryType::OrderedRelation(sym);
                 let mut constant_tests = Vec::new();
                 let mut variable_slots = Vec::new();
+                let mut negated_variable_slots = Vec::new();
 
                 for (i, constraint) in ordered.constraints.iter().enumerate() {
                     let slot = SlotIndex::Ordered(i);
@@ -1112,6 +1114,7 @@ impl Engine {
                         slot,
                         &mut constant_tests,
                         &mut variable_slots,
+                        &mut negated_variable_slots,
                     )?;
                 }
 
@@ -1119,6 +1122,7 @@ impl Engine {
                     entry_type,
                     constant_tests,
                     variable_slots,
+                    negated_variable_slots,
                     negated: false,
                     exists: false,
                 })
@@ -1214,6 +1218,7 @@ impl Engine {
                 let entry_type = AlphaEntryType::Template(template_id);
                 let mut constant_tests = Vec::new();
                 let mut variable_slots = Vec::new();
+                let mut negated_variable_slots = Vec::new();
 
                 for slot_constraint in &template.slot_constraints {
                     let slot_idx = registered
@@ -1237,6 +1242,7 @@ impl Engine {
                         slot,
                         &mut constant_tests,
                         &mut variable_slots,
+                        &mut negated_variable_slots,
                     )?;
                 }
 
@@ -1244,6 +1250,7 @@ impl Engine {
                     entry_type,
                     constant_tests,
                     variable_slots,
+                    negated_variable_slots,
                     negated: false,
                     exists: false,
                 })
@@ -1268,6 +1275,7 @@ impl Engine {
         slot: SlotIndex,
         constant_tests: &mut Vec<ConstantTest>,
         variable_slots: &mut Vec<(SlotIndex, ferric_core::Symbol)>,
+        negated_variable_slots: &mut Vec<(SlotIndex, ferric_core::Symbol)>,
     ) -> Result<(), LoadError> {
         match constraint {
             Constraint::Literal(lit) => {
@@ -1292,27 +1300,39 @@ impl Engine {
                     &format!("multi-field variable `$?{name}` is not supported yet"),
                 ));
             }
-            Constraint::Not(inner, span) => {
-                // ~literal → NotEqual constant test
-                if let Constraint::Literal(lit) = inner.as_ref() {
+            Constraint::Not(inner, span) => match inner.as_ref() {
+                Constraint::Literal(lit) => {
+                    // ~literal → NotEqual constant test
                     if let Some(key) = self.literal_to_atom_key(&lit.value)? {
                         constant_tests.push(ConstantTest {
                             slot,
                             test_type: ConstantTestType::NotEqual(key),
                         });
                     }
-                } else {
+                }
+                Constraint::Variable(name, _) => {
+                    // ~?x → NotEqual beta join test
+                    let sym = self.compile_symbol(name)?;
+                    negated_variable_slots.push((slot, sym));
+                }
+                _ => {
                     return Err(Self::unsupported_constraint(
                         "not",
                         span,
-                        "only negated literals (~<literal>) are supported",
+                        "only negated literals (~<literal>) and negated variables (~?var) are supported",
                     ));
                 }
-            }
+            },
             Constraint::And(constraints, _span) => {
                 // Process each sub-constraint against the same slot
                 for sub in constraints {
-                    self.translate_constraint(sub, slot, constant_tests, variable_slots)?;
+                    self.translate_constraint(
+                        sub,
+                        slot,
+                        constant_tests,
+                        variable_slots,
+                        negated_variable_slots,
+                    )?;
                 }
             }
             Constraint::Or(_constraints, span) => {
@@ -1805,6 +1825,7 @@ mod tests {
         let mut engine = new_utf8_engine();
         let mut constant_tests = Vec::new();
         let mut variable_slots = Vec::new();
+        let mut negated_variable_slots = Vec::new();
         let span = test_span(9, 4);
         let constraint = Constraint::Or(Vec::new(), span);
 
@@ -1814,6 +1835,7 @@ mod tests {
                 SlotIndex::Ordered(0),
                 &mut constant_tests,
                 &mut variable_slots,
+                &mut negated_variable_slots,
             )
             .unwrap_err();
 
@@ -1827,10 +1849,11 @@ mod tests {
     }
 
     #[test]
-    fn translate_negated_non_literal_constraint_returns_compile_error() {
+    fn translate_negated_variable_constraint_produces_negated_slot() {
         let mut engine = new_utf8_engine();
         let mut constant_tests = Vec::new();
         let mut variable_slots = Vec::new();
+        let mut negated_variable_slots = Vec::new();
         let outer_span = test_span(7, 2);
         let inner_span = test_span(7, 3);
         let constraint = Constraint::Not(
@@ -1838,22 +1861,18 @@ mod tests {
             outer_span,
         );
 
-        let error = engine
+        engine
             .translate_constraint(
                 &constraint,
                 SlotIndex::Ordered(0),
                 &mut constant_tests,
                 &mut variable_slots,
+                &mut negated_variable_slots,
             )
-            .unwrap_err();
+            .unwrap();
 
-        match error {
-            LoadError::Compile(message) => {
-                assert!(message.contains("unsupported constraint form `not`"));
-                assert!(message.contains("line 7, column 2"));
-            }
-            other => panic!("expected compile error, got {other:?}"),
-        }
+        assert_eq!(negated_variable_slots.len(), 1);
+        assert_eq!(negated_variable_slots[0].0, SlotIndex::Ordered(0));
     }
 
     #[test]
@@ -1861,6 +1880,7 @@ mod tests {
         let mut engine = new_utf8_engine();
         let mut constant_tests = Vec::new();
         let mut variable_slots = Vec::new();
+        let mut negated_variable_slots = Vec::new();
         let span = test_span(3, 8);
         let literal = ferric_parser::LiteralValue {
             value: LiteralKind::Integer(42),
@@ -1874,6 +1894,7 @@ mod tests {
                 SlotIndex::Ordered(0),
                 &mut constant_tests,
                 &mut variable_slots,
+                &mut negated_variable_slots,
             )
             .unwrap();
 

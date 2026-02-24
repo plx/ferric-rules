@@ -3022,6 +3022,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(item_sym),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -3029,6 +3030,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(block_sym),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -3036,6 +3038,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(reason_sym),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };

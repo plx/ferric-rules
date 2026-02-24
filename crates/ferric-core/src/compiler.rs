@@ -32,6 +32,10 @@ pub struct CompilablePattern {
     /// Variable bindings: (`slot_index`, `variable_symbol`)
     /// The Symbol is the interned variable name (e.g., intern("x") for ?x)
     pub variable_slots: Vec<(SlotIndex, Symbol)>,
+    /// Negated variable bindings: (`slot_index`, `variable_symbol`)
+    /// These generate `NotEqual` join tests instead of `Equal` join tests.
+    /// Used for constraints like `~?x` (field must NOT equal variable `?x`).
+    pub negated_variable_slots: Vec<(SlotIndex, Symbol)>,
     /// If true, this pattern is a negated conditional element (not CE).
     /// Negated patterns create negative nodes instead of join nodes.
     pub negated: bool,
@@ -434,6 +438,20 @@ impl ReteCompiler {
             }
         }
 
+        // Negated variable slots produce NotEqual join tests.
+        // The variable must already be bound (negating an unbound variable is meaningless).
+        for &(slot, var_sym) in &pattern.negated_variable_slots {
+            let var_id = var_map
+                .get_or_create(var_sym)
+                .map_err(|_| CompileError::VarMapOverflow)?;
+
+            join_tests.push(JoinTest {
+                alpha_slot: slot,
+                beta_var: var_id,
+                test_type: JoinTestType::NotEqual,
+            });
+        }
+
         if pattern.negated {
             let (neg_id, _beta_mem, _neg_mem) =
                 rete.beta
@@ -580,6 +598,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -626,6 +645,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -660,6 +680,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -702,6 +723,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -710,6 +732,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -748,6 +771,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -756,6 +780,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_y)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -784,6 +809,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -823,6 +849,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -831,6 +858,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -871,6 +899,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -878,6 +907,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -946,6 +976,7 @@ mod tests {
                 entry_type: AlphaEntryType::OrderedRelation(relation),
                 constant_tests: vec![],
                 variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+                negated_variable_slots: Vec::new(),
                 negated: false,
                 exists: false,
             }],
@@ -958,6 +989,7 @@ mod tests {
                 entry_type: AlphaEntryType::OrderedRelation(relation),
                 constant_tests: vec![],
                 variable_slots: vec![],
+                negated_variable_slots: Vec::new(),
                 negated: false,
                 exists: false,
             }],
@@ -987,6 +1019,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1036,6 +1069,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test1, test2],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1072,6 +1106,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1106,6 +1141,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel1),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1114,6 +1150,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel2),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1122,6 +1159,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel3),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1159,6 +1197,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![test],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1203,6 +1242,7 @@ mod tests {
             entry_type: AlphaEntryType::Template(template_id),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Template(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1214,6 +1254,7 @@ mod tests {
                 (SlotIndex::Template(0), var_x),
                 (SlotIndex::Template(1), var_y),
             ],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1263,6 +1304,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(item_rel),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1271,6 +1313,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(danger_rel),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: true,
             exists: false,
         };
@@ -1315,6 +1358,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(item_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1323,6 +1367,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(exclude_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: true,
             exists: false,
         };
@@ -1368,6 +1413,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(trigger_rel),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1376,6 +1422,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(person_rel),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: true,
         };
@@ -1417,6 +1464,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(a_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: true,
             exists: false,
         };
@@ -1424,6 +1472,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(b_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1460,6 +1509,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(a_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: true,
         };
@@ -1467,6 +1517,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(b_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1503,6 +1554,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(item_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1510,6 +1562,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(block_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1517,6 +1570,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(reason_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1590,6 +1644,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(intern(&mut table, "item")),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1598,6 +1653,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(rel),
             constant_tests: vec![],
             variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
             negated: true,
             exists: false,
         };
@@ -1628,6 +1684,7 @@ mod tests {
                 (SlotIndex::Ordered(0), var_x),
                 (SlotIndex::Ordered(1), var_x),
             ],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1683,6 +1740,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(person_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };
@@ -1690,6 +1748,7 @@ mod tests {
             entry_type: AlphaEntryType::OrderedRelation(age_rel),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
             negated: false,
             exists: false,
         };

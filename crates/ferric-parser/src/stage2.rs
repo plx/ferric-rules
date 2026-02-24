@@ -1547,9 +1547,9 @@ fn interpret_pattern_slot_constraint(slot_expr: &SExpr) -> Result<SlotConstraint
         .ok_or_else(|| InterpretError::expected("slot name (symbol)", slot_list[0].span()))?
         .to_string();
 
-    // For Phase 2, support single constraint per slot.
     let constraint = if slot_list.len() > 1 {
-        interpret_constraint(&slot_list[1])?
+        let (c, _consumed) = interpret_constraint_sequence(&slot_list[1..])?;
+        c
     } else {
         Constraint::Wildcard(slot_expr.span())
     };
@@ -1566,9 +1566,12 @@ fn interpret_ordered_pattern(
     field_exprs: &[SExpr],
     span: Span,
 ) -> Result<Pattern, InterpretError> {
-    let mut constraints = Vec::with_capacity(field_exprs.len());
-    for field_expr in field_exprs {
-        constraints.push(interpret_constraint(field_expr)?);
+    let mut constraints = Vec::new();
+    let mut i = 0;
+    while i < field_exprs.len() {
+        let (constraint, consumed) = interpret_constraint_sequence(&field_exprs[i..])?;
+        constraints.push(constraint);
+        i += consumed;
     }
 
     Ok(Pattern::Ordered(OrderedPattern {
@@ -1576,6 +1579,177 @@ fn interpret_ordered_pattern(
         constraints,
         span,
     }))
+}
+
+/// Interpret a sequence of S-expressions as a single constraint, handling
+/// connective operators (`&`, `|`, `~`) with correct precedence.
+///
+/// Precedence (highest to lowest): `~` (prefix not) > `&` (and) > `|` (or).
+///
+/// Returns the parsed `Constraint` and the number of S-expressions consumed
+/// from `exprs`.
+fn interpret_constraint_sequence(exprs: &[SExpr]) -> Result<(Constraint, usize), InterpretError> {
+    if exprs.is_empty() {
+        // Should not happen in normal flow, but guard anyway.
+        return Err(InterpretError::invalid(
+            "empty constraint sequence",
+            // We have no span; callers always check length first.
+            Span::point(crate::span::Position::new(), crate::span::FileId(0)),
+        ));
+    }
+    parse_or_expr(exprs)
+}
+
+/// Parse an or-expression: `and_expr ("|" and_expr)*`.
+///
+/// Returns `(constraint, consumed)`.
+fn parse_or_expr(exprs: &[SExpr]) -> Result<(Constraint, usize), InterpretError> {
+    let (mut lhs, mut pos) = parse_and_expr(exprs)?;
+
+    loop {
+        if pos >= exprs.len() {
+            break;
+        }
+        // Check if the next token is `|`
+        if !is_connective(&exprs[pos], Connective::Or) {
+            break;
+        }
+        // Consume the `|`
+        pos += 1;
+
+        if pos >= exprs.len() {
+            return Err(InterpretError::invalid(
+                "expected constraint after `|`",
+                exprs[pos - 1].span(),
+            ));
+        }
+
+        let (rhs, rhs_len) = parse_and_expr(&exprs[pos..])?;
+        let combined_span = lhs.span().merge(rhs.span());
+
+        // Flatten nested Or into a single Or if possible.
+        lhs = match lhs {
+            Constraint::Or(mut terms, _) => {
+                terms.push(rhs);
+                Constraint::Or(terms, combined_span)
+            }
+            other => Constraint::Or(vec![other, rhs], combined_span),
+        };
+        pos += rhs_len;
+    }
+
+    Ok((lhs, pos))
+}
+
+/// Parse an and-expression: `unary_expr ("&" unary_expr)*`.
+///
+/// Returns `(constraint, consumed)`.
+fn parse_and_expr(exprs: &[SExpr]) -> Result<(Constraint, usize), InterpretError> {
+    let (mut lhs, mut pos) = parse_unary_expr(exprs)?;
+
+    loop {
+        if pos >= exprs.len() {
+            break;
+        }
+        // Check if the next token is `&`
+        if !is_connective(&exprs[pos], Connective::And) {
+            break;
+        }
+        // Consume the `&`
+        pos += 1;
+
+        if pos >= exprs.len() {
+            return Err(InterpretError::invalid(
+                "expected constraint after `&`",
+                exprs[pos - 1].span(),
+            ));
+        }
+
+        let (rhs, rhs_len) = parse_unary_expr(&exprs[pos..])?;
+        let combined_span = lhs.span().merge(rhs.span());
+
+        // Flatten nested And into a single And if possible.
+        lhs = match lhs {
+            Constraint::And(mut terms, _) => {
+                terms.push(rhs);
+                Constraint::And(terms, combined_span)
+            }
+            other => Constraint::And(vec![other, rhs], combined_span),
+        };
+        pos += rhs_len;
+    }
+
+    Ok((lhs, pos))
+}
+
+/// Parse a unary expression: `"~" unary_expr | atom_constraint`.
+///
+/// Returns `(constraint, consumed)`.
+fn parse_unary_expr(exprs: &[SExpr]) -> Result<(Constraint, usize), InterpretError> {
+    if exprs.is_empty() {
+        return Err(InterpretError::invalid(
+            "expected constraint",
+            Span::point(crate::span::Position::new(), crate::span::FileId(0)),
+        ));
+    }
+
+    if is_connective(&exprs[0], Connective::Not) {
+        let not_span = exprs[0].span();
+        // Consume the `~` and parse the inner constraint.
+        if exprs.len() < 2 {
+            return Err(InterpretError::invalid(
+                "expected constraint after `~`",
+                not_span,
+            ));
+        }
+        let (inner, inner_len) = parse_unary_expr(&exprs[1..])?;
+        let combined_span = not_span.merge(inner.span());
+        return Ok((
+            Constraint::Not(Box::new(inner), combined_span),
+            1 + inner_len,
+        ));
+    }
+
+    // `:` and `=` introduce predicate/return-value constraint forms (item 005).
+    // Consume the connective plus its argument expression and produce a wildcard
+    // placeholder so that constructs using these forms are accepted without error.
+    if is_connective(&exprs[0], Connective::Colon) || is_connective(&exprs[0], Connective::Equals) {
+        let conn_span = exprs[0].span();
+        if exprs.len() < 2 {
+            return Err(InterpretError::invalid(
+                "expected expression after predicate connective",
+                conn_span,
+            ));
+        }
+        // Consume the connective and one more S-expression (the predicate/expression).
+        let combined_span = conn_span.merge(exprs[1].span());
+        return Ok((Constraint::Wildcard(combined_span), 2));
+    }
+
+    // Atom constraint — exactly one S-expression.
+    let c = interpret_constraint(&exprs[0])?;
+    Ok((c, 1))
+}
+
+/// Returns `true` if `expr` is a connective atom of the given kind.
+fn is_connective(expr: &SExpr, kind: Connective) -> bool {
+    matches!(expr.as_atom(), Some(Atom::Connective(c)) if *c == kind)
+}
+
+impl Constraint {
+    /// Returns the span of this constraint.
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Literal(lit) => lit.span,
+            Self::Variable(_, span)
+            | Self::MultiVariable(_, span)
+            | Self::Wildcard(span)
+            | Self::MultiWildcard(span)
+            | Self::Not(_, span)
+            | Self::And(_, span)
+            | Self::Or(_, span) => *span,
+        }
+    }
 }
 
 /// Interpret a single constraint from a pattern field.
@@ -3624,5 +3798,114 @@ mod tests {
             result.errors[0].kind,
             InterpretErrorKind::MissingElement
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Connective constraint tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpret_ordered_connective_and() {
+        // ?x&~red should parse as And([Variable("x"), Not(Literal("red"))])
+        let parsed = parse_sexprs("(defrule test (data ?x&~red) => (printout t ok))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        // The LHS has one pattern: (data ?x&~red)
+        let Pattern::Ordered(op) = &rule.patterns[0] else {
+            panic!("expected ordered pattern");
+        };
+        assert_eq!(op.constraints.len(), 1);
+        let Constraint::And(terms, _) = &op.constraints[0] else {
+            panic!("expected And constraint, got {:?}", op.constraints[0]);
+        };
+        assert_eq!(terms.len(), 2);
+        assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "x"));
+        let Constraint::Not(inner, _) = &terms[1] else {
+            panic!("expected Not constraint");
+        };
+        assert!(
+            matches!(inner.as_ref(), Constraint::Literal(lit) if matches!(&lit.value, LiteralKind::Symbol(s) if s == "red"))
+        );
+    }
+
+    #[test]
+    fn interpret_ordered_connective_or() {
+        // a|b should parse as Or([Literal("a"), Literal("b")])
+        let parsed = parse_sexprs("(defrule test (data a|b) => (printout t ok))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        let Pattern::Ordered(op) = &rule.patterns[0] else {
+            panic!("expected ordered pattern");
+        };
+        assert_eq!(op.constraints.len(), 1);
+        let Constraint::Or(terms, _) = &op.constraints[0] else {
+            panic!("expected Or constraint, got {:?}", op.constraints[0]);
+        };
+        assert_eq!(terms.len(), 2);
+        assert!(
+            matches!(&terms[0], Constraint::Literal(lit) if matches!(&lit.value, LiteralKind::Symbol(s) if s == "a"))
+        );
+        assert!(
+            matches!(&terms[1], Constraint::Literal(lit) if matches!(&lit.value, LiteralKind::Symbol(s) if s == "b"))
+        );
+    }
+
+    #[test]
+    fn interpret_template_connective_constraint() {
+        let parsed = parse_sexprs(
+            r"
+            (deftemplate item (slot color))
+            (defrule test (item (color ?c&~red)) => (printout t ok))
+            ",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[1] else {
+            panic!("expected Rule as second construct");
+        };
+        let Pattern::Template(tp) = &rule.patterns[0] else {
+            panic!("expected template pattern");
+        };
+        assert_eq!(tp.slot_constraints.len(), 1);
+        let sc = &tp.slot_constraints[0];
+        assert_eq!(sc.slot_name, "color");
+        let Constraint::And(terms, _) = &sc.constraint else {
+            panic!("expected And constraint in slot, got {:?}", sc.constraint);
+        };
+        assert_eq!(terms.len(), 2);
+        assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "c"));
+        assert!(matches!(&terms[1], Constraint::Not(_, _)));
+    }
+
+    #[test]
+    fn interpret_negation_constraint() {
+        // ~red should parse as Not(Literal("red"))
+        let parsed = parse_sexprs("(defrule test (data ~red) => (printout t ok))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        let Pattern::Ordered(op) = &rule.patterns[0] else {
+            panic!("expected ordered pattern");
+        };
+        assert_eq!(op.constraints.len(), 1);
+        let Constraint::Not(inner, _) = &op.constraints[0] else {
+            panic!("expected Not constraint, got {:?}", op.constraints[0]);
+        };
+        assert!(
+            matches!(inner.as_ref(), Constraint::Literal(lit) if matches!(&lit.value, LiteralKind::Symbol(s) if s == "red"))
+        );
     }
 }
