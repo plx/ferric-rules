@@ -1733,15 +1733,18 @@ fn interpret_slot_definition(expr: &SExpr) -> Result<SlotDefinition, InterpretEr
     }
 
     let keyword = list[0].as_symbol().ok_or_else(|| {
-        InterpretError::expected("slot keyword (slot or multislot)", list[0].span())
+        InterpretError::expected(
+            "slot keyword (slot, multislot, field, or multifield)",
+            list[0].span(),
+        )
     })?;
 
     let (slot_type, name_idx) = match keyword {
-        "slot" => (SlotType::Single, 1),
-        "multislot" => (SlotType::Multi, 1),
+        "slot" | "field" => (SlotType::Single, 1),
+        "multislot" | "multifield" => (SlotType::Multi, 1),
         _ => {
             return Err(InterpretError::invalid(
-                "expected 'slot' or 'multislot'",
+                "expected 'slot', 'multislot', 'field', or 'multifield'",
                 list[0].span(),
             ))
         }
@@ -2837,8 +2840,46 @@ mod tests {
     }
 
     #[test]
-    fn interpret_error_invalid_slot_keyword() {
+    fn interpret_field_alias_for_slot() {
         let parsed = parse_sexprs("(deftemplate person (field name))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            result.errors.is_empty(),
+            "field should be accepted as alias for slot"
+        );
+        assert_eq!(result.constructs.len(), 1);
+        if let Construct::Template(tmpl) = &result.constructs[0] {
+            assert_eq!(tmpl.slots.len(), 1);
+            assert_eq!(tmpl.slots[0].name, "name");
+            assert_eq!(tmpl.slots[0].slot_type, SlotType::Single);
+        } else {
+            panic!("expected template construct");
+        }
+    }
+
+    #[test]
+    fn interpret_multifield_alias_for_multislot() {
+        let parsed = parse_sexprs("(deftemplate data (multifield values))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            result.errors.is_empty(),
+            "multifield should be accepted as alias for multislot"
+        );
+        assert_eq!(result.constructs.len(), 1);
+        if let Construct::Template(tmpl) = &result.constructs[0] {
+            assert_eq!(tmpl.slots.len(), 1);
+            assert_eq!(tmpl.slots[0].name, "values");
+            assert_eq!(tmpl.slots[0].slot_type, SlotType::Multi);
+        } else {
+            panic!("expected template construct");
+        }
+    }
+
+    #[test]
+    fn interpret_error_invalid_slot_keyword() {
+        let parsed = parse_sexprs("(deftemplate person (bogus name))", file());
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert_eq!(result.errors.len(), 1);
