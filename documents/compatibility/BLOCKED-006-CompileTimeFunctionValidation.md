@@ -54,3 +54,19 @@ cargo run -p ferric-cli -- check tests/examples/clips-official/examples/sudoku/p
 cargo run -p ferric-cli -- check tests/examples/clips-executive/cx_plugins/protobuf_plugin/clips/protobuf.clp
 ```
 Expected near-term outcome: ferric should fail at load time where CLIPS reports missing function declarations; files may still need multi-file loading context.
+
+## BLOCKED Note
+
+**Blocker**: Implementing compile-time function validation requires building a complete
+callable-name registry (builtins + deffunctions + defgenerics) and adding a post-load
+validation pass. The current `.ok()` pattern in `compile_rule_construct()` is a deliberate
+design choice allowing graceful AST-fallback for constructs not yet supported by
+`from_action_expr`. Changing this naively would:
+
+1. Require enumerating all ~100+ builtin function names in a centralized registry
+2. Risk breaking valid programs that use the AST fallback path for newer constructs
+3. Need careful ordering (deffunctions/defgenerics may be defined after rules that call them)
+
+This is a diagnostic-behavior improvement (errors at load time vs runtime) rather than a
+capability gap. Programs that should work still work; broken programs get errors later.
+Deferred to a dedicated validation phase.
