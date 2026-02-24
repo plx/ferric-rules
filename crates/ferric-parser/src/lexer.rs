@@ -493,6 +493,8 @@ fn is_symbol_char(ch: char) -> bool {
                 | '@'
                 | '{'
                 | '}'
+                | '['
+                | ']'
         )
 }
 
@@ -629,6 +631,22 @@ mod tests {
         let tokens = lex("my-rule*", file()).unwrap();
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].token, Token::Symbol(ref s) if s == "my-rule*"));
+    }
+
+    #[test]
+    fn lex_symbol_with_brackets() {
+        let tokens = lex("Templates[1]", file()).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].token, Token::Symbol(ref s) if s == "Templates[1]"));
+    }
+
+    #[test]
+    fn lex_global_var_with_brackets() {
+        let tokens = lex("?*partial-OR2-gwhip[10]-salience-1*", file()).unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(
+            matches!(tokens[0].token, Token::GlobalVar(ref s) if s == "partial-OR2-gwhip[10]-salience-1")
+        );
     }
 
     #[test]
