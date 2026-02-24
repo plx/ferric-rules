@@ -218,6 +218,16 @@ def classify_results(ferric_result, clips_result):
     if f["exit_code"] != 0 and c["exit_code"] != 0:
         return "incompatible", "both-error"
 
+    # CLIPS may report errors on stdout even with exit code 0 (e.g.,
+    # [EXPRNPSR3] Missing function declaration).  Detect these and treat
+    # the file as incompatible when both engines effectively fail.
+    clips_has_error = bool(re.search(r"\[(?:EXPRNPSR|PRNTUTIL|CSTRCPSR|PRCCODE)\d*\]", c["stdout"]))
+    ferric_has_error = f["exit_code"] != 0
+    if clips_has_error and not ferric_has_error:
+        return "incompatible", "clips-load-error"
+    if clips_has_error and ferric_has_error:
+        return "incompatible", "both-error"
+
     # Both succeeded — compare normalized output
     f_out = normalize_output(f["stdout"], "ferric")
     c_out = normalize_output(c["stdout"], "clips")
