@@ -133,6 +133,13 @@ pub enum ActionExpr {
     Variable(String, Span),
     GlobalVariable(String, Span),
     FunctionCall(FunctionCall),
+    /// CLIPS `(if <condition> then <action>* [else <action>*])` form.
+    If {
+        condition: Box<ActionExpr>,
+        then_actions: Vec<ActionExpr>,
+        else_actions: Vec<ActionExpr>,
+        span: Span,
+    },
 }
 
 // ============================================================================
@@ -1818,6 +1825,22 @@ fn interpret_constraint(expr: &SExpr) -> Result<Constraint, InterpretError> {
 
 /// Interpret a single action from a rule's RHS.
 fn interpret_action(expr: &SExpr) -> Result<Action, InterpretError> {
+    // Detect the `(if ...)` special form at the action level.
+    if let Some(list) = expr.as_list() {
+        if !list.is_empty() && list[0].as_symbol() == Some("if") {
+            let if_expr = interpret_if_expr(&list[1..], expr.span())?;
+            // Wrap the parsed `if` form as the sole argument to a synthetic
+            // `FunctionCall` with name `"if"`.  The action executor detects
+            // this name and unpacks `args[0]` as `ActionExpr::If`.
+            return Ok(Action {
+                call: FunctionCall {
+                    name: "if".to_string(),
+                    args: vec![if_expr],
+                    span: expr.span(),
+                },
+            });
+        }
+    }
     let call = interpret_function_call(expr)?;
     Ok(Action { call })
 }
@@ -1849,10 +1872,73 @@ fn interpret_function_call(expr: &SExpr) -> Result<FunctionCall, InterpretError>
     })
 }
 
+/// Interpret a CLIPS `(if <cond> then <action>* [else <action>*])` form.
+///
+/// The S-expression list has already had its head `if` consumed — `rest` is
+/// the remaining elements: `[<cond>, then, <action>*, [else, <action>*]]`.
+fn interpret_if_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    if rest.is_empty() {
+        return Err(InterpretError::missing("condition in (if ...)", span));
+    }
+
+    let condition = interpret_action_expr(&rest[0])?;
+
+    // Find `then` keyword.
+    let then_pos = rest[1..]
+        .iter()
+        .position(|e| e.as_symbol() == Some("then"))
+        .ok_or_else(|| InterpretError::missing("then keyword in (if ... then ...)", span))?;
+    // `then_pos` is relative to `rest[1..]`, so absolute index is `then_pos + 1`.
+    let then_abs = then_pos + 1;
+
+    // Elements between condition and `then` are not valid — the condition is
+    // always a single expression (rest[0]).  The `then` must appear at index 1.
+    if then_abs != 1 {
+        return Err(InterpretError::invalid(
+            "expected 'then' immediately after the if-condition",
+            span,
+        ));
+    }
+
+    // Elements after `then` until `else` (or end) are the then-branch actions.
+    let after_then = &rest[then_abs + 1..];
+
+    let else_pos = after_then
+        .iter()
+        .position(|e| e.as_symbol() == Some("else"));
+
+    let (then_exprs, else_exprs) = if let Some(ep) = else_pos {
+        (&after_then[..ep], &after_then[ep + 1..])
+    } else {
+        (after_then, [].as_slice())
+    };
+
+    let mut then_actions = Vec::with_capacity(then_exprs.len());
+    for e in then_exprs {
+        then_actions.push(interpret_action_expr(e)?);
+    }
+
+    let mut else_actions = Vec::with_capacity(else_exprs.len());
+    for e in else_exprs {
+        else_actions.push(interpret_action_expr(e)?);
+    }
+
+    Ok(ActionExpr::If {
+        condition: Box::new(condition),
+        then_actions,
+        else_actions,
+        span,
+    })
+}
+
 /// Interpret an expression in an action context (RHS).
 fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
-    // Check if it's a list (nested function call)
-    if let Some(_list) = expr.as_list() {
+    // Check if it's a list (nested function call or special form)
+    if let Some(list) = expr.as_list() {
+        // Detect the `(if ...)` special form.
+        if !list.is_empty() && list[0].as_symbol() == Some("if") {
+            return interpret_if_expr(&list[1..], expr.span());
+        }
         let call = interpret_function_call(expr)?;
         return Ok(ActionExpr::FunctionCall(call));
     }
@@ -3906,6 +3992,121 @@ mod tests {
         };
         assert!(
             matches!(inner.as_ref(), Constraint::Literal(lit) if matches!(&lit.value, LiteralKind::Symbol(s) if s == "red"))
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // if/then/else parsing tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn interpret_if_then_else_action() {
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x) => (if (> ?x 0) then (assert (positive)) else (assert (negative))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions.len(), 1);
+        let ActionExpr::If {
+            then_actions,
+            else_actions,
+            ..
+        } = &rule.actions[0].call.args[0]
+        else {
+            panic!(
+                "expected If in action args, got {:?}",
+                rule.actions[0].call.args[0]
+            );
+        };
+        assert_eq!(then_actions.len(), 1, "then branch should have one action");
+        assert_eq!(else_actions.len(), 1, "else branch should have one action");
+    }
+
+    #[test]
+    fn interpret_if_then_no_else_action() {
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x) => (if (> ?x 0) then (assert (positive))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions.len(), 1);
+        let ActionExpr::If {
+            then_actions,
+            else_actions,
+            ..
+        } = &rule.actions[0].call.args[0]
+        else {
+            panic!("expected If in action args");
+        };
+        assert_eq!(then_actions.len(), 1);
+        assert!(else_actions.is_empty(), "else branch should be empty");
+    }
+
+    #[test]
+    fn interpret_if_then_multiple_actions_in_branch() {
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x) => (if (> ?x 0) then (assert (p)) (assert (q)) else (assert (r))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        let ActionExpr::If {
+            then_actions,
+            else_actions,
+            ..
+        } = &rule.actions[0].call.args[0]
+        else {
+            panic!("expected If in action args");
+        };
+        assert_eq!(then_actions.len(), 2, "then branch should have two actions");
+        assert_eq!(else_actions.len(), 1, "else branch should have one action");
+    }
+
+    #[test]
+    fn interpret_if_missing_then_keyword_is_error() {
+        // `then` keyword is missing — should produce an error
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x) => (if (> ?x 0) (assert (positive))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            !result.errors.is_empty(),
+            "should have reported a missing `then` error"
+        );
+    }
+
+    #[test]
+    fn interpret_if_in_deffunction_body() {
+        let parsed = parse_sexprs(
+            "(deffunction classify (?x) (if (> ?x 0) then positive else negative))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Function(func) = &result.constructs[0] else {
+            panic!("expected Function construct");
+        };
+        assert_eq!(func.body.len(), 1);
+        assert!(
+            matches!(&func.body[0], ActionExpr::If { .. }),
+            "expected If in function body"
         );
     }
 }

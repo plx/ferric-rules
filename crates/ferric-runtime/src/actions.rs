@@ -253,6 +253,7 @@ pub(crate) fn execute_actions(
 }
 
 #[allow(clippy::too_many_arguments)] // Action dispatch needs full mutable engine/action context.
+#[allow(clippy::too_many_lines)] // if-branch execution adds necessary verbosity
 fn execute_single_action(
     fact_base: &mut FactBase,
     rete: &mut ReteNetwork,
@@ -310,6 +311,113 @@ fn execute_single_action(
             // (run) from within a rule RHS is a no-op — the engine is already running.
             // CLIPS allows this but it's unusual. We silently ignore it.
             Ok(())
+        }
+        "if" => {
+            // `(if <cond> then <action>* [else <action>*])` special form.
+            //
+            // Two cases for `runtime_call`:
+            //
+            // 1. Top-level `if` action: the loader wraps the `if` as the sole
+            //    arg of a `RuntimeExpr::Call { name: "if", args: [RuntimeExpr::If{...}] }`.
+            //    We unwrap one level to get the `RuntimeExpr::If`.
+            //
+            // 2. Nested `if` in a branch: recursive `execute_single_action` is
+            //    called with `runtime_call = Some(RuntimeExpr::If{...})` directly
+            //    (since the branch item's `rt_expr` is already the `RuntimeExpr::If`).
+            let if_runtime: Option<&crate::evaluator::RuntimeExpr> = match runtime_call {
+                Some(crate::evaluator::RuntimeExpr::Call { args, .. }) => {
+                    // Top-level path: unwrap the wrapper call.
+                    args.first().map(|a| a as &crate::evaluator::RuntimeExpr)
+                }
+                Some(rt @ crate::evaluator::RuntimeExpr::If { .. }) => {
+                    // Nested path: already the RuntimeExpr::If directly.
+                    Some(rt)
+                }
+                _ => None,
+            };
+
+            if let Some(crate::evaluator::RuntimeExpr::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            }) = if_runtime
+            {
+                let cond_value = {
+                    let mut ctx = eval_env.make_eval_context(token, rule_info);
+                    crate::evaluator::eval(&mut ctx, condition).map_err(ActionError::from)?
+                };
+                let branch = if crate::evaluator::is_truthy(&cond_value, eval_env.symbol_table) {
+                    then_branch
+                } else {
+                    else_branch
+                };
+                for (action_expr, rt_expr) in branch {
+                    // Reconstruct a FunctionCall from the ActionExpr so we can
+                    // route through execute_single_action normally.
+                    let (branch_call, branch_runtime): (
+                        FunctionCall,
+                        Option<&crate::evaluator::RuntimeExpr>,
+                    ) = match action_expr {
+                        ActionExpr::FunctionCall(fc) => {
+                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                            (fc.clone(), rt)
+                        }
+                        ActionExpr::If { span, .. } => {
+                            // Nested if: create a synthetic call with name "if"
+                            // so the recursive execute_single_action picks it up.
+                            let synthetic = FunctionCall {
+                                name: "if".to_string(),
+                                args: vec![],
+                                span: *span,
+                            };
+                            let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                            (synthetic, rt)
+                        }
+                        _ => {
+                            // Literal/variable — evaluate as expression; not an
+                            // action but valid in CLIPS (result is discarded).
+                            if let Some(rt) = rt_expr {
+                                let _ = eval_env.eval_runtime_expr(token, rule_info, rt);
+                            } else {
+                                let _ = eval_env.eval_expr(token, rule_info, action_expr);
+                            }
+                            continue;
+                        }
+                    };
+                    execute_single_action(
+                        fact_base,
+                        rete,
+                        halted,
+                        reset_requested,
+                        clear_requested,
+                        token,
+                        rule_info,
+                        &branch_call,
+                        branch_runtime,
+                        template_defs,
+                        router,
+                        focus_requests,
+                        all_rule_info,
+                        eval_env,
+                    )?;
+                    // Propagate early-exit flags.
+                    if *halted || *reset_requested || *clear_requested {
+                        break;
+                    }
+                }
+                Ok(())
+            } else {
+                // Fallback: evaluate as expression (no-op if void).
+                if let Some(runtime_expr) = runtime_call {
+                    eval_env
+                        .eval_runtime_expr(token, rule_info, runtime_expr)
+                        .map(|_| ())
+                        .map_err(|e| ActionError::UnknownAction(format!("if: {e}")))
+                } else {
+                    Ok(())
+                }
+            }
         }
         // For any other call, try evaluating it as an expression (e.g., bind).
         _ => {

@@ -142,6 +142,22 @@ pub enum RuntimeExpr {
         args: Vec<RuntimeExpr>,
         span: Option<SourceSpan>,
     },
+    /// CLIPS `(if <condition> then <action>* [else <action>*])` form.
+    ///
+    /// Evaluates `condition`; if truthy evaluates `then_branch` in order and
+    /// returns the last value, otherwise evaluates `else_branch`.
+    /// Returns `Value::Void` when the selected branch is empty.
+    ///
+    /// Each branch entry pairs the original parser `ActionExpr` (needed by
+    /// the action executor for assert/retract/printout arg handling) with its
+    /// pre-compiled `RuntimeExpr` counterpart (used as the `runtime_call` hint
+    /// in action dispatch and for pure expression evaluation).
+    If {
+        condition: Box<RuntimeExpr>,
+        then_branch: Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
+        else_branch: Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
+        span: Option<SourceSpan>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +454,30 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                 }
                 Err(e) => Err(e),
             }
+        }
+        RuntimeExpr::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            let cond_value = eval(ctx, condition)?;
+            let branch = if is_truthy(&cond_value, ctx.symbol_table) {
+                then_branch
+            } else {
+                else_branch
+            };
+            let mut result = Value::Void;
+            for (action_expr, rt_expr) in branch {
+                if let Some(rt) = rt_expr {
+                    result = eval(ctx, rt)?;
+                } else {
+                    // Pre-compilation failed; translate on the fly.
+                    let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
+                    result = eval(ctx, &rt)?;
+                }
+            }
+            Ok(result)
         }
     }
 }
@@ -1138,6 +1178,33 @@ pub fn from_action_expr(
                 span: Some(SourceSpan {
                     line: call.span.start.line,
                     column: call.span.start.column,
+                }),
+            })
+        }
+        ferric_parser::ActionExpr::If {
+            condition,
+            then_actions,
+            else_actions,
+            span,
+        } => {
+            let condition_rt = from_action_expr(condition, symbol_table, config)?;
+            let mut then_branch = Vec::with_capacity(then_actions.len());
+            for a in then_actions {
+                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                then_branch.push((a.clone(), rt));
+            }
+            let mut else_branch = Vec::with_capacity(else_actions.len());
+            for a in else_actions {
+                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                else_branch.push((a.clone(), rt));
+            }
+            Ok(RuntimeExpr::If {
+                condition: Box::new(condition_rt),
+                then_branch,
+                else_branch,
+                span: Some(SourceSpan {
+                    line: span.start.line,
+                    column: span.start.column,
                 }),
             })
         }
