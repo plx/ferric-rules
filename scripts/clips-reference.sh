@@ -92,7 +92,7 @@ run_command() {
 
   local commands=()
   local file
-  for file in "${CLIPS_FILES[@]}"; do
+  for file in ${CLIPS_FILES[@]+"${CLIPS_FILES[@]}"}; do
     local abs
     abs="$(resolve_path "$file")"
     if [[ "$abs" != "$repo_root"/* ]]; then
@@ -114,7 +114,7 @@ run_command() {
   fi
 
   local op
-  for op in "${OPS[@]}"; do
+  for op in ${OPS[@]+"${OPS[@]}"}; do
     commands+=("$op")
   done
 
