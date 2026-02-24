@@ -972,12 +972,13 @@ impl Engine {
             conditions.push(condition);
         }
 
-        // If the first condition is an NCC (e.g., forall or not/and as the leading CE),
-        // the NCC requires a parent token in the beta chain to produce pass-through tokens.
-        // To support vacuous truth and standalone forall/negation, inject an implicit
-        // (initial-fact) join as the first condition, mirroring CLIPS' built-in
-        // (initial-fact) mechanism.
-        if matches!(conditions.first(), Some(CompilableCondition::Ncc(_))) {
+        // If the condition list is empty (empty-LHS rule or test-only rule), or if the
+        // first condition is an NCC (e.g., forall or not/and as the leading CE), inject
+        // an implicit (initial-fact) join as the first condition, mirroring CLIPS' built-in
+        // (initial-fact) mechanism. Empty-LHS rules implicitly match (initial-fact) after
+        // (reset) in CLIPS.
+        if conditions.is_empty() || matches!(conditions.first(), Some(CompilableCondition::Ncc(_)))
+        {
             let initial_sym = self
                 .symbol_table
                 .intern_symbol("initial-fact", self.config.string_encoding)
@@ -1696,6 +1697,39 @@ mod tests {
             .load_str("(defrule t (value ?x) (test (> ?x 0)) => (assert (ok)))")
             .unwrap();
         assert_eq!(result.rules.len(), 1);
+    }
+
+    #[test]
+    fn load_empty_lhs_rule_compiles_with_implicit_initial_fact() {
+        let mut engine = new_utf8_engine();
+        let result = engine
+            .load_str("(defrule empty-rule => (assert (fired)))")
+            .unwrap();
+        assert_eq!(result.rules.len(), 1);
+    }
+
+    #[test]
+    fn load_test_only_rule_compiles_with_implicit_initial_fact() {
+        let mut engine = new_utf8_engine();
+        let result = engine
+            .load_str("(defrule test-only (test (> 5 3)) => (assert (ok)))")
+            .unwrap();
+        assert_eq!(result.rules.len(), 1);
+    }
+
+    #[test]
+    fn empty_lhs_rule_fires_after_reset() {
+        let mut engine = new_utf8_engine();
+        engine
+            .load_str("(defrule empty-rule => (assert (fired)))")
+            .unwrap();
+        engine.reset().unwrap();
+        let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
+        assert!(
+            result.rules_fired > 0,
+            "empty-LHS rule should fire after reset, fired: {}",
+            result.rules_fired
+        );
     }
 
     #[test]
