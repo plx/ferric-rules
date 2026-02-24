@@ -195,6 +195,7 @@ fi
 
 require_cmd hyperfine "https://github.com/sharkdp/hyperfine#installation"
 require_cmd jq "apt-get install jq"
+require_cmd bc "apt-get install bc"
 require_cmd "$CLIPS_BIN" "apt-get install clips  (Ubuntu/Debian)"
 
 echo "==> Comparative benchmark: ferric vs. CLIPS"
@@ -255,6 +256,9 @@ done
 # ── Step 4: Memory measurement ──────────────────────────────────────────────
 
 echo "==> Measuring peak memory (Phase C only)..."
+
+# Truncate so repeated runs don't accumulate stale entries.
+: > "${RESULTS_DIR}/memory.txt"
 
 for workload in $WORKLOADS; do
     clp="${WORKLOAD_DIR}/${workload}.clp"
