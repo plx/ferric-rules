@@ -319,3 +319,119 @@ fn header_contains_value_free_functions() {
         "Missing ferric_value_array_free"
     );
 }
+
+// ── Bounds-safety annotation tests ─────────────────────────────────────
+
+#[test]
+fn header_has_bounds_safety_macros() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("#define FERRIC_COUNTED_BY(N)"),
+        "Missing FERRIC_COUNTED_BY macro definition"
+    );
+    assert!(
+        header.contains("#define FERRIC_SIZED_BY(N)"),
+        "Missing FERRIC_SIZED_BY macro definition"
+    );
+    assert!(
+        header.contains("#define FERRIC_NULL_TERMINATED"),
+        "Missing FERRIC_NULL_TERMINATED macro definition"
+    );
+    assert!(
+        header.contains("__has_feature(bounds_safety)"),
+        "Missing bounds_safety feature detection"
+    );
+}
+
+#[test]
+fn header_has_bounds_safety_escape_hatch() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("FERRIC_NO_BOUNDS_ANNOTATIONS"),
+        "Missing FERRIC_NO_BOUNDS_ANNOTATIONS escape hatch"
+    );
+}
+
+#[test]
+fn header_has_counted_by_and_sized_by_annotations() {
+    let header = read_committed_header();
+
+    // Struct field: FerricValue.multifield_ptr counted_by multifield_len
+    assert!(
+        header.contains("*multifield_ptr FERRIC_COUNTED_BY(multifield_len)"),
+        "Missing FERRIC_COUNTED_BY on FerricValue.multifield_ptr"
+    );
+
+    // ferric_value_array_free: arr counted_by len
+    assert!(
+        header.contains("*arr FERRIC_COUNTED_BY(len)"),
+        "Missing FERRIC_COUNTED_BY on ferric_value_array_free arr parameter"
+    );
+
+    // ferric_last_error_global_copy: buf sized_by buf_len
+    assert!(
+        header.contains("ferric_last_error_global_copy(char *buf FERRIC_SIZED_BY(buf_len)"),
+        "Missing FERRIC_SIZED_BY on ferric_last_error_global_copy buf parameter"
+    );
+
+    // ferric_engine_last_error_copy: buf sized_by buf_len
+    assert!(
+        header.contains("*buf FERRIC_SIZED_BY(buf_len),\n                                               uintptr_t buf_len,\n                                               uintptr_t *out_len);"),
+        "Missing FERRIC_SIZED_BY on ferric_engine_last_error_copy buf parameter"
+    );
+
+    // ferric_engine_action_diagnostic_copy: buf sized_by buf_len
+    assert!(
+        header.contains("*buf FERRIC_SIZED_BY(buf_len),\n                                                      uintptr_t buf_len,\n                                                      uintptr_t *out_len);"),
+        "Missing FERRIC_SIZED_BY on ferric_engine_action_diagnostic_copy buf parameter"
+    );
+}
+
+#[test]
+fn header_has_null_terminated_annotations() {
+    let header = read_committed_header();
+
+    // Struct field: FerricValue.string_ptr
+    assert!(
+        header.contains("FERRIC_NULL_TERMINATED string_ptr"),
+        "Missing FERRIC_NULL_TERMINATED on FerricValue.string_ptr"
+    );
+
+    // Return types
+    assert!(
+        header.contains("char * FERRIC_NULL_TERMINATED ferric_engine_last_error("),
+        "Missing FERRIC_NULL_TERMINATED on ferric_engine_last_error return type"
+    );
+    assert!(
+        header.contains("char * FERRIC_NULL_TERMINATED ferric_engine_get_output("),
+        "Missing FERRIC_NULL_TERMINATED on ferric_engine_get_output return type"
+    );
+    assert!(
+        header.contains("char * FERRIC_NULL_TERMINATED ferric_last_error_global("),
+        "Missing FERRIC_NULL_TERMINATED on ferric_last_error_global return type"
+    );
+
+    // String parameters
+    assert!(
+        header.contains("FERRIC_NULL_TERMINATED source);"),
+        "Missing FERRIC_NULL_TERMINATED on load_string source parameter"
+    );
+    assert!(
+        header.contains("FERRIC_NULL_TERMINATED source,"),
+        "Missing FERRIC_NULL_TERMINATED on assert_string source parameter"
+    );
+    assert!(
+        header.contains("FERRIC_NULL_TERMINATED channel);"),
+        "Missing FERRIC_NULL_TERMINATED on get_output channel parameter"
+    );
+    assert!(
+        header.contains("FERRIC_NULL_TERMINATED name,"),
+        "Missing FERRIC_NULL_TERMINATED on get_global name parameter"
+    );
+
+    // ferric_string_free: ptr
+    assert!(
+        header.contains("FERRIC_NULL_TERMINATED ptr)"),
+        "Missing FERRIC_NULL_TERMINATED on ferric_string_free ptr parameter"
+    );
+}
