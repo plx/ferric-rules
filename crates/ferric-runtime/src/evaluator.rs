@@ -115,6 +115,16 @@ pub enum EvalError {
 }
 
 // ---------------------------------------------------------------------------
+// Loop safety cap
+// ---------------------------------------------------------------------------
+
+/// Maximum number of loop iterations before an error is raised.
+///
+/// Applies to `while` loops and `loop-for-count` ranges. Prevents infinite
+/// loops and overly large iteration counts from hanging the engine.
+const MAX_LOOP_ITERATIONS: usize = 1_000_000;
+
+// ---------------------------------------------------------------------------
 // Runtime expression model
 // ---------------------------------------------------------------------------
 
@@ -156,6 +166,42 @@ pub enum RuntimeExpr {
         condition: Box<RuntimeExpr>,
         then_branch: Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
         else_branch: Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
+        span: Option<SourceSpan>,
+    },
+    /// CLIPS `(while <condition> do <action>*)` loop.
+    ///
+    /// Evaluates `condition` before each iteration; executes `body` while
+    /// truthy. Returns the last body value from the last iteration, or the
+    /// `FALSE` symbol if never entered.
+    ///
+    /// Body entries follow the same paired representation as `If` branches.
+    While {
+        condition: Box<RuntimeExpr>,
+        body: Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
+        span: Option<SourceSpan>,
+    },
+    /// CLIPS `(loop-for-count (?var start end) do <action>*)` loop.
+    ///
+    /// Iterates an integer counter from `start` to `end` (inclusive).
+    /// If `var_name` is `Some`, the counter is bound under that name for
+    /// each iteration. Returns `FALSE`.
+    LoopForCount {
+        var_name: Option<String>,
+        start: Box<RuntimeExpr>,
+        end: Box<RuntimeExpr>,
+        body: Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
+        span: Option<SourceSpan>,
+    },
+    /// CLIPS `(progn$ (?var <expr>) <action>*)` / `foreach` loop.
+    ///
+    /// Evaluates `list_expr` to a multifield value, then iterates each element
+    /// binding `var_name` to the element and `<var_name>-index` to the 1-based
+    /// index. Returns the last body value from the last iteration, or `FALSE`
+    /// if the multifield is empty.
+    Progn {
+        var_name: String,
+        list_expr: Box<RuntimeExpr>,
+        body: Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
         span: Option<SourceSpan>,
     },
 }
@@ -475,6 +521,250 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                     // Pre-compilation failed; translate on the fly.
                     let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
                     result = eval(ctx, &rt)?;
+                }
+            }
+            Ok(result)
+        }
+        RuntimeExpr::While {
+            condition, body, ..
+        } => {
+            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            let mut iterations = 0usize;
+            loop {
+                let cond_value = eval(ctx, condition)?;
+                if !is_truthy(&cond_value, ctx.symbol_table) {
+                    break;
+                }
+                iterations += 1;
+                if iterations > MAX_LOOP_ITERATIONS {
+                    return Err(EvalError::TypeError {
+                        function: "while".to_string(),
+                        expected: "loop to terminate".to_string(),
+                        actual: format!("exceeded maximum iterations ({MAX_LOOP_ITERATIONS})"),
+                        span: None,
+                    });
+                }
+                for (action_expr, rt_expr) in body {
+                    if let Some(rt) = rt_expr {
+                        result = eval(ctx, rt)?;
+                    } else {
+                        let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
+                        result = eval(ctx, &rt)?;
+                    }
+                }
+            }
+            Ok(result)
+        }
+        RuntimeExpr::LoopForCount {
+            var_name,
+            start,
+            end,
+            body,
+            span,
+        } => {
+            let start_val = eval(ctx, start)?;
+            let end_val = eval(ctx, end)?;
+            #[allow(clippy::cast_possible_truncation)] // intentional float-to-int for loop bounds
+            let start_int = match &start_val {
+                Value::Integer(n) => *n,
+                Value::Float(f) => *f as i64,
+                _ => {
+                    return Err(EvalError::TypeError {
+                        function: "loop-for-count".to_string(),
+                        expected: "integer start value".to_string(),
+                        actual: format!("{start_val:?}"),
+                        span: span.clone(),
+                    })
+                }
+            };
+            #[allow(clippy::cast_possible_truncation)] // intentional float-to-int for loop bounds
+            let end_int = match &end_val {
+                Value::Integer(n) => *n,
+                Value::Float(f) => *f as i64,
+                _ => {
+                    return Err(EvalError::TypeError {
+                        function: "loop-for-count".to_string(),
+                        expected: "integer end value".to_string(),
+                        actual: format!("{end_val:?}"),
+                        span: span.clone(),
+                    })
+                }
+            };
+
+            let false_val = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+
+            if start_int > end_int {
+                return Ok(false_val);
+            }
+
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let total_iters = (end_int - start_int + 1) as usize;
+            if total_iters > MAX_LOOP_ITERATIONS {
+                return Err(EvalError::TypeError {
+                    function: "loop-for-count".to_string(),
+                    expected: "loop range within limits".to_string(),
+                    actual: format!(
+                        "range {start_int}..{end_int} exceeds maximum ({MAX_LOOP_ITERATIONS})"
+                    ),
+                    span: span.clone(),
+                });
+            }
+
+            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            for counter in start_int..=end_int {
+                // Build a binding frame for this iteration.
+                let mut iter_var_map = ctx.var_map.clone();
+                let mut iter_bindings = ctx.bindings.clone();
+
+                if let Some(var) = var_name {
+                    let sym = ctx
+                        .symbol_table
+                        .intern_symbol(var, ctx.config.string_encoding)
+                        .map_err(|_| EvalError::TypeError {
+                            function: "loop-for-count".to_string(),
+                            expected: "valid loop variable name".to_string(),
+                            actual: var.clone(),
+                            span: span.clone(),
+                        })?;
+                    let var_id =
+                        iter_var_map
+                            .get_or_create(sym)
+                            .map_err(|_| EvalError::TypeError {
+                                function: "loop-for-count".to_string(),
+                                expected: "bindable variable".to_string(),
+                                actual: var.clone(),
+                                span: span.clone(),
+                            })?;
+                    iter_bindings.set(var_id, std::rc::Rc::new(Value::Integer(counter)));
+                }
+
+                let mut iter_ctx = EvalContext {
+                    bindings: &iter_bindings,
+                    var_map: &iter_var_map,
+                    symbol_table: ctx.symbol_table,
+                    config: ctx.config,
+                    functions: ctx.functions,
+                    globals: ctx.globals,
+                    generics: ctx.generics,
+                    call_depth: ctx.call_depth,
+                    current_module: ctx.current_module,
+                    module_registry: ctx.module_registry,
+                    function_modules: ctx.function_modules,
+                    global_modules: ctx.global_modules,
+                    generic_modules: ctx.generic_modules,
+                    method_chain: ctx.method_chain.clone(),
+                    input_buffer: ctx.input_buffer.as_deref_mut(),
+                };
+
+                for (action_expr, rt_expr) in body {
+                    if let Some(rt) = rt_expr {
+                        result = eval(&mut iter_ctx, rt)?;
+                    } else {
+                        let rt =
+                            from_action_expr(action_expr, iter_ctx.symbol_table, iter_ctx.config)?;
+                        result = eval(&mut iter_ctx, &rt)?;
+                    }
+                }
+            }
+            Ok(result)
+        }
+        RuntimeExpr::Progn {
+            var_name,
+            list_expr,
+            body,
+            span,
+        } => {
+            let list_val = eval(ctx, list_expr)?;
+            let elements: Vec<Value> = match list_val {
+                Value::Multifield(mf) => mf.as_slice().to_vec(),
+                // A scalar value is treated as a single-element multifield.
+                other => vec![other],
+            };
+
+            let false_val = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            if elements.is_empty() {
+                return Ok(false_val);
+            }
+
+            let index_var_name = format!("{var_name}-index");
+
+            let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            for (idx, element) in elements.iter().enumerate() {
+                #[allow(clippy::cast_possible_wrap)] // usize→i64: element counts can't exceed i64
+                let one_based = idx as i64 + 1;
+
+                // Build a binding frame for this iteration.
+                let mut iter_var_map = ctx.var_map.clone();
+                let mut iter_bindings = ctx.bindings.clone();
+
+                // Bind the element variable.
+                let elem_sym = ctx
+                    .symbol_table
+                    .intern_symbol(var_name, ctx.config.string_encoding)
+                    .map_err(|_| EvalError::TypeError {
+                        function: "progn$".to_string(),
+                        expected: "valid loop variable name".to_string(),
+                        actual: var_name.clone(),
+                        span: span.clone(),
+                    })?;
+                let elem_var_id =
+                    iter_var_map
+                        .get_or_create(elem_sym)
+                        .map_err(|_| EvalError::TypeError {
+                            function: "progn$".to_string(),
+                            expected: "bindable variable".to_string(),
+                            actual: var_name.clone(),
+                            span: span.clone(),
+                        })?;
+                iter_bindings.set(elem_var_id, std::rc::Rc::new(element.clone()));
+
+                // Bind the index variable (<var>-index).
+                let idx_sym = ctx
+                    .symbol_table
+                    .intern_symbol(&index_var_name, ctx.config.string_encoding)
+                    .map_err(|_| EvalError::TypeError {
+                        function: "progn$".to_string(),
+                        expected: "valid index variable name".to_string(),
+                        actual: index_var_name.clone(),
+                        span: span.clone(),
+                    })?;
+                let idx_var_id =
+                    iter_var_map
+                        .get_or_create(idx_sym)
+                        .map_err(|_| EvalError::TypeError {
+                            function: "progn$".to_string(),
+                            expected: "bindable index variable".to_string(),
+                            actual: index_var_name.clone(),
+                            span: span.clone(),
+                        })?;
+                iter_bindings.set(idx_var_id, std::rc::Rc::new(Value::Integer(one_based)));
+
+                let mut iter_ctx = EvalContext {
+                    bindings: &iter_bindings,
+                    var_map: &iter_var_map,
+                    symbol_table: ctx.symbol_table,
+                    config: ctx.config,
+                    functions: ctx.functions,
+                    globals: ctx.globals,
+                    generics: ctx.generics,
+                    call_depth: ctx.call_depth,
+                    current_module: ctx.current_module,
+                    module_registry: ctx.module_registry,
+                    function_modules: ctx.function_modules,
+                    global_modules: ctx.global_modules,
+                    generic_modules: ctx.generic_modules,
+                    method_chain: ctx.method_chain.clone(),
+                    input_buffer: ctx.input_buffer.as_deref_mut(),
+                };
+
+                for (action_expr, rt_expr) in body {
+                    if let Some(rt) = rt_expr {
+                        result = eval(&mut iter_ctx, rt)?;
+                    } else {
+                        let rt =
+                            from_action_expr(action_expr, iter_ctx.symbol_table, iter_ctx.config)?;
+                        result = eval(&mut iter_ctx, &rt)?;
+                    }
                 }
             }
             Ok(result)
@@ -1143,6 +1433,7 @@ fn bind_parameter(
 // ---------------------------------------------------------------------------
 
 /// Translate a parser `ActionExpr` to a `RuntimeExpr`.
+#[allow(clippy::too_many_lines)] // Each new loop form adds ~20 lines of translation boilerplate
 pub fn from_action_expr(
     expr: &ferric_parser::ActionExpr,
     symbol_table: &mut SymbolTable,
@@ -1202,6 +1493,73 @@ pub fn from_action_expr(
                 condition: Box::new(condition_rt),
                 then_branch,
                 else_branch,
+                span: Some(SourceSpan {
+                    line: span.start.line,
+                    column: span.start.column,
+                }),
+            })
+        }
+        ferric_parser::ActionExpr::While {
+            condition,
+            body,
+            span,
+        } => {
+            let condition_rt = from_action_expr(condition, symbol_table, config)?;
+            let mut body_rt = Vec::with_capacity(body.len());
+            for a in body {
+                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                body_rt.push((a.clone(), rt));
+            }
+            Ok(RuntimeExpr::While {
+                condition: Box::new(condition_rt),
+                body: body_rt,
+                span: Some(SourceSpan {
+                    line: span.start.line,
+                    column: span.start.column,
+                }),
+            })
+        }
+        ferric_parser::ActionExpr::LoopForCount {
+            var_name,
+            start,
+            end,
+            body,
+            span,
+        } => {
+            let start_rt = from_action_expr(start, symbol_table, config)?;
+            let end_rt = from_action_expr(end, symbol_table, config)?;
+            let mut body_rt = Vec::with_capacity(body.len());
+            for a in body {
+                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                body_rt.push((a.clone(), rt));
+            }
+            Ok(RuntimeExpr::LoopForCount {
+                var_name: var_name.clone(),
+                start: Box::new(start_rt),
+                end: Box::new(end_rt),
+                body: body_rt,
+                span: Some(SourceSpan {
+                    line: span.start.line,
+                    column: span.start.column,
+                }),
+            })
+        }
+        ferric_parser::ActionExpr::Progn {
+            var_name,
+            list_expr,
+            body,
+            span,
+        } => {
+            let list_rt = from_action_expr(list_expr, symbol_table, config)?;
+            let mut body_rt = Vec::with_capacity(body.len());
+            for a in body {
+                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                body_rt.push((a.clone(), rt));
+            }
+            Ok(RuntimeExpr::Progn {
+                var_name: var_name.clone(),
+                list_expr: Box::new(list_rt),
+                body: body_rt,
                 span: Some(SourceSpan {
                     line: span.start.line,
                     column: span.start.column,

@@ -140,6 +140,33 @@ pub enum ActionExpr {
         else_actions: Vec<ActionExpr>,
         span: Span,
     },
+    /// CLIPS `(while <condition> do <action>*)` loop form.
+    While {
+        condition: Box<ActionExpr>,
+        body: Vec<ActionExpr>,
+        span: Span,
+    },
+    /// CLIPS `(loop-for-count (?var <start> <end>) do <action>*)` loop form.
+    ///
+    /// If `var_name` is `None`, no variable is bound (anonymous counter).
+    LoopForCount {
+        var_name: Option<String>,
+        start: Box<ActionExpr>,
+        end: Box<ActionExpr>,
+        body: Vec<ActionExpr>,
+        span: Span,
+    },
+    /// CLIPS `(progn$ (?var <multifield-expr>) <action>*)` /
+    /// `(foreach ?var <multifield-expr> do <action>*)` form.
+    ///
+    /// Iterates over each element of a multifield value, binding `var_name`
+    /// to each element and `<var_name>-index` to the 1-based iteration index.
+    Progn {
+        var_name: String,
+        list_expr: Box<ActionExpr>,
+        body: Vec<ActionExpr>,
+        span: Span,
+    },
 }
 
 // ============================================================================
@@ -1825,20 +1852,66 @@ fn interpret_constraint(expr: &SExpr) -> Result<Constraint, InterpretError> {
 
 /// Interpret a single action from a rule's RHS.
 fn interpret_action(expr: &SExpr) -> Result<Action, InterpretError> {
-    // Detect the `(if ...)` special form at the action level.
+    // Detect special forms at the action level and wrap them as synthetic
+    // `FunctionCall`s so the action executor can route them.
     if let Some(list) = expr.as_list() {
-        if !list.is_empty() && list[0].as_symbol() == Some("if") {
-            let if_expr = interpret_if_expr(&list[1..], expr.span())?;
-            // Wrap the parsed `if` form as the sole argument to a synthetic
-            // `FunctionCall` with name `"if"`.  The action executor detects
-            // this name and unpacks `args[0]` as `ActionExpr::If`.
-            return Ok(Action {
-                call: FunctionCall {
-                    name: "if".to_string(),
-                    args: vec![if_expr],
-                    span: expr.span(),
-                },
-            });
+        if !list.is_empty() {
+            match list[0].as_symbol() {
+                Some("if") => {
+                    let if_expr = interpret_if_expr(&list[1..], expr.span())?;
+                    // Wrap the parsed `if` form as the sole argument to a synthetic
+                    // `FunctionCall` with name `"if"`.  The action executor detects
+                    // this name and unpacks `args[0]` as `ActionExpr::If`.
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "if".to_string(),
+                            args: vec![if_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                Some("while") => {
+                    let while_expr = interpret_while_expr(&list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "while".to_string(),
+                            args: vec![while_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                Some("loop-for-count") => {
+                    let lfc_expr = interpret_loop_for_count_expr(&list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "loop-for-count".to_string(),
+                            args: vec![lfc_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                Some("progn$") => {
+                    let progn_expr = interpret_progn_dollar_expr(&list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "progn$".to_string(),
+                            args: vec![progn_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                Some("foreach") => {
+                    let foreach_expr = interpret_foreach_expr(&list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "foreach".to_string(),
+                            args: vec![foreach_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                _ => {}
+            }
         }
     }
     let call = interpret_function_call(expr)?;
@@ -1931,6 +2004,244 @@ fn interpret_if_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Interpret
     })
 }
 
+/// Interpret a CLIPS `(while <cond> do <action>*)` form.
+///
+/// `rest` is the elements after the `while` keyword.
+fn interpret_while_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    if rest.is_empty() {
+        return Err(InterpretError::missing("condition in (while ...)", span));
+    }
+
+    let condition = interpret_action_expr(&rest[0])?;
+
+    // Find `do` keyword.
+    let do_pos = rest[1..]
+        .iter()
+        .position(|e| e.as_symbol() == Some("do"))
+        .ok_or_else(|| InterpretError::missing("do keyword in (while ... do ...)", span))?;
+    // `do_pos` is relative to `rest[1..]`, absolute index is `do_pos + 1`.
+    let do_abs = do_pos + 1;
+
+    // The condition must be the single element before `do`.
+    if do_abs != 1 {
+        return Err(InterpretError::invalid(
+            "expected 'do' immediately after the while condition",
+            span,
+        ));
+    }
+
+    let body_exprs = &rest[do_abs + 1..];
+    let mut body = Vec::with_capacity(body_exprs.len());
+    for e in body_exprs {
+        body.push(interpret_action_expr(e)?);
+    }
+
+    Ok(ActionExpr::While {
+        condition: Box::new(condition),
+        body,
+        span,
+    })
+}
+
+/// Interpret a CLIPS `(loop-for-count ...)` form.
+///
+/// `rest` is the elements after the `loop-for-count` keyword.
+/// Forms:
+///   `(loop-for-count (?var start end) do <action>*)`
+///   `(loop-for-count (?var end) do <action>*)`
+///   `(loop-for-count (end) do <action>*)`
+fn interpret_loop_for_count_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    if rest.is_empty() {
+        return Err(InterpretError::missing(
+            "loop spec in (loop-for-count ...)",
+            span,
+        ));
+    }
+
+    // First element must be a list containing the loop spec.
+    let spec_list = rest[0]
+        .as_list()
+        .ok_or_else(|| InterpretError::expected("loop spec list", rest[0].span()))?;
+
+    if spec_list.is_empty() {
+        return Err(InterpretError::missing(
+            "loop bound in loop-for-count spec",
+            rest[0].span(),
+        ));
+    }
+
+    // Parse the spec: `(?var start end)`, `(?var end)`, or `(end)`.
+    let (var_name, start_expr, end_expr) = match spec_list.len() {
+        1 => {
+            // `(end)` — anonymous counter, start=1
+            let end = interpret_action_expr(&spec_list[0])?;
+            let start = ActionExpr::Literal(LiteralValue {
+                value: LiteralKind::Integer(1),
+                span: spec_list[0].span(),
+            });
+            (None, start, end)
+        }
+        2 => {
+            // `(?var end)` — named variable, start=1
+            let var = match spec_list[0].as_atom() {
+                Some(Atom::SingleVar(name)) => name.clone(),
+                _ => {
+                    return Err(InterpretError::expected(
+                        "?variable in loop-for-count spec",
+                        spec_list[0].span(),
+                    ))
+                }
+            };
+            let end = interpret_action_expr(&spec_list[1])?;
+            let start = ActionExpr::Literal(LiteralValue {
+                value: LiteralKind::Integer(1),
+                span: spec_list[0].span(),
+            });
+            (Some(var), start, end)
+        }
+        3 => {
+            // `(?var start end)` — named variable with explicit start
+            let var = match spec_list[0].as_atom() {
+                Some(Atom::SingleVar(name)) => name.clone(),
+                _ => {
+                    return Err(InterpretError::expected(
+                        "?variable in loop-for-count spec",
+                        spec_list[0].span(),
+                    ))
+                }
+            };
+            let start = interpret_action_expr(&spec_list[1])?;
+            let end = interpret_action_expr(&spec_list[2])?;
+            (Some(var), start, end)
+        }
+        _ => {
+            return Err(InterpretError::invalid(
+                "loop-for-count spec must be (?var end), (?var start end), or (end)",
+                rest[0].span(),
+            ))
+        }
+    };
+
+    // Find `do` keyword in the remaining elements.
+    let after_spec = &rest[1..];
+    let do_pos = after_spec
+        .iter()
+        .position(|e| e.as_symbol() == Some("do"))
+        .ok_or_else(|| {
+            InterpretError::missing("do keyword in (loop-for-count ... do ...)", span)
+        })?;
+
+    let body_exprs = &after_spec[do_pos + 1..];
+    let mut body = Vec::with_capacity(body_exprs.len());
+    for e in body_exprs {
+        body.push(interpret_action_expr(e)?);
+    }
+
+    Ok(ActionExpr::LoopForCount {
+        var_name,
+        start: Box::new(start_expr),
+        end: Box::new(end_expr),
+        body,
+        span,
+    })
+}
+
+/// Interpret a CLIPS `(progn$ (?var <expr>) <action>*)` form.
+///
+/// `rest` is the elements after the `progn$` keyword.
+fn interpret_progn_dollar_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    if rest.is_empty() {
+        return Err(InterpretError::missing(
+            "binding spec in (progn$ ...)",
+            span,
+        ));
+    }
+
+    // First element is the binding spec: `(?var <expr>)`.
+    let spec_list = rest[0].as_list().ok_or_else(|| {
+        InterpretError::expected("binding spec list (?var <expr>) in progn$", rest[0].span())
+    })?;
+
+    if spec_list.len() < 2 {
+        return Err(InterpretError::missing(
+            "?variable and list expression in progn$ spec",
+            rest[0].span(),
+        ));
+    }
+
+    let var_name = match spec_list[0].as_atom() {
+        Some(Atom::SingleVar(name)) => name.clone(),
+        _ => {
+            return Err(InterpretError::expected(
+                "?variable in progn$ spec",
+                spec_list[0].span(),
+            ))
+        }
+    };
+
+    let list_expr = interpret_action_expr(&spec_list[1])?;
+
+    // Remaining elements after the spec are body actions (no `do` delimiter for progn$).
+    let body_exprs = &rest[1..];
+    let mut body = Vec::with_capacity(body_exprs.len());
+    for e in body_exprs {
+        body.push(interpret_action_expr(e)?);
+    }
+
+    Ok(ActionExpr::Progn {
+        var_name,
+        list_expr: Box::new(list_expr),
+        body,
+        span,
+    })
+}
+
+/// Interpret a CLIPS `(foreach ?var <expr> do <action>*)` form.
+///
+/// `rest` is the elements after the `foreach` keyword.
+/// This is semantically equivalent to `progn$` but uses a different syntax.
+fn interpret_foreach_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    // foreach ?var <expr> do <action>*
+    if rest.len() < 2 {
+        return Err(InterpretError::missing(
+            "?variable and list expression in (foreach ...)",
+            span,
+        ));
+    }
+
+    let var_name = match rest[0].as_atom() {
+        Some(Atom::SingleVar(name)) => name.clone(),
+        _ => {
+            return Err(InterpretError::expected(
+                "?variable in foreach",
+                rest[0].span(),
+            ))
+        }
+    };
+
+    let list_expr = interpret_action_expr(&rest[1])?;
+
+    // Find optional `do` keyword (some CLIPS variants include it, some don't).
+    let body_start = if rest.len() > 2 && rest[2].as_symbol() == Some("do") {
+        3
+    } else {
+        2
+    };
+
+    let body_exprs = &rest[body_start..];
+    let mut body = Vec::with_capacity(body_exprs.len());
+    for e in body_exprs {
+        body.push(interpret_action_expr(e)?);
+    }
+
+    Ok(ActionExpr::Progn {
+        var_name,
+        list_expr: Box::new(list_expr),
+        body,
+        span,
+    })
+}
+
 /// Interpret an expression in an action context (RHS).
 fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
     // Check if it's a list (nested function call or special form)
@@ -1938,6 +2249,18 @@ fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
         // Detect the `(if ...)` special form.
         if !list.is_empty() && list[0].as_symbol() == Some("if") {
             return interpret_if_expr(&list[1..], expr.span());
+        }
+        // Detect loop special forms.
+        if !list.is_empty() {
+            match list[0].as_symbol() {
+                Some("while") => return interpret_while_expr(&list[1..], expr.span()),
+                Some("loop-for-count") => {
+                    return interpret_loop_for_count_expr(&list[1..], expr.span())
+                }
+                Some("progn$") => return interpret_progn_dollar_expr(&list[1..], expr.span()),
+                Some("foreach") => return interpret_foreach_expr(&list[1..], expr.span()),
+                _ => {}
+            }
         }
         let call = interpret_function_call(expr)?;
         return Ok(ActionExpr::FunctionCall(call));
@@ -4108,5 +4431,194 @@ mod tests {
             matches!(&func.body[0], ActionExpr::If { .. }),
             "expected If in function body"
         );
+    }
+
+    // =========================================================================
+    // Loop special form tests
+    // =========================================================================
+
+    #[test]
+    fn interpret_while_action() {
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x) => (while (> ?x 0) do (printout t ?x)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        // Top-level action should be a synthetic FunctionCall wrapping a While.
+        assert_eq!(rule.actions.len(), 1);
+        assert_eq!(rule.actions[0].call.name, "while");
+        assert_eq!(rule.actions[0].call.args.len(), 1);
+        assert!(
+            matches!(&rule.actions[0].call.args[0], ActionExpr::While { .. }),
+            "expected While variant in args[0]"
+        );
+    }
+
+    #[test]
+    fn interpret_while_body_has_correct_actions() {
+        let parsed = parse_sexprs(
+            "(defrule test => (while (> ?x 1) do (printout t hello) (printout t world)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        let ActionExpr::While { body, .. } = &rule.actions[0].call.args[0] else {
+            panic!("expected While");
+        };
+        assert_eq!(body.len(), 2, "while body should have 2 actions");
+    }
+
+    #[test]
+    fn interpret_loop_for_count_action() {
+        let parsed = parse_sexprs(
+            "(defrule test => (loop-for-count (?i 1 10) do (printout t ?i)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions[0].call.name, "loop-for-count");
+        let ActionExpr::LoopForCount { var_name, .. } = &rule.actions[0].call.args[0] else {
+            panic!("expected LoopForCount");
+        };
+        assert_eq!(var_name.as_deref(), Some("i"));
+    }
+
+    #[test]
+    fn interpret_loop_for_count_two_arg_spec() {
+        // `(?var end)` form — start defaults to 1.
+        let parsed = parse_sexprs(
+            "(defrule test => (loop-for-count (?i 5) do (printout t ?i)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        let ActionExpr::LoopForCount {
+            var_name, start, ..
+        } = &rule.actions[0].call.args[0]
+        else {
+            panic!("expected LoopForCount");
+        };
+        assert_eq!(var_name.as_deref(), Some("i"));
+        // Start should be the literal integer 1 (default).
+        assert!(
+            matches!(start.as_ref(), ActionExpr::Literal(lit) if matches!(lit.value, LiteralKind::Integer(1))),
+            "expected start = 1"
+        );
+    }
+
+    #[test]
+    fn interpret_loop_for_count_anonymous() {
+        // `(end)` form — anonymous counter.
+        let parsed = parse_sexprs(
+            "(defrule test => (loop-for-count (5) do (printout t hi)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        let ActionExpr::LoopForCount { var_name, .. } = &rule.actions[0].call.args[0] else {
+            panic!("expected LoopForCount");
+        };
+        assert!(
+            var_name.is_none(),
+            "anonymous counter should have no var_name"
+        );
+    }
+
+    #[test]
+    fn interpret_progn_dollar_action() {
+        let parsed = parse_sexprs(
+            "(defrule test (data $?items) => (progn$ (?item ?items) (printout t ?item)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions[0].call.name, "progn$");
+        let ActionExpr::Progn { var_name, .. } = &rule.actions[0].call.args[0] else {
+            panic!("expected Progn");
+        };
+        assert_eq!(var_name, "item");
+    }
+
+    #[test]
+    fn interpret_foreach_action() {
+        let parsed = parse_sexprs(
+            "(defrule test (data $?items) => (foreach ?item ?items do (printout t ?item)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        // foreach is translated to a Progn variant wrapped in a "foreach" call.
+        assert_eq!(rule.actions[0].call.name, "foreach");
+        let ActionExpr::Progn { var_name, .. } = &rule.actions[0].call.args[0] else {
+            panic!("expected Progn");
+        };
+        assert_eq!(var_name, "item");
+    }
+
+    #[test]
+    fn interpret_while_in_deffunction_body() {
+        let parsed = parse_sexprs(
+            "(deffunction count-down (?n) (while (> ?n 0) do (bind ?*n* (- ?n 1))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Function(func) = &result.constructs[0] else {
+            panic!("expected Function construct");
+        };
+        assert_eq!(func.body.len(), 1);
+        assert!(
+            matches!(&func.body[0], ActionExpr::While { .. }),
+            "expected While in function body"
+        );
+    }
+
+    #[test]
+    fn interpret_while_missing_do_is_error() {
+        let parsed = parse_sexprs("(defrule test => (while (> ?x 0) (printout t ?x)))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(!result.errors.is_empty(), "should error on missing do");
+    }
+
+    #[test]
+    fn interpret_loop_for_count_missing_do_is_error() {
+        let parsed = parse_sexprs(
+            "(defrule test => (loop-for-count (?i 1 5) (printout t ?i)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(!result.errors.is_empty(), "should error on missing do");
     }
 }

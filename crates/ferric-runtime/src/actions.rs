@@ -27,6 +27,9 @@ use crate::templates::RegisteredTemplate;
 type OrderedFields = smallvec::SmallVec<[Value; 8]>;
 type ModuleLookup = HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>;
 
+/// Maximum iterations for action-level loops (while, loop-for-count, progn$).
+const MAX_ACTION_LOOP_ITERATIONS: usize = 1_000_000;
+
 pub(crate) struct ActionExecutionContext<'a> {
     pub fact_base: &'a mut FactBase,
     pub rete: &'a mut ReteNetwork,
@@ -419,6 +422,239 @@ fn execute_single_action(
                 }
             }
         }
+        "while" => {
+            // `(while <cond> do <action>*)` loop form.
+            let while_runtime: Option<&crate::evaluator::RuntimeExpr> = match runtime_call {
+                Some(crate::evaluator::RuntimeExpr::Call { args, .. }) => {
+                    args.first().map(|a| a as &crate::evaluator::RuntimeExpr)
+                }
+                Some(rt @ crate::evaluator::RuntimeExpr::While { .. }) => Some(rt),
+                _ => None,
+            };
+
+            if let Some(crate::evaluator::RuntimeExpr::While {
+                condition, body, ..
+            }) = while_runtime
+            {
+                let mut iterations = 0usize;
+                loop {
+                    // Evaluate condition.
+                    let cond_value = {
+                        let mut ctx = eval_env.make_eval_context(token, rule_info);
+                        crate::evaluator::eval(&mut ctx, condition).map_err(ActionError::from)?
+                    };
+                    if !crate::evaluator::is_truthy(&cond_value, eval_env.symbol_table) {
+                        break;
+                    }
+                    iterations += 1;
+                    if iterations > MAX_ACTION_LOOP_ITERATIONS {
+                        return Err(ActionError::EvalError(format!(
+                            "while loop exceeded maximum iterations ({MAX_ACTION_LOOP_ITERATIONS})"
+                        )));
+                    }
+                    // Execute body items.
+                    execute_loop_body(
+                        fact_base,
+                        rete,
+                        halted,
+                        reset_requested,
+                        clear_requested,
+                        token,
+                        rule_info,
+                        body,
+                        template_defs,
+                        router,
+                        focus_requests,
+                        all_rule_info,
+                        eval_env,
+                    )?;
+                    if *halted || *reset_requested || *clear_requested {
+                        break;
+                    }
+                }
+                Ok(())
+            } else if let Some(runtime_expr) = runtime_call {
+                eval_env
+                    .eval_runtime_expr(token, rule_info, runtime_expr)
+                    .map(|_| ())
+                    .map_err(|e| ActionError::UnknownAction(format!("while: {e}")))
+            } else {
+                Ok(())
+            }
+        }
+
+        "loop-for-count" => {
+            // `(loop-for-count (?var start end) do <action>*)` loop form.
+            let lfc_runtime: Option<&crate::evaluator::RuntimeExpr> = match runtime_call {
+                Some(crate::evaluator::RuntimeExpr::Call { args, .. }) => {
+                    args.first().map(|a| a as &crate::evaluator::RuntimeExpr)
+                }
+                Some(rt @ crate::evaluator::RuntimeExpr::LoopForCount { .. }) => Some(rt),
+                _ => None,
+            };
+
+            if let Some(crate::evaluator::RuntimeExpr::LoopForCount {
+                var_name,
+                start,
+                end,
+                body,
+                span,
+            }) = lfc_runtime
+            {
+                let (start_int, end_int) = {
+                    let mut ctx = eval_env.make_eval_context(token, rule_info);
+                    let sv = crate::evaluator::eval(&mut ctx, start).map_err(ActionError::from)?;
+                    let ev = crate::evaluator::eval(&mut ctx, end).map_err(ActionError::from)?;
+                    let si = match &sv {
+                        Value::Integer(n) => *n,
+                        #[allow(clippy::cast_possible_truncation)]
+                        Value::Float(f) => *f as i64,
+                        _ => {
+                            return Err(ActionError::EvalError(
+                                "loop-for-count: start value must be an integer".to_string(),
+                            ))
+                        }
+                    };
+                    let ei = match &ev {
+                        Value::Integer(n) => *n,
+                        #[allow(clippy::cast_possible_truncation)]
+                        Value::Float(f) => *f as i64,
+                        _ => {
+                            return Err(ActionError::EvalError(
+                                "loop-for-count: end value must be an integer".to_string(),
+                            ))
+                        }
+                    };
+                    (si, ei)
+                };
+
+                for counter in start_int..=end_int {
+                    // Build an augmented token and rule_info with the loop variable bound.
+                    let (loop_token, loop_rule_info) = if let Some(var) = var_name {
+                        augment_bindings_with_var(
+                            token,
+                            rule_info,
+                            var,
+                            Value::Integer(counter),
+                            eval_env.symbol_table,
+                            eval_env.config,
+                        )?
+                    } else {
+                        (token.clone(), rule_info_clone_light(rule_info))
+                    };
+
+                    execute_loop_body(
+                        fact_base,
+                        rete,
+                        halted,
+                        reset_requested,
+                        clear_requested,
+                        &loop_token,
+                        &loop_rule_info,
+                        body,
+                        template_defs,
+                        router,
+                        focus_requests,
+                        all_rule_info,
+                        eval_env,
+                    )?;
+                    if *halted || *reset_requested || *clear_requested {
+                        break;
+                    }
+                }
+                let _ = span; // suppress unused variable warning
+                Ok(())
+            } else if let Some(runtime_expr) = runtime_call {
+                eval_env
+                    .eval_runtime_expr(token, rule_info, runtime_expr)
+                    .map(|_| ())
+                    .map_err(|e| ActionError::UnknownAction(format!("loop-for-count: {e}")))
+            } else {
+                Ok(())
+            }
+        }
+
+        "progn$" | "foreach" => {
+            // `(progn$ (?var <expr>) <action>*)` / `(foreach ?var <expr> do <action>*)` loop.
+            let progn_runtime: Option<&crate::evaluator::RuntimeExpr> = match runtime_call {
+                Some(crate::evaluator::RuntimeExpr::Call { args, .. }) => {
+                    args.first().map(|a| a as &crate::evaluator::RuntimeExpr)
+                }
+                Some(rt @ crate::evaluator::RuntimeExpr::Progn { .. }) => Some(rt),
+                _ => None,
+            };
+
+            if let Some(crate::evaluator::RuntimeExpr::Progn {
+                var_name,
+                list_expr,
+                body,
+                ..
+            }) = progn_runtime
+            {
+                let elements: Vec<Value> = {
+                    let mut ctx = eval_env.make_eval_context(token, rule_info);
+                    let list_val =
+                        crate::evaluator::eval(&mut ctx, list_expr).map_err(ActionError::from)?;
+                    match list_val {
+                        Value::Multifield(mf) => mf.as_slice().to_vec(),
+                        other => vec![other],
+                    }
+                };
+
+                let index_var_name = format!("{var_name}-index");
+                for (idx, element) in elements.iter().enumerate() {
+                    #[allow(clippy::cast_possible_wrap)]
+                    // usize→i64: element counts can't exceed i64
+                    let one_based = idx as i64 + 1;
+
+                    // Bind the element variable and the index variable.
+                    let (token1, rule_info1) = augment_bindings_with_var(
+                        token,
+                        rule_info,
+                        var_name,
+                        element.clone(),
+                        eval_env.symbol_table,
+                        eval_env.config,
+                    )?;
+                    let (loop_token, loop_rule_info) = augment_bindings_with_var(
+                        &token1,
+                        &rule_info1,
+                        &index_var_name,
+                        Value::Integer(one_based),
+                        eval_env.symbol_table,
+                        eval_env.config,
+                    )?;
+
+                    execute_loop_body(
+                        fact_base,
+                        rete,
+                        halted,
+                        reset_requested,
+                        clear_requested,
+                        &loop_token,
+                        &loop_rule_info,
+                        body,
+                        template_defs,
+                        router,
+                        focus_requests,
+                        all_rule_info,
+                        eval_env,
+                    )?;
+                    if *halted || *reset_requested || *clear_requested {
+                        break;
+                    }
+                }
+                Ok(())
+            } else if let Some(runtime_expr) = runtime_call {
+                eval_env
+                    .eval_runtime_expr(token, rule_info, runtime_expr)
+                    .map(|_| ())
+                    .map_err(|e| ActionError::UnknownAction(format!("progn$: {e}")))
+            } else {
+                Ok(())
+            }
+        }
+
         // For any other call, try evaluating it as an expression (e.g., bind).
         _ => {
             let eval_result = if let Some(runtime_expr) = runtime_call {
@@ -432,6 +668,160 @@ fn execute_single_action(
                 .map_err(|e| ActionError::UnknownAction(format!("{}: {e}", call.name)))
         }
     }
+}
+
+/// Create a lightweight clone of `CompiledRuleInfo` sharing only the `var_map`.
+///
+/// Clones the parts needed for loop body execution.  `runtime_actions` is
+/// intentionally left empty because the loop body items are dispatched via
+/// `execute_loop_body`, which constructs `runtime_call` from the `RuntimeExpr`
+/// body entries directly rather than from a `runtime_actions` index.
+fn rule_info_clone_light(rule_info: &CompiledRuleInfo) -> CompiledRuleInfo {
+    CompiledRuleInfo {
+        name: rule_info.name.clone(),
+        actions: Vec::new(),
+        var_map: rule_info.var_map.clone(),
+        fact_address_vars: rule_info.fact_address_vars.clone(),
+        salience: rule_info.salience,
+        test_conditions: Vec::new(),
+        runtime_actions: Vec::new(),
+    }
+}
+
+/// Clone a `Token` and `CompiledRuleInfo` and augment them with an additional
+/// loop variable binding.
+///
+/// This allows loop body items to reference the loop variable via the normal
+/// `eval_expr(token, rule_info, ...)` path without modifying the original
+/// token or `rule_info`.
+fn augment_bindings_with_var(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    var_name: &str,
+    value: Value,
+    symbol_table: &mut SymbolTable,
+    config: &crate::config::EngineConfig,
+) -> Result<(Token, CompiledRuleInfo), ActionError> {
+    let sym = symbol_table
+        .intern_symbol(var_name, config.string_encoding)
+        .map_err(ActionError::from)?;
+
+    let mut new_rule_info = rule_info_clone_light(rule_info);
+    let var_id = new_rule_info
+        .var_map
+        .get_or_create(sym)
+        .map_err(|_| ActionError::EvalError(format!("loop: too many variables for {var_name}")))?;
+
+    let mut new_token = token.clone();
+    new_token.bindings.set(var_id, std::rc::Rc::new(value));
+
+    Ok((new_token, new_rule_info))
+}
+
+/// Execute a slice of loop body items.
+///
+/// Each body item is a `(ActionExpr, Option<RuntimeExpr>)` pair.  Items with
+/// pre-compiled `RuntimeExpr`s use them directly; others are dispatched via
+/// the standard action executor path.
+///
+/// This mirrors the branch-execution logic in the `if` handler but is factored
+/// out so the three loop forms can share it.
+#[allow(clippy::too_many_arguments)]
+fn execute_loop_body(
+    fact_base: &mut FactBase,
+    rete: &mut ReteNetwork,
+    halted: &mut bool,
+    reset_requested: &mut bool,
+    clear_requested: &mut bool,
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    body: &[(
+        ferric_parser::ActionExpr,
+        Option<Box<crate::evaluator::RuntimeExpr>>,
+    )],
+    template_defs: &HashMap<TemplateId, RegisteredTemplate>,
+    router: &mut OutputRouter,
+    focus_requests: &mut Vec<String>,
+    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
+    eval_env: &mut ActionEvalEnv<'_>,
+) -> Result<(), ActionError> {
+    use ferric_parser::ActionExpr;
+    for (action_expr, rt_expr) in body {
+        let (branch_call, branch_runtime): (
+            ferric_parser::FunctionCall,
+            Option<&crate::evaluator::RuntimeExpr>,
+        ) = match action_expr {
+            ActionExpr::FunctionCall(fc) => {
+                let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                (fc.clone(), rt)
+            }
+            ActionExpr::If { span, .. } => {
+                let synthetic = ferric_parser::FunctionCall {
+                    name: "if".to_string(),
+                    args: vec![],
+                    span: *span,
+                };
+                let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                (synthetic, rt)
+            }
+            ActionExpr::While { span, .. } => {
+                let synthetic = ferric_parser::FunctionCall {
+                    name: "while".to_string(),
+                    args: vec![],
+                    span: *span,
+                };
+                let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                (synthetic, rt)
+            }
+            ActionExpr::LoopForCount { span, .. } => {
+                let synthetic = ferric_parser::FunctionCall {
+                    name: "loop-for-count".to_string(),
+                    args: vec![],
+                    span: *span,
+                };
+                let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                (synthetic, rt)
+            }
+            ActionExpr::Progn { span, .. } => {
+                let synthetic = ferric_parser::FunctionCall {
+                    name: "progn$".to_string(),
+                    args: vec![],
+                    span: *span,
+                };
+                let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                (synthetic, rt)
+            }
+            _ => {
+                // Literal/variable — evaluate as expression; result is discarded.
+                if let Some(rt) = rt_expr {
+                    let _ = eval_env.eval_runtime_expr(token, rule_info, rt);
+                } else {
+                    let _ = eval_env.eval_expr(token, rule_info, action_expr);
+                }
+                continue;
+            }
+        };
+        execute_single_action(
+            fact_base,
+            rete,
+            halted,
+            reset_requested,
+            clear_requested,
+            token,
+            rule_info,
+            &branch_call,
+            branch_runtime,
+            template_defs,
+            router,
+            focus_requests,
+            all_rule_info,
+            eval_env,
+        )?;
+        if *halted || *reset_requested || *clear_requested {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Execute a `focus` action: push module(s) onto the focus stack.
