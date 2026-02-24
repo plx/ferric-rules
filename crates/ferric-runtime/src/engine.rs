@@ -324,6 +324,29 @@ impl Engine {
         &self.rete
     }
 
+    /// List the names and salience values of all registered rules.
+    ///
+    /// Returns a vector of `(name, salience)` pairs for every rule
+    /// that has been compiled into the Rete network.
+    pub fn rules(&self) -> Vec<(&str, i32)> {
+        self.rule_info
+            .values()
+            .map(|info| (info.name.as_str(), info.salience.get()))
+            .collect()
+    }
+
+    /// List the names of all registered templates.
+    pub fn templates(&self) -> Vec<&str> {
+        self.template_ids.keys().map(String::as_str).collect()
+    }
+
+    /// Look up a rule name by its internal ID.
+    ///
+    /// Returns `None` if the ID does not correspond to a known rule.
+    pub fn rule_name(&self, rule_id: RuleId) -> Option<&str> {
+        self.rule_info.get(&rule_id).map(|info| info.name.as_str())
+    }
+
     /// Check that the current thread is the same as the creator thread.
     pub fn check_thread_affinity(&self) -> Result<(), EngineError> {
         let current = std::thread::current().id();

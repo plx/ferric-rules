@@ -62,7 +62,11 @@ enum Command {
     },
 
     /// Start an interactive REPL session.
-    Repl,
+    Repl {
+        /// Files to load before entering interactive mode.
+        #[arg(long)]
+        load: Vec<PathBuf>,
+    },
 
     /// Print version information.
     Version,
@@ -74,7 +78,7 @@ fn main() {
     let exit_code = match cli.command {
         Command::Run { json, file } => commands::run::execute(json, &file),
         Command::Check { json, file } => commands::check::execute(json, &file),
-        Command::Repl => commands::repl::execute(),
+        Command::Repl { load } => commands::repl::execute(&load),
         Command::Version => commands::version::execute(),
     };
 
