@@ -1044,6 +1044,15 @@ fn interpret_global(elements: &[SExpr], span: Span) -> Result<GlobalConstruct, I
     let mut globals = Vec::new();
     let mut idx = 0;
 
+    // CLIPS allows an optional module name prefix: (defglobal MAIN ?*x* = 1)
+    // If the first element is a plain symbol (not a global var), skip it as
+    // the module qualifier.
+    if idx < elements.len() {
+        if let Some(Atom::Symbol(_)) = elements[idx].as_atom() {
+            idx += 1;
+        }
+    }
+
     while idx < elements.len() {
         // Expect a global variable atom: ?*name*
         let global_name = match elements[idx].as_atom() {
