@@ -167,6 +167,28 @@ pub enum ActionExpr {
         body: Vec<ActionExpr>,
         span: Span,
     },
+    /// CLIPS fact-query macro forms:
+    /// - `(do-for-fact ((?v tmpl)) <query> <action>*)`
+    /// - `(do-for-all-facts ((?v tmpl)) <query> <action>*)`
+    /// - `(delayed-do-for-all-facts ((?v tmpl)) <query> <action>*)`
+    /// - `(any-factp ((?v tmpl)) <query>)` — no body
+    /// - `(find-fact ((?v tmpl)) <query>)` — no body
+    /// - `(find-all-facts ((?v tmpl)) <query>)` — no body
+    ///
+    /// `name` is the macro name. `bindings` lists `(variable, template)` pairs.
+    /// `query` is the filter expression. `body` holds body actions (empty for
+    /// `any-factp`, `find-fact`, and `find-all-facts`).
+    QueryAction {
+        /// The specific macro name (e.g. `"do-for-fact"`).
+        name: String,
+        /// Binding specifications: `(variable_name, template_name)` pairs.
+        bindings: Vec<(String, String)>,
+        /// Query expression evaluated against each candidate fact.
+        query: Box<ActionExpr>,
+        /// Body actions executed for matching facts (empty for query-only forms).
+        body: Vec<ActionExpr>,
+        span: Span,
+    },
 }
 
 // ============================================================================
@@ -1910,6 +1932,24 @@ fn interpret_action(expr: &SExpr) -> Result<Action, InterpretError> {
                         },
                     });
                 }
+                Some(
+                    name @ ("do-for-fact"
+                    | "do-for-all-facts"
+                    | "delayed-do-for-all-facts"
+                    | "any-factp"
+                    | "find-fact"
+                    | "find-all-facts"),
+                ) => {
+                    let name = name.to_string();
+                    let query_expr = interpret_query_action_expr(&name, &list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name,
+                            args: vec![query_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
                 _ => {}
             }
         }
@@ -2242,6 +2282,89 @@ fn interpret_foreach_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Inte
     })
 }
 
+/// Interpret a CLIPS fact-query macro form.
+///
+/// Handles: `do-for-fact`, `do-for-all-facts`, `delayed-do-for-all-facts`,
+/// `any-factp`, `find-fact`, and `find-all-facts`.
+///
+/// `name` is the macro keyword that was already consumed. `rest` is the
+/// remaining elements: `[<binding-list>, <query>, <action>*]`.
+/// For query-only forms (`any-factp`, `find-fact`, `find-all-facts`) there
+/// are no trailing action elements.
+fn interpret_query_action_expr(
+    name: &str,
+    rest: &[SExpr],
+    span: Span,
+) -> Result<ActionExpr, InterpretError> {
+    if rest.len() < 2 {
+        return Err(InterpretError::missing(
+            &format!("binding list and query in ({name} ...)"),
+            span,
+        ));
+    }
+
+    // First element is the binding list: a list of `(?var template)` pairs.
+    let binding_list = rest[0].as_list().ok_or_else(|| {
+        InterpretError::expected(
+            &format!("binding list ((?var template) ...) in ({name} ...)"),
+            rest[0].span(),
+        )
+    })?;
+
+    let mut bindings = Vec::with_capacity(binding_list.len());
+    for binding_expr in binding_list {
+        let pair = binding_expr.as_list().ok_or_else(|| {
+            InterpretError::expected(
+                "(?variable template-name) binding pair",
+                binding_expr.span(),
+            )
+        })?;
+
+        if pair.len() < 2 {
+            return Err(InterpretError::missing(
+                "template name in binding pair (?var template)",
+                binding_expr.span(),
+            ));
+        }
+
+        let var_name = match pair[0].as_atom() {
+            Some(Atom::SingleVar(name)) => name.clone(),
+            _ => {
+                return Err(InterpretError::expected(
+                    "?variable in binding pair",
+                    pair[0].span(),
+                ))
+            }
+        };
+
+        let template_name = pair[1]
+            .as_symbol()
+            .ok_or_else(|| {
+                InterpretError::expected("template name (symbol) in binding pair", pair[1].span())
+            })?
+            .to_string();
+
+        bindings.push((var_name, template_name));
+    }
+
+    // Second element is the query expression.
+    let query = interpret_action_expr(&rest[1])?;
+
+    // Remaining elements (if any) are body actions.
+    let mut body = Vec::with_capacity(rest.len().saturating_sub(2));
+    for body_expr in &rest[2..] {
+        body.push(interpret_action_expr(body_expr)?);
+    }
+
+    Ok(ActionExpr::QueryAction {
+        name: name.to_string(),
+        bindings,
+        query: Box::new(query),
+        body,
+        span,
+    })
+}
+
 /// Interpret an expression in an action context (RHS).
 fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
     // Check if it's a list (nested function call or special form)
@@ -2259,6 +2382,17 @@ fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
                 }
                 Some("progn$") => return interpret_progn_dollar_expr(&list[1..], expr.span()),
                 Some("foreach") => return interpret_foreach_expr(&list[1..], expr.span()),
+                Some(
+                    name @ ("do-for-fact"
+                    | "do-for-all-facts"
+                    | "delayed-do-for-all-facts"
+                    | "any-factp"
+                    | "find-fact"
+                    | "find-all-facts"),
+                ) => {
+                    let name = name.to_string();
+                    return interpret_query_action_expr(&name, &list[1..], expr.span());
+                }
                 _ => {}
             }
         }
@@ -4620,5 +4754,127 @@ mod tests {
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert!(!result.errors.is_empty(), "should error on missing do");
+    }
+
+    // -----------------------------------------------------------------------
+    // Fact-query macro forms (do-for-fact, any-factp, etc.)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpret_do_for_fact_action() {
+        let parsed = parse_sexprs(
+            "(defrule test => (do-for-fact ((?f data)) TRUE (printout t ?f)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions.len(), 1);
+        assert_eq!(rule.actions[0].call.name, "do-for-fact");
+        // The sole argument is the wrapped QueryAction expression.
+        assert_eq!(rule.actions[0].call.args.len(), 1);
+        assert!(
+            matches!(&rule.actions[0].call.args[0], ActionExpr::QueryAction { name, bindings, body, .. }
+                if name == "do-for-fact" && bindings.len() == 1 && body.len() == 1),
+            "unexpected QueryAction shape"
+        );
+    }
+
+    #[test]
+    fn interpret_do_for_all_facts_action() {
+        let parsed = parse_sexprs(
+            r"(defrule test => (do-for-all-facts ((?f data)) (> (fact-slot-value ?f val) 0) (printout t ?f crlf)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        assert_eq!(rule.actions[0].call.name, "do-for-all-facts");
+        assert!(
+            matches!(&rule.actions[0].call.args[0], ActionExpr::QueryAction { bindings, body, .. }
+                if bindings.len() == 1 && body.len() == 1)
+        );
+    }
+
+    #[test]
+    fn interpret_any_factp_action() {
+        // any-factp used as a condition inside an if form.
+        let parsed = parse_sexprs(
+            r"(defrule test => (if (any-factp ((?f data)) TRUE) then (printout t found)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn interpret_find_all_facts_action() {
+        let parsed = parse_sexprs(
+            r"(defrule test => (bind ?result (find-all-facts ((?f data)) TRUE)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn interpret_find_fact_action() {
+        let parsed = parse_sexprs(
+            r"(defrule test => (bind ?r (find-fact ((?f person)) (eq (fact-slot-value ?f name) Alice))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn interpret_query_action_multi_binding() {
+        // Two binding variables in a single query macro.
+        let parsed = parse_sexprs(
+            r"(defrule test => (do-for-all-facts ((?a person) (?b address)) TRUE (printout t ?a ?b)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        assert!(
+            matches!(&rule.actions[0].call.args[0], ActionExpr::QueryAction { bindings, .. }
+                if bindings.len() == 2)
+        );
+    }
+
+    #[test]
+    fn interpret_query_action_missing_binding_list_is_error() {
+        let parsed = parse_sexprs("(defrule test => (do-for-fact TRUE))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            !result.errors.is_empty(),
+            "should error: missing binding list"
+        );
+    }
+
+    #[test]
+    fn interpret_query_action_bad_binding_var_is_error() {
+        // Using a plain symbol instead of ?var in a binding is an error.
+        let parsed = parse_sexprs("(defrule test => (do-for-fact ((f data)) TRUE))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            !result.errors.is_empty(),
+            "should error: bad binding variable"
+        );
     }
 }

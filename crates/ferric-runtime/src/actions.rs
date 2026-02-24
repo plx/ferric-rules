@@ -17,6 +17,7 @@ use ferric_core::{
     EncodingError, Fact, FactBase, FactId, ReteNetwork, Symbol, SymbolTable, TemplateId, Value,
 };
 use ferric_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
+use slotmap::Key as _;
 
 use crate::config::EngineConfig;
 use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore};
@@ -37,6 +38,8 @@ pub(crate) struct ActionExecutionContext<'a> {
     pub symbol_table: &'a mut SymbolTable,
     pub config: &'a EngineConfig,
     pub template_defs: &'a HashMap<TemplateId, RegisteredTemplate>,
+    /// Template name → `TemplateId` lookup, used by fact-query macros.
+    pub template_ids: &'a HashMap<String, TemplateId>,
     pub router: &'a mut OutputRouter,
     pub functions: &'a FunctionEnv,
     pub globals: &'a mut GlobalStore,
@@ -181,6 +184,7 @@ pub(crate) fn execute_actions(
     let input_buffer = &mut *context.input_buffer;
     let config = context.config;
     let template_defs = context.template_defs;
+    let template_ids = context.template_ids;
     let functions = context.functions;
     let generics = context.generics;
     let module_registry = context.module_registry;
@@ -239,6 +243,7 @@ pub(crate) fn execute_actions(
             &action.call,
             runtime_call,
             template_defs,
+            template_ids,
             router,
             focus_requests,
             all_rule_info,
@@ -268,6 +273,7 @@ fn execute_single_action(
     call: &FunctionCall,
     runtime_call: Option<&crate::evaluator::RuntimeExpr>,
     template_defs: &HashMap<TemplateId, RegisteredTemplate>,
+    template_ids: &HashMap<String, TemplateId>,
     router: &mut OutputRouter,
     focus_requests: &mut Vec<String>,
     all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
@@ -399,6 +405,7 @@ fn execute_single_action(
                         &branch_call,
                         branch_runtime,
                         template_defs,
+                        template_ids,
                         router,
                         focus_requests,
                         all_rule_info,
@@ -463,6 +470,7 @@ fn execute_single_action(
                         rule_info,
                         body,
                         template_defs,
+                        template_ids,
                         router,
                         focus_requests,
                         all_rule_info,
@@ -553,6 +561,7 @@ fn execute_single_action(
                         &loop_rule_info,
                         body,
                         template_defs,
+                        template_ids,
                         router,
                         focus_requests,
                         all_rule_info,
@@ -635,6 +644,7 @@ fn execute_single_action(
                         &loop_rule_info,
                         body,
                         template_defs,
+                        template_ids,
                         router,
                         focus_requests,
                         all_rule_info,
@@ -650,6 +660,60 @@ fn execute_single_action(
                     .eval_runtime_expr(token, rule_info, runtime_expr)
                     .map(|_| ())
                     .map_err(|e| ActionError::UnknownAction(format!("progn$: {e}")))
+            } else {
+                Ok(())
+            }
+        }
+
+        // Fact-query macro forms.
+        "do-for-fact"
+        | "do-for-all-facts"
+        | "delayed-do-for-all-facts"
+        | "any-factp"
+        | "find-fact"
+        | "find-all-facts" => {
+            // Unwrap the pre-compiled `RuntimeExpr::QueryAction` from the
+            // wrapper call that the loader places around it.
+            let query_runtime: Option<&crate::evaluator::RuntimeExpr> = match runtime_call {
+                Some(crate::evaluator::RuntimeExpr::Call { args, .. }) => {
+                    args.first().map(|a| a as &crate::evaluator::RuntimeExpr)
+                }
+                Some(rt @ crate::evaluator::RuntimeExpr::QueryAction { .. }) => Some(rt),
+                _ => None,
+            };
+
+            if let Some(crate::evaluator::RuntimeExpr::QueryAction {
+                name,
+                bindings,
+                query,
+                body,
+                ..
+            }) = query_runtime
+            {
+                execute_query_action(
+                    fact_base,
+                    rete,
+                    halted,
+                    reset_requested,
+                    clear_requested,
+                    token,
+                    rule_info,
+                    name,
+                    bindings,
+                    query,
+                    body,
+                    template_defs,
+                    template_ids,
+                    router,
+                    focus_requests,
+                    all_rule_info,
+                    eval_env,
+                )
+            } else if let Some(runtime_expr) = runtime_call {
+                eval_env
+                    .eval_runtime_expr(token, rule_info, runtime_expr)
+                    .map(|_| ())
+                    .map_err(|e| ActionError::UnknownAction(format!("{}: {e}", call.name)))
             } else {
                 Ok(())
             }
@@ -740,6 +804,7 @@ fn execute_loop_body(
         Option<Box<crate::evaluator::RuntimeExpr>>,
     )],
     template_defs: &HashMap<TemplateId, RegisteredTemplate>,
+    template_ids: &HashMap<String, TemplateId>,
     router: &mut OutputRouter,
     focus_requests: &mut Vec<String>,
     all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
@@ -791,6 +856,15 @@ fn execute_loop_body(
                 let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
                 (synthetic, rt)
             }
+            ActionExpr::QueryAction { name, span, .. } => {
+                let synthetic = ferric_parser::FunctionCall {
+                    name: name.clone(),
+                    args: vec![],
+                    span: *span,
+                };
+                let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
+                (synthetic, rt)
+            }
             _ => {
                 // Literal/variable — evaluate as expression; result is discarded.
                 if let Some(rt) = rt_expr {
@@ -812,6 +886,7 @@ fn execute_loop_body(
             &branch_call,
             branch_runtime,
             template_defs,
+            template_ids,
             router,
             focus_requests,
             all_rule_info,
@@ -821,6 +896,159 @@ fn execute_loop_body(
             break;
         }
     }
+    Ok(())
+}
+
+/// Execute a fact-query macro action.
+///
+/// Handles `do-for-fact`, `do-for-all-facts`, `delayed-do-for-all-facts`,
+/// `any-factp`, `find-fact`, and `find-all-facts`.
+///
+/// For action forms (`do-for-*`), executes `body` for each matching fact and
+/// returns `Ok(())`. For expression forms (`any-factp`, `find-*`), the return
+/// value cannot be propagated here; call-sites that need it should go through
+/// `eval()` instead (which returns a default value since it lacks fact-base
+/// access — see `RuntimeExpr::QueryAction` eval arm).
+#[allow(clippy::too_many_arguments)]
+fn execute_query_action(
+    fact_base: &mut FactBase,
+    rete: &mut ReteNetwork,
+    halted: &mut bool,
+    reset_requested: &mut bool,
+    clear_requested: &mut bool,
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    name: &str,
+    bindings: &[(String, String)],
+    query: &crate::evaluator::RuntimeExpr,
+    body: &[(
+        ferric_parser::ActionExpr,
+        Option<Box<crate::evaluator::RuntimeExpr>>,
+    )],
+    template_defs: &HashMap<TemplateId, RegisteredTemplate>,
+    template_ids: &HashMap<String, TemplateId>,
+    router: &mut OutputRouter,
+    focus_requests: &mut Vec<String>,
+    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
+    eval_env: &mut ActionEvalEnv<'_>,
+) -> Result<(), ActionError> {
+    // Collect matching fact IDs.
+    //
+    // For multi-binding forms (e.g. `(do-for-all-facts ((?a T1) (?b T2)) ...)`),
+    // we iterate the cross-product of each binding's fact set.  For the common
+    // single-binding case this degenerates to a simple loop.
+    //
+    // We collect all IDs first to avoid borrow issues when executing the body
+    // (body actions may assert/retract facts, which would mutate the fact base
+    // while we're iterating it).  This also serves as the snapshot required by
+    // `delayed-do-for-all-facts`.
+
+    // Resolve each binding to (variable_name, Vec<FactId>).
+    let mut binding_fact_ids: Vec<(String, Vec<FactId>)> = Vec::with_capacity(bindings.len());
+    for (var_name, template_name) in bindings {
+        let Some(&tid) = template_ids.get(template_name.as_str()) else {
+            // Unknown template — no facts match; result is empty / FALSE.
+            return Ok(());
+        };
+        let ids: Vec<FactId> = fact_base.facts_by_template(tid).collect();
+        binding_fact_ids.push((var_name.clone(), ids));
+    }
+
+    if binding_fact_ids.is_empty() {
+        return Ok(());
+    }
+
+    // For simplicity, implement the cross-product as a recursive-style iteration
+    // over the bindings list. We build candidate tuples iteratively.
+    // A "candidate" is a Vec of (var_name, FactId) assignments — one per binding.
+
+    // Seed with single-element tuples for the first binding.
+    let (first_var, first_ids) = &binding_fact_ids[0];
+    let mut candidates: Vec<Vec<(String, FactId)>> = first_ids
+        .iter()
+        .map(|&id| vec![(first_var.clone(), id)])
+        .collect();
+
+    // Extend with remaining bindings.
+    for (var_name, ids) in &binding_fact_ids[1..] {
+        let mut next = Vec::with_capacity(candidates.len() * ids.len());
+        for candidate in &candidates {
+            for &id in ids {
+                let mut extended = candidate.clone();
+                extended.push((var_name.clone(), id));
+                next.push(extended);
+            }
+        }
+        candidates = next;
+    }
+
+    // Now iterate candidates, filter by query, execute body as appropriate.
+    let stop_after_first = name == "do-for-fact";
+    let is_action_form = matches!(
+        name,
+        "do-for-fact" | "do-for-all-facts" | "delayed-do-for-all-facts"
+    );
+
+    for candidate in &candidates {
+        // Build augmented (token, rule_info) with all binding variables set.
+        let mut aug_token = token.clone();
+        let mut aug_rule_info = rule_info_clone_light(rule_info);
+
+        for (var_name, fact_id) in candidate {
+            // Represent the FactId as an integer value.
+            #[allow(clippy::cast_possible_wrap)] // FactId ffi is u64; wrap is acceptable here
+            let fact_val = Value::Integer(fact_id.data().as_ffi() as i64);
+            let (new_token, new_rule_info) = augment_bindings_with_var(
+                &aug_token,
+                &aug_rule_info,
+                var_name,
+                fact_val,
+                eval_env.symbol_table,
+                eval_env.config,
+            )?;
+            aug_token = new_token;
+            aug_rule_info = new_rule_info;
+        }
+
+        // Evaluate the query expression.
+        let query_val = {
+            let mut ctx = eval_env.make_eval_context(&aug_token, &aug_rule_info);
+            crate::evaluator::eval(&mut ctx, query).map_err(ActionError::from)?
+        };
+
+        if !crate::evaluator::is_truthy(&query_val, eval_env.symbol_table) {
+            continue;
+        }
+
+        if is_action_form {
+            execute_loop_body(
+                fact_base,
+                rete,
+                halted,
+                reset_requested,
+                clear_requested,
+                &aug_token,
+                &aug_rule_info,
+                body,
+                template_defs,
+                template_ids,
+                router,
+                focus_requests,
+                all_rule_info,
+                eval_env,
+            )?;
+            if *halted || *reset_requested || *clear_requested {
+                break;
+            }
+            if stop_after_first {
+                break;
+            }
+        }
+        // For expression forms (any-factp, find-fact, find-all-facts) we
+        // can't return the value from this action-execution path; callers
+        // that need a return value should use the eval() path instead.
+    }
+
     Ok(())
 }
 

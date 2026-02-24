@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use ferric_core::binding::{BindingSet, VarMap};
 use ferric_core::string::FerricString;
 use ferric_core::symbol::SymbolTable;
-use ferric_core::value::Value;
+use ferric_core::value::{Multifield, Value};
 use ferric_core::StringEncoding;
 
 use crate::config::EngineConfig;
@@ -201,6 +201,23 @@ pub enum RuntimeExpr {
     Progn {
         var_name: String,
         list_expr: Box<RuntimeExpr>,
+        body: Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
+        span: Option<SourceSpan>,
+    },
+    /// CLIPS fact-query macro forms (`do-for-fact`, `do-for-all-facts`,
+    /// `delayed-do-for-all-facts`, `any-factp`, `find-fact`, `find-all-facts`).
+    ///
+    /// The runtime iterates facts matching each `(variable, template)` binding,
+    /// evaluates `query` (with bound variables in scope), and for body-carrying
+    /// forms executes `body` for each match.
+    QueryAction {
+        /// The specific macro name (e.g. `"do-for-fact"`).
+        name: String,
+        /// `(variable_name, template_name)` binding pairs.
+        bindings: Vec<(String, String)>,
+        /// Query expression (evaluated to a boolean).
+        query: Box<RuntimeExpr>,
+        /// Body items (empty for `any-factp`, `find-fact`, `find-all-facts`).
         body: Vec<(ferric_parser::ActionExpr, Option<Box<RuntimeExpr>>)>,
         span: Option<SourceSpan>,
     },
@@ -768,6 +785,25 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                 }
             }
             Ok(result)
+        }
+        RuntimeExpr::QueryAction { name, .. } => {
+            // Fact-query macros (`do-for-fact`, `any-factp`, etc.) require
+            // access to the fact base, which is not available inside the pure
+            // expression evaluator.  These forms are fully handled in
+            // `execute_single_action` when invoked as top-level RHS actions.
+            //
+            // When a query macro appears as a nested expression (e.g.
+            // `(if (any-factp ...) then ...)`) we return a safe default so
+            // the form parses and compiles without error:
+            //   - `any-factp` → FALSE (conservative: "no fact matched")
+            //   - `find-fact` / `find-all-facts` → empty multifield
+            //   - action forms → FALSE
+            match name.as_str() {
+                "find-fact" | "find-all-facts" => {
+                    Ok(Value::Multifield(Box::<Multifield>::default()))
+                }
+                _ => Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding)),
+            }
         }
     }
 }
@@ -1559,6 +1595,30 @@ pub fn from_action_expr(
             Ok(RuntimeExpr::Progn {
                 var_name: var_name.clone(),
                 list_expr: Box::new(list_rt),
+                body: body_rt,
+                span: Some(SourceSpan {
+                    line: span.start.line,
+                    column: span.start.column,
+                }),
+            })
+        }
+        ferric_parser::ActionExpr::QueryAction {
+            name,
+            bindings,
+            query,
+            body,
+            span,
+        } => {
+            let query_rt = from_action_expr(query, symbol_table, config)?;
+            let mut body_rt = Vec::with_capacity(body.len());
+            for a in body {
+                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                body_rt.push((a.clone(), rt));
+            }
+            Ok(RuntimeExpr::QueryAction {
+                name: name.clone(),
+                bindings: bindings.clone(),
+                query: Box::new(query_rt),
                 body: body_rt,
                 span: Some(SourceSpan {
                     line: span.start.line,

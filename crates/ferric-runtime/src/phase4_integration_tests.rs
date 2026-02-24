@@ -2421,3 +2421,165 @@ fn nested_loops_work_correctly() {
     assert!(output.contains("2-1"), "output: {output:?}");
     assert!(output.contains("2-2"), "output: {output:?}");
 }
+
+// ===========================================================================
+// Fact-query macro forms (do-for-fact, any-factp, find-fact, find-all-facts)
+// ===========================================================================
+
+/// Verify that a rule containing `do-for-fact` loads without error.
+#[test]
+fn load_rule_with_do_for_fact() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(deftemplate data (slot value))
+(defrule test => (do-for-fact ((?f data)) TRUE (printout t "found" crlf)))
+"#,
+    );
+}
+
+/// Verify that a rule containing `do-for-all-facts` loads without error.
+#[test]
+fn load_rule_with_do_for_all_facts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate item (slot name))
+(defrule list-all => (do-for-all-facts ((?i item)) TRUE (printout t ?i crlf)))
+",
+    );
+}
+
+/// `do-for-all-facts` iterates all facts of the given template and executes
+/// the body for each.  With three `data` facts and a body that asserts an
+/// ordered `hit` fact, we expect three `hit` facts after running.
+#[test]
+fn do_for_all_facts_iterates_matching_facts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate data (slot value))
+(deffacts setup
+    (data (value 1))
+    (data (value 2))
+    (data (value 3)))
+(defrule find-all
+    (go)
+    =>
+    (do-for-all-facts ((?f data)) TRUE
+        (assert (hit ?f))))
+(deffacts trigger (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    // Three data facts → three ordered hit facts asserted.
+    let hits = find_facts_by_relation(&engine, "hit");
+    assert_eq!(hits.len(), 3, "expected 3 hit facts, got: {hits:?}");
+}
+
+/// `do-for-fact` stops after the first matching fact.
+#[test]
+fn do_for_fact_stops_after_first_match() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate data (slot value))
+(deffacts setup
+    (data (value 10))
+    (data (value 20))
+    (data (value 30)))
+(defrule find-first
+    (go)
+    =>
+    (do-for-fact ((?f data)) TRUE
+        (assert (hit ?f))))
+(deffacts trigger (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    // do-for-fact stops at the first match, so exactly one hit fact.
+    let hits = find_facts_by_relation(&engine, "hit");
+    assert_eq!(
+        hits.len(),
+        1,
+        "expected 1 hit fact from do-for-fact, got: {hits:?}"
+    );
+}
+
+/// `delayed-do-for-all-facts` loads and parses correctly.
+#[test]
+fn load_rule_with_delayed_do_for_all_facts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate task (slot id))
+(defrule process
+    (go)
+    =>
+    (delayed-do-for-all-facts ((?t task)) TRUE (printout t ?t crlf)))
+(deffacts trigger (go))
+",
+    );
+}
+
+/// `any-factp` used as condition inside `if` loads without error.
+#[test]
+fn load_rule_with_any_factp_in_if_condition() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(deftemplate flag (slot active))
+(defrule check
+    (go)
+    =>
+    (if (any-factp ((?f flag)) TRUE)
+        then (printout t "has flags" crlf)
+        else (printout t "no flags" crlf)))
+(deffacts trigger (go))
+"#,
+    );
+}
+
+/// `find-all-facts` used as the RHS of `bind` loads without error.
+#[test]
+fn load_rule_with_find_all_facts_in_bind() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate record (slot id))
+(defrule gather
+    (go)
+    =>
+    (bind ?all (find-all-facts ((?r record)) TRUE))
+    (printout t ?all crlf))
+(deffacts trigger (go))
+",
+    );
+}
+
+/// `find-fact` used as the RHS of `bind` loads without error.
+#[test]
+fn load_rule_with_find_fact_in_bind() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate widget (slot id))
+(defrule get-first
+    (go)
+    =>
+    (bind ?w (find-fact ((?r widget)) TRUE))
+    (printout t ?w crlf))
+(deffacts trigger (go))
+",
+    );
+}
