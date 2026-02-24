@@ -159,3 +159,87 @@ Tests involving `(defmodule X)` + module-qualified deffacts may not work as expe
 
 ### Test count after Pass 012
 569 ferric-runtime tests (total 1018 including 3 doctests + ferric-core + ferric-parser).
+
+## if/then/else Control Flow Implementation
+
+### Key design: action wrapping
+- `interpret_action()` intercepts `(if ...)` BEFORE `interpret_function_call()`
+- Result: `Action { call: FunctionCall { name: "if", args: [ActionExpr::If{...}], span } }`
+- The `ActionExpr::If` is the SOLE arg — NOT the `(> ?x 0) then ...` elements broken into separate args
+
+### RuntimeExpr::If branch type
+- Branches are `Vec<(ActionExpr, Option<Box<RuntimeExpr>>)>` — NOT `Vec<RuntimeExpr>`
+- Reason: `execute_single_action` for assert/retract/printout needs original `ActionExpr` args
+- Pre-compiled `RuntimeExpr` stored as `Box` to avoid size issues
+
+### Two `if_runtime` extraction paths in execute_single_action
+1. **Top-level** (loader pre-compilation): `runtime_call = Some(RuntimeExpr::Call { name: "if", args: [RuntimeExpr::If{...}] })` — extract `args.first()`
+2. **Nested in branch** (recursive call): `runtime_call = Some(RuntimeExpr::If{...})` directly
+- CRITICAL: Without the nested path, nested `if` silently does nothing
+
+### Branch dispatch
+- `ActionExpr::FunctionCall(fc)` → use `fc.clone()` as call, `rt_expr.as_deref()` as runtime_call
+- `ActionExpr::If { span, .. }` → synthetic `FunctionCall { name: "if", args: [], span }` + `rt_expr.as_deref()` directly as runtime_call (will be `RuntimeExpr::If` for recursive dispatch)
+- Always propagate early-exit flags (`halted`, `reset_requested`, `clear_requested`) after each branch item
+
+### Test count after if/then/else
+618 ferric-runtime tests (added 5 parser unit tests + 10 integration tests).
+
+## Loop Control Forms: while, loop-for-count, progn$/foreach
+
+### Parser design (stage2.rs)
+- Three new `ActionExpr` variants: `While`, `LoopForCount`, `Progn`
+- `foreach` parses to `ActionExpr::Progn` (same semantics, different syntax)
+- `interpret_action()` intercepts all 5 keywords before `interpret_function_call()`
+- Result: `Action { call: FunctionCall { name: "while"|"loop-for-count"|"progn$"|"foreach", args: [ActionExpr::While|LoopForCount|Progn{...}], span } }`
+- `interpret_action_expr()` also intercepts loops for nested usage (e.g., in deffunction body)
+
+### while syntax
+- `(while <cond> do <action>*)` — `do` is a plain symbol delimiter (not a token type)
+- Condition must be the single element between `while` and `do`
+
+### loop-for-count syntax
+- `(?var start end)` — 3-element spec
+- `(?var end)` — 2-element spec (start defaults to 1)
+- `(end)` — 1-element anonymous counter spec
+- `do` is required delimiter after the spec
+
+### progn$/foreach syntax
+- `progn$`: `(progn$ (?var <expr>) <action>*)` — no `do` delimiter
+- `foreach`: `(foreach ?var <expr> do <action>*)` — optional `do` (3rd element check)
+
+### RuntimeExpr variants
+- `While { condition, body, span }` — body is `Vec<(ActionExpr, Option<Box<RuntimeExpr>>)>`
+- `LoopForCount { var_name: Option<String>, start, end, body, span }`
+- `Progn { var_name: String, list_expr, body, span }`
+- `from_action_expr()` needs `#[allow(clippy::too_many_lines)]` (128+ lines)
+
+### Loop evaluation in eval() — for pure expression contexts
+- `while`: `MAX_LOOP_ITERATIONS` cap; returns last body value or `FALSE`
+- `loop-for-count`: evaluates start/end, clones `var_map`+`bindings` per iteration via `EvalContext`
+- `progn$`: evaluates `list_expr`, iterates elements, binds `var_name` and `var_name-index`
+- Create new `EvalContext` per iteration with cloned `var_map` and `BindingSet`
+- `f64 as i64` needs `#[allow(clippy::cast_possible_truncation)]`
+- `(end_int - start_int + 1) as usize` needs `#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]`
+- `idx as i64` needs `#[allow(clippy::cast_possible_wrap)]`
+- Use `body` not `body.iter()` in for loops (clippy: `explicit_iter_loop`)
+
+### Loop execution in execute_single_action() — for side-effecting action contexts
+- Three helpers: `execute_loop_body`, `augment_bindings_with_var`, `rule_info_clone_light`
+- `augment_bindings_with_var`: clones `token` and `rule_info.var_map`, adds new variable binding
+- `rule_info_clone_light`: clones only `var_map`, `fact_address_vars`, `name`, `salience` — leaves actions/test_conditions empty
+- `execute_loop_body`: shared body dispatch (mirrors if branch dispatch) — handles all `ActionExpr` variants
+- The `else { if ... }` pattern for fallbacks → clippy `collapsible_else_if` → use `else if`
+
+### Variable binding for loops via augmented Token
+- `loop-for-count` and `progn$` use `augment_bindings_with_var(token, rule_info, var, value, ...)`
+- Returns `(Token, CompiledRuleInfo)` — both cloned with the extra variable added
+- `progn$` calls it twice: once for element, once for `var-index`
+- `while` uses the original token/rule_info unchanged (no new variable)
+
+### Test considerations
+- `$?xs` multifield LHS patterns NOT yet supported — use `(create$ a b c)` in RHS instead
+- `defglobal` must be declared for accumulator variables in deffunction bodies
+
+### Test count after loops
+199 ferric-parser tests (10 new), 632 ferric-runtime tests (14 new).
