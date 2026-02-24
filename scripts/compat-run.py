@@ -390,7 +390,15 @@ def main():
         if args.source and info["source"] != args.source:
             continue
 
-        abs_path = examples_dir / rel_path
+        # Resolve file path: check for "generated" field override, then
+        # try tests/generated/ prefix, then fall back to examples_dir.
+        generated = info.get("generated")
+        if generated:
+            abs_path = repo_root / generated
+        elif rel_path.startswith("generated/"):
+            abs_path = repo_root / "tests" / rel_path
+        else:
+            abs_path = examples_dir / rel_path
         if not abs_path.exists():
             continue
 
