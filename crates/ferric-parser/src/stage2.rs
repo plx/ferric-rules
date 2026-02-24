@@ -1999,10 +1999,30 @@ fn interpret_function_call(expr: &SExpr) -> Result<FunctionCall, InterpretError>
         return Err(InterpretError::invalid("empty function call", expr.span()));
     }
 
-    let name = list[0]
-        .as_symbol()
-        .ok_or_else(|| InterpretError::expected("function name (symbol)", list[0].span()))?
-        .to_string();
+    // Accept symbols directly, and also connective operators as function names.
+    // CLIPS allows `=` and constraint connectives (`&`, `|`, `~`) in
+    // function-call position, mapping to their function equivalents.
+    let name = if let Some(s) = list[0].as_symbol() {
+        s.to_string()
+    } else if let Some(Atom::Connective(c)) = list[0].as_atom() {
+        match c {
+            Connective::Equals => "=".to_string(),
+            Connective::And => "and".to_string(),
+            Connective::Or => "or".to_string(),
+            Connective::Not => "not".to_string(),
+            _ => {
+                return Err(InterpretError::expected(
+                    "function name (symbol)",
+                    list[0].span(),
+                ));
+            }
+        }
+    } else {
+        return Err(InterpretError::expected(
+            "function name (symbol)",
+            list[0].span(),
+        ));
+    };
 
     let mut args = Vec::new();
     for arg_expr in &list[1..] {
