@@ -880,6 +880,22 @@ impl Engine {
             return Err(LoadError::Validation(validation_errors));
         }
 
+        // Expand (or ...) CEs via rule duplication: a rule with (or P1 P2) becomes
+        // N internal rules, each with one branch substituted. Multiple or CEs produce
+        // the Cartesian product.
+        let expanded_rules = Self::expand_or_patterns(rule);
+        let mut last_result = None;
+
+        for variant in &expanded_rules {
+            let result = self.compile_single_rule(variant)?;
+            last_result = Some(result);
+        }
+
+        // Return the last compile result (all variants share the same name/semantics)
+        last_result.ok_or_else(|| LoadError::Compile("empty or-expansion".to_string()))
+    }
+
+    fn compile_single_rule(&mut self, rule: &RuleConstruct) -> Result<CompileResult, LoadError> {
         let translated = self
             .translate_rule_construct(rule)
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
@@ -920,6 +936,89 @@ impl Engine {
         );
 
         Ok(compile_result)
+    }
+
+    /// Expand `Pattern::Or` CEs via rule duplication.
+    /// Returns a vec of rule variants (1 if no `or` CEs, N*M*... for Cartesian product).
+    fn expand_or_patterns(rule: &RuleConstruct) -> Vec<RuleConstruct> {
+        // First flatten top-level And/Logical to expose Or patterns
+        let mut flat_patterns: Vec<Pattern> = Vec::new();
+        for pattern in &rule.patterns {
+            match pattern {
+                Pattern::And(inner, _) | Pattern::Logical(inner, _) => {
+                    flat_patterns.extend(inner.iter().cloned());
+                }
+                _ => flat_patterns.push(pattern.clone()),
+            }
+        }
+
+        // Check if any top-level pattern is an Or (or assigned wrapping an Or)
+        let has_or = flat_patterns.iter().any(|p| {
+            matches!(p, Pattern::Or(..))
+                || matches!(p, Pattern::Assigned { pattern, .. } if matches!(pattern.as_ref(), Pattern::Or(..)))
+        });
+
+        if !has_or {
+            return vec![rule.clone()];
+        }
+
+        // Build Cartesian product of all or-branches
+        let mut pattern_options: Vec<Vec<Pattern>> = Vec::new();
+        for pattern in &flat_patterns {
+            match pattern {
+                Pattern::Or(branches, _) => {
+                    pattern_options.push(branches.clone());
+                }
+                Pattern::Assigned {
+                    variable,
+                    pattern: inner,
+                    span,
+                } if matches!(inner.as_ref(), Pattern::Or(..)) => {
+                    // ?var <- (or P1 P2) → expand to [?var <- P1, ?var <- P2]
+                    if let Pattern::Or(branches, _) = inner.as_ref() {
+                        let assigned_branches: Vec<Pattern> = branches
+                            .iter()
+                            .map(|b| Pattern::Assigned {
+                                variable: variable.clone(),
+                                pattern: Box::new(b.clone()),
+                                span: *span,
+                            })
+                            .collect();
+                        pattern_options.push(assigned_branches);
+                    }
+                }
+                other => {
+                    pattern_options.push(vec![other.clone()]);
+                }
+            }
+        }
+
+        // Compute Cartesian product
+        let mut combinations: Vec<Vec<Pattern>> = vec![vec![]];
+        for options in &pattern_options {
+            let mut new_combinations = Vec::new();
+            for combo in &combinations {
+                for option in options {
+                    let mut new_combo = combo.clone();
+                    new_combo.push(option.clone());
+                    new_combinations.push(new_combo);
+                }
+            }
+            combinations = new_combinations;
+        }
+
+        // Create rule variants
+        combinations
+            .into_iter()
+            .map(|patterns| RuleConstruct {
+                name: rule.name.clone(),
+                span: rule.span,
+                comment: rule.comment.clone(),
+                salience: rule.salience,
+                patterns,
+                actions: rule.actions.clone(),
+            })
+            .collect()
     }
 
     /// Translate a `RuleConstruct` (parser types) into a `CompilableRule` (core types).
@@ -1113,6 +1212,11 @@ impl Engine {
                 span,
                 "logical CE is only supported at top-level of rule LHS",
             )),
+            Pattern::Or(_, span) => Err(Self::unsupported_pattern(
+                "or",
+                span,
+                "or CE should have been expanded via rule duplication before reaching translate_condition",
+            )),
             _ => Ok(CompilableCondition::Pattern(
                 self.translate_pattern(pattern)?,
             )),
@@ -1292,6 +1396,11 @@ impl Engine {
                 "logical",
                 span,
                 "logical CE reached translate_pattern unexpectedly (should be flattened at top level)",
+            )),
+            Pattern::Or(_, span) => Err(Self::unsupported_pattern(
+                "or",
+                span,
+                "or CE reached translate_pattern unexpectedly (should be expanded via rule duplication)",
             )),
         }
     }
@@ -1560,7 +1669,9 @@ fn validate_pattern_recursive(
             validate_pattern_recursive(inner, depth, max_depth, errors);
         }
 
-        Pattern::And(inner_patterns, _) | Pattern::Logical(inner_patterns, _) => {
+        Pattern::And(inner_patterns, _)
+        | Pattern::Logical(inner_patterns, _)
+        | Pattern::Or(inner_patterns, _) => {
             for inner in inner_patterns {
                 validate_pattern_recursive(inner, depth, max_depth, errors);
             }

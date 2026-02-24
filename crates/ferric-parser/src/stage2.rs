@@ -43,6 +43,8 @@ pub enum Pattern {
     Forall(Vec<Pattern>, Span),
     /// Logical CE: (logical <pattern> ...) — truth maintenance wrapper
     Logical(Vec<Pattern>, Span),
+    /// Disjunction CE: (or <pattern> <pattern> ...)
+    Or(Vec<Pattern>, Span),
     /// Assigned pattern: ?var <- <pattern>
     Assigned {
         variable: String,
@@ -1546,6 +1548,19 @@ fn interpret_conditional_pattern(
                 patterns.push(interpret_pattern(pattern_expr)?);
             }
             Ok(Some(Pattern::Logical(patterns, expr.span())))
+        }
+        Some("or") => {
+            if list.len() < 3 {
+                return Err(InterpretError::missing(
+                    "at least two patterns in (or ...)",
+                    expr.span(),
+                ));
+            }
+            let mut patterns = Vec::new();
+            for pattern_expr in &list[1..] {
+                patterns.push(interpret_pattern(pattern_expr)?);
+            }
+            Ok(Some(Pattern::Or(patterns, expr.span())))
         }
         _ => Ok(None),
     }
