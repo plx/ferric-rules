@@ -396,6 +396,7 @@ impl Engine {
             symbol_table: &mut self.symbol_table,
             config: &self.config,
             template_defs: &self.template_defs,
+            template_ids: &self.template_ids,
             router: &mut self.router,
             functions: &self.functions,
             globals: &mut self.globals,
