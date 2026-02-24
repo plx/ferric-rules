@@ -1131,7 +1131,7 @@ impl Engine {
         match pattern {
             Pattern::Assigned { pattern, .. } => self.translate_condition(pattern),
             Pattern::Not(inner, span) => {
-                if let Pattern::And(inner_patterns, and_span) = inner.as_ref() {
+                if let Pattern::And(inner_patterns, _and_span) = inner.as_ref() {
                     if inner_patterns.is_empty() {
                         return Err(Self::unsupported_pattern(
                             "not/and",
@@ -1143,13 +1143,6 @@ impl Engine {
                     let mut subpatterns = Vec::with_capacity(inner_patterns.len());
                     for sub in inner_patterns {
                         let translated = self.translate_pattern(sub)?;
-                        if translated.negated {
-                            return Err(Self::unsupported_pattern(
-                                "not/and",
-                                and_span,
-                                "nested negation inside and is not supported yet",
-                            ));
-                        }
                         subpatterns.push(translated);
                     }
                     Ok(CompilableCondition::Ncc(subpatterns))
