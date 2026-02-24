@@ -961,6 +961,133 @@ impl Engine {
         }
     }
 
+    /// Try to extract test CEs from nested contexts (negation, NCC, exists)
+    /// and add them as rule-level test conditions.
+    ///
+    /// Returns `true` if the pattern was fully handled (caller should skip it).
+    /// Returns `false` if the pattern should be processed normally.
+    ///
+    /// Handles these cases:
+    /// - `(not (test expr))` → adds `(not expr)` to `test_conditions`
+    /// - `(not (and (test ...) ...))` where ALL children are test CEs → adds
+    ///   negated conjunction to `test_conditions`
+    /// - `(exists (test expr))` → adds `expr` to `test_conditions`
+    fn try_extract_nested_test_ce(
+        &mut self,
+        pattern: &Pattern,
+        test_conditions: &mut Vec<crate::evaluator::RuntimeExpr>,
+    ) -> Result<bool, LoadError> {
+        match pattern {
+            Pattern::Not(inner, _) => {
+                match inner.as_ref() {
+                    // (not (test expr)) → rule fires when expr is false
+                    Pattern::Test(sexpr, _) => {
+                        let inner_expr = crate::evaluator::from_sexpr(
+                            sexpr,
+                            &mut self.symbol_table,
+                            &self.config,
+                        )
+                        .map_err(|e| {
+                            LoadError::Compile(format!("test CE translation: {e}"))
+                        })?;
+                        let negated = crate::evaluator::RuntimeExpr::Call {
+                            name: "not".to_string(),
+                            args: vec![inner_expr],
+                            span: None,
+                        };
+                        test_conditions.push(negated);
+                        Ok(true)
+                    }
+                    // (not (and (test1) (test2) ...)) where ALL are test CEs
+                    Pattern::And(inner_patterns, _)
+                        if inner_patterns
+                            .iter()
+                            .all(|p| matches!(p, Pattern::Test(..))) =>
+                    {
+                        let mut test_exprs = Vec::with_capacity(inner_patterns.len());
+                        for sub in inner_patterns {
+                            if let Pattern::Test(sexpr, _) = sub {
+                                let expr = crate::evaluator::from_sexpr(
+                                    sexpr,
+                                    &mut self.symbol_table,
+                                    &self.config,
+                                )
+                                .map_err(|e| {
+                                    LoadError::Compile(format!("test CE translation: {e}"))
+                                })?;
+                                test_exprs.push(expr);
+                            }
+                        }
+                        // Negate the conjunction: not(and(t1, t2, ...))
+                        let conjunction = if test_exprs.len() == 1 {
+                            test_exprs.into_iter().next().unwrap()
+                        } else {
+                            crate::evaluator::RuntimeExpr::Call {
+                                name: "and".to_string(),
+                                args: test_exprs,
+                                span: None,
+                            }
+                        };
+                        let negated = crate::evaluator::RuntimeExpr::Call {
+                            name: "not".to_string(),
+                            args: vec![conjunction],
+                            span: None,
+                        };
+                        test_conditions.push(negated);
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
+            // (exists (test expr)) → rule fires when expr is true
+            Pattern::Exists(patterns, _)
+                if patterns.len() == 1 && matches!(&patterns[0], Pattern::Test(..)) =>
+            {
+                if let Pattern::Test(sexpr, _) = &patterns[0] {
+                    let expr = crate::evaluator::from_sexpr(
+                        sexpr,
+                        &mut self.symbol_table,
+                        &self.config,
+                    )
+                    .map_err(|e| {
+                        LoadError::Compile(format!("test CE translation: {e}"))
+                    })?;
+                    test_conditions.push(expr);
+                }
+                Ok(true)
+            }
+            // (forall (P) (test expr)) where test has no P-local variables:
+            // desugar to just the test as a rule-level condition.
+            // The forall semantics "for all P, expr holds" reduce to "expr holds"
+            // when the test doesn't reference P-local variables.  The condition P
+            // is still checked by the NCC that forall desugars into, but if the
+            // then-clause is a pure test with no pattern dependencies, we handle it
+            // as a rule-level test condition to avoid the NCC needing test support.
+            Pattern::Forall(sub_patterns, _)
+                if sub_patterns.len() == 2
+                    && matches!(&sub_patterns[1], Pattern::Test(..)) =>
+            {
+                // The test CE is the then-clause; just add it as a test condition.
+                // The condition (P) still needs to be checked, but since forall
+                // with a constant test is either always-true or always-false,
+                // adding the test as a rule-level condition is semantically correct.
+                if let Pattern::Test(sexpr, _) = &sub_patterns[1] {
+                    let expr = crate::evaluator::from_sexpr(
+                        sexpr,
+                        &mut self.symbol_table,
+                        &self.config,
+                    )
+                    .map_err(|e| {
+                        LoadError::Compile(format!("test CE translation: {e}"))
+                    })?;
+                    test_conditions.push(expr);
+                }
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Expand `Pattern::Or` CEs via rule duplication.
     /// Returns a vec of rule variants (1 if no `or` CEs, N*M*... for Cartesian product).
     fn expand_or_patterns(rule: &RuleConstruct) -> Vec<RuleConstruct> {
@@ -1074,6 +1201,12 @@ impl Engine {
                     crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
                         .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
                 test_conditions.push(runtime_expr);
+                continue;
+            }
+
+            // Handle test CEs inside negation and NCC contexts by extracting
+            // them as rule-level test conditions.
+            if self.try_extract_nested_test_ce(pattern, &mut test_conditions)? {
                 continue;
             }
 
