@@ -1598,10 +1598,14 @@ impl Engine {
                         });
                     }
                 }
-                Constraint::Variable(name, _) => {
-                    // ~?x → NotEqual beta join test
+                Constraint::Variable(name, _) | Constraint::MultiVariable(name, _) => {
+                    // ~?x or ~$?x → NotEqual beta join test
                     let sym = self.compile_symbol(name)?;
                     negated_variable_slots.push((slot, sym));
+                }
+                Constraint::Wildcard(_) | Constraint::MultiWildcard(_) => {
+                    // ~? or ~$? — negated wildcard, effectively a no-op
+                    // (matches nothing? or everything?) — treat as accept-all
                 }
                 _ => {
                     return Err(Self::unsupported_constraint(
@@ -1656,7 +1660,10 @@ impl Engine {
                     let mut found_var = false;
                     for sub in constraints {
                         match sub {
-                            Constraint::Variable(name, _) if !found_var => {
+                            Constraint::Variable(name, _)
+                            | Constraint::MultiVariable(name, _)
+                                if !found_var =>
+                            {
                                 let sym = self.compile_symbol(name)?;
                                 variable_slots.push((slot, sym));
                                 found_var = true;
@@ -1673,13 +1680,17 @@ impl Engine {
                             _ => {}
                         }
                     }
-                    if !found_var {
+                    if !found_var && constraints.is_empty() {
                         return Err(Self::unsupported_constraint(
                             "or",
                             span,
-                            "or constraints require at least one literal or variable alternative",
+                            "or constraints require at least one alternative",
                         ));
                     }
+                    // If !found_var but constraints is non-empty, all alternatives
+                    // are wildcards/predicates — no alpha-level filtering needed.
+                    // Predicate constraints have already been absorbed as wildcards
+                    // by the parser, so we just accept any value for this slot.
                 }
             }
         }
