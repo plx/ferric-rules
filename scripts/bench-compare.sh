@@ -33,6 +33,10 @@ WORKLOADS=""
 SKIP_BUILD=0
 SKIP_GENERATE=0
 QUICK=0
+DOCKER=0
+BENCH_RUNNER_IMAGE="ferric-bench-runner"
+
+ORIGINAL_ARGS=("$@")
 
 # ── Usage ────────────────────────────────────────────────────────────────────
 
@@ -50,12 +54,14 @@ Options:
   --skip-build        Skip cargo build (reuse existing binaries)
   --skip-generate     Skip workload generation (reuse existing .clp files)
   --output-dir <dir>  Results directory (default: target/bench-compare)
+  --docker            Run inside a Docker container (macOS: avoids per-invocation overhead)
   -h, --help          Show this help
 
 Prerequisites:
   hyperfine           https://github.com/sharkdp/hyperfine
   clips               apt-get install clips  (Ubuntu)
   jq                  apt-get install jq
+  docker              https://docs.docker.com/get-docker/  (only with --docker)
 EOF
 }
 
@@ -159,6 +165,10 @@ while [[ $# -gt 0 ]]; do
             WORKLOADS="${2//,/ }"
             shift 2
             ;;
+        --docker)
+            DOCKER=1
+            shift
+            ;;
         --skip-build)
             SKIP_BUILD=1
             shift
@@ -189,6 +199,36 @@ if [[ -z "$WORKLOADS" ]]; then
     else
         WORKLOADS="$ALL_WORKLOADS"
     fi
+fi
+
+# ── Docker dispatch ──────────────────────────────────────────────────────────
+
+if [[ "$DOCKER" -eq 1 ]]; then
+    require_cmd docker "https://docs.docker.com/get-docker/"
+
+    echo "==> Docker mode: building bench-runner image..."
+    docker build -q -t "$BENCH_RUNNER_IMAGE" "${REPO_ROOT}/docker/bench-runner"
+
+    # Strip --docker and --skip-build from forwarded args.
+    FORWARDED_ARGS=()
+    for arg in "${ORIGINAL_ARGS[@]}"; do
+        case "$arg" in
+            --docker|--skip-build) ;;
+            *) FORWARDED_ARGS+=("$arg") ;;
+        esac
+    done
+
+    echo "==> Launching benchmarks inside container..."
+    docker run --rm \
+        -v "${REPO_ROOT}:/workspace" \
+        -v cargo-registry:/usr/local/cargo/registry \
+        -v cargo-git:/usr/local/cargo/git \
+        -w /workspace \
+        "$BENCH_RUNNER_IMAGE" \
+        bash -c "./scripts/bench-compare.sh ${FORWARDED_ARGS[*]}"
+
+    echo "==> Docker benchmarks complete. Results in target/bench-compare/"
+    exit 0
 fi
 
 # ── Prerequisites ────────────────────────────────────────────────────────────

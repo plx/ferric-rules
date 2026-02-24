@@ -120,6 +120,7 @@ the Criterion benchmarks.  All `.clp` files use only syntax both engines support
 # Prerequisites: hyperfine, clips, jq
 ./scripts/bench-compare.sh            # full run (all workloads, 10 runs)
 ./scripts/bench-compare.sh --quick    # CI mode (small workloads, 3 runs)
+./scripts/bench-compare.sh --docker --quick    # macOS: runs inside container
 ```
 
 ### Output
