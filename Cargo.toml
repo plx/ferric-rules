@@ -20,6 +20,9 @@ repository = "https://github.com/prb/ferric-rules"
 # Error handling
 thiserror = "2"
 
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
 # Line editing for interactive REPL
 rustyline = "17"
 

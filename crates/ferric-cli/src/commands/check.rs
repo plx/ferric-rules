@@ -5,22 +5,15 @@
 //! Exit codes:
 //! - 0: File is valid
 //! - 1: Validation/parse/compile error
-//! - 2: Usage error (missing file argument)
 
 use std::path::Path;
 
 use ferric_runtime::{Engine, EngineConfig};
 
-use super::common::{emit_error, parse_file_args};
+use super::common::emit_error;
 
 /// Execute the `check` subcommand.
-pub fn execute(args: &[String]) -> i32 {
-    let (json_mode, file_arg) = match parse_file_args(args, "check") {
-        Ok(parsed) => parsed,
-        Err(code) => return code,
-    };
-
-    let file_path = Path::new(file_arg);
+pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
     if !file_path.exists() {
         emit_error(
             json_mode,

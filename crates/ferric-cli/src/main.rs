@@ -22,23 +22,60 @@
 
 mod commands;
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+use std::path::PathBuf;
 
-    let exit_code = match args.get(1).map(String::as_str) {
-        Some("run") => commands::run::execute(&args[2..]),
-        Some("check") => commands::check::execute(&args[2..]),
-        Some("repl") => commands::repl::execute(&args[2..]),
-        Some("version" | "--version" | "-V") => commands::version::execute(),
-        Some(unknown) => {
-            eprintln!("ferric: unknown command '{unknown}'");
-            eprintln!("Usage: ferric <run|check|repl|version> [args...]");
-            2
-        }
-        None => {
-            eprintln!("Usage: ferric <run|check|repl|version> [args...]");
-            2
-        }
+use clap::{Parser, Subcommand};
+
+/// Command-line interface for the Ferric rules engine.
+#[derive(Parser)]
+#[command(
+    name = "ferric",
+    version,
+    subcommand_required = true,
+    arg_required_else_help = true
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Load and execute a CLIPS file.
+    Run {
+        /// Emit diagnostics as JSON objects on stderr.
+        #[arg(long)]
+        json: bool,
+
+        /// Path to the CLIPS file to execute.
+        file: PathBuf,
+    },
+
+    /// Parse and validate a CLIPS file without executing.
+    Check {
+        /// Emit diagnostics as JSON objects on stderr.
+        #[arg(long)]
+        json: bool,
+
+        /// Path to the CLIPS file to validate.
+        file: PathBuf,
+    },
+
+    /// Start an interactive REPL session.
+    Repl,
+
+    /// Print version information.
+    Version,
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    let exit_code = match cli.command {
+        Command::Run { json, file } => commands::run::execute(json, &file),
+        Command::Check { json, file } => commands::check::execute(json, &file),
+        Command::Repl => commands::repl::execute(),
+        Command::Version => commands::version::execute(),
     };
 
     std::process::exit(exit_code);

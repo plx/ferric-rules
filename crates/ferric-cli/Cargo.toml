@@ -12,6 +12,7 @@ name = "ferric"
 path = "src/main.rs"
 
 [dependencies]
+clap = { workspace = true }
 ferric-core = { workspace = true }
 ferric-parser = { workspace = true }
 ferric-runtime = { workspace = true }

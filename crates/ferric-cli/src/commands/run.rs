@@ -5,22 +5,15 @@
 //! Exit codes:
 //! - 0: Success
 //! - 1: Runtime/load error
-//! - 2: Usage error (missing file argument)
 
 use std::path::Path;
 
 use ferric_runtime::{Engine, EngineConfig, RunLimit};
 
-use super::common::{emit_error, emit_warning, parse_file_args};
+use super::common::{emit_error, emit_warning};
 
 /// Execute the `run` subcommand.
-pub fn execute(args: &[String]) -> i32 {
-    let (json_mode, file_arg) = match parse_file_args(args, "run") {
-        Ok(parsed) => parsed,
-        Err(code) => return code,
-    };
-
-    let file_path = Path::new(file_arg);
+pub fn execute(json_mode: bool, file_path: &Path) -> i32 {
     if !file_path.exists() {
         emit_error(
             json_mode,
