@@ -938,6 +938,29 @@ impl Engine {
         Ok(compile_result)
     }
 
+    /// Recursively flatten a pattern for top-level condition processing.
+    /// - `And`/`Logical`: flatten children.
+    /// - `Not(Not(X))`: strip double negation (exists ≈ positive), then flatten X.
+    /// - Everything else: push as-is.
+    fn flatten_pattern<'a>(pattern: &'a Pattern, out: &mut Vec<&'a Pattern>) {
+        match pattern {
+            Pattern::And(inner, _) | Pattern::Logical(inner, _) => {
+                for sub in inner {
+                    Self::flatten_pattern(sub, out);
+                }
+            }
+            Pattern::Not(inner, _) => {
+                if let Pattern::Not(doubly_inner, _) = inner.as_ref() {
+                    // (not (not X)) ≡ (exists X): strip double negation
+                    Self::flatten_pattern(doubly_inner, out);
+                } else {
+                    out.push(pattern);
+                }
+            }
+            _ => out.push(pattern),
+        }
+    }
+
     /// Expand `Pattern::Or` CEs via rule duplication.
     /// Returns a vec of rule variants (1 if no `or` CEs, N*M*... for Cartesian product).
     fn expand_or_patterns(rule: &RuleConstruct) -> Vec<RuleConstruct> {
@@ -1036,18 +1059,10 @@ impl Engine {
         // CLIPS treats (and ...) as a grouping CE equivalent to listing sub-patterns directly.
         // (logical ...) is a truth-maintenance wrapper; we strip it (no TMS yet) and treat
         // children as top-level conditions.
+        // Also flatten (not (not X)) → X (double negation = exists, approximated as positive).
         let mut flat_patterns: Vec<&Pattern> = Vec::new();
         for pattern in &rule.patterns {
-            match pattern {
-                Pattern::And(inner_patterns, _) | Pattern::Logical(inner_patterns, _) => {
-                    for inner in inner_patterns {
-                        flat_patterns.push(inner);
-                    }
-                }
-                _ => {
-                    flat_patterns.push(pattern);
-                }
-            }
+            Self::flatten_pattern(pattern, &mut flat_patterns);
         }
 
         for pattern in &flat_patterns {
@@ -1131,25 +1146,33 @@ impl Engine {
         match pattern {
             Pattern::Assigned { pattern, .. } => self.translate_condition(pattern),
             Pattern::Not(inner, span) => {
-                if let Pattern::And(inner_patterns, _and_span) = inner.as_ref() {
-                    if inner_patterns.is_empty() {
-                        return Err(Self::unsupported_pattern(
-                            "not/and",
-                            span,
-                            "not(and ...) requires at least one inner pattern",
-                        ));
+                match inner.as_ref() {
+                    Pattern::And(inner_patterns, _) => {
+                        // (not (and P1 P2 ...)) → NCC
+                        if inner_patterns.is_empty() {
+                            return Err(Self::unsupported_pattern(
+                                "not/and",
+                                span,
+                                "not(and ...) requires at least one inner pattern",
+                            ));
+                        }
+                        let mut subpatterns = Vec::with_capacity(inner_patterns.len());
+                        for sub in inner_patterns {
+                            let translated = self.translate_pattern(sub)?;
+                            subpatterns.push(translated);
+                        }
+                        Ok(CompilableCondition::Ncc(subpatterns))
                     }
-
-                    let mut subpatterns = Vec::with_capacity(inner_patterns.len());
-                    for sub in inner_patterns {
-                        let translated = self.translate_pattern(sub)?;
-                        subpatterns.push(translated);
+                    Pattern::Not(doubly_inner, _) => {
+                        // (not (not X)) ≡ (exists X) in CLIPS.
+                        // Strip double negation and translate as a positive condition.
+                        self.translate_condition(doubly_inner)
                     }
-                    Ok(CompilableCondition::Ncc(subpatterns))
-                } else {
-                    let mut compilable = self.translate_pattern(inner)?;
-                    compilable.negated = true;
-                    Ok(CompilableCondition::Pattern(compilable))
+                    _ => {
+                        let mut compilable = self.translate_pattern(inner)?;
+                        compilable.negated = true;
+                        Ok(CompilableCondition::Pattern(compilable))
+                    }
                 }
             }
             Pattern::Forall(sub_patterns, span) => {
