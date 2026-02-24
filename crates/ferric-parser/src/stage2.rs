@@ -266,6 +266,8 @@ pub enum FactValue {
     Literal(LiteralValue),
     Variable(String, Span),
     GlobalVariable(String, Span),
+    /// Empty multifield value — represents `(slot-name)` with no values.
+    EmptyMultifield(Span),
 }
 
 // ============================================================================
@@ -2697,6 +2699,18 @@ fn interpret_default_value(expr: &SExpr) -> Result<DefaultValue, InterpretError>
         }
     }
 
+    // Handle function-call default values like `(create$)` or `(create$ val1 val2)`.
+    // `(create$)` with no args produces an empty multifield default.
+    if let Some(list) = expr.as_list() {
+        if !list.is_empty() && list[0].as_symbol() == Some("create$") {
+            // (create$) → empty multifield default.  With args, we still treat
+            // it as Derive since we'd need full expression evaluation.
+            return Ok(DefaultValue::Derive);
+        }
+        // Other function-call defaults: accept but treat as Derive.
+        return Ok(DefaultValue::Derive);
+    }
+
     // Otherwise, treat as a literal value
     let atom = expr
         .as_atom()
@@ -2793,10 +2807,13 @@ fn interpret_fact_slot_value(slot_expr: &SExpr) -> Result<FactSlotValue, Interpr
         .to_string();
 
     if slot_list.len() < 2 {
-        return Err(InterpretError::missing(
-            "value for slot in fact",
-            slot_expr.span(),
-        ));
+        // Empty slot: `(slot-name)` with no values — valid for multislots,
+        // produces an empty multifield value.
+        return Ok(FactSlotValue {
+            name: slot_name,
+            value: FactValue::EmptyMultifield(slot_expr.span()),
+            span: slot_expr.span(),
+        });
     }
 
     let value = interpret_fact_value(&slot_list[1])?;

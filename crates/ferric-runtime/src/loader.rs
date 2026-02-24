@@ -748,6 +748,11 @@ impl Engine {
                 );
                 None
             }
+            FactValue::EmptyMultifield(_) => {
+                // Empty multislot: `(slot-name)` → empty multifield value.
+                // Represented as Void (the default for unset multislots).
+                Some(Value::Void)
+            }
         }
     }
 
