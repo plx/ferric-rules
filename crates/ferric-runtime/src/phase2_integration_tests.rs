@@ -719,11 +719,24 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn triple_nested_not_fails_validation() {
+    fn triple_nested_not_compiles_as_not() {
+        // (not (not (not (b)))) = (not (b)) after double-negation stripping
         let mut engine = new_utf8_engine();
         let result = engine.load_str("(defrule r (a) (not (not (not (b)))) => )");
 
-        assert!(result.is_err(), "triple-nested not should fail validation");
+        assert!(
+            result.is_ok(),
+            "triple-nested not should compile (strips to not(b)): {result:?}"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_not_fails_validation() {
+        // Depth 5 exceeds the max depth of 4
+        let mut engine = new_utf8_engine();
+        let result = engine.load_str("(defrule r (a) (not (not (not (not (not (b)))))) => )");
+
+        assert!(result.is_err(), "5-deep nested not should fail validation");
         let errs = result.unwrap_err();
         assert_eq!(errs.len(), 1);
 
@@ -1254,9 +1267,13 @@ mod tests {
     #[test]
     fn validation_error_from_file_has_source_location() {
         use std::io::Write;
-        // Create a temporary file with invalid nesting
+        // Create a temporary file with invalid nesting (depth 5 exceeds max of 4)
         let mut temp = tempfile::NamedTempFile::new().unwrap();
-        writeln!(temp, "(defrule bad-rule (a) (not (not (not (b)))) => )").unwrap();
+        writeln!(
+            temp,
+            "(defrule bad-rule (a) (not (not (not (not (not (b)))))) => )"
+        )
+        .unwrap();
 
         let mut engine = new_utf8_engine();
         let result = engine.load_file(temp.path());

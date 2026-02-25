@@ -879,8 +879,8 @@ impl Engine {
 
     /// Compile a `RuleConstruct` into the engine's rete network.
     fn compile_rule_construct(&mut self, rule: &RuleConstruct) -> Result<CompileResult, LoadError> {
-        // Validate patterns first (max nesting depth: 2)
-        let validation_errors = validate_rule_patterns(&rule.patterns, 2);
+        // Validate patterns first (max nesting depth: 4 to support deeply nested NCCs)
+        let validation_errors = validate_rule_patterns(&rule.patterns, 4);
         if !validation_errors.is_empty() {
             return Err(LoadError::Validation(validation_errors));
         }
@@ -1463,12 +1463,12 @@ impl Engine {
                                 "not(and ...) requires at least one inner pattern",
                             ));
                         }
-                        let mut subpatterns = Vec::with_capacity(inner_patterns.len());
+                        let mut subconditions = Vec::with_capacity(inner_patterns.len());
                         for sub in inner_patterns {
-                            let translated = self.translate_pattern(sub)?;
-                            subpatterns.push(translated);
+                            let condition = self.translate_condition(sub)?;
+                            subconditions.push(condition);
                         }
-                        Ok(CompilableCondition::Ncc(subpatterns))
+                        Ok(CompilableCondition::Ncc(subconditions))
                     }
                     Pattern::Not(doubly_inner, _) => {
                         // (not (not X)) ≡ (exists X) in CLIPS.
@@ -1523,7 +1523,10 @@ impl Engine {
                 let mut then_clause = self.translate_pattern(&sub_patterns[1])?;
                 then_clause.negated = true;
 
-                Ok(CompilableCondition::Ncc(vec![condition, then_clause]))
+                Ok(CompilableCondition::Ncc(vec![
+                    CompilableCondition::Pattern(condition),
+                    CompilableCondition::Pattern(then_clause),
+                ]))
             }
             Pattern::And(_, span) => Err(Self::unsupported_pattern(
                 "and",
@@ -2117,23 +2120,6 @@ mod tests {
     use crate::config::EngineConfig;
     use crate::test_helpers::{load_err, load_ok, new_utf8_engine};
     use ferric_core::Fact;
-
-    fn assert_single_compile_error_contains(errors: &[LoadError], expected: &str) {
-        assert_eq!(
-            errors.len(),
-            1,
-            "expected exactly one error, got {errors:?}"
-        );
-        match &errors[0] {
-            LoadError::Compile(message) => {
-                assert!(
-                    message.contains(expected),
-                    "expected compile error to contain `{expected}`, got `{message}`"
-                );
-            }
-            other => panic!("expected LoadError::Compile, got {other:?}"),
-        }
-    }
 
     fn test_span(line: u32, column: u32) -> ferric_parser::Span {
         let pos = ferric_parser::Position {

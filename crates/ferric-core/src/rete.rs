@@ -3045,7 +3045,10 @@ mod tests {
 
         let conditions = vec![
             CompilableCondition::Pattern(positive),
-            CompilableCondition::Ncc(vec![ncc_sub_1, ncc_sub_2]),
+            CompilableCondition::Ncc(vec![
+                CompilableCondition::Pattern(ncc_sub_1),
+                CompilableCondition::Pattern(ncc_sub_2),
+            ]),
         ];
         compiler
             .compile_conditions(&mut rete, rule_id, Salience::DEFAULT, &conditions)
