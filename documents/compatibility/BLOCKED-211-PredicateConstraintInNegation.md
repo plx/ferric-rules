@@ -1,4 +1,4 @@
-# 211 Predicate Constraint In Negation And Complex Patterns
+BLOCKED: # 211 Predicate Constraint In Negation And Complex Patterns
 
 ## Behavioral Divergence
 CLIPS allows predicate constraints (`:()`) and return-value constraints (`=()`) within negated and complex constraint forms. Ferric's pattern validator rejects several valid CLIPS constraint patterns:
