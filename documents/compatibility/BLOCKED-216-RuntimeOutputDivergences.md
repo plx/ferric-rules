@@ -1,4 +1,4 @@
-# 216 Runtime Output Divergences (globltst, drtest03, dfrulcmd)
+BLOCKED: # 216 Runtime Output Divergences (globltst, drtest03, dfrulcmd)
 
 ## Behavioral Divergence
 A small set of files produce output from both engines but the output differs due to missing ferric runtime features. These are genuine behavioral gaps, not infrastructure issues.
