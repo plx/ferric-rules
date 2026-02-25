@@ -971,6 +971,44 @@ impl Engine {
         }
     }
 
+    /// Desugar multi-pattern exists into individual patterns.
+    ///
+    /// `exists(P1, P2, ..., Pn)` is desugared to `P1, P2, ..., Pn-1, exists(Pn)`.
+    /// The inner patterns become regular joins and only the last is an exists join.
+    /// Single-element `And` wrappers inside exists are flattened: `And([P])` → `P`.
+    fn desugar_multi_pattern_exists(patterns: &[&Pattern]) -> Vec<Pattern> {
+        let mut result = Vec::new();
+        for pattern in patterns {
+            if let Pattern::Exists(sub_patterns, span) = pattern {
+                if sub_patterns.len() > 1 {
+                    // Flatten single-element Ands within the exists sub-patterns
+                    let flattened: Vec<Pattern> = sub_patterns
+                        .iter()
+                        .map(|p| {
+                            if let Pattern::And(children, _) = p {
+                                if children.len() == 1 {
+                                    return children[0].clone();
+                                }
+                            }
+                            p.clone()
+                        })
+                        .collect();
+
+                    // Push all but the last as regular top-level patterns
+                    for p in &flattened[..flattened.len() - 1] {
+                        result.push(p.clone());
+                    }
+                    // Wrap the last in exists
+                    let last = flattened.last().unwrap().clone();
+                    result.push(Pattern::Exists(vec![last], *span));
+                    continue;
+                }
+            }
+            result.push((*pattern).clone());
+        }
+        result
+    }
+
     /// Try to extract test CEs from nested contexts (negation, NCC, exists)
     /// and add them as rule-level test conditions.
     ///
@@ -997,9 +1035,7 @@ impl Engine {
                             &mut self.symbol_table,
                             &self.config,
                         )
-                        .map_err(|e| {
-                            LoadError::Compile(format!("test CE translation: {e}"))
-                        })?;
+                        .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
                         let negated = crate::evaluator::RuntimeExpr::Call {
                             name: "not".to_string(),
                             args: vec![inner_expr],
@@ -1054,14 +1090,9 @@ impl Engine {
                 if patterns.len() == 1 && matches!(&patterns[0], Pattern::Test(..)) =>
             {
                 if let Pattern::Test(sexpr, _) = &patterns[0] {
-                    let expr = crate::evaluator::from_sexpr(
-                        sexpr,
-                        &mut self.symbol_table,
-                        &self.config,
-                    )
-                    .map_err(|e| {
-                        LoadError::Compile(format!("test CE translation: {e}"))
-                    })?;
+                    let expr =
+                        crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
+                            .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
                     test_conditions.push(expr);
                 }
                 Ok(true)
@@ -1074,22 +1105,16 @@ impl Engine {
             // then-clause is a pure test with no pattern dependencies, we handle it
             // as a rule-level test condition to avoid the NCC needing test support.
             Pattern::Forall(sub_patterns, _)
-                if sub_patterns.len() == 2
-                    && matches!(&sub_patterns[1], Pattern::Test(..)) =>
+                if sub_patterns.len() == 2 && matches!(&sub_patterns[1], Pattern::Test(..)) =>
             {
                 // The test CE is the then-clause; just add it as a test condition.
                 // The condition (P) still needs to be checked, but since forall
                 // with a constant test is either always-true or always-false,
                 // adding the test as a rule-level condition is semantically correct.
                 if let Pattern::Test(sexpr, _) = &sub_patterns[1] {
-                    let expr = crate::evaluator::from_sexpr(
-                        sexpr,
-                        &mut self.symbol_table,
-                        &self.config,
-                    )
-                    .map_err(|e| {
-                        LoadError::Compile(format!("test CE translation: {e}"))
-                    })?;
+                    let expr =
+                        crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
+                            .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
                     test_conditions.push(expr);
                 }
                 Ok(true)
@@ -1135,10 +1160,17 @@ impl Engine {
                         if let Pattern::Or(branches, _) = &children[idx] {
                             // Distribute: not(and(A, or(B, C), D))
                             // → [not(and(A, B, D)), not(and(A, C, D))]
+                            // If a branch is itself an And, flatten it into the parent:
+                            // not(and(A, or(and(B, C), D))) → [not(and(A, B, C)), not(and(A, D))]
                             let mut results = Vec::new();
                             for branch in branches {
                                 let mut new_children = children.clone();
-                                new_children[idx] = branch.clone();
+                                if let Pattern::And(branch_children, _) = branch {
+                                    // Flatten: replace the or slot with the And's children
+                                    new_children.splice(idx..=idx, branch_children.iter().cloned());
+                                } else {
+                                    new_children[idx] = branch.clone();
+                                }
                                 let new_and = Pattern::And(new_children, *and_span);
                                 let new_not = Pattern::Not(Box::new(new_and), *span);
                                 // Recursively normalize in case there are more or CEs
@@ -1148,10 +1180,8 @@ impl Engine {
                         }
                     }
                     // No or CE found — recurse into children
-                    let normalized_children: Vec<Pattern> = children
-                        .iter()
-                        .flat_map(Self::normalize_pattern)
-                        .collect();
+                    let normalized_children: Vec<Pattern> =
+                        children.iter().flat_map(Self::normalize_pattern).collect();
                     vec![Pattern::Not(
                         Box::new(Pattern::And(normalized_children, *and_span)),
                         *span,
@@ -1180,28 +1210,29 @@ impl Engine {
                 if let Some(idx) = or_idx {
                     if let Pattern::Or(branches, _) = &children[idx] {
                         // exists(A, or(B, C), D) → or(exists(A, B, D), exists(A, C, D))
-                        // This becomes a top-level Or that will be expanded by rule duplication
+                        // If a branch is an And, flatten: exists(A, or(and(B,C), D))
+                        // → or(exists(A, B, C), exists(A, D))
                         let mut or_branches = Vec::new();
                         for branch in branches {
                             let mut new_children = children.clone();
-                            new_children[idx] = branch.clone();
+                            if let Pattern::And(branch_children, _) = branch {
+                                new_children.splice(idx..=idx, branch_children.iter().cloned());
+                            } else {
+                                new_children[idx] = branch.clone();
+                            }
                             or_branches.push(Pattern::Exists(new_children, *span));
                         }
                         return vec![Pattern::Or(or_branches, *span)];
                     }
                 }
                 // Recurse into children
-                let normalized: Vec<Pattern> = children
-                    .iter()
-                    .flat_map(Self::normalize_pattern)
-                    .collect();
+                let normalized: Vec<Pattern> =
+                    children.iter().flat_map(Self::normalize_pattern).collect();
                 vec![Pattern::Exists(normalized, *span)]
             }
             Pattern::And(children, span) => {
-                let normalized: Vec<Pattern> = children
-                    .iter()
-                    .flat_map(Self::normalize_pattern)
-                    .collect();
+                let normalized: Vec<Pattern> =
+                    children.iter().flat_map(Self::normalize_pattern).collect();
                 vec![Pattern::And(normalized, *span)]
             }
             Pattern::Assigned {
@@ -1328,7 +1359,14 @@ impl Engine {
             Self::flatten_pattern(pattern, &mut flat_patterns);
         }
 
-        for pattern in &flat_patterns {
+        // Desugar multi-pattern exists into individual patterns:
+        // exists(P1, P2, ..., Pn) → P1, P2, ..., Pn-1, exists(Pn)
+        // This makes the inner patterns regular joins and only the last is exists,
+        // approximating CLIPS' "at most one activation" semantics.
+        let desugared_patterns: Vec<Pattern> = Self::desugar_multi_pattern_exists(&flat_patterns);
+        let pattern_refs: Vec<&Pattern> = desugared_patterns.iter().collect();
+
+        for pattern in &pattern_refs {
             // Test CEs are handled separately: they do not generate alpha/beta
             // nodes in the Rete network, and they do not consume a fact index.
             // Instead they are collected and evaluated at rule-firing time.
@@ -1796,8 +1834,7 @@ impl Engine {
                     let mut found_var = false;
                     for sub in constraints {
                         match sub {
-                            Constraint::Variable(name, _)
-                            | Constraint::MultiVariable(name, _)
+                            Constraint::Variable(name, _) | Constraint::MultiVariable(name, _)
                                 if !found_var =>
                             {
                                 let sym = self.compile_symbol(name)?;
@@ -2295,13 +2332,14 @@ mod tests {
     }
 
     #[test]
-    fn load_rule_with_multi_pattern_exists_returns_compile_error() {
+    fn load_rule_with_multi_pattern_exists_compiles() {
         let mut engine = new_utf8_engine();
-        let errors = engine
-            .load_str("(defrule t (exists (a) (b)) => (assert (ok)))")
-            .unwrap_err();
+        let result = engine.load_str("(defrule t (exists (a) (b)) => (assert (ok)))");
 
-        assert_single_compile_error_contains(&errors, "unsupported pattern form `exists`");
+        assert!(
+            result.is_ok(),
+            "multi-pattern exists should compile: {result:?}"
+        );
     }
 
     #[test]
