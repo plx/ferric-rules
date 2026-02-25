@@ -1,4 +1,4 @@
-# 212 Error Recovery For Malformed Constructs
+BLOCKED: # 212 Error Recovery For Malformed Constructs
 
 ## Behavioral Divergence
 CLIPS has robust error recovery: when it encounters a malformed construct (missing function body, invalid slot reference, undefined global reference, etc.), it reports an error and continues parsing subsequent constructs. Ferric often treats the first error as fatal, preventing later valid constructs from being processed.
