@@ -1,4 +1,4 @@
-# 214 Missing Compile-Time Validation Warnings
+BLOCKED: # 214 Missing Compile-Time Validation Warnings
 
 ## Behavioral Divergence
 CLIPS performs compile-time validation that produces warning messages for various constructs — type constraint mismatches, module import/export violations, argument type errors, etc. These are typically warnings (not fatal errors) that appear in the output alongside normal program output. Ferric silently accepts these constructs, producing no output where CLIPS produces warning text.
