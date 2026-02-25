@@ -32,9 +32,10 @@ use ferric_core::{
 };
 use ferric_parser::{
     interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
-    FactValue, FileId, FunctionConstruct, GenericConstruct, GlobalConstruct, InterpretError,
-    InterpreterConfig, LiteralKind, MethodConstruct, ModuleConstruct, OrderedFactBody, ParseError,
-    Pattern, RuleConstruct, SExpr, TemplateConstruct, TemplateFactBody,
+    FactValue, FileId, FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct,
+    InterpretError, InterpreterConfig, LiteralKind, MethodConstruct, ModuleConstruct,
+    OrderedFactBody, ParseError, Pattern, RuleConstruct, SExpr, Span, TemplateConstruct,
+    TemplateFactBody,
 };
 
 use crate::actions::CompiledRuleInfo;
@@ -905,7 +906,372 @@ impl Engine {
         last_result.ok_or_else(|| LoadError::Compile("empty or-expansion".to_string()))
     }
 
+    fn validate_rule_action_callables(
+        &self,
+        rule: &RuleConstruct,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<(), LoadError> {
+        for action in &rule.actions {
+            self.validate_rule_action_call(&action.call, current_module, &rule.name)?;
+        }
+        Ok(())
+    }
+
+    fn validate_rule_action_call(
+        &self,
+        call: &FunctionCall,
+        current_module: crate::modules::ModuleId,
+        rule_name: &str,
+    ) -> Result<(), LoadError> {
+        match call.name.as_str() {
+            // `(assert (relation ...))`: each argument list represents a fact pattern,
+            // so the relation name is data, not a callable.
+            "assert" => {
+                for arg in &call.args {
+                    if let ActionExpr::FunctionCall(fact_pattern) = arg {
+                        for field_expr in &fact_pattern.args {
+                            self.validate_action_expr_as_expression(
+                                field_expr,
+                                current_module,
+                                rule_name,
+                            )?;
+                        }
+                    } else {
+                        self.validate_action_expr_as_expression(arg, current_module, rule_name)?;
+                    }
+                }
+                Ok(())
+            }
+            // `(modify ?f (slot value) ...)` / `(duplicate ?f (slot value) ...)`:
+            // slot names are data, but slot values are expressions.
+            "modify" | "duplicate" => {
+                if let Some(target) = call.args.first() {
+                    self.validate_action_expr_as_expression(target, current_module, rule_name)?;
+                }
+                for slot_override in call.args.iter().skip(1) {
+                    if let ActionExpr::FunctionCall(slot_pair) = slot_override {
+                        for value_expr in &slot_pair.args {
+                            self.validate_action_expr_as_expression(
+                                value_expr,
+                                current_module,
+                                rule_name,
+                            )?;
+                        }
+                    } else {
+                        self.validate_action_expr_as_expression(
+                            slot_override,
+                            current_module,
+                            rule_name,
+                        )?;
+                    }
+                }
+                Ok(())
+            }
+            name if Self::is_rule_action_wrapper(name) => {
+                for arg in &call.args {
+                    self.validate_action_expr_as_action(arg, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            name if Self::is_rule_action_builtin(name) => {
+                for arg in &call.args {
+                    self.validate_action_expr_as_expression(arg, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            _ => {
+                self.validate_expression_callable_name(
+                    &call.name,
+                    &call.span,
+                    current_module,
+                    rule_name,
+                )?;
+                for arg in &call.args {
+                    self.validate_action_expr_as_expression(arg, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn validate_action_expr_as_expression(
+        &self,
+        expr: &ActionExpr,
+        current_module: crate::modules::ModuleId,
+        rule_name: &str,
+    ) -> Result<(), LoadError> {
+        match expr {
+            ActionExpr::Literal(_)
+            | ActionExpr::Variable(_, _)
+            | ActionExpr::GlobalVariable(_, _) => Ok(()),
+            ActionExpr::FunctionCall(call) => {
+                self.validate_expression_callable_name(
+                    &call.name,
+                    &call.span,
+                    current_module,
+                    rule_name,
+                )?;
+                for arg in &call.args {
+                    self.validate_action_expr_as_expression(arg, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::If {
+                condition,
+                then_actions,
+                else_actions,
+                ..
+            } => {
+                self.validate_action_expr_as_expression(condition, current_module, rule_name)?;
+                for action in then_actions {
+                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                }
+                for action in else_actions {
+                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::While {
+                condition, body, ..
+            } => {
+                self.validate_action_expr_as_expression(condition, current_module, rule_name)?;
+                for action in body {
+                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::LoopForCount {
+                start, end, body, ..
+            } => {
+                self.validate_action_expr_as_expression(start, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(end, current_module, rule_name)?;
+                for action in body {
+                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::Progn {
+                list_expr, body, ..
+            } => {
+                self.validate_action_expr_as_expression(list_expr, current_module, rule_name)?;
+                for action in body {
+                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::QueryAction { query, body, .. } => {
+                self.validate_action_expr_as_expression(query, current_module, rule_name)?;
+                for action in body {
+                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.validate_action_expr_as_expression(expr, current_module, rule_name)?;
+                for (case_expr, actions) in cases {
+                    self.validate_action_expr_as_expression(case_expr, current_module, rule_name)?;
+                    for action in actions {
+                        self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                    }
+                }
+                if let Some(default_actions) = default {
+                    for action in default_actions {
+                        self.validate_action_expr_as_expression(action, current_module, rule_name)?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn validate_action_expr_as_action(
+        &self,
+        expr: &ActionExpr,
+        current_module: crate::modules::ModuleId,
+        rule_name: &str,
+    ) -> Result<(), LoadError> {
+        match expr {
+            ActionExpr::Literal(_)
+            | ActionExpr::Variable(_, _)
+            | ActionExpr::GlobalVariable(_, _) => Ok(()),
+            ActionExpr::FunctionCall(call) => {
+                self.validate_rule_action_call(call, current_module, rule_name)
+            }
+            ActionExpr::If {
+                condition,
+                then_actions,
+                else_actions,
+                ..
+            } => {
+                self.validate_action_expr_as_expression(condition, current_module, rule_name)?;
+                for action in then_actions {
+                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                }
+                for action in else_actions {
+                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::While {
+                condition, body, ..
+            } => {
+                self.validate_action_expr_as_expression(condition, current_module, rule_name)?;
+                for action in body {
+                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::LoopForCount {
+                start, end, body, ..
+            } => {
+                self.validate_action_expr_as_expression(start, current_module, rule_name)?;
+                self.validate_action_expr_as_expression(end, current_module, rule_name)?;
+                for action in body {
+                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::Progn {
+                list_expr, body, ..
+            } => {
+                self.validate_action_expr_as_expression(list_expr, current_module, rule_name)?;
+                for action in body {
+                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::QueryAction { query, body, .. } => {
+                self.validate_action_expr_as_expression(query, current_module, rule_name)?;
+                for action in body {
+                    self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                }
+                Ok(())
+            }
+            ActionExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.validate_action_expr_as_expression(expr, current_module, rule_name)?;
+                for (case_expr, actions) in cases {
+                    self.validate_action_expr_as_expression(case_expr, current_module, rule_name)?;
+                    for action in actions {
+                        self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                    }
+                }
+                if let Some(default_actions) = default {
+                    for action in default_actions {
+                        self.validate_action_expr_as_action(action, current_module, rule_name)?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn validate_expression_callable_name(
+        &self,
+        callable: &str,
+        span: &Span,
+        current_module: crate::modules::ModuleId,
+        rule_name: &str,
+    ) -> Result<(), LoadError> {
+        if self.is_declared_expression_callable(callable, current_module) {
+            return Ok(());
+        }
+        Err(Self::missing_function_declaration_error(
+            callable, span, rule_name,
+        ))
+    }
+
+    fn is_declared_expression_callable(
+        &self,
+        callable: &str,
+        _current_module: crate::modules::ModuleId,
+    ) -> bool {
+        if callable == "call-next-method" || crate::evaluator::is_builtin_callable(callable) {
+            return true;
+        }
+
+        match parse_qualified_name(callable) {
+            // Keep module-qualified resolution on the runtime path so existing
+            // visibility/module diagnostics remain unchanged.
+            Ok(QualifiedName::Qualified { .. }) => true,
+            Ok(QualifiedName::Unqualified(name)) => {
+                !self.functions.modules_for_name(&name).is_empty()
+                    || !self.generics.modules_for_name(&name).is_empty()
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn missing_function_declaration_error(
+        callable: &str,
+        span: &Span,
+        rule_name: &str,
+    ) -> LoadError {
+        LoadError::Compile(format!(
+            "[EXPRNPSR3] Missing function declaration for {callable} in rule `{rule_name}` at line {}, column {}",
+            span.start.line, span.start.column
+        ))
+    }
+
+    fn is_rule_action_builtin(name: &str) -> bool {
+        matches!(
+            name,
+            "assert"
+                | "retract"
+                | "modify"
+                | "duplicate"
+                | "halt"
+                | "reset"
+                | "clear"
+                | "printout"
+                | "focus"
+                | "list-focus-stack"
+                | "agenda"
+                | "run"
+                | "if"
+                | "while"
+                | "loop-for-count"
+                | "switch"
+                | "progn$"
+                | "foreach"
+                | "do-for-fact"
+                | "do-for-all-facts"
+                | "delayed-do-for-all-facts"
+                | "any-factp"
+                | "find-fact"
+                | "find-all-facts"
+        )
+    }
+
+    fn is_rule_action_wrapper(name: &str) -> bool {
+        matches!(
+            name,
+            "if" | "while"
+                | "loop-for-count"
+                | "switch"
+                | "progn$"
+                | "foreach"
+                | "do-for-fact"
+                | "do-for-all-facts"
+                | "delayed-do-for-all-facts"
+                | "any-factp"
+                | "find-fact"
+                | "find-all-facts"
+        )
+    }
+
     fn compile_single_rule(&mut self, rule: &RuleConstruct) -> Result<CompileResult, LoadError> {
+        self.validate_rule_action_callables(rule, self.module_registry.current_module())?;
+
         let translated = self
             .translate_rule_construct(rule)
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
@@ -920,14 +1286,19 @@ impl Engine {
             )
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
 
-        let runtime_actions = rule
-            .actions
-            .iter()
-            .map(|action| {
-                let expr = ActionExpr::FunctionCall(action.call.clone());
-                crate::evaluator::from_action_expr(&expr, &mut self.symbol_table, &self.config).ok()
-            })
-            .collect();
+        let mut runtime_actions = Vec::with_capacity(rule.actions.len());
+        for action in &rule.actions {
+            let expr = ActionExpr::FunctionCall(action.call.clone());
+            let runtime_expr =
+                crate::evaluator::from_action_expr(&expr, &mut self.symbol_table, &self.config)
+                    .map_err(|error| {
+                        LoadError::Compile(format!(
+                            "rule `{}` action `{}` at line {}: {error}",
+                            rule.name, action.call.name, action.call.span.start.line
+                        ))
+                    })?;
+            runtime_actions.push(Some(runtime_expr));
+        }
 
         // Store rule info for action execution
         let info = CompiledRuleInfo {
@@ -2118,7 +2489,7 @@ fn span_to_source_location(span: &ferric_parser::Span) -> ferric_core::SourceLoc
 mod tests {
     use super::*;
     use crate::config::EngineConfig;
-    use crate::test_helpers::{load_err, load_ok, new_utf8_engine};
+    use crate::test_helpers::{load_err, load_ok, new_utf8_engine, run_to_completion};
     use ferric_core::Fact;
 
     fn test_span(line: u32, column: u32) -> ferric_parser::Span {
@@ -2636,6 +3007,65 @@ mod tests {
 
         assert_eq!(errors.len(), 1);
         assert!(matches!(errors[0], LoadError::Parse(_)));
+    }
+
+    #[test]
+    fn load_recovers_after_malformed_deffunction_and_runs_later_constructs() {
+        let mut engine = new_utf8_engine();
+        let source = r"
+            (deffunction foo ())
+            (deffunction bar () 42)
+            (defrule test (go) => (printout t (bar) crlf))
+            (deffacts startup (go))
+        ";
+        let errors = load_err(&mut engine, source);
+        let joined = errors
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(
+            joined.contains("deffunction requires at least one body expression"),
+            "expected malformed deffunction diagnostic, got: {joined}"
+        );
+
+        engine.reset().expect("reset");
+        run_to_completion(&mut engine);
+        let output = engine.get_output("t").unwrap_or("").trim().to_string();
+        assert_eq!(output, "42");
+    }
+
+    #[test]
+    fn load_recovers_after_bad_rule_and_runs_other_rules() {
+        let mut engine = new_utf8_engine();
+        let source = r"
+            (deftemplate a (slot one) (slot two))
+            (defrule bad  (a (three 3)) => (printout t BAD crlf))
+            (defrule good (a (one 1))  => (printout t GOOD crlf))
+            (deffacts startup (a (one 1) (two ok)))
+        ";
+        let errors = load_err(&mut engine, source);
+        let joined = errors
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(
+            joined.contains("unknown slot `three`"),
+            "expected unknown-slot diagnostic, got: {joined}"
+        );
+
+        engine.reset().expect("reset");
+        run_to_completion(&mut engine);
+        let output = engine.get_output("t").unwrap_or("");
+        assert!(
+            output.contains("GOOD"),
+            "expected valid rule to run after recovery, got: {output:?}"
+        );
+        assert!(
+            !output.contains("BAD"),
+            "bad rule should not compile/fire after unknown-slot error, got: {output:?}"
+        );
     }
 
     #[test]

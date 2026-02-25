@@ -1972,6 +1972,59 @@ fn as_numeric(v: &Value, function: &str, span: Option<&SourceSpan>) -> Result<Nu
 // Built-in function dispatch
 // ---------------------------------------------------------------------------
 
+/// Returns true if `name` is a supported evaluator builtin callable.
+pub(crate) fn is_builtin_callable(name: &str) -> bool {
+    matches!(
+        name,
+        "+" | "-"
+            | "*"
+            | "/"
+            | "div"
+            | "mod"
+            | "abs"
+            | "min"
+            | "max"
+            | ">"
+            | "<"
+            | ">="
+            | "<="
+            | "="
+            | "!="
+            | "<>"
+            | "eq"
+            | "neq"
+            | "and"
+            | "or"
+            | "not"
+            | "integerp"
+            | "floatp"
+            | "numberp"
+            | "symbolp"
+            | "stringp"
+            | "lexemep"
+            | "multifieldp"
+            | "evenp"
+            | "oddp"
+            | "integer"
+            | "float"
+            | "str-cat"
+            | "sym-cat"
+            | "str-length"
+            | "sub-string"
+            | "create$"
+            | "length$"
+            | "nth$"
+            | "member$"
+            | "subsetp"
+            | "format"
+            | "read"
+            | "readline"
+            | "get-focus"
+            | "get-focus-stack"
+            | "bind"
+    )
+}
+
 /// Dispatch a built-in function call.
 fn dispatch_builtin(
     ctx: &mut EvalContext<'_>,

@@ -1934,7 +1934,7 @@ fn unsupported_defmessage_handler_fails_loudly() {
 }
 
 #[test]
-fn unknown_function_in_rhs_produces_diagnostic() {
+fn unknown_function_in_rhs_fails_at_load_time() {
     let mut engine = new_utf8_engine();
     let source = r"
 (defrule bad-call
@@ -1943,17 +1943,12 @@ fn unknown_function_in_rhs_produces_diagnostic() {
     (nonexistent-function 42))
 (deffacts startup (go))
 ";
-    load_ok(&mut engine, source);
-    engine.reset().expect("reset");
-    run_to_completion(&mut engine);
-    let diags = engine.action_diagnostics();
+    let errors = load_err(&mut engine, source);
+    let diags: Vec<String> = errors.into_iter().map(|e| e.to_string()).collect();
+    assert!(!diags.is_empty(), "unknown function should fail load");
+    let msg = diags.join("; ");
     assert!(
-        !diags.is_empty(),
-        "unknown function should produce a diagnostic"
-    );
-    let msg = format!("{diags:?}");
-    assert!(
-        msg.contains("nonexistent-function"),
+        msg.contains("[EXPRNPSR3]") && msg.contains("nonexistent-function"),
         "diagnostic should mention the function name: {msg}"
     );
 }
