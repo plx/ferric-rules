@@ -215,7 +215,7 @@ def classify_results(ferric_result, clips_result):
     # CLIPS exit code is 0, since a non-zero exit is already handled
     # correctly by the exit-code comparisons below.
     if c["exit_code"] == 0:
-        clips_has_error = bool(re.search(r"\[(?:EXPRNPSR|PRNTUTIL|CSTRCPSR|PRCCODE)\d*\]", c["stdout"]))
+        clips_has_error = bool(re.search(r"\[[A-Z]+\d+\]", c["stdout"]))
         if clips_has_error and f["exit_code"] != 0:
             return "incompatible", "both-error"
         if clips_has_error:
