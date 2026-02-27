@@ -52,6 +52,7 @@ jobs:
       - name: Assess base branch
         run: |
           git checkout ${{ inputs.base_sha }}
+          git checkout ${{ inputs.head_sha }} -- scripts/
           cargo build --release -p ferric-cli
           python3 scripts/compat-scan.py
           python3 scripts/compat-run.py --workers 4 --timeout 30

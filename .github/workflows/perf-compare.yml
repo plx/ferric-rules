@@ -49,6 +49,8 @@ jobs:
       - name: Benchmark base branch
         run: |
           git checkout ${{ inputs.base_sha }}
+          git checkout ${{ inputs.head_sha }} -- scripts/
+          rm -rf target/criterion
           python3 scripts/perf-collect.py \
             --commit-sha "${{ inputs.base_sha }}" \
             --output /tmp/base-perf-manifest.json
@@ -57,6 +59,7 @@ jobs:
       - name: Benchmark head
         run: |
           git checkout ${{ inputs.head_sha }}
+          rm -rf target/criterion
           python3 scripts/perf-collect.py \
             --commit-sha "${{ inputs.head_sha }}" \
             --output /tmp/head-perf-manifest.json

@@ -85,7 +85,8 @@ def run_benchmarks(sample_size, warm_up_time, measurement_time):
         print(f"==> Running {suite}...", flush=True)
         result = subprocess.run(cmd, capture_output=False)
         if result.returncode != 0:
-            print(f"warning: {suite} exited with code {result.returncode}", file=sys.stderr)
+            print(f"error: {suite} exited with code {result.returncode}", file=sys.stderr)
+            sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
