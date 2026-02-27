@@ -2,10 +2,12 @@
 """Report generator for CLIPS compatibility assessment.
 
 Reads the manifest produced by compat-scan.py / compat-run.py and
-generates human-readable reports, CSV exports, and optional symlink views.
+generates human-readable reports, CSV/TSV exports, and optional symlink views.
 
 Usage:
-    python scripts/compat-report.py [--manifest FILE] [--csv FILE] [--symlinks DIR]
+    python scripts/compat-report.py [--manifest FILE] [--csv FILE] [--tsv FILE]
+                                    [--report FILE] [--symlinks DIR]
+                                    [--repo OWNER/REPO] [--commit-sha SHA]
 """
 
 import argparse
@@ -148,6 +150,129 @@ def write_csv(manifest, csv_path):
     print(f"CSV written to {csv_path}")
 
 
+def write_tsv(manifest, tsv_path):
+    fieldnames = [
+        "path", "source", "classification", "reason", "runability",
+        "features", "unsupported_features",
+        "ferric_exit", "ferric_duration_ms", "ferric_timed_out",
+        "clips_exit", "clips_duration_ms", "clips_timed_out",
+        "notes",
+    ]
+
+    with open(tsv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+
+        for path, info in sorted(manifest["files"].items()):
+            ferric = info.get("ferric") or {}
+            clips = info.get("clips") or {}
+            writer.writerow({
+                "path": path,
+                "source": info["source"],
+                "classification": info["classification"],
+                "reason": info["reason"],
+                "runability": info["runability"],
+                "features": ";".join(info.get("features", [])),
+                "unsupported_features": ";".join(info.get("unsupported_features", [])),
+                "ferric_exit": ferric.get("exit_code", ""),
+                "ferric_duration_ms": ferric.get("duration_ms", ""),
+                "ferric_timed_out": ferric.get("timed_out", ""),
+                "clips_exit": clips.get("exit_code", ""),
+                "clips_duration_ms": clips.get("duration_ms", ""),
+                "clips_timed_out": clips.get("timed_out", ""),
+                "notes": info.get("notes", ""),
+            })
+
+    print(f"TSV written to {tsv_path}")
+
+
+# ---------------------------------------------------------------------------
+# Markdown report (self-contained file)
+# ---------------------------------------------------------------------------
+
+def write_report(manifest, report_path, repo=None, commit_sha=None):
+    summary = manifest["summary"]
+    total = summary["total"]
+    generated = manifest.get("generated", "unknown")
+
+    lines = []
+    lines.append("## CLIPS Compatibility Report")
+    lines.append("")
+    lines.append("Assessment of ferric's compatibility with CLIPS across a corpus of")
+    lines.append("example `.clp` files. Each file is classified as **equivalent**")
+    lines.append("(output matches CLIPS), **divergent** (runs but output differs),")
+    lines.append("**incompatible** (cannot run), or **pending** (not yet tested).")
+    lines.append("")
+
+    if repo and commit_sha:
+        commit_link = f"[`{commit_sha[:10]}`](https://github.com/{repo}/commit/{commit_sha})"
+        lines.append(f"Commit: {commit_link} | Generated: {generated}")
+    else:
+        lines.append(f"Generated: {generated}")
+    lines.append("")
+
+    lines.append(f"| Classification | Count | % |")
+    lines.append("|---|---:|---:|")
+    for cls in ["equivalent", "divergent", "incompatible", "pending"]:
+        count = summary.get(cls, 0)
+        pct = (count / total * 100) if total else 0
+        lines.append(f"| {cls} | {count:,} | {pct:.1f}% |")
+    lines.append(f"| **total** | **{total:,}** | |")
+
+    # By-source breakdown
+    source_stats = {}
+    for info in manifest["files"].values():
+        src = info["source"] or "(root)"
+        if src not in source_stats:
+            source_stats[src] = {"equivalent": 0, "divergent": 0, "incompatible": 0, "pending": 0, "total": 0}
+        source_stats[src]["total"] += 1
+        cls = info["classification"]
+        if cls in source_stats[src]:
+            source_stats[src][cls] += 1
+
+    lines.append("")
+    lines.append("### By source")
+    lines.append("")
+    lines.append("| Source | Total | Equiv | Diverg | Incompat | Pending |")
+    lines.append("|---|---:|---:|---:|---:|---:|")
+    for src in sorted(source_stats, key=lambda s: -source_stats[s]["total"]):
+        s = source_stats[src]
+        lines.append(
+            f"| {src} | {s['total']:,} | {s['equivalent']:,} | "
+            f"{s['divergent']:,} | {s['incompatible']:,} | {s['pending']:,} |"
+        )
+
+    # Equivalent files
+    equivalent = sorted(
+        (k, v) for k, v in manifest["files"].items()
+        if v["classification"] == "equivalent"
+    )
+    if equivalent:
+        lines.append("")
+        lines.append(f"### Equivalent files ({len(equivalent)})")
+        lines.append("")
+        for k, v in equivalent:
+            lines.append(f"- `{k}` ({v['reason']})")
+
+    # Divergent files
+    divergent = sorted(
+        (k, v) for k, v in manifest["files"].items()
+        if v["classification"] == "divergent"
+    )
+    if divergent:
+        lines.append("")
+        lines.append(f"### Divergent files ({len(divergent)})")
+        lines.append("")
+        for k, v in divergent:
+            lines.append(f"- `{k}` ({v['reason']})")
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+        f.write("\n")
+
+    print(f"Report written to {report_path}")
+
+
 # ---------------------------------------------------------------------------
 # Symlink view
 # ---------------------------------------------------------------------------
@@ -190,6 +315,10 @@ def main():
     parser = argparse.ArgumentParser(description="Generate compatibility assessment reports")
     parser.add_argument("--manifest", default=None, help="Path to manifest file")
     parser.add_argument("--csv", default=None, metavar="FILE", help="Export as CSV")
+    parser.add_argument("--tsv", default=None, metavar="FILE", help="Export as TSV")
+    parser.add_argument("--report", default=None, metavar="FILE", help="Write self-contained Markdown report")
+    parser.add_argument("--repo", default=None, metavar="OWNER/REPO", help="GitHub repository for commit links")
+    parser.add_argument("--commit-sha", default=None, metavar="SHA", help="Commit SHA for report links")
     parser.add_argument("--symlinks", default=None, metavar="DIR", help="Create symlink directory view")
 
     args = parser.parse_args()
@@ -213,6 +342,14 @@ def main():
     if args.csv:
         print()
         write_csv(manifest, args.csv)
+
+    if args.tsv:
+        print()
+        write_tsv(manifest, args.tsv)
+
+    if args.report:
+        print()
+        write_report(manifest, args.report, repo=args.repo, commit_sha=args.commit_sha)
 
     if args.symlinks:
         print()

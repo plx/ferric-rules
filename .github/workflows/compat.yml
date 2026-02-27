@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -51,21 +55,56 @@ jobs:
       - name: Run compat assessment
         run: python3 scripts/compat-run.py --workers 4 --timeout 30
 
-      # ── Report ──────────────────────────────────────────────────────
+      # ── PR report ───────────────────────────────────────────────────
       - name: Generate comparison report
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        run: python3 scripts/compat-diff.py /tmp/base-manifest.json tests/examples/compat-manifest.json >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          python3 scripts/compat-diff.py \
+            /tmp/base-manifest.json tests/examples/compat-manifest.json \
+            --tsv /tmp/compat-diff.tsv \
+            --report /tmp/compat-report.md \
+            --repo "${{ github.repository }}" \
+            --base-sha "${{ github.event.pull_request.base.sha }}" \
+            --head-sha "${{ github.sha }}" \
+            >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Generate standalone report
-        if: github.event_name == 'push'
-        run: python3 scripts/compat-report.py >> "$GITHUB_STEP_SUMMARY"
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        run: gh pr comment "${{ github.event.number }}" --body-file /tmp/compat-report.md
+        env:
+          GH_TOKEN: ${{ github.token }}
 
-      - name: Upload manifests
-        if: always()
+      - name: Upload comparison artifacts
+        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: compat-manifests
+          name: compat-report
+          retention-days: 30
           path: |
+            /tmp/compat-diff.tsv
+            /tmp/compat-report.md
             tests/examples/compat-manifest.json
             /tmp/base-manifest.json
+
+      # ── Push-to-main report ─────────────────────────────────────────
+      - name: Generate standalone report
+        if: github.event_name == 'push'
+        run: |
+          python3 scripts/compat-report.py \
+            --tsv /tmp/compat-report.tsv \
+            --report /tmp/compat-report.md \
+            --repo "${{ github.repository }}" \
+            --commit-sha "${{ github.sha }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload standalone artifacts
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-report
+          retention-days: 30
+          path: |
+            /tmp/compat-report.tsv
+            /tmp/compat-report.md
+            tests/examples/compat-manifest.json
