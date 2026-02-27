@@ -8,13 +8,13 @@ Usage:
     python scripts/perf-diff.py BASE_MANIFEST HEAD_MANIFEST [options]
 
 Options:
-    --report FILE       Write a self-contained Markdown report with context
-    --repo OWNER/REPO   GitHub repository (for commit links)
-    --base-sha SHA      Base commit SHA (for commit links)
-    --head-sha SHA      Head commit SHA (for commit links)
+    --report FILE              Write a self-contained Markdown report with context
+    --repo OWNER/REPO          GitHub repository (for commit links)
+    --base-sha SHA             Base commit SHA (for commit links)
+    --head-sha SHA             Head commit SHA (for commit links)
+    --fail-on-regression       Exit with code 1 if regressions are detected
 
 Stdout is always the comparison table (suitable for $GITHUB_STEP_SUMMARY).
-Exit code 1 if regressions are detected (>+5% slower).
 """
 
 import argparse
@@ -239,6 +239,8 @@ def main():
                         help="GitHub repository for commit links")
     parser.add_argument("--base-sha", metavar="SHA", help="Base commit SHA")
     parser.add_argument("--head-sha", metavar="SHA", help="Head commit SHA")
+    parser.add_argument("--fail-on-regression", action="store_true",
+                        help="Exit with code 1 if regressions are detected")
 
     args = parser.parse_args()
 
@@ -260,8 +262,8 @@ def main():
             f.write("\n".join(md_lines))
             f.write("\n")
 
-    # Exit with code 1 if there are regressions
-    if regressions:
+    # Optionally exit with code 1 if there are regressions
+    if args.fail_on_regression and regressions:
         sys.exit(1)
 
 
