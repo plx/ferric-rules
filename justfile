@@ -140,6 +140,25 @@ compat-report *args:
 # Full compatibility assessment: scan, run, report
 assess-compatibility: compat-scan compat-run compat-report
 
+# ── Performance assessment ─────────────────────────────────────────────────
+
+# Collect Criterion benchmark results into a performance manifest
+perf-collect *args:
+    python3 scripts/perf-collect.py {{args}}
+
+# Generate performance report from manifest
+perf-report *args:
+    python3 scripts/perf-report.py {{args}}
+
+# Compare two performance manifests
+perf-diff *args:
+    python3 scripts/perf-diff.py {{args}}
+
+# Full performance assessment: collect (with CLIPS reference) and report
+assess-performance: clips-build
+    python3 scripts/perf-collect.py --clips-reference
+    python3 scripts/perf-report.py
+
 # ── CLIPS reference ─────────────────────────────────────────────────────────
 
 # Build the CLIPS Docker reference image
