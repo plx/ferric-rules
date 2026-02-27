@@ -1,0 +1,14 @@
+name: Main Assessment
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  compat-standalone:
+    name: Compat Standalone
+    uses: ./.github/workflows/compat-standalone.yml
+
+  perf-standalone:
+    name: Perf Standalone
+    uses: ./.github/workflows/perf-standalone.yml

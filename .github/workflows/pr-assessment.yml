@@ -1,0 +1,59 @@
+name: PR Assessment
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  compat-compare:
+    name: Compat Compare
+    uses: ./.github/workflows/compat-compare.yml
+    with:
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      head_sha: ${{ github.sha }}
+
+  perf-compare:
+    name: Perf Compare
+    uses: ./.github/workflows/perf-compare.yml
+    with:
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      head_sha: ${{ github.sha }}
+
+  comment:
+    name: Post PR Comment
+    needs: [compat-compare, perf-compare]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download compat artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: compat-diff-report
+          path: /tmp/compat-artifacts
+        continue-on-error: true
+
+      - name: Download perf artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: perf-diff-report
+          path: /tmp/perf-artifacts
+        continue-on-error: true
+
+      - name: Compose and post comment
+        run: |
+          bash scripts/compose-pr-comment.sh \
+            --pr "${{ github.event.number }}" \
+            --compat-report "/tmp/compat-artifacts/compat-diff-report.md" \
+            --perf-report "/tmp/perf-artifacts/perf-diff-report.md" \
+            --compat-status "${{ needs.compat-compare.result }}" \
+            --perf-status "${{ needs.perf-compare.result }}"
+        env:
+          GH_TOKEN: ${{ github.token }}

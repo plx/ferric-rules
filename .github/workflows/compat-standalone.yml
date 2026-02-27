@@ -1,0 +1,62 @@
+name: Compat Standalone
+
+on:
+  workflow_dispatch: {}
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_TOOLCHAIN: "1.93.0"
+
+jobs:
+  compat-standalone:
+    name: Compat Standalone Report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build CLIPS reference image
+        run: docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+
+      - name: Build ferric
+        run: cargo build --release -p ferric-cli
+
+      - name: Run compat scan
+        run: python3 scripts/compat-scan.py
+
+      - name: Run compat assessment
+        run: python3 scripts/compat-run.py --workers 4 --timeout 30
+
+      - name: Generate standalone report
+        run: |
+          python3 scripts/compat-report.py \
+            --tsv /tmp/compat-report.tsv \
+            --report /tmp/compat-report.md \
+            --repo "${{ github.repository }}" \
+            --commit-sha "${{ github.sha }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Copy manifest
+        run: cp tests/examples/compat-manifest.json /tmp/compat-manifest.json
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-report
+          retention-days: 30
+          path: |
+            /tmp/compat-report.tsv
+            /tmp/compat-report.md
+            /tmp/compat-manifest.json

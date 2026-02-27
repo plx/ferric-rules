@@ -1,0 +1,51 @@
+name: Perf Standalone
+
+on:
+  workflow_dispatch: {}
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_TOOLCHAIN: "1.93.0"
+
+jobs:
+  perf-standalone:
+    name: Perf Standalone Report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Collect benchmark results
+        run: |
+          python3 scripts/perf-collect.py \
+            --commit-sha "${{ github.sha }}"
+
+      - name: Generate standalone report
+        run: |
+          python3 scripts/perf-report.py \
+            --report /tmp/perf-report.md \
+            --repo "${{ github.repository }}" \
+            --commit-sha "${{ github.sha }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Copy manifest
+        run: cp target/perf-manifest.json /tmp/perf-manifest.json
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report
+          retention-days: 30
+          path: |
+            /tmp/perf-report.md
+            /tmp/perf-manifest.json

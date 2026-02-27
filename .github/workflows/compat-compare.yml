@@ -1,0 +1,97 @@
+name: Compat Compare
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: "Base commit SHA"
+        required: true
+        type: string
+      head_sha:
+        description: "Head commit SHA"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      base_sha:
+        description: "Base commit SHA"
+        required: true
+        type: string
+      head_sha:
+        description: "Head commit SHA"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_TOOLCHAIN: "1.93.0"
+
+jobs:
+  compat-compare:
+    name: Compat Comparison Report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build CLIPS reference image
+        run: docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+
+      # ── Base branch assessment ─────────────────────────────────────────
+      - name: Assess base branch
+        run: |
+          git checkout ${{ inputs.base_sha }}
+          cargo build --release -p ferric-cli
+          python3 scripts/compat-scan.py
+          python3 scripts/compat-run.py --workers 4 --timeout 30
+          cp tests/examples/compat-manifest.json /tmp/base-compat-manifest.json
+          rm -f tests/examples/compat-manifest.json
+          git checkout ${{ inputs.head_sha }}
+
+      # ── Head assessment ────────────────────────────────────────────────
+      - name: Build ferric
+        run: cargo build --release -p ferric-cli
+
+      - name: Run compat scan
+        run: python3 scripts/compat-scan.py
+
+      - name: Run compat assessment
+        run: python3 scripts/compat-run.py --workers 4 --timeout 30
+
+      # ── Comparison report ──────────────────────────────────────────────
+      - name: Generate comparison report
+        continue-on-error: true
+        run: |
+          python3 scripts/compat-diff.py \
+            /tmp/base-compat-manifest.json tests/examples/compat-manifest.json \
+            --tsv /tmp/compat-diff.tsv \
+            --report /tmp/compat-diff-report.md \
+            --repo "${{ github.repository }}" \
+            --base-sha "${{ inputs.base_sha }}" \
+            --head-sha "${{ inputs.head_sha }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Copy head manifest
+        run: cp tests/examples/compat-manifest.json /tmp/head-compat-manifest.json
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-diff-report
+          retention-days: 30
+          path: |
+            /tmp/compat-diff.tsv
+            /tmp/compat-diff-report.md
+            /tmp/head-compat-manifest.json
+            /tmp/base-compat-manifest.json
