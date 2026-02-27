@@ -1,35 +1,239 @@
 # ferric-rules
-An embeddable rust rewrite of (most of) the CLIPS rules engine.
 
-## Pre-flight checks
-Run the same command surface used by CI before opening a PR:
+A (mostly) CLIPS-compatible forward-chaining rules engine, written in Rust.
+
+CLIPS has been around since the 1980s and is battle-tested for expert systems,
+but it's a C library with global state, which makes it awkward to embed in
+modern applications. ferric-rules keeps the language and semantics — deffacts,
+defrule, salience, the Rete algorithm — and drops the parts that don't fit:
+no global state, no thread-unsafe singletons, no C build headaches.
+Each `Engine` instance is fully independent, and the whole thing compiles
+as a normal Rust crate (or as a C library via `ferric-ffi`).
+
+The engine is early but functional: ordered and template facts, negative and
+existential patterns, the full Rete join network, modules with focus stacks,
+deffunction/defgeneric, globals, and the core CLIPS standard library
+(math, string, multifield, predicates, I/O). What's not here yet:
+object system (COOL), logical dependencies, and some of the more exotic
+pattern connectives. See the [compatibility roadmap](COMPATIBILITY_ROADMAP.md)
+for details.
+
+```
+cargo add ferric
+```
+
+## Example: in-app engagement rules
+
+Here's a real-ish use case. You have a mobile app and want to decide, once per
+session, whether to show a rating prompt, an upsell, a paywall, a retention
+offer, or nothing at all. The rules encode your product team's priorities and
+constraints; your app just asserts what it knows about the user and runs the
+engine.
+
+### The rules
+
+```clips
+;;; Only one prompt per session. Higher salience = higher priority.
+;;; The (prompt-shown) guard stops lower-priority rules from firing
+;;; after a decision is made.
+
+;;; Bad session? Show nothing.
+(defrule suppress-after-crash
+    (declare (salience 100))
+    (has-crashed yes)
+    =>
+    (assert (prompt-suppressed))
+    (assert (prompt-shown)))
+
+;;; Free user hit a premium feature — paywall.
+(defrule show-paywall
+    (declare (salience 90))
+    (user-tier free)
+    (accessed-premium-feature)
+    (not (prompt-shown))
+    (not (prompt-suppressed))
+    =>
+    (assert (show paywall))
+    (assert (prompt-shown))
+    (printout t "ACTION: paywall" crlf))
+
+;;; Brand-new user (<=3 sessions) — signup incentive.
+(defrule offer-signup-incentive
+    (declare (salience 70))
+    (user-tier free)
+    (session-count ?s)
+    (test (<= ?s 3))
+    (not (prompt-shown))
+    (not (prompt-suppressed))
+    =>
+    (assert (show signup-incentive))
+    (assert (prompt-shown))
+    (printout t "ACTION: signup-incentive" crlf))
+
+;;; Haven't opened the app in a week — retention discount.
+(defrule offer-retention-discount
+    (declare (salience 60))
+    (days-since-last-open ?d)
+    (test (>= ?d 7))
+    (not (prompt-shown))
+    (not (prompt-suppressed))
+    =>
+    (assert (show retention-discount))
+    (assert (prompt-shown))
+    (printout t "ACTION: retention-discount" crlf))
+
+;;; Engaged user who hasn't rated — ask for a review.
+(defrule prompt-app-rating
+    (declare (salience 50))
+    (session-count ?s)
+    (test (>= ?s 10))
+    (days-since-install ?d)
+    (test (>= ?d 7))
+    (has-rated no)
+    (not (has-crashed yes))
+    (not (prompt-shown))
+    (not (prompt-suppressed))
+    =>
+    (assert (show rate-app))
+    (assert (prompt-shown))
+    (printout t "ACTION: rate-app" crlf))
+
+;;; Engaged free user — upsell to paid.
+(defrule upsell-to-paid
+    (declare (salience 40))
+    (user-tier free)
+    (session-count ?s)
+    (test (>= ?s 5))
+    (feature-usage high)
+    (not (prompt-shown))
+    (not (prompt-suppressed))
+    =>
+    (assert (show upsell-paid))
+    (assert (prompt-shown))
+    (printout t "ACTION: upsell-paid" crlf))
+
+;;; Paid power user — upsell to premium.
+(defrule upsell-to-premium
+    (declare (salience 40))
+    (user-tier paid)
+    (session-count ?s)
+    (test (>= ?s 20))
+    (feature-usage high)
+    (not (prompt-shown))
+    (not (prompt-suppressed))
+    =>
+    (assert (show upsell-premium))
+    (assert (prompt-shown))
+    (printout t "ACTION: upsell-premium" crlf))
+
+;;; User hasn't shared much — offer credits for sharing.
+(defrule offer-share-credit
+    (declare (salience 30))
+    (social-shares ?n)
+    (test (< ?n 3))
+    (not (prompt-shown))
+    (not (prompt-suppressed))
+    =>
+    (assert (show share-credit))
+    (assert (prompt-shown))
+    (printout t "ACTION: share-credit" crlf))
+```
+
+### Using it from Rust
+
+Load the rules once, then for each session, assert the current user state and
+run the engine. The highest-priority matching rule fires and the `(show ...)`
+fact tells you what to do.
+
+```rust
+use ferric::core::Value;
+use ferric::runtime::{Engine, EngineConfig, RunLimit};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let rules = include_str!("rules/engagement.clp");
+
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine.load_str(rules)?;
+    engine.reset()?;
+
+    // Assert what we know about this user right now.
+    let free = Value::Symbol(engine.intern_symbol("free")?);
+    engine.assert_ordered("user-tier", vec![free])?;
+    engine.assert_ordered("session-count", vec![Value::Integer(12)])?;
+    engine.assert_ordered("days-since-install", vec![Value::Integer(14)])?;
+
+    let no = Value::Symbol(engine.intern_symbol("no")?);
+    engine.assert_ordered("has-rated", vec![no.clone()])?;
+    engine.assert_ordered("has-crashed", vec![no])?;
+
+    let high = Value::Symbol(engine.intern_symbol("high")?);
+    engine.assert_ordered("feature-usage", vec![high])?;
+    engine.assert_ordered("social-shares", vec![Value::Integer(1)])?;
+
+    // Run the engine. One rule fires.
+    let result = engine.run(RunLimit::Count(100))?;
+    assert_eq!(result.rules_fired, 1);
+
+    // Read the decision from the printout channel, or inspect working memory
+    // for the (show ...) fact.
+    let output = engine.get_output("t").unwrap_or("");
+    assert_eq!(output, "ACTION: rate-app\n");
+
+    Ok(())
+}
+```
+
+### What fires when
+
+Given the rules above, the engine picks one action per session based on the
+user's state:
+
+| User state | Action | Why |
+|---|---|---|
+| Free, 2 sessions | `signup-incentive` | New user, highest eligible priority |
+| Free, 12 sessions, hasn't rated | `rate-app` | Engaged + hasn't reviewed yet |
+| Free, 12 sessions, has rated, heavy usage | `upsell-paid` | Already rated, using features |
+| Paid, 25 sessions, heavy usage | `upsell-premium` | Power user on paid tier |
+| Any tier, app just crashed | *(nothing)* | All prompts suppressed |
+| Paid, 10 days since last open | `retention-discount` | Lapsed user coming back |
+| Free, hit a premium feature | `paywall` | Highest action priority |
+| Free, 8 sessions, has rated, low usage, 0 shares | `share-credit` | Nothing else matches |
+
+These scenarios are verified as tests in
+[`crates/ferric/tests/clips_compat.rs`](crates/ferric/tests/clips_compat.rs)
+(look for `test_engagement_*`), so they won't silently go stale.
+
+## Development
+
+### Pre-flight checks
+
+Run the same checks CI uses before opening a PR:
 
 ```bash
 ./scripts/preflight.sh all
 ```
 
-You can also run an individual gate:
+Or run an individual gate:
 
 ```bash
 ./scripts/preflight.sh clippy
 ```
 
-## CLIPS reference harness
+### CLIPS reference harness
 
-To support behavioral comparisons against upstream CLIPS, this repository includes a
+To compare behavior against upstream CLIPS, this repository includes a
 Docker-based reference harness:
 
-- `docker/clips-reference/Dockerfile`
-- `scripts/clips-reference.sh`
-- `documents/reference/CLIPSContainerHarness.md`
-
-Quick start:
-
 ```bash
-# Build local image
+# Build the image
 scripts/clips-reference.sh build --load
 
-# Run CLIPS with one or more source files and operations
+# Run a fixture
 scripts/clips-reference.sh run --file path/to/rules.clp --op '(reset)' --op '(run)'
 ```
 
+See `documents/reference/CLIPSContainerHarness.md` for details.
+
+## License
+
+MIT OR Apache-2.0

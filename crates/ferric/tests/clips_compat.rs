@@ -922,3 +922,167 @@ fn test_compat_stdlib_math_edge_cases() {
         "min3: 1\nmax3: 3\nneg-abs: 7\ndiv-trunc: 3\nmod-neg: 1\n",
     );
 }
+
+// ===========================================================================
+// Mobile App Engagement example (README demo)
+//
+// These tests verify the rules in
+//   tests/clips_compat/fixtures/examples/mobile_engagement.clp
+// by composing the shared ruleset with scenario-specific deffacts.
+// Each scenario asserts exactly the user-state facts needed and checks
+// that the engine picks the single correct action.
+// ===========================================================================
+
+/// Load the shared engagement rules from the fixture file.
+fn engagement_rules() -> String {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("could not resolve workspace root");
+    let path = workspace_root.join("tests/clips_compat/fixtures/examples/mobile_engagement.clp");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("could not read engagement rules: {e}"))
+}
+
+/// Run the engagement rules with scenario-specific deffacts.
+fn run_engagement(deffacts: &str) -> CompatResult {
+    let rules = engagement_rules();
+    let source = format!("{deffacts}\n{rules}");
+    run_clips_compat(&source)
+}
+
+/// Brand-new free user (2 sessions) → signup incentive.
+#[test]
+fn test_engagement_new_user_gets_signup_incentive() {
+    let result = run_engagement(
+        r"(deffacts scenario
+            (user-tier free)
+            (session-count 2)
+            (has-crashed no)
+            (social-shares 0))",
+    );
+    assert_rules_fired(&result, 1);
+    assert_output_exact(&result, "ACTION: signup-incentive\n");
+}
+
+/// Engaged free user who has not yet rated → rating prompt.
+#[test]
+fn test_engagement_engaged_user_gets_rating_prompt() {
+    let result = run_engagement(
+        r"(deffacts scenario
+            (user-tier free)
+            (session-count 12)
+            (days-since-install 14)
+            (has-rated no)
+            (has-crashed no)
+            (feature-usage high)
+            (social-shares 1))",
+    );
+    assert_rules_fired(&result, 1);
+    assert_output_exact(&result, "ACTION: rate-app\n");
+}
+
+/// Engaged free user who already rated and uses features heavily → upsell to paid.
+#[test]
+fn test_engagement_rated_power_user_gets_upsell_paid() {
+    let result = run_engagement(
+        r"(deffacts scenario
+            (user-tier free)
+            (session-count 12)
+            (days-since-install 30)
+            (has-rated yes)
+            (has-crashed no)
+            (feature-usage high)
+            (social-shares 2))",
+    );
+    assert_rules_fired(&result, 1);
+    assert_output_exact(&result, "ACTION: upsell-paid\n");
+}
+
+/// Paid subscriber with heavy use → upsell to premium.
+#[test]
+fn test_engagement_paid_power_user_gets_upsell_premium() {
+    let result = run_engagement(
+        r"(deffacts scenario
+            (user-tier paid)
+            (session-count 25)
+            (has-rated yes)
+            (has-crashed no)
+            (feature-usage high)
+            (social-shares 5))",
+    );
+    assert_rules_fired(&result, 1);
+    assert_output_exact(&result, "ACTION: upsell-premium\n");
+}
+
+/// Recent crash → all prompts suppressed, nothing shown.
+#[test]
+fn test_engagement_crash_suppresses_all_prompts() {
+    let result = run_engagement(
+        r"(deffacts scenario
+            (user-tier free)
+            (session-count 12)
+            (days-since-install 14)
+            (has-rated no)
+            (has-crashed yes)
+            (feature-usage high)
+            (social-shares 0))",
+    );
+    // suppress-after-crash fires (asserts prompt-shown + prompt-suppressed)
+    // but prints nothing.
+    assert_rules_fired(&result, 1);
+    assert_output_exact(&result, "");
+}
+
+/// Lapsed user returning after 10 days → retention discount.
+#[test]
+fn test_engagement_lapsed_user_gets_retention_discount() {
+    let result = run_engagement(
+        r"(deffacts scenario
+            (user-tier paid)
+            (session-count 50)
+            (days-since-last-open 10)
+            (has-rated yes)
+            (has-crashed no)
+            (feature-usage medium)
+            (social-shares 3))",
+    );
+    assert_rules_fired(&result, 1);
+    assert_output_exact(&result, "ACTION: retention-discount\n");
+}
+
+/// Free user who hits a premium feature → paywall (highest action priority).
+#[test]
+fn test_engagement_premium_access_shows_paywall() {
+    let result = run_engagement(
+        r"(deffacts scenario
+            (user-tier free)
+            (session-count 12)
+            (days-since-install 14)
+            (has-rated no)
+            (has-crashed no)
+            (accessed-premium-feature)
+            (feature-usage high)
+            (social-shares 0))",
+    );
+    assert_rules_fired(&result, 1);
+    assert_output_exact(&result, "ACTION: paywall\n");
+}
+
+/// Low-engagement user with no social shares → share credit offer.
+#[test]
+fn test_engagement_quiet_user_gets_share_credit() {
+    let result = run_engagement(
+        r"(deffacts scenario
+            (user-tier free)
+            (session-count 8)
+            (days-since-install 30)
+            (has-rated yes)
+            (has-crashed no)
+            (feature-usage low)
+            (social-shares 0))",
+    );
+    assert_rules_fired(&result, 1);
+    assert_output_exact(&result, "ACTION: share-credit\n");
+}
