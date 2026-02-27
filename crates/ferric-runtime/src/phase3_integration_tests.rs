@@ -1177,6 +1177,68 @@ mod tests {
     }
 
     #[test]
+    fn template_defined_as_module_qualified_name_is_resolved_by_import() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defmodule A (export ?ALL))
+            (deftemplate A::foo (slot x))
+            (defmodule B (import A ?ALL))
+            (defrule B::r (foo (x ?v)) => (assert (seen ?v)))
+            (deffacts startup (foo (x 7)))
+        ",
+        );
+
+        engine.push_focus("B").unwrap();
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 1);
+        assert_has_fact_with_relation(&engine, "seen");
+    }
+
+    #[test]
+    fn module_without_explicit_export_defaults_to_export_all() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defmodule A)
+            (deftemplate A::foo (slot x))
+            (defmodule B (import A ?ALL))
+            (defrule B::r (foo (x ?v)) => (assert (seen ?v)))
+            (deffacts startup (foo (x 11)))
+        ",
+        );
+
+        engine.push_focus("B").unwrap();
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 1);
+        assert_has_fact_with_relation(&engine, "seen");
+    }
+
+    #[test]
+    fn cross_module_template_visibility_supports_transitive_import_reexport() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defmodule A (export ?ALL))
+            (deftemplate A::foo (slot x))
+
+            (defmodule C1 (import A ?ALL) (export ?ALL))
+            (defmodule C2 (import C1 deftemplate ?ALL))
+            (defrule C2::r (foo (x ?v)) => (assert (seen ?v)))
+            (deffacts startup (foo (x 19)))
+        ",
+        );
+
+        engine.push_focus("C2").unwrap();
+        let result = run_to_completion(&mut engine);
+        assert_eq!(result.rules_fired, 1);
+        assert_has_fact_with_relation(&engine, "seen");
+    }
+
+    #[test]
     fn template_not_visible_without_import() {
         let mut engine = new_utf8_engine();
         load_ok(
@@ -1203,6 +1265,197 @@ mod tests {
             has_visibility_error,
             "expected 'not visible' compile error, got: {errors:?}"
         );
+    }
+
+    #[test]
+    fn modlmisc_03_visibility_error_is_reported() {
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defmodule A (export deftemplate bar))
+                (deftemplate A::foo (slot x))
+                (defmodule B (import A ?ALL))
+                (defrule B::rule1 (foo (x 3)) =>)
+            ",
+            )
+            .unwrap_err();
+
+        let compile_messages: Vec<&str> = errors
+            .iter()
+            .filter_map(|e| match e {
+                crate::loader::LoadError::Compile(msg) => Some(msg.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(compile_messages.len(), 1);
+        assert!(
+            compile_messages[0].contains("template `foo` is not visible from module `B`"),
+            "unexpected compile diagnostic: {compile_messages:?}"
+        );
+    }
+
+    #[test]
+    fn modlmisc_04_one_level_import_visibility_matches_expected_rejections() {
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defmodule A (export ?ALL))
+                (deftemplate A::foo (slot x))
+                (deftemplate A::bar (slot x))
+                (defmodule B)
+                (defrule B::rule1 (foo (x 3)) =>)
+                (defrule B::rule2 (bar (x 3)) =>)
+                (defmodule C (import A ?ALL))
+                (defrule C::rule1 (foo (x 3)) =>)
+                (defrule C::rule2 (bar (x 3)) =>)
+                (defmodule D (import A deftemplate ?ALL))
+                (defrule D::rule1 (foo (x 3)) =>)
+                (defrule D::rule2 (bar (x 3)) =>)
+                (defmodule E (import A deftemplate foo bar))
+                (defrule E::rule1 (foo (x 3)) =>)
+                (defrule E::rule2 (bar (x 3)) =>)
+                (defmodule F (import A deftemplate bar))
+                (defrule F::rule1 (foo (x 3)) =>)
+                (defrule F::rule2 (bar (x 3)) =>)
+                (defmodule G (import A deftemplate foo))
+                (defrule G::rule1 (foo (x 3)) =>)
+                (defrule G::rule2 (bar (x 3)) =>)
+            ",
+            )
+            .unwrap_err();
+
+        let compile_messages: Vec<&str> = errors
+            .iter()
+            .filter_map(|e| match e {
+                crate::loader::LoadError::Compile(msg) => Some(msg.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        let expected = [
+            "template `foo` is not visible from module `B`",
+            "template `bar` is not visible from module `B`",
+            "template `foo` is not visible from module `F`",
+            "template `bar` is not visible from module `G`",
+        ];
+        assert_eq!(compile_messages.len(), expected.len());
+        for want in expected {
+            assert!(
+                compile_messages.iter().any(|msg| msg.contains(want)),
+                "missing expected diagnostic `{want}` in {compile_messages:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn modlmisc_05_two_level_import_visibility_matches_expected_rejections() {
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defmodule A (export ?ALL))
+                (deftemplate A::foo (slot x))
+                (deftemplate A::bar (slot x))
+                (defmodule B1 (export ?ALL))
+                (defmodule B2 (import B1 ?ALL))
+                (defrule B2::rule1 (foo (x 3)) =>)
+                (defrule B2::rule2 (bar (x 3)) =>)
+                (defmodule C1 (import A ?ALL) (export ?ALL))
+                (defmodule C2 (import C1 deftemplate ?ALL))
+                (defrule C2::rule1 (foo (x 3)) =>)
+                (defrule C2::rule2 (bar (x 3)) =>)
+                (defmodule D1 (import A deftemplate ?ALL) (export ?ALL))
+                (defmodule D2 (import D1 deftemplate ?NONE))
+                (defrule D2::rule1 (foo (x 3)) =>)
+                (defrule D2::rule2 (bar (x 3)) =>)
+                (defmodule E1 (import A deftemplate foo bar) (export ?ALL))
+                (defmodule E2 (import E1 deftemplate foo bar))
+                (defrule E2::rule1 (foo (x 3)) =>)
+                (defrule E2::rule2 (bar (x 3)) =>)
+                (defmodule F1 (import A deftemplate bar) (export ?ALL))
+                (defmodule F2 (import F1 deftemplate foo))
+                (defrule F2::rule1 (foo (x 3)) =>)
+                (defrule F2::rule2 (bar (x 3)) =>)
+                (defmodule G1 (import A deftemplate foo) (export ?ALL))
+                (defmodule G2 (import G1 deftemplate foo))
+                (defrule G2::rule1 (foo (x 3)) =>)
+                (defrule G2::rule2 (bar (x 3)) =>)
+            ",
+            )
+            .unwrap_err();
+
+        let compile_messages: Vec<&str> = errors
+            .iter()
+            .filter_map(|e| match e {
+                crate::loader::LoadError::Compile(msg) => Some(msg.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        let expected = [
+            "template `foo` is not visible from module `B2`",
+            "template `bar` is not visible from module `B2`",
+            "template `foo` is not visible from module `D2`",
+            "template `bar` is not visible from module `D2`",
+            "template `foo` is not visible from module `F2`",
+            "template `bar` is not visible from module `F2`",
+            "template `bar` is not visible from module `G2`",
+        ];
+        assert_eq!(compile_messages.len(), expected.len());
+        for want in expected {
+            assert!(
+                compile_messages.iter().any(|msg| msg.contains(want)),
+                "missing expected diagnostic `{want}` in {compile_messages:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn modlmisc_09_imported_template_lhs_visibility_rejections_match_expected() {
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defmodule A (export ?ALL))
+                (deftemplate A::foo (slot x))
+                (defmodule B (import A ?ALL))
+                (deftemplate B::bar (slot y))
+                (defmodule C (import A ?ALL))
+                (deftemplate C::yak (slot z))
+                (defrule C::bad (bar (y 3)) =>)
+                (defrule C::good (foo (x 2)) (yak (z 4)) =>)
+                (defrule B::bad (yak (z 4)) =>)
+                (defrule B::good (foo (x 2)) (bar (y 3)) =>)
+                (defrule A::bad1 (yak (z 4)) =>)
+                (defrule A::bad2 (bar (y 3)) =>)
+                (defrule A::good (foo (x 2)) =>)
+            ",
+            )
+            .unwrap_err();
+
+        let compile_messages: Vec<&str> = errors
+            .iter()
+            .filter_map(|e| match e {
+                crate::loader::LoadError::Compile(msg) => Some(msg.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        let expected = [
+            "template `bar` is not visible from module `C`",
+            "template `yak` is not visible from module `B`",
+            "template `yak` is not visible from module `A`",
+            "template `bar` is not visible from module `A`",
+        ];
+        assert_eq!(compile_messages.len(), expected.len());
+        for want in expected {
+            assert!(
+                compile_messages.iter().any(|msg| msg.contains(want)),
+                "missing expected diagnostic `{want}` in {compile_messages:?}"
+            );
+        }
     }
 
     #[test]

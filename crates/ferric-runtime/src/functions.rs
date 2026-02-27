@@ -101,9 +101,21 @@ impl FunctionEnv {
 ///
 /// Maps global variable names (without the `?*` and `*` delimiters) to their
 /// current runtime values.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct GlobalStore {
     values: HashMap<(ModuleId, String), Value>,
+    gensym_counter: i64,
+    printout_events: Vec<(String, String)>,
+}
+
+impl Default for GlobalStore {
+    fn default() -> Self {
+        Self {
+            values: HashMap::new(),
+            gensym_counter: 1,
+            printout_events: Vec::new(),
+        }
+    }
 }
 
 impl GlobalStore {
@@ -140,9 +152,32 @@ impl GlobalStore {
         self.values.insert((module, name.to_string()), value);
     }
 
+    /// Return the next `gensym` sequence number and increment internal state.
+    pub fn next_gensym_counter(&mut self) -> i64 {
+        let current = self.gensym_counter;
+        self.gensym_counter = self.gensym_counter.saturating_add(1);
+        current
+    }
+
+    /// Set the next value returned by `gensym`.
+    pub fn set_gensym_counter(&mut self, value: i64) {
+        self.gensym_counter = value.max(1);
+    }
+
+    /// Queue a deferred `printout` event emitted from expression evaluation.
+    pub fn push_printout_event(&mut self, channel: String, text: String) {
+        self.printout_events.push((channel, text));
+    }
+
+    /// Drain queued deferred `printout` events in FIFO order.
+    pub fn take_printout_events(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.printout_events)
+    }
+
     /// Clear all global variables (used during engine reset).
     pub fn clear(&mut self) {
         self.values.clear();
+        self.printout_events.clear();
     }
 
     /// Debug-only structural checks for global store bookkeeping.
@@ -154,6 +189,10 @@ impl GlobalStore {
                 "global store contains an empty-name entry"
             );
         }
+        assert!(
+            self.gensym_counter >= 1,
+            "gensym counter must remain positive"
+        );
     }
 }
 
@@ -467,10 +506,12 @@ mod tests {
         let mut store = GlobalStore::new();
         store.set(main_module(), "a", Value::Integer(1));
         store.set(main_module(), "b", Value::Integer(2));
+        let _ = store.next_gensym_counter();
         store.clear();
 
         assert!(store.get(main_module(), "a").is_none());
         assert!(store.get(main_module(), "b").is_none());
+        assert_eq!(store.next_gensym_counter(), 2);
     }
 
     #[test]
@@ -512,6 +553,35 @@ mod tests {
             .get(module_b, "g")
             .unwrap()
             .structural_eq(&Value::Integer(2)));
+    }
+
+    #[test]
+    fn global_store_gensym_counter_increments() {
+        let mut store = GlobalStore::new();
+        assert_eq!(store.next_gensym_counter(), 1);
+        assert_eq!(store.next_gensym_counter(), 2);
+        assert_eq!(store.next_gensym_counter(), 3);
+    }
+
+    #[test]
+    fn global_store_set_gensym_counter_changes_next_value() {
+        let mut store = GlobalStore::new();
+        store.set_gensym_counter(10);
+        assert_eq!(store.next_gensym_counter(), 10);
+        assert_eq!(store.next_gensym_counter(), 11);
+    }
+
+    #[test]
+    fn global_store_printout_events_roundtrip_and_drain() {
+        let mut store = GlobalStore::new();
+        store.push_printout_event("t".to_string(), "hello".to_string());
+        store.push_printout_event("wtrace".to_string(), "trace".to_string());
+
+        let events = store.take_printout_events();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], ("t".to_string(), "hello".to_string()));
+        assert_eq!(events[1], ("wtrace".to_string(), "trace".to_string()));
+        assert!(store.take_printout_events().is_empty());
     }
 
     // -----------------------------------------------------------------------

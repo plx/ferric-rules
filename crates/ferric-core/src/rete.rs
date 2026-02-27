@@ -5,6 +5,7 @@
 
 use slotmap::Key;
 use smallvec::SmallVec;
+use std::cmp::Ordering;
 
 use crate::agenda::{Activation, ActivationId, ActivationSeq, Agenda};
 use crate::alpha::{get_slot_value, AlphaMemoryId, AlphaNetwork};
@@ -14,7 +15,7 @@ use crate::fact::{Fact, FactBase, FactId, Timestamp};
 use crate::negative::NegativeMemoryId;
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
-use crate::value::AtomKey;
+use crate::value::{AtomKey, Value};
 
 /// The complete Rete network.
 ///
@@ -25,6 +26,7 @@ pub struct ReteNetwork {
     pub beta: BetaNetwork,
     pub token_store: TokenStore,
     pub agenda: Agenda,
+    disabled_rules: std::collections::HashSet<crate::beta::RuleId>,
 }
 
 impl ReteNetwork {
@@ -52,6 +54,7 @@ impl ReteNetwork {
             beta,
             token_store,
             agenda,
+            disabled_rules: std::collections::HashSet::new(),
         }
     }
 
@@ -202,6 +205,15 @@ impl ReteNetwork {
         self.beta.clear_all_runtime();
         let strategy = self.agenda.strategy();
         self.agenda = Agenda::with_strategy(strategy);
+    }
+
+    /// Disable a compiled rule at runtime.
+    ///
+    /// Disabling a rule removes any queued activations for that rule and prevents
+    /// new activations from being created for future token propagations.
+    pub fn disable_rule(&mut self, rule_id: crate::beta::RuleId) {
+        self.disabled_rules.insert(rule_id);
+        let _ = self.agenda.remove_activations_for_rule(rule_id);
     }
 
     /// Perform a right activation on a join node.
@@ -1246,6 +1258,9 @@ impl ReteNetwork {
 
             match child_node {
                 BetaNode::Terminal { rule, salience, .. } => {
+                    if self.disabled_rules.contains(rule) {
+                        continue;
+                    }
                     // Create activation
                     let Some(token) = self.token_store.get(token_id) else {
                         continue;
@@ -1381,10 +1396,6 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
             return false; // Slot doesn't exist
         };
 
-        let Some(fact_key) = AtomKey::from_value(fact_value) else {
-            return false; // Value not indexable (e.g., Multifield, Void)
-        };
-
         // Get the token's binding for the variable
         let token_value = match token {
             Some(t) => match t.bindings.get(test.beta_var) {
@@ -1394,14 +1405,120 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
             None => return false, // No token to compare against
         };
 
-        let Some(token_key) = AtomKey::from_value(token_value) else {
-            return false;
-        };
-
         // Compare based on test type
         let matches = match test.test_type {
-            JoinTestType::Equal => fact_key == token_key,
-            JoinTestType::NotEqual => fact_key != token_key,
+            JoinTestType::Equal => {
+                let Some(fact_key) = AtomKey::from_value(fact_value) else {
+                    return false;
+                };
+                let Some(token_key) = AtomKey::from_value(token_value) else {
+                    return false;
+                };
+                fact_key == token_key
+            }
+            JoinTestType::NotEqual => {
+                let Some(fact_key) = AtomKey::from_value(fact_value) else {
+                    return false;
+                };
+                let Some(token_key) = AtomKey::from_value(token_value) else {
+                    return false;
+                };
+                fact_key != token_key
+            }
+            JoinTestType::GreaterThan => matches!(
+                compare_numeric_values(fact_value, token_value),
+                Some(Ordering::Greater)
+            ),
+            JoinTestType::LessThan => matches!(
+                compare_numeric_values(fact_value, token_value),
+                Some(Ordering::Less)
+            ),
+            JoinTestType::GreaterOrEqual => matches!(
+                compare_numeric_values(fact_value, token_value),
+                Some(Ordering::Greater) | Some(Ordering::Equal)
+            ),
+            JoinTestType::LessOrEqual => matches!(
+                compare_numeric_values(fact_value, token_value),
+                Some(Ordering::Less) | Some(Ordering::Equal)
+            ),
+            JoinTestType::LexEqual => matches!(
+                compare_lexeme_values(fact_value, token_value),
+                Some(Ordering::Equal)
+            ),
+            JoinTestType::LexNotEqual => !matches!(
+                compare_lexeme_values(fact_value, token_value),
+                Some(Ordering::Equal)
+            ),
+            JoinTestType::LexGreaterThan => matches!(
+                compare_lexeme_values(fact_value, token_value),
+                Some(Ordering::Greater)
+            ),
+            JoinTestType::LexLessThan => matches!(
+                compare_lexeme_values(fact_value, token_value),
+                Some(Ordering::Less)
+            ),
+            JoinTestType::LexGreaterOrEqual => matches!(
+                compare_lexeme_values(fact_value, token_value),
+                Some(Ordering::Greater) | Some(Ordering::Equal)
+            ),
+            JoinTestType::LexLessOrEqual => matches!(
+                compare_lexeme_values(fact_value, token_value),
+                Some(Ordering::Less) | Some(Ordering::Equal)
+            ),
+            JoinTestType::EqualOffset(offset) => {
+                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
+                    return false;
+                };
+                matches!(
+                    compare_numeric_values(fact_value, &adjusted_token),
+                    Some(Ordering::Equal)
+                )
+            }
+            JoinTestType::NotEqualOffset(offset) => {
+                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
+                    return false;
+                };
+                !matches!(
+                    compare_numeric_values(fact_value, &adjusted_token),
+                    Some(Ordering::Equal)
+                )
+            }
+            JoinTestType::GreaterThanOffset(offset) => {
+                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
+                    return false;
+                };
+                matches!(
+                    compare_numeric_values(fact_value, &adjusted_token),
+                    Some(Ordering::Greater)
+                )
+            }
+            JoinTestType::LessThanOffset(offset) => {
+                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
+                    return false;
+                };
+                matches!(
+                    compare_numeric_values(fact_value, &adjusted_token),
+                    Some(Ordering::Less)
+                )
+            }
+            JoinTestType::GreaterOrEqualOffset(offset) => {
+                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
+                    return false;
+                };
+                matches!(
+                    compare_numeric_values(fact_value, &adjusted_token),
+                    Some(Ordering::Greater) | Some(Ordering::Equal)
+                )
+            }
+            JoinTestType::LessOrEqualOffset(offset) => {
+                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
+                    return false;
+                };
+                matches!(
+                    compare_numeric_values(fact_value, &adjusted_token),
+                    Some(Ordering::Less) | Some(Ordering::Equal)
+                )
+            }
         };
 
         if !matches {
@@ -1412,11 +1529,37 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
     true
 }
 
+fn add_integer_offset(value: &Value, offset: i64) -> Option<Value> {
+    match value {
+        Value::Integer(i) => i.checked_add(offset).map(Value::Integer),
+        Value::Float(f) => Some(Value::Float(*f + offset as f64)),
+        _ => None,
+    }
+}
+
+fn compare_numeric_values(lhs: &Value, rhs: &Value) -> Option<Ordering> {
+    match (lhs, rhs) {
+        (Value::Integer(a), Value::Integer(b)) => Some(a.cmp(b)),
+        (Value::Integer(a), Value::Float(b)) => (*a as f64).partial_cmp(b),
+        (Value::Float(a), Value::Integer(b)) => a.partial_cmp(&(*b as f64)),
+        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+        _ => None,
+    }
+}
+
+fn compare_lexeme_values(lhs: &Value, rhs: &Value) -> Option<Ordering> {
+    match (lhs, rhs) {
+        (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::alpha::{AlphaEntryType, ConstantTest, ConstantTestType, SlotIndex};
     use crate::beta::{RuleId, Salience};
+    use crate::string::FerricString;
     use crate::symbol::{Symbol, SymbolTable};
     use crate::value::Value;
     use smallvec::smallvec;
@@ -1963,6 +2106,182 @@ mod tests {
         );
 
         assert_eq!(rete.agenda.len(), 1, "Only one activation total");
+    }
+
+    #[test]
+    fn join_test_greater_than_filters_numeric_matches() {
+        use crate::binding::VarId;
+
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut symbol_table = SymbolTable::new();
+
+        let threshold = make_symbol(&mut symbol_table, "threshold");
+        let value_rel = make_symbol(&mut symbol_table, "value");
+
+        let threshold_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(threshold));
+        let threshold_alpha = rete.alpha.create_memory(threshold_entry);
+        let value_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(value_rel));
+        let value_alpha = rete.alpha.create_memory(value_entry);
+
+        let root = rete.beta.root_id();
+        let var_x = VarId(0);
+        let (join1, _) = rete.beta.create_join_node(
+            root,
+            threshold_alpha,
+            vec![],
+            vec![(SlotIndex::Ordered(0), var_x)],
+        );
+        let (join2, _) = rete.beta.create_join_node(
+            join1,
+            value_alpha,
+            vec![JoinTest {
+                alpha_slot: SlotIndex::Ordered(0),
+                beta_var: var_x,
+                test_type: JoinTestType::GreaterThan,
+            }],
+            vec![],
+        );
+        let _terminal = rete
+            .beta
+            .create_terminal_node(join2, RuleId(300), Salience::DEFAULT);
+
+        let threshold_id = fact_base.assert_ordered(threshold, smallvec![Value::Integer(5)]);
+        let threshold_fact = fact_base.get(threshold_id).unwrap().fact.clone();
+        rete.assert_fact(threshold_id, &threshold_fact, &fact_base);
+
+        let lower_id = fact_base.assert_ordered(value_rel, smallvec![Value::Integer(3)]);
+        let lower_fact = fact_base.get(lower_id).unwrap().fact.clone();
+        let lower_acts = rete.assert_fact(lower_id, &lower_fact, &fact_base);
+        assert_eq!(lower_acts.len(), 0, "3 is not greater than threshold 5");
+
+        let higher_id = fact_base.assert_ordered(value_rel, smallvec![Value::Integer(7)]);
+        let higher_fact = fact_base.get(higher_id).unwrap().fact.clone();
+        let higher_acts = rete.assert_fact(higher_id, &higher_fact, &fact_base);
+        assert_eq!(higher_acts.len(), 1, "7 should pass greater-than join test");
+    }
+
+    #[test]
+    fn join_test_equal_offset_matches_shifted_value() {
+        use crate::binding::VarId;
+
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut symbol_table = SymbolTable::new();
+
+        let base_rel = make_symbol(&mut symbol_table, "base");
+        let target_rel = make_symbol(&mut symbol_table, "target");
+
+        let base_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(base_rel));
+        let base_alpha = rete.alpha.create_memory(base_entry);
+        let target_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(target_rel));
+        let target_alpha = rete.alpha.create_memory(target_entry);
+
+        let root = rete.beta.root_id();
+        let var_x = VarId(0);
+        let (join1, _) = rete.beta.create_join_node(
+            root,
+            base_alpha,
+            vec![],
+            vec![(SlotIndex::Ordered(0), var_x)],
+        );
+        let (join2, _) = rete.beta.create_join_node(
+            join1,
+            target_alpha,
+            vec![JoinTest {
+                alpha_slot: SlotIndex::Ordered(0),
+                beta_var: var_x,
+                test_type: JoinTestType::EqualOffset(1),
+            }],
+            vec![],
+        );
+        let _terminal = rete
+            .beta
+            .create_terminal_node(join2, RuleId(301), Salience::DEFAULT);
+
+        let base_id = fact_base.assert_ordered(base_rel, smallvec![Value::Integer(5)]);
+        let base_fact = fact_base.get(base_id).unwrap().fact.clone();
+        rete.assert_fact(base_id, &base_fact, &fact_base);
+
+        let mismatch_id = fact_base.assert_ordered(target_rel, smallvec![Value::Integer(5)]);
+        let mismatch_fact = fact_base.get(mismatch_id).unwrap().fact.clone();
+        let mismatch_acts = rete.assert_fact(mismatch_id, &mismatch_fact, &fact_base);
+        assert_eq!(mismatch_acts.len(), 0, "5 should not match base+1");
+
+        let match_id = fact_base.assert_ordered(target_rel, smallvec![Value::Integer(6)]);
+        let match_fact = fact_base.get(match_id).unwrap().fact.clone();
+        let match_acts = rete.assert_fact(match_id, &match_fact, &fact_base);
+        assert_eq!(match_acts.len(), 1, "6 should match base+1");
+    }
+
+    #[test]
+    fn join_test_lex_less_than_compares_strings() {
+        use crate::binding::VarId;
+        use crate::encoding::StringEncoding;
+
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut symbol_table = SymbolTable::new();
+
+        let anchor_rel = make_symbol(&mut symbol_table, "anchor");
+        let candidate_rel = make_symbol(&mut symbol_table, "candidate");
+
+        let anchor_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(anchor_rel));
+        let anchor_alpha = rete.alpha.create_memory(anchor_entry);
+        let candidate_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(candidate_rel));
+        let candidate_alpha = rete.alpha.create_memory(candidate_entry);
+
+        let root = rete.beta.root_id();
+        let var_a = VarId(0);
+        let (join1, _) = rete.beta.create_join_node(
+            root,
+            anchor_alpha,
+            vec![],
+            vec![(SlotIndex::Ordered(0), var_a)],
+        );
+        let (join2, _) = rete.beta.create_join_node(
+            join1,
+            candidate_alpha,
+            vec![JoinTest {
+                alpha_slot: SlotIndex::Ordered(0),
+                beta_var: var_a,
+                test_type: JoinTestType::LexLessThan,
+            }],
+            vec![],
+        );
+        let _terminal = rete
+            .beta
+            .create_terminal_node(join2, RuleId(302), Salience::DEFAULT);
+
+        let banana = FerricString::new("banana", StringEncoding::Ascii).unwrap();
+        let apple = FerricString::new("apple", StringEncoding::Ascii).unwrap();
+        let carrot = FerricString::new("carrot", StringEncoding::Ascii).unwrap();
+
+        let anchor_id = fact_base.assert_ordered(anchor_rel, smallvec![Value::String(banana)]);
+        let anchor_fact = fact_base.get(anchor_id).unwrap().fact.clone();
+        rete.assert_fact(anchor_id, &anchor_fact, &fact_base);
+
+        let lower_id = fact_base.assert_ordered(candidate_rel, smallvec![Value::String(apple)]);
+        let lower_fact = fact_base.get(lower_id).unwrap().fact.clone();
+        let lower_acts = rete.assert_fact(lower_id, &lower_fact, &fact_base);
+        assert_eq!(lower_acts.len(), 1, "apple < banana should pass lex join");
+
+        let higher_id = fact_base.assert_ordered(candidate_rel, smallvec![Value::String(carrot)]);
+        let higher_fact = fact_base.get(higher_id).unwrap().fact.clone();
+        let higher_acts = rete.assert_fact(higher_id, &higher_fact, &fact_base);
+        assert_eq!(higher_acts.len(), 0, "carrot < banana should fail lex join");
     }
 
     #[test]
@@ -3139,5 +3458,65 @@ mod tests {
             "all descendant tokens should be removed"
         );
         rete.debug_assert_consistency();
+    }
+
+    #[test]
+    fn disable_rule_removes_existing_activations_and_blocks_new_ones() {
+        use crate::compiler::{CompilableCondition, CompilablePattern, ReteCompiler};
+
+        let mut symbol_table = SymbolTable::new();
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+
+        let relation = symbol_table
+            .intern_symbol("go", crate::encoding::StringEncoding::Utf8)
+            .expect("symbol intern");
+        let var_x = symbol_table
+            .intern_symbol("?x", crate::encoding::StringEncoding::Utf8)
+            .expect("var symbol");
+
+        let pattern = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+            negated_variable_slots: Vec::new(),
+            negated: false,
+            exists: false,
+        };
+        let rule_id = compiler.allocate_rule_id();
+        compiler
+            .compile_conditions(
+                &mut rete,
+                rule_id,
+                Salience::DEFAULT,
+                &[CompilableCondition::Pattern(pattern)],
+            )
+            .expect("compile");
+
+        let fact_id = fact_base.assert_ordered(relation, smallvec![Value::Integer(1)]);
+        let fact = fact_base.get(fact_id).unwrap().fact.clone();
+        rete.assert_fact(fact_id, &fact, &fact_base);
+        assert_eq!(
+            rete.agenda.len(),
+            1,
+            "activation should exist before disable"
+        );
+
+        rete.disable_rule(rule_id);
+        assert_eq!(
+            rete.agenda.len(),
+            0,
+            "existing activation should be removed"
+        );
+
+        let fact_id2 = fact_base.assert_ordered(relation, smallvec![Value::Integer(2)]);
+        let fact2 = fact_base.get(fact_id2).unwrap().fact.clone();
+        rete.assert_fact(fact_id2, &fact2, &fact_base);
+        assert_eq!(
+            rete.agenda.len(),
+            0,
+            "disabled rule should not create new activations"
+        );
     }
 }

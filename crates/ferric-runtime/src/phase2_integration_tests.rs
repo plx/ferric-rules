@@ -769,6 +769,17 @@ mod tests {
     }
 
     #[test]
+    fn multi_pattern_exists_with_not_passes_validation() {
+        let mut engine = new_utf8_engine();
+        let result = engine.load_str("(defrule r (a) (exists (b) (not (c))) => )");
+
+        assert!(
+            result.is_ok(),
+            "multi-pattern exists containing not should pass validation/desugaring: {result:?}"
+        );
+    }
+
+    #[test]
     fn valid_not_exists_passes() {
         let mut engine = new_utf8_engine();
         let result = engine.load_str("(defrule r (a) (not (exists (b))) => )");

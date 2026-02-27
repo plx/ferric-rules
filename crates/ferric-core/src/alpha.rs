@@ -3,6 +3,7 @@
 //! The alpha network is the first stage of the Rete algorithm. It discriminates
 //! facts by type (template or ordered relation) and applies constant tests.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use smallvec::SmallVec;
@@ -46,6 +47,30 @@ pub enum ConstantTestType {
     NotEqual(AtomKey),
     /// Disjunctive equality: slot value must equal any one of the keys.
     EqualAny(Vec<AtomKey>),
+    /// Numeric greater-than comparison against an atom key.
+    GreaterThan(AtomKey),
+    /// Numeric less-than comparison against an atom key.
+    LessThan(AtomKey),
+    /// Numeric greater-than-or-equal comparison against an atom key.
+    GreaterOrEqual(AtomKey),
+    /// Numeric less-than-or-equal comparison against an atom key.
+    LessOrEqual(AtomKey),
+    /// Slot equality: current slot value must equal another slot value.
+    EqualSlot(SlotIndex),
+    /// Slot inequality: current slot value must not equal another slot value.
+    NotEqualSlot(SlotIndex),
+    /// Numeric slot equality against another slot plus integer offset.
+    EqualSlotOffset(SlotIndex, i64),
+    /// Numeric slot inequality against another slot plus integer offset.
+    NotEqualSlotOffset(SlotIndex, i64),
+    /// Numeric slot greater-than against another slot plus integer offset.
+    GreaterThanSlotOffset(SlotIndex, i64),
+    /// Numeric slot less-than against another slot plus integer offset.
+    LessThanSlotOffset(SlotIndex, i64),
+    /// Numeric slot greater-or-equal against another slot plus integer offset.
+    GreaterOrEqualSlotOffset(SlotIndex, i64),
+    /// Numeric slot less-or-equal against another slot plus integer offset.
+    LessOrEqualSlotOffset(SlotIndex, i64),
 }
 
 /// An alpha network node.
@@ -565,14 +590,155 @@ fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
         return false;
     };
 
-    let Some(slot_key) = AtomKey::from_value(slot_value) else {
-        return false;
-    };
-
     match &test.test_type {
-        ConstantTestType::Equal(test_key) => slot_key == *test_key,
-        ConstantTestType::NotEqual(test_key) => slot_key != *test_key,
-        ConstantTestType::EqualAny(keys) => keys.contains(&slot_key),
+        ConstantTestType::Equal(test_key) => {
+            let Some(slot_key) = AtomKey::from_value(slot_value) else {
+                return false;
+            };
+            slot_key == *test_key
+        }
+        ConstantTestType::NotEqual(test_key) => {
+            let Some(slot_key) = AtomKey::from_value(slot_value) else {
+                return false;
+            };
+            slot_key != *test_key
+        }
+        ConstantTestType::EqualAny(keys) => {
+            let Some(slot_key) = AtomKey::from_value(slot_value) else {
+                return false;
+            };
+            keys.contains(&slot_key)
+        }
+        ConstantTestType::GreaterThan(test_key) => {
+            let rhs = test_key.to_value();
+            matches!(
+                compare_numeric_values(slot_value, &rhs),
+                Some(Ordering::Greater)
+            )
+        }
+        ConstantTestType::LessThan(test_key) => {
+            let rhs = test_key.to_value();
+            matches!(
+                compare_numeric_values(slot_value, &rhs),
+                Some(Ordering::Less)
+            )
+        }
+        ConstantTestType::GreaterOrEqual(test_key) => {
+            let rhs = test_key.to_value();
+            matches!(
+                compare_numeric_values(slot_value, &rhs),
+                Some(Ordering::Greater) | Some(Ordering::Equal)
+            )
+        }
+        ConstantTestType::LessOrEqual(test_key) => {
+            let rhs = test_key.to_value();
+            matches!(
+                compare_numeric_values(slot_value, &rhs),
+                Some(Ordering::Less) | Some(Ordering::Equal)
+            )
+        }
+        ConstantTestType::EqualSlot(other_slot) => {
+            let Some(other_value) = get_slot_value(fact, *other_slot) else {
+                return false;
+            };
+            slot_value.structural_eq(other_value)
+        }
+        ConstantTestType::NotEqualSlot(other_slot) => {
+            let Some(other_value) = get_slot_value(fact, *other_slot) else {
+                return false;
+            };
+            !slot_value.structural_eq(other_value)
+        }
+        ConstantTestType::EqualSlotOffset(other_slot, offset) => {
+            let Some(other_value) = get_slot_value(fact, *other_slot) else {
+                return false;
+            };
+            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
+                return false;
+            };
+            matches!(
+                compare_numeric_values(slot_value, &adjusted_other),
+                Some(Ordering::Equal)
+            )
+        }
+        ConstantTestType::NotEqualSlotOffset(other_slot, offset) => {
+            let Some(other_value) = get_slot_value(fact, *other_slot) else {
+                return false;
+            };
+            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
+                return false;
+            };
+            !matches!(
+                compare_numeric_values(slot_value, &adjusted_other),
+                Some(Ordering::Equal)
+            )
+        }
+        ConstantTestType::GreaterThanSlotOffset(other_slot, offset) => {
+            let Some(other_value) = get_slot_value(fact, *other_slot) else {
+                return false;
+            };
+            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
+                return false;
+            };
+            matches!(
+                compare_numeric_values(slot_value, &adjusted_other),
+                Some(Ordering::Greater)
+            )
+        }
+        ConstantTestType::LessThanSlotOffset(other_slot, offset) => {
+            let Some(other_value) = get_slot_value(fact, *other_slot) else {
+                return false;
+            };
+            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
+                return false;
+            };
+            matches!(
+                compare_numeric_values(slot_value, &adjusted_other),
+                Some(Ordering::Less)
+            )
+        }
+        ConstantTestType::GreaterOrEqualSlotOffset(other_slot, offset) => {
+            let Some(other_value) = get_slot_value(fact, *other_slot) else {
+                return false;
+            };
+            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
+                return false;
+            };
+            matches!(
+                compare_numeric_values(slot_value, &adjusted_other),
+                Some(Ordering::Greater) | Some(Ordering::Equal)
+            )
+        }
+        ConstantTestType::LessOrEqualSlotOffset(other_slot, offset) => {
+            let Some(other_value) = get_slot_value(fact, *other_slot) else {
+                return false;
+            };
+            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
+                return false;
+            };
+            matches!(
+                compare_numeric_values(slot_value, &adjusted_other),
+                Some(Ordering::Less) | Some(Ordering::Equal)
+            )
+        }
+    }
+}
+
+fn add_integer_offset(value: &Value, offset: i64) -> Option<Value> {
+    match value {
+        Value::Integer(i) => i.checked_add(offset).map(Value::Integer),
+        Value::Float(f) => Some(Value::Float(*f + offset as f64)),
+        _ => None,
+    }
+}
+
+fn compare_numeric_values(lhs: &Value, rhs: &Value) -> Option<Ordering> {
+    match (lhs, rhs) {
+        (Value::Integer(a), Value::Integer(b)) => Some(a.cmp(b)),
+        (Value::Integer(a), Value::Float(b)) => (*a as f64).partial_cmp(b),
+        (Value::Float(a), Value::Integer(b)) => a.partial_cmp(&(*b as f64)),
+        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+        _ => None,
     }
 }
 
@@ -1102,6 +1268,115 @@ mod tests {
         };
 
         assert!(evaluate_test(&fact, &test));
+    }
+
+    #[test]
+    fn constant_test_equal_slot_passes() {
+        let mut table = SymbolTable::new();
+        let rel = table.intern_symbol("pair", StringEncoding::Ascii).unwrap();
+        let ordered = OrderedFact {
+            relation: rel,
+            fields: smallvec![Value::Integer(7), Value::Integer(7)],
+        };
+        let fact = Fact::Ordered(ordered);
+
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(1),
+            test_type: ConstantTestType::EqualSlot(SlotIndex::Ordered(0)),
+        };
+
+        assert!(evaluate_test(&fact, &test));
+    }
+
+    #[test]
+    fn constant_test_not_equal_slot_passes() {
+        let mut table = SymbolTable::new();
+        let rel = table.intern_symbol("pair", StringEncoding::Ascii).unwrap();
+        let ordered = OrderedFact {
+            relation: rel,
+            fields: smallvec![Value::Integer(7), Value::Integer(8)],
+        };
+        let fact = Fact::Ordered(ordered);
+
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(1),
+            test_type: ConstantTestType::NotEqualSlot(SlotIndex::Ordered(0)),
+        };
+
+        assert!(evaluate_test(&fact, &test));
+    }
+
+    #[test]
+    fn constant_test_equal_slot_offset_passes() {
+        let mut table = SymbolTable::new();
+        let rel = table.intern_symbol("pair", StringEncoding::Ascii).unwrap();
+        let ordered = OrderedFact {
+            relation: rel,
+            fields: smallvec![Value::Integer(7), Value::Integer(8)],
+        };
+        let fact = Fact::Ordered(ordered);
+
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(1),
+            test_type: ConstantTestType::EqualSlotOffset(SlotIndex::Ordered(0), 1),
+        };
+
+        assert!(evaluate_test(&fact, &test));
+    }
+
+    #[test]
+    fn constant_test_greater_than_slot_offset_passes() {
+        let mut table = SymbolTable::new();
+        let rel = table.intern_symbol("pair", StringEncoding::Ascii).unwrap();
+        let ordered = OrderedFact {
+            relation: rel,
+            fields: smallvec![Value::Integer(10), Value::Integer(8)],
+        };
+        let fact = Fact::Ordered(ordered);
+
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::GreaterThanSlotOffset(SlotIndex::Ordered(1), 1),
+        };
+
+        assert!(evaluate_test(&fact, &test));
+    }
+
+    #[test]
+    fn constant_test_greater_than_numeric_passes() {
+        let mut table = SymbolTable::new();
+        let rel = table.intern_symbol("test", StringEncoding::Ascii).unwrap();
+        let ordered = OrderedFact {
+            relation: rel,
+            fields: smallvec![Value::Integer(7)],
+        };
+        let fact = Fact::Ordered(ordered);
+
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::GreaterThan(AtomKey::Integer(5)),
+        };
+
+        assert!(evaluate_test(&fact, &test));
+    }
+
+    #[test]
+    fn constant_test_less_or_equal_numeric_fails_on_non_numeric() {
+        let mut table = SymbolTable::new();
+        let rel = table.intern_symbol("test", StringEncoding::Ascii).unwrap();
+        let sym = table.intern_symbol("alpha", StringEncoding::Ascii).unwrap();
+        let ordered = OrderedFact {
+            relation: rel,
+            fields: smallvec![Value::Symbol(sym)],
+        };
+        let fact = Fact::Ordered(ordered);
+
+        let test = ConstantTest {
+            slot: SlotIndex::Ordered(0),
+            test_type: ConstantTestType::LessOrEqual(AtomKey::Integer(5)),
+        };
+
+        assert!(!evaluate_test(&fact, &test));
     }
 }
 

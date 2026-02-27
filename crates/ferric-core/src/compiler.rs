@@ -33,9 +33,9 @@ pub struct CompilablePattern {
     /// The Symbol is the interned variable name (e.g., intern("x") for ?x)
     pub variable_slots: Vec<(SlotIndex, Symbol)>,
     /// Negated variable bindings: (`slot_index`, `variable_symbol`)
-    /// These generate `NotEqual` join tests instead of `Equal` join tests.
-    /// Used for constraints like `~?x` (field must NOT equal variable `?x`).
-    pub negated_variable_slots: Vec<(SlotIndex, Symbol)>,
+    /// These generate non-binding join tests against already-bound variables.
+    /// Used for constraints like `~?x` and lowered predicate comparisons.
+    pub negated_variable_slots: Vec<(SlotIndex, Symbol, JoinTestType)>,
     /// If true, this pattern is a negated conditional element (not CE).
     /// Negated patterns create negative nodes instead of join nodes.
     pub negated: bool,
@@ -342,16 +342,8 @@ impl ReteCompiler {
             Self::push_unsupported_structure_error(errors, format!("{context} cannot be exists"));
         }
 
-        let mut slot_bindings = HashSet::new();
         let mut variable_bindings: HashMap<Symbol, SlotIndex> = HashMap::new();
         for &(slot, var_sym) in &pattern.variable_slots {
-            if !slot_bindings.insert(slot) {
-                Self::push_unsupported_structure_error(
-                    errors,
-                    format!("{context} binds slot {slot:?} more than once"),
-                );
-            }
-
             if let Some(previous_slot) = variable_bindings.insert(var_sym, slot) {
                 if previous_slot != slot {
                     Self::push_unsupported_structure_error(
@@ -464,9 +456,8 @@ impl ReteCompiler {
             }
         }
 
-        // Negated variable slots produce NotEqual join tests.
-        // The variable must already be bound (negating an unbound variable is meaningless).
-        for &(slot, var_sym) in &pattern.negated_variable_slots {
+        // Non-binding variable comparisons produce join tests.
+        for &(slot, var_sym, test_type) in &pattern.negated_variable_slots {
             let var_id = var_map
                 .get_or_create(var_sym)
                 .map_err(|_| CompileError::VarMapOverflow)?;
@@ -474,7 +465,7 @@ impl ReteCompiler {
             join_tests.push(JoinTest {
                 alpha_slot: slot,
                 beta_var: var_id,
-                test_type: JoinTestType::NotEqual,
+                test_type,
             });
         }
 

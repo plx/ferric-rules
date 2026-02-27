@@ -272,6 +272,31 @@ impl Agenda {
         removed
     }
 
+    /// Remove all activations for a given rule.
+    ///
+    /// Returns the removed activations.
+    pub fn remove_activations_for_rule(&mut self, rule_id: RuleId) -> Vec<Activation> {
+        let act_ids: Vec<ActivationId> = self
+            .activations
+            .iter()
+            .filter_map(|(id, activation)| (activation.rule == rule_id).then_some(id))
+            .collect();
+
+        let mut removed = Vec::with_capacity(act_ids.len());
+        for id in act_ids {
+            if let Some(key) = self.id_to_key.remove(&id) {
+                self.ordering.remove(&key);
+            }
+
+            if let Some(activation) = self.activations.remove(id) {
+                remove_from_token_index(&mut self.token_to_activations, activation.token, id);
+                removed.push(activation);
+            }
+        }
+
+        removed
+    }
+
     /// Return the number of activations in the agenda.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -1422,5 +1447,50 @@ mod tests {
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0].id, id1);
         assert_eq!(agenda.len(), 1);
+    }
+
+    #[test]
+    fn remove_activations_for_rule_removes_all_matching_entries() {
+        let mut agenda = Agenda::new();
+        let mut temp: SlotMap<TokenId, ()> = SlotMap::with_key();
+        let t1 = temp.insert(());
+        let t2 = temp.insert(());
+        let t3 = temp.insert(());
+
+        let id1 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(7),
+            token: t1,
+            salience: Salience::DEFAULT,
+            timestamp: Timestamp::new(10),
+            activation_seq: ActivationSeq::ZERO,
+            recency: SmallVec::new(),
+        });
+        let _id2 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(8),
+            token: t2,
+            salience: Salience::DEFAULT,
+            timestamp: Timestamp::new(20),
+            activation_seq: ActivationSeq::ZERO,
+            recency: SmallVec::new(),
+        });
+        let id3 = agenda.add(Activation {
+            id: ActivationId::default(),
+            rule: RuleId(7),
+            token: t3,
+            salience: Salience::DEFAULT,
+            timestamp: Timestamp::new(30),
+            activation_seq: ActivationSeq::ZERO,
+            recency: SmallVec::new(),
+        });
+
+        let removed = agenda.remove_activations_for_rule(RuleId(7));
+        let removed_ids: std::collections::HashSet<_> = removed.iter().map(|a| a.id).collect();
+        assert_eq!(removed.len(), 2);
+        assert!(removed_ids.contains(&id1));
+        assert!(removed_ids.contains(&id3));
+        assert_eq!(agenda.len(), 1);
+        assert!(agenda.iter_activations().all(|a| a.rule == RuleId(8)));
     }
 }

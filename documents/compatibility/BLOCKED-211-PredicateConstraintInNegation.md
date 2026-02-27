@@ -24,29 +24,33 @@ Representative examples:
 
 ## Incompatible Ferric Behavior
 Ferric still diverges in key areas:
-- Some predicate-style constraints are accepted syntactically but not preserved semantically as true predicate checks.
-- Forward-reference/same-pattern variable reuse cases can fail with `pattern validation failed`.
-- Same-variable reuse across multiple slots/fields in a single pattern is rejected by core compile-time structure checks.
+- Predicate/return-value constraints are preserved and enforced for positive ordered/template patterns, and negated support now covers simple comparison/literal-variable shapes, linear integer arithmetic around a single variable (including slot-side and nested `(+/- ...)` forms), and selected `str-compare` comparison shapes, but full negated expression support is still missing.
+- Full CLIPS behavior for predicate constraints inside negation/NCC contexts is still missing.
+- Diagnostics still differ from CLIPS warning-vs-error behavior in several files.
 
-Observed current behavior (2026-02-25):
-- Minimal `:(or (= ...) (= ...))` chain can load.
-- `?f <- (x ?y&?x)` fails.
-- `(foo (x ?x) (y ?x))` fails.
+Observed current behavior (2026-02-26, updated after disjunctive expansion and broader linear negated lowering):
+- `?f <- (x ?y&?x)` now compiles.
+- `(foo (x ?x) (y ?x))` now compiles and enforces same-slot equality semantics.
+- `:(...)` and `=(...)` constraints are preserved in Stage 2 AST and enforced for positive patterns.
+- Simple negated predicate comparisons (for example `?x&:(> ?x ?min)`) are now lowered to join/alpha tests and no longer require unsupported diagnostics.
+- Simple negated return-value constraints using literal/variable expressions (for example `=?x`) are now lowered and enforced.
+- Negated predicate/return constraints using linear variable-offset expressions (for example `:(> ?x (+ ?min 1))`, `=(+ ?x 1)`) are now lowered to offset-aware join/alpha tests.
+- Negated predicate/return constraints continue to lower when the current slot variable is itself wrapped in linear integer arithmetic (for example `:(> (+ ?x 1) ?min)`, `=(+ (+ ?x 1) 1)`), including nested `+`/`-` forms that normalize to a single-variable affine form.
+- Negated predicate constraints using `str-compare`-vs-zero forms (for example `:(> (str-compare ?a ?b) 0)`) are now lowered to lexeme join tests (string comparisons).
+- Complex negated predicate/return forms tied to a slot-local variable (for example nested non-linear function expressions such as `?x&:(> (* ?x ?x) (* ?min ?min))` or `?x&=(* ?x ?x)`) now compile via a runtime fallback check.
+- Negated predicate/return forms that do not involve a slot-local variable still produce explicit compile-time unsupported diagnostics (for example CEERR-style unbound variable expressions).
 
 ## Root Cause For Ferric Divergence
 The divergence is split across parser/runtime boundaries:
 
-1. Parser representation is lossy for predicate/return-value constraints.
-- In `crates/ferric-parser/src/stage2.rs`, unary `:` and `=` forms are currently consumed and reduced to wildcard placeholders in constraint parsing, rather than represented as first-class predicate constraints.
-- This means Ferric often accepts syntax but cannot enforce CLIPS-equivalent semantics at match time.
+1. Negation path still lacks full executable predicate constraint support.
+- In `crates/ferric-runtime/src/loader.rs`, binary comparisons (including normalized single-variable linear integer arithmetic and selected `str-compare`-vs-zero shapes) are lowered to core join/alpha tests, and complex slot-local expressions now have a runtime fallback evaluator in action-time test conditions. Full parity is still missing for broader forms (for example expressions without a slot-local variable anchor and template-side equivalents).
 
-2. Core compiler forbids intra-pattern variable reuse.
-- In `crates/ferric-core/src/compiler.rs`, `validate_pattern_structure()` rejects variable symbol reuse across different slots in one pattern (`intra-pattern equality is not supported at core compile stage`).
-- The current `CompilablePattern` model and compilation flow are oriented around cross-pattern beta joins, not same-pattern relational checks.
+2. Or-constraint/predicate combinations are still only partially aligned.
+- Slot-level/top-level `Constraint::Or` disjunctions are now distributed into rule variants via Cartesian expansion, but full CLIPS backtracking parity for all mixed alternatives is not yet guaranteed.
 
-3. Constraint execution model lacks a dedicated path for rich per-pattern predicate evaluation.
-- Current translation and rete compile phases primarily support literals, simple variable bindings, and a limited set of connected constraints.
-- Complex per-slot boolean predicates need explicit runtime/match-time representation and execution.
+3. Warning-vs-error compatibility is incomplete.
+- Some constructs that CLIPS compiles with warnings are still hard errors in Ferric; this document remains blocked until diagnostics policy is aligned.
 
 ## High-Level Sketch Of Required Changes
 To align with CLIPS behavior, Ferric needs all of the following, not just one local patch:

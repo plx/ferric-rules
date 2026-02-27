@@ -91,6 +91,10 @@ pub enum Constraint {
     Wildcard(Span),
     /// Multi-field wildcard: $? (matches zero or more values)
     MultiWildcard(Span),
+    /// Predicate constraint: :(<expr>)
+    Predicate(SExpr, Span),
+    /// Return-value constraint: =(<expr>)
+    ReturnValue(SExpr, Span),
     /// Negation: ~<constraint>
     Not(Box<Constraint>, Span),
     /// Conjunction: constraint & constraint
@@ -130,6 +134,8 @@ pub struct FunctionCall {
     pub args: Vec<ActionExpr>,
     pub span: Span,
 }
+
+const FACT_SLOT_REF_FN: &str = "__fact_slot_ref";
 
 #[derive(Clone, Debug)]
 pub enum ActionExpr {
@@ -1808,9 +1814,8 @@ fn parse_unary_expr(exprs: &[SExpr]) -> Result<(Constraint, usize), InterpretErr
         ));
     }
 
-    // `:` and `=` introduce predicate/return-value constraint forms (item 005).
-    // Consume the connective plus its argument expression and produce a wildcard
-    // placeholder so that constructs using these forms are accepted without error.
+    // `:` and `=` introduce predicate/return-value constraint forms.
+    // Consume the connective and one expression as a first-class constraint node.
     if is_connective(&exprs[0], Connective::Colon) || is_connective(&exprs[0], Connective::Equals) {
         let conn_span = exprs[0].span();
         if exprs.len() < 2 {
@@ -1819,9 +1824,11 @@ fn parse_unary_expr(exprs: &[SExpr]) -> Result<(Constraint, usize), InterpretErr
                 conn_span,
             ));
         }
-        // Consume the connective and one more S-expression (the predicate/expression).
         let combined_span = conn_span.merge(exprs[1].span());
-        return Ok((Constraint::Wildcard(combined_span), 2));
+        if is_connective(&exprs[0], Connective::Colon) {
+            return Ok((Constraint::Predicate(exprs[1].clone(), combined_span), 2));
+        }
+        return Ok((Constraint::ReturnValue(exprs[1].clone(), combined_span), 2));
     }
 
     // Atom constraint — exactly one S-expression.
@@ -1843,6 +1850,8 @@ impl Constraint {
             | Self::MultiVariable(_, span)
             | Self::Wildcard(span)
             | Self::MultiWildcard(span)
+            | Self::Predicate(_, span)
+            | Self::ReturnValue(_, span)
             | Self::Not(_, span)
             | Self::And(_, span)
             | Self::Or(_, span) => *span,
@@ -2103,8 +2112,15 @@ fn interpret_function_call(expr: &SExpr) -> Result<FunctionCall, InterpretError>
     };
 
     let mut args = Vec::new();
-    for arg_expr in &list[1..] {
-        args.push(interpret_action_expr(arg_expr)?);
+    let mut i = 1usize;
+    while i < list.len() {
+        if let Some((slot_ref, consumed)) = try_interpret_fact_slot_ref_argument(&list[i..]) {
+            args.push(slot_ref);
+            i += consumed;
+            continue;
+        }
+        args.push(interpret_action_expr(&list[i])?);
+        i += 1;
     }
 
     Ok(FunctionCall {
@@ -2112,6 +2128,39 @@ fn interpret_function_call(expr: &SExpr) -> Result<FunctionCall, InterpretError>
         args,
         span: expr.span(),
     })
+}
+
+fn try_interpret_fact_slot_ref_argument(exprs: &[SExpr]) -> Option<(ActionExpr, usize)> {
+    if exprs.len() < 3 {
+        return None;
+    }
+
+    let Some(Atom::SingleVar(var_name)) = exprs[0].as_atom() else {
+        return None;
+    };
+    let Some(Atom::Connective(Connective::Colon)) = exprs[1].as_atom() else {
+        return None;
+    };
+    let Some(slot_name) = exprs[2].as_symbol() else {
+        return None;
+    };
+
+    let var_span = exprs[0].span();
+    let slot_span = exprs[2].span();
+    let call_span = var_span.merge(slot_span);
+
+    let slot_ref = ActionExpr::FunctionCall(FunctionCall {
+        name: FACT_SLOT_REF_FN.to_string(),
+        args: vec![
+            ActionExpr::Variable(var_name.to_string(), var_span),
+            ActionExpr::Literal(LiteralValue {
+                value: LiteralKind::Symbol(slot_name.to_string()),
+                span: slot_span,
+            }),
+        ],
+        span: call_span,
+    });
+    Some((slot_ref, 3))
 }
 
 /// Interpret a CLIPS `(if <cond> then <action>* [else <action>*])` form.
@@ -3639,6 +3688,33 @@ mod tests {
     }
 
     #[test]
+    fn interpret_action_fact_slot_access_compacts_var_colon_slot() {
+        let parsed = parse_sexprs(
+            "(defrule test ?p<-(point) => (bind ?x ?p:x) (printout t (+ ?p:x 1)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions.len(), 2);
+
+        let bind_call = &rule.actions[0].call;
+        assert_eq!(bind_call.name, "bind");
+        assert_eq!(bind_call.args.len(), 2);
+        assert!(matches!(
+            &bind_call.args[1],
+            ActionExpr::FunctionCall(FunctionCall { name, args, .. })
+                if name == FACT_SLOT_REF_FN
+                    && args.len() == 2
+                    && matches!(&args[0], ActionExpr::Variable(v, _) if v == "p")
+        ));
+    }
+
+    #[test]
     fn interpret_deffacts_ordered() {
         let parsed = parse_sexprs(
             "(deffacts startup (person Alice 30) (person Bob 25))",
@@ -4640,6 +4716,50 @@ mod tests {
         assert_eq!(terms.len(), 2);
         assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "c"));
         assert!(matches!(&terms[1], Constraint::Not(_, _)));
+    }
+
+    #[test]
+    fn interpret_ordered_predicate_constraint_preserved() {
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x&:(> ?x 3)) => (printout t ok))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        let Pattern::Ordered(op) = &rule.patterns[0] else {
+            panic!("expected ordered pattern");
+        };
+        let Constraint::And(terms, _) = &op.constraints[0] else {
+            panic!("expected And constraint, got {:?}", op.constraints[0]);
+        };
+        assert_eq!(terms.len(), 2);
+        assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "x"));
+        assert!(matches!(
+            &terms[1],
+            Constraint::Predicate(SExpr::List(items, _), _) if items.len() == 3
+        ));
+    }
+
+    #[test]
+    fn interpret_ordered_return_value_constraint_preserved() {
+        let parsed = parse_sexprs("(defrule test (data =(+ 1 2)) => (printout t ok))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        let Pattern::Ordered(op) = &rule.patterns[0] else {
+            panic!("expected ordered pattern");
+        };
+        assert!(matches!(
+            &op.constraints[0],
+            Constraint::ReturnValue(SExpr::List(items, _), _) if items.len() == 3
+        ));
     }
 
     #[test]

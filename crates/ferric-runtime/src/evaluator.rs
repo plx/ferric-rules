@@ -2009,18 +2009,37 @@ pub(crate) fn is_builtin_callable(name: &str) -> bool {
             | "float"
             | "str-cat"
             | "sym-cat"
+            | "gensym"
+            | "gensym*"
+            | "setgen"
+            | "set-fact-duplication"
+            | "refresh-agenda"
+            | "watch"
+            | "unwatch"
             | "str-length"
             | "sub-string"
             | "create$"
+            | "length"
             | "length$"
+            | "subseq$"
+            | "nth"
+            | "implode$"
+            | "member"
             | "nth$"
             | "member$"
             | "subsetp"
+            | "printout"
             | "format"
             | "read"
             | "readline"
             | "get-focus"
             | "get-focus-stack"
+            | "close"
+            | "return"
+            | "load"
+            | "undefrule"
+            | "ppdefrule"
+            | "rules"
             | "bind"
     )
 }
@@ -2078,20 +2097,39 @@ fn dispatch_builtin(
         // String/Symbol
         "str-cat" => builtin_str_cat(ctx, args, span_ref),
         "sym-cat" => builtin_sym_cat(ctx, args, span_ref),
+        "gensym" => builtin_gensym(ctx, args, span_ref),
+        "gensym*" => builtin_gensym_star(ctx, args, span_ref),
+        "setgen" => builtin_setgen(ctx, args, span_ref),
+        "set-fact-duplication" => builtin_set_fact_duplication(ctx, args, span_ref),
+        "refresh-agenda" => builtin_refresh_agenda(ctx, args, span_ref),
+        "watch" => builtin_watch(ctx, args, span_ref),
+        "unwatch" => builtin_unwatch(ctx, args, span_ref),
         "str-length" => builtin_str_length(ctx, args, span_ref),
         "sub-string" => builtin_sub_string(ctx, args, span_ref),
 
         // Multifield
         "create$" => builtin_create_mf(ctx, args, span_ref),
+        "length" => builtin_length(ctx, args, span_ref),
         "length$" => builtin_length_mf(ctx, args, span_ref),
+        "subseq$" => builtin_subseq_mf(ctx, args, span_ref),
+        "nth" => builtin_nth(ctx, args, span_ref),
+        "implode$" => builtin_implode_mf(ctx, args, span_ref),
+        "member" => builtin_member(ctx, args, span_ref),
         "nth$" => builtin_nth_mf(ctx, args, span_ref),
         "member$" => builtin_member_mf(ctx, args, span_ref),
         "subsetp" => builtin_subsetp(ctx, args, span_ref),
 
         // I/O and environment
+        "printout" => builtin_printout(ctx, args, span_ref),
         "format" => builtin_format(ctx, args, span_ref),
         "read" => builtin_read(ctx, args, span_ref),
         "readline" => builtin_readline(ctx, args, span_ref),
+        "close" => builtin_close(ctx, args, span_ref),
+        "return" => builtin_return(ctx, args, span_ref),
+        "load" => builtin_load(ctx, args, span_ref),
+        "undefrule" => builtin_undefrule(ctx, args, span_ref),
+        "ppdefrule" => builtin_ppdefrule(ctx, args, span_ref),
+        "rules" => builtin_rules(ctx, args, span_ref),
 
         // Agenda/focus query
         "get-focus" => builtin_get_focus(ctx, args, span_ref),
@@ -3029,6 +3067,123 @@ fn builtin_sym_cat(
     Ok(Value::Symbol(sym))
 }
 
+/// `gensym` — generate a unique symbol name using the `gen` prefix.
+fn builtin_gensym(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("gensym", args, 0, span)?;
+    let suffix = ctx.globals.next_gensym_counter();
+    let symbol_name = format!("gen{suffix}");
+    let sym = ctx
+        .symbol_table
+        .intern_symbol(&symbol_name, ctx.config.string_encoding)
+        .map_err(|e| EvalError::TypeError {
+            function: "gensym".to_string(),
+            expected: "encodable symbol name".to_string(),
+            actual: format!("{e}"),
+            span: span.cloned(),
+        })?;
+    Ok(Value::Symbol(sym))
+}
+
+/// `gensym*` — CLIPS-compatible alias of `gensym`.
+fn builtin_gensym_star(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("gensym*", args, 0, span)?;
+    let suffix = ctx.globals.next_gensym_counter();
+    let symbol_name = format!("gen{suffix}");
+    let sym = ctx
+        .symbol_table
+        .intern_symbol(&symbol_name, ctx.config.string_encoding)
+        .map_err(|e| EvalError::TypeError {
+            function: "gensym*".to_string(),
+            expected: "encodable symbol name".to_string(),
+            actual: format!("{e}"),
+            span: span.cloned(),
+        })?;
+    Ok(Value::Symbol(sym))
+}
+
+/// `setgen` — set the next numeric suffix used by `gensym`/`gensym*`.
+fn builtin_setgen(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("setgen", args, 1, span)?;
+    let value = eval(ctx, &args[0])?;
+    match value {
+        Value::Integer(n) if n >= 1 => {
+            ctx.globals.set_gensym_counter(n);
+            Ok(Value::Integer(n))
+        }
+        Value::Integer(_) => Err(EvalError::TypeError {
+            function: "setgen".to_string(),
+            expected: "positive INTEGER".to_string(),
+            actual: "non-positive integer".to_string(),
+            span: span.cloned(),
+        }),
+        _ => Err(EvalError::TypeError {
+            function: "setgen".to_string(),
+            expected: "INTEGER".to_string(),
+            actual: value_type_name(&value).to_string(),
+            span: span.cloned(),
+        }),
+    }
+}
+
+/// `set-fact-duplication` — accepted for compatibility; current runtime keeps duplicate assertions enabled.
+fn builtin_set_fact_duplication(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("set-fact-duplication", args, 1, span)?;
+    let value = eval(ctx, &args[0])?;
+    Ok(clips_bool(
+        is_truthy(&value, ctx.symbol_table),
+        ctx.symbol_table,
+        ctx.config.string_encoding,
+    ))
+}
+
+/// `refresh-agenda` — accepted for compatibility; current runtime performs agenda refresh continuously.
+fn builtin_refresh_agenda(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("refresh-agenda", args, 0, span)?;
+    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+}
+
+/// `watch` — debugging command accepted for compatibility.
+fn builtin_watch(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_min("watch", args, 1, span)?;
+    let _ = eval_args(ctx, args)?;
+    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+}
+
+/// `unwatch` — debugging command accepted for compatibility.
+fn builtin_unwatch(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_min("unwatch", args, 1, span)?;
+    let _ = eval_args(ctx, args)?;
+    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+}
+
 /// `str-length` — return the character length of a STRING.
 ///
 /// Takes 1 argument (must be STRING). Returns an INTEGER.
@@ -3178,6 +3333,30 @@ fn builtin_create_mf(
     Ok(Value::Multifield(Box::new(result)))
 }
 
+/// `length` — compatibility alias for multifield/string length.
+fn builtin_length(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("length", args, 1, span)?;
+    let val = eval(ctx, &args[0])?;
+    match &val {
+        #[allow(clippy::cast_possible_wrap)] // container length fits in i64 in practice
+        Value::Multifield(mf) => Ok(Value::Integer(mf.len() as i64)),
+        Value::String(s) => {
+            let char_len = i64::try_from(s.as_str().chars().count()).unwrap_or(i64::MAX);
+            Ok(Value::Integer(char_len))
+        }
+        _ => Err(EvalError::TypeError {
+            function: "length".to_string(),
+            expected: "MULTIFIELD or STRING".to_string(),
+            actual: generic_value_type_name(&val).to_string(),
+            span: span.cloned(),
+        }),
+    }
+}
+
 /// `length$` — return the length of a multifield.
 ///
 /// Takes 1 argument (must be MULTIFIELD). Returns an INTEGER.
@@ -3193,6 +3372,142 @@ fn builtin_length_mf(
         Value::Multifield(mf) => Ok(Value::Integer(mf.len() as i64)),
         _ => Err(EvalError::TypeError {
             function: "length$".to_string(),
+            expected: "MULTIFIELD".to_string(),
+            actual: generic_value_type_name(&val).to_string(),
+            span: span.cloned(),
+        }),
+    }
+}
+
+/// `subseq$` — extract a 1-indexed inclusive multifield slice.
+///
+/// `(subseq$ <multifield> <start> <end>)`.
+/// Out-of-range indices are clamped; an inverted range returns an empty multifield.
+fn builtin_subseq_mf(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("subseq$", args, 3, span)?;
+    let values = eval_args(ctx, args)?;
+
+    let Value::Multifield(mf) = &values[0] else {
+        return Err(EvalError::TypeError {
+            function: "subseq$".to_string(),
+            expected: "MULTIFIELD".to_string(),
+            actual: generic_value_type_name(&values[0]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let Value::Integer(start_raw) = values[1] else {
+        return Err(EvalError::TypeError {
+            function: "subseq$".to_string(),
+            expected: "INTEGER (start)".to_string(),
+            actual: generic_value_type_name(&values[1]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let Value::Integer(end_raw) = values[2] else {
+        return Err(EvalError::TypeError {
+            function: "subseq$".to_string(),
+            expected: "INTEGER (end)".to_string(),
+            actual: generic_value_type_name(&values[2]).to_string(),
+            span: span.cloned(),
+        });
+    };
+
+    #[allow(clippy::cast_possible_wrap)] // multifield length fits in i64 in practice
+    let len = mf.len() as i64;
+    if len == 0 {
+        return Ok(Value::Multifield(Box::default()));
+    }
+
+    let start = start_raw.max(1);
+    let end = end_raw.min(len);
+    if start > end {
+        return Ok(Value::Multifield(Box::default()));
+    }
+
+    let Some(start_idx) = usize::try_from(start - 1).ok() else {
+        return Ok(Value::Multifield(Box::default()));
+    };
+    let Some(end_idx_inclusive) = usize::try_from(end - 1).ok() else {
+        return Ok(Value::Multifield(Box::default()));
+    };
+
+    let mut out = ferric_core::value::Multifield::new();
+    for value in &mf[start_idx..=end_idx_inclusive] {
+        out.push(value.clone());
+    }
+    Ok(Value::Multifield(Box::new(out)))
+}
+
+/// `nth` — compatibility alias for `nth$`.
+fn builtin_nth(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("nth", args, 2, span)?;
+    let values = eval_args(ctx, args)?;
+    let Value::Integer(index) = &values[0] else {
+        return Err(EvalError::TypeError {
+            function: "nth".to_string(),
+            expected: "INTEGER (index)".to_string(),
+            actual: generic_value_type_name(&values[0]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let index = *index;
+    let Value::Multifield(mf) = &values[1] else {
+        return Err(EvalError::TypeError {
+            function: "nth".to_string(),
+            expected: "MULTIFIELD".to_string(),
+            actual: generic_value_type_name(&values[1]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let idx = usize::try_from(index - 1).ok().filter(|&i| i < mf.len());
+    let Some(idx) = idx else {
+        return Err(EvalError::TypeError {
+            function: "nth".to_string(),
+            expected: format!("index 1..{}", mf.len()),
+            actual: format!("index {index}"),
+            span: span.cloned(),
+        });
+    };
+    Ok(mf[idx].clone())
+}
+
+/// `implode$` — convert a multifield to a space-separated string.
+fn builtin_implode_mf(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("implode$", args, 1, span)?;
+    let val = eval(ctx, &args[0])?;
+    match &val {
+        Value::Multifield(mf) => {
+            let mut result = String::new();
+            for (idx, element) in mf.iter().enumerate() {
+                if idx > 0 {
+                    result.push(' ');
+                }
+                concat_values_to_string(ctx, std::slice::from_ref(element), &mut result);
+            }
+            let fs = FerricString::new(&result, ctx.config.string_encoding).map_err(|e| {
+                EvalError::TypeError {
+                    function: "implode$".to_string(),
+                    expected: "encodable string".to_string(),
+                    actual: format!("{e}"),
+                    span: span.cloned(),
+                }
+            })?;
+            Ok(Value::String(fs))
+        }
+        _ => Err(EvalError::TypeError {
+            function: "implode$".to_string(),
             expected: "MULTIFIELD".to_string(),
             actual: generic_value_type_name(&val).to_string(),
             span: span.cloned(),
@@ -3275,6 +3590,36 @@ fn builtin_member_mf(
     ))
 }
 
+/// `member` — compatibility alias for `member$`.
+fn builtin_member(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("member", args, 2, span)?;
+    let values = eval_args(ctx, args)?;
+    let needle = &values[0];
+    let Value::Multifield(mf) = &values[1] else {
+        return Err(EvalError::TypeError {
+            function: "member".to_string(),
+            expected: "MULTIFIELD".to_string(),
+            actual: generic_value_type_name(&values[1]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    for (i, elem) in mf.iter().enumerate() {
+        if needle.structural_eq(elem) {
+            #[allow(clippy::cast_possible_wrap)] // multifield index fits in i64
+            return Ok(Value::Integer((i + 1) as i64));
+        }
+    }
+    Ok(clips_bool(
+        false,
+        ctx.symbol_table,
+        ctx.config.string_encoding,
+    ))
+}
+
 /// `subsetp` — test if one multifield is a subset of another.
 ///
 /// `(subsetp <multifield1> <multifield2>)` — returns TRUE if every element of
@@ -3317,6 +3662,182 @@ fn builtin_subsetp(
 // ===========================================================================
 // I/O and environment builtins
 // ===========================================================================
+
+/// `close` — router close command accepted for compatibility.
+fn builtin_close(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("close", args, 1, span)?;
+    let _ = eval(ctx, &args[0])?;
+    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+}
+
+/// `return` — compatibility fallback returning its argument (or VOID).
+fn builtin_return(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    match args {
+        [] => Ok(Value::Void),
+        [expr] => eval(ctx, expr),
+        _ => Err(EvalError::ArityMismatch {
+            name: "return".to_string(),
+            expected: "0 or 1".to_string(),
+            actual: args.len(),
+            span: span.cloned(),
+        }),
+    }
+}
+
+/// `load` — runtime load command placeholder (currently non-mutating).
+fn builtin_load(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("load", args, 1, span)?;
+    let path_value = eval(ctx, &args[0])?;
+    match path_value {
+        Value::String(_) | Value::Symbol(_) => {
+            Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
+        }
+        _ => Err(EvalError::TypeError {
+            function: "load".to_string(),
+            expected: "STRING or SYMBOL".to_string(),
+            actual: generic_value_type_name(&path_value).to_string(),
+            span: span.cloned(),
+        }),
+    }
+}
+
+/// `undefrule` — runtime rule removal placeholder accepted for compatibility.
+fn builtin_undefrule(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_min("undefrule", args, 1, span)?;
+    let _ = eval_args(ctx, args)?;
+    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+}
+
+/// `ppdefrule` — pretty-print command placeholder accepted for compatibility.
+fn builtin_ppdefrule(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("ppdefrule", args, 1, span)?;
+    let _ = eval(ctx, &args[0])?;
+    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+}
+
+/// `rules` — command accepted in expression contexts; action path owns output.
+fn builtin_rules(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    if args.len() > 1 {
+        return Err(EvalError::ArityMismatch {
+            name: "rules".to_string(),
+            expected: "0 or 1".to_string(),
+            actual: args.len(),
+            span: span.cloned(),
+        });
+    }
+    if let Some(arg) = args.first() {
+        let _ = eval(ctx, arg)?;
+    }
+    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+}
+
+fn printout_channel_name(
+    value: &Value,
+    symbol_table: &SymbolTable,
+    span: Option<&SourceSpan>,
+) -> Result<String, EvalError> {
+    match value {
+        Value::Symbol(sym) => Ok(symbol_table
+            .resolve_symbol_str(*sym)
+            .unwrap_or("???")
+            .to_string()),
+        Value::String(s) => Ok(s.as_str().to_string()),
+        Value::Integer(n) => Ok(n.to_string()),
+        Value::Float(f) => Ok(f.to_string()),
+        other => Err(EvalError::TypeError {
+            function: "printout".to_string(),
+            expected: "SYMBOL, STRING, INTEGER, or FLOAT channel".to_string(),
+            actual: generic_value_type_name(other).to_string(),
+            span: span.cloned(),
+        }),
+    }
+}
+
+fn append_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut String) {
+    use std::fmt::Write as _;
+    match value {
+        Value::Integer(n) => {
+            let _ = write!(output, "{n}");
+        }
+        Value::Float(f) => {
+            if f.fract() == 0.0 {
+                let _ = write!(output, "{f:.1}");
+            } else {
+                let _ = write!(output, "{f}");
+            }
+        }
+        Value::Symbol(sym) => {
+            if let Some(name) = symbol_table.resolve_symbol_str(*sym) {
+                match name {
+                    "crlf" => output.push('\n'),
+                    "tab" => output.push('\t'),
+                    "ff" => output.push('\x0C'),
+                    other => output.push_str(other),
+                }
+            }
+        }
+        Value::String(s) => output.push_str(s.as_str()),
+        Value::Void => {}
+        Value::ExternalAddress(_) => output.push_str("<ExternalAddress>"),
+        Value::Multifield(mf) => {
+            output.push('(');
+            for (index, item) in mf.iter().enumerate() {
+                if index > 0 {
+                    output.push(' ');
+                }
+                append_printout_value(item, symbol_table, output);
+            }
+            output.push(')');
+        }
+    }
+}
+
+/// `printout` — evaluator-level output command for deffunction/method bodies.
+///
+/// Events are queued into `GlobalStore` and flushed by the action executor
+/// after each evaluation step that has access to an output router.
+fn builtin_printout(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_min("printout", args, 1, span)?;
+    let channel_value = eval(ctx, &args[0])?;
+    let channel = printout_channel_name(&channel_value, ctx.symbol_table, span)?;
+
+    let mut output = String::new();
+    for expr in &args[1..] {
+        let value = eval(ctx, expr)?;
+        append_printout_value(&value, ctx.symbol_table, &mut output);
+    }
+
+    ctx.globals.push_printout_event(channel, output);
+    Ok(Value::Void)
+}
 
 /// `format` — CLIPS-style printf formatting.
 ///
@@ -6096,6 +6617,231 @@ mod tests {
     }
 
     #[test]
+    fn gensym_generates_incrementing_symbols() {
+        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let mut ctx = EvalContext {
+            bindings: &bs,
+            var_map: &vm,
+            symbol_table: &mut st,
+            config: &cfg,
+            functions: &fenv,
+            globals: &mut gs,
+            generics: &generics,
+            call_depth: 0,
+            current_module: mr.main_module_id(),
+            module_registry: &mr,
+            function_modules: &em,
+            global_modules: &em,
+            generic_modules: &em,
+            method_chain: None,
+            input_buffer: None,
+        };
+
+        let first = eval(&mut ctx, &call("gensym", vec![])).unwrap();
+        let second = eval(&mut ctx, &call("gensym", vec![])).unwrap();
+        let third = eval(&mut ctx, &call("gensym*", vec![])).unwrap();
+
+        let Value::Symbol(first_sym) = first else {
+            panic!("expected SYMBOL from gensym")
+        };
+        let Value::Symbol(second_sym) = second else {
+            panic!("expected SYMBOL from gensym")
+        };
+        let Value::Symbol(third_sym) = third else {
+            panic!("expected SYMBOL from gensym*")
+        };
+
+        assert_eq!(ctx.symbol_table.resolve_symbol_str(first_sym), Some("gen1"));
+        assert_eq!(
+            ctx.symbol_table.resolve_symbol_str(second_sym),
+            Some("gen2")
+        );
+        assert_eq!(ctx.symbol_table.resolve_symbol_str(third_sym), Some("gen3"));
+    }
+
+    #[test]
+    fn setgen_sets_next_generated_symbol() {
+        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let mut ctx = EvalContext {
+            bindings: &bs,
+            var_map: &vm,
+            symbol_table: &mut st,
+            config: &cfg,
+            functions: &fenv,
+            globals: &mut gs,
+            generics: &generics,
+            call_depth: 0,
+            current_module: mr.main_module_id(),
+            module_registry: &mr,
+            function_modules: &em,
+            global_modules: &em,
+            generic_modules: &em,
+            method_chain: None,
+            input_buffer: None,
+        };
+
+        let set_result = eval(&mut ctx, &call("setgen", vec![int(10)])).unwrap();
+        assert!(set_result.structural_eq(&Value::Integer(10)));
+        let generated = eval(&mut ctx, &call("gensym", vec![])).unwrap();
+        let Value::Symbol(generated_sym) = generated else {
+            panic!("expected SYMBOL from gensym")
+        };
+        assert_eq!(
+            ctx.symbol_table.resolve_symbol_str(generated_sym),
+            Some("gen10")
+        );
+    }
+
+    #[test]
+    fn setgen_requires_positive_integer() {
+        let result = eval_expr(&call("setgen", vec![int(0)]));
+        assert!(matches!(result, Err(EvalError::TypeError { .. })));
+    }
+
+    #[test]
+    fn gensym_requires_no_arguments() {
+        let result = eval_expr(&call("gensym", vec![int(1)]));
+        assert!(matches!(result, Err(EvalError::ArityMismatch { .. })));
+    }
+
+    #[test]
+    fn setgen_requires_one_argument() {
+        let result = eval_expr(&call("setgen", vec![]));
+        assert!(matches!(result, Err(EvalError::ArityMismatch { .. })));
+    }
+
+    #[test]
+    fn set_fact_duplication_returns_boolean_symbol() {
+        let result = eval_expr(&call("set-fact-duplication", vec![int(1)])).unwrap();
+        assert!(matches!(result, Value::Symbol(_)));
+    }
+
+    #[test]
+    fn refresh_agenda_returns_boolean_symbol() {
+        let result = eval_expr(&call("refresh-agenda", vec![])).unwrap();
+        assert!(matches!(result, Value::Symbol(_)));
+    }
+
+    #[test]
+    fn watch_requires_at_least_one_argument() {
+        let result = eval_expr(&call("watch", vec![]));
+        assert!(matches!(result, Err(EvalError::ArityMismatch { .. })));
+    }
+
+    #[test]
+    fn watch_and_unwatch_with_argument_succeed() {
+        let watch_result = eval_expr(&call("watch", vec![str_lit("facts")])).unwrap();
+        assert!(matches!(watch_result, Value::Symbol(_)));
+        let unwatch_result = eval_expr(&call("unwatch", vec![str_lit("facts")])).unwrap();
+        assert!(matches!(unwatch_result, Value::Symbol(_)));
+    }
+
+    #[test]
+    fn close_returns_boolean_symbol() {
+        let result = eval_expr(&call("close", vec![str_lit("t")])).unwrap();
+        assert!(matches!(result, Value::Symbol(_)));
+    }
+
+    #[test]
+    fn printout_queues_deferred_output_event() {
+        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let channel_sym = st.intern_symbol("t", StringEncoding::Utf8).unwrap();
+        let tab_sym = st.intern_symbol("tab", StringEncoding::Utf8).unwrap();
+        let crlf_sym = st.intern_symbol("crlf", StringEncoding::Utf8).unwrap();
+
+        {
+            let mut ctx = EvalContext {
+                bindings: &bs,
+                var_map: &vm,
+                symbol_table: &mut st,
+                config: &cfg,
+                functions: &fenv,
+                globals: &mut gs,
+                generics: &generics,
+                call_depth: 0,
+                current_module: mr.main_module_id(),
+                module_registry: &mr,
+                function_modules: &em,
+                global_modules: &em,
+                generic_modules: &em,
+                method_chain: None,
+                input_buffer: None,
+            };
+            let expr = call(
+                "printout",
+                vec![
+                    RuntimeExpr::Literal(Value::Symbol(channel_sym)),
+                    str_lit("v="),
+                    RuntimeExpr::Literal(Value::Symbol(tab_sym)),
+                    int(7),
+                    RuntimeExpr::Literal(Value::Symbol(crlf_sym)),
+                ],
+            );
+            let result = eval(&mut ctx, &expr).unwrap();
+            assert!(matches!(result, Value::Void));
+        }
+
+        let events = gs.take_printout_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "t");
+        assert_eq!(events[0].1, "v=\t7\n");
+    }
+
+    #[test]
+    fn return_without_argument_returns_void() {
+        let result = eval_expr(&call("return", vec![])).unwrap();
+        assert!(matches!(result, Value::Void));
+    }
+
+    #[test]
+    fn return_with_argument_returns_value() {
+        let result = eval_expr(&call("return", vec![int(123)])).unwrap();
+        assert!(result.structural_eq(&Value::Integer(123)));
+    }
+
+    #[test]
+    fn load_returns_false_symbol_for_placeholder_path() {
+        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let mut ctx = EvalContext {
+            bindings: &bs,
+            var_map: &vm,
+            symbol_table: &mut st,
+            config: &cfg,
+            functions: &fenv,
+            globals: &mut gs,
+            generics: &generics,
+            call_depth: 0,
+            current_module: mr.main_module_id(),
+            module_registry: &mr,
+            function_modules: &em,
+            global_modules: &em,
+            generic_modules: &em,
+            method_chain: None,
+            input_buffer: None,
+        };
+        let result = eval(&mut ctx, &call("load", vec![str_lit("x.clp")])).unwrap();
+        assert!(is_false_symbol(&result, ctx.symbol_table));
+    }
+
+    #[test]
+    fn rules_accepts_zero_or_one_arguments() {
+        let no_arg = eval_expr(&call("rules", vec![])).unwrap();
+        assert!(matches!(no_arg, Value::Symbol(_)));
+        let one_arg = eval_expr(&call("rules", vec![str_lit("MAIN")])).unwrap();
+        assert!(matches!(one_arg, Value::Symbol(_)));
+        let too_many = eval_expr(&call("rules", vec![str_lit("MAIN"), str_lit("X")]));
+        assert!(matches!(too_many, Err(EvalError::ArityMismatch { .. })));
+    }
+
+    #[test]
+    fn undefrule_and_ppdefrule_return_boolean_symbol() {
+        let undef = eval_expr(&call("undefrule", vec![str_lit("r1")])).unwrap();
+        assert!(matches!(undef, Value::Symbol(_)));
+        let pp = eval_expr(&call("ppdefrule", vec![str_lit("r1")])).unwrap();
+        assert!(matches!(pp, Value::Symbol(_)));
+    }
+
+    #[test]
     fn str_length_empty_string_returns_zero() {
         let expr = call("str-length", vec![str_lit("")]);
         let result = eval_expr(&expr).unwrap();
@@ -6332,6 +7078,144 @@ mod tests {
     }
 
     #[test]
+    fn length_alias_returns_string_length() {
+        let expr = call("length", vec![str_lit("hello")]);
+        let result = eval_expr(&expr).unwrap();
+        assert!(result.structural_eq(&Value::Integer(5)));
+    }
+
+    #[test]
+    fn length_alias_returns_multifield_length() {
+        let expr = call(
+            "length",
+            vec![mf_lit(vec![Value::Integer(1), Value::Integer(2)])],
+        );
+        let result = eval_expr(&expr).unwrap();
+        assert!(result.structural_eq(&Value::Integer(2)));
+    }
+
+    #[test]
+    fn length_alias_type_error_on_integer() {
+        let result = eval_expr(&call("length", vec![int(42)]));
+        assert!(matches!(result, Err(EvalError::TypeError { .. })));
+    }
+
+    #[test]
+    fn subseq_mf_extracts_inclusive_slice() {
+        let expr = call(
+            "subseq$",
+            vec![
+                mf_lit(vec![
+                    Value::Integer(10),
+                    Value::Integer(20),
+                    Value::Integer(30),
+                    Value::Integer(40),
+                ]),
+                int(2),
+                int(3),
+            ],
+        );
+        let result = eval_expr(&expr).unwrap();
+        match result {
+            Value::Multifield(mf) => {
+                assert_eq!(mf.len(), 2);
+                assert!(mf[0].structural_eq(&Value::Integer(20)));
+                assert!(mf[1].structural_eq(&Value::Integer(30)));
+            }
+            other => panic!("expected MULTIFIELD, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subseq_mf_clamps_end_index() {
+        let expr = call(
+            "subseq$",
+            vec![
+                mf_lit(vec![
+                    Value::Integer(1),
+                    Value::Integer(2),
+                    Value::Integer(3),
+                ]),
+                int(2),
+                int(99),
+            ],
+        );
+        let result = eval_expr(&expr).unwrap();
+        match result {
+            Value::Multifield(mf) => {
+                assert_eq!(mf.len(), 2);
+                assert!(mf[0].structural_eq(&Value::Integer(2)));
+                assert!(mf[1].structural_eq(&Value::Integer(3)));
+            }
+            other => panic!("expected MULTIFIELD, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subseq_mf_inverted_range_returns_empty() {
+        let expr = call(
+            "subseq$",
+            vec![
+                mf_lit(vec![
+                    Value::Integer(1),
+                    Value::Integer(2),
+                    Value::Integer(3),
+                ]),
+                int(3),
+                int(1),
+            ],
+        );
+        let result = eval_expr(&expr).unwrap();
+        match result {
+            Value::Multifield(mf) => assert!(mf.is_empty()),
+            other => panic!("expected MULTIFIELD, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subseq_mf_type_error_on_non_multifield() {
+        let result = eval_expr(&call("subseq$", vec![int(1), int(1), int(2)]));
+        assert!(matches!(result, Err(EvalError::TypeError { .. })));
+    }
+
+    #[test]
+    fn implode_mf_joins_with_spaces() {
+        let mf = mf_lit(vec![
+            Value::Integer(10),
+            Value::Integer(20),
+            Value::Integer(30),
+        ]);
+        let expr = call("implode$", vec![mf]);
+        let result = eval_expr(&expr).unwrap();
+        match result {
+            Value::String(s) => assert_eq!(s.as_str(), "10 20 30"),
+            other => panic!("expected STRING, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn implode_mf_empty_returns_empty_string() {
+        let expr = call("implode$", vec![mf_lit(vec![])]);
+        let result = eval_expr(&expr).unwrap();
+        match result {
+            Value::String(s) => assert_eq!(s.as_str(), ""),
+            other => panic!("expected STRING, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn implode_mf_arity_error() {
+        let result = eval_expr(&call("implode$", vec![]));
+        assert!(matches!(result, Err(EvalError::ArityMismatch { .. })));
+    }
+
+    #[test]
+    fn implode_mf_type_error_non_multifield() {
+        let result = eval_expr(&call("implode$", vec![int(42)]));
+        assert!(matches!(result, Err(EvalError::TypeError { .. })));
+    }
+
+    #[test]
     fn nth_mf_first_element() {
         // (nth$ 1 (create$ 10 20 30)) => 10
         let mf = mf_lit(vec![
@@ -6400,6 +7284,24 @@ mod tests {
         let expr = call("nth$", vec![int(1), int(99)]);
         let result = eval_expr(&expr);
         assert!(matches!(result, Err(EvalError::TypeError { .. })));
+    }
+
+    #[test]
+    fn nth_alias_matches_nth_mf_behavior() {
+        let mf = mf_lit(vec![
+            Value::Integer(10),
+            Value::Integer(20),
+            Value::Integer(30),
+        ]);
+        let expr = call("nth", vec![int(2), mf]);
+        let result = eval_expr(&expr).unwrap();
+        assert!(result.structural_eq(&Value::Integer(20)));
+    }
+
+    #[test]
+    fn nth_alias_arity_error() {
+        let result = eval_expr(&call("nth", vec![int(1)]));
+        assert!(matches!(result, Err(EvalError::ArityMismatch { .. })));
     }
 
     #[test]
@@ -6486,6 +7388,40 @@ mod tests {
         let expr = call("member$", vec![int(1), int(99)]);
         let result = eval_expr(&expr);
         assert!(matches!(result, Err(EvalError::TypeError { .. })));
+    }
+
+    #[test]
+    fn member_alias_found_returns_index() {
+        let mf = mf_lit(vec![Value::Integer(3), Value::Integer(4)]);
+        let expr = call("member", vec![int(4), mf]);
+        let result = eval_expr(&expr).unwrap();
+        assert!(result.structural_eq(&Value::Integer(2)));
+    }
+
+    #[test]
+    fn member_alias_not_found_returns_false() {
+        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let mf = mf_lit(vec![Value::Integer(3), Value::Integer(4)]);
+        let expr = call("member", vec![int(9), mf]);
+        let mut ctx = EvalContext {
+            bindings: &bs,
+            var_map: &vm,
+            symbol_table: &mut st,
+            config: &cfg,
+            functions: &fenv,
+            globals: &mut gs,
+            generics: &generics,
+            call_depth: 0,
+            current_module: mr.main_module_id(),
+            module_registry: &mr,
+            function_modules: &em,
+            global_modules: &em,
+            generic_modules: &em,
+            method_chain: None,
+            input_buffer: None,
+        };
+        let result = eval(&mut ctx, &expr).unwrap();
+        assert!(is_false_symbol(&result, ctx.symbol_table));
     }
 
     #[test]

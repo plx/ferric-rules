@@ -389,29 +389,14 @@ impl Engine {
             .unwrap_or_else(|| self.module_registry.main_module_id());
 
         let mut focus_requests = Vec::new();
-        let mut action_context = actions::ActionExecutionContext {
-            fact_base: &mut self.fact_base,
-            rete: &mut self.rete,
-            halted: &mut self.halted,
-            symbol_table: &mut self.symbol_table,
-            config: &self.config,
-            template_defs: &self.template_defs,
-            template_ids: &self.template_ids,
-            router: &mut self.router,
-            functions: &self.functions,
-            globals: &mut self.globals,
-            focus_requests: &mut focus_requests,
-            generics: &self.generics,
-            module_registry: &self.module_registry,
-            current_module,
-            function_modules: &self.function_modules,
-            global_modules: &self.global_modules,
-            generic_modules: &self.generic_modules,
-            input_buffer: &mut self.input_buffer,
-            all_rule_info: &self.rule_info,
+        let (fired, reset_requested, clear_requested, mut errors) = {
+            let mut action_context = actions::ActionExecutionContext {
+                engine: self,
+                focus_requests: &mut focus_requests,
+                current_module,
+            };
+            actions::execute_actions(&token, info.as_ref(), &mut action_context)
         };
-        let (fired, reset_requested, clear_requested, mut errors) =
-            actions::execute_actions(&token, info.as_ref(), &mut action_context);
 
         // Apply focus requests (push in reverse order so first arg is on top)
         for module_name in focus_requests.iter().rev() {

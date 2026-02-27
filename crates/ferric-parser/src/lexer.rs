@@ -323,6 +323,11 @@ impl<'a> Lexer<'a> {
             // Regular single-field variable
             let mut name = String::new();
             while let Some(&(_, ch)) = self.chars.peek() {
+                // Allow compact assignment syntax without whitespace:
+                // `?f<-(pattern)` should tokenize as `?f`, `<-`, ...
+                if ch == '<' && self.peek_ahead(1) == Some('-') {
+                    break;
+                }
                 if is_symbol_char(ch) {
                     name.push(ch);
                     self.advance();
@@ -343,6 +348,11 @@ impl<'a> Lexer<'a> {
 
         let mut name = String::new();
         while let Some(&(_, ch)) = self.chars.peek() {
+            // Allow compact assignment syntax without whitespace:
+            // `$?f<-(pattern)` should tokenize as `$?f`, `<-`, ...
+            if ch == '<' && self.peek_ahead(1) == Some('-') {
+                break;
+            }
             if is_symbol_char(ch) {
                 name.push(ch);
                 self.advance();
@@ -698,6 +708,17 @@ mod tests {
         let tokens = lex("<-", file()).unwrap();
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].token, Token::LeftArrow));
+    }
+
+    #[test]
+    fn lex_variable_compact_assign_sequence() {
+        let tokens = lex("?w<-(foo)", file()).unwrap();
+        assert_eq!(tokens.len(), 5);
+        assert!(matches!(tokens[0].token, Token::SingleVar(ref s) if s == "w"));
+        assert!(matches!(tokens[1].token, Token::LeftArrow));
+        assert!(matches!(tokens[2].token, Token::LeftParen));
+        assert!(matches!(tokens[3].token, Token::Symbol(ref s) if s == "foo"));
+        assert!(matches!(tokens[4].token, Token::RightParen));
     }
 
     #[test]

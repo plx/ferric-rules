@@ -19,41 +19,45 @@ CLIPS supports all of the following in the affected scenarios:
 - `(load "...")` can be used as a command in knowledge-base workflows.
 
 ## Incompatible Ferric Behavior
-Current observed behavior (2026-02-25):
+Current observed behavior (2026-02-27):
 
-1. `globltst.clp` diverges with action warnings.
-- `deffunction printem` fails internally because `printout` is not available in the evaluator callable set used by function bodies.
-- This leads to partial output and test ending with errors.
+1. `globltst.clp` now runs through to completion (`Test Completed - No Errors`).
+- The prior blockers in this slice were addressed:
+  - evaluator-side `printout` support for deffunction/method bodies,
+  - deffacts global value resolution,
+  - RHS local `bind` rebinding support,
+  - ordered multifield splicing/capture corrections used by this fixture.
 
-2. `co-drtest03-03.clp` fails at load.
-- `[EXPRNPSR3] Missing function declaration for subseq$ ...`
+2. `co-drtest03-03.clp` now runs without the previous `bind` warning.
+- `subseq$` callability and RHS local `bind` rebinding now both work in this representative slice.
+- Remaining `drtest03-*` differences are now outside the original `bind` blocker (for example stricter template-slot validation in `co-drtest03-08.clp` for unknown slot `three`).
 
-3. `co-dfrulcmd-03.clp` fails at load.
-- `[EXPRNPSR3] Missing function declaration for rules ...`
+3. `co-dfrulcmd-03.clp` is partially aligned.
+- `rules` is callable from RHS and prints loaded rule names.
+- `undefrule` now mutates runtime rule state from RHS:
+  - removes targeted rule metadata (`*`, unqualified, qualified selectors),
+  - clears queued activations for removed rules,
+  - prevents removed rules from creating new activations.
+- Runtime `load` now mutates the live engine state from RHS:
+  - invokes the normal file loader during rule execution,
+  - newly loaded rules are visible to subsequent `(rules)` calls in the same RHS,
+  - load failures surface as non-fatal action diagnostics.
 
-4. Related command surface remains missing.
-- `undefrule`, `load`, `ppdefrule` command semantics are not fully implemented for RHS execution contexts.
+4. Related command surface remains partially missing.
+- `ppdefrule` now prints stored rule definitions from RHS (`name`, `*`, qualified/module selectors).
+- `load` in evaluator-only expression contexts (outside RHS action dispatch) still uses placeholder return semantics.
 
 ## Root Cause For Ferric Divergence
 This is a runtime callable-surface split problem plus missing mutable rule-management features.
 
-1. Split dispatch surfaces (evaluator vs action executor).
-- `printout` exists as an action command path in `actions.rs`.
-- Deffunction bodies run through evaluator call dispatch (`evaluator.rs`) where `printout` is absent.
+1. Runtime callable surface is split by execution context.
+- RHS action dispatch now supports mutable `load`, but evaluator-only paths still keep compatibility placeholders for mutation commands.
 
-2. Missing builtin implementations.
-- `subseq$` and some related compatibility functions are not present in evaluator builtin dispatch.
+2. Runtime `load` during active execution still needs policy hardening.
+- Current behavior re-enters the loader directly; recursion-depth limits and stricter cycle guards are future hardening work.
 
-3. Strict load-time callable validation now surfaces missing runtime commands earlier.
-- After item 006, unresolved callables fail at load with `[EXPRNPSR3]` rather than deferred runtime warnings.
-- This is desirable in general, but it exposes unimplemented command surface directly.
-
-4. Rule graph mutation/introspection APIs are incomplete.
-- `rules` may be implementable as read-only reporting.
-- `undefrule` requires safe removal/update of compiled rule structures and agenda interactions.
-
-5. Runtime `load` command requires execution-time loader entry and policy controls.
-- Needs path handling, recursion safeguards, and deterministic semantics while engine is running.
+3. Strict callable validation still surfaces the missing mutation semantics.
+- This is desirable for early diagnostics, but it means command names can parse/load while still diverging behaviorally until mutation semantics are implemented.
 
 ## High-Level Sketch Of Required Changes
 
@@ -68,9 +72,10 @@ This is a runtime callable-surface split problem plus missing mutable rule-manag
 - Add output sink capability to evaluator contexts so deffunction/method bodies can use `printout` behavior.
 
 4. Add rule introspection/mutation commands in controlled phases.
-- Start read-only (`rules`), then mutation (`undefrule`) with strong invariants.
+- Read-only (`rules`), mutation (`undefrule`), and rule pretty-print (`ppdefrule`) are now in place.
 
-5. Add runtime `load` only after reentrancy and state-safety strategy is defined.
+5. Runtime `load` is now wired for RHS actions.
+- Remaining work is hardening/policy, not basic command availability.
 
 ## Tentative Implementation Plan (Session-Sized Passes)
 
@@ -134,33 +139,46 @@ Validation:
 Expected end-of-pass state:
 - `rules` no longer blocks load; basic listing works.
 
-### Pass 5: `undefrule` Command (Mutation)
+### Pass 5: `undefrule` Command (Mutation) [Completed]
 Goal: support runtime rule removal safely.
 
-Changes:
-- Add engine API to remove rules by name and wildcard (`*`) with safe updates to:
+Implemented:
+- Add RHS `undefrule` action handling for `*`, unqualified names, qualified names, and `MODULE::` module selectors.
+- Add safe runtime mutation updates across:
   - compiled rule metadata,
   - rule-module bookkeeping,
-  - agenda/activation references.
-- Add command path in action executor and callable validation.
+  - agenda activations (purged immediately),
+  - future activation creation (disabled-rule guard in rete terminal propagation).
 
 Validation:
-- Tests for remove-one, remove-all, remove-nonexistent, and post-removal run behavior.
+- `cargo test -p ferric-runtime`:
+  - `undefrule_star_removes_rules_and_cancels_pending_activations`
+  - `undefrule_by_name_removes_targeted_rule_before_it_fires`
+- `cargo test -p ferric-core`:
+  - `agenda::tests::remove_activations_for_rule_removes_all_matching_entries`
+  - `rete::tests::disable_rule_removes_existing_activations_and_blocks_new_ones`
 
 Expected end-of-pass state:
 - Core `dfrulcmd` mutation behavior available.
 
-### Pass 6: Runtime `load` Command
+### Pass 6: Runtime `load` Command [Completed]
 Goal: support `load` from RHS with predictable safety constraints.
 
-Changes:
-- Add runtime load action command invoking loader with policy controls:
-  - path resolution rules,
-  - recursion/reentrancy protections,
-  - bounded error reporting semantics.
+Implemented:
+- Add RHS `load` action handling that:
+  - evaluates a string/symbol path argument,
+  - re-enters `Engine::load_file` during action execution,
+  - restores the caller module context after load,
+  - reports load failures through action diagnostics.
+- Route action execution through a mutable engine context so runtime loader mutation and subsequent RHS commands (`rules`) observe the same live state.
 
 Validation:
-- Integration tests for successful nested load and controlled failure cases.
+- `cargo test -p ferric-runtime`:
+  - `runtime_load_mutates_rule_set_and_rules_output`
+  - `runtime_load_missing_file_surfaces_action_diagnostic`
+- CLI smoke with `Temp/foo.tmp` fixture:
+  - `co-dfrulcmd-03.clp`, `t64x-dfrulcmd-03.clp`, `t65x-dfrulcmd-03.clp`
+  - post-`load` `(rules)` now prints `foo1 foo2 foo3`.
 
 Expected end-of-pass state:
 - `load` command available for compatibility workflows.
@@ -198,30 +216,23 @@ Expected end-of-pass state:
 
 ## Cost Of Doing Nothing
 
-1. Real CLIPS workflows remain blocked.
-- Users depending on `rules`/`undefrule`/`load` command idioms cannot run those scripts directly.
+1. Real CLIPS workflows are substantially less blocked.
+- Users depending on RHS `rules`/`undefrule`/`ppdefrule`/`load` admin idioms can now execute the core pattern directly.
 
-2. Deffunction output patterns remain broken.
-- Existing CLIPS knowledge bases that encapsulate output logic in deffunctions produce incorrect or partial output.
+2. Runtime dynamic load workflows still have hardening gaps.
+- Basic mutation works, but recursion/cycle policy is not yet as explicit as desired.
 
-3. Multifield-heavy scripts remain non-portable.
-- Missing `subseq$` blocks some test suites and user rule bases at load time.
+3. Evaluator-only mutation call sites remain intentionally conservative.
+- Calls to mutation commands through pure expression-eval paths still return compatibility placeholders.
 
-4. Migration confidence is reduced.
+4. Migration confidence is still reduced.
 - Compatibility failures cluster around runtime operability, which users feel immediately in end-to-end runs.
 
 Plausible blocked scenarios and workarounds:
 - Scenario: a user uses CLIPS runtime admin rules that self-manage rule sets via `rules`/`undefrule`.
-  - Likely outcome today: load-time failure.
-  - Workaround: external orchestration code mutating engine state via host API.
-  - Practical downside: significant rewrite, loss of in-language self-management.
+  - Likely outcome today: works for direct RHS command usage, including runtime `load`.
+  - Remaining downside: edge-case policy differences around recursive/nested loads may still diverge.
 
-- Scenario: a user has reusable deffunctions for reporting/logging using `printout`.
-  - Likely outcome today: runtime warnings and missing output.
-  - Workaround: move output calls back into each rule RHS.
-  - Practical downside: duplicated logic, poorer maintainability.
-
-- Scenario: a rule base uses `subseq$` to manipulate multifields in RHS expressions.
-  - Likely outcome today: load-time failure.
-  - Workaround: rewrite with slower/manual `nth$` loops where possible.
-  - Practical downside: complex rewrites and uncertain semantic equivalence.
+- Scenario: a user depends on dynamic runtime `(load "...")` orchestration inside RHS admin rules.
+  - Likely outcome today: live mutations apply and subsequent RHS introspection sees loaded rules.
+  - Remaining downside: missing-file and invalid-load cases surface as Ferric action diagnostics rather than CLIPS-identical text.
