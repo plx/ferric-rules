@@ -130,7 +130,7 @@ COMMENT_ID="$(gh api "repos/${REPO}/issues/${PR}/comments" \
 
 if [[ -n "$COMMENT_ID" ]]; then
     echo "==> Updating existing comment ${COMMENT_ID}..."
-    gh api "repos/${REPO}/issues/${PR}/comments/${COMMENT_ID}" \
+    gh api "repos/${REPO}/issues/comments/${COMMENT_ID}" \
         -X PATCH \
         -f body="${BODY}" \
         --silent
