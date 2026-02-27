@@ -53,7 +53,6 @@ fn flush_deferred_printout(context: &mut ActionExecutionContext<'_>) {
 
 impl ActionEvalEnv {
     fn make_eval_context<'ctx>(
-        &'ctx mut self,
         token: &'ctx Token,
         rule_info: &'ctx CompiledRuleInfo,
         context: &'ctx mut ActionExecutionContext<'_>,
@@ -92,7 +91,7 @@ impl ActionEvalEnv {
                 insert_runtime_binding(&mut merged_env, name, value.clone());
             }
             let (bindings, var_map) = build_runtime_eval_bindings(&merged_env, context)?;
-            return self.eval_runtime_expr_with_bindings(
+            return Self::eval_runtime_expr_with_bindings(
                 runtime_expr,
                 &bindings,
                 &var_map,
@@ -100,7 +99,7 @@ impl ActionEvalEnv {
             );
         }
 
-        let mut ctx = self.make_eval_context(token, rule_info, context);
+        let mut ctx = Self::make_eval_context(token, rule_info, context);
         crate::evaluator::eval(&mut ctx, runtime_expr).map_err(ActionError::from)
     }
 
@@ -165,7 +164,6 @@ impl ActionEvalEnv {
     }
 
     fn eval_runtime_expr_with_bindings(
-        &mut self,
         runtime_expr: &crate::evaluator::RuntimeExpr,
         bindings: &BindingSet,
         var_map: &VarMap,
@@ -508,13 +506,12 @@ fn evaluate_negated_pattern_runtime_check(
     eval_env: &mut ActionEvalEnv,
     context: &mut ActionExecutionContext<'_>,
 ) -> Result<bool, ActionError> {
-    let relation = match context
+    let Ok(relation) = context
         .engine
         .symbol_table
         .intern_symbol(&check.relation, context.engine.config.string_encoding)
-    {
-        Ok(sym) => sym,
-        Err(_) => return Ok(true),
+    else {
+        return Ok(true);
     };
 
     let base_env = collect_outer_runtime_bindings(token, rule_info, &context.engine.symbol_table);
@@ -744,22 +741,26 @@ fn runtime_constraint_matches_envs(
 fn runtime_constraint_expr_value(
     expr: &ferric_parser::SExpr,
     env: &RuntimeBindingEnv,
-    eval_env: &mut ActionEvalEnv,
+    _eval_env: &mut ActionEvalEnv,
     context: &mut ActionExecutionContext<'_>,
 ) -> Result<Option<Value>, ActionError> {
-    let runtime_expr = match crate::evaluator::from_sexpr(
+    let Ok(runtime_expr) = crate::evaluator::from_sexpr(
         expr,
         &mut context.engine.symbol_table,
         &context.engine.config,
-    ) {
-        Ok(runtime_expr) => runtime_expr,
-        Err(_) => return Ok(None),
+    ) else {
+        return Ok(None);
     };
 
     let (bindings, var_map) = build_runtime_eval_bindings(env, context)?;
-    match eval_env.eval_runtime_expr_with_bindings(&runtime_expr, &bindings, &var_map, context) {
+    match ActionEvalEnv::eval_runtime_expr_with_bindings(
+        &runtime_expr,
+        &bindings,
+        &var_map,
+        context,
+    ) {
         Ok(value) => Ok(Some(value)),
-        Err(ActionError::Evaluator(_)) | Err(ActionError::EvalError(_)) => Ok(None),
+        Err(ActionError::Evaluator(_) | ActionError::EvalError(_)) => Ok(None),
         Err(other) => Err(other),
     }
 }
@@ -918,7 +919,7 @@ fn execute_single_action(
             }) = if_runtime
             {
                 let cond_value = {
-                    let mut ctx = eval_env.make_eval_context(token, rule_info, context);
+                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
                     crate::evaluator::eval(&mut ctx, condition).map_err(ActionError::from)?
                 };
                 let branch =
@@ -1042,7 +1043,7 @@ fn execute_single_action(
                 loop {
                     // Evaluate condition.
                     let cond_value = {
-                        let mut ctx = eval_env.make_eval_context(token, rule_info, context);
+                        let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
                         crate::evaluator::eval(&mut ctx, condition).map_err(ActionError::from)?
                     };
                     if !crate::evaluator::is_truthy(&cond_value, &context.engine.symbol_table) {
@@ -1098,7 +1099,7 @@ fn execute_single_action(
             }) = lfc_runtime
             {
                 let (start_int, end_int) = {
-                    let mut ctx = eval_env.make_eval_context(token, rule_info, context);
+                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
                     let sv = crate::evaluator::eval(&mut ctx, start).map_err(ActionError::from)?;
                     let ev = crate::evaluator::eval(&mut ctx, end).map_err(ActionError::from)?;
                     let si = match &sv {
@@ -1183,7 +1184,7 @@ fn execute_single_action(
             {
                 // Evaluate the discriminant expression.
                 let disc_value = {
-                    let mut ctx = eval_env.make_eval_context(token, rule_info, context);
+                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
                     crate::evaluator::eval(&mut ctx, expr).map_err(ActionError::from)?
                 };
 
@@ -1191,7 +1192,7 @@ fn execute_single_action(
                 let mut matched_body = None;
                 for (test_val_expr, case_body) in cases {
                     let test_value = {
-                        let mut ctx = eval_env.make_eval_context(token, rule_info, context);
+                        let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
                         crate::evaluator::eval(&mut ctx, test_val_expr)
                             .map_err(ActionError::from)?
                     };
@@ -1249,7 +1250,7 @@ fn execute_single_action(
             }) = progn_runtime
             {
                 let elements: Vec<Value> = {
-                    let mut ctx = eval_env.make_eval_context(token, rule_info, context);
+                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
                     let list_val =
                         crate::evaluator::eval(&mut ctx, list_expr).map_err(ActionError::from)?;
                     match list_val {
@@ -1636,7 +1637,7 @@ fn execute_query_action(
 
         // Evaluate the query expression.
         let query_val = {
-            let mut ctx = eval_env.make_eval_context(&aug_token, &aug_rule_info, context);
+            let mut ctx = ActionEvalEnv::make_eval_context(&aug_token, &aug_rule_info, context);
             crate::evaluator::eval(&mut ctx, query).map_err(ActionError::from)?
         };
 

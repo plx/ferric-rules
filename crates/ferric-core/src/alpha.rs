@@ -592,138 +592,129 @@ fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
 
     match &test.test_type {
         ConstantTestType::Equal(test_key) => {
-            let Some(slot_key) = AtomKey::from_value(slot_value) else {
-                return false;
-            };
-            slot_key == *test_key
+            atom_key_matches(slot_value, |slot_key| slot_key == test_key)
         }
         ConstantTestType::NotEqual(test_key) => {
-            let Some(slot_key) = AtomKey::from_value(slot_value) else {
-                return false;
-            };
-            slot_key != *test_key
+            atom_key_matches(slot_value, |slot_key| slot_key != test_key)
         }
         ConstantTestType::EqualAny(keys) => {
-            let Some(slot_key) = AtomKey::from_value(slot_value) else {
-                return false;
-            };
-            keys.contains(&slot_key)
+            atom_key_matches(slot_value, |slot_key| keys.contains(slot_key))
         }
         ConstantTestType::GreaterThan(test_key) => {
-            let rhs = test_key.to_value();
-            matches!(
-                compare_numeric_values(slot_value, &rhs),
-                Some(Ordering::Greater)
-            )
+            compare_test_key(slot_value, test_key, |ord| matches!(ord, Ordering::Greater))
         }
         ConstantTestType::LessThan(test_key) => {
-            let rhs = test_key.to_value();
-            matches!(
-                compare_numeric_values(slot_value, &rhs),
-                Some(Ordering::Less)
-            )
+            compare_test_key(slot_value, test_key, |ord| matches!(ord, Ordering::Less))
         }
         ConstantTestType::GreaterOrEqual(test_key) => {
-            let rhs = test_key.to_value();
-            matches!(
-                compare_numeric_values(slot_value, &rhs),
-                Some(Ordering::Greater) | Some(Ordering::Equal)
-            )
+            compare_test_key(slot_value, test_key, |ord| {
+                matches!(ord, Ordering::Greater | Ordering::Equal)
+            })
         }
-        ConstantTestType::LessOrEqual(test_key) => {
-            let rhs = test_key.to_value();
-            matches!(
-                compare_numeric_values(slot_value, &rhs),
-                Some(Ordering::Less) | Some(Ordering::Equal)
-            )
-        }
+        ConstantTestType::LessOrEqual(test_key) => compare_test_key(slot_value, test_key, |ord| {
+            matches!(ord, Ordering::Less | Ordering::Equal)
+        }),
         ConstantTestType::EqualSlot(other_slot) => {
-            let Some(other_value) = get_slot_value(fact, *other_slot) else {
-                return false;
-            };
-            slot_value.structural_eq(other_value)
+            compare_other_slot(fact, *other_slot, |other_value| {
+                slot_value.structural_eq(other_value)
+            })
         }
         ConstantTestType::NotEqualSlot(other_slot) => {
-            let Some(other_value) = get_slot_value(fact, *other_slot) else {
-                return false;
-            };
-            !slot_value.structural_eq(other_value)
+            compare_other_slot(fact, *other_slot, |other_value| {
+                !slot_value.structural_eq(other_value)
+            })
         }
         ConstantTestType::EqualSlotOffset(other_slot, offset) => {
-            let Some(other_value) = get_slot_value(fact, *other_slot) else {
-                return false;
-            };
-            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
-                return false;
-            };
-            matches!(
-                compare_numeric_values(slot_value, &adjusted_other),
-                Some(Ordering::Equal)
-            )
+            compare_other_slot(fact, *other_slot, |other_value| {
+                compare_offset(slot_value, other_value, *offset, |ord| {
+                    matches!(ord, Ordering::Equal)
+                })
+            })
         }
         ConstantTestType::NotEqualSlotOffset(other_slot, offset) => {
-            let Some(other_value) = get_slot_value(fact, *other_slot) else {
-                return false;
-            };
-            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
-                return false;
-            };
-            !matches!(
-                compare_numeric_values(slot_value, &adjusted_other),
-                Some(Ordering::Equal)
-            )
+            compare_other_slot(fact, *other_slot, |other_value| {
+                !compare_offset(slot_value, other_value, *offset, |ord| {
+                    matches!(ord, Ordering::Equal)
+                })
+            })
         }
         ConstantTestType::GreaterThanSlotOffset(other_slot, offset) => {
-            let Some(other_value) = get_slot_value(fact, *other_slot) else {
-                return false;
-            };
-            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
-                return false;
-            };
-            matches!(
-                compare_numeric_values(slot_value, &adjusted_other),
-                Some(Ordering::Greater)
-            )
+            compare_other_slot(fact, *other_slot, |other_value| {
+                compare_offset(slot_value, other_value, *offset, |ord| {
+                    matches!(ord, Ordering::Greater)
+                })
+            })
         }
         ConstantTestType::LessThanSlotOffset(other_slot, offset) => {
-            let Some(other_value) = get_slot_value(fact, *other_slot) else {
-                return false;
-            };
-            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
-                return false;
-            };
-            matches!(
-                compare_numeric_values(slot_value, &adjusted_other),
-                Some(Ordering::Less)
-            )
+            compare_other_slot(fact, *other_slot, |other_value| {
+                compare_offset(slot_value, other_value, *offset, |ord| {
+                    matches!(ord, Ordering::Less)
+                })
+            })
         }
         ConstantTestType::GreaterOrEqualSlotOffset(other_slot, offset) => {
-            let Some(other_value) = get_slot_value(fact, *other_slot) else {
-                return false;
-            };
-            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
-                return false;
-            };
-            matches!(
-                compare_numeric_values(slot_value, &adjusted_other),
-                Some(Ordering::Greater) | Some(Ordering::Equal)
-            )
+            compare_other_slot(fact, *other_slot, |other_value| {
+                compare_offset(slot_value, other_value, *offset, |ord| {
+                    matches!(ord, Ordering::Greater | Ordering::Equal)
+                })
+            })
         }
         ConstantTestType::LessOrEqualSlotOffset(other_slot, offset) => {
-            let Some(other_value) = get_slot_value(fact, *other_slot) else {
-                return false;
-            };
-            let Some(adjusted_other) = add_integer_offset(other_value, *offset) else {
-                return false;
-            };
-            matches!(
-                compare_numeric_values(slot_value, &adjusted_other),
-                Some(Ordering::Less) | Some(Ordering::Equal)
-            )
+            compare_other_slot(fact, *other_slot, |other_value| {
+                compare_offset(slot_value, other_value, *offset, |ord| {
+                    matches!(ord, Ordering::Less | Ordering::Equal)
+                })
+            })
         }
     }
 }
 
+fn atom_key_matches<F>(value: &Value, predicate: F) -> bool
+where
+    F: FnOnce(&AtomKey) -> bool,
+{
+    let Some(slot_key) = AtomKey::from_value(value) else {
+        return false;
+    };
+    predicate(&slot_key)
+}
+
+fn compare_test_key<F>(slot_value: &Value, test_key: &AtomKey, predicate: F) -> bool
+where
+    F: FnOnce(Ordering) -> bool,
+{
+    let rhs = test_key.to_value();
+    numeric_compare_matches(slot_value, &rhs, predicate)
+}
+
+fn compare_other_slot<F>(fact: &Fact, other_slot: SlotIndex, predicate: F) -> bool
+where
+    F: FnOnce(&Value) -> bool,
+{
+    let Some(other_value) = get_slot_value(fact, other_slot) else {
+        return false;
+    };
+    predicate(other_value)
+}
+
+fn compare_offset<F>(lhs: &Value, rhs: &Value, offset: i64, predicate: F) -> bool
+where
+    F: FnOnce(Ordering) -> bool,
+{
+    let Some(adjusted_rhs) = add_integer_offset(rhs, offset) else {
+        return false;
+    };
+    numeric_compare_matches(lhs, &adjusted_rhs, predicate)
+}
+
+fn numeric_compare_matches<F>(lhs: &Value, rhs: &Value, predicate: F) -> bool
+where
+    F: FnOnce(Ordering) -> bool,
+{
+    compare_numeric_values(lhs, rhs).is_some_and(predicate)
+}
+
+#[allow(clippy::cast_precision_loss)]
 fn add_integer_offset(value: &Value, offset: i64) -> Option<Value> {
     match value {
         Value::Integer(i) => i.checked_add(offset).map(Value::Integer),
@@ -732,6 +723,7 @@ fn add_integer_offset(value: &Value, offset: i64) -> Option<Value> {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn compare_numeric_values(lhs: &Value, rhs: &Value) -> Option<Ordering> {
     match (lhs, rhs) {
         (Value::Integer(a), Value::Integer(b)) => Some(a.cmp(b)),

@@ -2141,9 +2141,7 @@ fn try_interpret_fact_slot_ref_argument(exprs: &[SExpr]) -> Option<(ActionExpr, 
     let Some(Atom::Connective(Connective::Colon)) = exprs[1].as_atom() else {
         return None;
     };
-    let Some(slot_name) = exprs[2].as_symbol() else {
-        return None;
-    };
+    let slot_name = exprs[2].as_symbol()?;
 
     let var_span = exprs[0].span();
     let slot_span = exprs[2].span();
@@ -2152,9 +2150,9 @@ fn try_interpret_fact_slot_ref_argument(exprs: &[SExpr]) -> Option<(ActionExpr, 
     let slot_ref = ActionExpr::FunctionCall(FunctionCall {
         name: FACT_SLOT_REF_FN.to_string(),
         args: vec![
-            ActionExpr::Variable(var_name.to_string(), var_span),
+            ActionExpr::Variable(var_name.clone(), var_span),
             ActionExpr::Literal(LiteralValue {
-                value: LiteralKind::Symbol(slot_name.to_string()),
+                value: LiteralKind::Symbol(slot_name.to_owned()),
                 span: slot_span,
             }),
         ],

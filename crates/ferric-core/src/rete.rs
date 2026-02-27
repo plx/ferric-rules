@@ -1393,131 +1393,91 @@ impl Default for ReteNetwork {
 fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool {
     for test in tests {
         let Some(fact_value) = get_slot_value(fact, test.alpha_slot) else {
-            return false; // Slot doesn't exist
+            return false;
         };
 
-        // Get the token's binding for the variable
-        let token_value = match token {
-            Some(t) => match t.bindings.get(test.beta_var) {
-                Some(v) => v,
-                None => return false, // Variable not bound in token
-            },
-            None => return false, // No token to compare against
+        let Some(token_value) = token.and_then(|t| t.bindings.get(test.beta_var)) else {
+            return false;
         };
 
-        // Compare based on test type
         let matches = match test.test_type {
             JoinTestType::Equal => {
-                let Some(fact_key) = AtomKey::from_value(fact_value) else {
-                    return false;
-                };
-                let Some(token_key) = AtomKey::from_value(token_value) else {
-                    return false;
-                };
-                fact_key == token_key
+                atom_key_pair_matches(fact_value, token_value, |fact_key, token_key| {
+                    fact_key == token_key
+                })
             }
             JoinTestType::NotEqual => {
-                let Some(fact_key) = AtomKey::from_value(fact_value) else {
-                    return false;
-                };
-                let Some(token_key) = AtomKey::from_value(token_value) else {
-                    return false;
-                };
-                fact_key != token_key
+                atom_key_pair_matches(fact_value, token_value, |fact_key, token_key| {
+                    fact_key != token_key
+                })
             }
-            JoinTestType::GreaterThan => matches!(
-                compare_numeric_values(fact_value, token_value),
-                Some(Ordering::Greater)
-            ),
-            JoinTestType::LessThan => matches!(
-                compare_numeric_values(fact_value, token_value),
-                Some(Ordering::Less)
-            ),
-            JoinTestType::GreaterOrEqual => matches!(
-                compare_numeric_values(fact_value, token_value),
-                Some(Ordering::Greater) | Some(Ordering::Equal)
-            ),
-            JoinTestType::LessOrEqual => matches!(
-                compare_numeric_values(fact_value, token_value),
-                Some(Ordering::Less) | Some(Ordering::Equal)
-            ),
-            JoinTestType::LexEqual => matches!(
-                compare_lexeme_values(fact_value, token_value),
-                Some(Ordering::Equal)
-            ),
-            JoinTestType::LexNotEqual => !matches!(
-                compare_lexeme_values(fact_value, token_value),
-                Some(Ordering::Equal)
-            ),
-            JoinTestType::LexGreaterThan => matches!(
-                compare_lexeme_values(fact_value, token_value),
-                Some(Ordering::Greater)
-            ),
-            JoinTestType::LexLessThan => matches!(
-                compare_lexeme_values(fact_value, token_value),
-                Some(Ordering::Less)
-            ),
-            JoinTestType::LexGreaterOrEqual => matches!(
-                compare_lexeme_values(fact_value, token_value),
-                Some(Ordering::Greater) | Some(Ordering::Equal)
-            ),
-            JoinTestType::LexLessOrEqual => matches!(
-                compare_lexeme_values(fact_value, token_value),
-                Some(Ordering::Less) | Some(Ordering::Equal)
-            ),
+            JoinTestType::GreaterThan => numeric_compare_matches(fact_value, token_value, |ord| {
+                matches!(ord, Ordering::Greater)
+            }),
+            JoinTestType::LessThan => numeric_compare_matches(fact_value, token_value, |ord| {
+                matches!(ord, Ordering::Less)
+            }),
+            JoinTestType::GreaterOrEqual => {
+                numeric_compare_matches(fact_value, token_value, |ord| {
+                    matches!(ord, Ordering::Greater | Ordering::Equal)
+                })
+            }
+            JoinTestType::LessOrEqual => numeric_compare_matches(fact_value, token_value, |ord| {
+                matches!(ord, Ordering::Less | Ordering::Equal)
+            }),
+            JoinTestType::LexEqual => lexeme_compare_matches(fact_value, token_value, |ord| {
+                matches!(ord, Ordering::Equal)
+            }),
+            JoinTestType::LexNotEqual => !lexeme_compare_matches(fact_value, token_value, |ord| {
+                matches!(ord, Ordering::Equal)
+            }),
+            JoinTestType::LexGreaterThan => {
+                lexeme_compare_matches(fact_value, token_value, |ord| {
+                    matches!(ord, Ordering::Greater)
+                })
+            }
+            JoinTestType::LexLessThan => {
+                lexeme_compare_matches(fact_value, token_value, |ord| matches!(ord, Ordering::Less))
+            }
+            JoinTestType::LexGreaterOrEqual => {
+                lexeme_compare_matches(fact_value, token_value, |ord| {
+                    matches!(ord, Ordering::Greater | Ordering::Equal)
+                })
+            }
+            JoinTestType::LexLessOrEqual => {
+                lexeme_compare_matches(fact_value, token_value, |ord| {
+                    matches!(ord, Ordering::Less | Ordering::Equal)
+                })
+            }
             JoinTestType::EqualOffset(offset) => {
-                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
-                    return false;
-                };
-                matches!(
-                    compare_numeric_values(fact_value, &adjusted_token),
-                    Some(Ordering::Equal)
-                )
+                offset_compare_matches(fact_value, token_value, offset, |ord| {
+                    matches!(ord, Ordering::Equal)
+                })
             }
             JoinTestType::NotEqualOffset(offset) => {
-                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
-                    return false;
-                };
-                !matches!(
-                    compare_numeric_values(fact_value, &adjusted_token),
-                    Some(Ordering::Equal)
-                )
+                !offset_compare_matches(fact_value, token_value, offset, |ord| {
+                    matches!(ord, Ordering::Equal)
+                })
             }
             JoinTestType::GreaterThanOffset(offset) => {
-                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
-                    return false;
-                };
-                matches!(
-                    compare_numeric_values(fact_value, &adjusted_token),
-                    Some(Ordering::Greater)
-                )
+                offset_compare_matches(fact_value, token_value, offset, |ord| {
+                    matches!(ord, Ordering::Greater)
+                })
             }
             JoinTestType::LessThanOffset(offset) => {
-                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
-                    return false;
-                };
-                matches!(
-                    compare_numeric_values(fact_value, &adjusted_token),
-                    Some(Ordering::Less)
-                )
+                offset_compare_matches(fact_value, token_value, offset, |ord| {
+                    matches!(ord, Ordering::Less)
+                })
             }
             JoinTestType::GreaterOrEqualOffset(offset) => {
-                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
-                    return false;
-                };
-                matches!(
-                    compare_numeric_values(fact_value, &adjusted_token),
-                    Some(Ordering::Greater) | Some(Ordering::Equal)
-                )
+                offset_compare_matches(fact_value, token_value, offset, |ord| {
+                    matches!(ord, Ordering::Greater | Ordering::Equal)
+                })
             }
             JoinTestType::LessOrEqualOffset(offset) => {
-                let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
-                    return false;
-                };
-                matches!(
-                    compare_numeric_values(fact_value, &adjusted_token),
-                    Some(Ordering::Less) | Some(Ordering::Equal)
-                )
+                offset_compare_matches(fact_value, token_value, offset, |ord| {
+                    matches!(ord, Ordering::Less | Ordering::Equal)
+                })
             }
         };
 
@@ -1529,6 +1489,49 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
     true
 }
 
+fn atom_key_pair_matches<F>(fact_value: &Value, token_value: &Value, predicate: F) -> bool
+where
+    F: FnOnce(&AtomKey, &AtomKey) -> bool,
+{
+    let Some(fact_key) = AtomKey::from_value(fact_value) else {
+        return false;
+    };
+    let Some(token_key) = AtomKey::from_value(token_value) else {
+        return false;
+    };
+    predicate(&fact_key, &token_key)
+}
+
+fn numeric_compare_matches<F>(lhs: &Value, rhs: &Value, predicate: F) -> bool
+where
+    F: FnOnce(Ordering) -> bool,
+{
+    compare_numeric_values(lhs, rhs).is_some_and(predicate)
+}
+
+fn lexeme_compare_matches<F>(lhs: &Value, rhs: &Value, predicate: F) -> bool
+where
+    F: FnOnce(Ordering) -> bool,
+{
+    compare_lexeme_values(lhs, rhs).is_some_and(predicate)
+}
+
+fn offset_compare_matches<F>(
+    fact_value: &Value,
+    token_value: &Value,
+    offset: i64,
+    predicate: F,
+) -> bool
+where
+    F: FnOnce(Ordering) -> bool,
+{
+    let Some(adjusted_token) = add_integer_offset(token_value, offset) else {
+        return false;
+    };
+    numeric_compare_matches(fact_value, &adjusted_token, predicate)
+}
+
+#[allow(clippy::cast_precision_loss)]
 fn add_integer_offset(value: &Value, offset: i64) -> Option<Value> {
     match value {
         Value::Integer(i) => i.checked_add(offset).map(Value::Integer),
@@ -1537,6 +1540,7 @@ fn add_integer_offset(value: &Value, offset: i64) -> Option<Value> {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn compare_numeric_values(lhs: &Value, rhs: &Value) -> Option<Ordering> {
     match (lhs, rhs) {
         (Value::Integer(a), Value::Integer(b)) => Some(a.cmp(b)),

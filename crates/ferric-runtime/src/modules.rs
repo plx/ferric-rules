@@ -244,30 +244,26 @@ impl ModuleRegistry {
             return false;
         }
 
-        let visible = self
-            .modules
-            .get(&from_module)
-            .map(|importer| {
-                importer.imports.iter().any(|import| {
-                    let Some(&import_from_id) = self.name_to_id.get(&import.module_name) else {
-                        return false;
-                    };
+        let visible = self.modules.get(&from_module).is_some_and(|importer| {
+            importer.imports.iter().any(|import| {
+                let Some(&import_from_id) = self.name_to_id.get(&import.module_name) else {
+                    return false;
+                };
 
-                    if !Self::spec_matches(&import.spec, construct_type, construct_name) {
-                        return false;
-                    }
+                if !Self::spec_matches(&import.spec, construct_type, construct_name) {
+                    return false;
+                }
 
-                    self.module_exports_construct(import_from_id, construct_type, construct_name)
-                        && self.is_construct_visible_recursive(
-                            import_from_id,
-                            owning_module,
-                            construct_type,
-                            construct_name,
-                            visiting,
-                        )
-                })
+                self.module_exports_construct(import_from_id, construct_type, construct_name)
+                    && self.is_construct_visible_recursive(
+                        import_from_id,
+                        owning_module,
+                        construct_type,
+                        construct_name,
+                        visiting,
+                    )
             })
-            .unwrap_or(false);
+        });
 
         visiting.remove(&(from_module, owning_module));
         visible

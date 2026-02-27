@@ -167,15 +167,17 @@ impl LinearIntegerExpr {
         }
     }
 
-    fn add(self, other: Self) -> Option<Self> {
-        let variable = Self::merge_variables(&self.variable, &other.variable)?;
+    fn add(&self, other: &Self) -> Option<Self> {
+        let variable =
+            Self::merge_variables(self.variable.as_deref(), other.variable.as_deref()).ok()?;
         let coefficient = self.coefficient.checked_add(other.coefficient)?;
         let offset = self.offset.checked_add(other.offset)?;
         Some(Self::new(variable, coefficient, offset))
     }
 
-    fn sub(self, other: Self) -> Option<Self> {
-        let variable = Self::merge_variables(&self.variable, &other.variable)?;
+    fn sub(&self, other: &Self) -> Option<Self> {
+        let variable =
+            Self::merge_variables(self.variable.as_deref(), other.variable.as_deref()).ok()?;
         let coefficient = self.coefficient.checked_sub(other.coefficient)?;
         let offset = self.offset.checked_sub(other.offset)?;
         Some(Self::new(variable, coefficient, offset))
@@ -187,12 +189,12 @@ impl LinearIntegerExpr {
         Some(Self::new(self.variable, coefficient, offset))
     }
 
-    fn merge_variables(lhs: &Option<String>, rhs: &Option<String>) -> Option<Option<String>> {
+    fn merge_variables(lhs: Option<&str>, rhs: Option<&str>) -> Result<Option<String>, ()> {
         match (lhs, rhs) {
-            (Some(a), Some(b)) if a != b => None,
-            (Some(a), _) => Some(Some(a.clone())),
-            (_, Some(b)) => Some(Some(b.clone())),
-            (None, None) => Some(None),
+            (Some(a), Some(b)) if a != b => Err(()),
+            (Some(a), _) => Ok(Some(a.to_owned())),
+            (_, Some(b)) => Ok(Some(b.to_owned())),
+            (None, None) => Ok(None),
         }
     }
 
@@ -1941,12 +1943,9 @@ impl Engine {
     ///
     /// This is a fallback for negated ordered patterns where predicate/return
     /// expressions are too rich to lower into join/alpha tests.
-    fn try_build_negated_runtime_check(
-        &self,
-        pattern: &Pattern,
-    ) -> Option<NegatedPatternRuntimeCheck> {
+    fn try_build_negated_runtime_check(pattern: &Pattern) -> Option<NegatedPatternRuntimeCheck> {
         match pattern {
-            Pattern::Assigned { pattern, .. } => self.try_build_negated_runtime_check(pattern),
+            Pattern::Assigned { pattern, .. } => Self::try_build_negated_runtime_check(pattern),
             Pattern::Not(inner, _) => {
                 let Pattern::Ordered(ordered) = inner.as_ref() else {
                     return None;
@@ -2026,7 +2025,7 @@ impl Engine {
 
     fn sexpr_references_any_variable(expr: &SExpr, slot_variables: &HashSet<String>) -> bool {
         match expr {
-            SExpr::Atom(Atom::SingleVar(name), _) | SExpr::Atom(Atom::MultiVar(name), _) => {
+            SExpr::Atom(Atom::SingleVar(name) | Atom::MultiVar(name), _) => {
                 slot_variables.contains(name)
             }
             SExpr::Atom(_, _) => false,
@@ -2477,7 +2476,7 @@ impl Engine {
 
             // Fallback path for complex negated ordered constraints that cannot
             // be lowered to join/alpha tests in the negative network.
-            if let Some(runtime_check) = self.try_build_negated_runtime_check(pattern) {
+            if let Some(runtime_check) = Self::try_build_negated_runtime_check(pattern) {
                 test_conditions.push(CompiledTestCondition::NegatedPatternRuntimeCheck(
                     runtime_check,
                 ));
@@ -2587,6 +2586,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn translate_condition(
         &mut self,
         pattern: &Pattern,
@@ -2898,7 +2898,7 @@ impl Engine {
     }
 
     /// Translate a single `Constraint` into constant tests and/or variable slots.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn translate_constraint(
         &mut self,
         constraint: &Constraint,
@@ -2959,18 +2959,12 @@ impl Engine {
                 Constraint::Variable(name, _) | Constraint::MultiVariable(name, _) => {
                     let sym = self.compile_symbol(name)?;
                     if let Some(previous_slot) = seen_variable_slots.get(&sym).copied() {
-                        if previous_slot != slot {
-                            constant_tests.push(ConstantTest {
-                                slot,
-                                test_type: ConstantTestType::NotEqualSlot(previous_slot),
-                            });
-                        } else {
-                            // `?x&~?x` on the same slot is unsatisfiable.
-                            constant_tests.push(ConstantTest {
-                                slot,
-                                test_type: ConstantTestType::NotEqualSlot(previous_slot),
-                            });
-                        }
+                        // `?x&~?x` on the same slot is unsatisfiable, and a distinct
+                        // previously-bound slot is the normal inequality case.
+                        constant_tests.push(ConstantTest {
+                            slot,
+                            test_type: ConstantTestType::NotEqualSlot(previous_slot),
+                        });
                     } else {
                         // ~?x or ~$?x against a previously-bound variable.
                         negated_variable_slots.push((slot, sym, JoinTestType::NotEqual));
@@ -3347,6 +3341,7 @@ impl Engine {
         Ok(true)
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn normalize_operand_for_slot_offset(
         operand: &PredicateOperand,
         slot_offset: i64,
@@ -3456,12 +3451,10 @@ impl Engine {
     }
 
     fn slot_self_comparison_truthiness(op: SimpleComparisonOp, offset: i64) -> bool {
-        let ordering = if offset == 0 {
-            std::cmp::Ordering::Equal
-        } else if offset > 0 {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
+        let ordering = match offset.cmp(&0) {
+            std::cmp::Ordering::Equal => std::cmp::Ordering::Equal,
+            std::cmp::Ordering::Greater => std::cmp::Ordering::Less,
+            std::cmp::Ordering::Less => std::cmp::Ordering::Greater,
         };
 
         match op {
@@ -3608,7 +3601,7 @@ impl Engine {
                 let mut acc = Self::parse_linear_integer_expression(first)?;
                 for term in terms {
                     let rhs = Self::parse_linear_integer_expression(term)?;
-                    acc = acc.add(rhs)?;
+                    acc = acc.add(&rhs)?;
                 }
                 Some(acc)
             }
@@ -3622,7 +3615,7 @@ impl Engine {
 
                 for term in terms {
                     let rhs = Self::parse_linear_integer_expression(term)?;
-                    acc = acc.sub(rhs)?;
+                    acc = acc.sub(&rhs)?;
                 }
                 Some(acc)
             }
@@ -5217,7 +5210,9 @@ mod tests {
                     .expect("field symbol should resolve");
                 assert_eq!(field, "clear");
             }
-            other => panic!("expected ordered fact fallback, got {other:?}"),
+            Fact::Template(template) => {
+                panic!("expected ordered fact fallback, got template fact {template:?}")
+            }
         }
     }
 

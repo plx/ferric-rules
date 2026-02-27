@@ -343,7 +343,7 @@ fn rhs_bind_can_rebind_local_variable() {
     run_to_completion(&mut engine);
     let output = engine.get_output("t").unwrap_or("");
     assert!(
-        output.contains("3"),
+        output.contains('3'),
         "expected local bind-rebind output, got: {output}"
     );
     assert!(
@@ -1875,11 +1875,11 @@ fn agenda_prints_activations() {
 #[test]
 fn rules_prints_loaded_rule_names() {
     let mut engine = new_utf8_engine();
-    let source = r#"
+    let source = r"
 (defrule alpha (go) =>)
 (defrule beta (go) => (rules))
 (deffacts startup (go))
-"#;
+";
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
@@ -1897,7 +1897,7 @@ fn rules_prints_loaded_rule_names() {
 #[test]
 fn ppdefrule_prints_named_rule_definition() {
     let mut engine = new_utf8_engine();
-    let source = r#"
+    let source = r"
 (defrule target
     (go)
     =>
@@ -1908,7 +1908,7 @@ fn ppdefrule_prints_named_rule_definition() {
     =>
     (ppdefrule target))
 (deffacts startup (go))
-"#;
+";
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
@@ -1926,7 +1926,7 @@ fn ppdefrule_prints_named_rule_definition() {
 #[test]
 fn ppdefrule_star_prints_all_loaded_definitions() {
     let mut engine = new_utf8_engine();
-    let source = r#"
+    let source = r"
 (defrule alpha (go) =>)
 (defrule beta (go) =>)
 (defrule inspector
@@ -1935,7 +1935,7 @@ fn ppdefrule_star_prints_all_loaded_definitions() {
     =>
     (ppdefrule *))
 (deffacts startup (go))
-"#;
+";
     load_ok(&mut engine, source);
     engine.reset().expect("reset");
     run_to_completion(&mut engine);
