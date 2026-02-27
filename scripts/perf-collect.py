@@ -7,8 +7,8 @@ target/criterion/ directory to collect estimates into a unified
 perf-manifest.json.
 
 Optionally collects CLIPS reference times by running equivalent workloads
-through the CLIPS Docker image, providing a frame of reference for
-ferric's performance.
+through the native CLIPS binary when available (or the CLIPS Docker image
+as a fallback), providing a frame of reference for ferric's performance.
 
 Usage:
     python scripts/perf-collect.py [options]
@@ -21,8 +21,11 @@ Options:
     --warm-up-time N          Criterion warm-up time in seconds (default: 1)
     --measurement-time N      Criterion measurement time in seconds (default: 1)
     --commit-sha SHA          Commit SHA to record in manifest
-    --clips-reference         Collect CLIPS reference times via Docker
-    --clips-image NAME        Docker image (default: ferric-rules/clips-reference:latest)
+    --clips-reference         Collect CLIPS reference times
+    --clips-runner MODE       CLIPS runner: auto|native|docker (default: auto)
+    --clips-bin PATH          CLIPS executable for native runner (default: clips)
+    --clips-image NAME        Docker image for docker runner
+                              (default: ferric-rules/clips-reference:latest)
     --clips-iterations N      Timed iterations per workload (default: 5)
     --clips-warmup N          Warm-up iterations for CLIPS (default: 1)
     --clips-timeout N         Timeout per CLIPS invocation in seconds (default: 120)
@@ -33,6 +36,7 @@ Options:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -169,24 +173,89 @@ def _floor_or_none(value):
 # CLIPS reference collection
 # ---------------------------------------------------------------------------
 
-def generate_workloads(repo_root, workload_dir):
-    """Run ferric-bench-gen to create .clp workload files."""
-    print("==> Generating CLIPS workload files...", flush=True)
-    cmd = [
-        "cargo", "run", "--release", "-p", "ferric-bench-gen", "--",
-        "--output-dir", workload_dir,
-    ]
-    result = subprocess.run(cmd, capture_output=False, cwd=str(repo_root))
-    if result.returncode != 0:
-        print(f"error: ferric-bench-gen failed with code {result.returncode}",
-              file=sys.stderr)
+def _escape_clips_string(value):
+    """Escape a Python string for a CLIPS string literal."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_clips_script(workload_path=None):
+    """Build stdin text for a CLIPS invocation."""
+    lines = []
+    if workload_path is not None:
+        lines.append(f'(load "{_escape_clips_string(workload_path)}")')
+        lines.append("(reset)")
+        lines.append("(run)")
+    lines.append("(exit)")
+    return "\n".join(lines) + "\n"
+
+
+def _resolve_clips_runner(mode, clips_bin, image):
+    """Resolve the requested CLIPS runner."""
+    native_path = shutil.which(clips_bin)
+
+    if mode in ("auto", "native") and native_path:
+        return {"mode": "native", "clips_bin": native_path}
+
+    if mode == "native":
+        print(f"error: CLIPS executable not found: {clips_bin}", file=sys.stderr)
         sys.exit(1)
 
+    if shutil.which("docker") is None:
+        if mode == "docker":
+            print("error: docker not found in PATH", file=sys.stderr)
+        else:
+            print(
+                f"error: CLIPS executable not found ({clips_bin}) and docker is not available",
+                file=sys.stderr,
+            )
+        sys.exit(1)
 
-def time_clips_workload(image, repo_root, container_path, timeout):
-    """Run a single CLIPS workload in Docker and return elapsed nanoseconds."""
-    stdin_text = f'(batch* "{container_path}")\n(reset)\n(run)\n(exit)\n'
+    inspect = subprocess.run(
+        ["docker", "image", "inspect", image],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if inspect.returncode != 0:
+        if mode == "docker":
+            print(f"error: Docker image not found locally: {image}", file=sys.stderr)
+        else:
+            print(
+                f"error: CLIPS executable not found ({clips_bin}), and Docker image "
+                f"not found locally: {image}",
+                file=sys.stderr,
+            )
+        print(
+            "hint: build the image first with ./scripts/clips-reference.sh build",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
+    return {"mode": "docker", "image": image}
+
+
+def _time_clips_session_native(clips_bin, repo_root, stdin_text, timeout):
+    """Run a single CLIPS invocation natively and return elapsed nanoseconds."""
+    start = time.perf_counter_ns()
+    try:
+        result = subprocess.run(
+            [clips_bin],
+            input=stdin_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=repo_root,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    elapsed_ns = time.perf_counter_ns() - start
+
+    if result.returncode != 0:
+        return None
+    return elapsed_ns
+
+
+def _time_clips_session_docker(image, repo_root, stdin_text, timeout):
+    """Run a single CLIPS invocation via Docker and return elapsed nanoseconds."""
     start = time.perf_counter_ns()
     try:
         result = subprocess.run(
@@ -208,16 +277,69 @@ def time_clips_workload(image, repo_root, container_path, timeout):
     return elapsed_ns
 
 
-def collect_clips_reference(image, repo_root, workload_dir, warmup, iterations, timeout):
+def _time_clips_session(runner, repo_root, stdin_text, timeout):
+    """Run a single CLIPS invocation using the resolved runner."""
+    if runner["mode"] == "native":
+        return _time_clips_session_native(
+            runner["clips_bin"], repo_root, stdin_text, timeout
+        )
+    return _time_clips_session_docker(
+        runner["image"], repo_root, stdin_text, timeout
+    )
+
+
+def _clips_workload_path(runner, repo_root, workload_path):
+    """Return the path string CLIPS should load for the selected runner."""
+    if runner["mode"] == "native":
+        return str(Path(workload_path).resolve())
+    return f"/workspace/{os.path.relpath(workload_path, repo_root)}"
+
+
+def _time_clips_sample(runner, repo_root, workload_path, timeout):
+    """Measure a workload and subtract a matched launch-only baseline."""
+    launch_ns = _time_clips_session(
+        runner, repo_root, _build_clips_script(), timeout
+    )
+    if launch_ns is None:
+        return None
+
+    full_ns = _time_clips_session(
+        runner, repo_root, _build_clips_script(workload_path), timeout
+    )
+    if full_ns is None:
+        return None
+
+    return max(0, full_ns - launch_ns)
+
+
+def generate_workloads(repo_root, workload_dir):
+    """Run ferric-bench-gen to create .clp workload files."""
+    print("==> Generating CLIPS workload files...", flush=True)
+    cmd = [
+        "cargo", "run", "--release", "-p", "ferric-bench-gen", "--",
+        "--output-dir", workload_dir,
+    ]
+    result = subprocess.run(cmd, capture_output=False, cwd=str(repo_root))
+    if result.returncode != 0:
+        print(f"error: ferric-bench-gen failed with code {result.returncode}",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def collect_clips_reference(runner, repo_root, workload_dir, warmup, iterations, timeout):
     """Collect CLIPS reference times for all mapped workloads."""
-    print(f"\n==> Collecting CLIPS reference times ({iterations} iterations, "
-          f"{warmup} warmup)...", flush=True)
+    runner_desc = runner["clips_bin"] if runner["mode"] == "native" else runner["image"]
+    print(
+        f"\n==> Collecting CLIPS reference times ({iterations} iterations, "
+        f"{warmup} warmup) via {runner['mode']} ({runner_desc})...",
+        flush=True,
+    )
 
     clips_benchmarks = {}
 
     for bench_name, clp_file in CLIPS_WORKLOADS.items():
         workload_path = os.path.join(workload_dir, clp_file)
-        container_path = f"/workspace/{os.path.relpath(workload_path, repo_root)}"
+        clips_path = _clips_workload_path(runner, repo_root, workload_path)
 
         if not os.path.exists(workload_path):
             print(f"  warning: workload not found: {workload_path}", file=sys.stderr)
@@ -228,12 +350,12 @@ def collect_clips_reference(image, repo_root, workload_dir, warmup, iterations, 
 
         # Warm-up runs (untimed)
         for _ in range(warmup):
-            time_clips_workload(image, repo_root, container_path, timeout)
+            _time_clips_sample(runner, repo_root, clips_path, timeout)
 
         # Timed runs
         times = []
         for _ in range(iterations):
-            t = time_clips_workload(image, repo_root, container_path, timeout)
+            t = _time_clips_sample(runner, repo_root, clips_path, timeout)
             if t is not None:
                 times.append(t)
 
@@ -246,7 +368,7 @@ def collect_clips_reference(image, repo_root, workload_dir, warmup, iterations, 
                 "mean_ns": mean_ns,
                 "iterations": len(times),
             }
-            print(f" {_fmt_ns(median_ns)}")
+            print(f" {_fmt_ns(median_ns)} (launch-adjusted)")
         else:
             clips_benchmarks[bench_name] = None
             print(" FAILED")
@@ -344,12 +466,22 @@ def main():
     # CLIPS reference options
     parser.add_argument(
         "--clips-reference", action="store_true",
-        help="Collect CLIPS reference times via Docker",
+        help="Collect CLIPS reference times (native CLIPS preferred, Docker fallback)",
+    )
+    parser.add_argument(
+        "--clips-runner", choices=("auto", "native", "docker"), default="auto",
+        metavar="MODE",
+        help="CLIPS runner: auto|native|docker (default: auto)",
+    )
+    parser.add_argument(
+        "--clips-bin", default="clips", metavar="PATH",
+        help="CLIPS executable for native runner (default: clips)",
     )
     parser.add_argument(
         "--clips-image", default="ferric-rules/clips-reference:latest",
         metavar="IMAGE",
-        help="CLIPS Docker image (default: ferric-rules/clips-reference:latest)",
+        help="CLIPS Docker image for docker runner "
+             "(default: ferric-rules/clips-reference:latest)",
     )
     parser.add_argument(
         "--clips-iterations", type=int, default=5,
@@ -391,11 +523,15 @@ def main():
     # Collect CLIPS reference times
     clips_reference = None
     if args.clips_reference:
+        clips_runner = _resolve_clips_runner(
+            args.clips_runner, args.clips_bin, args.clips_image
+        )
+
         if not args.skip_workload_gen:
             generate_workloads(str(repo_root), workload_dir)
 
         clips_benchmarks = collect_clips_reference(
-            image=args.clips_image,
+            runner=clips_runner,
             repo_root=str(repo_root),
             workload_dir=workload_dir,
             warmup=args.clips_warmup,
@@ -403,11 +539,16 @@ def main():
             timeout=args.clips_timeout,
         )
         clips_reference = {
-            "methodology": "docker_wall_clock",
-            "image": args.clips_image,
+            "methodology": f"{clips_runner['mode']}_wall_clock_launch_adjusted",
+            "runner": clips_runner["mode"],
             "iterations": args.clips_iterations,
+            "launch_overhead_adjusted": True,
             "benchmarks": clips_benchmarks,
         }
+        if clips_runner["mode"] == "native":
+            clips_reference["clips_bin"] = clips_runner["clips_bin"]
+        else:
+            clips_reference["image"] = clips_runner["image"]
 
     # Collect Criterion results
     settings = {
@@ -433,7 +574,8 @@ def main():
     if clips_reference:
         clips_collected = sum(1 for v in clips_reference["benchmarks"].values()
                               if v is not None)
-        print(f"    clips reference: {clips_collected}/{len(CLIPS_WORKLOADS)} collected")
+        print(f"    clips reference: {clips_collected}/{len(CLIPS_WORKLOADS)} collected "
+              f"({clips_reference['runner']}, launch-adjusted)")
 
     # Exit 1 only if ALL benchmarks are missing
     if summary["collected"] == 0:

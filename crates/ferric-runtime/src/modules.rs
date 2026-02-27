@@ -4,7 +4,7 @@
 //! modules only affect which rules fire (based on focus) and which
 //! templates/constructs are visible across module boundaries.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ferric_parser::{ImportSpec, ModuleSpec};
 
@@ -206,6 +206,69 @@ impl ModuleRegistry {
         }
     }
 
+    fn module_exports_construct(
+        &self,
+        module_id: ModuleId,
+        construct_type: &str,
+        construct_name: &str,
+    ) -> bool {
+        let Some(module) = self.modules.get(&module_id) else {
+            return false;
+        };
+
+        // CLIPS default behavior: if no explicit export spec is provided,
+        // the module behaves as though it exports ?ALL.
+        if module.exports.is_empty() {
+            return true;
+        }
+
+        module
+            .exports
+            .iter()
+            .any(|spec| Self::spec_matches(spec, construct_type, construct_name))
+    }
+
+    fn is_construct_visible_recursive(
+        &self,
+        from_module: ModuleId,
+        owning_module: ModuleId,
+        construct_type: &str,
+        construct_name: &str,
+        visiting: &mut HashSet<(ModuleId, ModuleId)>,
+    ) -> bool {
+        if from_module == owning_module {
+            return true;
+        }
+
+        if !visiting.insert((from_module, owning_module)) {
+            return false;
+        }
+
+        let visible = self.modules.get(&from_module).is_some_and(|importer| {
+            importer.imports.iter().any(|import| {
+                let Some(&import_from_id) = self.name_to_id.get(&import.module_name) else {
+                    return false;
+                };
+
+                if !Self::spec_matches(&import.spec, construct_type, construct_name) {
+                    return false;
+                }
+
+                self.module_exports_construct(import_from_id, construct_type, construct_name)
+                    && self.is_construct_visible_recursive(
+                        import_from_id,
+                        owning_module,
+                        construct_type,
+                        construct_name,
+                        visiting,
+                    )
+            })
+        });
+
+        visiting.remove(&(from_module, owning_module));
+        visible
+    }
+
     /// Check if a construct is visible from `from_module`.
     ///
     /// A construct is visible if:
@@ -219,36 +282,14 @@ impl ModuleRegistry {
         construct_type: &str,
         construct_name: &str,
     ) -> bool {
-        if from_module == owning_module {
-            return true;
-        }
-
-        let Some(owner) = self.modules.get(&owning_module) else {
-            return false;
-        };
-
-        let exported = owner
-            .exports
-            .iter()
-            .any(|spec| Self::spec_matches(spec, construct_type, construct_name));
-
-        if !exported {
-            return false;
-        }
-
-        let Some(importer) = self.modules.get(&from_module) else {
-            return false;
-        };
-
-        importer.imports.iter().any(|import| {
-            let Some(&import_from_id) = self.name_to_id.get(&import.module_name) else {
-                return false;
-            };
-            if import_from_id != owning_module {
-                return false;
-            }
-            Self::spec_matches(&import.spec, construct_type, construct_name)
-        })
+        let mut visiting = HashSet::new();
+        self.is_construct_visible_recursive(
+            from_module,
+            owning_module,
+            construct_type,
+            construct_name,
+            &mut visiting,
+        )
     }
 
     /// Debug-only structural checks for module/focus bookkeeping.
@@ -430,6 +471,59 @@ mod tests {
 
         let main = registry.main_module_id();
         assert!(registry.is_construct_visible(main, sensor_id, "deftemplate", "reading"));
+    }
+
+    #[test]
+    fn visibility_defaults_to_export_all_when_unspecified() {
+        let mut registry = ModuleRegistry::new();
+        let source_id = registry.register("SOURCE", vec![], vec![]);
+        registry.register(
+            "MAIN",
+            vec![ModuleSpec::All],
+            vec![ImportSpec {
+                module_name: "SOURCE".to_string(),
+                spec: ModuleSpec::All,
+                span: dummy_span(),
+            }],
+        );
+
+        let main = registry.main_module_id();
+        assert!(registry.is_construct_visible(main, source_id, "deftemplate", "reading"));
+    }
+
+    #[test]
+    fn visibility_supports_transitive_reexports() {
+        let mut registry = ModuleRegistry::new();
+        let source_id = registry.register(
+            "SOURCE",
+            vec![ModuleSpec::Specific {
+                construct_type: "deftemplate".to_string(),
+                names: vec!["reading".to_string()],
+            }],
+            vec![],
+        );
+
+        registry.register(
+            "MID",
+            vec![ModuleSpec::All],
+            vec![ImportSpec {
+                module_name: "SOURCE".to_string(),
+                spec: ModuleSpec::All,
+                span: dummy_span(),
+            }],
+        );
+
+        let leaf_id = registry.register(
+            "LEAF",
+            vec![],
+            vec![ImportSpec {
+                module_name: "MID".to_string(),
+                spec: ModuleSpec::All,
+                span: dummy_span(),
+            }],
+        );
+
+        assert!(registry.is_construct_visible(leaf_id, source_id, "deftemplate", "reading"));
     }
 
     #[test]

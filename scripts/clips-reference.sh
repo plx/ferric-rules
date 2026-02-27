@@ -127,6 +127,11 @@ run_command() {
 
   if [[ "${#commands[@]}" -eq 0 ]]; then
     commands+=("(reset)" "(run)")
+  elif [[ "${#OPS[@]}" -eq 0 && -z "$OPS_FILE" ]]; then
+    # When only --file was given (no explicit --op or --ops-file),
+    # append (reset)(run) to execute rules after loading.  This matches
+    # ferric's "load → reset → run" behavior.
+    commands+=("(reset)" "(run)")
   fi
 
   {

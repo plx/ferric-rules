@@ -41,6 +41,10 @@ pub enum Pattern {
     Exists(Vec<Pattern>, Span),
     /// Forall CE: (forall <condition> <then-clause>...)
     Forall(Vec<Pattern>, Span),
+    /// Logical CE: (logical <pattern> ...) — truth maintenance wrapper
+    Logical(Vec<Pattern>, Span),
+    /// Disjunction CE: (or <pattern> <pattern> ...)
+    Or(Vec<Pattern>, Span),
     /// Assigned pattern: ?var <- <pattern>
     Assigned {
         variable: String,
@@ -87,6 +91,10 @@ pub enum Constraint {
     Wildcard(Span),
     /// Multi-field wildcard: $? (matches zero or more values)
     MultiWildcard(Span),
+    /// Predicate constraint: :(<expr>)
+    Predicate(SExpr, Span),
+    /// Return-value constraint: =(<expr>)
+    ReturnValue(SExpr, Span),
     /// Negation: ~<constraint>
     Not(Box<Constraint>, Span),
     /// Conjunction: constraint & constraint
@@ -127,12 +135,77 @@ pub struct FunctionCall {
     pub span: Span,
 }
 
+const FACT_SLOT_REF_FN: &str = "__fact_slot_ref";
+
 #[derive(Clone, Debug)]
 pub enum ActionExpr {
     Literal(LiteralValue),
     Variable(String, Span),
     GlobalVariable(String, Span),
     FunctionCall(FunctionCall),
+    /// CLIPS `(if <condition> then <action>* [else <action>*])` form.
+    If {
+        condition: Box<ActionExpr>,
+        then_actions: Vec<ActionExpr>,
+        else_actions: Vec<ActionExpr>,
+        span: Span,
+    },
+    /// CLIPS `(while <condition> do <action>*)` loop form.
+    While {
+        condition: Box<ActionExpr>,
+        body: Vec<ActionExpr>,
+        span: Span,
+    },
+    /// CLIPS `(loop-for-count (?var <start> <end>) do <action>*)` loop form.
+    ///
+    /// If `var_name` is `None`, no variable is bound (anonymous counter).
+    LoopForCount {
+        var_name: Option<String>,
+        start: Box<ActionExpr>,
+        end: Box<ActionExpr>,
+        body: Vec<ActionExpr>,
+        span: Span,
+    },
+    /// CLIPS `(progn$ (?var <multifield-expr>) <action>*)` /
+    /// `(foreach ?var <multifield-expr> do <action>*)` form.
+    ///
+    /// Iterates over each element of a multifield value, binding `var_name`
+    /// to each element and `<var_name>-index` to the 1-based iteration index.
+    Progn {
+        var_name: String,
+        list_expr: Box<ActionExpr>,
+        body: Vec<ActionExpr>,
+        span: Span,
+    },
+    /// CLIPS fact-query macro forms:
+    /// - `(do-for-fact ((?v tmpl)) <query> <action>*)`
+    /// - `(do-for-all-facts ((?v tmpl)) <query> <action>*)`
+    /// - `(delayed-do-for-all-facts ((?v tmpl)) <query> <action>*)`
+    /// - `(any-factp ((?v tmpl)) <query>)` — no body
+    /// - `(find-fact ((?v tmpl)) <query>)` — no body
+    /// - `(find-all-facts ((?v tmpl)) <query>)` — no body
+    ///
+    /// `name` is the macro name. `bindings` lists `(variable, template)` pairs.
+    /// `query` is the filter expression. `body` holds body actions (empty for
+    /// `any-factp`, `find-fact`, and `find-all-facts`).
+    QueryAction {
+        /// The specific macro name (e.g. `"do-for-fact"`).
+        name: String,
+        /// Binding specifications: `(variable_name, template_name)` pairs.
+        bindings: Vec<(String, String)>,
+        /// Query expression evaluated against each candidate fact.
+        query: Box<ActionExpr>,
+        /// Body actions executed for matching facts (empty for query-only forms).
+        body: Vec<ActionExpr>,
+        span: Span,
+    },
+    /// CLIPS `(switch <expr> (case <value> then <action>*) ... [(default <action>*)])` form.
+    Switch {
+        expr: Box<ActionExpr>,
+        cases: Vec<(ActionExpr, Vec<ActionExpr>)>,
+        default: Option<Vec<ActionExpr>>,
+        span: Span,
+    },
 }
 
 // ============================================================================
@@ -199,6 +272,8 @@ pub enum FactValue {
     Literal(LiteralValue),
     Variable(String, Span),
     GlobalVariable(String, Span),
+    /// Empty multifield value — represents `(slot-name)` with no values.
+    EmptyMultifield(Span),
 }
 
 // ============================================================================
@@ -975,6 +1050,15 @@ fn interpret_global(elements: &[SExpr], span: Span) -> Result<GlobalConstruct, I
     let mut globals = Vec::new();
     let mut idx = 0;
 
+    // CLIPS allows an optional module name prefix: (defglobal MAIN ?*x* = 1)
+    // If the first element is a plain symbol (not a global var), skip it as
+    // the module qualifier.
+    if idx < elements.len() {
+        if let Some(Atom::Symbol(_)) = elements[idx].as_atom() {
+            idx += 1;
+        }
+    }
+
     while idx < elements.len() {
         // Expect a global variable atom: ?*name*
         let global_name = match elements[idx].as_atom() {
@@ -1482,6 +1566,26 @@ fn interpret_conditional_pattern(
             }
             Ok(Some(Pattern::Forall(patterns, expr.span())))
         }
+        Some("logical") => {
+            let mut patterns = Vec::new();
+            for pattern_expr in &list[1..] {
+                patterns.push(interpret_pattern(pattern_expr)?);
+            }
+            Ok(Some(Pattern::Logical(patterns, expr.span())))
+        }
+        Some("or") => {
+            if list.len() < 3 {
+                return Err(InterpretError::missing(
+                    "at least two patterns in (or ...)",
+                    expr.span(),
+                ));
+            }
+            let mut patterns = Vec::new();
+            for pattern_expr in &list[1..] {
+                patterns.push(interpret_pattern(pattern_expr)?);
+            }
+            Ok(Some(Pattern::Or(patterns, expr.span())))
+        }
         _ => Ok(None),
     }
 }
@@ -1547,9 +1651,9 @@ fn interpret_pattern_slot_constraint(slot_expr: &SExpr) -> Result<SlotConstraint
         .ok_or_else(|| InterpretError::expected("slot name (symbol)", slot_list[0].span()))?
         .to_string();
 
-    // For Phase 2, support single constraint per slot.
     let constraint = if slot_list.len() > 1 {
-        interpret_constraint(&slot_list[1])?
+        let (c, _consumed) = interpret_constraint_sequence(&slot_list[1..])?;
+        c
     } else {
         Constraint::Wildcard(slot_expr.span())
     };
@@ -1566,9 +1670,12 @@ fn interpret_ordered_pattern(
     field_exprs: &[SExpr],
     span: Span,
 ) -> Result<Pattern, InterpretError> {
-    let mut constraints = Vec::with_capacity(field_exprs.len());
-    for field_expr in field_exprs {
-        constraints.push(interpret_constraint(field_expr)?);
+    let mut constraints = Vec::new();
+    let mut i = 0;
+    while i < field_exprs.len() {
+        let (constraint, consumed) = interpret_constraint_sequence(&field_exprs[i..])?;
+        constraints.push(constraint);
+        i += consumed;
     }
 
     Ok(Pattern::Ordered(OrderedPattern {
@@ -1576,6 +1683,180 @@ fn interpret_ordered_pattern(
         constraints,
         span,
     }))
+}
+
+/// Interpret a sequence of S-expressions as a single constraint, handling
+/// connective operators (`&`, `|`, `~`) with correct precedence.
+///
+/// Precedence (highest to lowest): `~` (prefix not) > `&` (and) > `|` (or).
+///
+/// Returns the parsed `Constraint` and the number of S-expressions consumed
+/// from `exprs`.
+fn interpret_constraint_sequence(exprs: &[SExpr]) -> Result<(Constraint, usize), InterpretError> {
+    if exprs.is_empty() {
+        // Should not happen in normal flow, but guard anyway.
+        return Err(InterpretError::invalid(
+            "empty constraint sequence",
+            // We have no span; callers always check length first.
+            Span::point(crate::span::Position::new(), crate::span::FileId(0)),
+        ));
+    }
+    parse_or_expr(exprs)
+}
+
+/// Parse an or-expression: `and_expr ("|" and_expr)*`.
+///
+/// Returns `(constraint, consumed)`.
+fn parse_or_expr(exprs: &[SExpr]) -> Result<(Constraint, usize), InterpretError> {
+    let (mut lhs, mut pos) = parse_and_expr(exprs)?;
+
+    loop {
+        if pos >= exprs.len() {
+            break;
+        }
+        // Check if the next token is `|`
+        if !is_connective(&exprs[pos], Connective::Or) {
+            break;
+        }
+        // Consume the `|`
+        pos += 1;
+
+        if pos >= exprs.len() {
+            return Err(InterpretError::invalid(
+                "expected constraint after `|`",
+                exprs[pos - 1].span(),
+            ));
+        }
+
+        let (rhs, rhs_len) = parse_and_expr(&exprs[pos..])?;
+        let combined_span = lhs.span().merge(rhs.span());
+
+        // Flatten nested Or into a single Or if possible.
+        lhs = match lhs {
+            Constraint::Or(mut terms, _) => {
+                terms.push(rhs);
+                Constraint::Or(terms, combined_span)
+            }
+            other => Constraint::Or(vec![other, rhs], combined_span),
+        };
+        pos += rhs_len;
+    }
+
+    Ok((lhs, pos))
+}
+
+/// Parse an and-expression: `unary_expr ("&" unary_expr)*`.
+///
+/// Returns `(constraint, consumed)`.
+fn parse_and_expr(exprs: &[SExpr]) -> Result<(Constraint, usize), InterpretError> {
+    let (mut lhs, mut pos) = parse_unary_expr(exprs)?;
+
+    loop {
+        if pos >= exprs.len() {
+            break;
+        }
+        // Check if the next token is `&`
+        if !is_connective(&exprs[pos], Connective::And) {
+            break;
+        }
+        // Consume the `&`
+        pos += 1;
+
+        if pos >= exprs.len() {
+            return Err(InterpretError::invalid(
+                "expected constraint after `&`",
+                exprs[pos - 1].span(),
+            ));
+        }
+
+        let (rhs, rhs_len) = parse_unary_expr(&exprs[pos..])?;
+        let combined_span = lhs.span().merge(rhs.span());
+
+        // Flatten nested And into a single And if possible.
+        lhs = match lhs {
+            Constraint::And(mut terms, _) => {
+                terms.push(rhs);
+                Constraint::And(terms, combined_span)
+            }
+            other => Constraint::And(vec![other, rhs], combined_span),
+        };
+        pos += rhs_len;
+    }
+
+    Ok((lhs, pos))
+}
+
+/// Parse a unary expression: `"~" unary_expr | atom_constraint`.
+///
+/// Returns `(constraint, consumed)`.
+fn parse_unary_expr(exprs: &[SExpr]) -> Result<(Constraint, usize), InterpretError> {
+    if exprs.is_empty() {
+        return Err(InterpretError::invalid(
+            "expected constraint",
+            Span::point(crate::span::Position::new(), crate::span::FileId(0)),
+        ));
+    }
+
+    if is_connective(&exprs[0], Connective::Not) {
+        let not_span = exprs[0].span();
+        // Consume the `~` and parse the inner constraint.
+        if exprs.len() < 2 {
+            return Err(InterpretError::invalid(
+                "expected constraint after `~`",
+                not_span,
+            ));
+        }
+        let (inner, inner_len) = parse_unary_expr(&exprs[1..])?;
+        let combined_span = not_span.merge(inner.span());
+        return Ok((
+            Constraint::Not(Box::new(inner), combined_span),
+            1 + inner_len,
+        ));
+    }
+
+    // `:` and `=` introduce predicate/return-value constraint forms.
+    // Consume the connective and one expression as a first-class constraint node.
+    if is_connective(&exprs[0], Connective::Colon) || is_connective(&exprs[0], Connective::Equals) {
+        let conn_span = exprs[0].span();
+        if exprs.len() < 2 {
+            return Err(InterpretError::invalid(
+                "expected expression after predicate connective",
+                conn_span,
+            ));
+        }
+        let combined_span = conn_span.merge(exprs[1].span());
+        if is_connective(&exprs[0], Connective::Colon) {
+            return Ok((Constraint::Predicate(exprs[1].clone(), combined_span), 2));
+        }
+        return Ok((Constraint::ReturnValue(exprs[1].clone(), combined_span), 2));
+    }
+
+    // Atom constraint — exactly one S-expression.
+    let c = interpret_constraint(&exprs[0])?;
+    Ok((c, 1))
+}
+
+/// Returns `true` if `expr` is a connective atom of the given kind.
+fn is_connective(expr: &SExpr, kind: Connective) -> bool {
+    matches!(expr.as_atom(), Some(Atom::Connective(c)) if *c == kind)
+}
+
+impl Constraint {
+    /// Returns the span of this constraint.
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Literal(lit) => lit.span,
+            Self::Variable(_, span)
+            | Self::MultiVariable(_, span)
+            | Self::Wildcard(span)
+            | Self::MultiWildcard(span)
+            | Self::Predicate(_, span)
+            | Self::ReturnValue(_, span)
+            | Self::Not(_, span)
+            | Self::And(_, span)
+            | Self::Or(_, span) => *span,
+        }
+    }
 }
 
 /// Interpret a single constraint from a pattern field.
@@ -1644,8 +1925,155 @@ fn interpret_constraint(expr: &SExpr) -> Result<Constraint, InterpretError> {
 
 /// Interpret a single action from a rule's RHS.
 fn interpret_action(expr: &SExpr) -> Result<Action, InterpretError> {
+    // Detect special forms at the action level and wrap them as synthetic
+    // `FunctionCall`s so the action executor can route them.
+    if let Some(list) = expr.as_list() {
+        if !list.is_empty() {
+            match list[0].as_symbol() {
+                Some("if") => {
+                    let if_expr = interpret_if_expr(&list[1..], expr.span())?;
+                    // Wrap the parsed `if` form as the sole argument to a synthetic
+                    // `FunctionCall` with name `"if"`.  The action executor detects
+                    // this name and unpacks `args[0]` as `ActionExpr::If`.
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "if".to_string(),
+                            args: vec![if_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                Some("while") => {
+                    let while_expr = interpret_while_expr(&list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "while".to_string(),
+                            args: vec![while_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                Some("loop-for-count") => {
+                    let lfc_expr = interpret_loop_for_count_expr(&list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "loop-for-count".to_string(),
+                            args: vec![lfc_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                Some("progn$") => {
+                    let progn_expr = interpret_progn_dollar_expr(&list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "progn$".to_string(),
+                            args: vec![progn_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                Some("foreach") => {
+                    let foreach_expr = interpret_foreach_expr(&list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "foreach".to_string(),
+                            args: vec![foreach_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                Some(
+                    name @ ("do-for-fact"
+                    | "do-for-all-facts"
+                    | "delayed-do-for-all-facts"
+                    | "any-factp"
+                    | "find-fact"
+                    | "find-all-facts"),
+                ) => {
+                    let name = name.to_string();
+                    let query_expr = interpret_query_action_expr(&name, &list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name,
+                            args: vec![query_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
+                // `modify` and `duplicate` use slot-value pair syntax for their
+                // arguments after the fact variable.  We must NOT interpret the
+                // slot name position as a keyword — `(modify ?f (if ?rest))` means
+                // slot name `if`, not an if/then/else construct.
+                Some("modify" | "duplicate") => {
+                    let name = list[0].as_symbol().unwrap().to_string();
+                    let call = interpret_fact_mutation_call(&name, &list[1..], expr.span())?;
+                    return Ok(Action { call });
+                }
+                _ => {}
+            }
+        }
+    }
     let call = interpret_function_call(expr)?;
     Ok(Action { call })
+}
+
+/// Parse a `modify` or `duplicate` action call.
+///
+/// Syntax: `(modify ?var (slot-name value ...) ...)`
+///
+/// The first argument is the fact variable, parsed normally.  The remaining
+/// arguments are slot-value pairs where the first element of each sub-list is
+/// a slot name — which can be ANY symbol, including keywords like `if`, `while`,
+/// etc.  We therefore parse those sub-expressions without keyword interception.
+fn interpret_fact_mutation_call(
+    name: &str,
+    rest: &[SExpr],
+    span: Span,
+) -> Result<FunctionCall, InterpretError> {
+    let mut args = Vec::new();
+
+    // First arg is the fact variable, parse as normal action expression
+    if let Some(first) = rest.first() {
+        args.push(interpret_action_expr(first)?);
+    }
+
+    // Remaining args are slot-value pairs: parse without keyword interception
+    for slot_expr in &rest[1..] {
+        args.push(interpret_action_expr_as_slot_pair(slot_expr)?);
+    }
+
+    Ok(FunctionCall {
+        name: name.to_string(),
+        args,
+        span,
+    })
+}
+
+/// Parse an action expression in slot-value pair context.
+///
+/// If the expression is a list `(name ...)` where `name` is a symbol, treat it
+/// as a function call regardless of whether `name` is a keyword.  This allows
+/// slot names like `if`, `while`, etc. to pass through without being
+/// intercepted as control-flow constructs.
+fn interpret_action_expr_as_slot_pair(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
+    if let Some(list) = expr.as_list() {
+        if !list.is_empty() {
+            if let Some(name) = list[0].as_symbol() {
+                // Build a FunctionCall directly, parsing sub-args normally
+                let mut args = Vec::new();
+                for arg_expr in &list[1..] {
+                    args.push(interpret_action_expr(arg_expr)?);
+                }
+                return Ok(ActionExpr::FunctionCall(FunctionCall {
+                    name: name.to_string(),
+                    args,
+                    span: expr.span(),
+                }));
+            }
+        }
+    }
+    interpret_action_expr(expr)
 }
 
 /// Interpret a function call expression.
@@ -1658,14 +2086,41 @@ fn interpret_function_call(expr: &SExpr) -> Result<FunctionCall, InterpretError>
         return Err(InterpretError::invalid("empty function call", expr.span()));
     }
 
-    let name = list[0]
-        .as_symbol()
-        .ok_or_else(|| InterpretError::expected("function name (symbol)", list[0].span()))?
-        .to_string();
+    // Accept symbols directly, and also connective operators as function names.
+    // CLIPS allows `=` and constraint connectives (`&`, `|`, `~`) in
+    // function-call position, mapping to their function equivalents.
+    let name = if let Some(s) = list[0].as_symbol() {
+        s.to_string()
+    } else if let Some(Atom::Connective(c)) = list[0].as_atom() {
+        match c {
+            Connective::Equals => "=".to_string(),
+            Connective::And => "and".to_string(),
+            Connective::Or => "or".to_string(),
+            Connective::Not => "not".to_string(),
+            _ => {
+                return Err(InterpretError::expected(
+                    "function name (symbol)",
+                    list[0].span(),
+                ));
+            }
+        }
+    } else {
+        return Err(InterpretError::expected(
+            "function name (symbol)",
+            list[0].span(),
+        ));
+    };
 
     let mut args = Vec::new();
-    for arg_expr in &list[1..] {
-        args.push(interpret_action_expr(arg_expr)?);
+    let mut i = 1usize;
+    while i < list.len() {
+        if let Some((slot_ref, consumed)) = try_interpret_fact_slot_ref_argument(&list[i..]) {
+            args.push(slot_ref);
+            i += consumed;
+            continue;
+        }
+        args.push(interpret_action_expr(&list[i])?);
+        i += 1;
     }
 
     Ok(FunctionCall {
@@ -1675,10 +2130,516 @@ fn interpret_function_call(expr: &SExpr) -> Result<FunctionCall, InterpretError>
     })
 }
 
+fn try_interpret_fact_slot_ref_argument(exprs: &[SExpr]) -> Option<(ActionExpr, usize)> {
+    if exprs.len() < 3 {
+        return None;
+    }
+
+    let Some(Atom::SingleVar(var_name)) = exprs[0].as_atom() else {
+        return None;
+    };
+    let Some(Atom::Connective(Connective::Colon)) = exprs[1].as_atom() else {
+        return None;
+    };
+    let slot_name = exprs[2].as_symbol()?;
+
+    let var_span = exprs[0].span();
+    let slot_span = exprs[2].span();
+    let call_span = var_span.merge(slot_span);
+
+    let slot_ref = ActionExpr::FunctionCall(FunctionCall {
+        name: FACT_SLOT_REF_FN.to_string(),
+        args: vec![
+            ActionExpr::Variable(var_name.clone(), var_span),
+            ActionExpr::Literal(LiteralValue {
+                value: LiteralKind::Symbol(slot_name.to_owned()),
+                span: slot_span,
+            }),
+        ],
+        span: call_span,
+    });
+    Some((slot_ref, 3))
+}
+
+/// Interpret a CLIPS `(if <cond> then <action>* [else <action>*])` form.
+///
+/// The S-expression list has already had its head `if` consumed — `rest` is
+/// the remaining elements: `[<cond>, then, <action>*, [else, <action>*]]`.
+fn interpret_if_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    if rest.is_empty() {
+        return Err(InterpretError::missing("condition in (if ...)", span));
+    }
+
+    let condition = interpret_action_expr(&rest[0])?;
+
+    // Find `then` keyword.
+    let then_pos = rest[1..]
+        .iter()
+        .position(|e| e.as_symbol() == Some("then"))
+        .ok_or_else(|| InterpretError::missing("then keyword in (if ... then ...)", span))?;
+    // `then_pos` is relative to `rest[1..]`, so absolute index is `then_pos + 1`.
+    let then_abs = then_pos + 1;
+
+    // Elements between condition and `then` are not valid — the condition is
+    // always a single expression (rest[0]).  The `then` must appear at index 1.
+    if then_abs != 1 {
+        return Err(InterpretError::invalid(
+            "expected 'then' immediately after the if-condition",
+            span,
+        ));
+    }
+
+    // Elements after `then` until `else` (or end) are the then-branch actions.
+    let after_then = &rest[then_abs + 1..];
+
+    let else_pos = after_then
+        .iter()
+        .position(|e| e.as_symbol() == Some("else"));
+
+    let (then_exprs, else_exprs) = if let Some(ep) = else_pos {
+        (&after_then[..ep], &after_then[ep + 1..])
+    } else {
+        (after_then, [].as_slice())
+    };
+
+    let mut then_actions = Vec::with_capacity(then_exprs.len());
+    for e in then_exprs {
+        then_actions.push(interpret_action_expr(e)?);
+    }
+
+    let mut else_actions = Vec::with_capacity(else_exprs.len());
+    for e in else_exprs {
+        else_actions.push(interpret_action_expr(e)?);
+    }
+
+    Ok(ActionExpr::If {
+        condition: Box::new(condition),
+        then_actions,
+        else_actions,
+        span,
+    })
+}
+
+/// Interpret a CLIPS `(while <cond> do <action>*)` form.
+///
+/// `rest` is the elements after the `while` keyword.
+fn interpret_while_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    if rest.is_empty() {
+        return Err(InterpretError::missing("condition in (while ...)", span));
+    }
+
+    let condition = interpret_action_expr(&rest[0])?;
+
+    // The `do` keyword is optional. If present immediately after the condition,
+    // consume it; otherwise body starts right after the condition.
+    let has_do = rest.len() > 1 && rest[1].as_symbol() == Some("do");
+    let body_start = 1 + usize::from(has_do);
+
+    let body_exprs = &rest[body_start..];
+    let mut body = Vec::with_capacity(body_exprs.len());
+    for e in body_exprs {
+        body.push(interpret_action_expr(e)?);
+    }
+
+    Ok(ActionExpr::While {
+        condition: Box::new(condition),
+        body,
+        span,
+    })
+}
+
+/// Interpret a CLIPS `(switch <expr> (case <value> then <action>*) ... [(default <action>*)])` form.
+///
+/// `rest` is the elements after the `switch` keyword.
+fn interpret_switch_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    if rest.is_empty() {
+        return Err(InterpretError::missing("expression in (switch ...)", span));
+    }
+
+    // First element is the discriminant expression.
+    let discriminant = interpret_action_expr(&rest[0])?;
+
+    let mut cases = Vec::new();
+    let mut default = None;
+
+    for clause in &rest[1..] {
+        let clause_list = clause
+            .as_list()
+            .ok_or_else(|| InterpretError::expected("case or default clause", clause.span()))?;
+
+        if clause_list.is_empty() {
+            return Err(InterpretError::expected(
+                "case or default clause",
+                clause.span(),
+            ));
+        }
+
+        match clause_list[0].as_symbol() {
+            Some("case") => {
+                // (case <value> then <action>*)
+                if clause_list.len() < 4 {
+                    return Err(InterpretError::missing(
+                        "value and 'then' keyword in case clause",
+                        clause.span(),
+                    ));
+                }
+                let case_value = interpret_action_expr(&clause_list[1])?;
+
+                // Find 'then' keyword
+                if clause_list[2].as_symbol() != Some("then") {
+                    return Err(InterpretError::expected(
+                        "'then' keyword after case value",
+                        clause_list[2].span(),
+                    ));
+                }
+
+                let mut actions = Vec::new();
+                for action_expr in &clause_list[3..] {
+                    actions.push(interpret_action_expr(action_expr)?);
+                }
+                cases.push((case_value, actions));
+            }
+            Some("default") => {
+                if default.is_some() {
+                    return Err(InterpretError::invalid(
+                        "duplicate default clause in switch",
+                        clause.span(),
+                    ));
+                }
+                let mut actions = Vec::new();
+                for action_expr in &clause_list[1..] {
+                    actions.push(interpret_action_expr(action_expr)?);
+                }
+                default = Some(actions);
+            }
+            _ => {
+                return Err(InterpretError::expected(
+                    "case or default clause",
+                    clause.span(),
+                ));
+            }
+        }
+    }
+
+    Ok(ActionExpr::Switch {
+        expr: Box::new(discriminant),
+        cases,
+        default,
+        span,
+    })
+}
+
+/// Interpret a CLIPS `(loop-for-count ...)` form.
+///
+/// `rest` is the elements after the `loop-for-count` keyword.
+/// Forms:
+///   `(loop-for-count (?var start end) do <action>*)`
+///   `(loop-for-count (?var end) do <action>*)`
+///   `(loop-for-count (end) do <action>*)`
+fn interpret_loop_for_count_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    if rest.is_empty() {
+        return Err(InterpretError::missing(
+            "loop spec in (loop-for-count ...)",
+            span,
+        ));
+    }
+
+    // First element must be a list containing the loop spec.
+    let spec_list = rest[0]
+        .as_list()
+        .ok_or_else(|| InterpretError::expected("loop spec list", rest[0].span()))?;
+
+    if spec_list.is_empty() {
+        return Err(InterpretError::missing(
+            "loop bound in loop-for-count spec",
+            rest[0].span(),
+        ));
+    }
+
+    // Parse the spec: `(?var start end)`, `(?var end)`, or `(end)`.
+    let (var_name, start_expr, end_expr) = match spec_list.len() {
+        1 => {
+            // `(end)` — anonymous counter, start=1
+            let end = interpret_action_expr(&spec_list[0])?;
+            let start = ActionExpr::Literal(LiteralValue {
+                value: LiteralKind::Integer(1),
+                span: spec_list[0].span(),
+            });
+            (None, start, end)
+        }
+        2 => {
+            // `(?var end)` — named variable, start=1
+            let var = match spec_list[0].as_atom() {
+                Some(Atom::SingleVar(name)) => name.clone(),
+                _ => {
+                    return Err(InterpretError::expected(
+                        "?variable in loop-for-count spec",
+                        spec_list[0].span(),
+                    ))
+                }
+            };
+            let end = interpret_action_expr(&spec_list[1])?;
+            let start = ActionExpr::Literal(LiteralValue {
+                value: LiteralKind::Integer(1),
+                span: spec_list[0].span(),
+            });
+            (Some(var), start, end)
+        }
+        3 => {
+            // `(?var start end)` — named variable with explicit start
+            let var = match spec_list[0].as_atom() {
+                Some(Atom::SingleVar(name)) => name.clone(),
+                _ => {
+                    return Err(InterpretError::expected(
+                        "?variable in loop-for-count spec",
+                        spec_list[0].span(),
+                    ))
+                }
+            };
+            let start = interpret_action_expr(&spec_list[1])?;
+            let end = interpret_action_expr(&spec_list[2])?;
+            (Some(var), start, end)
+        }
+        _ => {
+            return Err(InterpretError::invalid(
+                "loop-for-count spec must be (?var end), (?var start end), or (end)",
+                rest[0].span(),
+            ))
+        }
+    };
+
+    // The `do` keyword is optional. If present immediately after the spec,
+    // consume it; otherwise body starts right after the spec.
+    let after_spec = &rest[1..];
+    let has_do = !after_spec.is_empty() && after_spec[0].as_symbol() == Some("do");
+    let body_start = usize::from(has_do);
+
+    let body_exprs = &after_spec[body_start..];
+    let mut body = Vec::with_capacity(body_exprs.len());
+    for e in body_exprs {
+        body.push(interpret_action_expr(e)?);
+    }
+
+    Ok(ActionExpr::LoopForCount {
+        var_name,
+        start: Box::new(start_expr),
+        end: Box::new(end_expr),
+        body,
+        span,
+    })
+}
+
+/// Interpret a CLIPS `(progn$ (?var <expr>) <action>*)` form.
+///
+/// `rest` is the elements after the `progn$` keyword.
+fn interpret_progn_dollar_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    if rest.is_empty() {
+        return Err(InterpretError::missing(
+            "binding spec in (progn$ ...)",
+            span,
+        ));
+    }
+
+    // First element is the binding spec: `(?var <expr>)`.
+    let spec_list = rest[0].as_list().ok_or_else(|| {
+        InterpretError::expected("binding spec list (?var <expr>) in progn$", rest[0].span())
+    })?;
+
+    if spec_list.len() < 2 {
+        return Err(InterpretError::missing(
+            "?variable and list expression in progn$ spec",
+            rest[0].span(),
+        ));
+    }
+
+    let var_name = match spec_list[0].as_atom() {
+        Some(Atom::SingleVar(name)) => name.clone(),
+        _ => {
+            return Err(InterpretError::expected(
+                "?variable in progn$ spec",
+                spec_list[0].span(),
+            ))
+        }
+    };
+
+    let list_expr = interpret_action_expr(&spec_list[1])?;
+
+    // Remaining elements after the spec are body actions (no `do` delimiter for progn$).
+    let body_exprs = &rest[1..];
+    let mut body = Vec::with_capacity(body_exprs.len());
+    for e in body_exprs {
+        body.push(interpret_action_expr(e)?);
+    }
+
+    Ok(ActionExpr::Progn {
+        var_name,
+        list_expr: Box::new(list_expr),
+        body,
+        span,
+    })
+}
+
+/// Interpret a CLIPS `(foreach ?var <expr> do <action>*)` form.
+///
+/// `rest` is the elements after the `foreach` keyword.
+/// This is semantically equivalent to `progn$` but uses a different syntax.
+fn interpret_foreach_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, InterpretError> {
+    // foreach ?var <expr> do <action>*
+    if rest.len() < 2 {
+        return Err(InterpretError::missing(
+            "?variable and list expression in (foreach ...)",
+            span,
+        ));
+    }
+
+    let var_name = match rest[0].as_atom() {
+        Some(Atom::SingleVar(name)) => name.clone(),
+        _ => {
+            return Err(InterpretError::expected(
+                "?variable in foreach",
+                rest[0].span(),
+            ))
+        }
+    };
+
+    let list_expr = interpret_action_expr(&rest[1])?;
+
+    // Find optional `do` keyword (some CLIPS variants include it, some don't).
+    let body_start = if rest.len() > 2 && rest[2].as_symbol() == Some("do") {
+        3
+    } else {
+        2
+    };
+
+    let body_exprs = &rest[body_start..];
+    let mut body = Vec::with_capacity(body_exprs.len());
+    for e in body_exprs {
+        body.push(interpret_action_expr(e)?);
+    }
+
+    Ok(ActionExpr::Progn {
+        var_name,
+        list_expr: Box::new(list_expr),
+        body,
+        span,
+    })
+}
+
+/// Interpret a CLIPS fact-query macro form.
+///
+/// Handles: `do-for-fact`, `do-for-all-facts`, `delayed-do-for-all-facts`,
+/// `any-factp`, `find-fact`, and `find-all-facts`.
+///
+/// `name` is the macro keyword that was already consumed. `rest` is the
+/// remaining elements: `[<binding-list>, <query>, <action>*]`.
+/// For query-only forms (`any-factp`, `find-fact`, `find-all-facts`) there
+/// are no trailing action elements.
+fn interpret_query_action_expr(
+    name: &str,
+    rest: &[SExpr],
+    span: Span,
+) -> Result<ActionExpr, InterpretError> {
+    if rest.len() < 2 {
+        return Err(InterpretError::missing(
+            &format!("binding list and query in ({name} ...)"),
+            span,
+        ));
+    }
+
+    // First element is the binding list: a list of `(?var template)` pairs.
+    let binding_list = rest[0].as_list().ok_or_else(|| {
+        InterpretError::expected(
+            &format!("binding list ((?var template) ...) in ({name} ...)"),
+            rest[0].span(),
+        )
+    })?;
+
+    let mut bindings = Vec::with_capacity(binding_list.len());
+    for binding_expr in binding_list {
+        let pair = binding_expr.as_list().ok_or_else(|| {
+            InterpretError::expected(
+                "(?variable template-name) binding pair",
+                binding_expr.span(),
+            )
+        })?;
+
+        if pair.len() < 2 {
+            return Err(InterpretError::missing(
+                "template name in binding pair (?var template)",
+                binding_expr.span(),
+            ));
+        }
+
+        let var_name = match pair[0].as_atom() {
+            Some(Atom::SingleVar(name)) => name.clone(),
+            _ => {
+                return Err(InterpretError::expected(
+                    "?variable in binding pair",
+                    pair[0].span(),
+                ))
+            }
+        };
+
+        let template_name = pair[1]
+            .as_symbol()
+            .ok_or_else(|| {
+                InterpretError::expected("template name (symbol) in binding pair", pair[1].span())
+            })?
+            .to_string();
+
+        bindings.push((var_name, template_name));
+    }
+
+    // Second element is the query expression.
+    let query = interpret_action_expr(&rest[1])?;
+
+    // Remaining elements (if any) are body actions.
+    let mut body = Vec::with_capacity(rest.len().saturating_sub(2));
+    for body_expr in &rest[2..] {
+        body.push(interpret_action_expr(body_expr)?);
+    }
+
+    Ok(ActionExpr::QueryAction {
+        name: name.to_string(),
+        bindings,
+        query: Box::new(query),
+        body,
+        span,
+    })
+}
+
 /// Interpret an expression in an action context (RHS).
 fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
-    // Check if it's a list (nested function call)
-    if let Some(_list) = expr.as_list() {
+    // Check if it's a list (nested function call or special form)
+    if let Some(list) = expr.as_list() {
+        // Detect the `(if ...)` special form.
+        if !list.is_empty() && list[0].as_symbol() == Some("if") {
+            return interpret_if_expr(&list[1..], expr.span());
+        }
+        // Detect loop special forms.
+        if !list.is_empty() {
+            match list[0].as_symbol() {
+                Some("while") => return interpret_while_expr(&list[1..], expr.span()),
+                Some("loop-for-count") => {
+                    return interpret_loop_for_count_expr(&list[1..], expr.span())
+                }
+                Some("switch") => return interpret_switch_expr(&list[1..], expr.span()),
+                Some("progn$") => return interpret_progn_dollar_expr(&list[1..], expr.span()),
+                Some("foreach") => return interpret_foreach_expr(&list[1..], expr.span()),
+                Some(
+                    name @ ("do-for-fact"
+                    | "do-for-all-facts"
+                    | "delayed-do-for-all-facts"
+                    | "any-factp"
+                    | "find-fact"
+                    | "find-all-facts"),
+                ) => {
+                    let name = name.to_string();
+                    return interpret_query_action_expr(&name, &list[1..], expr.span());
+                }
+                _ => {}
+            }
+        }
         let call = interpret_function_call(expr)?;
         return Ok(ActionExpr::FunctionCall(call));
     }
@@ -1733,15 +2694,18 @@ fn interpret_slot_definition(expr: &SExpr) -> Result<SlotDefinition, InterpretEr
     }
 
     let keyword = list[0].as_symbol().ok_or_else(|| {
-        InterpretError::expected("slot keyword (slot or multislot)", list[0].span())
+        InterpretError::expected(
+            "slot keyword (slot, multislot, field, or multifield)",
+            list[0].span(),
+        )
     })?;
 
     let (slot_type, name_idx) = match keyword {
-        "slot" => (SlotType::Single, 1),
-        "multislot" => (SlotType::Multi, 1),
+        "slot" | "field" => (SlotType::Single, 1),
+        "multislot" | "multifield" => (SlotType::Multi, 1),
         _ => {
             return Err(InterpretError::invalid(
-                "expected 'slot' or 'multislot'",
+                "expected 'slot', 'multislot', 'field', or 'multifield'",
                 list[0].span(),
             ))
         }
@@ -1789,6 +2753,18 @@ fn interpret_default_value(expr: &SExpr) -> Result<DefaultValue, InterpretError>
         } else if name.eq_ignore_ascii_case("DERIVE") {
             return Ok(DefaultValue::Derive);
         }
+    }
+
+    // Handle function-call default values like `(create$)` or `(create$ val1 val2)`.
+    // `(create$)` with no args produces an empty multifield default.
+    if let Some(list) = expr.as_list() {
+        if !list.is_empty() && list[0].as_symbol() == Some("create$") {
+            // (create$) → empty multifield default.  With args, we still treat
+            // it as Derive since we'd need full expression evaluation.
+            return Ok(DefaultValue::Derive);
+        }
+        // Other function-call defaults: accept but treat as Derive.
+        return Ok(DefaultValue::Derive);
     }
 
     // Otherwise, treat as a literal value
@@ -1887,10 +2863,13 @@ fn interpret_fact_slot_value(slot_expr: &SExpr) -> Result<FactSlotValue, Interpr
         .to_string();
 
     if slot_list.len() < 2 {
-        return Err(InterpretError::missing(
-            "value for slot in fact",
-            slot_expr.span(),
-        ));
+        // Empty slot: `(slot-name)` with no values — valid for multislots,
+        // produces an empty multifield value.
+        return Ok(FactSlotValue {
+            name: slot_name,
+            value: FactValue::EmptyMultifield(slot_expr.span()),
+            span: slot_expr.span(),
+        });
     }
 
     let value = interpret_fact_value(&slot_list[1])?;
@@ -2707,6 +3686,33 @@ mod tests {
     }
 
     #[test]
+    fn interpret_action_fact_slot_access_compacts_var_colon_slot() {
+        let parsed = parse_sexprs(
+            "(defrule test ?p<-(point) => (bind ?x ?p:x) (printout t (+ ?p:x 1)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions.len(), 2);
+
+        let bind_call = &rule.actions[0].call;
+        assert_eq!(bind_call.name, "bind");
+        assert_eq!(bind_call.args.len(), 2);
+        assert!(matches!(
+            &bind_call.args[1],
+            ActionExpr::FunctionCall(FunctionCall { name, args, .. })
+                if name == FACT_SLOT_REF_FN
+                    && args.len() == 2
+                    && matches!(&args[0], ActionExpr::Variable(v, _) if v == "p")
+        ));
+    }
+
+    #[test]
     fn interpret_deffacts_ordered() {
         let parsed = parse_sexprs(
             "(deffacts startup (person Alice 30) (person Bob 25))",
@@ -2837,8 +3843,46 @@ mod tests {
     }
 
     #[test]
-    fn interpret_error_invalid_slot_keyword() {
+    fn interpret_field_alias_for_slot() {
         let parsed = parse_sexprs("(deftemplate person (field name))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            result.errors.is_empty(),
+            "field should be accepted as alias for slot"
+        );
+        assert_eq!(result.constructs.len(), 1);
+        if let Construct::Template(tmpl) = &result.constructs[0] {
+            assert_eq!(tmpl.slots.len(), 1);
+            assert_eq!(tmpl.slots[0].name, "name");
+            assert_eq!(tmpl.slots[0].slot_type, SlotType::Single);
+        } else {
+            panic!("expected template construct");
+        }
+    }
+
+    #[test]
+    fn interpret_multifield_alias_for_multislot() {
+        let parsed = parse_sexprs("(deftemplate data (multifield values))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            result.errors.is_empty(),
+            "multifield should be accepted as alias for multislot"
+        );
+        assert_eq!(result.constructs.len(), 1);
+        if let Construct::Template(tmpl) = &result.constructs[0] {
+            assert_eq!(tmpl.slots.len(), 1);
+            assert_eq!(tmpl.slots[0].name, "values");
+            assert_eq!(tmpl.slots[0].slot_type, SlotType::Multi);
+        } else {
+            panic!("expected template construct");
+        }
+    }
+
+    #[test]
+    fn interpret_error_invalid_slot_keyword() {
+        let parsed = parse_sexprs("(deftemplate person (bogus name))", file());
         let config = InterpreterConfig::default();
         let result = interpret_constructs(&parsed.exprs, &config);
         assert_eq!(result.errors.len(), 1);
@@ -3583,5 +4627,589 @@ mod tests {
             result.errors[0].kind,
             InterpretErrorKind::MissingElement
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Connective constraint tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpret_ordered_connective_and() {
+        // ?x&~red should parse as And([Variable("x"), Not(Literal("red"))])
+        let parsed = parse_sexprs("(defrule test (data ?x&~red) => (printout t ok))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        // The LHS has one pattern: (data ?x&~red)
+        let Pattern::Ordered(op) = &rule.patterns[0] else {
+            panic!("expected ordered pattern");
+        };
+        assert_eq!(op.constraints.len(), 1);
+        let Constraint::And(terms, _) = &op.constraints[0] else {
+            panic!("expected And constraint, got {:?}", op.constraints[0]);
+        };
+        assert_eq!(terms.len(), 2);
+        assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "x"));
+        let Constraint::Not(inner, _) = &terms[1] else {
+            panic!("expected Not constraint");
+        };
+        assert!(
+            matches!(inner.as_ref(), Constraint::Literal(lit) if matches!(&lit.value, LiteralKind::Symbol(s) if s == "red"))
+        );
+    }
+
+    #[test]
+    fn interpret_ordered_connective_or() {
+        // a|b should parse as Or([Literal("a"), Literal("b")])
+        let parsed = parse_sexprs("(defrule test (data a|b) => (printout t ok))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        let Pattern::Ordered(op) = &rule.patterns[0] else {
+            panic!("expected ordered pattern");
+        };
+        assert_eq!(op.constraints.len(), 1);
+        let Constraint::Or(terms, _) = &op.constraints[0] else {
+            panic!("expected Or constraint, got {:?}", op.constraints[0]);
+        };
+        assert_eq!(terms.len(), 2);
+        assert!(
+            matches!(&terms[0], Constraint::Literal(lit) if matches!(&lit.value, LiteralKind::Symbol(s) if s == "a"))
+        );
+        assert!(
+            matches!(&terms[1], Constraint::Literal(lit) if matches!(&lit.value, LiteralKind::Symbol(s) if s == "b"))
+        );
+    }
+
+    #[test]
+    fn interpret_template_connective_constraint() {
+        let parsed = parse_sexprs(
+            r"
+            (deftemplate item (slot color))
+            (defrule test (item (color ?c&~red)) => (printout t ok))
+            ",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[1] else {
+            panic!("expected Rule as second construct");
+        };
+        let Pattern::Template(tp) = &rule.patterns[0] else {
+            panic!("expected template pattern");
+        };
+        assert_eq!(tp.slot_constraints.len(), 1);
+        let sc = &tp.slot_constraints[0];
+        assert_eq!(sc.slot_name, "color");
+        let Constraint::And(terms, _) = &sc.constraint else {
+            panic!("expected And constraint in slot, got {:?}", sc.constraint);
+        };
+        assert_eq!(terms.len(), 2);
+        assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "c"));
+        assert!(matches!(&terms[1], Constraint::Not(_, _)));
+    }
+
+    #[test]
+    fn interpret_ordered_predicate_constraint_preserved() {
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x&:(> ?x 3)) => (printout t ok))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        let Pattern::Ordered(op) = &rule.patterns[0] else {
+            panic!("expected ordered pattern");
+        };
+        let Constraint::And(terms, _) = &op.constraints[0] else {
+            panic!("expected And constraint, got {:?}", op.constraints[0]);
+        };
+        assert_eq!(terms.len(), 2);
+        assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "x"));
+        assert!(matches!(
+            &terms[1],
+            Constraint::Predicate(SExpr::List(items, _), _) if items.len() == 3
+        ));
+    }
+
+    #[test]
+    fn interpret_ordered_return_value_constraint_preserved() {
+        let parsed = parse_sexprs("(defrule test (data =(+ 1 2)) => (printout t ok))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        let Pattern::Ordered(op) = &rule.patterns[0] else {
+            panic!("expected ordered pattern");
+        };
+        assert!(matches!(
+            &op.constraints[0],
+            Constraint::ReturnValue(SExpr::List(items, _), _) if items.len() == 3
+        ));
+    }
+
+    #[test]
+    fn interpret_negation_constraint() {
+        // ~red should parse as Not(Literal("red"))
+        let parsed = parse_sexprs("(defrule test (data ~red) => (printout t ok))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        let Pattern::Ordered(op) = &rule.patterns[0] else {
+            panic!("expected ordered pattern");
+        };
+        assert_eq!(op.constraints.len(), 1);
+        let Constraint::Not(inner, _) = &op.constraints[0] else {
+            panic!("expected Not constraint, got {:?}", op.constraints[0]);
+        };
+        assert!(
+            matches!(inner.as_ref(), Constraint::Literal(lit) if matches!(&lit.value, LiteralKind::Symbol(s) if s == "red"))
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // if/then/else parsing tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn interpret_if_then_else_action() {
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x) => (if (> ?x 0) then (assert (positive)) else (assert (negative))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions.len(), 1);
+        let ActionExpr::If {
+            then_actions,
+            else_actions,
+            ..
+        } = &rule.actions[0].call.args[0]
+        else {
+            panic!(
+                "expected If in action args, got {:?}",
+                rule.actions[0].call.args[0]
+            );
+        };
+        assert_eq!(then_actions.len(), 1, "then branch should have one action");
+        assert_eq!(else_actions.len(), 1, "else branch should have one action");
+    }
+
+    #[test]
+    fn interpret_if_then_no_else_action() {
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x) => (if (> ?x 0) then (assert (positive))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions.len(), 1);
+        let ActionExpr::If {
+            then_actions,
+            else_actions,
+            ..
+        } = &rule.actions[0].call.args[0]
+        else {
+            panic!("expected If in action args");
+        };
+        assert_eq!(then_actions.len(), 1);
+        assert!(else_actions.is_empty(), "else branch should be empty");
+    }
+
+    #[test]
+    fn interpret_if_then_multiple_actions_in_branch() {
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x) => (if (> ?x 0) then (assert (p)) (assert (q)) else (assert (r))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        let ActionExpr::If {
+            then_actions,
+            else_actions,
+            ..
+        } = &rule.actions[0].call.args[0]
+        else {
+            panic!("expected If in action args");
+        };
+        assert_eq!(then_actions.len(), 2, "then branch should have two actions");
+        assert_eq!(else_actions.len(), 1, "else branch should have one action");
+    }
+
+    #[test]
+    fn interpret_if_missing_then_keyword_is_error() {
+        // `then` keyword is missing — should produce an error
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x) => (if (> ?x 0) (assert (positive))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            !result.errors.is_empty(),
+            "should have reported a missing `then` error"
+        );
+    }
+
+    #[test]
+    fn interpret_if_in_deffunction_body() {
+        let parsed = parse_sexprs(
+            "(deffunction classify (?x) (if (> ?x 0) then positive else negative))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Function(func) = &result.constructs[0] else {
+            panic!("expected Function construct");
+        };
+        assert_eq!(func.body.len(), 1);
+        assert!(
+            matches!(&func.body[0], ActionExpr::If { .. }),
+            "expected If in function body"
+        );
+    }
+
+    // =========================================================================
+    // Loop special form tests
+    // =========================================================================
+
+    #[test]
+    fn interpret_while_action() {
+        let parsed = parse_sexprs(
+            "(defrule test (data ?x) => (while (> ?x 0) do (printout t ?x)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        // Top-level action should be a synthetic FunctionCall wrapping a While.
+        assert_eq!(rule.actions.len(), 1);
+        assert_eq!(rule.actions[0].call.name, "while");
+        assert_eq!(rule.actions[0].call.args.len(), 1);
+        assert!(
+            matches!(&rule.actions[0].call.args[0], ActionExpr::While { .. }),
+            "expected While variant in args[0]"
+        );
+    }
+
+    #[test]
+    fn interpret_while_body_has_correct_actions() {
+        let parsed = parse_sexprs(
+            "(defrule test => (while (> ?x 1) do (printout t hello) (printout t world)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        let ActionExpr::While { body, .. } = &rule.actions[0].call.args[0] else {
+            panic!("expected While");
+        };
+        assert_eq!(body.len(), 2, "while body should have 2 actions");
+    }
+
+    #[test]
+    fn interpret_loop_for_count_action() {
+        let parsed = parse_sexprs(
+            "(defrule test => (loop-for-count (?i 1 10) do (printout t ?i)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions[0].call.name, "loop-for-count");
+        let ActionExpr::LoopForCount { var_name, .. } = &rule.actions[0].call.args[0] else {
+            panic!("expected LoopForCount");
+        };
+        assert_eq!(var_name.as_deref(), Some("i"));
+    }
+
+    #[test]
+    fn interpret_loop_for_count_two_arg_spec() {
+        // `(?var end)` form — start defaults to 1.
+        let parsed = parse_sexprs(
+            "(defrule test => (loop-for-count (?i 5) do (printout t ?i)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        let ActionExpr::LoopForCount {
+            var_name, start, ..
+        } = &rule.actions[0].call.args[0]
+        else {
+            panic!("expected LoopForCount");
+        };
+        assert_eq!(var_name.as_deref(), Some("i"));
+        // Start should be the literal integer 1 (default).
+        assert!(
+            matches!(start.as_ref(), ActionExpr::Literal(lit) if matches!(lit.value, LiteralKind::Integer(1))),
+            "expected start = 1"
+        );
+    }
+
+    #[test]
+    fn interpret_loop_for_count_anonymous() {
+        // `(end)` form — anonymous counter.
+        let parsed = parse_sexprs(
+            "(defrule test => (loop-for-count (5) do (printout t hi)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        let ActionExpr::LoopForCount { var_name, .. } = &rule.actions[0].call.args[0] else {
+            panic!("expected LoopForCount");
+        };
+        assert!(
+            var_name.is_none(),
+            "anonymous counter should have no var_name"
+        );
+    }
+
+    #[test]
+    fn interpret_progn_dollar_action() {
+        let parsed = parse_sexprs(
+            "(defrule test (data $?items) => (progn$ (?item ?items) (printout t ?item)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions[0].call.name, "progn$");
+        let ActionExpr::Progn { var_name, .. } = &rule.actions[0].call.args[0] else {
+            panic!("expected Progn");
+        };
+        assert_eq!(var_name, "item");
+    }
+
+    #[test]
+    fn interpret_foreach_action() {
+        let parsed = parse_sexprs(
+            "(defrule test (data $?items) => (foreach ?item ?items do (printout t ?item)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        // foreach is translated to a Progn variant wrapped in a "foreach" call.
+        assert_eq!(rule.actions[0].call.name, "foreach");
+        let ActionExpr::Progn { var_name, .. } = &rule.actions[0].call.args[0] else {
+            panic!("expected Progn");
+        };
+        assert_eq!(var_name, "item");
+    }
+
+    #[test]
+    fn interpret_while_in_deffunction_body() {
+        let parsed = parse_sexprs(
+            "(deffunction count-down (?n) (while (> ?n 0) do (bind ?*n* (- ?n 1))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Function(func) = &result.constructs[0] else {
+            panic!("expected Function construct");
+        };
+        assert_eq!(func.body.len(), 1);
+        assert!(
+            matches!(&func.body[0], ActionExpr::While { .. }),
+            "expected While in function body"
+        );
+    }
+
+    #[test]
+    fn interpret_while_optional_do() {
+        // `do` keyword is optional in while — both forms should parse successfully
+        let parsed = parse_sexprs("(defrule test => (while (> ?x 0) (printout t ?x)))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "while without do should succeed");
+    }
+
+    #[test]
+    fn interpret_loop_for_count_optional_do() {
+        // `do` keyword is optional in loop-for-count — both forms should parse
+        let parsed = parse_sexprs(
+            "(defrule test => (loop-for-count (?i 1 5) (printout t ?i)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            result.errors.is_empty(),
+            "loop-for-count without do should succeed"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fact-query macro forms (do-for-fact, any-factp, etc.)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interpret_do_for_fact_action() {
+        let parsed = parse_sexprs(
+            "(defrule test => (do-for-fact ((?f data)) TRUE (printout t ?f)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule construct");
+        };
+        assert_eq!(rule.actions.len(), 1);
+        assert_eq!(rule.actions[0].call.name, "do-for-fact");
+        // The sole argument is the wrapped QueryAction expression.
+        assert_eq!(rule.actions[0].call.args.len(), 1);
+        assert!(
+            matches!(&rule.actions[0].call.args[0], ActionExpr::QueryAction { name, bindings, body, .. }
+                if name == "do-for-fact" && bindings.len() == 1 && body.len() == 1),
+            "unexpected QueryAction shape"
+        );
+    }
+
+    #[test]
+    fn interpret_do_for_all_facts_action() {
+        let parsed = parse_sexprs(
+            r"(defrule test => (do-for-all-facts ((?f data)) (> (fact-slot-value ?f val) 0) (printout t ?f crlf)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        assert_eq!(rule.actions[0].call.name, "do-for-all-facts");
+        assert!(
+            matches!(&rule.actions[0].call.args[0], ActionExpr::QueryAction { bindings, body, .. }
+                if bindings.len() == 1 && body.len() == 1)
+        );
+    }
+
+    #[test]
+    fn interpret_any_factp_action() {
+        // any-factp used as a condition inside an if form.
+        let parsed = parse_sexprs(
+            r"(defrule test => (if (any-factp ((?f data)) TRUE) then (printout t found)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn interpret_find_all_facts_action() {
+        let parsed = parse_sexprs(
+            r"(defrule test => (bind ?result (find-all-facts ((?f data)) TRUE)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn interpret_find_fact_action() {
+        let parsed = parse_sexprs(
+            r"(defrule test => (bind ?r (find-fact ((?f person)) (eq (fact-slot-value ?f name) Alice))))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn interpret_query_action_multi_binding() {
+        // Two binding variables in a single query macro.
+        let parsed = parse_sexprs(
+            r"(defrule test => (do-for-all-facts ((?a person) (?b address)) TRUE (printout t ?a ?b)))",
+            file(),
+        );
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[0] else {
+            panic!("expected Rule");
+        };
+        assert!(
+            matches!(&rule.actions[0].call.args[0], ActionExpr::QueryAction { bindings, .. }
+                if bindings.len() == 2)
+        );
+    }
+
+    #[test]
+    fn interpret_query_action_missing_binding_list_is_error() {
+        let parsed = parse_sexprs("(defrule test => (do-for-fact TRUE))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            !result.errors.is_empty(),
+            "should error: missing binding list"
+        );
+    }
+
+    #[test]
+    fn interpret_query_action_bad_binding_var_is_error() {
+        // Using a plain symbol instead of ?var in a binding is an error.
+        let parsed = parse_sexprs("(defrule test => (do-for-fact ((f data)) TRUE))", file());
+        let config = InterpreterConfig::default();
+        let result = interpret_constructs(&parsed.exprs, &config);
+        assert!(
+            !result.errors.is_empty(),
+            "should error: bad binding variable"
+        );
     }
 }

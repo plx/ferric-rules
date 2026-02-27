@@ -1,0 +1,1 @@
+(defrule foo => (close blah))

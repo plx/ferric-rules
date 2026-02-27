@@ -1,0 +1,5 @@
+(defmodule A (export ?ALL))
+(defmodule B (import A deftemplate foo))
+(defmodule B (import A defglobal foo))
+(defmodule B (import A defclass FOO))
+(defmodule B (import A defgeneric foo))

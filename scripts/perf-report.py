@@ -45,6 +45,48 @@ def _fmt_ratio(ferric_ns, clips_ns):
     return f"{ferric_ns / clips_ns:.3f}x"
 
 
+def _clips_reference_label(clips_ref):
+    """Return a short human-readable label for CLIPS methodology."""
+    method = (clips_ref or {}).get("methodology")
+    if method == "native_wall_clock_launch_adjusted":
+        return "native wall-clock, launch-adjusted"
+    if method == "docker_wall_clock_launch_adjusted":
+        return "Docker wall-clock, launch-adjusted"
+    if method == "native_wall_clock":
+        return "native wall-clock"
+    if method == "docker_wall_clock":
+        return "Docker wall-clock"
+
+    runner = (clips_ref or {}).get("runner")
+    if runner == "native":
+        return "native wall-clock"
+    if runner == "docker":
+        return "Docker wall-clock"
+    return "external reference"
+
+
+def _clips_reference_note(clips_ref):
+    """Return a full sentence describing CLIPS methodology."""
+    method = (clips_ref or {}).get("methodology")
+    if method == "native_wall_clock_launch_adjusted":
+        return ("Wall-clock times from the native CLIPS binary on the runner host, "
+                "with a matched launch-only invocation subtracted from each sample.")
+    if method == "docker_wall_clock_launch_adjusted":
+        return ("Wall-clock times from CLIPS in the reference Docker image, with a "
+                "matched launch-only container invocation subtracted from each sample.")
+    if method == "native_wall_clock":
+        return "Wall-clock times from the native CLIPS binary on the runner host."
+    if method == "docker_wall_clock":
+        return ("Wall-clock times from CLIPS via Docker (includes container startup).")
+
+    runner = (clips_ref or {}).get("runner")
+    if runner == "native":
+        return "Wall-clock times from the native CLIPS binary on the runner host."
+    if runner == "docker":
+        return "Wall-clock times from CLIPS via Docker."
+    return "Wall-clock times from an external CLIPS reference runner."
+
+
 # ---------------------------------------------------------------------------
 # Text summary (stdout)
 # ---------------------------------------------------------------------------
@@ -101,8 +143,9 @@ def print_summary(manifest):
     if clips_ref and clips_ref.get("benchmarks"):
         clips_benchmarks = clips_ref["benchmarks"]
         print()
-        print("CLIPS Reference (Docker wall-clock, includes container startup)")
+        print(f"CLIPS Reference ({_clips_reference_label(clips_ref)})")
         print(f"{'-'*70}")
+        print(_clips_reference_note(clips_ref))
         print(f"{'Benchmark':<28s} {'ferric':>12s} {'CLIPS':>12s} {'Ratio':>10s}")
         print(f"{'-'*28} {'-'*12} {'-'*12} {'-'*10}")
         for name, clips_info in clips_benchmarks.items():
@@ -184,7 +227,7 @@ def write_report(manifest, report_path, repo=None, commit_sha=None):
             lines.append("")
             lines.append("### CLIPS Reference")
             lines.append("")
-            lines.append("Wall-clock times from CLIPS via Docker (includes container startup).")
+            lines.append(_clips_reference_note(clips_ref))
             lines.append("Useful as a relative frame of reference, not for absolute speed comparison.")
             lines.append("")
             lines.append("| Benchmark | ferric (median) | CLIPS (median) | ferric / CLIPS |")

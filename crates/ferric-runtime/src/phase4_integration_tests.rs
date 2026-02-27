@@ -297,6 +297,89 @@ fn qualified_global_reference_not_visible() {
 }
 
 #[test]
+fn deffacts_can_resolve_global_values() {
+    let mut engine = new_utf8_engine();
+    let source = r#"
+(defglobal ?*x* = 3 ?*y* = (create$ a b c))
+(deffacts info
+  (fact-1 ?*x*)
+  (fact-2 ?*y*))
+(defrule probe
+  (fact-1 ?x)
+  (fact-2 $?y)
+  =>
+  (printout t ?x "|" ?y crlf))
+"#;
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        output.contains("3|(a b c)"),
+        "expected resolved deffacts global output, got: {output}"
+    );
+    assert!(
+        engine.action_diagnostics().is_empty(),
+        "unexpected diagnostics: {:?}",
+        engine.action_diagnostics()
+    );
+}
+
+#[test]
+fn rhs_bind_can_rebind_local_variable() {
+    let mut engine = new_utf8_engine();
+    let source = r"
+(deffacts test
+  (go))
+(defrule ok
+  (go)
+  =>
+  (bind ?one 1)
+  (bind ?one (+ ?one 2))
+  (printout t ?one crlf))
+";
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        output.contains('3'),
+        "expected local bind-rebind output, got: {output}"
+    );
+    assert!(
+        engine.action_diagnostics().is_empty(),
+        "unexpected diagnostics: {:?}",
+        engine.action_diagnostics()
+    );
+}
+
+#[test]
+fn trailing_multivariable_capture_behaves_as_multifield_in_rhs() {
+    let mut engine = new_utf8_engine();
+    let source = r"
+(deffacts test
+  (_2 x y z p))
+(defrule ok
+  (_2 ? $?two)
+  =>
+  (printout t (subseq$ ?two 1 2) crlf))
+";
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        output.contains("(y z)"),
+        "expected subseq$ to see multifield capture, got: {output}"
+    );
+    assert!(
+        engine.action_diagnostics().is_empty(),
+        "unexpected diagnostics: {:?}",
+        engine.action_diagnostics()
+    );
+}
+
+#[test]
 fn bind_rejects_undeclared_global() {
     let mut engine = new_utf8_engine();
     let source = r"
@@ -429,6 +512,31 @@ fn same_module_function_always_visible() {
     run_to_completion(&mut engine);
     let output = engine.get_output("t").unwrap_or("");
     assert_eq!(output.trim(), "10");
+}
+
+#[test]
+fn deffunction_body_can_printout_to_router() {
+    let mut engine = new_utf8_engine();
+    let source = r#"
+(deffunction printem (?x ?y)
+  (printout t "Passed values: |" ?x "|" ?y "|" crlf))
+(defrule test-call (go)
+  =>
+  (printout t "before" crlf)
+  (printem 3 (create$ a b c))
+  (printout t "after" crlf))
+(deffacts startup (go))
+"#;
+    load_ok(&mut engine, source);
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(output.contains("before"), "missing before marker: {output}");
+    assert!(
+        output.contains("Passed values: |3|(a b c)|"),
+        "missing deffunction printout output: {output}"
+    );
+    assert!(output.contains("after"), "missing after marker: {output}");
 }
 
 #[test]
@@ -1082,6 +1190,25 @@ fn sym_cat_content_matches_concatenation() {
 }
 
 #[test]
+fn gensym_and_setgen_generate_expected_sequence() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+        (defrule test (go)
+            =>
+            (setgen 10)
+            (printout t (gensym) " " (gensym*) crlf))
+        (deffacts startup (go))
+    "#,
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert_eq!(output.trim(), "gen10 gen11");
+}
+
+#[test]
 fn str_length_of_string() {
     let mut engine = new_utf8_engine();
     load_ok(
@@ -1375,6 +1502,66 @@ fn create_mf_flattens_nested_multifield_integration() {
     assert_eq!(output.trim(), "4");
 }
 
+#[test]
+fn assert_splices_multifield_values_into_ordered_fact() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+        (defrule produce (go)
+            => (assert (vals (create$ a b c))))
+        (defrule consume (vals $?x)
+            => (printout t ?x crlf))
+        (deffacts startup (go))
+    ",
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        output.contains("(a b c)"),
+        "expected spliced multifield assertion output, got: {output:?}"
+    );
+    assert!(
+        !output.contains("((a b c))"),
+        "multifield should be spliced, not nested: {output:?}"
+    );
+}
+
+#[test]
+fn implode_mf_returns_space_separated_string() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+        (defrule test (go)
+            => (printout t (implode$ (create$ 1 2 3)) crlf))
+        (deffacts startup (go))
+    ",
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert_eq!(output.trim(), "1 2 3");
+}
+
+#[test]
+fn subseq_mf_extracts_expected_slice() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+        (defrule test (go)
+            => (printout t (subseq$ (create$ a b c d) 2 3) crlf))
+        (deffacts startup (go))
+    ",
+    );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert_eq!(output.trim(), "(b c)");
+}
+
 // ===========================================================================
 // I/O and environment functions (pass 011)
 // ===========================================================================
@@ -1554,6 +1741,52 @@ fn printout_mixed_types() {
     assert_eq!(output, "count=42 val=3.5\n");
 }
 
+#[test]
+fn println_writes_to_t_with_trailing_newline() {
+    let mut engine = new_utf8_engine();
+    let source = r#"
+(defrule say-line
+    (go)
+    =>
+    (println "count=" 42))
+(deffacts startup (go))
+"#;
+    load_ok(&mut engine, source);
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    assert_eq!(engine.get_output("t").unwrap_or(""), "count=42\n");
+}
+
+#[test]
+fn rhs_fact_slot_access_supports_compact_assignment_and_nested_calls() {
+    let mut engine = new_utf8_engine();
+    let source = r#"
+(deftemplate point
+    (slot x))
+(deffacts startup
+    (point (x 4)))
+(defrule inspect-point
+    ?p<-(point (x ?x))
+    =>
+    (bind ?inc (+ ?p:x 1))
+    (println ?inc "|" (+ ?p:x ?inc)))
+"#;
+    load_ok(&mut engine, source);
+    engine.reset().expect("reset");
+    let run = run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("").to_string();
+    let diagnostics = engine.action_diagnostics().to_vec();
+    assert_eq!(
+        run.rules_fired, 1,
+        "expected inspect-point to fire once; output={output:?} diagnostics={diagnostics:?}"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "unexpected diagnostics in inspect-point run: {diagnostics:?}"
+    );
+    assert_eq!(output, "5|9\n");
+}
+
 // ===========================================================================
 // Agenda/focus query functions (pass 012)
 // ===========================================================================
@@ -1636,6 +1869,233 @@ fn agenda_prints_activations() {
     assert!(
         output.contains("low-priority"),
         "agenda should show low-priority rule, got: {output}"
+    );
+}
+
+#[test]
+fn rules_prints_loaded_rule_names() {
+    let mut engine = new_utf8_engine();
+    let source = r"
+(defrule alpha (go) =>)
+(defrule beta (go) => (rules))
+(deffacts startup (go))
+";
+    load_ok(&mut engine, source);
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        output.contains("alpha"),
+        "rules output missing alpha: {output}"
+    );
+    assert!(
+        output.contains("beta"),
+        "rules output missing beta: {output}"
+    );
+}
+
+#[test]
+fn ppdefrule_prints_named_rule_definition() {
+    let mut engine = new_utf8_engine();
+    let source = r"
+(defrule target
+    (go)
+    =>
+    (assert (done)))
+(defrule inspector
+    (declare (salience 10))
+    (go)
+    =>
+    (ppdefrule target))
+(deffacts startup (go))
+";
+    load_ok(&mut engine, source);
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        output.contains("(defrule target"),
+        "ppdefrule output missing rule header: {output}"
+    );
+    assert!(
+        output.contains("(assert (done))"),
+        "ppdefrule output missing rule body: {output}"
+    );
+}
+
+#[test]
+fn ppdefrule_star_prints_all_loaded_definitions() {
+    let mut engine = new_utf8_engine();
+    let source = r"
+(defrule alpha (go) =>)
+(defrule beta (go) =>)
+(defrule inspector
+    (declare (salience 10))
+    (go)
+    =>
+    (ppdefrule *))
+(deffacts startup (go))
+";
+    load_ok(&mut engine, source);
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        output.contains("(defrule alpha"),
+        "ppdefrule * output missing alpha definition: {output}"
+    );
+    assert!(
+        output.contains("(defrule beta"),
+        "ppdefrule * output missing beta definition: {output}"
+    );
+}
+
+#[test]
+fn runtime_load_mutates_rule_set_and_rules_output() {
+    use std::io::Write as _;
+
+    let mut temp = tempfile::NamedTempFile::new().expect("tempfile");
+    writeln!(temp, "(defrule loaded-one (go) =>)").expect("write loaded-one");
+    writeln!(temp, "(defrule loaded-two (go) =>)").expect("write loaded-two");
+    let load_path = temp.path().to_string_lossy().replace('\\', "\\\\");
+
+    let mut engine = new_utf8_engine();
+    let source = format!(
+        r#"
+(defrule inspector
+    (go)
+    =>
+    (undefrule *)
+    (load "{load_path}")
+    (rules))
+(deffacts startup (go))
+"#
+    );
+    load_ok(&mut engine, &source);
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        output.lines().any(|line| line.trim() == "loaded-one"),
+        "rules output should include loaded-one after runtime load: {output}"
+    );
+    assert!(
+        output.lines().any(|line| line.trim() == "loaded-two"),
+        "rules output should include loaded-two after runtime load: {output}"
+    );
+
+    let names: std::collections::HashSet<_> =
+        engine.rules().into_iter().map(|(name, _)| name).collect();
+    assert!(
+        names.contains("loaded-one"),
+        "loaded-one missing from registry"
+    );
+    assert!(
+        names.contains("loaded-two"),
+        "loaded-two missing from registry"
+    );
+}
+
+#[test]
+fn runtime_load_missing_file_surfaces_action_diagnostic() {
+    let mut engine = new_utf8_engine();
+    let source = r#"
+(defrule inspector
+    (go)
+    =>
+    (load "/definitely/not/a/real/path/ferric-load-missing.clp"))
+(deffacts startup (go))
+"#;
+    load_ok(&mut engine, source);
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+
+    let diags = engine.action_diagnostics();
+    assert!(
+        !diags.is_empty(),
+        "missing runtime load file should produce an action diagnostic"
+    );
+    let joined = diags
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert!(
+        joined.contains("load failed"),
+        "expected load failure diagnostic, got: {joined}"
+    );
+}
+
+#[test]
+fn undefrule_star_removes_rules_and_cancels_pending_activations() {
+    let mut engine = new_utf8_engine();
+    let source = r#"
+(defrule seed => (assert (go)))
+(defrule victim (go) => (printout t "VICTIM-FIRED" crlf))
+(defrule inspector
+    (declare (salience 10))
+    (go)
+    =>
+    (rules)
+    (undefrule *)
+    (rules))
+"#;
+    load_ok(&mut engine, source);
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        output.contains("(no rules)"),
+        "expected empty rules listing after undefrule *, got: {output}"
+    );
+    assert!(
+        !output.contains("VICTIM-FIRED"),
+        "victim activation should have been removed by undefrule *: {output}"
+    );
+    assert!(
+        engine.rules().is_empty(),
+        "engine should have no rules after undefrule *"
+    );
+}
+
+#[test]
+fn undefrule_by_name_removes_targeted_rule_before_it_fires() {
+    let mut engine = new_utf8_engine();
+    let source = r#"
+(defrule seed => (assert (go)))
+(defrule victim (go) => (printout t "VICTIM-FIRED" crlf))
+(defrule killer
+    (declare (salience 5))
+    (go)
+    =>
+    (undefrule victim))
+(defrule reporter
+    (declare (salience -5))
+    (go)
+    =>
+    (rules))
+"#;
+    load_ok(&mut engine, source);
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        !output.contains("VICTIM-FIRED"),
+        "targeted undefrule should cancel victim activation: {output}"
+    );
+    assert!(
+        !output.lines().any(|line| line.trim() == "victim"),
+        "rules output should not include removed victim rule: {output}"
+    );
+
+    let remaining_names: std::collections::HashSet<_> =
+        engine.rules().into_iter().map(|(name, _)| name).collect();
+    assert!(
+        !remaining_names.contains("victim"),
+        "victim should be removed from engine rule registry"
     );
 }
 
@@ -1934,7 +2394,7 @@ fn unsupported_defmessage_handler_fails_loudly() {
 }
 
 #[test]
-fn unknown_function_in_rhs_produces_diagnostic() {
+fn unknown_function_in_rhs_fails_at_load_time() {
     let mut engine = new_utf8_engine();
     let source = r"
 (defrule bad-call
@@ -1943,17 +2403,12 @@ fn unknown_function_in_rhs_produces_diagnostic() {
     (nonexistent-function 42))
 (deffacts startup (go))
 ";
-    load_ok(&mut engine, source);
-    engine.reset().expect("reset");
-    run_to_completion(&mut engine);
-    let diags = engine.action_diagnostics();
+    let errors = load_err(&mut engine, source);
+    let diags: Vec<String> = errors.into_iter().map(|e| e.to_string()).collect();
+    assert!(!diags.is_empty(), "unknown function should fail load");
+    let msg = diags.join("; ");
     assert!(
-        !diags.is_empty(),
-        "unknown function should produce a diagnostic"
-    );
-    let msg = format!("{diags:?}");
-    assert!(
-        msg.contains("nonexistent-function"),
+        msg.contains("[EXPRNPSR3]") && msg.contains("nonexistent-function"),
         "diagnostic should mention the function name: {msg}"
     );
 }
@@ -1973,5 +2428,613 @@ fn deffunction_defgeneric_conflict_at_load_time() {
     assert!(
         combined.contains("classify"),
         "conflict diagnostic should mention 'classify': {combined}"
+    );
+}
+
+// ===========================================================================
+// if/then/else control flow
+// ===========================================================================
+
+#[test]
+fn load_rule_with_if_then_else() {
+    let mut engine = new_utf8_engine();
+    engine
+        .load_str(r"(defrule test (data ?x) => (if (> ?x 0) then (assert (positive)) else (assert (negative))))")
+        .unwrap();
+}
+
+#[test]
+fn load_rule_with_if_then_no_else() {
+    let mut engine = new_utf8_engine();
+    engine
+        .load_str(r"(defrule test (data ?x) => (if (> ?x 0) then (assert (positive))))")
+        .unwrap();
+}
+
+#[test]
+fn if_then_branch_fires_assert_when_truthy() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule classify
+    (data ?x)
+    =>
+    (if (> ?x 0) then (assert (positive)) else (assert (negative))))
+(deffacts startup (data 5))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    assert_has_fact_with_relation(&engine, "positive");
+    assert_no_fact_with_relation(&engine, "negative");
+}
+
+#[test]
+fn if_else_branch_fires_assert_when_falsy() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule classify
+    (data ?x)
+    =>
+    (if (> ?x 0) then (assert (positive)) else (assert (negative))))
+(deffacts startup (data -3))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    assert_has_fact_with_relation(&engine, "negative");
+    assert_no_fact_with_relation(&engine, "positive");
+}
+
+#[test]
+fn if_then_no_else_does_nothing_when_falsy() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule classify
+    (data ?x)
+    =>
+    (if (> ?x 0) then (assert (positive))))
+(deffacts startup (data 0))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    assert_no_fact_with_relation(&engine, "positive");
+}
+
+#[test]
+fn if_then_multiple_actions_in_branch() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule classify
+    (data ?x)
+    =>
+    (if (> ?x 0)
+        then
+            (assert (positive))
+            (assert (greater-than-zero))
+        else
+            (assert (non-positive))))
+(deffacts startup (data 10))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    assert_has_fact_with_relation(&engine, "positive");
+    assert_has_fact_with_relation(&engine, "greater-than-zero");
+    assert_no_fact_with_relation(&engine, "non-positive");
+}
+
+#[test]
+fn if_nested_in_then_branch() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule classify
+    (data ?x)
+    =>
+    (if (> ?x 0)
+        then
+            (if (> ?x 10)
+                then (assert (large))
+                else (assert (small-positive)))
+        else
+            (assert (non-positive))))
+(deffacts startup (data 15))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    assert_has_fact_with_relation(&engine, "large");
+    assert_no_fact_with_relation(&engine, "small-positive");
+    assert_no_fact_with_relation(&engine, "non-positive");
+}
+
+#[test]
+fn if_with_printout_in_branch() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(defrule report
+    (data ?x)
+    =>
+    (if (> ?x 0)
+        then (printout t "positive" crlf)
+        else (printout t "negative" crlf)))
+(deffacts startup (data 7))
+"#,
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        output.contains("positive"),
+        "expected 'positive' in output, got: {output:?}"
+    );
+    assert!(
+        !output.contains("negative"),
+        "unexpected 'negative' in output: {output:?}"
+    );
+}
+
+#[test]
+fn if_in_deffunction_body_returns_branch_value() {
+    let mut engine = new_utf8_engine();
+    let output = eval_function_via_rule(
+        &mut engine,
+        r"(deffunction sign (?x) (if (> ?x 0) then positive else negative))",
+        "(sign 5)",
+    );
+    let output = output.trim_end_matches('\n');
+    assert_eq!(output, "positive");
+}
+
+#[test]
+fn if_in_deffunction_body_else_branch() {
+    let mut engine = new_utf8_engine();
+    let output = eval_function_via_rule(
+        &mut engine,
+        r"(deffunction sign (?x) (if (> ?x 0) then positive else negative))",
+        "(sign -1)",
+    );
+    let output = output.trim_end_matches('\n');
+    assert_eq!(output, "negative");
+}
+
+// ===========================================================================
+// Loop special forms: while, loop-for-count, progn$ / foreach
+// ===========================================================================
+
+#[test]
+fn load_rule_with_while_loop() {
+    let mut engine = new_utf8_engine();
+    engine
+        .load_str("(defrule test (data ?x) => (while (> ?x 0) do (printout t ?x)))")
+        .unwrap();
+}
+
+#[test]
+fn load_rule_with_loop_for_count() {
+    let mut engine = new_utf8_engine();
+    engine
+        .load_str("(defrule test => (loop-for-count (?i 1 10) do (printout t ?i)))")
+        .unwrap();
+}
+
+#[test]
+fn load_rule_with_progn_dollar() {
+    let mut engine = new_utf8_engine();
+    // Use create$ so we don't depend on $? multifield patterns (not yet fully supported).
+    engine
+        .load_str("(defrule test (go) => (progn$ (?item (create$ a b c)) (printout t ?item)))")
+        .unwrap();
+}
+
+#[test]
+fn load_rule_with_foreach() {
+    let mut engine = new_utf8_engine();
+    // Use create$ so we don't depend on $? multifield patterns (not yet fully supported).
+    engine
+        .load_str("(defrule test (go) => (foreach ?item (create$ a b c) do (printout t ?item)))")
+        .unwrap();
+}
+
+#[test]
+fn loop_for_count_runs_correct_iterations() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule count-up
+    (go)
+    =>
+    (loop-for-count (?i 1 5) do
+        (printout t ?i crlf)))
+(deffacts startup (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(output.contains('1'), "output: {output:?}");
+    assert!(output.contains('2'), "output: {output:?}");
+    assert!(output.contains('3'), "output: {output:?}");
+    assert!(output.contains('4'), "output: {output:?}");
+    assert!(output.contains('5'), "output: {output:?}");
+}
+
+#[test]
+fn loop_for_count_default_start_is_one() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule count
+    (go)
+    =>
+    (loop-for-count (?i 3) do
+        (printout t ?i crlf)))
+(deffacts startup (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    // Should print 1, 2, 3
+    assert!(output.contains('1'), "output: {output:?}");
+    assert!(output.contains('2'), "output: {output:?}");
+    assert!(output.contains('3'), "output: {output:?}");
+}
+
+#[test]
+fn loop_for_count_asserts_facts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule make-numbers
+    (go)
+    =>
+    (loop-for-count (?i 1 3) do
+        (assert (number ?i))))
+(deffacts startup (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    assert_has_fact_with_relation(&engine, "number");
+    // Should have exactly 3 number facts.
+    let count = find_facts_by_relation(&engine, "number").len();
+    assert_eq!(count, 3, "expected 3 number facts, got {count}");
+}
+
+#[test]
+fn while_loop_runs_printout() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defglobal ?*counter* = 3)
+(defrule countdown
+    (go)
+    =>
+    (while (> ?*counter* 0) do
+        (printout t ?*counter* crlf)
+        (bind ?*counter* (- ?*counter* 1))))
+(deffacts startup (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(output.contains('3'), "output: {output:?}");
+    assert!(output.contains('2'), "output: {output:?}");
+    assert!(output.contains('1'), "output: {output:?}");
+}
+
+#[test]
+fn while_loop_body_never_executes_on_false_condition() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(defrule no-run
+    (go)
+    =>
+    (while (> 0 1) do
+        (printout t "should-not-appear" crlf)))
+(deffacts startup (go))
+"#,
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(
+        !output.contains("should-not-appear"),
+        "output should be empty, got: {output:?}"
+    );
+}
+
+#[test]
+fn progn_dollar_iterates_multifield() {
+    // Use create$ to build multifield instead of $? LHS pattern.
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule print-items
+    (go)
+    =>
+    (progn$ (?x (create$ a b c))
+        (printout t ?x crlf)))
+(deffacts startup (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(output.contains('a'), "output: {output:?}");
+    assert!(output.contains('b'), "output: {output:?}");
+    assert!(output.contains('c'), "output: {output:?}");
+}
+
+#[test]
+fn progn_dollar_binds_index_variable() {
+    // Use create$ to build multifield instead of $? LHS pattern.
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule print-indices
+    (go)
+    =>
+    (progn$ (?x (create$ a b c))
+        (printout t ?x-index crlf)))
+(deffacts startup (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(output.contains('1'), "expected index 1: {output:?}");
+    assert!(output.contains('2'), "expected index 2: {output:?}");
+    assert!(output.contains('3'), "expected index 3: {output:?}");
+}
+
+#[test]
+fn foreach_is_equivalent_to_progn_dollar() {
+    // Use create$ to build multifield instead of $? LHS pattern.
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule print-items
+    (go)
+    =>
+    (foreach ?x (create$ x y z) do
+        (printout t ?x crlf)))
+(deffacts startup (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(output.contains('x'), "output: {output:?}");
+    assert!(output.contains('y'), "output: {output:?}");
+    assert!(output.contains('z'), "output: {output:?}");
+}
+
+#[test]
+fn loop_for_count_in_deffunction() {
+    // Use a defglobal for the accumulator since deffunction doesn't have local mutable vars.
+    let mut engine = new_utf8_engine();
+    let output = eval_function_via_rule(
+        &mut engine,
+        r"(defglobal ?*total* = 0)
+(deffunction sum-to (?n)
+    (bind ?*total* 0)
+    (loop-for-count (?i 1 ?n) do
+        (bind ?*total* (+ ?*total* ?i)))
+    ?*total*)",
+        "(sum-to 4)",
+    );
+    let output = output.trim_end_matches('\n');
+    // sum 1+2+3+4 = 10
+    assert_eq!(output, "10", "sum-to 4 should be 10, got {output:?}");
+}
+
+#[test]
+fn nested_loops_work_correctly() {
+    // loop-for-count inside loop-for-count
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(defrule nested
+    (go)
+    =>
+    (loop-for-count (?i 1 2) do
+        (loop-for-count (?j 1 2) do
+            (printout t ?i "-" ?j crlf))))
+(deffacts startup (go))
+"#,
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    let output = engine.get_output("t").unwrap_or("");
+    assert!(output.contains("1-1"), "output: {output:?}");
+    assert!(output.contains("1-2"), "output: {output:?}");
+    assert!(output.contains("2-1"), "output: {output:?}");
+    assert!(output.contains("2-2"), "output: {output:?}");
+}
+
+// ===========================================================================
+// Fact-query macro forms (do-for-fact, any-factp, find-fact, find-all-facts)
+// ===========================================================================
+
+/// Verify that a rule containing `do-for-fact` loads without error.
+#[test]
+fn load_rule_with_do_for_fact() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(deftemplate data (slot value))
+(defrule test => (do-for-fact ((?f data)) TRUE (printout t "found" crlf)))
+"#,
+    );
+}
+
+/// Verify that a rule containing `do-for-all-facts` loads without error.
+#[test]
+fn load_rule_with_do_for_all_facts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate item (slot name))
+(defrule list-all => (do-for-all-facts ((?i item)) TRUE (printout t ?i crlf)))
+",
+    );
+}
+
+/// `do-for-all-facts` iterates all facts of the given template and executes
+/// the body for each.  With three `data` facts and a body that asserts an
+/// ordered `hit` fact, we expect three `hit` facts after running.
+#[test]
+fn do_for_all_facts_iterates_matching_facts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate data (slot value))
+(deffacts setup
+    (data (value 1))
+    (data (value 2))
+    (data (value 3)))
+(defrule find-all
+    (go)
+    =>
+    (do-for-all-facts ((?f data)) TRUE
+        (assert (hit ?f))))
+(deffacts trigger (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    // Three data facts → three ordered hit facts asserted.
+    let hits = find_facts_by_relation(&engine, "hit");
+    assert_eq!(hits.len(), 3, "expected 3 hit facts, got: {hits:?}");
+}
+
+/// `do-for-fact` stops after the first matching fact.
+#[test]
+fn do_for_fact_stops_after_first_match() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate data (slot value))
+(deffacts setup
+    (data (value 10))
+    (data (value 20))
+    (data (value 30)))
+(defrule find-first
+    (go)
+    =>
+    (do-for-fact ((?f data)) TRUE
+        (assert (hit ?f))))
+(deffacts trigger (go))
+",
+    );
+    engine.reset().expect("reset");
+    run_to_completion(&mut engine);
+    // do-for-fact stops at the first match, so exactly one hit fact.
+    let hits = find_facts_by_relation(&engine, "hit");
+    assert_eq!(
+        hits.len(),
+        1,
+        "expected 1 hit fact from do-for-fact, got: {hits:?}"
+    );
+}
+
+/// `delayed-do-for-all-facts` loads and parses correctly.
+#[test]
+fn load_rule_with_delayed_do_for_all_facts() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate task (slot id))
+(defrule process
+    (go)
+    =>
+    (delayed-do-for-all-facts ((?t task)) TRUE (printout t ?t crlf)))
+(deffacts trigger (go))
+",
+    );
+}
+
+/// `any-factp` used as condition inside `if` loads without error.
+#[test]
+fn load_rule_with_any_factp_in_if_condition() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r#"
+(deftemplate flag (slot active))
+(defrule check
+    (go)
+    =>
+    (if (any-factp ((?f flag)) TRUE)
+        then (printout t "has flags" crlf)
+        else (printout t "no flags" crlf)))
+(deffacts trigger (go))
+"#,
+    );
+}
+
+/// `find-all-facts` used as the RHS of `bind` loads without error.
+#[test]
+fn load_rule_with_find_all_facts_in_bind() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate record (slot id))
+(defrule gather
+    (go)
+    =>
+    (bind ?all (find-all-facts ((?r record)) TRUE))
+    (printout t ?all crlf))
+(deffacts trigger (go))
+",
+    );
+}
+
+/// `find-fact` used as the RHS of `bind` loads without error.
+#[test]
+fn load_rule_with_find_fact_in_bind() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(deftemplate widget (slot id))
+(defrule get-first
+    (go)
+    =>
+    (bind ?w (find-fact ((?r widget)) TRUE))
+    (printout t ?w crlf))
+(deffacts trigger (go))
+",
     );
 }

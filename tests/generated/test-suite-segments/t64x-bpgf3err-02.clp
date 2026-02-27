@@ -1,0 +1,2 @@
+(deffunction foo ())
+(defgeneric foo)

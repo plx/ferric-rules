@@ -1,0 +1,182 @@
+{
+  "version": 2,
+  "groups": [
+    {
+      "glob": "co-bpgf3err-*.clp",
+      "category": "intentional-invalid-fixture",
+      "note": "bpgf3err is an error-focused suite and these extracted cycles are expected to fail load/check."
+    },
+    {
+      "glob": "t64x-bpgf3err-*.clp",
+      "category": "intentional-invalid-fixture",
+      "note": "telefonica 64x mirror of bpgf3err error cycles."
+    }
+  ],
+  "entries": {
+    "bug-00.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "deffunction requires at least one body expression"
+      ],
+      "note": "Contains a known-invalid deffunction form at the end of the cycle."
+    },
+    "jnftrght-01.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "unsupported pattern form `logical`"
+      ],
+      "note": "Error-tagged jnftrght slice intentionally uses unsupported/invalid logical placements."
+    },
+    "misclns2-10.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "expected pattern name (symbol)"
+      ],
+      "note": "Malformed pattern form."
+    },
+    "modlmisc-03.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "template `foo` is not visible from module `B`"
+      ],
+      "note": "modlmisc cycle 03 intentionally references non-exported template through import."
+    },
+    "modlmisc-04.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "template `foo` is not visible from module `B`",
+        "template `bar` is not visible from module `B`",
+        "template `foo` is not visible from module `F`",
+        "template `bar` is not visible from module `G`"
+      ],
+      "note": "modlmisc cycle 04 mixes valid and intentionally-invalid one-level import visibility references."
+    },
+    "modlmisc-05.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "template `foo` is not visible from module `B2`",
+        "template `bar` is not visible from module `B2`",
+        "template `foo` is not visible from module `D2`",
+        "template `bar` is not visible from module `D2`",
+        "template `foo` is not visible from module `F2`",
+        "template `bar` is not visible from module `F2`",
+        "template `bar` is not visible from module `G2`"
+      ],
+      "note": "modlmisc cycle 05 two-level import/re-export case with intentional visibility failures."
+    },
+    "modlmisc-07.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "missing module name"
+      ],
+      "note": "Bad defmodule name/syntax cycle."
+    },
+    "modlmisc-09.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "template `bar` is not visible from module `C`",
+        "template `yak` is not visible from module `B`",
+        "template `yak` is not visible from module `A`",
+        "template `bar` is not visible from module `A`"
+      ],
+      "note": "modlmisc cycle 09 intentionally probes imported-template LHS visibility errors."
+    },
+    "co-drtest03-08.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "unknown slot `three` in template `a`"
+      ]
+    },
+    "t64x-drtest03-08.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "unknown slot `three` in template `a`"
+      ]
+    },
+    "co-drtest05-07.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "connectives not allowed in facts"
+      ]
+    },
+    "t64x-drtest05-07.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "connectives not allowed in facts"
+      ]
+    },
+    "co-drtest05-08.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "predicate constraint translation: unknown function `connective`"
+      ]
+    },
+    "t64x-drtest05-08.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "predicate constraint translation: unknown function `connective`"
+      ]
+    },
+    "co-drtest05-09.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "invalid expected 'slot', 'multislot', 'field', or 'multifield'"
+      ]
+    },
+    "t64x-drtest05-09.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "invalid expected 'slot', 'multislot', 'field', or 'multifield'"
+      ]
+    },
+    "co-drtest06-16.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "global `x` init: unbound global variable `?*r*`"
+      ]
+    },
+    "t64x-drtest06-16.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "global `x` init: unbound global variable `?*r*`"
+      ]
+    },
+    "co-drtest07-23.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "connectives not allowed in facts"
+      ]
+    },
+    "t64x-drtest07-23.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "connectives not allowed in facts"
+      ]
+    },
+    "co-drtest08-46.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "expected fact (list)"
+      ]
+    },
+    "t64x-drtest08-46.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "expected fact (list)"
+      ]
+    },
+    "co-drtest08-48.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "expected function call (list)"
+      ]
+    },
+    "t64x-drtest08-48.clp": {
+      "category": "intentional-invalid-fixture",
+      "contains": [
+        "expected function call (list)"
+      ]
+    }
+  }
+}
+

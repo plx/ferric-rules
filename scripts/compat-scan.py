@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -33,7 +34,6 @@ COOL_CONSTRUCTS = [
 ]
 
 UNSUPPORTED_CONTROL = [
-    "if", "foreach", "while", "switch", "loop-for-count", "progn$",
 ]
 
 UNSUPPORTED_IO = ["open", "close"]
@@ -186,9 +186,9 @@ def classify_file(path, features, unsupported):
     if loading_features:
         return "incompatible", "unsupported-command", "batch"
 
-    # No defrule → library only
+    # No defrule → library only (still testable: load→reset→run produces empty output)
     if "defrule" not in features:
-        return "incompatible", "library-only", "library"
+        return "pending", "library-only", "library"
 
     # Testable
     return "pending", "testable", "standalone"
@@ -251,6 +251,39 @@ def scan_examples(examples_dir):
     return files
 
 
+def dedup_batch_files(files, examples_dir):
+    """Detect duplicate .bat files via content hashing.
+
+    When duplicates are found, the first occurrence (by sorted path) is kept
+    as canonical and later copies get a "duplicate_of" field and are marked
+    incompatible with reason "duplicate-batch".
+    """
+    examples_path = Path(examples_dir)
+    hash_to_paths = {}
+
+    for rel_path, info in sorted(files.items()):
+        if info["reason"] != "test-suite-batch":
+            continue
+        filepath = examples_path / rel_path
+        try:
+            content = filepath.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()
+        except OSError:
+            continue
+
+        if digest not in hash_to_paths:
+            hash_to_paths[digest] = rel_path
+        else:
+            canonical = hash_to_paths[digest]
+            info["classification"] = "incompatible"
+            info["reason"] = "duplicate-batch"
+            info["duplicate_of"] = canonical
+
+    # Count dedup stats
+    dup_count = sum(1 for info in files.values() if info.get("duplicate_of"))
+    return dup_count
+
+
 def build_summary(files):
     """Compute summary counts from the files dict."""
     counts = {"total": 0, "equivalent": 0, "divergent": 0, "incompatible": 0, "pending": 0}
@@ -289,6 +322,7 @@ def main():
 
     print(f"Scanning {examples_dir} ...")
     files = scan_examples(examples_dir)
+    dup_count = dedup_batch_files(files, examples_dir)
     summary = build_summary(files)
 
     manifest = {
@@ -312,6 +346,8 @@ def main():
     print(f"  Incompatible:   {summary['incompatible']}")
     print(f"  Equivalent:     {summary['equivalent']}")
     print(f"  Divergent:      {summary['divergent']}")
+    if dup_count:
+        print(f"  Duplicate .bat:  {dup_count}")
 
     # Breakdown of incompatible reasons
     reason_counts = {}

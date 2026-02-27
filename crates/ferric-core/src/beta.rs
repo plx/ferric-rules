@@ -48,6 +48,34 @@ pub struct JoinTest {
 pub enum JoinTestType {
     Equal,
     NotEqual,
+    GreaterThan,
+    LessThan,
+    GreaterOrEqual,
+    LessOrEqual,
+    /// Lexeme equality (currently string-only) comparison.
+    LexEqual,
+    /// Lexeme inequality (currently string-only) comparison.
+    LexNotEqual,
+    /// Lexeme greater-than (currently string-only) comparison.
+    LexGreaterThan,
+    /// Lexeme less-than (currently string-only) comparison.
+    LexLessThan,
+    /// Lexeme greater-or-equal (currently string-only) comparison.
+    LexGreaterOrEqual,
+    /// Lexeme less-or-equal (currently string-only) comparison.
+    LexLessOrEqual,
+    /// Compare against the left binding plus an integer offset.
+    EqualOffset(i64),
+    /// Compare against the left binding plus an integer offset.
+    NotEqualOffset(i64),
+    /// Compare against the left binding plus an integer offset.
+    GreaterThanOffset(i64),
+    /// Compare against the left binding plus an integer offset.
+    LessThanOffset(i64),
+    /// Compare against the left binding plus an integer offset.
+    GreaterOrEqualOffset(i64),
+    /// Compare against the left binding plus an integer offset.
+    LessOrEqualOffset(i64),
 }
 
 /// Unique identifier for a beta memory.

@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -214,7 +215,7 @@ def classify_results(ferric_result, clips_result):
     # CLIPS exit code is 0, since a non-zero exit is already handled
     # correctly by the exit-code comparisons below.
     if c["exit_code"] == 0:
-        clips_has_error = bool(re.search(r"\[(?:EXPRNPSR|PRNTUTIL|CSTRCPSR|PRCCODE)\d*\]", c["stdout"]))
+        clips_has_error = bool(re.search(r"\[[A-Z]+\d+\]", c["stdout"]))
         if clips_has_error and f["exit_code"] != 0:
             return "incompatible", "both-error"
         if clips_has_error:
@@ -252,20 +253,56 @@ def classify_results(ferric_result, clips_result):
 def process_file(args):
     """Process a single file through both engines.
 
-    args is a tuple: (rel_path, abs_path, ferric_bin, repo_root, harness_script, timeout, skip_clips)
+    args is a tuple: (rel_path, abs_path, ferric_bin, repo_root, harness_script, timeout, skip_clips, harness_path)
     Returns (rel_path, ferric_result, clips_result, classification, reason).
     """
-    rel_path, abs_path, ferric_bin, repo_root, harness_script, timeout, skip_clips = args
+    rel_path, abs_path, ferric_bin, repo_root, harness_script, timeout, skip_clips, harness_path = args
 
-    ferric_result = run_ferric(abs_path, ferric_bin, timeout)
+    # If a harness file is specified, concatenate original + harness into a temp file
+    run_path = abs_path
+    tmp_path = None
+    try:
+        if harness_path and os.path.exists(harness_path):
+            with open(abs_path, "r") as f_orig:
+                original_content = f_orig.read()
+            with open(harness_path, "r") as f_harness:
+                harness_content = f_harness.read()
+            tmp = tempfile.NamedTemporaryFile(suffix=".clp", delete=False, mode="w")
+            tmp.write(original_content)
+            tmp.write("\n")
+            tmp.write(harness_content)
+            tmp.close()
+            tmp_path = tmp.name
+            run_path = tmp_path
 
-    clips_result = None
-    if not skip_clips:
-        clips_result = run_clips_docker(abs_path, repo_root, harness_script, timeout)
+        ferric_result = run_ferric(run_path, ferric_bin, timeout)
 
-    classification, reason = classify_results(ferric_result, clips_result)
+        clips_result = None
+        if not skip_clips:
+            clips_result = run_clips_docker(run_path, repo_root, harness_script, timeout)
 
-    return rel_path, ferric_result, clips_result, classification, reason
+        classification, reason = classify_results(ferric_result, clips_result)
+
+        return rel_path, ferric_result, clips_result, classification, reason
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_harness(entry, repo_root):
+    """Resolve harness path from manifest entry, or None."""
+    harness = entry.get("harness")
+    if not harness:
+        return None
+    path = Path(repo_root) / harness
+    return str(path) if path.exists() else None
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +316,7 @@ def main():
     parser.add_argument("--only-divergent", action="store_true", help="Re-run divergent files")
     parser.add_argument("--source", help="Filter by source directory")
     parser.add_argument("--file", help="Run a single file (relative to tests/examples/)")
-    parser.add_argument("--timeout", type=int, default=30, help="Per-engine timeout in seconds")
+    parser.add_argument("--timeout", type=int, default=120, help="Per-engine timeout in seconds")
     parser.add_argument("--workers", type=int, default=4, help="Parallel worker count")
     parser.add_argument("--manifest", default=None, help="Path to manifest file")
     parser.add_argument("--ferric-bin", default=None, help="Path to ferric binary")
@@ -340,7 +377,7 @@ def main():
             if info["classification"] != "divergent":
                 continue
         elif args.all:
-            if info["reason"] not in ("testable", "ferric-only-clean") and info["classification"] != "pending":
+            if info["reason"] not in ("testable", "ferric-only-clean", "library-only") and info["classification"] != "pending":
                 # Skip pre-classified incompatible files unless they were testable
                 if info["classification"] == "incompatible" and info["reason"] != "testable":
                     continue
@@ -353,7 +390,15 @@ def main():
         if args.source and info["source"] != args.source:
             continue
 
-        abs_path = examples_dir / rel_path
+        # Resolve file path: check for "generated" field override, then
+        # try tests/generated/ prefix, then fall back to examples_dir.
+        generated = info.get("generated")
+        if generated:
+            abs_path = repo_root / generated
+        elif rel_path.startswith("generated/"):
+            abs_path = repo_root / "tests" / rel_path
+        else:
+            abs_path = examples_dir / rel_path
         if not abs_path.exists():
             continue
 
@@ -376,7 +421,8 @@ def main():
 
     # Prepare worker arguments
     work_items = [
-        (rel, abs_p, ferric_bin, str(repo_root), harness_script, args.timeout, args.skip_clips)
+        (rel, abs_p, ferric_bin, str(repo_root), harness_script, args.timeout, args.skip_clips,
+         _resolve_harness(manifest["files"].get(rel, {}), repo_root))
         for rel, abs_p in files_to_run
     ]
 

@@ -1,0 +1,5 @@
+(defmodule FOO (export ?ALL))
+(deftemplate FOO::foo)
+(defmodule BAR (export ?ALL))
+(deftemplate BAR::foo)
+(defmodule YAK (import FOO ?ALL) (import BAR ?ALL))

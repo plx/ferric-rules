@@ -40,6 +40,16 @@ Load-level unknown constructs produce `LoadError::UnsupportedForm { name, line, 
 `(float 42)` → prints as `42.0`; `(/ 100 4)` → prints as `25.0` (division always returns float).
 `(integer 3)` → prints as `3` (no decimal).
 
+## Connective constraint parsing (stage2.rs)
+
+- Added `interpret_constraint_sequence()` with OR > AND > NOT precedence
+- Added `parse_or_expr`, `parse_and_expr`, `parse_unary_expr` helpers
+- Added `Constraint::span()` method
+- `Colon` and `Equals` connectives produce `Constraint::Wildcard` placeholder (item 005 not yet done)
+- **CRITICAL**: CLI fixture `tests/fixtures/cli/check_valid.clp` uses `?a&:(> ?a 18)` — was silently ignoring predicate. Now parsed with wildcard placeholder.
+- `interpret_pattern_slot_constraint` now uses `interpret_constraint_sequence(&slot_list[1..])` instead of just `slot_list[1]`
+- 4 new tests: `interpret_ordered_connective_and`, `interpret_ordered_connective_or`, `interpret_template_connective_constraint`, `interpret_negation_constraint`
+
 ## Test count trajectory (phase 6)
 - Baseline: 1216
 - After pass 001 (harness scaffold): 1220
