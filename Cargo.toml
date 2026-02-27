@@ -62,6 +62,11 @@ must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+
 # FFI profile: development builds with panic=abort for C ABI safety
 [profile.ffi-dev]
 inherits = "dev"
