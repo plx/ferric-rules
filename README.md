@@ -13,14 +13,13 @@ as a normal Rust crate (or as a C library via `ferric-ffi`).
 The engine is early but functional: ordered and template facts, negative and
 existential patterns, the full Rete join network, modules with focus stacks,
 deffunction/defgeneric, globals, and the core CLIPS standard library
-(math, string, multifield, predicates, I/O). What's not here yet:
-object system (COOL), logical dependencies, and some of the more exotic
-pattern connectives. See the [compatibility roadmap](COMPATIBILITY_ROADMAP.md)
-for details.
+(math, string, multifield, predicates, I/O). What's planned, but not here yet:
 
-```
-cargo add ferric
-```
+- logical dependencies
+- some of the more exotic pattern connectives
+- idiomatic wrappers/bindings (C++, Swift, python, etc.)
+
+We have no plans to support the object system (COOL).
 
 ## Example: in-app engagement rules
 
