@@ -45,6 +45,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build CLIPS reference image
+        run: docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+
       # ── Base branch benchmarks ─────────────────────────────────────────
       - name: Benchmark base branch
         run: |
@@ -55,14 +58,15 @@ jobs:
             --commit-sha "${{ inputs.base_sha }}" \
             --output /tmp/base-perf-manifest.json
 
-      # ── Head benchmarks ────────────────────────────────────────────────
+      # ── Head benchmarks (with CLIPS reference) ─────────────────────────
       - name: Benchmark head
         run: |
           git checkout ${{ inputs.head_sha }}
           rm -rf target/criterion
           python3 scripts/perf-collect.py \
             --commit-sha "${{ inputs.head_sha }}" \
-            --output /tmp/head-perf-manifest.json
+            --output /tmp/head-perf-manifest.json \
+            --clips-reference
 
       # ── Comparison report ──────────────────────────────────────────────
       - name: Generate comparison report

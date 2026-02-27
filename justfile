@@ -154,8 +154,10 @@ perf-report *args:
 perf-diff *args:
     python3 scripts/perf-diff.py {{args}}
 
-# Full performance assessment: collect and report
-assess-performance: perf-collect perf-report
+# Full performance assessment: collect (with CLIPS reference) and report
+assess-performance: clips-build
+    python3 scripts/perf-collect.py --clips-reference
+    python3 scripts/perf-report.py
 
 # ── CLIPS reference ─────────────────────────────────────────────────────────
 

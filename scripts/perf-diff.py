@@ -57,6 +57,13 @@ def fmt_delta(pct):
     return f"{sign}{pct:.1f}%"
 
 
+def fmt_ratio(ferric_ns, clips_ns):
+    """Format ferric/CLIPS ratio."""
+    if ferric_ns is None or clips_ns is None or clips_ns == 0:
+        return "n/a"
+    return f"{ferric_ns / clips_ns:.3f}x"
+
+
 # ---------------------------------------------------------------------------
 # Diff computation
 # ---------------------------------------------------------------------------
@@ -131,9 +138,12 @@ def compute_diff(base, head):
 # ---------------------------------------------------------------------------
 
 def format_markdown(regressions, improvements, unchanged, added, removed,
-                    *, repo=None, base_sha=None, head_sha=None):
+                    *, repo=None, base_sha=None, head_sha=None,
+                    clips_ref=None):
     """Build the full Markdown report as a list of lines."""
     lines = []
+    clips = clips_ref or {}
+    has_clips = bool(clips)
 
     total = len(regressions) + len(improvements) + len(unchanged)
 
@@ -163,15 +173,32 @@ def format_markdown(regressions, improvements, unchanged, added, removed,
     if removed:
         lines.append(f"| Removed (deleted benchmarks) | {len(removed)} |")
 
+    # Table headers depend on whether CLIPS data is available
+    if has_clips:
+        hdr = "| Benchmark | Base | Head | Delta | CLIPS Ref | vs CLIPS |"
+        sep = "|---|---:|---:|---|---:|---:|"
+    else:
+        hdr = "| Benchmark | Base | Head | Delta |"
+        sep = "|---|---:|---:|---|"
+
+    def _row(name, b_ns, h_ns, pct, bold_delta=False):
+        delta = f"**{fmt_delta(pct)}**" if bold_delta else fmt_delta(pct)
+        base_cols = f"| {name} | {fmt_ns(b_ns)} | {fmt_ns(h_ns)} | {delta}"
+        if has_clips:
+            c = clips.get(name)
+            c_ns = c.get("median_ns") if c else None
+            return f"{base_cols} | {fmt_ns(c_ns)} | {fmt_ratio(h_ns, c_ns)} |"
+        return f"{base_cols} |"
+
     # Regressions
     lines.append("")
     if regressions:
         lines.append(f"### Regressions ({len(regressions)})")
         lines.append("")
-        lines.append("| Benchmark | Base | Head | Delta |")
-        lines.append("|---|---:|---:|---|")
+        lines.append(hdr)
+        lines.append(sep)
         for name, suite, b_ns, h_ns, pct in regressions:
-            lines.append(f"| {name} | {fmt_ns(b_ns)} | {fmt_ns(h_ns)} | **{fmt_delta(pct)}** |")
+            lines.append(_row(name, b_ns, h_ns, pct, bold_delta=True))
     else:
         lines.append("### Regressions")
         lines.append("")
@@ -182,10 +209,10 @@ def format_markdown(regressions, improvements, unchanged, added, removed,
     if improvements:
         lines.append(f"### Improvements ({len(improvements)})")
         lines.append("")
-        lines.append("| Benchmark | Base | Head | Delta |")
-        lines.append("|---|---:|---:|---|")
+        lines.append(hdr)
+        lines.append(sep)
         for name, suite, b_ns, h_ns, pct in improvements:
-            lines.append(f"| {name} | {fmt_ns(b_ns)} | {fmt_ns(h_ns)} | **{fmt_delta(pct)}** |")
+            lines.append(_row(name, b_ns, h_ns, pct, bold_delta=True))
     else:
         lines.append("### Improvements")
         lines.append("")
@@ -196,10 +223,10 @@ def format_markdown(regressions, improvements, unchanged, added, removed,
         lines.append("")
         lines.append(f"<details><summary>Unchanged ({len(unchanged)})</summary>")
         lines.append("")
-        lines.append("| Benchmark | Base | Head | Delta |")
-        lines.append("|---|---:|---:|---|")
+        lines.append(hdr)
+        lines.append(sep)
         for name, suite, b_ns, h_ns, pct in unchanged:
-            lines.append(f"| {name} | {fmt_ns(b_ns)} | {fmt_ns(h_ns)} | {fmt_delta(pct)} |")
+            lines.append(_row(name, b_ns, h_ns, pct))
         lines.append("")
         lines.append("</details>")
 
@@ -221,6 +248,13 @@ def format_markdown(regressions, improvements, unchanged, added, removed,
             lines.append(f"- `{name}` ({suite}): was {fmt_ns(b_ns)}")
         lines.append("")
         lines.append("</details>")
+
+    # CLIPS methodology note
+    if has_clips:
+        lines.append("")
+        lines.append("> CLIPS reference: Docker wall-clock time (includes container startup). "
+                     "The \"vs CLIPS\" ratio is ferric/CLIPS — useful for tracking relative "
+                     "trends, not absolute speed comparison.")
 
     return lines
 
@@ -249,10 +283,15 @@ def main():
 
     regressions, improvements, unchanged, added, removed = compute_diff(base, head)
 
+    # Extract CLIPS reference from head manifest (if available)
+    clips_ref_section = head.get("clips_reference")
+    clips_ref = clips_ref_section.get("benchmarks") if clips_ref_section else None
+
     # Always write comparison to stdout (for $GITHUB_STEP_SUMMARY)
     md_lines = format_markdown(
         regressions, improvements, unchanged, added, removed,
         repo=args.repo, base_sha=args.base_sha, head_sha=args.head_sha,
+        clips_ref=clips_ref,
     )
     print("\n".join(md_lines))
 

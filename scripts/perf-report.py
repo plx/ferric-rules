@@ -38,6 +38,13 @@ def fmt_ns(ns):
     return f"{ns / 1_000_000_000:.3f} s"
 
 
+def _fmt_ratio(ferric_ns, clips_ns):
+    """Format ferric/CLIPS ratio."""
+    if ferric_ns is None or clips_ns is None or clips_ns == 0:
+        return "n/a"
+    return f"{ferric_ns / clips_ns:.3f}x"
+
+
 # ---------------------------------------------------------------------------
 # Text summary (stdout)
 # ---------------------------------------------------------------------------
@@ -88,6 +95,24 @@ def print_summary(manifest):
         mean = fmt_ns(info.get("mean_ns"))
         stddev = fmt_ns(info.get("stddev_ns"))
         print(f"{name:<28s} {median:>12s} {mean:>12s} {stddev:>12s}")
+
+    # CLIPS reference
+    clips_ref = manifest.get("clips_reference")
+    if clips_ref and clips_ref.get("benchmarks"):
+        clips_benchmarks = clips_ref["benchmarks"]
+        print()
+        print("CLIPS Reference (Docker wall-clock, includes container startup)")
+        print(f"{'-'*70}")
+        print(f"{'Benchmark':<28s} {'ferric':>12s} {'CLIPS':>12s} {'Ratio':>10s}")
+        print(f"{'-'*28} {'-'*12} {'-'*12} {'-'*10}")
+        for name, clips_info in clips_benchmarks.items():
+            if clips_info is None:
+                continue
+            ferric_info = manifest.get("benchmarks", {}).get(name, {})
+            ferric_ns = ferric_info.get("median_ns")
+            clips_ns = clips_info.get("median_ns")
+            ratio = _fmt_ratio(ferric_ns, clips_ns)
+            print(f"{name:<28s} {fmt_ns(ferric_ns):>12s} {fmt_ns(clips_ns):>12s} {ratio:>10s}")
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +174,29 @@ def write_report(manifest, report_path, repo=None, commit_sha=None):
         mean = fmt_ns(info.get("mean_ns"))
         stddev = fmt_ns(info.get("stddev_ns"))
         lines.append(f"| {name} | {suite} | {median} | {mean} | {stddev} |")
+
+    # CLIPS reference section
+    clips_ref = manifest.get("clips_reference")
+    if clips_ref and clips_ref.get("benchmarks"):
+        clips_benchmarks = clips_ref["benchmarks"]
+        has_data = any(v is not None for v in clips_benchmarks.values())
+        if has_data:
+            lines.append("")
+            lines.append("### CLIPS Reference")
+            lines.append("")
+            lines.append("Wall-clock times from CLIPS via Docker (includes container startup).")
+            lines.append("Useful as a relative frame of reference, not for absolute speed comparison.")
+            lines.append("")
+            lines.append("| Benchmark | ferric (median) | CLIPS (median) | ferric / CLIPS |")
+            lines.append("|---|---:|---:|---:|")
+            for name, clips_info in clips_benchmarks.items():
+                if clips_info is None:
+                    continue
+                ferric_info = manifest.get("benchmarks", {}).get(name, {})
+                ferric_ns = ferric_info.get("median_ns")
+                clips_ns = clips_info.get("median_ns")
+                ratio = _fmt_ratio(ferric_ns, clips_ns)
+                lines.append(f"| {name} | {fmt_ns(ferric_ns)} | {fmt_ns(clips_ns)} | {ratio} |")
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

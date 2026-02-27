@@ -25,10 +25,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build CLIPS reference image
+        run: docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+
       - name: Collect benchmark results
         run: |
           python3 scripts/perf-collect.py \
-            --commit-sha "${{ github.sha }}"
+            --commit-sha "${{ github.sha }}" \
+            --clips-reference
 
       - name: Generate standalone report
         run: |
