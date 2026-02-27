@@ -1,0 +1,110 @@
+name: Compatibility Report
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_TOOLCHAIN: "1.93.0"
+
+jobs:
+  compat-report:
+    name: Compat Report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build CLIPS reference image
+        run: docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+
+      # ── Base branch (PRs only) ──────────────────────────────────────
+      - name: Assess base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          git checkout ${{ github.event.pull_request.base.sha }}
+          cargo build --release -p ferric-cli
+          python3 scripts/compat-scan.py
+          python3 scripts/compat-run.py --workers 4 --timeout 30
+          cp tests/examples/compat-manifest.json /tmp/base-manifest.json
+          rm -f tests/examples/compat-manifest.json
+          git checkout ${{ github.sha }}
+
+      # ── Head (PR merge commit or push) ──────────────────────────────
+      - name: Build ferric
+        run: cargo build --release -p ferric-cli
+
+      - name: Run compat scan
+        run: python3 scripts/compat-scan.py
+
+      - name: Run compat assessment
+        run: python3 scripts/compat-run.py --workers 4 --timeout 30
+
+      # ── PR report ───────────────────────────────────────────────────
+      - name: Generate comparison report
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          python3 scripts/compat-diff.py \
+            /tmp/base-manifest.json tests/examples/compat-manifest.json \
+            --tsv /tmp/compat-diff.tsv \
+            --report /tmp/compat-report.md \
+            --repo "${{ github.repository }}" \
+            --base-sha "${{ github.event.pull_request.base.sha }}" \
+            --head-sha "${{ github.sha }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        run: gh pr comment "${{ github.event.number }}" --body-file /tmp/compat-report.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload comparison artifacts
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-report
+          retention-days: 30
+          path: |
+            /tmp/compat-diff.tsv
+            /tmp/compat-report.md
+            tests/examples/compat-manifest.json
+            /tmp/base-manifest.json
+
+      # ── Push-to-main report ─────────────────────────────────────────
+      - name: Generate standalone report
+        if: github.event_name == 'push'
+        run: |
+          python3 scripts/compat-report.py \
+            --tsv /tmp/compat-report.tsv \
+            --report /tmp/compat-report.md \
+            --repo "${{ github.repository }}" \
+            --commit-sha "${{ github.sha }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload standalone artifacts
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-report
+          retention-days: 30
+          path: |
+            /tmp/compat-report.tsv
+            /tmp/compat-report.md
+            tests/examples/compat-manifest.json
