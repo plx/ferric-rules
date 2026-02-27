@@ -64,6 +64,28 @@ def fmt_ratio(ferric_ns, clips_ns):
     return f"{ferric_ns / clips_ns:.3f}x"
 
 
+def clips_reference_note(clips_ref):
+    """Return a full sentence describing CLIPS methodology."""
+    method = (clips_ref or {}).get("methodology")
+    if method == "native_wall_clock_launch_adjusted":
+        return ("CLIPS reference: native wall-clock on the runner host, with a "
+                "matched launch-only invocation subtracted from each sample.")
+    if method == "docker_wall_clock_launch_adjusted":
+        return ("CLIPS reference: Docker wall-clock, with a matched launch-only "
+                "container invocation subtracted from each sample.")
+    if method == "native_wall_clock":
+        return "CLIPS reference: native wall-clock on the runner host."
+    if method == "docker_wall_clock":
+        return "CLIPS reference: Docker wall-clock (includes container startup)."
+
+    runner = (clips_ref or {}).get("runner")
+    if runner == "native":
+        return "CLIPS reference: native wall-clock on the runner host."
+    if runner == "docker":
+        return "CLIPS reference: Docker wall-clock."
+    return "CLIPS reference: external wall-clock timings."
+
+
 # ---------------------------------------------------------------------------
 # Diff computation
 # ---------------------------------------------------------------------------
@@ -142,7 +164,8 @@ def format_markdown(regressions, improvements, unchanged, added, removed,
                     clips_ref=None):
     """Build the full Markdown report as a list of lines."""
     lines = []
-    clips = clips_ref or {}
+    clips_section = clips_ref or {}
+    clips = clips_section.get("benchmarks") or {}
     has_clips = bool(clips)
 
     total = len(regressions) + len(improvements) + len(unchanged)
@@ -252,9 +275,9 @@ def format_markdown(regressions, improvements, unchanged, added, removed,
     # CLIPS methodology note
     if has_clips:
         lines.append("")
-        lines.append("> CLIPS reference: Docker wall-clock time (includes container startup). "
-                     "The \"vs CLIPS\" ratio is ferric/CLIPS — useful for tracking relative "
-                     "trends, not absolute speed comparison.")
+        lines.append(f"> {clips_reference_note(clips_section)} "
+                     "The \"vs CLIPS\" ratio is ferric/CLIPS — useful for tracking "
+                     "relative trends, not absolute speed comparison.")
 
     return lines
 
@@ -284,8 +307,7 @@ def main():
     regressions, improvements, unchanged, added, removed = compute_diff(base, head)
 
     # Extract CLIPS reference from head manifest (if available)
-    clips_ref_section = head.get("clips_reference")
-    clips_ref = clips_ref_section.get("benchmarks") if clips_ref_section else None
+    clips_ref = head.get("clips_reference")
 
     # Always write comparison to stdout (for $GITHUB_STEP_SUMMARY)
     md_lines = format_markdown(
