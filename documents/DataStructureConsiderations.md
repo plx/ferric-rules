@@ -211,6 +211,13 @@ For each experiment:
 - The main care point is preserving behavior if rule IDs are ever sparse due to
   reset/reload behavior; using `Option` slots handles that safely.
 
+**Experiment note (2026-02-28)**
+
+- `crates/ferric-runtime/src/engine.rs` already uses `RuleIndex<T> = Vec<Option<T>>`
+  for both `rule_info` and `rule_modules`.
+- No additional runtime experiment was needed here; this candidate is already
+  satisfied by the current implementation.
+
 ### 4. Make the Template Registry Fully `slotmap`-Native
 
 **Current structures**
@@ -252,6 +259,14 @@ For each experiment:
 - Low.
 - This is largely a structural simplification of storage that is already keyed
   by a `slotmap` ID.
+
+**Experiment note (2026-02-28)**
+
+- `crates/ferric-runtime/src/engine.rs` already stores template definitions in
+  `SlotMap<TemplateId, RegisteredTemplate>` and template-module ownership in
+  `SecondaryMap<TemplateId, ModuleId>`.
+- No additional runtime experiment was needed here; this candidate is already
+  satisfied by the current implementation.
 
 ### 5. Replace `slotmap`-Keyed Side Tables with `SecondaryMap` / `SparseSecondaryMap`
 
@@ -637,6 +652,13 @@ For each experiment:
   roughly `201.5 ns` to `202.3 ns`; Criterion reported that as within the
   configured noise threshold, so the steady-state read cost is effectively flat
   while the template-name keys become more compact.
+- Replacing `RegisteredTemplate.slot_index` in
+  `crates/ferric-runtime/src/templates.rs` with a small linear
+  `SmallVec<[(String, usize); 8]>` map was tested and reverted.
+- The targeted microbenchmark `template_wide_modify_reset_run` regressed from
+  roughly `1.41 us` to `1.46 us` (about `+2.8%`) on a slot-override-heavy
+  workload, so the current `FxHashMap<String, usize>` remains the better fit
+  for runtime template slot lookup.
 
 ## Areas to Deprioritize for Now
 

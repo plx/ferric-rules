@@ -774,16 +774,12 @@ fn apply_template_slot_overrides(
             continue;
         };
 
-        let slot_idx = registered
-            .slot_index
-            .get(&fc.name)
-            .copied()
-            .ok_or_else(|| {
-                ActionError::EvalError(format!(
-                    "unknown slot `{}` in template `{}`",
-                    fc.name, registered.name
-                ))
-            })?;
+        let slot_idx = registered.slot_index(&fc.name).ok_or_else(|| {
+            ActionError::EvalError(format!(
+                "unknown slot `{}` in template `{}`",
+                fc.name, registered.name
+            ))
+        })?;
 
         if slot_idx >= slots.len() {
             return Err(ActionError::EvalError(format!(

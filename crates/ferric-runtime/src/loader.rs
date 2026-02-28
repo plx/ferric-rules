@@ -596,16 +596,12 @@ impl Engine {
 
         // Apply slot values from the deffacts body.
         for slot_val in &template.slot_values {
-            let slot_idx = registered
-                .slot_index
-                .get(&slot_val.name)
-                .copied()
-                .ok_or_else(|| {
-                    LoadError::Compile(format!(
-                        "unknown slot `{}` in template `{}`",
-                        slot_val.name, template.template
-                    ))
-                })?;
+            let slot_idx = registered.slot_index(&slot_val.name).ok_or_else(|| {
+                LoadError::Compile(format!(
+                    "unknown slot `{}` in template `{}`",
+                    slot_val.name, template.template
+                ))
+            })?;
 
             if let Some(value) = self.fact_value_to_value(&slot_val.value, result) {
                 slots[slot_idx] = value;
@@ -1234,20 +1230,16 @@ impl Engine {
                 let mut variable_slots = Vec::new();
 
                 for slot_constraint in &template.slot_constraints {
-                    let slot_idx = registered
-                        .slot_index
-                        .get(&slot_constraint.slot_name)
-                        .copied()
-                        .ok_or_else(|| {
-                            Self::unsupported_pattern(
-                                "template",
-                                &slot_constraint.span,
-                                &format!(
-                                    "unknown slot `{}` in template `{}`",
-                                    slot_constraint.slot_name, template.template
-                                ),
-                            )
-                        })?;
+                    let slot_idx = registered.slot_index(&slot_constraint.slot_name).ok_or_else(|| {
+                        Self::unsupported_pattern(
+                            "template",
+                            &slot_constraint.span,
+                            &format!(
+                                "unknown slot `{}` in template `{}`",
+                                slot_constraint.slot_name, template.template
+                            ),
+                        )
+                    })?;
 
                     let slot = SlotIndex::Template(slot_idx);
                     self.translate_constraint(

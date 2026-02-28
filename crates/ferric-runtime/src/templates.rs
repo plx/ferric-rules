@@ -27,3 +27,10 @@ pub(crate) struct RegisteredTemplate {
     /// declared or the default is `?NONE` / `?DERIVE`).
     pub defaults: Vec<Value>,
 }
+
+impl RegisteredTemplate {
+    #[must_use]
+    pub fn slot_index(&self, name: &str) -> Option<usize> {
+        self.slot_index.get(name).copied()
+    }
+}

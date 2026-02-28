@@ -35,6 +35,36 @@ fn load_modify_engine() -> Engine {
     engine
 }
 
+fn load_wide_modify_engine(slot_count: usize) -> Engine {
+    let mut source = String::from("(deftemplate sensor");
+    for slot_idx in 0..slot_count {
+        source.push_str(&format!(" (slot s{slot_idx})"));
+    }
+    source.push_str(")\n(deffacts startup (sensor");
+    for slot_idx in 0..slot_count {
+        if slot_idx == 0 {
+            source.push_str(&format!(" (s{slot_idx} FALSE)"));
+        } else {
+            source.push_str(&format!(" (s{slot_idx} 0)"));
+        }
+    }
+    source.push_str("))\n(defrule bump ?f <- (sensor (s0 FALSE)) => (modify ?f");
+    for slot_idx in 0..slot_count {
+        if slot_idx == 0 {
+            source.push_str(" (s0 TRUE)");
+        } else {
+            source.push_str(&format!(" (s{slot_idx} {slot_idx})"));
+        }
+    }
+    source.push_str("))");
+
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine
+        .load_str(&source)
+        .expect("load wide template modify program");
+    engine
+}
+
 fn load_many_templates_engine(template_count: usize, slot_count: usize) -> Engine {
     let source = many_templates_source(template_count, slot_count);
     let mut engine = Engine::new(EngineConfig::utf8());
@@ -72,6 +102,14 @@ fn bench_template_registry(c: &mut Criterion) {
             let names = engine.templates();
             black_box(names.last().copied());
             black_box(names.len());
+        });
+    });
+
+    let mut engine = load_wide_modify_engine(8);
+    c.bench_function("template_wide_modify_reset_run", |b| {
+        b.iter(|| {
+            engine.reset().expect("reset");
+            black_box(engine.run(RunLimit::Unlimited).expect("run"));
         });
     });
 }
