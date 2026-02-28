@@ -716,6 +716,51 @@ For each experiment:
   change regressed from roughly `70.3 us` to `76.5 us` (about `+7.8%`), so the
   current `FxHashSet` remains the better fit for this membership path.
 
+### 12. Probe Slotmap-Native Relation Index Sets in `FactBase`
+
+**Current structures**
+
+- `crates/ferric-core/src/fact.rs`
+  - `FactBase.by_relation: HashMap<Symbol, HashSet<FactId>>`
+
+**Proposed substitution**
+
+- Replace the per-relation fact-ID sets with
+  `HashMap<Symbol, SparseSecondaryMap<FactId, ()>>`.
+
+**Where we'd use it**
+
+- The ordered-fact relation index in `FactBase`.
+
+**Additional adjustments**
+
+- Keep `by_template` unchanged so the measurement isolates only the ordered
+  relation index.
+- Preserve the existing `facts_by_relation` iterator API by iterating the
+  sparse map's keys.
+
+**Reasoning**
+
+- The relation index stores `FactId` values, which are `slotmap` keys.
+- That makes it another plausible place to remove hashing from the inner
+  membership sets without changing the outer grouping by relation symbol.
+
+**Risk**
+
+- Low.
+- The swap is mechanically local, but this index sits directly on fact assert,
+  query, and retract operations.
+
+**Experiment note (2026-02-28)**
+
+- Converting `FactBase.by_relation` in `crates/ferric-core/src/fact.rs` from
+  `HashMap<Symbol, HashSet<FactId>>` to
+  `HashMap<Symbol, SparseSecondaryMap<FactId, ()>>` was tested and reverted.
+- Reusing the existing `fact_base_relation_index_cycle` microbenchmark, the
+  change regressed from roughly `48.2 us` to `65.1 us` (about `+35.3%`), so
+  the current `FxHashSet` remains the better fit for the per-relation fact
+  sets.
+
 ## Areas to Deprioritize for Now
 
 These are existing structures that currently look well-matched to their
