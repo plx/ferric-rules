@@ -436,23 +436,25 @@ impl Engine {
     /// Return the CLIPS `TRUE` symbol as a [`Value`].
     ///
     /// The symbol is interned on first use and cached thereafter.
-    pub fn clips_true(&mut self) -> Value {
+    pub fn clips_true(&mut self) -> Result<Value, EngineError> {
+        self.check_thread_affinity()?;
         let sym = self
             .symbol_table
             .intern_symbol("TRUE", self.config.string_encoding)
             .expect("TRUE is valid in all encodings");
-        Value::Symbol(sym)
+        Ok(Value::Symbol(sym))
     }
 
     /// Return the CLIPS `FALSE` symbol as a [`Value`].
     ///
     /// The symbol is interned on first use and cached thereafter.
-    pub fn clips_false(&mut self) -> Value {
+    pub fn clips_false(&mut self) -> Result<Value, EngineError> {
+        self.check_thread_affinity()?;
         let sym = self
             .symbol_table
             .intern_symbol("FALSE", self.config.string_encoding)
             .expect("FALSE is valid in all encodings");
-        Value::Symbol(sym)
+        Ok(Value::Symbol(sym))
     }
 
     /// Resolve a [`Symbol`] to its string representation.
