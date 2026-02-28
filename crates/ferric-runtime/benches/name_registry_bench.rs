@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ferric_runtime::functions::{FunctionEnv, GenericRegistry, GlobalStore, UserFunction};
-use ferric_runtime::ModuleId;
+use ferric_runtime::{ModuleId, ModuleRegistry};
 
 fn module_ids(count: usize) -> Vec<ModuleId> {
     (0..count).map(|idx| ModuleId(idx as u32)).collect()
@@ -53,6 +53,14 @@ fn build_generic_registry(modules: &[ModuleId], names: &[String]) -> GenericRegi
                 Vec::new(),
             );
         }
+    }
+    registry
+}
+
+fn build_module_registry(names: &[String]) -> ModuleRegistry {
+    let mut registry = ModuleRegistry::new();
+    for name in names {
+        registry.register(name, Vec::new(), Vec::new());
     }
     registry
 }
@@ -143,10 +151,30 @@ fn bench_generic_registry_lookup(c: &mut Criterion) {
     });
 }
 
+fn bench_module_registry_lookup(c: &mut Criterion) {
+    let names = local_names(256);
+    let registry = build_module_registry(&names);
+
+    c.bench_function("module_registry_lookup_cycle", |b| {
+        b.iter(|| {
+            let mut hits = 0usize;
+            for _ in 0..16 {
+                for name in &names {
+                    if registry.get_by_name(black_box(name)).is_some() {
+                        hits += 1;
+                    }
+                }
+            }
+            black_box(hits);
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_function_env_lookup,
     bench_global_store_lookup,
     bench_generic_registry_lookup,
+    bench_module_registry_lookup,
 );
 criterion_main!(benches);

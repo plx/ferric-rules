@@ -607,6 +607,13 @@ For each experiment:
   change, but `template_modify_reset_run` regressed from roughly `1.75 us` to
   `1.84 us` (about `+4.1%`), so this specific `Box<str>` substitution is not a
   win for the current slot-lookup path.
+- Converting `ModuleRegistry.name_to_id` in
+  `crates/ferric-runtime/src/modules.rs` from `HashMap<String, ModuleId>` to
+  `HashMap<Box<str>, ModuleId>` was kept.
+- The targeted microbenchmark `module_registry_lookup_cycle` shifted from
+  roughly `16.54 us` to `16.78 us`; Criterion reported that as within the
+  configured noise threshold, so the runtime cost is effectively flat while the
+  stored keys become more compact.
 
 ## Areas to Deprioritize for Now
 
