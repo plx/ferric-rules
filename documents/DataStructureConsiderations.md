@@ -308,6 +308,12 @@ For each experiment:
 - The targeted microbenchmark `agenda_token_index_cycle` improved from roughly
   `103.4 us` to `101.0 us` (about `-2.5%`), making the dense slotmap side table
   a straightforward win for this field.
+- Converting `Agenda.token_to_activations` in `crates/ferric-core/src/agenda.rs`
+  from `HashMap` to `SparseSecondaryMap` was tested and reverted.
+- Using a fresh post-`id_to_key` baseline, the targeted microbenchmark
+  `agenda_token_index_cycle` regressed from roughly `99.7 us` to `106.8 us`
+  (about `+7.4%`), so the sparse slotmap fan-out table is not a good fit for
+  this path.
 
 ### 6. Convert Slotmap-Keyed Runtime State Maps in Negative/Exists/NCC Paths
 
