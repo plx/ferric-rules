@@ -105,4 +105,225 @@ mod tests {
         assert!(router.get_output("t").is_none());
         assert_eq!(router.get_output("stderr"), Some("error"));
     }
+
+    // -----------------------------------------------------------------------
+    // Property tests: OutputRouter
+    // -----------------------------------------------------------------------
+
+    use proptest::prelude::*;
+
+    /// Small fixed pool of channel names used across property tests.
+    const CHANNELS: &[&str] = &["t", "stderr", "wtrace", "ch1", "ch2"];
+
+    fn channel_idx_strategy() -> impl Strategy<Value = usize> {
+        0usize..CHANNELS.len()
+    }
+
+    fn data_strategy() -> impl Strategy<Value = String> {
+        "[a-zA-Z0-9 ]{0,20}"
+    }
+
+    proptest! {
+        /// Postcondition: Writing s1 then s2 to the same channel yields exactly s1+s2.
+        /// Verifies that `write` performs string concatenation, not replacement.
+        #[test]
+        fn write_is_concatenation(
+            ch_idx in channel_idx_strategy(),
+            s1 in data_strategy(),
+            s2 in data_strategy(),
+        ) {
+            let ch = CHANNELS[ch_idx];
+            let mut router = OutputRouter::new();
+            router.write(ch, &s1);
+            router.write(ch, &s2);
+            let expected = format!("{s1}{s2}");
+            prop_assert_eq!(
+                router.get_output(ch),
+                Some(expected.as_str()),
+                "write did not concatenate: expected {:?}, got {:?}",
+                expected, router.get_output(ch)
+            );
+        }
+
+        /// Isolation invariant: Writing to channel A never affects channel B's output.
+        #[test]
+        fn channel_isolation(
+            a_idx in channel_idx_strategy(),
+            b_idx in channel_idx_strategy(),
+            data in data_strategy(),
+        ) {
+            prop_assume!(a_idx != b_idx);
+            let ch_a = CHANNELS[a_idx];
+            let ch_b = CHANNELS[b_idx];
+            let mut router = OutputRouter::new();
+            router.write(ch_a, &data);
+            // Channel B must remain unaffected by writes to channel A.
+            prop_assert!(
+                router.get_output(ch_b).is_none(),
+                "write to {:?} polluted channel {:?}",
+                ch_a, ch_b
+            );
+        }
+
+        /// Postcondition: After `clear()`, every channel returns `None`.
+        /// Verifies that clear() truly removes all buffered output.
+        #[test]
+        fn clear_removes_all(
+            writes in prop::collection::vec(
+                (channel_idx_strategy(), data_strategy()),
+                1..10
+            )
+        ) {
+            let mut router = OutputRouter::new();
+            for (ch_idx, data) in &writes {
+                router.write(CHANNELS[*ch_idx], data);
+            }
+            router.clear();
+            // After a full clear, every channel must return None.
+            for ch in CHANNELS {
+                prop_assert!(
+                    router.get_output(ch).is_none(),
+                    "clear() left data in channel {:?}",
+                    ch
+                );
+            }
+        }
+
+        /// Invariant: `clear_channel(x)` removes only channel x.
+        /// All other channels that had data must still have their data.
+        #[test]
+        fn clear_channel_only_target(
+            target_idx in channel_idx_strategy(),
+            writes in prop::collection::vec(
+                (channel_idx_strategy(), data_strategy()),
+                1..10
+            )
+        ) {
+            let target = CHANNELS[target_idx];
+            let mut router = OutputRouter::new();
+            // Track what ended up in each channel before the clear.
+            let mut expected: std::collections::HashMap<usize, String> =
+                std::collections::HashMap::new();
+            for (ch_idx, data) in &writes {
+                router.write(CHANNELS[*ch_idx], data);
+                expected.entry(*ch_idx).or_default().push_str(data);
+            }
+            router.clear_channel(target);
+            // Target channel must now be empty.
+            prop_assert!(
+                router.get_output(target).is_none(),
+                "clear_channel({:?}) did not remove the channel",
+                target
+            );
+            // All other channels must be unaffected.
+            for (ch_idx, expected_data) in &expected {
+                if CHANNELS[*ch_idx] == target {
+                    continue;
+                }
+                prop_assert_eq!(
+                    router.get_output(CHANNELS[*ch_idx]),
+                    Some(expected_data.as_str()),
+                    "clear_channel({:?}) corrupted channel {:?}",
+                    target, CHANNELS[*ch_idx]
+                );
+            }
+        }
+
+        /// Precondition: A channel that was never written to always returns `None`.
+        #[test]
+        fn get_unwritten_returns_none(ch_idx in channel_idx_strategy()) {
+            let router = OutputRouter::new();
+            prop_assert!(
+                router.get_output(CHANNELS[ch_idx]).is_none(),
+                "fresh router returned Some for unwritten channel {:?}",
+                CHANNELS[ch_idx]
+            );
+        }
+    }
+
+    /// Operations for the `OutputRouter` shadow-model property test.
+    #[derive(Clone, Debug)]
+    enum RouterOp {
+        Write(usize, usize), // (channel_idx, data_idx)
+        Clear,
+        ClearChannel(usize), // channel_idx
+        GetOutput(usize),    // channel_idx
+    }
+
+    // Fixed pool of data strings to write.
+    const DATA_POOL: &[&str] = &[
+        "hello",
+        "world",
+        "foo",
+        "bar",
+        "baz",
+        "test data",
+        "123",
+        "abc",
+        "",
+        "xyz",
+    ];
+
+    fn router_op_strategy() -> impl Strategy<Value = RouterOp> {
+        prop_oneof![
+            5 => (0usize..CHANNELS.len(), 0usize..DATA_POOL.len())
+                .prop_map(|(c, d)| RouterOp::Write(c, d)),
+            1 => Just(RouterOp::Clear),
+            2 => (0usize..CHANNELS.len()).prop_map(RouterOp::ClearChannel),
+            2 => (0usize..CHANNELS.len()).prop_map(RouterOp::GetOutput),
+        ]
+    }
+
+    proptest! {
+        /// Full shadow-model consistency test for OutputRouter.
+        ///
+        /// We drive both a real OutputRouter and a shadow HashMap<usize, String>
+        /// with the same sequence of operations, then verify their outputs agree
+        /// after every step. This proves that all the router's channel operations
+        /// satisfy the combined concatenation + isolation + clear invariants.
+        #[test]
+        fn shadow_model_consistency(
+            ops in prop::collection::vec(router_op_strategy(), 1..50)
+        ) {
+            let mut router = OutputRouter::new();
+            // Shadow model maps channel index to accumulated output string.
+            let mut shadow: std::collections::HashMap<usize, String> =
+                std::collections::HashMap::new();
+
+            for op in &ops {
+                match op {
+                    RouterOp::Write(ch_idx, data_idx) => {
+                        let ch = CHANNELS[*ch_idx];
+                        let data = DATA_POOL[*data_idx];
+                        router.write(ch, data);
+                        shadow.entry(*ch_idx).or_default().push_str(data);
+                    }
+                    RouterOp::Clear => {
+                        router.clear();
+                        shadow.clear();
+                    }
+                    RouterOp::ClearChannel(ch_idx) => {
+                        router.clear_channel(CHANNELS[*ch_idx]);
+                        shadow.remove(ch_idx);
+                    }
+                    RouterOp::GetOutput(ch_idx) => {
+                        // Exercise the getter; actual verification is below.
+                        let _ = router.get_output(CHANNELS[*ch_idx]);
+                    }
+                }
+
+                // After every operation: verify every channel agrees with the shadow.
+                for (i, ch) in CHANNELS.iter().enumerate() {
+                    let router_val = router.get_output(ch);
+                    let shadow_val = shadow.get(&i).map(String::as_str);
+                    prop_assert_eq!(
+                        router_val,
+                        shadow_val,
+                        "channel {:?} disagrees: router={:?}, shadow={:?}",
+                        ch, router_val, shadow_val
+                    );
+                }
+            }
+        }
+    }
 }

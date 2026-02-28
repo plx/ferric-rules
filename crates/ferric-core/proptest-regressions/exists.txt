@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4bcc48dd42a4d31335e5c75c54689b36ac5ccd53cae9708fb9f30b3badd94324 # shrinks to ops = [AddSupport { token_idx: 4, fact_idx: 4 }, SetSatisfied { token_idx: 4, passthrough_idx: 0 }, RemoveSupport { token_idx: 4, fact_idx: 4 }]
+cc cd4eec9345266ffcc8990e0212aa9a478097988bd4ca29583958a6a9bea4faa6 # shrinks to ops = [AddSupport { token_idx: 4, fact_idx: 0 }, SetSatisfied { token_idx: 4, passthrough_idx: 0 }, RemoveSupport { token_idx: 4, fact_idx: 0 }]
+cc 11d8e6e0094fc5acc31000125d0dc35eb04c70af117f183969a01146395476f9 # shrinks to ops = [AddSupport { token_idx: 3, fact_idx: 0 }, SetSatisfied { token_idx: 3, passthrough_idx: 0 }, RemoveSupport { token_idx: 3, fact_idx: 0 }]

@@ -167,6 +167,201 @@ impl Default for SymbolTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    // ---- Property-based tests -----------------------------------------------
+
+    proptest! {
+        /// Interning an ASCII byte string and resolving it must yield the original bytes.
+        ///
+        /// Invariant: intern_ascii then resolve is the identity on valid ASCII byte slices.
+        #[test]
+        fn intern_resolve_ascii_roundtrip(bytes in proptest::collection::vec(0u8..128u8, 0..50)) {
+            let mut table = SymbolTable::new();
+            let id = table.intern_ascii(&bytes);
+            // Postcondition: resolving the returned id gives back the original bytes.
+            prop_assert_eq!(
+                table.resolve(id),
+                bytes.as_slice(),
+                "resolved ASCII bytes must match the original input"
+            );
+        }
+
+        /// Interning a UTF-8 string and resolving it must yield the original str.
+        ///
+        /// Invariant: intern_utf8 then resolve_str is the identity on arbitrary UTF-8 strings.
+        #[test]
+        fn intern_resolve_utf8_roundtrip(s in ".*") {
+            let mut table = SymbolTable::new();
+            let id = table.intern_utf8(&s);
+            // Postcondition: resolved str matches the original string.
+            prop_assert_eq!(
+                table.resolve_str(id),
+                Some(s.as_str()),
+                "resolved UTF-8 string must match the original input"
+            );
+            // Postcondition: resolved bytes match the original string's UTF-8 encoding.
+            prop_assert_eq!(
+                table.resolve(id),
+                s.as_bytes(),
+                "resolved bytes must match the original UTF-8 encoding"
+            );
+        }
+
+        /// Interning the same ASCII byte string twice must return the same SymbolId,
+        /// and the table size must not grow on the second call.
+        ///
+        /// Invariant: intern is idempotent — repeated intern of equal inputs yields equal IDs
+        /// without allocating new entries.
+        #[test]
+        fn interning_is_idempotent_ascii_prop(bytes in proptest::collection::vec(0u8..128u8, 0..50)) {
+            let mut table = SymbolTable::new();
+            let id1 = table.intern_ascii(&bytes);
+            let len_after_first = table.len();
+            let id2 = table.intern_ascii(&bytes);
+            // Postcondition: both calls return the same id.
+            prop_assert_eq!(id1, id2, "second intern of the same bytes must return the same SymbolId");
+            // Postcondition: len must not grow on the second intern of an already-known string.
+            prop_assert_eq!(
+                table.len(),
+                len_after_first,
+                "table length must not increase when re-interning the same bytes"
+            );
+        }
+
+        /// Interning the same UTF-8 string twice must return the same SymbolId
+        /// and not increase the table length.
+        ///
+        /// Invariant: idempotency holds for the UTF-8 pool independently of the ASCII pool.
+        #[test]
+        fn interning_is_idempotent_utf8_prop(s in ".*") {
+            let mut table = SymbolTable::new();
+            let id1 = table.intern_utf8(&s);
+            let len_after_first = table.len();
+            let id2 = table.intern_utf8(&s);
+            // Postcondition: identical SymbolIds for the same string.
+            prop_assert_eq!(id1, id2, "second intern of the same UTF-8 string must return the same SymbolId");
+            // Postcondition: table length is stable after re-interning.
+            prop_assert_eq!(
+                table.len(),
+                len_after_first,
+                "table length must not increase when re-interning the same UTF-8 string"
+            );
+        }
+
+        /// Two distinct ASCII byte strings must yield distinct SymbolIds.
+        ///
+        /// Invariant: the intern function is injective — different inputs produce different IDs.
+        #[test]
+        fn distinct_ascii_strings_get_distinct_ids_prop(
+            a in proptest::collection::vec(0u8..128u8, 0..50),
+            b in proptest::collection::vec(0u8..128u8, 0..50)
+        ) {
+            prop_assume!(a != b);
+            let mut table = SymbolTable::new();
+            let id_a = table.intern_ascii(&a);
+            let id_b = table.intern_ascii(&b);
+            // Postcondition: different strings map to different IDs in the ASCII pool.
+            prop_assert_ne!(id_a, id_b, "distinct ASCII byte strings must produce distinct SymbolIds");
+        }
+
+        /// After interning N distinct ASCII byte strings, len() must equal N.
+        ///
+        /// Invariant: each unique entry occupies exactly one slot in the table.
+        #[test]
+        fn len_tracking_ascii_prop(
+            strings in proptest::collection::vec(
+                proptest::collection::vec(0u8..128u8, 0..20),
+                1usize..16
+            )
+        ) {
+            let mut table = SymbolTable::new();
+            // De-duplicate the input so we can predict the exact count.
+            let mut unique: Vec<Vec<u8>> = Vec::new();
+            for s in &strings {
+                if !unique.contains(s) {
+                    unique.push(s.clone());
+                }
+            }
+            for s in &unique {
+                table.intern_ascii(s);
+            }
+            // Postcondition: table length matches the number of distinct strings interned.
+            prop_assert_eq!(
+                table.len(),
+                unique.len(),
+                "len() must equal the number of distinct interned strings"
+            );
+        }
+
+        /// ASCII SymbolId(Ascii(i)) and UTF-8 SymbolId(Utf8(i)) with the same internal
+        /// index must never compare equal, even when the underlying text is the same.
+        ///
+        /// Invariant: the two pools are fully isolated — an ASCII entry and a UTF-8
+        /// entry with identical text are different symbols.
+        #[test]
+        fn cross_pool_isolation_prop(s in "[a-zA-Z0-9]{1,20}") {
+            // All chars in the above regex are valid ASCII, so the string is accepted
+            // by both intern_ascii and intern_utf8.
+            let mut table = SymbolTable::new();
+            let ascii_id = table.intern_ascii(s.as_bytes());
+            let utf8_id = table.intern_utf8(&s);
+            // Postcondition: the two IDs must be different — they live in different pools.
+            prop_assert_ne!(
+                ascii_id,
+                utf8_id,
+                "ASCII pool entry and UTF-8 pool entry for the same text must be distinct SymbolIds"
+            );
+        }
+
+        /// intern_symbol with Ascii mode must reject non-ASCII strings and accept ASCII ones.
+        /// intern_symbol with Utf8 mode must accept all strings.
+        /// intern_symbol with AsciiSymbolsUtf8Strings mode must reject non-ASCII strings.
+        ///
+        /// Invariant: encoding enforcement is consistent with the declared StringEncoding mode.
+        #[test]
+        fn encoding_mode_enforcement_prop(s in ".*") {
+            let mut table = SymbolTable::new();
+            let is_ascii = s.is_ascii();
+
+            // Ascii mode rejects non-ASCII, accepts ASCII.
+            let ascii_result = table.intern_symbol(&s, StringEncoding::Ascii);
+            if is_ascii {
+                prop_assert!(
+                    ascii_result.is_ok(),
+                    "Ascii mode must accept ASCII string"
+                );
+            } else {
+                prop_assert!(
+                    matches!(ascii_result, Err(EncodingError::NonAsciiSymbol(_))),
+                    "Ascii mode must reject non-ASCII string with NonAsciiSymbol error"
+                );
+            }
+
+            // Utf8 mode accepts everything.
+            let utf8_result = table.intern_symbol(&s, StringEncoding::Utf8);
+            prop_assert!(
+                utf8_result.is_ok(),
+                "Utf8 mode must accept any string"
+            );
+
+            // AsciiSymbolsUtf8Strings mode rejects non-ASCII symbols.
+            let mixed_result = table.intern_symbol(&s, StringEncoding::AsciiSymbolsUtf8Strings);
+            if is_ascii {
+                prop_assert!(
+                    mixed_result.is_ok(),
+                    "AsciiSymbolsUtf8Strings mode must accept ASCII string"
+                );
+            } else {
+                prop_assert!(
+                    matches!(mixed_result, Err(EncodingError::NonAsciiSymbol(_))),
+                    "AsciiSymbolsUtf8Strings mode must reject non-ASCII string with NonAsciiSymbol error"
+                );
+            }
+        }
+    }
+
+    // ---- Unit tests (kept from before) -------------------------------------
 
     #[test]
     fn intern_and_resolve_ascii() {

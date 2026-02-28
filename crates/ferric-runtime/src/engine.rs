@@ -1342,4 +1342,366 @@ mod tests {
         engine.retract(fid).unwrap();
         assert!(engine.rete.agenda.is_empty());
     }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    use proptest::prelude::*;
+
+    /// Operations exercised in the fact-lifecycle shadow-model test.
+    #[derive(Debug, Clone)]
+    enum FactOp {
+        /// Assert an ordered fact using a relation from the pre-interned pool.
+        AssertOrdered(usize),
+        /// Retract a fact selected from the live set by index.
+        Retract(usize),
+        /// Query a fact selected from the ever-asserted set by index.
+        GetFact(usize),
+    }
+
+    fn arb_fact_op() -> impl Strategy<Value = FactOp> {
+        prop_oneof![
+            (0usize..3).prop_map(FactOp::AssertOrdered),
+            // Indices into live/all-asserted lists — clamped at use time.
+            any::<usize>().prop_map(FactOp::Retract),
+            any::<usize>().prop_map(FactOp::GetFact),
+        ]
+    }
+
+    proptest! {
+        /// Shadow-model verification for ordered fact assertion and retraction.
+        ///
+        /// Invariants verified after each operation:
+        /// - `get_fact(id)` returns `Some` iff the fact is in the live set.
+        /// - `get_fact(id)` returns `None` for retracted (but previously asserted) facts.
+        /// - Engine structural consistency holds throughout the sequence.
+        #[test]
+        fn fact_lifecycle_shadow_model(ops in proptest::collection::vec(arb_fact_op(), 0..40)) {
+            let mut engine = Engine::new(EngineConfig::default());
+
+            // Pre-intern a small pool of relation symbols so we can refer to
+            // them by index in the operation stream.
+            let relation_pool: Vec<&str> = vec!["rel0", "rel1", "rel2"];
+
+            // Shadow model: track which FactIds are currently live.
+            let mut live: Vec<FactId> = Vec::new();
+            // All FactIds ever successfully asserted (live or retracted).
+            let mut all_asserted: Vec<FactId> = Vec::new();
+
+            for op in &ops {
+                match op {
+                    FactOp::AssertOrdered(name_idx) => {
+                        let relation = relation_pool[name_idx % relation_pool.len()];
+                        let fid = engine.assert_ordered(relation, vec![]).unwrap();
+                        // Postcondition: newly asserted fact must be immediately retrievable.
+                        let retrieved = engine.get_fact(fid).unwrap();
+                        prop_assert!(
+                            retrieved.is_some(),
+                            "newly asserted fact must be retrievable via get_fact"
+                        );
+                        live.push(fid);
+                        all_asserted.push(fid);
+                    }
+                    FactOp::Retract(idx) => {
+                        if live.is_empty() {
+                            // No live facts — skip retract.
+                            continue;
+                        }
+                        let pick = idx % live.len();
+                        let fid = live.remove(pick);
+                        engine.retract(fid).unwrap();
+                        // Postcondition: retracted fact must no longer be retrievable.
+                        let after = engine.get_fact(fid).unwrap();
+                        prop_assert!(
+                            after.is_none(),
+                            "retracted fact must not be retrievable via get_fact"
+                        );
+                    }
+                    FactOp::GetFact(idx) => {
+                        if all_asserted.is_empty() {
+                            continue;
+                        }
+                        let pick = idx % all_asserted.len();
+                        let fid = all_asserted[pick];
+                        let result = engine.get_fact(fid).unwrap();
+                        let is_live = live.contains(&fid);
+                        // Invariant: presence in get_fact matches live-set membership.
+                        prop_assert_eq!(
+                            result.is_some(),
+                            is_live,
+                            "get_fact liveness mismatch for fact {:?}: shadow says live={}, engine returned {}",
+                            fid,
+                            is_live,
+                            if result.is_some() { "Some" } else { "None" }
+                        );
+                    }
+                }
+
+                // Structural consistency must hold after every operation.
+                engine.debug_assert_consistency();
+            }
+
+            // Final cross-check: every ID in `live` must be retrievable.
+            for &fid in &live {
+                prop_assert!(
+                    engine.get_fact(fid).unwrap().is_some(),
+                    "live fact {:?} must still be retrievable at end of sequence",
+                    fid
+                );
+            }
+            // Every retracted ID (in all_asserted but not live) must be absent.
+            for &fid in &all_asserted {
+                if !live.contains(&fid) {
+                    prop_assert!(
+                        engine.get_fact(fid).unwrap().is_none(),
+                        "retracted fact {:?} must not be retrievable at end of sequence",
+                        fid
+                    );
+                }
+            }
+        }
+
+        /// Property: assert N facts then retract them all in arbitrary order;
+        /// the user-visible fact count must return to zero.
+        ///
+        /// Invariants:
+        /// - After retracting every asserted fact, `facts().count() == 0`.
+        /// - `agenda_len() == 0` (no pending activations).
+        /// - Structural consistency holds after the final retraction.
+        #[test]
+        fn assert_retract_idempotent_cleanup(
+            n in 0usize..20,
+            shuffle in proptest::collection::vec(any::<usize>(), 0..20),
+        ) {
+            let mut engine = Engine::new(EngineConfig::default());
+
+            // Assert N ordered facts and collect their IDs.
+            let mut live: Vec<FactId> = (0..n)
+                .map(|i| {
+                    let relation = if i % 2 == 0 { "even" } else { "odd" };
+                    engine.assert_ordered(relation, vec![]).unwrap()
+                })
+                .collect();
+
+            // Retract them in the order prescribed by the `shuffle` indices
+            // (clamped to the shrinking live list).
+            let mut shuffle_iter = shuffle.into_iter();
+            while !live.is_empty() {
+                let pick = shuffle_iter.next().unwrap_or(0) % live.len();
+                let fid = live.remove(pick);
+                engine.retract(fid).unwrap();
+            }
+
+            // Invariant: no user-visible facts remain.
+            let remaining = engine.facts().unwrap().count();
+            prop_assert_eq!(
+                remaining,
+                0,
+                "all facts retracted but {} user-visible facts remain",
+                remaining
+            );
+            // Invariant: agenda is empty (no rules loaded, so trivially satisfied,
+            // but the check still exercises agenda_len consistency).
+            prop_assert_eq!(
+                engine.agenda_len(),
+                0,
+                "agenda must be empty after retracting all facts with no rules loaded"
+            );
+
+            engine.debug_assert_consistency();
+        }
+
+        /// Property: sequences of push_focus / set_focus keep get_focus consistent.
+        ///
+        /// Invariants:
+        /// - After set_focus(name), get_focus() == Some(name).
+        /// - After push_focus(name), get_focus() == Some(name) (it's on top).
+        /// - Structural consistency holds after every focus operation.
+        #[test]
+        fn focus_stack_operations(
+            ops in proptest::collection::vec(
+                prop_oneof![
+                    // 0 = push MAIN, 1 = push SENSOR, 2 = push DATA
+                    (0usize..3usize).prop_map(|i| (false, i)),
+                    // set_focus
+                    (0usize..3usize).prop_map(|i| (true, i)),
+                ],
+                1..30,
+            )
+        ) {
+            let mut engine = Engine::new(EngineConfig::default());
+
+            // Register two extra modules so we have a pool of three
+            // (MAIN is always present).
+            engine.load_str("(defmodule SENSOR)").unwrap();
+            engine.load_str("(defmodule DATA)").unwrap();
+
+            let module_names = ["MAIN", "SENSOR", "DATA"];
+
+            for (is_set, idx) in &ops {
+                let name = module_names[idx % module_names.len()];
+                if *is_set {
+                    engine.set_focus(name).unwrap();
+                    // Postcondition: set_focus makes `name` the unique focus.
+                    prop_assert_eq!(
+                        engine.get_focus(),
+                        Some(name),
+                        "after set_focus({}) get_focus must return Some({})",
+                        name, name
+                    );
+                    // After set_focus, the stack has exactly one element.
+                    prop_assert_eq!(
+                        engine.get_focus_stack().len(),
+                        1,
+                        "set_focus must leave stack with exactly 1 element"
+                    );
+                } else {
+                    engine.push_focus(name).unwrap();
+                    // Postcondition: push_focus makes `name` the new top.
+                    prop_assert_eq!(
+                        engine.get_focus(),
+                        Some(name),
+                        "after push_focus({}) get_focus must return Some({})",
+                        name, name
+                    );
+                    // Stack must be non-empty.
+                    prop_assert!(
+                        !engine.get_focus_stack().is_empty(),
+                        "focus stack must be non-empty after push_focus"
+                    );
+                }
+
+                engine.debug_assert_consistency();
+            }
+        }
+
+        /// Property: halt/reset sequences keep the halted flag and consistency invariant.
+        ///
+        /// Invariants:
+        /// - `halt()` always sets `is_halted()` to true.
+        /// - `reset()` always clears `is_halted()` to false.
+        /// - After reset, agenda is empty and fact count is 0 (no deffacts loaded).
+        /// - Structural consistency holds after every state transition.
+        #[test]
+        fn halt_reset_state_machine(
+            ops in proptest::collection::vec(
+                prop_oneof![
+                    Just(0u8), // halt
+                    Just(1u8), // reset
+                    Just(2u8), // step (no-op on empty agenda)
+                ],
+                1..40,
+            )
+        ) {
+            let mut engine = Engine::new(EngineConfig::default());
+            let mut expected_halted = false;
+
+            for op in &ops {
+                match op {
+                    0 => {
+                        // halt: sets the flag unconditionally.
+                        engine.halt();
+                        expected_halted = true;
+                        prop_assert!(
+                            engine.is_halted(),
+                            "after halt(), is_halted() must be true"
+                        );
+                    }
+                    1 => {
+                        // reset: clears the flag and runtime state.
+                        engine.reset().unwrap();
+                        expected_halted = false;
+                        prop_assert!(
+                            !engine.is_halted(),
+                            "after reset(), is_halted() must be false"
+                        );
+                        // Invariant: reset leaves an empty agenda and no user facts.
+                        prop_assert_eq!(
+                            engine.agenda_len(),
+                            0,
+                            "agenda must be empty after reset with no rules/deffacts"
+                        );
+                        prop_assert_eq!(
+                            engine.facts().unwrap().count(),
+                            0,
+                            "fact count must be 0 after reset with no deffacts"
+                        );
+                    }
+                    _ => {
+                        // step on empty agenda returns None.
+                        let result = engine.step().unwrap();
+                        prop_assert!(
+                            result.is_none(),
+                            "step on empty agenda must return None"
+                        );
+                        // step() does not affect the halted flag.
+                        prop_assert_eq!(
+                            engine.is_halted(),
+                            expected_halted,
+                            "step must not alter the halted flag"
+                        );
+                    }
+                }
+
+                engine.debug_assert_consistency();
+            }
+        }
+
+        /// Property: clear() removes all facts and empties the input buffer.
+        ///
+        /// Invariants:
+        /// - After clear(), `facts().count() == 0`.
+        /// - After clear(), `agenda_len() == 0`.
+        /// - After clear(), `is_halted() == false`.
+        /// - After clear(), input_buffer is empty (clear resets I/O state).
+        /// - Structural consistency holds after clear.
+        #[test]
+        fn clear_resets_all_state(
+            n_facts in 0usize..15,
+            n_inputs in 0usize..10,
+        ) {
+            let mut engine = Engine::new(EngineConfig::default());
+
+            // Assert some facts.
+            for i in 0..n_facts {
+                let relation = if i % 2 == 0 { "alpha" } else { "beta" };
+                engine.assert_ordered(relation, vec![]).unwrap();
+            }
+            // Push some input lines.
+            for i in 0..n_inputs {
+                engine.push_input(&format!("line{i}"));
+            }
+            // Set halt flag.
+            engine.halt();
+
+            engine.clear();
+
+            // Invariants after clear:
+            prop_assert_eq!(
+                engine.facts().unwrap().count(),
+                0,
+                "clear must remove all facts"
+            );
+            prop_assert_eq!(
+                engine.agenda_len(),
+                0,
+                "clear must empty the agenda"
+            );
+            prop_assert!(
+                !engine.is_halted(),
+                "clear must reset the halted flag"
+            );
+            // Input buffer must be empty — push a sentinel then verify buffer
+            // holds exactly one item (the sentinel), not any stale lines.
+            engine.push_input("sentinel");
+            prop_assert_eq!(
+                engine.input_buffer.len(),
+                1,
+                "after clear, input buffer must contain only the sentinel (1 item)"
+            );
+
+            engine.debug_assert_consistency();
+        }
+    }
 }

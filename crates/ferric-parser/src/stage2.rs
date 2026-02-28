@@ -2997,9 +2997,168 @@ mod tests {
     use super::*;
     use crate::sexpr::parse_sexprs;
     use crate::span::FileId;
+    use proptest::prelude::*;
 
     fn file() -> FileId {
         FileId(0)
+    }
+
+    /// Strategy that produces valid CLIPS identifiers: a letter followed by up to 10
+    /// alphanumeric-or-underscore characters.
+    fn arb_identifier() -> impl Strategy<Value = String> {
+        "[a-zA-Z][a-zA-Z0-9_]{0,10}".prop_filter("not a reserved keyword", |s| {
+            !matches!(
+                s.as_str(),
+                "defrule"
+                    | "deftemplate"
+                    | "deffacts"
+                    | "deffunction"
+                    | "defglobal"
+                    | "defmodule"
+                    | "defgeneric"
+                    | "defmethod"
+                    | "declare"
+                    | "salience"
+                    | "slot"
+                    | "multislot"
+                    | "not"
+                    | "and"
+                    | "or"
+                    | "test"
+                    | "exists"
+                    | "forall"
+                    | "logical"
+            )
+        })
+    }
+
+    proptest! {
+        /// Panic-safety invariant: interpret_constructs must never panic on any input
+        /// produced by parse_sexprs, even if it returns errors.  This validates the
+        /// robustness contract of the entire Stage 2 pipeline.
+        #[test]
+        fn interpret_never_panics(source in "([a-zA-Z0-9?$_\\-]+ ?){0,10}") {
+            let parsed = parse_sexprs(&source, file());
+            let config = InterpreterConfig::default();
+            // The call itself is the assertion — we must not panic
+            let _result = interpret_constructs(&parsed.exprs, &config);
+        }
+
+        /// Postcondition: a well-formed `(defrule NAME (PAT) => (ACT))` must parse
+        /// without errors and produce exactly one Rule construct whose name matches.
+        #[test]
+        fn valid_defrule_parses_successfully(
+            name in arb_identifier(),
+            pat in arb_identifier(),
+            act in arb_identifier(),
+        ) {
+            let source = format!("(defrule {name} ({pat}) => ({act}))");
+            let parsed = parse_sexprs(&source, file());
+            let config = InterpreterConfig::default();
+            let result = interpret_constructs(&parsed.exprs, &config);
+            // A syntactically correct defrule must produce no interpreter errors
+            prop_assert!(result.errors.is_empty(),
+                "valid defrule produced errors: {:?}", result.errors);
+            // Exactly one construct must be emitted
+            prop_assert_eq!(result.constructs.len(), 1,
+                "expected exactly 1 construct, got {}", result.constructs.len());
+            // That construct must be a Rule
+            let Construct::Rule(ref rule) = result.constructs[0] else {
+                return Err(TestCaseError::fail("expected Construct::Rule"));
+            };
+            // The rule name must match the generated identifier
+            prop_assert_eq!(&rule.name, &name,
+                "rule name must round-trip through parsing");
+        }
+
+        /// Postcondition: a well-formed `(deftemplate NAME (slot SLOT_NAME))` must parse
+        /// without errors and produce a Template construct with correct name and slot.
+        #[test]
+        fn valid_deftemplate_parses_successfully(
+            name in arb_identifier(),
+            slot_name in arb_identifier(),
+        ) {
+            let source = format!("(deftemplate {name} (slot {slot_name}))");
+            let parsed = parse_sexprs(&source, file());
+            let config = InterpreterConfig::default();
+            let result = interpret_constructs(&parsed.exprs, &config);
+            // A well-formed deftemplate must produce no interpreter errors
+            prop_assert!(result.errors.is_empty(),
+                "valid deftemplate produced errors: {:?}", result.errors);
+            // Exactly one construct
+            prop_assert_eq!(result.constructs.len(), 1,
+                "expected exactly 1 construct");
+            // Must be a Template construct
+            let Construct::Template(ref tmpl) = result.constructs[0] else {
+                return Err(TestCaseError::fail("expected Construct::Template"));
+            };
+            // Template name must round-trip
+            prop_assert_eq!(&tmpl.name, &name,
+                "template name must match generated identifier");
+            // The single slot must be present with the correct name
+            prop_assert_eq!(tmpl.slots.len(), 1,
+                "template must have exactly one slot");
+            prop_assert_eq!(&tmpl.slots[0].name, &slot_name,
+                "slot name must match generated identifier");
+        }
+
+        /// Invariant: the salience value declared in a defrule is preserved verbatim
+        /// through Stage 2 interpretation; no clamping or alteration must occur.
+        #[test]
+        fn salience_value_preserved(
+            name in arb_identifier(),
+            pat in arb_identifier(),
+            act in arb_identifier(),
+            salience in -10000i32..=10000i32,
+        ) {
+            let source = format!(
+                "(defrule {name} (declare (salience {salience})) ({pat}) => ({act}))"
+            );
+            let parsed = parse_sexprs(&source, file());
+            let config = InterpreterConfig::default();
+            let result = interpret_constructs(&parsed.exprs, &config);
+            // A valid defrule with declare/salience must not produce errors
+            prop_assert!(result.errors.is_empty(),
+                "defrule with salience produced errors: {:?}", result.errors);
+            prop_assert_eq!(result.constructs.len(), 1);
+            let Construct::Rule(ref rule) = result.constructs[0] else {
+                return Err(TestCaseError::fail("expected Construct::Rule"));
+            };
+            // The salience stored on the rule must equal the declared value exactly
+            prop_assert_eq!(rule.salience, salience,
+                "salience must be preserved without alteration");
+        }
+
+        /// Postcondition: a well-formed `(deffacts NAME (fact1) (fact2))` must parse
+        /// without errors and produce a Facts construct with the correct name and fact
+        /// count.
+        #[test]
+        fn valid_deffacts_parses_successfully(
+            name in arb_identifier(),
+            fact1 in arb_identifier(),
+            fact2 in arb_identifier(),
+        ) {
+            let source = format!("(deffacts {name} ({fact1}) ({fact2}))");
+            let parsed = parse_sexprs(&source, file());
+            let config = InterpreterConfig::default();
+            let result = interpret_constructs(&parsed.exprs, &config);
+            // A well-formed deffacts must produce no interpreter errors
+            prop_assert!(result.errors.is_empty(),
+                "valid deffacts produced errors: {:?}", result.errors);
+            // Exactly one construct
+            prop_assert_eq!(result.constructs.len(), 1,
+                "expected exactly 1 construct");
+            // Must be a Facts construct
+            let Construct::Facts(ref facts) = result.constructs[0] else {
+                return Err(TestCaseError::fail("expected Construct::Facts"));
+            };
+            // Name must round-trip
+            prop_assert_eq!(&facts.name, &name,
+                "deffacts name must match generated identifier");
+            // Both facts must be recorded
+            prop_assert_eq!(facts.facts.len(), 2,
+                "deffacts must contain exactly 2 facts");
+        }
     }
 
     #[test]

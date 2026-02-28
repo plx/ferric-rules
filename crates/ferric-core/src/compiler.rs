@@ -560,6 +560,7 @@ impl Default for ReteCompiler {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
     use slotmap::SlotMap;
 
     use super::*;
@@ -1836,6 +1837,294 @@ mod tests {
                 },
             ) => assert_eq!(rule_tests.len(), condition_tests.len()),
             (lhs, rhs) => panic!("expected join nodes for both paths, got {lhs:?} and {rhs:?}"),
+        }
+    }
+
+    // ---- Property-based tests -----------------------------------------------
+
+    /// Create a fresh `SymbolTable` pre-loaded with 8 symbols (`a`..`h`).
+    /// Returns the table and the interned symbols for use in test helpers.
+    fn make_test_symbols() -> (SymbolTable, Vec<Symbol>) {
+        let mut table = SymbolTable::new();
+        let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        let syms: Vec<Symbol> = names.iter().map(|n| intern(&mut table, n)).collect();
+        (table, syms)
+    }
+
+    /// Build a positive, non-negated, non-exists `CompilablePattern`.
+    ///
+    /// `relation_idx` selects the ordered relation symbol (modulo `symbols.len()`).
+    /// `var_slots` is a list of `(slot_index, symbol_index)` pairs for variable bindings.
+    /// Variable symbols that would be mapped to two different slots are silently dropped
+    /// to keep the pattern valid (the compiler rejects intra-pattern reuse at distinct slots).
+    fn make_positive_pattern(
+        symbols: &[Symbol],
+        relation_idx: usize,
+        var_slots: &[(usize, usize)],
+    ) -> CompilablePattern {
+        let relation = symbols[relation_idx % symbols.len()];
+        let mut seen_sym: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        let mut variable_slots = Vec::new();
+        for &(slot, sym_idx) in var_slots {
+            let sym_idx = sym_idx % symbols.len();
+            if let Some(&prev_slot) = seen_sym.get(&sym_idx) {
+                if prev_slot != slot {
+                    // Would trigger validation error — skip.
+                    continue;
+                }
+            } else {
+                seen_sym.insert(sym_idx, slot);
+            }
+            variable_slots.push((SlotIndex::Ordered(slot), symbols[sym_idx]));
+        }
+        CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            constant_tests: vec![],
+            variable_slots,
+            negated_variable_slots: Vec::new(),
+            negated: false,
+            exists: false,
+        }
+    }
+
+    proptest! {
+        /// A `CompilableRule` with no patterns must always yield `CompileError::EmptyRule`,
+        /// regardless of salience value.
+        ///
+        /// Invariant: the empty-patterns precondition violation is consistently reported.
+        #[test]
+        fn empty_rule_rejected(salience_val in i32::MIN..=i32::MAX) {
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+            let rule_id = compiler.allocate_rule_id();
+
+            let rule = CompilableRule {
+                rule_id,
+                salience: Salience::new(salience_val),
+                patterns: vec![],
+            };
+
+            let result = compiler.compile_rule(&mut rete, &rule);
+            // Postcondition: empty patterns always yield CompileError::EmptyRule.
+            prop_assert!(
+                matches!(result, Err(CompileError::EmptyRule)),
+                "empty patterns must always produce CompileError::EmptyRule"
+            );
+        }
+
+        /// Compiling any structurally valid positive-only rule (1-5 patterns, no constant
+        /// tests, no variables) must succeed and leave the network in a consistent state.
+        ///
+        /// Postconditions verified:
+        ///   - terminal_node exists in the beta network
+        ///   - all alpha_memories in the result are valid (resolvable)
+        ///   - rete.debug_assert_consistency() does not panic
+        #[test]
+        fn compile_produces_valid_result(
+            relation_indices in proptest::collection::vec(0usize..8, 1usize..=5)
+        ) {
+            let (_, symbols) = make_test_symbols();
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+            let rule_id = compiler.allocate_rule_id();
+
+            let patterns: Vec<CompilablePattern> = relation_indices
+                .iter()
+                .map(|&ri| make_positive_pattern(&symbols, ri, &[]))
+                .collect();
+
+            let rule = CompilableRule {
+                rule_id,
+                salience: Salience::DEFAULT,
+                patterns,
+            };
+
+            let result = compiler.compile_rule(&mut rete, &rule)
+                .expect("valid positive-only rule must compile successfully");
+
+            // Postcondition: terminal_node is present in the beta network.
+            prop_assert!(
+                rete.beta.get_node(result.terminal_node).is_some(),
+                "terminal_node must exist in the beta network"
+            );
+
+            // Postcondition: every reported alpha memory must be resolvable.
+            for &mem_id in &result.alpha_memories {
+                prop_assert!(
+                    rete.alpha.get_memory(mem_id).is_some(),
+                    "all alpha_memories in the result must be valid"
+                );
+            }
+
+            // Postcondition: the network passes its own internal consistency checks.
+            rete.debug_assert_consistency();
+        }
+
+        /// Two rules whose first pattern uses the same relation symbol (and no constant
+        /// tests) must share the same `AlphaMemoryId`.
+        ///
+        /// Invariant: the alpha-path cache is keyed on (entry_type, constant_tests);
+        /// identical keys always yield the same `AlphaMemoryId`.
+        #[test]
+        fn alpha_path_sharing_identical_first_pattern(relation_idx in 0usize..8) {
+            let (_, symbols) = make_test_symbols();
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+
+            let pattern = make_positive_pattern(&symbols, relation_idx, &[]);
+
+            let rule_id1 = compiler.allocate_rule_id();
+            let result1 = compiler.compile_rule(&mut rete, &CompilableRule {
+                rule_id: rule_id1,
+                salience: Salience::DEFAULT,
+                patterns: vec![pattern.clone()],
+            }).unwrap();
+
+            let rule_id2 = compiler.allocate_rule_id();
+            let result2 = compiler.compile_rule(&mut rete, &CompilableRule {
+                rule_id: rule_id2,
+                salience: Salience::DEFAULT,
+                patterns: vec![pattern],
+            }).unwrap();
+
+            // Postcondition: identical alpha path key → same AlphaMemoryId.
+            prop_assert_eq!(
+                result1.alpha_memories[0],
+                result2.alpha_memories[0],
+                "rules with identical first patterns must share the same alpha memory"
+            );
+        }
+
+        /// Two rules whose first patterns use relation symbols from disjoint halves of
+        /// the symbol table must get different `AlphaMemoryId`s.
+        ///
+        /// Invariant: the alpha-path key is injective — distinct structural keys
+        /// produce distinct `AlphaMemoryId`s.
+        #[test]
+        fn different_patterns_get_different_alphas(
+            rel_a in 0usize..4,
+            rel_b in 4usize..8
+        ) {
+            // rel_a ∈ [0,4) and rel_b ∈ [4,8) always select different symbols.
+            let (_, symbols) = make_test_symbols();
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+
+            let rule_id1 = compiler.allocate_rule_id();
+            let result1 = compiler.compile_rule(&mut rete, &CompilableRule {
+                rule_id: rule_id1,
+                salience: Salience::DEFAULT,
+                patterns: vec![make_positive_pattern(&symbols, rel_a, &[])],
+            }).unwrap();
+
+            let rule_id2 = compiler.allocate_rule_id();
+            let result2 = compiler.compile_rule(&mut rete, &CompilableRule {
+                rule_id: rule_id2,
+                salience: Salience::DEFAULT,
+                patterns: vec![make_positive_pattern(&symbols, rel_b, &[])],
+            }).unwrap();
+
+            // Postcondition: distinct relation symbols → distinct AlphaMemoryIds.
+            prop_assert_ne!(
+                result1.alpha_memories[0],
+                result2.alpha_memories[0],
+                "rules with structurally different alpha paths must get different alpha memories"
+            );
+        }
+
+        /// Compiling the same single-pattern rule N times (with fresh rule IDs) must
+        /// always yield the same alpha memory ID.
+        ///
+        /// Invariant: alpha-path sharing is stable — the caching property holds for
+        /// any number of compilations of the same pattern.
+        #[test]
+        fn alpha_sharing_is_stable_across_n_compilations(
+            relation_idx in 0usize..8,
+            n in 2usize..=6
+        ) {
+            let (_, symbols) = make_test_symbols();
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+
+            let pattern = make_positive_pattern(&symbols, relation_idx, &[]);
+            let mut first_mem_id = None;
+
+            for _ in 0..n {
+                let rule_id = compiler.allocate_rule_id();
+                let result = compiler.compile_rule(&mut rete, &CompilableRule {
+                    rule_id,
+                    salience: Salience::DEFAULT,
+                    patterns: vec![pattern.clone()],
+                }).unwrap();
+                let mem_id = result.alpha_memories[0];
+                match first_mem_id {
+                    None => first_mem_id = Some(mem_id),
+                    Some(expected) => {
+                        // Postcondition: the cached alpha memory must never change.
+                        prop_assert_eq!(
+                            mem_id,
+                            expected,
+                            "alpha memory must be identical across all compilations of the same pattern"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// A rule with N patterns that each bind a distinct variable symbol must produce
+        /// a var_map with exactly N entries — one per unique variable.
+        ///
+        /// Invariant: var_map.len() equals the number of distinct variable symbols
+        /// introduced by positive patterns in the rule.
+        #[test]
+        fn var_map_counts_distinct_variables(n_patterns in 1usize..=4) {
+            let (_, symbols) = make_test_symbols();
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+            let rule_id = compiler.allocate_rule_id();
+
+            // Build N patterns; relations from symbols[0..n], variables from symbols[n..2n].
+            // The index ranges are chosen so that relation and variable symbols are distinct,
+            // and each pattern introduces a unique variable.
+            let patterns: Vec<CompilablePattern> = (0..n_patterns)
+                .map(|i| {
+                    let relation_sym = symbols[i % symbols.len()];
+                    let var_sym = symbols[(i + n_patterns) % symbols.len()];
+                    CompilablePattern {
+                        entry_type: AlphaEntryType::OrderedRelation(relation_sym),
+                        constant_tests: vec![],
+                        variable_slots: vec![(SlotIndex::Ordered(0), var_sym)],
+                        negated_variable_slots: Vec::new(),
+                        negated: false,
+                        exists: false,
+                    }
+                })
+                .collect();
+
+            // Count how many distinct variable symbols were introduced.
+            let n_unique_vars = {
+                let mut seen = std::collections::HashSet::new();
+                for p in &patterns {
+                    for &(_, sym) in &p.variable_slots {
+                        seen.insert(sym);
+                    }
+                }
+                seen.len()
+            };
+
+            let result = compiler.compile_rule(&mut rete, &CompilableRule {
+                rule_id,
+                salience: Salience::DEFAULT,
+                patterns,
+            }).unwrap();
+
+            // Postcondition: var_map has exactly one entry per distinct variable symbol.
+            prop_assert_eq!(
+                result.var_map.len(),
+                n_unique_vars,
+                "var_map must have exactly one entry per distinct variable symbol"
+            );
         }
     }
 }

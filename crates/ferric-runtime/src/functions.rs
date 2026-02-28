@@ -797,4 +797,570 @@ mod tests {
         );
         reg.debug_assert_consistency();
     }
+
+    // -----------------------------------------------------------------------
+    // Property tests: FunctionEnv & GlobalStore
+    // -----------------------------------------------------------------------
+
+    use proptest::prelude::*;
+
+    /// Pre-defined pool of `ModuleId`s for property tests.
+    fn prop_module_pool() -> [ModuleId; 3] {
+        [ModuleId(0), ModuleId(1), ModuleId(2)]
+    }
+
+    /// Pre-defined pool of function/global names for property tests.
+    const PROP_NAME_POOL: &[&str] = &["alpha", "beta", "gamma", "delta", "epsilon"];
+
+    /// Build a minimal `UserFunction` with a given name and no body.
+    fn make_user_func(name: &str) -> UserFunction {
+        UserFunction {
+            name: name.to_string(),
+            parameters: vec![],
+            wildcard_parameter: None,
+            body: vec![],
+        }
+    }
+
+    /// A single operation applied to `FunctionEnv` and the shadow model.
+    #[derive(Clone, Debug)]
+    enum FnOp {
+        /// Register a user function at `modules[module_idx]` / `PROP_NAME_POOL[name_idx]`.
+        Register { module_idx: usize, name_idx: usize },
+        /// Query `get()` at `modules[module_idx]` / `PROP_NAME_POOL[name_idx]`.
+        Get { module_idx: usize, name_idx: usize },
+        /// Query `contains()` at `modules[module_idx]` / `PROP_NAME_POOL[name_idx]`.
+        Contains { module_idx: usize, name_idx: usize },
+    }
+
+    fn fn_op_strategy() -> impl Strategy<Value = FnOp> {
+        prop_oneof![
+            3 => (any::<usize>(), any::<usize>())
+                .prop_map(|(m, n)| FnOp::Register { module_idx: m, name_idx: n }),
+            2 => (any::<usize>(), any::<usize>())
+                .prop_map(|(m, n)| FnOp::Get { module_idx: m, name_idx: n }),
+            2 => (any::<usize>(), any::<usize>())
+                .prop_map(|(m, n)| FnOp::Contains { module_idx: m, name_idx: n }),
+        ]
+    }
+
+    proptest! {
+        /// Registering a function and retrieving it returns the same function.
+        ///
+        /// Invariants:
+        /// - `get(module, name)` after `register` returns Some with the correct name.
+        /// - `contains(module, name)` agrees with the shadow model's record.
+        /// - `debug_assert_consistency` passes after every operation.
+        #[test]
+        fn function_env_register_get_contains_consistent(
+            ops in prop::collection::vec(fn_op_strategy(), 0..60)
+        ) {
+            let modules = prop_module_pool();
+            let mut env = FunctionEnv::new();
+            // Shadow model: (module_id, name) → registered.
+            let mut model: std::collections::HashMap<(ModuleId, String), bool> =
+                std::collections::HashMap::new();
+
+            for op in &ops {
+                match *op {
+                    FnOp::Register { module_idx, name_idx } => {
+                        let module = modules[module_idx % modules.len()];
+                        let name = PROP_NAME_POOL[name_idx % PROP_NAME_POOL.len()];
+                        env.register(module, make_user_func(name));
+                        model.insert((module, name.to_string()), true);
+                    }
+                    FnOp::Get { module_idx, name_idx } => {
+                        let module = modules[module_idx % modules.len()];
+                        let name = PROP_NAME_POOL[name_idx % PROP_NAME_POOL.len()];
+                        let result = env.get(module, name);
+                        let expected_present = model.contains_key(&(module, name.to_string()));
+                        if expected_present {
+                            // A registered function must be retrievable.
+                            prop_assert!(
+                                result.is_some(),
+                                "get({module:?}, {name}) should return Some after register"
+                            );
+                            // The returned name must match the registration key.
+                            prop_assert_eq!(
+                                result.unwrap().name.as_str(),
+                                name,
+                                "retrieved function name must match registered name"
+                            );
+                        } else {
+                            // An unregistered entry must return None.
+                            prop_assert!(
+                                result.is_none(),
+                                "get({module:?}, {name}) should return None if not registered"
+                            );
+                        }
+                    }
+                    FnOp::Contains { module_idx, name_idx } => {
+                        let module = modules[module_idx % modules.len()];
+                        let name = PROP_NAME_POOL[name_idx % PROP_NAME_POOL.len()];
+                        let actual = env.contains(module, name);
+                        let expected = model.contains_key(&(module, name.to_string()));
+                        // `contains` must agree with the shadow model.
+                        prop_assert_eq!(
+                            actual,
+                            expected,
+                            "contains({:?}, {}) mismatch",
+                            module,
+                            name
+                        );
+                    }
+                }
+
+                // After every step the registry must be internally consistent.
+                env.debug_assert_consistency();
+            }
+        }
+
+        /// Re-registering the same (module, name) pair replaces the old definition.
+        ///
+        /// Postcondition: the most-recently-registered function is the one retrieved.
+        #[test]
+        fn function_env_register_overwrites(
+            module_idx in 0usize..3,
+            name_idx in 0usize..5,
+        ) {
+            let modules = prop_module_pool();
+            let module = modules[module_idx % modules.len()];
+            let name = PROP_NAME_POOL[name_idx % PROP_NAME_POOL.len()];
+
+            let mut env = FunctionEnv::new();
+            // Register with one parameter.
+            let mut first = make_user_func(name);
+            first.parameters = vec!["x".to_string()];
+            env.register(module, first);
+
+            // Re-register with two parameters.
+            let mut second = make_user_func(name);
+            second.parameters = vec!["a".to_string(), "b".to_string()];
+            env.register(module, second);
+
+            // The latest registration must win.
+            let retrieved = env.get(module, name).unwrap();
+            prop_assert_eq!(
+                retrieved.parameters.len(),
+                2,
+                "re-registered function must have the new parameter list"
+            );
+
+            env.debug_assert_consistency();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Property tests: GlobalStore
+    // -----------------------------------------------------------------------
+
+    /// A single operation applied to `GlobalStore` and the shadow model.
+    #[derive(Clone, Debug)]
+    enum GlobalOp {
+        /// Set an integer value at `modules[module_idx]` / `PROP_NAME_POOL[name_idx]`.
+        Set {
+            module_idx: usize,
+            name_idx: usize,
+            value: i64,
+        },
+        /// Query `get()` for presence and value.
+        Get { module_idx: usize, name_idx: usize },
+        /// Advance gensym counter by one step.
+        NextGensym,
+        /// Set gensym counter to an arbitrary value (may be ≤ 0 to exercise floor).
+        SetGensymCounter { value: i64 },
+        /// Push a printout event drawn from small channel/text pools.
+        PushPrintoutEvent { channel_idx: usize, text_idx: usize },
+        /// Drain all queued printout events.
+        TakePrintoutEvents,
+        /// Clear the store.
+        Clear,
+    }
+
+    const PROP_CHANNELS: &[&str] = &["t", "trace", "wdialog"];
+    const PROP_TEXTS: &[&str] = &["hello", "world", "foo", "bar"];
+
+    fn global_op_strategy() -> impl Strategy<Value = GlobalOp> {
+        prop_oneof![
+            3 => (any::<usize>(), any::<usize>(), any::<i64>())
+                .prop_map(|(m, n, v)| GlobalOp::Set { module_idx: m, name_idx: n, value: v }),
+            2 => (any::<usize>(), any::<usize>())
+                .prop_map(|(m, n)| GlobalOp::Get { module_idx: m, name_idx: n }),
+            2 => Just(GlobalOp::NextGensym),
+            1 => any::<i64>().prop_map(|v| GlobalOp::SetGensymCounter { value: v }),
+            2 => (any::<usize>(), any::<usize>())
+                .prop_map(|(c, t)| GlobalOp::PushPrintoutEvent {
+                    channel_idx: c,
+                    text_idx: t,
+                }),
+            1 => Just(GlobalOp::TakePrintoutEvents),
+            1 => Just(GlobalOp::Clear),
+        ]
+    }
+
+    proptest! {
+        /// Full shadow-model test for GlobalStore.
+        ///
+        /// Invariants verified after each step:
+        /// - get after set returns the set integer value.
+        /// - Unset keys return None from get().
+        /// - next_gensym_counter returns the expected monotonically-advancing value.
+        /// - set_gensym_counter floors at 1.
+        /// - Printout events are drained in FIFO order; second drain returns empty.
+        /// - clear removes values and events but preserves the gensym counter.
+        /// - debug_assert_consistency passes at every step.
+        #[test]
+        fn global_store_shadow_model(
+            ops in prop::collection::vec(global_op_strategy(), 0..80)
+        ) {
+            let modules = prop_module_pool();
+            let mut store = GlobalStore::new();
+
+            // Shadow model state.
+            let mut model_values: std::collections::HashMap<(ModuleId, String), i64> =
+                std::collections::HashMap::new();
+            let mut model_gensym: i64 = 1;
+            let mut model_events: std::collections::VecDeque<(String, String)> =
+                std::collections::VecDeque::new();
+
+            for op in &ops {
+                match *op {
+                    GlobalOp::Set { module_idx, name_idx, value } => {
+                        let module = modules[module_idx % modules.len()];
+                        let name = PROP_NAME_POOL[name_idx % PROP_NAME_POOL.len()];
+                        store.set(module, name, Value::Integer(value));
+                        model_values.insert((module, name.to_string()), value);
+                    }
+                    GlobalOp::Get { module_idx, name_idx } => {
+                        let module = modules[module_idx % modules.len()];
+                        let name = PROP_NAME_POOL[name_idx % PROP_NAME_POOL.len()];
+                        let actual = store.get(module, name);
+                        if let Some(&expected_val) =
+                            model_values.get(&(module, name.to_string()))
+                        {
+                            // Key must be present and return the correct integer.
+                            let val =
+                                actual.expect("get should return Some for a set key");
+                            prop_assert!(
+                                val.structural_eq(&Value::Integer(expected_val)),
+                                "get({module:?}, {name}) returned wrong value"
+                            );
+                        } else {
+                            // Key must be absent.
+                            prop_assert!(
+                                actual.is_none(),
+                                "get({module:?}, {name}) should return None for unset key"
+                            );
+                        }
+                    }
+                    GlobalOp::NextGensym => {
+                        let returned = store.next_gensym_counter();
+                        // Must return the model's expected counter value.
+                        prop_assert_eq!(
+                            returned,
+                            model_gensym,
+                            "next_gensym_counter must return model counter"
+                        );
+                        // Saturating-add mirrors the implementation.
+                        model_gensym = model_gensym.saturating_add(1);
+                    }
+                    GlobalOp::SetGensymCounter { value } => {
+                        store.set_gensym_counter(value);
+                        // Implementation floors at 1.
+                        model_gensym = value.max(1);
+                    }
+                    GlobalOp::PushPrintoutEvent { channel_idx, text_idx } => {
+                        let channel =
+                            PROP_CHANNELS[channel_idx % PROP_CHANNELS.len()].to_string();
+                        let text = PROP_TEXTS[text_idx % PROP_TEXTS.len()].to_string();
+                        store.push_printout_event(channel.clone(), text.clone());
+                        model_events.push_back((channel, text));
+                    }
+                    GlobalOp::TakePrintoutEvents => {
+                        let actual_events = store.take_printout_events();
+                        // Must match the model queue in FIFO order.
+                        let expected: Vec<_> = model_events.drain(..).collect();
+                        prop_assert_eq!(
+                            actual_events,
+                            expected,
+                            "take_printout_events must return events in FIFO order"
+                        );
+                        // After draining, a second take must return empty.
+                        let again = store.take_printout_events();
+                        prop_assert!(
+                            again.is_empty(),
+                            "second take_printout_events must return empty vec"
+                        );
+                    }
+                    GlobalOp::Clear => {
+                        store.clear();
+                        // Values and events are removed; gensym counter is preserved.
+                        model_values.clear();
+                        model_events.clear();
+                        // model_gensym intentionally NOT reset — clear preserves it.
+                    }
+                }
+
+                // After every step the store must be internally consistent.
+                store.debug_assert_consistency();
+            }
+        }
+
+        /// Gensym counter increments strictly.
+        ///
+        /// Invariant: each successive call to `next_gensym_counter` returns a value
+        /// strictly greater than the one before it.
+        #[test]
+        fn gensym_counter_strictly_increasing(n_steps in 1usize..50) {
+            let mut store = GlobalStore::new();
+            let mut prev = store.next_gensym_counter();
+            for _ in 1..n_steps {
+                let next = store.next_gensym_counter();
+                prop_assert!(
+                    next > prev,
+                    "gensym counter must be strictly increasing: {prev} then {next}"
+                );
+                prev = next;
+            }
+        }
+
+        /// `set_gensym_counter` floors at 1 for any non-positive input.
+        ///
+        /// Invariant: calling `set_gensym_counter(v)` with v ≤ 0 causes
+        /// `next_gensym_counter()` to return 1.
+        #[test]
+        fn set_gensym_counter_floors_at_one(v in i64::MIN..=0i64) {
+            let mut store = GlobalStore::new();
+            store.set_gensym_counter(v);
+            let result = store.next_gensym_counter();
+            prop_assert_eq!(
+                result,
+                1,
+                "set_gensym_counter({}) must floor at 1",
+                v
+            );
+        }
+
+        /// `clear` preserves the gensym counter.
+        ///
+        /// Invariant: the gensym counter value in effect just before `clear()`
+        /// is returned correctly immediately after.
+        #[test]
+        fn clear_preserves_gensym_counter(advance in 1usize..20) {
+            let mut store = GlobalStore::new();
+            let mut expected_next: i64 = 1;
+            for _ in 0..advance {
+                store.next_gensym_counter();
+                expected_next = expected_next.saturating_add(1);
+            }
+            store.clear();
+            let after_clear = store.next_gensym_counter();
+            prop_assert_eq!(
+                after_clear,
+                expected_next,
+                "clear must not reset the gensym counter"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Property tests: GenericFunction & GenericRegistry
+    // -----------------------------------------------------------------------
+
+    /// Helper to build a minimal `RegisteredMethod` for testing.
+    fn make_method(index: i32) -> RegisteredMethod {
+        RegisteredMethod {
+            index,
+            parameters: vec!["x".to_string()],
+            type_restrictions: vec![vec![]],
+            wildcard_parameter: None,
+            body: vec![],
+        }
+    }
+
+    proptest! {
+        /// Invariant: After inserting methods with arbitrary indices (0..100),
+        /// the methods vec is always sorted in strictly ascending order by index.
+        /// This verifies that `add_method` maintains the sorted invariant under
+        /// any insertion order.
+        #[test]
+        fn methods_always_sorted(indices in prop::collection::vec(0i32..100, 1..20)) {
+            let mut gf = GenericFunction::new("test".to_string());
+            // Track which indices we've already added to avoid duplicates
+            // (duplicate indices violate the strict-ascending invariant).
+            let mut seen = std::collections::HashSet::new();
+            for idx in &indices {
+                if seen.insert(*idx) {
+                    gf.add_method(make_method(*idx));
+                }
+            }
+            // Invariant: methods are in strictly ascending index order.
+            for w in gf.methods.windows(2) {
+                prop_assert!(
+                    w[0].index < w[1].index,
+                    "methods not strictly sorted: {} then {}",
+                    w[0].index, w[1].index
+                );
+            }
+        }
+
+        /// Invariant: Each successive call to `next_auto_index` returns a value
+        /// strictly larger than the previous. Auto-index is monotonically increasing.
+        #[test]
+        fn next_auto_index_always_increases(n_calls in 1usize..20) {
+            let mut gf = GenericFunction::new("test".to_string());
+            let mut prev = gf.next_auto_index();
+            for _ in 1..n_calls {
+                let next = gf.next_auto_index();
+                prop_assert!(
+                    next > prev,
+                    "next_auto_index did not increase: got {} after {}",
+                    next, prev
+                );
+                prev = next;
+            }
+        }
+    }
+
+    /// Operations for the `GenericRegistry` shadow-model property test.
+    #[derive(Clone, Debug)]
+    #[allow(clippy::enum_variant_names)]
+    enum GenericOp {
+        /// Register a generic by (`module_idx`, `name_idx`) — no-op if already present.
+        RegisterGeneric(usize, usize),
+        /// Register a method with an explicit index.
+        RegisterMethodExplicit(usize, usize, i32),
+        /// Register a method with an auto-assigned index.
+        RegisterMethodAuto(usize, usize),
+    }
+
+    fn generic_op_strategy() -> impl Strategy<Value = GenericOp> {
+        prop_oneof![
+            2 => (0usize..3, 0usize..5).prop_map(|(m, n)| GenericOp::RegisterGeneric(m, n)),
+            3 => (0usize..3, 0usize..5, 1i32..50).prop_map(|(m, n, i)| GenericOp::RegisterMethodExplicit(m, n, i)),
+            3 => (0usize..3, 0usize..5).prop_map(|(m, n)| GenericOp::RegisterMethodAuto(m, n)),
+        ]
+    }
+
+    proptest! {
+        /// Shadow-model invariant test for GenericRegistry.
+        ///
+        /// We execute a random sequence of register_generic / register_method
+        /// operations against both a `GenericRegistry` and a shadow model
+        /// (HashMap tracking which (module, name) entries exist and their method
+        /// indices), then verify at every step that:
+        ///   - register/get roundtrip is consistent
+        ///   - method auto-creation via register_method works
+        ///   - has_method_index agrees with the shadow model
+        ///   - debug_assert_consistency() passes (sorted methods, name bookkeeping)
+        #[test]
+        fn generic_registry_shadow_model(
+            ops in prop::collection::vec(generic_op_strategy(), 1..40)
+        ) {
+            // Pre-allocate 3 module ids and 5 generic names to keep the space small.
+            let modules = [ModuleId(0), ModuleId(1), ModuleId(2)];
+            let names = ["alpha", "beta", "gamma", "delta", "epsilon"];
+
+            // Shadow model: tracks method indices per (module_idx, name) pair.
+            // None means the generic has never been registered.
+            let mut shadow: std::collections::HashMap<(usize, usize), std::collections::BTreeSet<i32>> =
+                std::collections::HashMap::new();
+            // Track the next auto-index per (module, name) key.
+            let mut next_auto: std::collections::HashMap<(usize, usize), i32> =
+                std::collections::HashMap::new();
+
+            let mut reg = GenericRegistry::new();
+
+            for op in &ops {
+                match op {
+                    GenericOp::RegisterGeneric(mi, ni) => {
+                        let module = modules[*mi];
+                        let name = names[*ni];
+                        reg.register_generic(module, name);
+                        // Shadow: ensure entry exists (no-op if already present).
+                        shadow.entry((*mi, *ni)).or_default();
+                    }
+                    GenericOp::RegisterMethodExplicit(mi, ni, idx) => {
+                        let module = modules[*mi];
+                        let name = names[*ni];
+                        // Only add if the index is not already present in the shadow
+                        // (duplicate indices would violate the sorted-unique invariant).
+                        let key = (*mi, *ni);
+                        let indices = shadow.entry(key).or_default();
+                        if !indices.contains(idx) {
+                            indices.insert(*idx);
+                            // Update next_auto to be at least idx+1.
+                            let na = next_auto.entry(key).or_insert(1);
+                            if *idx >= *na {
+                                *na = *idx + 1;
+                            }
+                            reg.register_method(
+                                module,
+                                name,
+                                Some(*idx),
+                                vec!["x".to_string()],
+                                vec![vec![]],
+                                None,
+                                vec![],
+                            );
+                        }
+                    }
+                    GenericOp::RegisterMethodAuto(mi, ni) => {
+                        let module = modules[*mi];
+                        let name = names[*ni];
+                        let key = (*mi, *ni);
+                        // Compute the auto-index from our shadow tracker.
+                        let na = next_auto.entry(key).or_insert(1);
+                        let auto_idx = *na;
+                        *na += 1;
+                        shadow.entry(key).or_default().insert(auto_idx);
+                        reg.register_method(
+                            module,
+                            name,
+                            None,
+                            vec!["x".to_string()],
+                            vec![vec![]],
+                            None,
+                            vec![],
+                        );
+                    }
+                }
+
+                // After every operation, verify invariants against the shadow model.
+
+                // Structural consistency (sorted methods, name bookkeeping).
+                reg.debug_assert_consistency();
+
+                // Verify every entry in the shadow model is reflected in the registry.
+                for ((mi, ni), expected_indices) in &shadow {
+                    let module = modules[*mi];
+                    let name = names[*ni];
+
+                    // The generic must exist since we registered it.
+                    prop_assert!(
+                        reg.contains(module, name),
+                        "registry missing generic ({}, {})",
+                        *mi, *ni
+                    );
+
+                    // get() must return the same generic.
+                    let gf = reg.get(module, name).unwrap();
+                    prop_assert_eq!(
+                        &gf.name, name,
+                        "generic name mismatch for ({}, {})",
+                        *mi, *ni
+                    );
+
+                    // has_method_index must agree with shadow for known indices.
+                    for &idx in expected_indices {
+                        prop_assert!(
+                            reg.has_method_index(module, name, idx),
+                            "has_method_index returned false for known index {} in ({}, {})",
+                            idx, *mi, *ni
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

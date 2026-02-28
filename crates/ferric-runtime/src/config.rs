@@ -113,4 +113,67 @@ mod tests {
         let encoding: StringEncoding = EngineConfig::ascii_symbols_utf8_strings().into();
         assert_eq!(encoding, StringEncoding::AsciiSymbolsUtf8Strings);
     }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_encoding() -> impl Strategy<Value = StringEncoding> {
+            prop_oneof![
+                Just(StringEncoding::Ascii),
+                Just(StringEncoding::Utf8),
+                Just(StringEncoding::AsciiSymbolsUtf8Strings),
+            ]
+        }
+
+        fn arb_strategy() -> impl Strategy<Value = ConflictResolutionStrategy> {
+            prop_oneof![
+                Just(ConflictResolutionStrategy::Depth),
+                Just(ConflictResolutionStrategy::Breadth),
+                Just(ConflictResolutionStrategy::Lex),
+                Just(ConflictResolutionStrategy::Mea),
+            ]
+        }
+
+        proptest! {
+            /// `From<StringEncoding>` roundtrip: encoding survives conversion
+            /// to config and back.
+            #[test]
+            fn encoding_roundtrip(enc in arb_encoding()) {
+                let config = EngineConfig::from(enc);
+                let recovered: StringEncoding = config.into();
+                prop_assert_eq!(recovered, enc);
+            }
+
+            /// `with_strategy` preserves the encoding and max_call_depth.
+            #[test]
+            fn with_strategy_preserves_other_fields(
+                enc in arb_encoding(),
+                strategy in arb_strategy(),
+            ) {
+                let base = EngineConfig::from(enc);
+                let original_depth = base.max_call_depth;
+                let modified = base.with_strategy(strategy);
+                prop_assert_eq!(modified.string_encoding, enc);
+                prop_assert_eq!(modified.strategy, strategy);
+                prop_assert_eq!(modified.max_call_depth, original_depth);
+            }
+
+            /// Named constructors always produce the advertised encoding.
+            #[test]
+            fn named_constructors_correct_encoding(choice in 0..3_u8) {
+                let (config, expected) = match choice {
+                    0 => (EngineConfig::ascii(), StringEncoding::Ascii),
+                    1 => (EngineConfig::utf8(), StringEncoding::Utf8),
+                    _ => (EngineConfig::ascii_symbols_utf8_strings(), StringEncoding::AsciiSymbolsUtf8Strings),
+                };
+                prop_assert_eq!(config.string_encoding, expected);
+                prop_assert_eq!(config.max_call_depth, 64);
+            }
+        }
+    }
 }
