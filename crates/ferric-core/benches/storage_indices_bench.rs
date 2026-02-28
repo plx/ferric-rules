@@ -4,7 +4,7 @@ use ferric_core::{
     AlphaNetwork, AtomKey, BetaMemoryId, BetaNetwork, BindingSet, ConstantTest, ConstantTestType,
     ExistsMemory, ExistsMemoryId, Fact, FactBase, FactId, NccMemory, NccMemoryId, NegativeMemory,
     NegativeMemoryId, NodeId, RuleId, Salience, SlotIndex, StringEncoding, Symbol, SymbolTable,
-    Timestamp, Token, TokenId, TokenStore, Value,
+    TemplateId, Timestamp, Token, TokenId, TokenStore, Value,
 };
 use slotmap::SlotMap;
 use smallvec::SmallVec;
@@ -22,6 +22,15 @@ fn ascii_symbols(table: &mut SymbolTable, count: usize) -> Vec<Symbol> {
 fn fact_ids(count: usize) -> Vec<FactId> {
     let mut ids = Vec::with_capacity(count);
     let mut temp: SlotMap<FactId, ()> = SlotMap::with_key();
+    for _ in 0..count {
+        ids.push(temp.insert(()));
+    }
+    ids
+}
+
+fn template_ids(count: usize) -> Vec<TemplateId> {
+    let mut ids = Vec::with_capacity(count);
+    let mut temp: SlotMap<TemplateId, ()> = SlotMap::with_key();
     for _ in 0..count {
         ids.push(temp.insert(()));
     }
@@ -77,6 +86,37 @@ fn bench_fact_base_relation_index_cycle(c: &mut Criterion) {
                 let total_indexed: usize = relations
                     .iter()
                     .map(|&relation| fact_base.facts_by_relation(relation).count())
+                    .sum();
+                black_box(total_indexed);
+
+                for id in ids {
+                    black_box(fact_base.retract(id));
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_fact_base_template_index_cycle(c: &mut Criterion) {
+    let templates = template_ids(32);
+
+    c.bench_function("fact_base_template_index_cycle", |b| {
+        b.iter_batched(
+            FactBase::new,
+            |mut fact_base| {
+                let mut ids = Vec::with_capacity(1024);
+                for idx in 0..1024 {
+                    let template_id = templates[idx % templates.len()];
+                    ids.push(
+                        fact_base
+                            .assert_template(template_id, Vec::<Value>::new().into_boxed_slice()),
+                    );
+                }
+
+                let total_indexed: usize = templates
+                    .iter()
+                    .map(|&template_id| fact_base.facts_by_template(template_id).count())
                     .sum();
                 black_box(total_indexed);
 
@@ -694,6 +734,7 @@ criterion_group!(
     benches,
     bench_symbol_table_ascii_intern,
     bench_fact_base_relation_index_cycle,
+    bench_fact_base_template_index_cycle,
     bench_token_store_reverse_index_cycle,
     bench_alpha_network_reverse_index_cycle,
     bench_alpha_node_store_cycle,

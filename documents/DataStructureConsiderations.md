@@ -761,6 +761,56 @@ For each experiment:
   the current `FxHashSet` remains the better fit for the per-relation fact
   sets.
 
+### 13. Probe Slotmap-Native Template Index Sets in `FactBase`
+
+**Current structures**
+
+- `crates/ferric-core/src/fact.rs`
+  - `FactBase.by_template: HashMap<TemplateId, HashSet<FactId>>`
+
+**Proposed substitution**
+
+- Replace the per-template fact-ID sets with
+  `HashMap<TemplateId, SparseSecondaryMap<FactId, ()>>`.
+
+**Where we'd use it**
+
+- The template-fact index in `FactBase`.
+
+**Additional adjustments**
+
+- Keep `by_relation` unchanged so the measurement isolates only the template
+  index.
+- Add a dedicated microbenchmark for this path rather than reusing the
+  relation-index benchmark.
+- Preserve the existing `facts_by_template` iterator API by iterating the
+  sparse map's keys.
+
+**Reasoning**
+
+- The template index stores the same `FactId` slotmap keys as the relation
+  index, so it is the natural parallel experiment.
+- Measuring it independently avoids assuming the relation-index result fully
+  predicts the template-index path.
+
+**Risk**
+
+- Low.
+- The swap is mechanically local, but this index sits directly on template
+  fact assert, query, and retract operations.
+
+**Experiment note (2026-02-28)**
+
+- Added a dedicated `fact_base_template_index_cycle` microbenchmark to
+  `crates/ferric-core/benches/storage_indices_bench.rs`.
+- Converting `FactBase.by_template` in `crates/ferric-core/src/fact.rs` from
+  `HashMap<TemplateId, HashSet<FactId>>` to
+  `HashMap<TemplateId, SparseSecondaryMap<FactId, ()>>` was tested and
+  reverted.
+- Using the new targeted benchmark, the change regressed from roughly
+  `49.2 us` to `66.7 us` (about `+35.9%`), so the current `FxHashSet` remains
+  the better fit for the per-template fact sets.
+
 ## Areas to Deprioritize for Now
 
 These are existing structures that currently look well-matched to their
