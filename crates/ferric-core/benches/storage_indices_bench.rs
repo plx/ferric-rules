@@ -1,9 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use ferric_core::{
     Activation, ActivationId, ActivationSeq, Agenda, AlphaEntryType, AlphaMemory, AlphaMemoryId,
-    AlphaNetwork, BetaNetwork, BindingSet, ExistsMemory, ExistsMemoryId, Fact, FactBase, FactId,
-    NccMemory, NccMemoryId, NegativeMemory, NegativeMemoryId, NodeId, RuleId, Salience, SlotIndex,
-    StringEncoding, Symbol, SymbolTable, Timestamp, Token, TokenId, TokenStore, Value,
+    AlphaNetwork, BetaMemoryId, BetaNetwork, BindingSet, ExistsMemory, ExistsMemoryId, Fact,
+    FactBase, FactId, NccMemory, NccMemoryId, NegativeMemory, NegativeMemoryId, NodeId, RuleId,
+    Salience, SlotIndex, StringEncoding, Symbol, SymbolTable, Timestamp, Token, TokenId,
+    TokenStore, Value,
 };
 use slotmap::SlotMap;
 use smallvec::SmallVec;
@@ -289,6 +290,45 @@ fn bench_beta_fanout_index_cycle(c: &mut Criterion) {
     });
 }
 
+fn bench_beta_memory_store_cycle(c: &mut Criterion) {
+    let token_pool = token_ids(256);
+
+    c.bench_function("beta_memory_store_cycle", |b| {
+        b.iter_batched(
+            || {
+                let mut beta = BetaNetwork::new(NodeId(100_000));
+                let root_id = beta.root_id();
+
+                for idx in 0..128 {
+                    let alpha_mem = AlphaMemoryId((idx % 8) as u32);
+                    let _ = beta.create_join_node(root_id, alpha_mem, Vec::new(), Vec::new());
+                }
+
+                let memory_ids: Vec<BetaMemoryId> = beta.memory_ids().collect();
+                (beta, memory_ids)
+            },
+            |(mut beta, memory_ids)| {
+                let mut touched = 0usize;
+
+                for round in 0..256 {
+                    let token_id = token_pool[round % token_pool.len()];
+                    for &memory_id in &memory_ids {
+                        if let Some(memory) = beta.get_memory_mut(memory_id) {
+                            memory.insert(token_id);
+                            memory.remove(token_id);
+                        }
+
+                        touched += beta.get_memory(memory_id).map_or(0, |memory| memory.len());
+                    }
+                }
+
+                black_box(touched);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn bench_negative_memory_outer_index_cycle(c: &mut Criterion) {
     let token_pool = token_ids(256);
     let fact_pool = fact_ids(128);
@@ -464,6 +504,7 @@ criterion_group!(
     bench_alpha_network_reverse_index_cycle,
     bench_alpha_memory_indexed_slots_cycle,
     bench_beta_fanout_index_cycle,
+    bench_beta_memory_store_cycle,
     bench_negative_memory_outer_index_cycle,
     bench_exists_memory_outer_index_cycle,
     bench_ncc_memory_outer_index_cycle,

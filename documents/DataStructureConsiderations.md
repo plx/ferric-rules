@@ -433,6 +433,11 @@ For each experiment:
 - The targeted microbenchmark `alpha_network_reverse_index_cycle` improved from
   roughly `70.4 us` to `65.3 us` (about `-7.2%`), which makes this a clear win
   for one of the dense sequential-ID stores in `AlphaNetwork`.
+- Converting `BetaNetwork.memories` in `crates/ferric-core/src/beta.rs` from
+  `HashMap<BetaMemoryId, BetaMemory>` to `Vec<BetaMemory>` was kept.
+- The targeted microbenchmark `beta_memory_store_cycle` improved from roughly
+  `202.3 us` to `101.1 us` (about `-50%`), making direct indexing a clear win
+  for the main beta-memory table as well.
 
 ### 8. Replace Tiny Hash Sets with `SmallVec` in Clearly Small Cardinality Cases
 

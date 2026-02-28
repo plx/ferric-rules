@@ -187,7 +187,7 @@ pub enum BetaNode {
 /// to perform joins and produce activations.
 pub struct BetaNetwork {
     nodes: HashMap<NodeId, BetaNode>,
-    memories: HashMap<BetaMemoryId, BetaMemory>,
+    memories: Vec<BetaMemory>,
     neg_memories: HashMap<NegativeMemoryId, NegativeMemory>,
     ncc_memories: HashMap<NccMemoryId, NccMemory>,
     exists_memories: HashMap<ExistsMemoryId, ExistsMemory>,
@@ -225,7 +225,7 @@ impl BetaNetwork {
 
         Self {
             nodes,
-            memories: HashMap::default(),
+            memories: Vec::new(),
             neg_memories: HashMap::default(),
             ncc_memories: HashMap::default(),
             exists_memories: HashMap::default(),
@@ -268,7 +268,8 @@ impl BetaNetwork {
         };
 
         self.nodes.insert(node_id, node);
-        self.memories.insert(memory_id, BetaMemory::new(memory_id));
+        debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
+        self.memories.push(BetaMemory::new(memory_id));
 
         self.attach_child_to_parent(parent, node_id);
 
@@ -338,7 +339,8 @@ impl BetaNetwork {
         };
 
         self.nodes.insert(node_id, node);
-        self.memories.insert(memory_id, BetaMemory::new(memory_id));
+        debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
+        self.memories.push(BetaMemory::new(memory_id));
         self.neg_memories
             .insert(neg_memory_id, NegativeMemory::new(neg_memory_id));
 
@@ -393,7 +395,8 @@ impl BetaNetwork {
         };
 
         self.nodes.insert(node_id, node);
-        self.memories.insert(memory_id, BetaMemory::new(memory_id));
+        debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
+        self.memories.push(BetaMemory::new(memory_id));
 
         self.attach_child_to_parent(parent, node_id);
 
@@ -471,7 +474,8 @@ impl BetaNetwork {
         };
 
         self.nodes.insert(node_id, node);
-        self.memories.insert(memory_id, BetaMemory::new(memory_id));
+        debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
+        self.memories.push(BetaMemory::new(memory_id));
         self.exists_memories
             .insert(exists_memory_id, ExistsMemory::new(exists_memory_id));
 
@@ -495,12 +499,12 @@ impl BetaNetwork {
     /// Get a beta memory by ID.
     #[must_use]
     pub fn get_memory(&self, id: BetaMemoryId) -> Option<&BetaMemory> {
-        self.memories.get(&id)
+        self.memory(id)
     }
 
     /// Get a mutable reference to a beta memory by ID.
     pub fn get_memory_mut(&mut self, id: BetaMemoryId) -> Option<&mut BetaMemory> {
-        self.memories.get_mut(&id)
+        self.memory_mut(id)
     }
 
     /// Get the root node ID.
@@ -568,7 +572,7 @@ impl BetaNetwork {
 
     /// Clear all runtime state from beta and negative memories, preserving network structure.
     pub fn clear_all_runtime(&mut self) {
-        for memory in self.memories.values_mut() {
+        for memory in &mut self.memories {
             memory.clear();
         }
         for neg_memory in self.neg_memories.values_mut() {
@@ -594,7 +598,7 @@ impl BetaNetwork {
 
     /// Iterate over all beta memory IDs.
     pub fn memory_ids(&self) -> impl Iterator<Item = BetaMemoryId> + '_ {
-        self.memories.keys().copied()
+        self.memories.iter().map(|memory| memory.id)
     }
 
     /// Iterate over all negative memory IDs.
@@ -687,7 +691,7 @@ impl BetaNetwork {
             match node {
                 BetaNode::Join { memory, .. } => {
                     assert!(
-                        self.memories.contains_key(memory),
+                        self.memory(*memory).is_some(),
                         "Join node {node_id:?} references non-existent memory {memory:?}"
                     );
                 }
@@ -695,7 +699,7 @@ impl BetaNetwork {
                     memory, neg_memory, ..
                 } => {
                     assert!(
-                        self.memories.contains_key(memory),
+                        self.memory(*memory).is_some(),
                         "Negative node {node_id:?} references non-existent beta memory {memory:?}"
                     );
                     assert!(
@@ -710,7 +714,7 @@ impl BetaNetwork {
                     ..
                 } => {
                     assert!(
-                        self.memories.contains_key(memory),
+                        self.memory(*memory).is_some(),
                         "NCC node {node_id:?} references non-existent beta memory {memory:?}"
                     );
                     assert!(
@@ -742,7 +746,7 @@ impl BetaNetwork {
                     ..
                 } => {
                     assert!(
-                        self.memories.contains_key(memory),
+                        self.memory(*memory).is_some(),
                         "Exists node {node_id:?} references non-existent beta memory {memory:?}"
                     );
                     assert!(
@@ -835,6 +839,14 @@ impl BetaNetwork {
             let _ = exists_mem_id;
             exists_mem.debug_assert_consistency();
         }
+    }
+
+    fn memory(&self, id: BetaMemoryId) -> Option<&BetaMemory> {
+        self.memories.get(id.0 as usize)
+    }
+
+    fn memory_mut(&mut self, id: BetaMemoryId) -> Option<&mut BetaMemory> {
+        self.memories.get_mut(id.0 as usize)
     }
 }
 
