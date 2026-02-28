@@ -267,7 +267,7 @@ fn remove_from_slot_index(
 /// Stores all alpha nodes and memories, and provides methods to propagate facts
 /// through the network.
 pub struct AlphaNetwork {
-    nodes: HashMap<NodeId, AlphaNode>,
+    nodes: Vec<AlphaNode>,
     memories: Vec<AlphaMemory>,
     /// Entry points: `AlphaEntryType` -> `NodeId`.
     entry_nodes: HashMap<AlphaEntryType, NodeId>,
@@ -284,7 +284,7 @@ impl AlphaNetwork {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            nodes: HashMap::default(),
+            nodes: Vec::new(),
             memories: Vec::new(),
             entry_nodes: HashMap::default(),
             fact_to_memories: SparseSecondaryMap::new(),
@@ -311,7 +311,8 @@ impl AlphaNetwork {
             memory: None,
         };
 
-        self.nodes.insert(node_id, node);
+        debug_assert_eq!(self.nodes.len(), node_id.0 as usize);
+        self.nodes.push(node);
         self.entry_nodes.insert(entry_type, node_id);
 
         node_id
@@ -331,10 +332,11 @@ impl AlphaNetwork {
             memory: None,
         };
 
-        self.nodes.insert(node_id, node);
+        debug_assert_eq!(self.nodes.len(), node_id.0 as usize);
+        self.nodes.push(node);
 
         // Add this node as a child of the parent
-        if let Some(parent_node) = self.nodes.get_mut(&parent) {
+        if let Some(parent_node) = self.node_mut(parent) {
             parent_node.children_mut().push(node_id);
         }
 
@@ -354,7 +356,7 @@ impl AlphaNetwork {
         self.memories.push(memory);
 
         // Attach to node
-        if let Some(node) = self.nodes.get_mut(&node_id) {
+        if let Some(node) = self.node_mut(node_id) {
             *node.memory_mut() = Some(memory_id);
         }
 
@@ -417,7 +419,7 @@ impl AlphaNetwork {
     /// Get a reference to a node.
     #[must_use]
     pub fn get_node(&self, id: NodeId) -> Option<&AlphaNode> {
-        self.nodes.get(&id)
+        self.node(id)
     }
 
     /// Return all alpha memory IDs that currently contain the given fact.
@@ -446,7 +448,7 @@ impl AlphaNetwork {
     #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
         // Check 1: All alpha memory IDs referenced by nodes exist in memories map
-        for node in self.nodes.values() {
+        for node in &self.nodes {
             if let Some(mem_id) = node.memory() {
                 assert!(
                     self.memory(mem_id).is_some(),
@@ -456,17 +458,19 @@ impl AlphaNetwork {
         }
 
         // Check 2: All node IDs in children fields exist in nodes map
-        for (node_id, node) in &self.nodes {
+        for (index, node) in self.nodes.iter().enumerate() {
+            let node_id = NodeId(index as u32);
             for child_id in node.children() {
                 assert!(
-                    self.nodes.contains_key(child_id),
+                    self.node(*child_id).is_some(),
                     "Node {node_id:?} has non-existent child {child_id:?}"
                 );
             }
         }
 
         // Check 3: No duplicate children in any node
-        for (node_id, node) in &self.nodes {
+        for (index, node) in self.nodes.iter().enumerate() {
+            let node_id = NodeId(index as u32);
             let mut seen = HashSet::default();
             for child_id in node.children() {
                 assert!(
@@ -540,7 +544,7 @@ impl AlphaNetwork {
         node_id: NodeId,
         fact: &Fact,
     ) -> Option<(Option<AlphaMemoryId>, Vec<NodeId>)> {
-        let node = self.nodes.get(&node_id)?;
+        let node = self.node(node_id)?;
         if let AlphaNode::ConstantTest { test, .. } = node {
             evaluate_test(fact, test).then_some(())?;
         }
@@ -548,8 +552,16 @@ impl AlphaNetwork {
     }
 
     fn retraction_plan(&self, node_id: NodeId) -> Option<(Option<AlphaMemoryId>, Vec<NodeId>)> {
-        let node = self.nodes.get(&node_id)?;
+        let node = self.node(node_id)?;
         Some((node.memory(), node.children().to_vec()))
+    }
+
+    fn node(&self, id: NodeId) -> Option<&AlphaNode> {
+        self.nodes.get(id.0 as usize)
+    }
+
+    fn node_mut(&mut self, id: NodeId) -> Option<&mut AlphaNode> {
+        self.nodes.get_mut(id.0 as usize)
     }
 
     fn memory(&self, id: AlphaMemoryId) -> Option<&AlphaMemory> {

@@ -1,10 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use ferric_core::{
     Activation, ActivationId, ActivationSeq, Agenda, AlphaEntryType, AlphaMemory, AlphaMemoryId,
-    AlphaNetwork, BetaMemoryId, BetaNetwork, BindingSet, ExistsMemory, ExistsMemoryId, Fact,
-    FactBase, FactId, NccMemory, NccMemoryId, NegativeMemory, NegativeMemoryId, NodeId, RuleId,
-    Salience, SlotIndex, StringEncoding, Symbol, SymbolTable, Timestamp, Token, TokenId,
-    TokenStore, Value,
+    AlphaNetwork, AtomKey, BetaMemoryId, BetaNetwork, BindingSet, ConstantTest, ConstantTestType,
+    ExistsMemory, ExistsMemoryId, Fact, FactBase, FactId, NccMemory, NccMemoryId, NegativeMemory,
+    NegativeMemoryId, NodeId, RuleId, Salience, SlotIndex, StringEncoding, Symbol, SymbolTable,
+    Timestamp, Token, TokenId, TokenStore, Value,
 };
 use slotmap::SlotMap;
 use smallvec::SmallVec;
@@ -168,6 +168,61 @@ fn bench_alpha_network_reverse_index_cycle(c: &mut Criterion) {
                 black_box(accepted);
 
                 for (fact_id, fact) in asserted {
+                    network.retract_fact(fact_id, &fact);
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_alpha_node_store_cycle(c: &mut Criterion) {
+    let mut symbols = SymbolTable::new();
+    let relation = symbols
+        .intern_symbol("alpha-node-item", StringEncoding::Ascii)
+        .expect("ASCII symbol");
+
+    c.bench_function("alpha_node_store_cycle", |b| {
+        b.iter_batched(
+            || {
+                let mut fact_base = FactBase::new();
+                let mut facts = Vec::with_capacity(256);
+
+                for _ in 0..256 {
+                    let fact_id =
+                        fact_base.assert_ordered(relation, smallvec::smallvec![Value::Integer(1)]);
+                    let fact = fact_base
+                        .get(fact_id)
+                        .expect("fact must exist")
+                        .fact
+                        .clone();
+                    facts.push((fact_id, fact));
+                }
+
+                facts
+            },
+            |facts| {
+                let mut network = AlphaNetwork::new();
+                let mut parent =
+                    network.create_entry_node(AlphaEntryType::OrderedRelation(relation));
+
+                let test = ConstantTest {
+                    slot: SlotIndex::Ordered(0),
+                    test_type: ConstantTestType::Equal(AtomKey::Integer(1)),
+                };
+
+                for _ in 0..127 {
+                    parent = network.create_constant_test_node(parent, test.clone());
+                }
+
+                let mut accepted = 0usize;
+                for (fact_id, fact) in &facts {
+                    accepted += network.assert_fact(*fact_id, fact).len();
+                }
+
+                black_box(accepted);
+
+                for (fact_id, fact) in facts {
                     network.retract_fact(fact_id, &fact);
                 }
             },
@@ -641,6 +696,7 @@ criterion_group!(
     bench_fact_base_relation_index_cycle,
     bench_token_store_reverse_index_cycle,
     bench_alpha_network_reverse_index_cycle,
+    bench_alpha_node_store_cycle,
     bench_alpha_memory_indexed_slots_cycle,
     bench_beta_fanout_index_cycle,
     bench_beta_memory_store_cycle,

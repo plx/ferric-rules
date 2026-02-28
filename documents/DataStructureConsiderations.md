@@ -464,6 +464,11 @@ For each experiment:
 - The targeted microbenchmark `alpha_network_reverse_index_cycle` improved from
   roughly `70.4 us` to `65.3 us` (about `-7.2%`), which makes this a clear win
   for one of the dense sequential-ID stores in `AlphaNetwork`.
+- Converting `AlphaNetwork.nodes` in `crates/ferric-core/src/alpha.rs` from
+  `HashMap<NodeId, AlphaNode>` to `Vec<AlphaNode>` was kept.
+- The targeted microbenchmark `alpha_node_store_cycle` improved from roughly
+  `1.72 ms` to `1.61 ms` (about `-5.5%`), making direct indexing a clear win
+  for the dense alpha-node table as well.
 - Converting `BetaNetwork.memories` in `crates/ferric-core/src/beta.rs` from
   `HashMap<BetaMemoryId, BetaMemory>` to `Vec<BetaMemory>` was kept.
 - The targeted microbenchmark `beta_memory_store_cycle` improved from roughly
