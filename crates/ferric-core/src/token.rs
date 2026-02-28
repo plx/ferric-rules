@@ -19,24 +19,6 @@ slotmap::new_key_type! {
     pub struct TokenId;
 }
 
-fn remove_from_vec_index<K>(
-    index: &mut HashMap<K, SmallVec<[TokenId; 4]>>,
-    key: K,
-    token_id: TokenId,
-) where
-    K: Copy + Eq + std::hash::Hash,
-{
-    let mut remove_key = false;
-    if let Some(entry) = index.get_mut(&key) {
-        entry.retain(|tid| *tid != token_id);
-        remove_key = entry.is_empty();
-    }
-
-    if remove_key {
-        index.remove(&key);
-    }
-}
-
 /// A token representing a partial match through the beta network.
 ///
 /// Tokens contain the facts matched so far, variable bindings from the match,
@@ -59,8 +41,8 @@ pub struct Token {
 /// These indices enable efficient cascading deletion when facts are retracted.
 pub struct TokenStore {
     tokens: SlotMap<TokenId, Token>,
-    fact_to_tokens: HashMap<FactId, SmallVec<[TokenId; 4]>>,
-    parent_to_children: HashMap<TokenId, SmallVec<[TokenId; 4]>>,
+    fact_to_tokens: HashMap<FactId, HashSet<TokenId>>,
+    parent_to_children: HashMap<TokenId, HashSet<TokenId>>,
 }
 
 impl TokenStore {
@@ -95,29 +77,23 @@ impl TokenStore {
             // Only index if we haven't already indexed this fact for this token
             if !indexed_facts.contains(&fact_id) {
                 indexed_facts.push(fact_id);
-                let entry = self.fact_to_tokens.entry(fact_id).or_default();
+                let inserted = self.fact_to_tokens.entry(fact_id).or_default().insert(id);
 
                 // Debug assert: no duplicate TokenId in the index
-                debug_assert!(
-                    !entry.contains(&id),
-                    "duplicate TokenId in fact_to_tokens index"
-                );
-
-                entry.push(id);
+                debug_assert!(inserted, "duplicate TokenId in fact_to_tokens index");
             }
         }
 
         // Update parent_to_children index
         if let Some(parent_id) = parent {
-            let entry = self.parent_to_children.entry(parent_id).or_default();
+            let inserted = self
+                .parent_to_children
+                .entry(parent_id)
+                .or_default()
+                .insert(id);
 
             // Debug assert: no duplicate TokenId in the index
-            debug_assert!(
-                !entry.contains(&id),
-                "duplicate TokenId in parent_to_children index"
-            );
-
-            entry.push(id);
+            debug_assert!(inserted, "duplicate TokenId in parent_to_children index");
         }
 
         id
@@ -138,13 +114,23 @@ impl TokenStore {
             // Only clean once per distinct fact
             if !cleaned_facts.contains(&fact_id) {
                 cleaned_facts.push(fact_id);
-                remove_from_vec_index(&mut self.fact_to_tokens, fact_id, id);
+                if let Some(set) = self.fact_to_tokens.get_mut(&fact_id) {
+                    set.remove(&id);
+                    if set.is_empty() {
+                        self.fact_to_tokens.remove(&fact_id);
+                    }
+                }
             }
         }
 
         // Clean up parent_to_children index: remove from parent's children list
         if let Some(parent_id) = token.parent {
-            remove_from_vec_index(&mut self.parent_to_children, parent_id, id);
+            if let Some(set) = self.parent_to_children.get_mut(&parent_id) {
+                set.remove(&id);
+                if set.is_empty() {
+                    self.parent_to_children.remove(&parent_id);
+                }
+            }
         }
 
         // Also remove the entry where this token is the parent (if it has children)
@@ -328,7 +314,7 @@ impl TokenStore {
             }
         }
 
-        // 5. No empty SmallVecs exist in the index maps
+        // 5. No empty sets exist in the index maps
         for (fact_id, tokens) in &self.fact_to_tokens {
             assert!(
                 !tokens.is_empty(),
