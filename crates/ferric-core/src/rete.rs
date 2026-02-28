@@ -1566,6 +1566,7 @@ mod tests {
     use crate::string::FerricString;
     use crate::symbol::{Symbol, SymbolTable};
     use crate::value::Value;
+    use proptest::prelude::*;
     use smallvec::smallvec;
 
     fn make_symbol(table: &mut SymbolTable, s: &str) -> Symbol {
@@ -3522,5 +3523,313 @@ mod tests {
             0,
             "disabled rule should not create new activations"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    /// Build a single-pattern rule `(person) => activation`. Returns the fully wired
+    /// `(person_symbol, rule_id)`. Callers supply their own `SymbolTable`/`FactBase`.
+    fn build_single_pattern_rule(
+        rete: &mut ReteNetwork,
+        symbol_table: &mut SymbolTable,
+    ) -> (Symbol, RuleId) {
+        let person = make_symbol(symbol_table, "person");
+        let entry_type = AlphaEntryType::OrderedRelation(person);
+        let entry_node = rete.alpha.create_entry_node(entry_type);
+        let alpha_mem_id = rete.alpha.create_memory(entry_node);
+        let root_id = rete.beta.root_id();
+        let (join_id, _) = rete
+            .beta
+            .create_join_node(root_id, alpha_mem_id, vec![], vec![]);
+        let rule_id = RuleId(1);
+        rete.beta
+            .create_terminal_node(join_id, rule_id, Salience::DEFAULT);
+        (person, rule_id)
+    }
+
+    proptest! {
+        /// Invariant: arbitrary sequences of assert/retract operations on a single-pattern
+        /// rule network must leave the Rete in a consistent state after every operation.
+        ///
+        /// This exercises the core lifecycle: `assert_fact` followed later by `retract_fact`,
+        /// with `debug_assert_consistency()` as the structural oracle after each step.
+        #[test]
+        fn assert_retract_cycles_maintain_consistency(
+            ops in proptest::collection::vec(0u8..2u8, 0..30usize),
+        ) {
+            let mut rete = ReteNetwork::new();
+            let mut fact_base = FactBase::new();
+            let mut symbol_table = SymbolTable::new();
+
+            let (person, _rule_id) = build_single_pattern_rule(&mut rete, &mut symbol_table);
+
+            // Track live (fact_id, fact) pairs so we can retract them
+            let mut live_facts: Vec<(FactId, Fact)> = Vec::new();
+
+            for op in ops {
+                if op == 0 || live_facts.is_empty() {
+                    // Assert a new fact with a distinguishing integer field.
+                    // live_facts.len() stays <= 30 (bounded by ops.len()), so no wrap.
+                    #[allow(clippy::cast_possible_wrap)]
+                    let discriminant = live_facts.len() as i64;
+                    let fact_id = fact_base.assert_ordered(person, smallvec![Value::Integer(discriminant)]);
+                    let fact = fact_base.get(fact_id).expect("just asserted").fact.clone();
+                    rete.assert_fact(fact_id, &fact, &fact_base);
+                    live_facts.push((fact_id, fact));
+                } else {
+                    // Retract the first live fact (deterministic pick for reproducibility)
+                    let (fact_id, fact) = live_facts.remove(0);
+                    fact_base.retract(fact_id);
+                    rete.retract_fact(fact_id, &fact, &fact_base);
+                }
+
+                // Structural oracle: must hold after every single operation
+                rete.debug_assert_consistency();
+            }
+        }
+    }
+
+    proptest! {
+        /// Invariant: assert N facts then retract them all must produce a completely
+        /// clean network (empty agenda, empty token store).
+        ///
+        /// This verifies the "full drain" postcondition: after every fact is removed
+        /// the network returns to its initial runtime state.
+        #[test]
+        fn assert_retract_is_clean(
+            n in 1usize..20usize,
+        ) {
+            let mut rete = ReteNetwork::new();
+            let mut fact_base = FactBase::new();
+            let mut symbol_table = SymbolTable::new();
+
+            let (person, _rule_id) = build_single_pattern_rule(&mut rete, &mut symbol_table);
+
+            // Assert N facts (n bounded to < 20, so i64::try_from is infallible)
+            let mut live: Vec<(FactId, Fact)> = (0..n)
+                .map(|i| {
+                    let discriminant = i64::try_from(i).unwrap_or(0);
+                    let fid =
+                        fact_base.assert_ordered(person, smallvec![Value::Integer(discriminant)]);
+                    let fact = fact_base.get(fid).unwrap().fact.clone();
+                    rete.assert_fact(fid, &fact, &fact_base);
+                    (fid, fact)
+                })
+                .collect();
+
+            // Each assert should produce one activation
+            prop_assert_eq!(rete.agenda.len(), n,
+                "expected {} activations after asserting {} facts", n, n);
+
+            // Retract all in order
+            for (fid, fact) in live.drain(..) {
+                fact_base.retract(fid);
+                rete.retract_fact(fid, &fact, &fact_base);
+            }
+
+            // Postcondition: network is completely clean
+            prop_assert!(rete.agenda.is_empty(),
+                "agenda must be empty after all facts retracted");
+            prop_assert!(rete.token_store.is_empty(),
+                "token store must be empty after all facts retracted");
+
+            // Structural oracle must still pass
+            rete.debug_assert_consistency();
+        }
+    }
+
+    proptest! {
+        /// Invariant: a disabled rule must never produce activations regardless of
+        /// how many matching facts are asserted.
+        ///
+        /// `disable_rule` must (a) drain any existing activations for that rule and
+        /// (b) prevent new activations from being created for future asserts.
+        #[test]
+        fn disabled_rule_produces_no_activations(
+            n in 0usize..15usize,
+        ) {
+            let mut rete = ReteNetwork::new();
+            let mut fact_base = FactBase::new();
+            let mut symbol_table = SymbolTable::new();
+
+            let (person, rule_id) = build_single_pattern_rule(&mut rete, &mut symbol_table);
+
+            // Disable the rule before asserting any facts
+            rete.disable_rule(rule_id);
+
+            // Assert N matching facts; none should reach the agenda
+            // n bounded to < 15, so i64::try_from is infallible
+            for i in 0..n {
+                let discriminant = i64::try_from(i).unwrap_or(0);
+                let fid =
+                    fact_base.assert_ordered(person, smallvec![Value::Integer(discriminant)]);
+                let fact = fact_base.get(fid).unwrap().fact.clone();
+                let acts = rete.assert_fact(fid, &fact, &fact_base);
+
+                // Postcondition: disabled rule produces zero activations per assert
+                prop_assert!(acts.is_empty(),
+                    "disabled rule must not produce activations on assert");
+                // Structural oracle after each operation
+                rete.debug_assert_consistency();
+            }
+
+            // Postcondition: agenda must remain empty throughout
+            prop_assert!(rete.agenda.is_empty(),
+                "agenda must stay empty when rule is disabled");
+        }
+    }
+
+    proptest! {
+        /// Invariant: `clear_working_memory` resets all runtime state while preserving
+        /// the compiled network structure. After clearing, newly asserted matching facts
+        /// must still produce activations (network is structurally intact).
+        #[test]
+        fn clear_working_memory_preserves_structure(
+            pre_count in 1usize..10usize,
+            post_count in 1usize..10usize,
+        ) {
+            let mut rete = ReteNetwork::new();
+            let mut fact_base_pre = FactBase::new();
+            let mut symbol_table = SymbolTable::new();
+
+            let (person, _rule_id) = build_single_pattern_rule(&mut rete, &mut symbol_table);
+
+            // Assert some facts to populate runtime state (pre_count bounded to < 10)
+            for i in 0..pre_count {
+                let discriminant = i64::try_from(i).unwrap_or(0);
+                let fid =
+                    fact_base_pre.assert_ordered(person, smallvec![Value::Integer(discriminant)]);
+                let fact = fact_base_pre.get(fid).unwrap().fact.clone();
+                rete.assert_fact(fid, &fact, &fact_base_pre);
+            }
+
+            prop_assert_eq!(rete.agenda.len(), pre_count,
+                "should have {} activations before clear", pre_count);
+
+            // Clear all working memory
+            rete.clear_working_memory();
+
+            // Postcondition: agenda is empty after clear
+            prop_assert!(rete.agenda.is_empty(),
+                "agenda must be empty after clear_working_memory");
+
+            // Structural oracle: network structure still consistent
+            rete.debug_assert_consistency();
+
+            // Postcondition: asserting new facts into a fresh FactBase still
+            // produces activations — the compiled network is intact
+            let mut fact_base_post = FactBase::new();
+            // post_count bounded to < 10, so i64::try_from is infallible
+            for i in 0..post_count {
+                let discriminant = i64::try_from(i).unwrap_or(0);
+                let fid = fact_base_post
+                    .assert_ordered(person, smallvec![Value::Integer(discriminant)]);
+                let fact = fact_base_post.get(fid).unwrap().fact.clone();
+                let acts = rete.assert_fact(fid, &fact, &fact_base_post);
+
+                prop_assert_eq!(acts.len(), 1,
+                    "each new fact must still produce one activation post-clear");
+                rete.debug_assert_consistency();
+            }
+
+            prop_assert_eq!(rete.agenda.len(), post_count,
+                "should have {} activations from post-clear asserts", post_count);
+        }
+    }
+
+    proptest! {
+        /// Invariant: join test evaluation is consistent — for a two-pattern rule
+        /// (base ?x)(target ?x), only facts with matching first-field values produce
+        /// activations. Facts with distinct values from ?x must not match.
+        ///
+        /// This exercises `evaluate_join` through the full `assert_fact` path.
+        #[test]
+        fn join_test_evaluation_consistency(
+            base_val in proptest::num::i64::ANY,
+            matching_count in 1usize..5usize,
+            nonmatching_count in 1usize..5usize,
+        ) {
+            use crate::binding::VarId;
+
+            let mut rete = ReteNetwork::new();
+            let mut fact_base = FactBase::new();
+            let mut symbol_table = SymbolTable::new();
+
+            let base_rel = make_symbol(&mut symbol_table, "base");
+            let target_rel = make_symbol(&mut symbol_table, "target");
+
+            // Build rule: (base ?x) (target ?x) — join test: target field 0 == ?x
+            let base_entry = rete
+                .alpha
+                .create_entry_node(AlphaEntryType::OrderedRelation(base_rel));
+            let base_alpha = rete.alpha.create_memory(base_entry);
+
+            let target_entry = rete
+                .alpha
+                .create_entry_node(AlphaEntryType::OrderedRelation(target_rel));
+            let target_alpha = rete.alpha.create_memory(target_entry);
+
+            let root = rete.beta.root_id();
+            let var_x = VarId(0);
+            let (join1, _) = rete.beta.create_join_node(
+                root,
+                base_alpha,
+                vec![],
+                vec![(SlotIndex::Ordered(0), var_x)],
+            );
+            let (join2, _) = rete.beta.create_join_node(
+                join1,
+                target_alpha,
+                vec![JoinTest {
+                    alpha_slot: SlotIndex::Ordered(0),
+                    beta_var: var_x,
+                    test_type: JoinTestType::Equal,
+                }],
+                vec![],
+            );
+            rete.beta.create_terminal_node(join2, RuleId(99), Salience::DEFAULT);
+
+            // Assert the base fact binding ?x = base_val
+            let base_fid = fact_base.assert_ordered(base_rel, smallvec![Value::Integer(base_val)]);
+            let base_fact = fact_base.get(base_fid).unwrap().fact.clone();
+            let base_acts = rete.assert_fact(base_fid, &base_fact, &fact_base);
+
+            // No target facts yet — no activations
+            prop_assert!(base_acts.is_empty(),
+                "no activations expected before any target facts");
+
+            // Assert `matching_count` target facts with value == base_val
+            // Each should produce exactly one activation (joined with the base token)
+            let mut total_activations = 0usize;
+            for _ in 0..matching_count {
+                let fid = fact_base.assert_ordered(target_rel, smallvec![Value::Integer(base_val)]);
+                let fact = fact_base.get(fid).unwrap().fact.clone();
+                let acts = rete.assert_fact(fid, &fact, &fact_base);
+                // Postcondition: each matching target produces exactly one activation
+                prop_assert_eq!(acts.len(), 1,
+                    "matching target value must produce one activation per assert");
+                total_activations += 1;
+            }
+
+            // Assert `nonmatching_count` target facts with value != base_val (use base_val+1)
+            let other_val = base_val.wrapping_add(1);
+            for _ in 0..nonmatching_count {
+                let fid = fact_base.assert_ordered(target_rel, smallvec![Value::Integer(other_val)]);
+                let fact = fact_base.get(fid).unwrap().fact.clone();
+                let acts = rete.assert_fact(fid, &fact, &fact_base);
+                // Postcondition: non-matching targets must not activate the rule
+                prop_assert!(acts.is_empty(),
+                    "non-matching target value must produce zero activations");
+            }
+
+            // Postcondition: total agenda activations == only the matching ones
+            prop_assert_eq!(rete.agenda.len(), total_activations,
+                "agenda should contain only activations from matching targets");
+
+            // Structural oracle
+            rete.debug_assert_consistency();
+        }
     }
 }

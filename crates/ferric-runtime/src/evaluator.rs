@@ -8253,4 +8253,237 @@ mod tests {
             "expected ArityMismatch, got: {result:?}"
         );
     }
+
+    // -------------------------------------------------------------------
+    // Property-based tests
+    // -------------------------------------------------------------------
+
+    use proptest::prelude::*;
+
+    /// Strategy for arbitrary literal values that are safe for `structural_eq`
+    /// comparison (excludes NaN floats and uses a bounded float range to avoid
+    /// precision surprises).
+    fn arb_literal_value() -> impl Strategy<Value = Value> {
+        prop_oneof![
+            any::<i64>().prop_map(Value::Integer),
+            // Bounded range avoids NaN/infinity, which break structural_eq
+            (-1e10_f64..1e10_f64).prop_map(Value::Float),
+            Just(Value::Void),
+        ]
+    }
+
+    proptest! {
+        /// Invariant: evaluating a Literal expression is the identity function —
+        /// the returned value must be structurally equal to the original value.
+        #[test]
+        fn literal_evaluation_is_identity(v in arb_literal_value()) {
+            let expr = RuntimeExpr::Literal(v.clone());
+            let result = eval_expr(&expr).unwrap();
+            // Postcondition: eval(Literal(v)) == v
+            prop_assert!(
+                result.structural_eq(&v),
+                "expected {:?} but got {:?}",
+                v,
+                result
+            );
+        }
+    }
+
+    proptest! {
+        /// Invariant: integer addition is commutative.
+        /// (+ a b) must equal (+ b a) for all integers.
+        #[test]
+        fn integer_addition_commutative(a in -1000_i64..1000, b in -1000_i64..1000) {
+            let result_ab = eval_expr(&call("+", vec![int(a), int(b)])).unwrap();
+            let result_ba = eval_expr(&call("+", vec![int(b), int(a)])).unwrap();
+            // Postcondition: addition order does not affect result
+            prop_assert!(
+                result_ab.structural_eq(&result_ba),
+                "(+ {} {}) = {:?} but (+ {} {}) = {:?}",
+                a, b, result_ab, b, a, result_ba
+            );
+        }
+    }
+
+    proptest! {
+        /// Invariant: integer addition is associative.
+        /// (+ (+ a b) c) must equal (+ a (+ b c)).
+        #[test]
+        fn integer_addition_associative(
+            a in -1000_i64..1000,
+            b in -1000_i64..1000,
+            c in -1000_i64..1000,
+        ) {
+            let ab = call("+", vec![int(a), int(b)]);
+            let result_left = eval_expr(&call("+", vec![ab, int(c)])).unwrap();
+
+            let bc = call("+", vec![int(b), int(c)]);
+            let result_right = eval_expr(&call("+", vec![int(a), bc])).unwrap();
+
+            // Postcondition: grouping does not affect the sum
+            prop_assert!(
+                result_left.structural_eq(&result_right),
+                "(+ (+ {} {}) {}) = {:?} but (+ {} (+ {} {})) = {:?}",
+                a, b, c, result_left, a, b, c, result_right
+            );
+        }
+    }
+
+    proptest! {
+        /// Invariant: integer multiplication is commutative.
+        /// (* a b) must equal (* b a) for all integers.
+        #[test]
+        fn integer_multiplication_commutative(a in -1000_i64..1000, b in -1000_i64..1000) {
+            let result_ab = eval_expr(&call("*", vec![int(a), int(b)])).unwrap();
+            let result_ba = eval_expr(&call("*", vec![int(b), int(a)])).unwrap();
+            // Postcondition: multiplication order does not affect result
+            prop_assert!(
+                result_ab.structural_eq(&result_ba),
+                "(* {} {}) = {:?} but (* {} {}) = {:?}",
+                a, b, result_ab, b, a, result_ba
+            );
+        }
+    }
+
+    proptest! {
+        /// Invariant: subtraction is the inverse of addition.
+        /// (- (+ n k) k) must equal n for all integers.
+        #[test]
+        fn subtraction_is_addition_inverse(n in -10_000_i64..10_000, k in -10_000_i64..10_000) {
+            let sum = call("+", vec![int(n), int(k)]);
+            let result = eval_expr(&call("-", vec![sum, int(k)])).unwrap();
+            // Postcondition: (- (+ n k) k) == n
+            prop_assert!(
+                result.structural_eq(&Value::Integer(n)),
+                "(- (+ {} {}) {}) = {:?}, expected {}",
+                n, k, k, result, n
+            );
+        }
+    }
+
+    proptest! {
+        /// Invariant: integer negation is self-inverse.
+        /// (- 0 (- 0 n)) must equal n, i.e. negating twice yields the original.
+        #[test]
+        fn integer_negation_double_inverse(n in -100_000_i64..100_000) {
+            let neg_n = call("-", vec![int(0), int(n)]);
+            let result = eval_expr(&call("-", vec![int(0), neg_n])).unwrap();
+            // Postcondition: double negation is identity
+            prop_assert!(
+                result.structural_eq(&Value::Integer(n)),
+                "(- 0 (- 0 {})) = {:?}, expected {}",
+                n, result, n
+            );
+        }
+    }
+
+    proptest! {
+        /// Invariant: is_truthy follows CLIPS semantics.
+        /// Only Void and the FALSE symbol are falsy; all other values are truthy.
+        /// Notably, integer 0 and float 0.0 ARE truthy in CLIPS (unlike many languages).
+        #[test]
+        fn truthiness_consistency(n in any::<i64>(), f in -1e10_f64..1e10_f64) {
+            let (st, ..) = test_ctx();
+            // Integer invariant: all integers (including 0) are truthy in CLIPS
+            prop_assert!(
+                is_truthy(&Value::Integer(n), &st),
+                "integer {} should be truthy",
+                n
+            );
+            // Float invariant: all finite floats (including 0.0) are truthy in CLIPS
+            prop_assert!(
+                is_truthy(&Value::Float(f), &st),
+                "float {} should be truthy",
+                f
+            );
+            // Void is always falsy
+            prop_assert!(
+                !is_truthy(&Value::Void, &st),
+                "Void should be falsy"
+            );
+        }
+    }
+
+    proptest! {
+        /// Invariant: division by zero always returns DivisionByZero error.
+        /// This applies to both integer and float numerators with a zero divisor.
+        #[test]
+        fn division_by_zero_returns_error(
+            n in -10_000_i64..10_000,
+            fnum in -1e10_f64..1e10_f64,
+        ) {
+            // Integer numerator, integer zero denominator
+            let result_int = eval_expr(&call("/", vec![int(n), int(0)]));
+            // Postcondition: dividing by 0 is an error
+            prop_assert!(
+                matches!(result_int, Err(EvalError::DivisionByZero { .. })),
+                "(/ {} 0) should be DivisionByZero, got {:?}",
+                n, result_int
+            );
+
+            // Float numerator, float zero denominator (rhs == 0.0 check in impl)
+            let result_flt = eval_expr(&call("/", vec![float(fnum), float(0.0)]));
+            prop_assert!(
+                matches!(result_flt, Err(EvalError::DivisionByZero { .. })),
+                "(/ {} 0.0) should be DivisionByZero, got {:?}",
+                fnum, result_flt
+            );
+        }
+    }
+
+    proptest! {
+        /// Invariant: abs always returns a non-negative integer result for integer inputs,
+        /// except for i64::MIN which cannot be represented as a positive i64.
+        #[test]
+        fn abs_integer_is_non_negative(n in i64::MIN + 1..=i64::MAX) {
+            let result = eval_expr(&call("abs", vec![int(n)])).unwrap();
+            if let Value::Integer(v) = result {
+                // Postcondition: abs(n) >= 0 for all representable n
+                prop_assert!(v >= 0, "abs({}) = {} which is negative", n, v);
+            } else {
+                return Err(TestCaseError::fail(format!(
+                    "expected Integer from abs({n}), got {result:?}"
+                )));
+            }
+        }
+    }
+
+    proptest! {
+        /// Invariant: abs always returns a non-negative float result for float inputs.
+        #[test]
+        fn abs_float_is_non_negative(f in -1e10_f64..1e10_f64) {
+            let result = eval_expr(&call("abs", vec![float(f)])).unwrap();
+            if let Value::Float(v) = result {
+                // Postcondition: abs(f) >= 0.0 for all finite floats
+                prop_assert!(v >= 0.0, "abs({}) = {} which is negative", f, v);
+            } else {
+                return Err(TestCaseError::fail(format!(
+                    "expected Float from abs({f}), got {result:?}"
+                )));
+            }
+        }
+    }
+
+    proptest! {
+        /// Invariant: max(a, b) >= min(a, b) for any two integers.
+        /// This is the defining relationship between max and min.
+        #[test]
+        fn max_min_consistency(a in -1_000_000_i64..1_000_000, b in -1_000_000_i64..1_000_000) {
+            let max_result = eval_expr(&call("max", vec![int(a), int(b)])).unwrap();
+            let min_result = eval_expr(&call("min", vec![int(a), int(b)])).unwrap();
+
+            if let (Value::Integer(max_v), Value::Integer(min_v)) = (&max_result, &min_result) {
+                // Postcondition: max >= min always holds
+                prop_assert!(
+                    max_v >= min_v,
+                    "max({}, {}) = {} < min({}, {}) = {}",
+                    a, b, max_v, a, b, min_v
+                );
+            } else {
+                return Err(TestCaseError::fail(format!(
+                    "expected Integers, got max={max_result:?} min={min_result:?}"
+                )));
+            }
+        }
+    }
 }
