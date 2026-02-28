@@ -4,7 +4,7 @@
 //! in which they execute based on salience and conflict resolution strategy.
 
 use rustc_hash::FxHashMap as HashMap;
-use slotmap::SlotMap;
+use slotmap::{SecondaryMap, SlotMap};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 
@@ -113,7 +113,7 @@ pub struct Agenda {
     /// All activations: `ActivationId` -> `Activation`.
     activations: SlotMap<ActivationId, Activation>,
     /// Reverse index: `ActivationId` -> `AgendaKey` for removal.
-    id_to_key: HashMap<ActivationId, AgendaKey>,
+    id_to_key: SecondaryMap<ActivationId, AgendaKey>,
     /// Reverse index: `TokenId` -> `ActivationId`s for retraction.
     token_to_activations: HashMap<TokenId, SmallVec<[ActivationId; 2]>>,
     /// Next activation sequence number.
@@ -135,7 +135,7 @@ impl Agenda {
         Self {
             ordering: BTreeMap::new(),
             activations: SlotMap::with_key(),
-            id_to_key: HashMap::default(),
+            id_to_key: SecondaryMap::new(),
             token_to_activations: HashMap::default(),
             next_seq: ActivationSeq::ZERO,
             strategy,
@@ -205,7 +205,7 @@ impl Agenda {
     /// Returns `None` if the agenda is empty.
     pub fn pop(&mut self) -> Option<Activation> {
         let (_, id) = self.ordering.pop_first()?;
-        self.id_to_key.remove(&id);
+        self.id_to_key.remove(id);
 
         let activation = self.activations.remove(id)?;
 
@@ -238,7 +238,7 @@ impl Agenda {
         let id = target_id?;
 
         self.ordering.remove(&key);
-        self.id_to_key.remove(&id);
+        self.id_to_key.remove(id);
         let activation = self.activations.remove(id)?;
         remove_from_token_index(&mut self.token_to_activations, activation.token, id);
 
@@ -261,7 +261,7 @@ impl Agenda {
         let mut removed = Vec::new();
 
         for id in act_ids {
-            if let Some(key) = self.id_to_key.remove(&id) {
+            if let Some(key) = self.id_to_key.remove(id) {
                 self.ordering.remove(&key);
             }
 
@@ -324,7 +324,7 @@ impl Agenda {
                 "ordering references non-existent activation {activation_id:?}"
             );
 
-            let reverse_key = self.id_to_key.get(activation_id);
+            let reverse_key = self.id_to_key.get(*activation_id);
             assert!(
                 reverse_key.is_some(),
                 "activation {activation_id:?} missing from id_to_key"
@@ -337,9 +337,9 @@ impl Agenda {
         }
 
         // 2. Every reverse key references the same entry in ordering and a live activation.
-        for (activation_id, key) in &self.id_to_key {
+        for (activation_id, key) in self.id_to_key.iter() {
             assert!(
-                self.activations.contains_key(*activation_id),
+                self.activations.contains_key(activation_id),
                 "id_to_key references non-existent activation {activation_id:?}"
             );
 
@@ -350,7 +350,7 @@ impl Agenda {
             );
             assert_eq!(
                 ordered_id,
-                Some(activation_id),
+                Some(&activation_id),
                 "ordering mismatch for activation {activation_id:?}"
             );
         }
@@ -379,7 +379,7 @@ impl Agenda {
 
         // 4. Every live activation appears in both reverse indices.
         for (activation_id, activation) in &self.activations {
-            let key = self.id_to_key.get(&activation_id);
+            let key = self.id_to_key.get(activation_id);
             assert!(
                 key.is_some(),
                 "live activation {activation_id:?} missing from id_to_key"

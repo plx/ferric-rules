@@ -303,6 +303,11 @@ For each experiment:
   roughly `63.4 us` to `64.0 us`, which Criterion flagged as within the noise
   threshold, so it meets the current "no less efficient" acceptance bar while
   simplifying the slotmap-keyed reverse index.
+- Converting `Agenda.id_to_key` in `crates/ferric-core/src/agenda.rs` from
+  `HashMap` to `SecondaryMap` was kept.
+- The targeted microbenchmark `agenda_token_index_cycle` improved from roughly
+  `103.4 us` to `101.0 us` (about `-2.5%`), making the dense slotmap side table
+  a straightforward win for this field.
 
 ### 6. Convert Slotmap-Keyed Runtime State Maps in Negative/Exists/NCC Paths
 
