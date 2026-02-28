@@ -811,6 +811,58 @@ For each experiment:
   `49.2 us` to `66.7 us` (about `+35.9%`), so the current `FxHashSet` remains
   the better fit for the per-template fact sets.
 
+### 14. Replace `VarMap`'s Symbol Hash Lookup with Direct Pool Indexing
+
+**Current structures**
+
+- `crates/ferric-core/src/binding.rs`
+  - `VarMap.by_name: HashMap<Symbol, VarId>`
+  - `VarMap.by_id: Vec<Symbol>`
+
+**Proposed substitution**
+
+- Replace the hash map with two direct-indexed vectors:
+  - `ascii_by_name: Vec<Option<VarId>>`
+  - `utf8_by_name: Vec<Option<VarId>>`
+
+**Where we'd use it**
+
+- Variable-name to `VarId` resolution inside `VarMap`.
+
+**Additional adjustments**
+
+- Keep `by_id: Vec<Symbol>` unchanged so reverse lookup stays identical.
+- Dispatch on the symbol pool (`ASCII` vs `UTF-8`) and index directly by the
+  interned symbol ID within that pool.
+- Add a mixed-pool microbenchmark that includes padded symbol IDs before the
+  variable names, so the measurement includes nontrivial vector growth and
+  both symbol pools.
+
+**Reasoning**
+
+- `Symbol` values are already interned and carry compact numeric IDs.
+- Re-hashing them in `VarMap` adds avoidable overhead on a path that is hit
+  repeatedly during pattern compilation.
+- Splitting the storage by symbol pool preserves the existing semantics while
+  turning lookup into a bounds check plus direct indexing.
+
+**Risk**
+
+- Low to moderate.
+- CPU cost should improve, but memory use can grow if variable symbols arrive
+  with very sparse symbol IDs. That tradeoff needs to stay visible.
+
+**Experiment note (2026-02-28)**
+
+- Added a dedicated `var_map_symbol_lookup_cycle` microbenchmark to
+  `crates/ferric-core/benches/storage_indices_bench.rs`.
+- Converting `VarMap.by_name` in `crates/ferric-core/src/binding.rs` from
+  `HashMap<Symbol, VarId>` to split direct-indexed vectors
+  (`ascii_by_name` / `utf8_by_name`) was kept.
+- Using the new targeted benchmark, the mixed-pool insert/lookup cycle
+  improved from roughly `5.96 us` to `2.42 us` (about `-59.3%`), making this
+  a clear win for the current symbol-ID-driven lookup path.
+
 ## Areas to Deprioritize for Now
 
 These are existing structures that currently look well-matched to their

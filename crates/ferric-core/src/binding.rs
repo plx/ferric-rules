@@ -3,11 +3,10 @@
 //! This module provides variable ID management and binding storage for
 //! the pattern matcher.
 
-use rustc_hash::FxHashMap as HashMap;
 use smallvec::SmallVec;
 use std::rc::Rc;
 
-use crate::symbol::Symbol;
+use crate::symbol::{Symbol, SymbolId};
 use crate::value::Value;
 
 /// Variable identifier within a rule or pattern.
@@ -22,7 +21,8 @@ pub struct VarId(pub u16);
 /// Used during pattern compilation to assign stable IDs to variables.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VarMap {
-    by_name: HashMap<Symbol, VarId>,
+    ascii_by_name: Vec<Option<VarId>>,
+    utf8_by_name: Vec<Option<VarId>>,
     by_id: Vec<Symbol>,
 }
 
@@ -31,7 +31,8 @@ impl VarMap {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            by_name: HashMap::default(),
+            ascii_by_name: Vec::new(),
+            utf8_by_name: Vec::new(),
             by_id: Vec::new(),
         }
     }
@@ -41,7 +42,7 @@ impl VarMap {
     /// If the symbol already has an ID, returns it. Otherwise, assigns
     /// the next sequential ID.
     pub fn get_or_create(&mut self, name: Symbol) -> Result<VarId, VarMapError> {
-        if let Some(&id) = self.by_name.get(&name) {
+        if let Some(id) = self.lookup(name) {
             return Ok(id);
         }
 
@@ -52,7 +53,22 @@ impl VarMap {
 
         #[allow(clippy::cast_possible_truncation)]
         let id = VarId(id_val as u16);
-        self.by_name.insert(name, id);
+        match name.0 {
+            SymbolId::Ascii(idx) => {
+                let idx = idx as usize;
+                if idx >= self.ascii_by_name.len() {
+                    self.ascii_by_name.resize(idx + 1, None);
+                }
+                self.ascii_by_name[idx] = Some(id);
+            }
+            SymbolId::Utf8(idx) => {
+                let idx = idx as usize;
+                if idx >= self.utf8_by_name.len() {
+                    self.utf8_by_name.resize(idx + 1, None);
+                }
+                self.utf8_by_name[idx] = Some(id);
+            }
+        }
         self.by_id.push(name);
         Ok(id)
     }
@@ -60,7 +76,10 @@ impl VarMap {
     /// Lookup the `VarId` for a symbol, if it exists.
     #[must_use]
     pub fn lookup(&self, name: Symbol) -> Option<VarId> {
-        self.by_name.get(&name).copied()
+        match name.0 {
+            SymbolId::Ascii(idx) => self.ascii_by_name.get(idx as usize).copied().flatten(),
+            SymbolId::Utf8(idx) => self.utf8_by_name.get(idx as usize).copied().flatten(),
+        }
     }
 
     /// Resolve a `VarId` back to its symbol name.

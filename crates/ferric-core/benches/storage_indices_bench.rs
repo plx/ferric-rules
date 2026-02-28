@@ -4,7 +4,7 @@ use ferric_core::{
     AlphaNetwork, AtomKey, BetaMemoryId, BetaNetwork, BindingSet, ConstantTest, ConstantTestType,
     ExistsMemory, ExistsMemoryId, Fact, FactBase, FactId, NccMemory, NccMemoryId, NegativeMemory,
     NegativeMemoryId, NodeId, RuleId, Salience, SlotIndex, StringEncoding, Symbol, SymbolTable,
-    TemplateId, Timestamp, Token, TokenId, TokenStore, Value,
+    TemplateId, Timestamp, Token, TokenId, TokenStore, Value, VarMap,
 };
 use slotmap::SlotMap;
 use smallvec::SmallVec;
@@ -63,6 +63,67 @@ fn bench_symbol_table_ascii_intern(c: &mut Criterion) {
                     }
                 }
                 black_box(table.len());
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_var_map_symbol_lookup_cycle(c: &mut Criterion) {
+    let mut symbols = SymbolTable::new();
+    let mut names = Vec::with_capacity(256);
+
+    for idx in 0..512 {
+        black_box(
+            symbols
+                .intern_symbol(&format!("pad_ascii_{idx}"), StringEncoding::Ascii)
+                .expect("ASCII symbol"),
+        );
+    }
+
+    for idx in 0..128 {
+        names.push(
+            symbols
+                .intern_symbol(&format!("var_ascii_{idx}"), StringEncoding::Ascii)
+                .expect("ASCII symbol"),
+        );
+    }
+
+    for idx in 0..512 {
+        black_box(
+            symbols
+                .intern_symbol(&format!("pad_utf8_{idx}"), StringEncoding::Utf8)
+                .expect("UTF-8 symbol"),
+        );
+    }
+
+    for idx in 0..128 {
+        names.push(
+            symbols
+                .intern_symbol(&format!("var_utf8_{idx}"), StringEncoding::Utf8)
+                .expect("UTF-8 symbol"),
+        );
+    }
+
+    c.bench_function("var_map_symbol_lookup_cycle", |b| {
+        b.iter_batched(
+            VarMap::new,
+            |mut var_map| {
+                for &name in &names {
+                    black_box(var_map.get_or_create(name).expect("variable id"));
+                }
+
+                for &name in &names {
+                    black_box(var_map.get_or_create(name).expect("variable id"));
+                }
+
+                let mut found = 0usize;
+                for _ in 0..8 {
+                    for &name in &names {
+                        found += usize::from(var_map.lookup(name).is_some());
+                    }
+                }
+                black_box(found);
             },
             BatchSize::SmallInput,
         );
@@ -733,6 +794,7 @@ fn bench_agenda_token_index_cycle(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_symbol_table_ascii_intern,
+    bench_var_map_symbol_lookup_cycle,
     bench_fact_base_relation_index_cycle,
     bench_fact_base_template_index_cycle,
     bench_token_store_reverse_index_cycle,
