@@ -4,9 +4,8 @@
 //! metadata for a `deftemplate` construct after it has been registered with the
 //! engine. Both `loader.rs` and `actions.rs` need access to this type.
 
-use std::collections::HashMap;
-
 use ferric_core::Value;
+use rustc_hash::FxHashMap as HashMap;
 
 /// Runtime representation of a registered template.
 ///

@@ -3,9 +3,9 @@
 //! Facts are the working memory of the rules engine. This module provides
 //! ordered facts, template facts, and the fact base that stores and indexes them.
 
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use slotmap::SlotMap;
 use smallvec::SmallVec;
-use std::collections::{HashMap, HashSet};
 
 use crate::symbol::Symbol;
 use crate::value::Value;
@@ -136,8 +136,8 @@ impl FactBase {
     pub fn new() -> Self {
         Self {
             facts: SlotMap::with_key(),
-            by_template: HashMap::new(),
-            by_relation: HashMap::new(),
+            by_template: HashMap::default(),
+            by_relation: HashMap::default(),
             next_timestamp: Timestamp::ZERO,
         }
     }

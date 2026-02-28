@@ -36,6 +36,9 @@ slotmap = "1"
 # Small inline vectors
 smallvec = "1"
 
+# Faster internal hash tables/sets
+rustc-hash = "2"
+
 # Property-based testing
 proptest = "1"
 

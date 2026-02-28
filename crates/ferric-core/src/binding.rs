@@ -3,8 +3,8 @@
 //! This module provides variable ID management and binding storage for
 //! the pattern matcher.
 
+use rustc_hash::FxHashMap as HashMap;
 use smallvec::SmallVec;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::symbol::Symbol;
@@ -31,7 +31,7 @@ impl VarMap {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            by_name: HashMap::new(),
+            by_name: HashMap::default(),
             by_id: Vec::new(),
         }
     }

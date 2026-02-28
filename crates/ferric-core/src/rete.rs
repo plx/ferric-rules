@@ -126,7 +126,7 @@ impl ReteNetwork {
         fact: &Fact,
         fact_base: &FactBase,
     ) -> Vec<Activation> {
-        use std::collections::HashSet;
+        use rustc_hash::FxHashSet as HashSet;
 
         let mut removed_activations = Vec::new();
 

@@ -5,10 +5,9 @@
 //! - [`FunctionEnv`]: A registry of all user-defined functions.
 //! - [`GlobalStore`]: Runtime storage for `defglobal` values.
 
-use std::collections::HashMap;
-
 use ferric_core::Value;
 use ferric_parser::ActionExpr;
+use rustc_hash::FxHashMap as HashMap;
 
 use crate::modules::ModuleId;
 

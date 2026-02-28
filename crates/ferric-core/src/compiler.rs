@@ -5,7 +5,7 @@
 //! binding tests, and terminal nodes. Node sharing is achieved through canonical
 //! alpha path and positive join caching.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
 use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId, Salience};
@@ -105,8 +105,8 @@ impl ReteCompiler {
     /// Create a new compiler with an empty cache.
     pub fn new() -> Self {
         Self {
-            alpha_path_cache: HashMap::new(),
-            join_node_cache: HashMap::new(),
+            alpha_path_cache: HashMap::default(),
+            join_node_cache: HashMap::default(),
             next_rule_id: 1, // Start from 1, reserve 0
         }
     }
@@ -170,7 +170,7 @@ impl ReteCompiler {
     ) -> Result<CompileResult, CompileError> {
         let mut alpha_memories = Vec::new();
         let mut var_map = VarMap::new();
-        let mut bound_vars: HashSet<Symbol> = HashSet::new();
+        let mut bound_vars: HashSet<Symbol> = HashSet::default();
         let mut current_parent = rete.beta.root_id();
 
         for condition in conditions {
@@ -312,8 +312,8 @@ impl ReteCompiler {
             Self::push_unsupported_structure_error(errors, format!("{context} cannot be exists"));
         }
 
-        let mut slot_bindings = HashSet::new();
-        let mut variable_bindings: HashMap<Symbol, SlotIndex> = HashMap::new();
+        let mut slot_bindings = HashSet::default();
+        let mut variable_bindings: HashMap<Symbol, SlotIndex> = HashMap::default();
         for &(slot, var_sym) in &pattern.variable_slots {
             if !slot_bindings.insert(slot) {
                 Self::push_unsupported_structure_error(

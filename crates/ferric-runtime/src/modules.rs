@@ -4,9 +4,8 @@
 //! modules only affect which rules fire (based on focus) and which
 //! templates/constructs are visible across module boundaries.
 
-use std::collections::HashMap;
-
 use ferric_parser::{ImportSpec, ModuleSpec};
+use rustc_hash::FxHashMap as HashMap;
 
 /// Simple module identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,9 +53,9 @@ impl ModuleRegistry {
             exports: vec![ModuleSpec::All],
             imports: vec![],
         };
-        let mut modules = HashMap::new();
+        let mut modules = HashMap::default();
         modules.insert(main_id, main_module);
-        let mut name_to_id = HashMap::new();
+        let mut name_to_id = HashMap::default();
         name_to_id.insert(MAIN_MODULE_NAME.to_string(), main_id);
 
         Self {

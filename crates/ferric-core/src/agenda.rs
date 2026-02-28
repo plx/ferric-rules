@@ -3,9 +3,10 @@
 //! The agenda tracks which rules are ready to fire and determines the order
 //! in which they execute based on salience and conflict resolution strategy.
 
+use rustc_hash::FxHashMap as HashMap;
 use slotmap::SlotMap;
 use smallvec::SmallVec;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::beta::{RuleId, Salience};
 use crate::fact::Timestamp;
@@ -134,8 +135,8 @@ impl Agenda {
         Self {
             ordering: BTreeMap::new(),
             activations: SlotMap::with_key(),
-            id_to_key: HashMap::new(),
-            token_to_activations: HashMap::new(),
+            id_to_key: HashMap::default(),
+            token_to_activations: HashMap::default(),
             next_seq: ActivationSeq::ZERO,
             strategy,
         }

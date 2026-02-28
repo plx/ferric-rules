@@ -17,7 +17,7 @@
 //! - `test` CE compilation (currently returns compile error).
 //! - Template pattern compilation (currently returns compile error).
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::Path;
 use std::rc::Rc;
 use thiserror::Error;
@@ -629,7 +629,8 @@ impl Engine {
 
         let slot_count = template.slots.len();
         let mut slot_names = Vec::with_capacity(slot_count);
-        let mut slot_index = HashMap::with_capacity(slot_count);
+        let mut slot_index = HashMap::default();
+        slot_index.reserve(slot_count);
         let mut defaults = Vec::with_capacity(slot_count);
 
         for (i, slot_def) in template.slots.iter().enumerate() {
@@ -665,7 +666,7 @@ impl Engine {
     /// register it in both the active global store and the snapshot used for reset.
     fn process_global_construct(&mut self, global: &GlobalConstruct) -> Result<(), LoadError> {
         let current_module = self.module_registry.current_module();
-        let mut seen_in_construct: HashSet<&str> = HashSet::new();
+        let mut seen_in_construct: HashSet<&str> = HashSet::default();
         for def in &global.globals {
             if !seen_in_construct.insert(def.name.as_str())
                 || self.globals.contains(current_module, &def.name)
@@ -929,7 +930,7 @@ impl Engine {
     ) -> Result<TranslatedRule, LoadError> {
         let rule_id = self.compiler.allocate_rule_id();
         let mut conditions = Vec::new();
-        let mut fact_address_vars = HashMap::new();
+        let mut fact_address_vars = HashMap::default();
         let mut test_conditions = Vec::new();
         let mut fact_index = 0usize;
 

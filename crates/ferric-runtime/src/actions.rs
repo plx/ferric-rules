@@ -6,7 +6,8 @@
 //! - `modify`/`duplicate` support template-aware slot overrides (Pass 003).
 //! - `printout` with per-channel output capture via `OutputRouter` (Pass 004).
 
-use std::collections::{HashMap, VecDeque};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::VecDeque;
 use std::fmt::Write as FmtWrite;
 use std::rc::Rc;
 

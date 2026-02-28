@@ -3,8 +3,7 @@
 //! The alpha network is the first stage of the Rete algorithm. It discriminates
 //! facts by type (template or ordered relation) and applies constant tests.
 
-use std::collections::{HashMap, HashSet};
-
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::SmallVec;
 
 use crate::fact::{Fact, FactBase, FactId, TemplateId};
@@ -111,9 +110,9 @@ impl AlphaMemory {
     pub fn new(id: AlphaMemoryId) -> Self {
         Self {
             id,
-            facts: HashSet::new(),
-            slot_indices: HashMap::new(),
-            indexed_slots: HashSet::new(),
+            facts: HashSet::default(),
+            slot_indices: HashMap::default(),
+            indexed_slots: HashSet::default(),
         }
     }
 
@@ -284,10 +283,10 @@ impl AlphaNetwork {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            nodes: HashMap::new(),
-            memories: HashMap::new(),
-            entry_nodes: HashMap::new(),
-            fact_to_memories: HashMap::new(),
+            nodes: HashMap::default(),
+            memories: HashMap::default(),
+            entry_nodes: HashMap::default(),
+            fact_to_memories: HashMap::default(),
             next_node_id: 0,
             next_memory_id: 0,
         }
@@ -466,7 +465,7 @@ impl AlphaNetwork {
 
         // Check 3: No duplicate children in any node
         for (node_id, node) in &self.nodes {
-            let mut seen = HashSet::new();
+            let mut seen = HashSet::default();
             for child_id in node.children() {
                 assert!(
                     seen.insert(child_id),

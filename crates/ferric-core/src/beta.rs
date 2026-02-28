@@ -3,7 +3,7 @@
 //! The beta network is the second stage of the Rete algorithm. It performs
 //! joins between alpha memories (facts) and beta memories (partial matches/tokens).
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::alpha::{AlphaMemoryId, SlotIndex};
 use crate::binding::VarId;
@@ -69,7 +69,7 @@ impl BetaMemory {
     pub fn new(id: BetaMemoryId) -> Self {
         Self {
             id,
-            tokens: HashSet::new(),
+            tokens: HashSet::default(),
         }
     }
 
@@ -209,7 +209,7 @@ impl BetaNetwork {
     /// node ID allocation.
     #[must_use]
     pub fn new(root_node_id: NodeId) -> Self {
-        let mut nodes = HashMap::new();
+        let mut nodes = HashMap::default();
         nodes.insert(
             root_node_id,
             BetaNode::Root {
@@ -222,19 +222,19 @@ impl BetaNetwork {
 
         Self {
             nodes,
-            memories: HashMap::new(),
-            neg_memories: HashMap::new(),
-            ncc_memories: HashMap::new(),
-            exists_memories: HashMap::new(),
+            memories: HashMap::default(),
+            neg_memories: HashMap::default(),
+            ncc_memories: HashMap::default(),
+            exists_memories: HashMap::default(),
             root_id: root_node_id,
             next_node_id,
             next_memory_id: 0,
             next_neg_memory_id: 0,
             next_ncc_memory_id: 0,
             next_exists_memory_id: 0,
-            alpha_to_joins: HashMap::new(),
-            alpha_to_negatives: HashMap::new(),
-            alpha_to_exists: HashMap::new(),
+            alpha_to_joins: HashMap::default(),
+            alpha_to_negatives: HashMap::default(),
+            alpha_to_exists: HashMap::default(),
         }
     }
 

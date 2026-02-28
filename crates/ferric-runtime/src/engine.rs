@@ -4,7 +4,8 @@
 //! for embedding applications. Phase 1 includes basic fact assertion/retraction
 //! and thread affinity checking.
 
-use std::collections::{HashMap, VecDeque};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::thread::ThreadId;
@@ -143,9 +144,9 @@ impl Engine {
             rete: ReteNetwork::with_strategy(strategy),
             compiler: ReteCompiler::new(),
             registered_deffacts: Vec::new(),
-            rule_info: HashMap::new(),
-            template_ids: HashMap::new(),
-            template_defs: HashMap::new(),
+            rule_info: HashMap::default(),
+            template_ids: HashMap::default(),
+            template_defs: HashMap::default(),
             template_id_alloc: slotmap::SlotMap::with_key(),
             router: OutputRouter::new(),
             functions: FunctionEnv::new(),
@@ -153,11 +154,11 @@ impl Engine {
             registered_globals: Vec::new(),
             generics: GenericRegistry::new(),
             module_registry: ModuleRegistry::new(),
-            rule_modules: HashMap::new(),
-            template_modules: HashMap::new(),
-            function_modules: HashMap::new(),
-            global_modules: HashMap::new(),
-            generic_modules: HashMap::new(),
+            rule_modules: HashMap::default(),
+            template_modules: HashMap::default(),
+            function_modules: HashMap::default(),
+            global_modules: HashMap::default(),
+            generic_modules: HashMap::default(),
             initial_fact_id: None,
             action_diagnostics: Vec::new(),
             halted: false,
