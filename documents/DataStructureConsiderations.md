@@ -972,6 +972,57 @@ For each experiment:
   `11.47 us` to `11.09 us` (about `-3.6%`), making this a clear win for the
   current compile-path bound-variable checks.
 
+### 17. Replace Validation `Symbol -> SlotIndex` Hash Lookups with Direct Pool Indexing
+
+**Current structures**
+
+- `crates/ferric-core/src/compiler.rs`
+  - `variable_bindings: HashMap<Symbol, SlotIndex>` inside pattern validation
+
+**Proposed substitution**
+
+- Replace the local hash map with split direct-indexed vectors:
+  - `ascii: Vec<Option<SlotIndex>>`
+  - `utf8: Vec<Option<SlotIndex>>`
+
+**Where we'd use it**
+
+- Validation-time detection of "same variable symbol used across multiple
+  slots" within a single pattern.
+
+**Additional adjustments**
+
+- Keep the validation-time `slot_bindings: HashSet<SlotIndex>` unchanged so the
+  measurement isolates only the symbol-to-slot tracking map.
+- Add a validation-only benchmark by compiling an intentionally invalid pattern
+  that forces the compiler to traverse all variable slots, emit validation
+  errors, and return before rete construction.
+
+**Reasoning**
+
+- This is the remaining symbol-keyed direct-indexing candidate in the compiler.
+- Like the accepted `VarMap` and `bound_vars` changes, it operates on already
+  interned `Symbol` IDs.
+- The hoped-for win is avoiding hash work in repeated symbol-to-slot insertions
+  during pattern validation.
+
+**Risk**
+
+- Low.
+- The change is mechanically local, but the validation path may be too shallow
+  for vector growth to pay off.
+
+**Experiment note (2026-02-28)**
+
+- Added a dedicated `compiler_validation_symbol_slot_cycle` microbenchmark to
+  `crates/ferric-core/benches/storage_indices_bench.rs`.
+- Converting the validation-time `variable_bindings` map in
+  `crates/ferric-core/src/compiler.rs` from `HashMap<Symbol, SlotIndex>` to a
+  split direct-indexed symbol map was tested and reverted.
+- Using the new validation-only benchmark, the change regressed from roughly
+  `4.47 us` to `4.65 us` (about `+4.1%`), so the existing hash map remains the
+  better fit for this short-lived validation path.
+
 ## Areas to Deprioritize for Now
 
 These are existing structures that currently look well-matched to their

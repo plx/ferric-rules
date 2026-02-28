@@ -262,6 +262,70 @@ fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
     });
 }
 
+fn bench_compiler_validation_symbol_slot_cycle(c: &mut Criterion) {
+    let mut symbols = SymbolTable::new();
+    let relation = symbols
+        .intern_symbol("validation-relation", StringEncoding::Ascii)
+        .expect("ASCII symbol");
+    let mut variables = Vec::with_capacity(32);
+
+    for idx in 0..512 {
+        black_box(
+            symbols
+                .intern_symbol(&format!("pad_validate_ascii_{idx}"), StringEncoding::Ascii)
+                .expect("ASCII symbol"),
+        );
+    }
+
+    for idx in 0..16 {
+        variables.push(
+            symbols
+                .intern_symbol(&format!("validate_ascii_{idx}"), StringEncoding::Ascii)
+                .expect("ASCII symbol"),
+        );
+    }
+
+    for idx in 0..512 {
+        black_box(
+            symbols
+                .intern_symbol(&format!("pad_validate_utf8_{idx}"), StringEncoding::Utf8)
+                .expect("UTF-8 symbol"),
+        );
+    }
+
+    for idx in 0..16 {
+        variables.push(
+            symbols
+                .intern_symbol(&format!("validate_utf8_{idx}"), StringEncoding::Utf8)
+                .expect("UTF-8 symbol"),
+        );
+    }
+
+    let variable_slots = (0..64)
+        .map(|idx| (SlotIndex::Ordered(idx), variables[idx % variables.len()]))
+        .collect::<Vec<_>>();
+    let conditions = vec![CompilableCondition::Pattern(CompilablePattern {
+        entry_type: AlphaEntryType::OrderedRelation(relation),
+        constant_tests: Vec::new(),
+        variable_slots,
+        negated: false,
+        exists: false,
+    })];
+
+    c.bench_function("compiler_validation_symbol_slot_cycle", |b| {
+        b.iter_batched(
+            || (ReteCompiler::new(), ReteNetwork::new()),
+            |(mut compiler, mut rete)| {
+                let err = compiler
+                    .compile_conditions(&mut rete, RuleId(1), Salience::DEFAULT, &conditions)
+                    .expect_err("validation should fail");
+                black_box(err);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn bench_fact_base_relation_index_cycle(c: &mut Criterion) {
     let mut symbols = SymbolTable::new();
     let relations = ascii_symbols(&mut symbols, 32);
@@ -989,6 +1053,7 @@ criterion_group!(
     bench_symbol_table_ascii_intern,
     bench_var_map_symbol_lookup_cycle,
     bench_compiler_bound_var_cycle,
+    bench_compiler_validation_symbol_slot_cycle,
     bench_fact_base_relation_index_cycle,
     bench_fact_base_relation_symbol_index_cycle,
     bench_fact_base_template_index_cycle,
