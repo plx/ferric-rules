@@ -567,7 +567,7 @@ impl Engine {
 
         let registered = self
             .template_defs
-            .get(&template_id)
+            .get(template_id)
             .cloned()
             .ok_or_else(|| {
                 LoadError::Compile(format!(
@@ -624,9 +624,6 @@ impl Engine {
         template: &TemplateConstruct,
         result: &mut LoadResult,
     ) -> Result<(), LoadError> {
-        // Allocate a new TemplateId.
-        let template_id = self.template_id_alloc.insert(());
-
         let slot_count = template.slots.len();
         let mut slot_names = Vec::with_capacity(slot_count);
         let mut slot_index = HashMap::default();
@@ -653,9 +650,9 @@ impl Engine {
             slot_index,
             defaults,
         };
+        let template_id = self.template_defs.insert(registered);
 
         self.template_ids.insert(template.name.clone(), template_id);
-        self.template_defs.insert(template_id, registered);
         self.template_modules
             .insert(template_id, self.module_registry.current_module());
 
@@ -1179,7 +1176,7 @@ impl Engine {
 
                 let registered =
                     self.template_defs
-                        .get(&template_id)
+                        .get(template_id)
                         .cloned()
                         .ok_or_else(|| {
                             Self::unsupported_pattern(
@@ -1193,7 +1190,7 @@ impl Engine {
                 let current_module = self.module_registry.current_module();
                 let template_module = self
                     .template_modules
-                    .get(&template_id)
+                    .get(template_id)
                     .copied()
                     .unwrap_or_else(|| self.module_registry.main_module_id());
 

@@ -613,7 +613,7 @@ pub fn find_template_facts(
             if let ferric_core::Fact::Template(tf) = fact {
                 if tf.template_id == *template_id {
                     let mut slots: Vec<(String, ferric_core::Value)> = Vec::new();
-                    if let Some(def) = engine.template_defs.get(template_id) {
+                    if let Some(def) = engine.template_defs.get(*template_id) {
                         for name in &def.slot_names {
                             if let Some(&idx) = def.slot_index.get(name) {
                                 if let Some(val) = tf.slots.get(idx) {

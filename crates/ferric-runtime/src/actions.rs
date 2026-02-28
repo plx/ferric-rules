@@ -34,7 +34,7 @@ pub(crate) struct ActionExecutionContext<'a> {
     pub halted: &'a mut bool,
     pub symbol_table: &'a mut SymbolTable,
     pub config: &'a EngineConfig,
-    pub template_defs: &'a HashMap<TemplateId, RegisteredTemplate>,
+    pub template_defs: &'a slotmap::SlotMap<TemplateId, RegisteredTemplate>,
     pub router: &'a mut OutputRouter,
     pub functions: &'a FunctionEnv,
     pub globals: &'a mut GlobalStore,
@@ -264,7 +264,7 @@ fn execute_single_action(
     rule_info: &CompiledRuleInfo,
     call: &FunctionCall,
     runtime_call: Option<&crate::evaluator::RuntimeExpr>,
-    template_defs: &HashMap<TemplateId, RegisteredTemplate>,
+    template_defs: &slotmap::SlotMap<TemplateId, RegisteredTemplate>,
     router: &mut OutputRouter,
     focus_requests: &mut Vec<String>,
     all_rule_info: &crate::engine::RuleIndex<Rc<CompiledRuleInfo>>,
@@ -556,7 +556,7 @@ fn execute_modify(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
-    template_defs: &HashMap<TemplateId, RegisteredTemplate>,
+    template_defs: &slotmap::SlotMap<TemplateId, RegisteredTemplate>,
     eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     execute_fact_mutation(
@@ -578,7 +578,7 @@ fn execute_duplicate(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
-    template_defs: &HashMap<TemplateId, RegisteredTemplate>,
+    template_defs: &slotmap::SlotMap<TemplateId, RegisteredTemplate>,
     eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     execute_fact_mutation(
@@ -612,7 +612,7 @@ fn execute_fact_mutation(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
-    template_defs: &HashMap<TemplateId, RegisteredTemplate>,
+    template_defs: &slotmap::SlotMap<TemplateId, RegisteredTemplate>,
     mode: FactMutationMode,
     eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
@@ -630,7 +630,7 @@ fn execute_fact_mutation(
             assert_ordered_and_propagate(fact_base, rete, relation, fields);
         }
         Fact::Template(template) => {
-            let registered = template_defs.get(&template.template_id).ok_or_else(|| {
+            let registered = template_defs.get(template.template_id).ok_or_else(|| {
                 ActionError::UnknownAction(format!(
                     "template ID {:?} not found in registry",
                     template.template_id

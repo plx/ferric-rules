@@ -108,9 +108,7 @@ pub struct Engine {
     /// Registered template definitions: name → `TemplateId`.
     pub(crate) template_ids: HashMap<String, TemplateId>,
     /// Template slot metadata indexed by `TemplateId`.
-    pub(crate) template_defs: HashMap<TemplateId, RegisteredTemplate>,
-    /// Allocator for `TemplateId` keys.
-    pub(crate) template_id_alloc: slotmap::SlotMap<TemplateId, ()>,
+    pub(crate) template_defs: slotmap::SlotMap<TemplateId, RegisteredTemplate>,
     /// Output router for capturing `printout` and related I/O.
     pub(crate) router: OutputRouter,
     /// Registry of user-defined functions loaded via `deffunction`.
@@ -126,7 +124,7 @@ pub struct Engine {
     /// Rule-to-module association for focus-aware execution.
     pub(crate) rule_modules: RuleIndex<ModuleId>,
     /// Template-to-module association for visibility checking.
-    pub(crate) template_modules: HashMap<ferric_core::TemplateId, ModuleId>,
+    pub(crate) template_modules: slotmap::SecondaryMap<ferric_core::TemplateId, ModuleId>,
     /// Function-to-module association for consistency-check bookkeeping.
     pub(crate) function_modules: HashMap<(ModuleId, String), ModuleId>,
     /// Global-to-module association for consistency-check bookkeeping.
@@ -164,8 +162,7 @@ impl Engine {
             registered_deffacts: Vec::new(),
             rule_info: Vec::new(),
             template_ids: HashMap::default(),
-            template_defs: HashMap::default(),
-            template_id_alloc: slotmap::SlotMap::with_key(),
+            template_defs: slotmap::SlotMap::with_key(),
             router: OutputRouter::new(),
             functions: FunctionEnv::new(),
             globals: GlobalStore::new(),
@@ -173,7 +170,7 @@ impl Engine {
             generics: GenericRegistry::new(),
             module_registry: ModuleRegistry::new(),
             rule_modules: Vec::new(),
-            template_modules: HashMap::default(),
+            template_modules: slotmap::SecondaryMap::new(),
             function_modules: HashMap::default(),
             global_modules: HashMap::default(),
             generic_modules: HashMap::default(),
@@ -686,8 +683,7 @@ impl Engine {
         self.registered_deffacts.clear();
         self.rule_info.clear();
         self.template_ids.clear();
-        self.template_defs.clear();
-        self.template_id_alloc = slotmap::SlotMap::with_key();
+        self.template_defs = slotmap::SlotMap::with_key();
         self.router.clear();
         self.functions = FunctionEnv::new();
         self.globals = GlobalStore::new();
@@ -695,7 +691,7 @@ impl Engine {
         self.generics = GenericRegistry::new();
         self.module_registry = ModuleRegistry::new();
         self.rule_modules.clear();
-        self.template_modules.clear();
+        self.template_modules = slotmap::SecondaryMap::new();
         self.function_modules.clear();
         self.global_modules.clear();
         self.generic_modules.clear();
@@ -850,7 +846,7 @@ impl Engine {
             );
         }
 
-        for (template_id, module_id) in &self.template_modules {
+        for (template_id, module_id) in self.template_modules.iter() {
             assert!(
                 self.template_defs.contains_key(template_id),
                 "template_modules contains unknown template id {template_id:?}"
