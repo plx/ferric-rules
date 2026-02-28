@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use ferric_core::{
     Activation, ActivationId, ActivationSeq, Agenda, AlphaEntryType, AlphaMemory, AlphaMemoryId,
-    AlphaNetwork, BindingSet, Fact, FactBase, FactId, NodeId, RuleId, Salience, SlotIndex,
-    StringEncoding, Symbol, SymbolTable, Timestamp, Token, TokenId, TokenStore, Value,
+    AlphaNetwork, BetaNetwork, BindingSet, Fact, FactBase, FactId, NodeId, RuleId, Salience,
+    SlotIndex, StringEncoding, Symbol, SymbolTable, Timestamp, Token, TokenId, TokenStore, Value,
 };
 use slotmap::SlotMap;
 use smallvec::SmallVec;
@@ -234,6 +234,60 @@ fn bench_alpha_memory_indexed_slots_cycle(c: &mut Criterion) {
     });
 }
 
+fn bench_beta_fanout_index_cycle(c: &mut Criterion) {
+    c.bench_function("beta_fanout_index_cycle", |b| {
+        b.iter_batched(
+            || {
+                let alpha_mems = [
+                    AlphaMemoryId(0),
+                    AlphaMemoryId(1),
+                    AlphaMemoryId(2),
+                    AlphaMemoryId(3),
+                ];
+                let mut beta = BetaNetwork::new(NodeId(100_000));
+                let root_id = beta.root_id();
+
+                for &alpha_mem in &alpha_mems {
+                    for _ in 0..3 {
+                        let _ = beta.create_join_node(root_id, alpha_mem, Vec::new(), Vec::new());
+                    }
+                    for _ in 0..2 {
+                        let _ = beta.create_negative_node(root_id, alpha_mem, Vec::new());
+                    }
+                    for _ in 0..2 {
+                        let _ = beta.create_exists_node(root_id, alpha_mem, Vec::new());
+                    }
+                }
+
+                (beta, alpha_mems)
+            },
+            |(beta, alpha_mems)| {
+                let mut total = 0usize;
+
+                for _ in 0..4096 {
+                    for &alpha_mem in &alpha_mems {
+                        let join_nodes: SmallVec<[NodeId; 4]> =
+                            SmallVec::from_slice(beta.join_nodes_for_alpha(alpha_mem));
+                        let negative_nodes: SmallVec<[NodeId; 4]> =
+                            SmallVec::from_slice(beta.negative_nodes_for_alpha(alpha_mem));
+                        let exists_nodes: SmallVec<[NodeId; 4]> =
+                            SmallVec::from_slice(beta.exists_nodes_for_alpha(alpha_mem));
+
+                        total += join_nodes.len() + negative_nodes.len() + exists_nodes.len();
+
+                        black_box(join_nodes.last().copied());
+                        black_box(negative_nodes.last().copied());
+                        black_box(exists_nodes.last().copied());
+                    }
+                }
+
+                black_box(total);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn bench_agenda_token_index_cycle(c: &mut Criterion) {
     let token_pool = token_ids(128);
 
@@ -279,6 +333,7 @@ criterion_group!(
     bench_token_store_reverse_index_cycle,
     bench_alpha_network_reverse_index_cycle,
     bench_alpha_memory_indexed_slots_cycle,
+    bench_beta_fanout_index_cycle,
     bench_agenda_token_index_cycle,
 );
 criterion_main!(benches);

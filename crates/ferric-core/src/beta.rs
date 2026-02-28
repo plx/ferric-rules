@@ -4,6 +4,7 @@
 //! joins between alpha memories (facts) and beta memories (partial matches/tokens).
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use smallvec::SmallVec;
 
 use crate::alpha::{AlphaMemoryId, SlotIndex};
 use crate::binding::VarId;
@@ -12,6 +13,8 @@ use crate::ncc::{NccMemory, NccMemoryId};
 use crate::negative::{NegativeMemory, NegativeMemoryId};
 use crate::token::NodeId;
 use crate::token::TokenId;
+
+type FanoutNodes = SmallVec<[NodeId; 4]>;
 
 /// Rule priority in CLIPS.
 ///
@@ -195,11 +198,11 @@ pub struct BetaNetwork {
     next_ncc_memory_id: u32,
     next_exists_memory_id: u32,
     /// Reverse index: alpha memory -> list of join nodes that subscribe to it.
-    alpha_to_joins: HashMap<AlphaMemoryId, Vec<NodeId>>,
+    alpha_to_joins: HashMap<AlphaMemoryId, FanoutNodes>,
     /// Reverse index: alpha memory -> list of negative nodes that subscribe to it.
-    alpha_to_negatives: HashMap<AlphaMemoryId, Vec<NodeId>>,
+    alpha_to_negatives: HashMap<AlphaMemoryId, FanoutNodes>,
     /// Reverse index: alpha memory -> list of exists nodes that subscribe to it.
-    alpha_to_exists: HashMap<AlphaMemoryId, Vec<NodeId>>,
+    alpha_to_exists: HashMap<AlphaMemoryId, FanoutNodes>,
 }
 
 impl BetaNetwork {

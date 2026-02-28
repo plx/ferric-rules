@@ -502,6 +502,17 @@ For each experiment:
 - Low.
 - The main tuning decision is choosing the inline capacity.
 
+**Experiment note (2026-02-28)**
+
+- Converting the beta subscriber lists in `crates/ferric-core/src/beta.rs`
+  (`alpha_to_joins`, `alpha_to_negatives`, `alpha_to_exists`) from
+  `Vec<NodeId>` to `SmallVec<[NodeId; 4]>` was kept.
+- The matching borrowed-clone scratch lists in `crates/ferric-core/src/rete.rs`
+  were also switched from heap `Vec` clones to `SmallVec::from_slice(...)`.
+- The targeted microbenchmark `beta_fanout_index_cycle` improved from roughly
+  `907 us` to `154 us` (about `-83%`) on the small-fan-out workload it was
+  designed to represent, which makes this a clear win for the intended case.
+
 ### 10. Tighten Long-Lived String-Key Storage with `Box<str>` and Small-Map Options
 
 **Current structures**
