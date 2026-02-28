@@ -633,4 +633,230 @@ mod tests {
         registry.push_focus(sensor_id);
         registry.debug_assert_consistency();
     }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    #[cfg(test)]
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Pre-defined module name pool — operations index into this pool so we
+        /// avoid open-ended string generation while still covering multi-module
+        /// interactions.
+        const MODULE_NAMES: &[&str] = &["MOD_A", "MOD_B", "MOD_C", "MOD_D", "MOD_E"];
+
+        /// A single operation applied to both the real `ModuleRegistry` and the
+        /// shadow model.
+        #[derive(Clone, Debug)]
+        enum Op {
+            /// Register the module at `MODULE_NAMES[name_idx % len]`.
+            Register { name_idx: usize },
+            /// Push a previously-registered module onto the focus stack.
+            /// Skipped if no modules have been registered beyond MAIN.
+            PushFocus { module_idx: usize },
+            /// Pop the top of the focus stack.
+            /// Skipped when the stack would become empty (to keep consistency
+            /// check valid — `debug_assert_consistency` requires a non-empty stack).
+            PopFocus,
+            /// Replace the focus stack with a single previously-registered module.
+            SetFocus { module_idx: usize },
+            /// Reset focus back to MAIN and set current module to MAIN.
+            ResetFocus,
+            /// Change the current (construct-owning) module to a registered one.
+            SetCurrentModule { module_idx: usize },
+        }
+
+        fn op_strategy() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                3 => any::<usize>().prop_map(|n| Op::Register { name_idx: n }),
+                2 => any::<usize>().prop_map(|m| Op::PushFocus { module_idx: m }),
+                1 => Just(Op::PopFocus),
+                2 => any::<usize>().prop_map(|m| Op::SetFocus { module_idx: m }),
+                1 => Just(Op::ResetFocus),
+                2 => any::<usize>().prop_map(|m| Op::SetCurrentModule { module_idx: m }),
+            ]
+        }
+
+        fn scenario_strategy() -> impl Strategy<Value = Vec<Op>> {
+            prop::collection::vec(op_strategy(), 0..60)
+        }
+
+        /// Shadow model for `ModuleRegistry`: tracks what state we expect the
+        /// real implementation to be in.
+        struct Model {
+            /// Maps module name → assigned `ModuleId`.  MAIN is always pre-populated.
+            name_to_id: std::collections::HashMap<String, ModuleId>,
+            /// Currently-registered module IDs in registration order.
+            registered_ids: Vec<ModuleId>,
+            /// Focus stack (last element = top).
+            focus_stack: Vec<ModuleId>,
+            /// Current module.
+            current_module: ModuleId,
+        }
+
+        impl Model {
+            fn new(main_id: ModuleId) -> Self {
+                let mut name_to_id = std::collections::HashMap::new();
+                name_to_id.insert("MAIN".to_string(), main_id);
+                Self {
+                    name_to_id,
+                    registered_ids: vec![main_id],
+                    focus_stack: vec![main_id],
+                    current_module: main_id,
+                }
+            }
+
+            /// Return the model's focus-top.
+            fn current_focus(&self) -> Option<ModuleId> {
+                self.focus_stack.last().copied()
+            }
+
+            /// Pick a registered module by index (wrapping).
+            fn pick_registered(&self, idx: usize) -> Option<ModuleId> {
+                if self.registered_ids.is_empty() {
+                    return None;
+                }
+                Some(self.registered_ids[idx % self.registered_ids.len()])
+            }
+        }
+
+        /// Apply one `Op` to both the real registry and the shadow model.
+        ///
+        /// Returns `true` if the op was applied and `false` if it was a no-op
+        /// (e.g., a focus-manipulation op when no extra modules are registered).
+        fn apply_op(reg: &mut ModuleRegistry, model: &mut Model, op: &Op) -> bool {
+            match *op {
+                Op::Register { name_idx } => {
+                    let name = MODULE_NAMES[name_idx % MODULE_NAMES.len()];
+                    let id = reg.register(name, vec![], vec![]);
+                    // Mirror: if not yet seen, add to model.
+                    model.name_to_id.entry(name.to_string()).or_insert_with(|| {
+                        model.registered_ids.push(id);
+                        id
+                    });
+                    true
+                }
+                Op::PushFocus { module_idx } => {
+                    let Some(id) = model.pick_registered(module_idx) else {
+                        return false;
+                    };
+                    reg.push_focus(id);
+                    model.focus_stack.push(id);
+                    true
+                }
+                Op::PopFocus => {
+                    // Only pop when the stack has more than one element so it
+                    // stays non-empty and debug_assert_consistency remains valid.
+                    if model.focus_stack.len() <= 1 {
+                        return false;
+                    }
+                    reg.pop_focus();
+                    model.focus_stack.pop();
+                    true
+                }
+                Op::SetFocus { module_idx } => {
+                    let Some(id) = model.pick_registered(module_idx) else {
+                        return false;
+                    };
+                    reg.set_focus(id);
+                    model.focus_stack.clear();
+                    model.focus_stack.push(id);
+                    true
+                }
+                Op::ResetFocus => {
+                    let main_id = reg.main_module_id();
+                    reg.reset_focus();
+                    model.focus_stack.clear();
+                    model.focus_stack.push(main_id);
+                    model.current_module = main_id;
+                    true
+                }
+                Op::SetCurrentModule { module_idx } => {
+                    let Some(id) = model.pick_registered(module_idx) else {
+                        return false;
+                    };
+                    reg.set_current_module(id);
+                    model.current_module = id;
+                    true
+                }
+            }
+        }
+
+        proptest! {
+            /// After every operation the internal consistency check passes.
+            ///
+            /// Invariant: `debug_assert_consistency` must never panic for any
+            /// sequence of valid operations.
+            #[test]
+            fn arbitrary_ops_maintain_consistency(ops in scenario_strategy()) {
+                let mut reg = ModuleRegistry::new();
+                let main_id = reg.main_module_id();
+                let mut model = Model::new(main_id);
+
+                for op in &ops {
+                    apply_op(&mut reg, &mut model, op);
+                    // After every step the registry must be internally consistent.
+                    reg.debug_assert_consistency();
+                }
+            }
+
+            /// The shadow model stays in sync with the real implementation.
+            ///
+            /// Invariants verified after each step:
+            /// - Every name in the model maps to the correct ModuleId in the registry.
+            /// - The model's focus stack top matches `current_focus()`.
+            /// - The model's current module matches `current_module()`.
+            /// - MAIN always exists and is retrievable by name.
+            #[test]
+            fn model_matches_implementation(ops in scenario_strategy()) {
+                let mut reg = ModuleRegistry::new();
+                let main_id = reg.main_module_id();
+                let mut model = Model::new(main_id);
+
+                for op in &ops {
+                    apply_op(&mut reg, &mut model, op);
+
+                    // Name→ID and ID→name are bidirectional for all registered modules.
+                    for (name, &expected_id) in &model.name_to_id {
+                        let actual_id = reg.get_by_name(name);
+                        prop_assert_eq!(
+                            actual_id,
+                            Some(expected_id),
+                            "get_by_name({}) mismatch", name
+                        );
+                        let actual_name = reg.module_name(expected_id);
+                        prop_assert_eq!(
+                            actual_name,
+                            Some(name.as_str()),
+                            "module_name({:?}) mismatch", expected_id
+                        );
+                    }
+
+                    // Focus stack top matches the model's expectation.
+                    prop_assert_eq!(
+                        reg.current_focus(),
+                        model.current_focus(),
+                        "current_focus mismatch"
+                    );
+
+                    // Current module matches the model.
+                    prop_assert_eq!(
+                        reg.current_module(),
+                        model.current_module,
+                        "current_module mismatch"
+                    );
+
+                    // MAIN always remains present and reachable by name.
+                    prop_assert_eq!(
+                        reg.get_by_name("MAIN"),
+                        Some(main_id),
+                        "MAIN must always exist"
+                    );
+                }
+            }
+        }
+    }
 }

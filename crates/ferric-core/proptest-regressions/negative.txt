@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e19c161423563599536ef3ca203e66db1e80dbae3ea5b5946a2996c194e77493 # shrinks to ops = [SetUnblocked { token_idx: 0, passthrough_idx: 0 }, AddBlocker { token_idx: 0, fact_idx: 0 }]
+cc 414db3f50ba389d6d28a4ca5804015f9bba02d7db59787f6c666877f3e361441 # shrinks to ops = [AddBlocker { token_idx: 3, fact_idx: 0 }, SetUnblocked { token_idx: 3, passthrough_idx: 0 }]
+cc 11b3500a615c6aa037ba4157980742504542e382c8dc65b70d1e0a42f013e0f7 # shrinks to ops = [SetUnblocked { token_idx: 1, passthrough_idx: 0 }, AddBlocker { token_idx: 1, fact_idx: 0 }]
+cc 6802a69f0f53bc37e65f278349f678b37653a08dcd13c270b1405c1f5b9bb40e # shrinks to ops = [SetUnblocked { token_idx: 3, passthrough_idx: 0 }, AddBlocker { token_idx: 3, fact_idx: 0 }]

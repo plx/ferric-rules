@@ -1004,3 +1004,485 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use slotmap::SlotMap;
+
+    // ===========================================================================
+    // BetaMemory property tests
+    // ===========================================================================
+
+    /// Shadow model for `BetaMemory`: a `HashSet` of token indices (0..5).
+    #[derive(Default)]
+    struct BetaModel {
+        tokens: std::collections::HashSet<usize>,
+    }
+
+    impl BetaModel {
+        fn insert(&mut self, idx: usize) {
+            self.tokens.insert(idx);
+        }
+
+        fn remove(&mut self, idx: usize) {
+            self.tokens.remove(&idx);
+        }
+
+        fn contains(&self, idx: usize) -> bool {
+            self.tokens.contains(&idx)
+        }
+
+        fn len(&self) -> usize {
+            self.tokens.len()
+        }
+
+        fn is_empty(&self) -> bool {
+            self.tokens.is_empty()
+        }
+    }
+
+    /// An operation that can be applied to a `BetaMemory`.
+    #[derive(Clone, Debug)]
+    enum BetaOp {
+        Insert(usize),
+        Remove(usize),
+    }
+
+    fn beta_op_strategy() -> impl Strategy<Value = BetaOp> {
+        prop_oneof![
+            (0..5_usize).prop_map(BetaOp::Insert),
+            (0..5_usize).prop_map(BetaOp::Remove),
+        ]
+    }
+
+    fn apply_beta_op(op: &BetaOp, mem: &mut BetaMemory, model: &mut BetaModel, tokens: &[TokenId]) {
+        match *op {
+            BetaOp::Insert(idx) => {
+                mem.insert(tokens[idx]);
+                model.insert(idx);
+            }
+            BetaOp::Remove(idx) => {
+                mem.remove(tokens[idx]);
+                model.remove(idx);
+            }
+        }
+    }
+
+    proptest! {
+        /// After arbitrary insert/remove ops, `contains`, `len`, and `is_empty`
+        /// all match the shadow model (a plain `HashSet`).
+        #[test]
+        fn beta_memory_model_matches_implementation(
+            ops in proptest::collection::vec(beta_op_strategy(), 0..100)
+        ) {
+            let mut token_map: SlotMap<TokenId, ()> = SlotMap::with_key();
+            let tokens: Vec<TokenId> = (0..5).map(|_| token_map.insert(())).collect();
+
+            let mut mem = BetaMemory::new(BetaMemoryId(0));
+            let mut model = BetaModel::default();
+
+            for op in &ops {
+                apply_beta_op(op, &mut mem, &mut model, &tokens);
+            }
+
+            // contains matches for every token in the pool
+            for (idx, &tok) in tokens.iter().enumerate() {
+                prop_assert_eq!(
+                    mem.contains(tok),
+                    model.contains(idx),
+                    "contains mismatch for token index {}",
+                    idx
+                );
+            }
+
+            // len and is_empty are consistent
+            prop_assert_eq!(mem.len(), model.len(), "len mismatch");
+            prop_assert_eq!(mem.is_empty(), model.is_empty(), "is_empty mismatch");
+        }
+
+        /// Inserting the same token twice is idempotent: `len` does not increase.
+        #[test]
+        fn beta_memory_insert_idempotent(token_idx in 0..5_usize) {
+            let mut token_map: SlotMap<TokenId, ()> = SlotMap::with_key();
+            let tokens: Vec<TokenId> = (0..5).map(|_| token_map.insert(())).collect();
+
+            let mut mem = BetaMemory::new(BetaMemoryId(0));
+            mem.insert(tokens[token_idx]);
+            let len_after_first = mem.len();
+
+            mem.insert(tokens[token_idx]);
+            let len_after_second = mem.len();
+
+            prop_assert_eq!(len_after_first, len_after_second,
+                "duplicate insert must not increase len");
+            prop_assert!(mem.contains(tokens[token_idx]),
+                "token must be present after insert");
+        }
+
+        /// Removing a token that is not present is a no-op: `len` is unchanged.
+        #[test]
+        fn beta_memory_remove_missing_is_noop(
+            present_idx in 0..4_usize,
+            absent_idx in 4..5_usize,
+        ) {
+            let mut token_map: SlotMap<TokenId, ()> = SlotMap::with_key();
+            let tokens: Vec<TokenId> = (0..5).map(|_| token_map.insert(())).collect();
+
+            let mut mem = BetaMemory::new(BetaMemoryId(0));
+            mem.insert(tokens[present_idx]);
+
+            let len_before = mem.len();
+            mem.remove(tokens[absent_idx]); // absent_idx not inserted
+            let len_after = mem.len();
+
+            prop_assert_eq!(len_before, len_after,
+                "removing absent token must not change len");
+        }
+
+        /// After `clear()`, the memory is always empty.
+        #[test]
+        fn beta_memory_clear_resets_everything(
+            ops in proptest::collection::vec(beta_op_strategy(), 0..50)
+        ) {
+            let mut token_map: SlotMap<TokenId, ()> = SlotMap::with_key();
+            let tokens: Vec<TokenId> = (0..5).map(|_| token_map.insert(())).collect();
+
+            let mut mem = BetaMemory::new(BetaMemoryId(0));
+            let mut model = BetaModel::default();
+
+            for op in &ops {
+                apply_beta_op(op, &mut mem, &mut model, &tokens);
+            }
+
+            mem.clear();
+
+            prop_assert!(mem.is_empty(), "is_empty must be true after clear()");
+            prop_assert_eq!(mem.len(), 0, "len must be 0 after clear()");
+        }
+    }
+
+    // ===========================================================================
+    // BetaNetwork property tests
+    // ===========================================================================
+
+    /// An operation that creates a new node in the `BetaNetwork`.
+    ///
+    /// All parents are drawn from `created_node_ids` (already-created nodes)
+    /// or the root. Alpha memories are drawn from a pre-allocated pool.
+    #[allow(clippy::enum_variant_names)] // All variants are "make X node" operations; the prefix is intentional
+    #[derive(Clone, Debug)]
+    enum NetOp {
+        /// Create a join node attached to parent at `parent_slot` in `created_nodes`.
+        MakeJoin {
+            alpha_idx: usize,
+            parent_slot: usize,
+        },
+        /// Create a terminal node attached to the parent at `parent_slot`.
+        MakeTerminal { parent_slot: usize, rule_id: u32 },
+        /// Create a negative node attached to parent at `parent_slot`.
+        MakeNegative {
+            alpha_idx: usize,
+            parent_slot: usize,
+        },
+        /// Create an exists node attached to parent at `parent_slot`.
+        MakeExists {
+            alpha_idx: usize,
+            parent_slot: usize,
+        },
+    }
+
+    fn net_op_strategy() -> impl Strategy<Value = NetOp> {
+        prop_oneof![
+            3 => (0..4_usize, 0..8_usize).prop_map(|(a, p)| NetOp::MakeJoin { alpha_idx: a, parent_slot: p }),
+            2 => (0..8_usize, 0..100_u32).prop_map(|(p, r)| NetOp::MakeTerminal { parent_slot: p, rule_id: r }),
+            2 => (0..4_usize, 0..8_usize).prop_map(|(a, p)| NetOp::MakeNegative { alpha_idx: a, parent_slot: p }),
+            2 => (0..4_usize, 0..8_usize).prop_map(|(a, p)| NetOp::MakeExists { alpha_idx: a, parent_slot: p }),
+        ]
+    }
+
+    proptest! {
+        /// Arbitrary sequences of node-creation operations maintain the structural
+        /// consistency invariants verified by `debug_assert_consistency`.
+        ///
+        /// This verifies: parent/child references are valid, memory IDs are valid,
+        /// alpha reverse indices are accurate, and the root node is always present.
+        #[test]
+        fn beta_network_arbitrary_ops_maintain_consistency(
+            ops in proptest::collection::vec(net_op_strategy(), 0..30)
+        ) {
+            // Pre-allocate a small pool of alpha memory IDs.
+            // The real alpha network isn't involved here; we only test structural
+            // consistency of the beta network itself.
+            let alpha_mems = [
+                AlphaMemoryId(0),
+                AlphaMemoryId(1),
+                AlphaMemoryId(2),
+                AlphaMemoryId(3),
+            ];
+
+            let root = NodeId(0);
+            let mut net = BetaNetwork::new(root);
+
+            // Track all created node IDs so we can use them as parents.
+            // The root is always a valid parent.
+            let mut created_nodes: Vec<NodeId> = vec![root];
+
+            for op in &ops {
+                // Resolve the parent slot modulo current length (always >= 1 because
+                // root is always present).
+                let num_nodes = created_nodes.len();
+
+                match *op {
+                    NetOp::MakeJoin { alpha_idx, parent_slot } => {
+                        let parent = created_nodes[parent_slot % num_nodes];
+                        let alpha = alpha_mems[alpha_idx];
+                        let (node_id, _mem_id) =
+                            net.create_join_node(parent, alpha, vec![], vec![]);
+                        // Verify the new node immediately exists in the network
+                        prop_assert!(net.get_node(node_id).is_some(),
+                            "newly created join node must exist");
+                        // Verify the alpha reverse index was updated
+                        prop_assert!(
+                            net.join_nodes_for_alpha(alpha).contains(&node_id),
+                            "join node must appear in alpha_to_joins"
+                        );
+                        created_nodes.push(node_id);
+                    }
+                    NetOp::MakeTerminal { parent_slot, rule_id } => {
+                        let parent = created_nodes[parent_slot % num_nodes];
+                        let node_id =
+                            net.create_terminal_node(parent, RuleId(rule_id), Salience::DEFAULT);
+                        prop_assert!(net.get_node(node_id).is_some(),
+                            "newly created terminal node must exist");
+                        // Terminal nodes are not added to created_nodes as parents
+                        // because they cannot have children (attach_child_to_parent
+                        // is a no-op for Terminal/NccPartner nodes).
+                    }
+                    NetOp::MakeNegative { alpha_idx, parent_slot } => {
+                        let parent = created_nodes[parent_slot % num_nodes];
+                        let alpha = alpha_mems[alpha_idx];
+                        let (node_id, _mem_id, _neg_mem_id) =
+                            net.create_negative_node(parent, alpha, vec![]);
+                        prop_assert!(net.get_node(node_id).is_some(),
+                            "newly created negative node must exist");
+                        // Verify the alpha reverse index was updated
+                        prop_assert!(
+                            net.negative_nodes_for_alpha(alpha).contains(&node_id),
+                            "negative node must appear in alpha_to_negatives"
+                        );
+                        created_nodes.push(node_id);
+                    }
+                    NetOp::MakeExists { alpha_idx, parent_slot } => {
+                        let parent = created_nodes[parent_slot % num_nodes];
+                        let alpha = alpha_mems[alpha_idx];
+                        let (node_id, _mem_id, _exists_mem_id) =
+                            net.create_exists_node(parent, alpha, vec![]);
+                        prop_assert!(net.get_node(node_id).is_some(),
+                            "newly created exists node must exist");
+                        // Verify the alpha reverse index was updated
+                        prop_assert!(
+                            net.exists_nodes_for_alpha(alpha).contains(&node_id),
+                            "exists node must appear in alpha_to_exists"
+                        );
+                        created_nodes.push(node_id);
+                    }
+                }
+
+                // Full structural consistency check after every operation.
+                net.debug_assert_consistency();
+            }
+
+            // All created nodes must still be present in the network.
+            for &node_id in &created_nodes {
+                prop_assert!(net.get_node(node_id).is_some(),
+                    "node {node_id:?} must still exist after all ops");
+            }
+        }
+
+        /// Every join node created for a given alpha memory appears exactly once
+        /// in `join_nodes_for_alpha`.
+        #[test]
+        fn join_nodes_for_alpha_tracks_all_joins(
+            alpha_idxs in proptest::collection::vec(0..4_usize, 1..10)
+        ) {
+            let alpha_mems = [
+                AlphaMemoryId(0),
+                AlphaMemoryId(1),
+                AlphaMemoryId(2),
+                AlphaMemoryId(3),
+            ];
+
+            let root = NodeId(0);
+            let mut net = BetaNetwork::new(root);
+
+            // Track how many join nodes we create per alpha memory.
+            let mut expected_counts = [0_usize; 4];
+
+            for &a_idx in &alpha_idxs {
+                let alpha = alpha_mems[a_idx];
+                net.create_join_node(root, alpha, vec![], vec![]);
+                expected_counts[a_idx] += 1;
+            }
+
+            // Verify counts match.
+            for (a_idx, &expected) in expected_counts.iter().enumerate() {
+                let actual = net.join_nodes_for_alpha(alpha_mems[a_idx]).len();
+                prop_assert_eq!(
+                    actual, expected,
+                    "join_nodes_for_alpha count mismatch for alpha_idx {}",
+                    a_idx
+                );
+            }
+
+            net.debug_assert_consistency();
+        }
+
+        /// Every negative node created for a given alpha memory appears in
+        /// `negative_nodes_for_alpha`.
+        #[test]
+        fn negative_nodes_for_alpha_tracks_all_negatives(
+            alpha_idxs in proptest::collection::vec(0..4_usize, 1..10)
+        ) {
+            let alpha_mems = [
+                AlphaMemoryId(0),
+                AlphaMemoryId(1),
+                AlphaMemoryId(2),
+                AlphaMemoryId(3),
+            ];
+
+            let root = NodeId(0);
+            let mut net = BetaNetwork::new(root);
+
+            let mut expected_counts = [0_usize; 4];
+
+            for &a_idx in &alpha_idxs {
+                let alpha = alpha_mems[a_idx];
+                net.create_negative_node(root, alpha, vec![]);
+                expected_counts[a_idx] += 1;
+            }
+
+            for (a_idx, &expected) in expected_counts.iter().enumerate() {
+                let actual = net.negative_nodes_for_alpha(alpha_mems[a_idx]).len();
+                prop_assert_eq!(
+                    actual, expected,
+                    "negative_nodes_for_alpha count mismatch for alpha_idx {}",
+                    a_idx
+                );
+            }
+
+            net.debug_assert_consistency();
+        }
+
+        /// Every exists node created for a given alpha memory appears in
+        /// `exists_nodes_for_alpha`.
+        #[test]
+        fn exists_nodes_for_alpha_tracks_all_exists(
+            alpha_idxs in proptest::collection::vec(0..4_usize, 1..10)
+        ) {
+            let alpha_mems = [
+                AlphaMemoryId(0),
+                AlphaMemoryId(1),
+                AlphaMemoryId(2),
+                AlphaMemoryId(3),
+            ];
+
+            let root = NodeId(0);
+            let mut net = BetaNetwork::new(root);
+
+            let mut expected_counts = [0_usize; 4];
+
+            for &a_idx in &alpha_idxs {
+                let alpha = alpha_mems[a_idx];
+                net.create_exists_node(root, alpha, vec![]);
+                expected_counts[a_idx] += 1;
+            }
+
+            for (a_idx, &expected) in expected_counts.iter().enumerate() {
+                let actual = net.exists_nodes_for_alpha(alpha_mems[a_idx]).len();
+                prop_assert_eq!(
+                    actual, expected,
+                    "exists_nodes_for_alpha count mismatch for alpha_idx {}",
+                    a_idx
+                );
+            }
+
+            net.debug_assert_consistency();
+        }
+
+        /// Parent-child relationships are always bi-directional: a node listed as
+        /// the parent of a child should list that child in its `children` vec.
+        #[test]
+        fn parent_child_relationship_bidirectional(
+            ops in proptest::collection::vec(net_op_strategy(), 0..20)
+        ) {
+            let alpha_mems = [
+                AlphaMemoryId(0),
+                AlphaMemoryId(1),
+                AlphaMemoryId(2),
+                AlphaMemoryId(3),
+            ];
+
+            let root = NodeId(0);
+            let mut net = BetaNetwork::new(root);
+            let mut created_nodes: Vec<NodeId> = vec![root];
+
+            for op in &ops {
+                let num_nodes = created_nodes.len();
+                let (node_id_opt, parent_id) = match *op {
+                    NetOp::MakeJoin { alpha_idx, parent_slot } => {
+                        let parent = created_nodes[parent_slot % num_nodes];
+                        let (node_id, _) =
+                            net.create_join_node(parent, alpha_mems[alpha_idx], vec![], vec![]);
+                        created_nodes.push(node_id);
+                        (Some(node_id), parent)
+                    }
+                    NetOp::MakeTerminal { parent_slot, rule_id } => {
+                        let parent = created_nodes[parent_slot % num_nodes];
+                        let node_id =
+                            net.create_terminal_node(parent, RuleId(rule_id), Salience::DEFAULT);
+                        (Some(node_id), parent)
+                    }
+                    NetOp::MakeNegative { alpha_idx, parent_slot } => {
+                        let parent = created_nodes[parent_slot % num_nodes];
+                        let (node_id, _, _) =
+                            net.create_negative_node(parent, alpha_mems[alpha_idx], vec![]);
+                        created_nodes.push(node_id);
+                        (Some(node_id), parent)
+                    }
+                    NetOp::MakeExists { alpha_idx, parent_slot } => {
+                        let parent = created_nodes[parent_slot % num_nodes];
+                        let (node_id, _, _) =
+                            net.create_exists_node(parent, alpha_mems[alpha_idx], vec![]);
+                        created_nodes.push(node_id);
+                        (Some(node_id), parent)
+                    }
+                };
+
+                // If a node was created, verify the parent's children list contains it.
+                // (Terminal nodes don't get added as children of Terminal/NccPartner parents,
+                //  but attach_child_to_parent is always called — it just silently skips
+                //  those node types. We only assert for non-terminal parents.)
+                if let Some(node_id) = node_id_opt {
+                    if let Some(parent_node) = net.get_node(parent_id) {
+                        let children: Option<&Vec<NodeId>> = match parent_node {
+                            BetaNode::Root { children }
+                            | BetaNode::Join { children, .. }
+                            | BetaNode::Negative { children, .. }
+                            | BetaNode::Ncc { children, .. }
+                            | BetaNode::Exists { children, .. } => Some(children),
+                            BetaNode::Terminal { .. } | BetaNode::NccPartner { .. } => None,
+                        };
+                        if let Some(children) = children {
+                            prop_assert!(
+                                children.contains(&node_id),
+                                "parent {parent_id:?} children list does not contain child {node_id:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

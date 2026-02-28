@@ -1494,3 +1494,429 @@ mod tests {
         assert!(agenda.iter_activations().all(|a| a.rule == RuleId(8)));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::beta::{RuleId, Salience};
+    use crate::fact::Timestamp;
+    use crate::strategy::ConflictResolutionStrategy;
+    use proptest::prelude::*;
+    use slotmap::SlotMap;
+    use smallvec::SmallVec;
+
+    // ---------------------------------------------------------------------------
+    // Operation enum
+    // ---------------------------------------------------------------------------
+
+    /// An abstract mutation that can be applied to an `Agenda`.
+    #[derive(Clone, Debug)]
+    enum Op {
+        Add {
+            rule_idx: u8,
+            token_idx: u8,
+            salience: i32,
+            timestamp: u64,
+        },
+        Pop,
+        RemoveForToken {
+            token_idx: u8,
+        },
+        RemoveForRule {
+            rule_idx: u8,
+        },
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            4 => (0..5u8, 0..5u8, -10i32..10, 1u64..1000).prop_map(|(r, t, s, ts)| Op::Add {
+                rule_idx: r,
+                token_idx: t,
+                salience: s,
+                timestamp: ts,
+            }),
+            2 => Just(Op::Pop),
+            1 => (0..5u8).prop_map(|t| Op::RemoveForToken { token_idx: t }),
+            1 => (0..5u8).prop_map(|r| Op::RemoveForRule { rule_idx: r }),
+        ]
+    }
+
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    /// Build a pool of 5 `TokenId`s from a single `SlotMap`.
+    fn make_token_pool() -> (SlotMap<TokenId, ()>, Vec<TokenId>) {
+        let mut map: SlotMap<TokenId, ()> = SlotMap::with_key();
+        let ids: Vec<_> = (0..5).map(|_| map.insert(())).collect();
+        (map, ids)
+    }
+
+    /// Construct an `Activation` with empty recency (suitable for Depth/Breadth tests).
+    fn make_activation(
+        rule: RuleId,
+        token: TokenId,
+        salience: Salience,
+        timestamp: Timestamp,
+    ) -> Activation {
+        Activation {
+            id: ActivationId::default(),
+            rule,
+            token,
+            salience,
+            timestamp,
+            activation_seq: ActivationSeq::ZERO,
+            recency: SmallVec::new(),
+        }
+    }
+
+    /// Apply one `Op` to an agenda, using the provided token pool.
+    fn apply_op(agenda: &mut Agenda, op: &Op, tokens: &[TokenId]) {
+        match *op {
+            Op::Add {
+                rule_idx,
+                token_idx,
+                salience,
+                timestamp,
+            } => {
+                let token = tokens[token_idx as usize % tokens.len()];
+                agenda.add(make_activation(
+                    RuleId(u32::from(rule_idx)),
+                    token,
+                    Salience::new(salience),
+                    Timestamp::new(timestamp),
+                ));
+            }
+            Op::Pop => {
+                let _ = agenda.pop();
+            }
+            Op::RemoveForToken { token_idx } => {
+                let token = tokens[token_idx as usize % tokens.len()];
+                let _ = agenda.remove_activations_for_token(token);
+            }
+            Op::RemoveForRule { rule_idx } => {
+                let _ = agenda.remove_activations_for_rule(RuleId(u32::from(rule_idx)));
+            }
+        }
+    }
+
+    const ALL_STRATEGIES: [ConflictResolutionStrategy; 4] = [
+        ConflictResolutionStrategy::Depth,
+        ConflictResolutionStrategy::Breadth,
+        ConflictResolutionStrategy::Lex,
+        ConflictResolutionStrategy::Mea,
+    ];
+
+    // ---------------------------------------------------------------------------
+    // Tests
+    // ---------------------------------------------------------------------------
+
+    proptest! {
+        /// Running arbitrary operations under every strategy keeps all four indices
+        /// in sync (verified by `debug_assert_consistency`).
+        #[test]
+        fn arbitrary_ops_maintain_consistency(
+            ops in prop::collection::vec(op_strategy(), 0..80)
+        ) {
+            let (_map, tokens) = make_token_pool();
+            for &strategy in &ALL_STRATEGIES {
+                let mut agenda = Agenda::with_strategy(strategy);
+                for op in &ops {
+                    apply_op(&mut agenda, op, &tokens);
+                    agenda.debug_assert_consistency();
+                }
+            }
+        }
+
+        /// Adding N activations and then popping N+1 times yields exactly N
+        /// `Some` results followed by one `None`, and the agenda is empty.
+        #[test]
+        fn pop_drains_completely(n in 0usize..30) {
+            let (_map, tokens) = make_token_pool();
+            let mut agenda = Agenda::new();
+            for i in 0..n {
+                agenda.add(make_activation(
+                    RuleId(0),
+                    tokens[i % tokens.len()],
+                    Salience::DEFAULT,
+                    Timestamp::new(u64::try_from(i + 1).unwrap()),
+                ));
+            }
+
+            for _ in 0..n {
+                prop_assert!(agenda.pop().is_some());
+            }
+            prop_assert!(agenda.pop().is_none());
+            prop_assert!(agenda.is_empty());
+        }
+
+        /// Under Depth strategy, successive pops never yield a higher salience
+        /// than the previous pop (weak non-increasing salience order).
+        #[test]
+        fn pop_order_non_increasing_salience(
+            entries in prop::collection::vec((-10i32..10, 1u64..1000), 1..20)
+        ) {
+            let (_map, tokens) = make_token_pool();
+            let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Depth);
+            for (i, (sal, ts)) in entries.iter().enumerate() {
+                agenda.add(make_activation(
+                    RuleId(0),
+                    tokens[i % tokens.len()],
+                    Salience::new(*sal),
+                    Timestamp::new(*ts),
+                ));
+            }
+
+            let mut prev_salience: Option<i32> = None;
+            while let Some(act) = agenda.pop() {
+                let s = act.salience.get();
+                if let Some(prev) = prev_salience {
+                    prop_assert!(s <= prev, "salience increased: {} -> {}", prev, s);
+                }
+                prev_salience = Some(s);
+            }
+        }
+
+        /// Under every strategy, an activation with strictly higher salience always
+        /// pops before one with lower salience, regardless of timestamp or recency.
+        #[test]
+        fn salience_dominates_all_strategies(
+            low_ts in 1u64..500,
+            high_ts in 1u64..500,
+            low_sal in -9i32..0,
+            high_sal in 1i32..10,
+        ) {
+            let (_map, tokens) = make_token_pool();
+            for &strategy in &ALL_STRATEGIES {
+                let mut agenda = Agenda::with_strategy(strategy);
+                // Insert low-salience activation first (would win seq tiebreak)
+                agenda.add(make_activation(
+                    RuleId(0),
+                    tokens[0],
+                    Salience::new(low_sal),
+                    Timestamp::new(low_ts),
+                ));
+                // Insert high-salience activation second
+                agenda.add(make_activation(
+                    RuleId(1),
+                    tokens[1],
+                    Salience::new(high_sal),
+                    Timestamp::new(high_ts),
+                ));
+                let first = agenda.pop().expect("should have activation");
+                prop_assert_eq!(
+                    first.salience,
+                    Salience::new(high_sal),
+                    "strategy {:?}: expected high salience to pop first",
+                    strategy,
+                );
+            }
+        }
+
+        /// Under Depth strategy, with equal salience, the activation with the
+        /// higher timestamp pops first.
+        #[test]
+        fn depth_prefers_higher_timestamp(
+            ts_a in 1u64..500,
+            ts_b in 501u64..1000,
+        ) {
+            // ts_b > ts_a by construction
+            let (_map, tokens) = make_token_pool();
+            let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Depth);
+            agenda.add(make_activation(RuleId(0), tokens[0], Salience::DEFAULT, Timestamp::new(ts_a)));
+            agenda.add(make_activation(RuleId(1), tokens[1], Salience::DEFAULT, Timestamp::new(ts_b)));
+            let first = agenda.pop().expect("should have activation");
+            prop_assert_eq!(first.timestamp, Timestamp::new(ts_b));
+        }
+
+        /// Under Breadth strategy, with equal salience, the activation with the
+        /// lower timestamp pops first.
+        #[test]
+        fn breadth_prefers_lower_timestamp(
+            ts_a in 1u64..500,
+            ts_b in 501u64..1000,
+        ) {
+            // ts_a < ts_b by construction
+            let (_map, tokens) = make_token_pool();
+            let mut agenda = Agenda::with_strategy(ConflictResolutionStrategy::Breadth);
+            agenda.add(make_activation(RuleId(0), tokens[0], Salience::DEFAULT, Timestamp::new(ts_a)));
+            agenda.add(make_activation(RuleId(1), tokens[1], Salience::DEFAULT, Timestamp::new(ts_b)));
+            let first = agenda.pop().expect("should have activation");
+            prop_assert_eq!(first.timestamp, Timestamp::new(ts_a));
+        }
+
+        /// With the same salience and timestamp, the activation added later
+        /// (higher activation_seq) pops first (recency-of-addition tiebreaker).
+        #[test]
+        fn activation_seq_tiebreaker(sal in -10i32..10, ts in 1u64..1000) {
+            let (_map, tokens) = make_token_pool();
+            for &strategy in &ALL_STRATEGIES {
+                let mut agenda = Agenda::with_strategy(strategy);
+                let _first = agenda.add(make_activation(
+                    RuleId(0),
+                    tokens[0],
+                    Salience::new(sal),
+                    Timestamp::new(ts),
+                ));
+                let second = agenda.add(make_activation(
+                    RuleId(1),
+                    tokens[1],
+                    Salience::new(sal),
+                    Timestamp::new(ts),
+                ));
+                let popped = agenda.pop().expect("should have activation");
+                prop_assert_eq!(
+                    popped.id,
+                    second,
+                    "strategy {:?}: later-added activation should pop first",
+                    strategy,
+                );
+            }
+        }
+
+        /// After `remove_activations_for_token`, no remaining activation in the
+        /// agenda has that token.
+        #[test]
+        fn remove_for_token_completeness(
+            ops in prop::collection::vec(op_strategy(), 0..40),
+            target_token_idx in 0..5u8,
+        ) {
+            let (_map, tokens) = make_token_pool();
+            let mut agenda = Agenda::new();
+            for op in &ops {
+                apply_op(&mut agenda, op, &tokens);
+            }
+            let target = tokens[target_token_idx as usize % tokens.len()];
+            let _ = agenda.remove_activations_for_token(target);
+            agenda.debug_assert_consistency();
+            for act in agenda.iter_activations() {
+                prop_assert_ne!(
+                    act.token,
+                    target,
+                    "found activation with removed token after remove_activations_for_token",
+                );
+            }
+        }
+
+        /// After `remove_activations_for_rule`, no remaining activation in the
+        /// agenda has that rule.
+        #[test]
+        fn remove_for_rule_completeness(
+            ops in prop::collection::vec(op_strategy(), 0..40),
+            target_rule_idx in 0..5u8,
+        ) {
+            let (_map, tokens) = make_token_pool();
+            let mut agenda = Agenda::new();
+            for op in &ops {
+                apply_op(&mut agenda, op, &tokens);
+            }
+            let target_rule = RuleId(u32::from(target_rule_idx));
+            let _ = agenda.remove_activations_for_rule(target_rule);
+            agenda.debug_assert_consistency();
+            for act in agenda.iter_activations() {
+                prop_assert_ne!(
+                    act.rule,
+                    target_rule,
+                    "found activation with removed rule after remove_activations_for_rule",
+                );
+            }
+        }
+
+        /// After `clear()`, the agenda is fully empty.
+        #[test]
+        fn clear_resets_everything(
+            ops in prop::collection::vec(op_strategy(), 0..40)
+        ) {
+            let (_map, tokens) = make_token_pool();
+            let mut agenda = Agenda::new();
+            for op in &ops {
+                apply_op(&mut agenda, op, &tokens);
+            }
+            agenda.clear();
+            prop_assert!(agenda.is_empty());
+            prop_assert_eq!(agenda.len(), 0);
+            prop_assert!(agenda.pop().is_none());
+            agenda.debug_assert_consistency();
+        }
+
+        /// `len()` correctly tracks adds, pops, and removals across arbitrary
+        /// operation sequences.
+        #[test]
+        fn len_tracks_mutations(
+            ops in prop::collection::vec(op_strategy(), 0..60)
+        ) {
+            let (_map, tokens) = make_token_pool();
+            let mut agenda = Agenda::new();
+            let mut expected_len: usize = 0;
+
+            for op in &ops {
+                match op {
+                    Op::Add { rule_idx, token_idx, salience, timestamp } => {
+                        let token = tokens[*token_idx as usize % tokens.len()];
+                        agenda.add(make_activation(
+                            RuleId(u32::from(*rule_idx)),
+                            token,
+                            Salience::new(*salience),
+                            Timestamp::new(*timestamp),
+                        ));
+                        expected_len += 1;
+                    }
+                    Op::Pop => {
+                        let had = agenda.pop().is_some();
+                        if had {
+                            expected_len -= 1;
+                        }
+                    }
+                    Op::RemoveForToken { token_idx } => {
+                        let token = tokens[*token_idx as usize % tokens.len()];
+                        let removed = agenda.remove_activations_for_token(token);
+                        expected_len -= removed.len();
+                    }
+                    Op::RemoveForRule { rule_idx } => {
+                        let rule = RuleId(u32::from(*rule_idx));
+                        let removed = agenda.remove_activations_for_rule(rule);
+                        expected_len -= removed.len();
+                    }
+                }
+                prop_assert_eq!(
+                    agenda.len(),
+                    expected_len,
+                    "len() mismatch after op {:?}",
+                    op,
+                );
+            }
+        }
+
+        /// Removing activations for a token that has none is a no-op: returns an
+        /// empty vec and does not change `len()`.
+        #[test]
+        fn remove_absent_token_is_noop(n in 0usize..20) {
+            let (_map, tokens) = make_token_pool();
+            // Use only tokens[0..4] when adding, leaving tokens[4] always absent.
+            let absent_token = tokens[4];
+            let mut agenda = Agenda::new();
+            for i in 0..n {
+                agenda.add(make_activation(
+                    RuleId(0),
+                    tokens[i % 4],
+                    Salience::DEFAULT,
+                    Timestamp::new(u64::try_from(i + 1).unwrap()),
+                ));
+            }
+            let before_len = agenda.len();
+            let removed = agenda.remove_activations_for_token(absent_token);
+            prop_assert!(removed.is_empty());
+            prop_assert_eq!(agenda.len(), before_len);
+            agenda.debug_assert_consistency();
+        }
+
+        /// `strategy()` returns the strategy the agenda was constructed with.
+        #[test]
+        fn strategy_preserved(_seed in 0u8..1) {
+            for &strategy in &ALL_STRATEGIES {
+                let agenda = Agenda::with_strategy(strategy);
+                prop_assert_eq!(agenda.strategy(), strategy);
+            }
+        }
+    }
+}

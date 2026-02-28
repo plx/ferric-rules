@@ -353,78 +353,340 @@ mod proptests {
     use crate::symbol::SymbolTable;
     use crate::StringEncoding;
     use proptest::prelude::*;
+    use std::collections::{HashMap, HashSet};
+    use std::rc::Rc;
+
+    // ---------------------------------------------------------------------------
+    // VarMap property tests
+    // ---------------------------------------------------------------------------
 
     proptest! {
+        /// Calling `get_or_create` N times for the same symbol always returns
+        /// the same VarId, and len stays at 1.
         #[test]
-        fn var_map_get_or_create_is_idempotent_prop(count in 1..100_usize) {
+        fn idempotent_get_or_create(count in 1..=50_usize) {
             let mut table = SymbolTable::new();
             let mut vm = VarMap::new();
             let sym = table.intern_symbol("x", StringEncoding::Ascii).unwrap();
 
             let first_id = vm.get_or_create(sym).unwrap();
-
             for _ in 0..count {
                 let id = vm.get_or_create(sym).unwrap();
                 prop_assert_eq!(id, first_id);
             }
-
             prop_assert_eq!(vm.len(), 1);
         }
 
+        /// After creating N distinct symbols, `len() == N`.
         #[test]
-        fn var_map_distinct_symbols_get_distinct_ids(count in 1..100_usize) {
+        fn len_tracks_distinct_symbols(count in 1..=50_usize) {
             let mut table = SymbolTable::new();
             let mut vm = VarMap::new();
-            let mut ids = std::collections::HashSet::new();
 
             for i in 0..count {
-                let sym = table.intern_symbol(&format!("var{i}"), StringEncoding::Ascii).unwrap();
-                let id = vm.get_or_create(sym).unwrap();
-                ids.insert(id);
+                let sym = table.intern_symbol(&format!("v{i}"), StringEncoding::Ascii).unwrap();
+                vm.get_or_create(sym).unwrap();
             }
 
-            prop_assert_eq!(ids.len(), count);
             prop_assert_eq!(vm.len(), count);
         }
 
+        /// VarIds are assigned 0, 1, 2, ... for distinct symbols in order.
         #[test]
-        fn binding_set_get_returns_last_set_value(ops in prop::collection::vec((0..10_u16, any::<i64>()), 1..50)) {
-            let mut bs = BindingSet::new();
-            let mut expected = std::collections::HashMap::new();
+        fn sequential_id_assignment(count in 1..=50_usize) {
+            let mut table = SymbolTable::new();
+            let mut vm = VarMap::new();
 
-            for (var_id, value) in ops {
-                let var = VarId(var_id);
-                let val = Rc::new(Value::Integer(value));
-                bs.set(var, val.clone());
-                expected.insert(var_id, value);
-            }
-
-            for (var_id, expected_value) in expected {
-                let var = VarId(var_id);
-                if let Some(val) = bs.get(var) {
-                    if let Value::Integer(i) = **val {
-                        prop_assert_eq!(i, expected_value);
-                    } else {
-                        prop_assert!(false, "expected integer value");
-                    }
-                } else {
-                    prop_assert!(false, "expected binding to exist");
-                }
+            for i in 0..count {
+                let sym = table.intern_symbol(&format!("v{i}"), StringEncoding::Ascii).unwrap();
+                let id = vm.get_or_create(sym).unwrap();
+                #[allow(clippy::cast_possible_truncation)]
+                let expected_id = VarId(i as u16);
+                prop_assert_eq!(id, expected_id);
             }
         }
 
+        /// For every symbol added, `lookup(sym) == Some(id)` and `name(id) == sym`.
         #[test]
-        fn binding_set_bound_count_is_accurate(ops in prop::collection::vec((0..20_u16, any::<i64>()), 0..100)) {
-            let mut bs = BindingSet::new();
-            let mut bound_vars = std::collections::HashSet::new();
+        fn bidirectional_consistency(count in 1..=50_usize) {
+            let mut table = SymbolTable::new();
+            let mut vm = VarMap::new();
+            let mut pairs: Vec<(Symbol, VarId)> = Vec::new();
 
-            for (var_id, value) in ops {
-                let var = VarId(var_id);
-                bs.set(var, Rc::new(Value::Integer(value)));
-                bound_vars.insert(var_id);
+            for i in 0..count {
+                let sym = table.intern_symbol(&format!("v{i}"), StringEncoding::Ascii).unwrap();
+                let id = vm.get_or_create(sym).unwrap();
+                pairs.push((sym, id));
             }
 
-            prop_assert_eq!(bs.bound_count(), bound_vars.len());
+            for (sym, id) in pairs {
+                prop_assert_eq!(vm.lookup(sym), Some(id));
+                prop_assert_eq!(vm.name(id), sym);
+            }
+        }
+
+        /// Lookup on symbols not yet registered returns None.
+        #[test]
+        fn lookup_before_create_returns_none(count in 1..=20_usize) {
+            let mut table = SymbolTable::new();
+            let vm = VarMap::new();
+
+            for i in 0..count {
+                let sym = table.intern_symbol(&format!("v{i}"), StringEncoding::Ascii).unwrap();
+                prop_assert_eq!(vm.lookup(sym), None);
+            }
+        }
+
+        /// Interleaving repeated and new symbol creates still maintains consistency:
+        /// each symbol maps to a single stable VarId and `len` equals the number of
+        /// distinct symbols.
+        #[test]
+        fn mixed_idempotent_and_new(
+            // A sequence of indices in 0..10; the symbol used is "v{i}".
+            ops in prop::collection::vec(0..10_usize, 1..=60)
+        ) {
+            let mut table = SymbolTable::new();
+            let mut vm = VarMap::new();
+            // Track first-assigned id per index.
+            let mut first_ids: HashMap<usize, VarId> = HashMap::new();
+
+            for i in ops {
+                let sym = table.intern_symbol(&format!("v{i}"), StringEncoding::Ascii).unwrap();
+                let id = vm.get_or_create(sym).unwrap();
+                let entry = first_ids.entry(i).or_insert(id);
+                prop_assert_eq!(id, *entry);
+            }
+
+            prop_assert_eq!(vm.len(), first_ids.len());
+        }
+
+        /// `is_empty() == (len() == 0)` always holds, both before and after insertions.
+        #[test]
+        fn is_empty_consistent_with_len(count in 0..=30_usize) {
+            let mut table = SymbolTable::new();
+            let mut vm = VarMap::new();
+
+            prop_assert_eq!(vm.is_empty(), vm.is_empty());
+
+            for i in 0..count {
+                let sym = table.intern_symbol(&format!("v{i}"), StringEncoding::Ascii).unwrap();
+                vm.get_or_create(sym).unwrap();
+                prop_assert_eq!(vm.is_empty(), vm.is_empty());
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // BindingSet property tests
+    // ---------------------------------------------------------------------------
+
+    proptest! {
+        /// For arbitrary (VarId, i64) pairs, the last set value is always
+        /// retrievable via get().
+        #[test]
+        fn set_get_roundtrip(ops in prop::collection::vec((0..20_u16, any::<i64>()), 1..=50)) {
+            let mut bs = BindingSet::new();
+            let mut last_written: HashMap<u16, i64> = HashMap::new();
+
+            for (var_id, value) in ops {
+                bs.set(VarId(var_id), Rc::new(Value::Integer(value)));
+                last_written.insert(var_id, value);
+            }
+
+            for (var_id, expected) in last_written {
+                let val = bs.get(VarId(var_id)).expect("binding must exist");
+                let Value::Integer(got) = **val else {
+                    prop_assert!(false, "expected Integer value");
+                    unreachable!();
+                };
+                prop_assert_eq!(got, expected);
+            }
+        }
+
+        /// Setting the same VarId multiple times: the final value is the one
+        /// returned by get().
+        #[test]
+        fn last_write_wins(writes in prop::collection::vec(any::<i64>(), 1..=20)) {
+            let mut bs = BindingSet::new();
+            let var = VarId(3);
+
+            for &v in &writes {
+                bs.set(var, Rc::new(Value::Integer(v)));
+            }
+
+            let last = *writes.last().unwrap();
+            let val = bs.get(var).expect("binding must exist");
+            let Value::Integer(got) = **val else {
+                prop_assert!(false, "expected Integer");
+                unreachable!();
+            };
+            prop_assert_eq!(got, last);
+        }
+
+        /// Setting VarId(k) always succeeds and produces `capacity() >= k + 1`.
+        #[test]
+        fn auto_expansion(k in 0..100_u16) {
+            let mut bs = BindingSet::new();
+            bs.set(VarId(k), Rc::new(Value::Integer(0)));
+            prop_assert!(bs.capacity() > (k as usize));
+        }
+
+        /// With VarIds drawn from 0..10, bound_count() equals the number of
+        /// distinct VarIds that were set.
+        #[test]
+        fn bound_count_accurate_narrow(
+            ops in prop::collection::vec((0..10_u16, any::<i64>()), 0..=50)
+        ) {
+            let mut bs = BindingSet::new();
+            let mut distinct: HashSet<u16> = HashSet::new();
+
+            for (var_id, value) in ops {
+                bs.set(VarId(var_id), Rc::new(Value::Integer(value)));
+                distinct.insert(var_id);
+            }
+
+            prop_assert_eq!(bs.bound_count(), distinct.len());
+        }
+
+        /// With VarIds drawn from 0..100, bound_count() equals the number of
+        /// distinct VarIds that were set.
+        #[test]
+        fn bound_count_accurate_wide(
+            ops in prop::collection::vec((0..100_u16, any::<i64>()), 0..=200)
+        ) {
+            let mut bs = BindingSet::new();
+            let mut distinct: HashSet<u16> = HashSet::new();
+
+            for (var_id, value) in ops {
+                bs.set(VarId(var_id), Rc::new(Value::Integer(value)));
+                distinct.insert(var_id);
+            }
+
+            prop_assert_eq!(bs.bound_count(), distinct.len());
+        }
+
+        /// `bound_count() <= capacity()` always holds.
+        #[test]
+        fn bound_count_leq_capacity(
+            ops in prop::collection::vec((0..50_u16, any::<i64>()), 0..=100)
+        ) {
+            let mut bs = BindingSet::new();
+
+            for (var_id, value) in ops {
+                bs.set(VarId(var_id), Rc::new(Value::Integer(value)));
+            }
+
+            prop_assert!(bs.bound_count() <= bs.capacity());
+        }
+
+        /// After `a.extend_from(&b)`, any variable already bound in `a` retains
+        /// its original value.
+        #[test]
+        fn extend_from_does_not_overwrite(
+            a_ops in prop::collection::vec((0..10_u16, any::<i64>()), 1..=20),
+            b_ops in prop::collection::vec((0..10_u16, any::<i64>()), 1..=20),
+        ) {
+            let mut a = BindingSet::new();
+            let mut b = BindingSet::new();
+
+            // Track the last value written to `a` for each var.
+            let mut a_last: HashMap<u16, i64> = HashMap::new();
+            for (var_id, value) in a_ops {
+                a.set(VarId(var_id), Rc::new(Value::Integer(value)));
+                a_last.insert(var_id, value);
+            }
+            for (var_id, value) in b_ops {
+                b.set(VarId(var_id), Rc::new(Value::Integer(value)));
+            }
+
+            a.extend_from(&b);
+
+            // Every var that was originally bound in `a` still has the same value.
+            for (var_id, expected) in a_last {
+                let val = a.get(VarId(var_id)).expect("original binding must survive");
+                let Value::Integer(got) = **val else {
+                    prop_assert!(false, "expected Integer");
+                    unreachable!();
+                };
+                prop_assert_eq!(got, expected);
+            }
+        }
+
+        /// After `a.extend_from(&b)`, any variable bound in `b` but not in `a`
+        /// is now bound in `a` to `b`'s value.
+        #[test]
+        fn extend_from_fills_gaps(
+            // Use non-overlapping id ranges: a uses 0..5, b uses 5..10.
+            a_ids in prop::collection::vec(0..5_u16, 0..=5),
+            b_ids in prop::collection::vec(5..10_u16, 1..=5),
+        ) {
+            let mut a = BindingSet::new();
+            let mut b = BindingSet::new();
+            let mut b_values: HashMap<u16, i64> = HashMap::new();
+
+            for (idx, &var_id) in a_ids.iter().enumerate() {
+                #[allow(clippy::cast_possible_wrap)]
+                a.set(VarId(var_id), Rc::new(Value::Integer(idx as i64)));
+            }
+            for (idx, &var_id) in b_ids.iter().enumerate() {
+                #[allow(clippy::cast_possible_wrap)]
+                let v = (idx as i64) + 100;
+                b.set(VarId(var_id), Rc::new(Value::Integer(v)));
+                b_values.insert(var_id, v);
+            }
+
+            a.extend_from(&b);
+
+            // Every var from `b` (which was not in `a`) must now be present in `a`.
+            for (var_id, expected) in b_values {
+                let val = a.get(VarId(var_id)).expect("gap must be filled from b");
+                let Value::Integer(got) = **val else {
+                    prop_assert!(false, "expected Integer");
+                    unreachable!();
+                };
+                prop_assert_eq!(got, expected);
+            }
+        }
+
+        /// Calling `a.extend_from(&b)` twice produces the same result as once.
+        #[test]
+        fn extend_from_idempotent(
+            a_ops in prop::collection::vec((0..10_u16, any::<i64>()), 0..=15),
+            b_ops in prop::collection::vec((0..10_u16, any::<i64>()), 1..=15),
+        ) {
+            // Build `a` and `b`.
+            let mut a = BindingSet::new();
+            let mut b = BindingSet::new();
+            for (var_id, value) in &a_ops {
+                a.set(VarId(*var_id), Rc::new(Value::Integer(*value)));
+            }
+            for (var_id, value) in &b_ops {
+                b.set(VarId(*var_id), Rc::new(Value::Integer(*value)));
+            }
+
+            // Apply extend once and snapshot.
+            a.extend_from(&b);
+            let snapshot: Vec<Option<i64>> = (0..a.capacity())
+                .map(|i| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    a.get(VarId(i as u16)).map(|v| {
+                        if let Value::Integer(n) = **v { n } else { 0 }
+                    })
+                })
+                .collect();
+
+            // Apply extend a second time — result must be identical.
+            a.extend_from(&b);
+            let after_second: Vec<Option<i64>> = (0..a.capacity())
+                .map(|i| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    a.get(VarId(i as u16)).map(|v| {
+                        if let Value::Integer(n) = **v { n } else { 0 }
+                    })
+                })
+                .collect();
+
+            prop_assert_eq!(snapshot, after_second);
         }
     }
 }

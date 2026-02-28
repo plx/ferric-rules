@@ -697,126 +697,693 @@ mod proptests {
     use super::*;
     use proptest::prelude::*;
 
+    // ---------------------------------------------------------------------------
+    // Operation enum
+    // ---------------------------------------------------------------------------
+
+    /// One mutation step applied to both the real `TokenStore` and the shadow model.
+    #[derive(Clone, Debug)]
+    enum Op {
+        /// Insert a root token (no parent) referencing `fact_ids[fact_idx % len]`.
+        InsertRoot { fact_idx: usize },
+        /// Insert a child token whose parent is `live[parent_idx % len]`.
+        InsertChild { parent_idx: usize, fact_idx: usize },
+        /// Non-cascading remove of `live[idx % len]`.  No-op when store is empty.
+        Remove { idx: usize },
+        /// Cascading remove starting from `live[idx % len]`.  No-op when store is empty.
+        RemoveCascade { idx: usize },
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            3 => any::<usize>().prop_map(|f| Op::InsertRoot { fact_idx: f }),
+            3 => (any::<usize>(), any::<usize>())
+                .prop_map(|(p, f)| Op::InsertChild { parent_idx: p, fact_idx: f }),
+            2 => any::<usize>().prop_map(|i| Op::Remove { idx: i }),
+            1 => any::<usize>().prop_map(|i| Op::RemoveCascade { idx: i }),
+        ]
+    }
+
+    fn scenario_strategy() -> impl Strategy<Value = Vec<Op>> {
+        prop::collection::vec(op_strategy(), 0..100)
+    }
+
+    // ---------------------------------------------------------------------------
+    // Shadow model
+    // ---------------------------------------------------------------------------
+
+    /// Tracks what the `TokenStore` should contain independently of the real
+    /// implementation.
+    #[derive(Default)]
+    struct Model {
+        /// Set of currently-live token IDs.
+        live: HashSet<TokenId>,
+        /// `parent_of`[id] = Some(p) means `id` was inserted with parent `p`.
+        parent_of: HashMap<TokenId, Option<TokenId>>,
+        /// `facts_of`[id] = the facts vec (may contain duplicates) for that token.
+        facts_of: HashMap<TokenId, Vec<FactId>>,
+    }
+
+    impl Model {
+        fn insert(&mut self, id: TokenId, parent: Option<TokenId>, facts: Vec<FactId>) {
+            self.live.insert(id);
+            self.parent_of.insert(id, parent);
+            self.facts_of.insert(id, facts);
+        }
+
+        /// Collect `id` and all its descendants (tokens whose ancestor chain
+        /// reaches `id`) from the live set.
+        fn subtree(&self, root: TokenId) -> HashSet<TokenId> {
+            let mut result = HashSet::new();
+            let mut stack = vec![root];
+            while let Some(id) = stack.pop() {
+                if result.insert(id) {
+                    // Push all live tokens whose direct parent is `id`
+                    for &candidate in &self.live {
+                        if self.parent_of.get(&candidate).copied().flatten() == Some(id) {
+                            stack.push(candidate);
+                        }
+                    }
+                }
+            }
+            result
+        }
+
+        /// Remove a single token from the shadow model (non-cascading).
+        fn remove(&mut self, id: TokenId) {
+            self.live.remove(&id);
+            self.parent_of.remove(&id);
+            self.facts_of.remove(&id);
+        }
+
+        /// Remove `root` and all descendants from the shadow model.
+        fn remove_cascade(&mut self, root: TokenId) {
+            let to_remove = self.subtree(root);
+            for id in to_remove {
+                self.remove(id);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Scenario runner
+    // ---------------------------------------------------------------------------
+
+    /// Run a sequence of operations on both a real `TokenStore` and a `Model`.
+    ///
+    /// Returns the final store, the final model, and the pre-allocated pool of
+    /// `FactId` values.
+    fn run_scenario(ops: &[Op]) -> (TokenStore, Model) {
+        // Pre-allocate a pool of 16 distinct FactIds.
+        let mut fact_pool: SlotMap<FactId, ()> = SlotMap::with_key();
+        let fact_ids: Vec<FactId> = (0..16).map(|_| fact_pool.insert(())).collect();
+
+        let mut store = TokenStore::new();
+        let mut model = Model::default();
+        // `live_vec` gives us an ordered snapshot of live IDs so we can index
+        // into it with `idx % len`.
+        let mut live_vec: Vec<TokenId> = Vec::new();
+
+        #[allow(clippy::cast_possible_truncation)]
+        let mut token_count: u32 = 0;
+
+        for op in ops {
+            match *op {
+                Op::InsertRoot { fact_idx } => {
+                    let fid = fact_ids[fact_idx % fact_ids.len()];
+                    let t = Token {
+                        facts: smallvec::smallvec![fid],
+                        bindings: BindingSet::new(),
+                        parent: None,
+                        owner_node: NodeId(token_count),
+                    };
+                    token_count += 1;
+                    let id = store.insert(t);
+                    model.insert(id, None, vec![fid]);
+                    live_vec.push(id);
+                }
+                Op::InsertChild {
+                    parent_idx,
+                    fact_idx,
+                } => {
+                    if live_vec.is_empty() {
+                        // No live tokens to be a parent — treat as root insert.
+                        let fid = fact_ids[fact_idx % fact_ids.len()];
+                        let t = Token {
+                            facts: smallvec::smallvec![fid],
+                            bindings: BindingSet::new(),
+                            parent: None,
+                            owner_node: NodeId(token_count),
+                        };
+                        token_count += 1;
+                        let id = store.insert(t);
+                        model.insert(id, None, vec![fid]);
+                        live_vec.push(id);
+                    } else {
+                        let parent_id = live_vec[parent_idx % live_vec.len()];
+                        let fid = fact_ids[fact_idx % fact_ids.len()];
+                        let t = Token {
+                            facts: smallvec::smallvec![fid],
+                            bindings: BindingSet::new(),
+                            parent: Some(parent_id),
+                            owner_node: NodeId(token_count),
+                        };
+                        token_count += 1;
+                        let id = store.insert(t);
+                        model.insert(id, Some(parent_id), vec![fid]);
+                        live_vec.push(id);
+                    }
+                }
+                Op::Remove { idx } => {
+                    if live_vec.is_empty() {
+                        continue;
+                    }
+                    let pick = idx % live_vec.len();
+                    let id = live_vec.swap_remove(pick);
+                    store.remove(id);
+                    model.remove(id);
+                }
+                Op::RemoveCascade { idx } => {
+                    if live_vec.is_empty() {
+                        continue;
+                    }
+                    let pick = idx % live_vec.len();
+                    let root = live_vec[pick];
+                    // Compute the full subtree from the model *before* mutating.
+                    let subtree = model.subtree(root);
+                    store.remove_cascade(root);
+                    model.remove_cascade(root);
+                    // Rebuild live_vec: remove all IDs that were in the subtree.
+                    live_vec.retain(|id| !subtree.contains(id));
+                }
+            }
+        }
+
+        (store, model)
+    }
+
+    // ---------------------------------------------------------------------------
+    // Property tests
+    // ---------------------------------------------------------------------------
+
     proptest! {
+        /// After every operation the internal consistency check passes.
         #[test]
-        fn insert_n_tokens_maintains_consistency(count in 1..50_usize) {
+        fn arbitrary_ops_maintain_consistency(ops in scenario_strategy()) {
+            // Run op-by-op so we can call consistency check after each step.
+            let mut fact_pool: SlotMap<FactId, ()> = SlotMap::with_key();
+            let fact_ids: Vec<FactId> = (0..16).map(|_| fact_pool.insert(())).collect();
+
             let mut store = TokenStore::new();
-            let mut temp_facts: SlotMap<FactId, ()> = SlotMap::with_key();
+            let mut model = Model::default();
+            let mut live_vec: Vec<TokenId> = Vec::new();
+
+            #[allow(clippy::cast_possible_truncation)]
+            let mut token_count: u32 = 0;
+
+            for op in &ops {
+                match *op {
+                    Op::InsertRoot { fact_idx } => {
+                        let fid = fact_ids[fact_idx % fact_ids.len()];
+                        let t = Token {
+                            facts: smallvec::smallvec![fid],
+                            bindings: BindingSet::new(),
+                            parent: None,
+                            owner_node: NodeId(token_count),
+                        };
+                        token_count += 1;
+                        let id = store.insert(t);
+                        model.insert(id, None, vec![fid]);
+                        live_vec.push(id);
+                    }
+                    Op::InsertChild { parent_idx, fact_idx } => {
+                        let fid = fact_ids[fact_idx % fact_ids.len()];
+                        if live_vec.is_empty() {
+                            let t = Token {
+                                facts: smallvec::smallvec![fid],
+                                bindings: BindingSet::new(),
+                                parent: None,
+                                owner_node: NodeId(token_count),
+                            };
+                            token_count += 1;
+                            let id = store.insert(t);
+                            model.insert(id, None, vec![fid]);
+                            live_vec.push(id);
+                        } else {
+                            let parent_id = live_vec[parent_idx % live_vec.len()];
+                            let t = Token {
+                                facts: smallvec::smallvec![fid],
+                                bindings: BindingSet::new(),
+                                parent: Some(parent_id),
+                                owner_node: NodeId(token_count),
+                            };
+                            token_count += 1;
+                            let id = store.insert(t);
+                            model.insert(id, Some(parent_id), vec![fid]);
+                            live_vec.push(id);
+                        }
+                    }
+                    Op::Remove { idx } => {
+                        if live_vec.is_empty() { continue; }
+                        let pick = idx % live_vec.len();
+                        let id = live_vec.swap_remove(pick);
+                        store.remove(id);
+                        model.remove(id);
+                    }
+                    Op::RemoveCascade { idx } => {
+                        if live_vec.is_empty() { continue; }
+                        let pick = idx % live_vec.len();
+                        let root = live_vec[pick];
+                        let subtree = model.subtree(root);
+                        store.remove_cascade(root);
+                        model.remove_cascade(root);
+                        live_vec.retain(|id| !subtree.contains(id));
+                    }
+                }
+                store.debug_assert_consistency();
+            }
+        }
+
+        /// Every token we insert is immediately retrievable via `get()`.
+        #[test]
+        fn insert_get_roundtrip(ops in scenario_strategy()) {
+            let mut fact_pool: SlotMap<FactId, ()> = SlotMap::with_key();
+            let fact_ids: Vec<FactId> = (0..16).map(|_| fact_pool.insert(())).collect();
+
+            let mut store = TokenStore::new();
+            let mut live_vec: Vec<TokenId> = Vec::new();
+
+            #[allow(clippy::cast_possible_truncation)]
+            let mut token_count: u32 = 0;
+
+            for op in &ops {
+                match *op {
+                    Op::InsertRoot { fact_idx } | Op::InsertChild { fact_idx, .. } => {
+                        let parent = match *op {
+                            Op::InsertChild { parent_idx, .. } if !live_vec.is_empty() => {
+                                Some(live_vec[parent_idx % live_vec.len()])
+                            }
+                            _ => None,
+                        };
+                        let fid = fact_ids[fact_idx % fact_ids.len()];
+                        let t = Token {
+                            facts: smallvec::smallvec![fid],
+                            bindings: BindingSet::new(),
+                            parent,
+                            owner_node: NodeId(token_count),
+                        };
+                        token_count += 1;
+                        let id = store.insert(t);
+                        // Must be retrievable immediately after insertion.
+                        prop_assert!(store.get(id).is_some(), "get() returned None right after insert");
+                        live_vec.push(id);
+                    }
+                    Op::Remove { idx } => {
+                        if live_vec.is_empty() { continue; }
+                        let pick = idx % live_vec.len();
+                        let id = live_vec.swap_remove(pick);
+                        store.remove(id);
+                        prop_assert!(store.get(id).is_none(), "get() returned Some after remove");
+                    }
+                    Op::RemoveCascade { idx } => {
+                        if live_vec.is_empty() { continue; }
+                        let pick = idx % live_vec.len();
+                        let root = live_vec[pick];
+                        let removed: HashSet<TokenId> = store
+                            .remove_cascade(root)
+                            .into_iter()
+                            .map(|(id, _)| id)
+                            .collect();
+                        live_vec.retain(|id| !removed.contains(id));
+                        for id in &removed {
+                            prop_assert!(
+                                store.get(*id).is_none(),
+                                "get() returned Some for cascade-removed token"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        /// `len()` always matches the number of live tokens in the shadow model.
+        #[test]
+        fn len_tracks_live_tokens(ops in scenario_strategy()) {
+            let (store, model) = run_scenario(&ops);
+            prop_assert_eq!(
+                store.len(),
+                model.live.len(),
+                "store.len()={} but shadow model has {} live tokens",
+                store.len(),
+                model.live.len()
+            );
+        }
+
+        /// After `remove_cascade(root)`, neither root nor any of its descendants
+        /// (as computed by the shadow model) are reachable via `get()`.
+        #[test]
+        fn cascade_removes_all_descendants(ops in scenario_strategy()) {
+            let (mut store, model) = run_scenario(&ops);
+
+            // Pick all root tokens (no parent) from the live set, cascade each
+            // one and verify the subtree disappears.
+            let roots: Vec<TokenId> = model
+                .live
+                .iter()
+                .filter(|&&id| model.parent_of.get(&id).copied().flatten().is_none())
+                .copied()
+                .collect();
+
+            for root in roots {
+                if store.get(root).is_none() {
+                    // Already removed by a previous cascade in this test.
+                    continue;
+                }
+                // Compute expected subtree before cascading.
+                let subtree: HashSet<TokenId> = {
+                    // Walk live_vec in the store to find all descendants.
+                    let mut desc = HashSet::new();
+                    let mut stack = vec![root];
+                    while let Some(id) = stack.pop() {
+                        if desc.insert(id) {
+                            let children: Vec<_> = store.children(id).collect();
+                            stack.extend(children);
+                        }
+                    }
+                    desc
+                };
+
+                store.remove_cascade(root);
+
+                for id in &subtree {
+                    prop_assert!(
+                        store.get(*id).is_none(),
+                        "token {:?} still reachable after cascade from root {:?}",
+                        id,
+                        root
+                    );
+                }
+                store.debug_assert_consistency();
+            }
+        }
+
+        /// After `remove_cascade(root)`, tokens outside root's subtree remain
+        /// accessible.
+        #[test]
+        fn cascade_preserves_unrelated_tokens(ops in scenario_strategy()) {
+            let (mut store, _model) = run_scenario(&ops);
+
+            // Only proceed if there are at least two independent root subtrees.
+            let all_live: Vec<TokenId> = store
+                .tokens
+                .keys()
+                .collect();
+
+            if all_live.len() < 2 {
+                return Ok(());
+            }
+
+            // Find a root (token with no parent still alive).
+            let root = all_live.iter().find(|&&id| {
+                store.get(id).and_then(|t| t.parent).is_none()
+            });
+            let Some(&root) = root else { return Ok(()) };
+
+            // Compute the subtree of that root.
+            let subtree: HashSet<TokenId> = {
+                let mut desc = HashSet::new();
+                let mut stack = vec![root];
+                while let Some(id) = stack.pop() {
+                    if desc.insert(id) {
+                        let children: Vec<_> = store.children(id).collect();
+                        stack.extend(children);
+                    }
+                }
+                desc
+            };
+
+            // Tokens outside the subtree.
+            let unrelated: Vec<TokenId> = all_live
+                .iter()
+                .filter(|id| !subtree.contains(id))
+                .copied()
+                .collect();
+
+            store.remove_cascade(root);
+
+            for id in unrelated {
+                prop_assert!(
+                    store.get(id).is_some(),
+                    "token {:?} (outside subtree of {:?}) missing after cascade",
+                    id,
+                    root
+                );
+            }
+            store.debug_assert_consistency();
+        }
+
+        /// For every live token, each of its unique facts maps back to that token
+        /// via `tokens_containing()`.  And every entry returned by
+        /// `tokens_containing(f)` actually contains `f` in its `facts` vec.
+        #[test]
+        fn fact_to_tokens_bidirectional(ops in scenario_strategy()) {
+            let (store, _model) = run_scenario(&ops);
+
+            // Forward: every live token's unique facts index back to it.
+            for (token_id, token) in &store.tokens {
+                let mut seen_facts: SmallVec<[FactId; 4]> = SmallVec::new();
+                for &fid in &token.facts {
+                    if seen_facts.contains(&fid) {
+                        continue;
+                    }
+                    seen_facts.push(fid);
+                    let indexed: Vec<_> = store.tokens_containing(fid).collect();
+                    prop_assert!(
+                        indexed.contains(&token_id),
+                        "token {:?} has fact {:?} but tokens_containing() doesn't include it",
+                        token_id,
+                        fid
+                    );
+                }
+            }
+
+            // Reverse: every entry returned by tokens_containing(f) has f in its facts.
+            for (&fact_id, token_ids) in &store.fact_to_tokens {
+                for &tid in token_ids {
+                    let token = store.get(tid).expect("index references non-existent token");
+                    prop_assert!(
+                        token.facts.contains(&fact_id),
+                        "tokens_containing({:?}) includes {:?} but that token doesn't contain the fact",
+                        fact_id,
+                        tid
+                    );
+                }
+            }
+        }
+
+        /// For every live token whose parent is also alive, the parent's
+        /// `children()` includes it.  And every `children(p)` entry has
+        /// `parent == Some(p)`.
+        #[test]
+        fn parent_to_children_bidirectional(ops in scenario_strategy()) {
+            let (store, _model) = run_scenario(&ops);
+
+            // Forward: every live token with a live parent appears in the parent's children.
+            for (token_id, token) in &store.tokens {
+                if let Some(parent_id) = token.parent {
+                    if store.get(parent_id).is_some() {
+                        let children: Vec<_> = store.children(parent_id).collect();
+                        prop_assert!(
+                            children.contains(&token_id),
+                            "token {:?} has live parent {:?} but is not in children()",
+                            token_id,
+                            parent_id
+                        );
+                    }
+                }
+            }
+
+            // Reverse: every child returned by children(p) has parent == Some(p).
+            for (&parent_id, child_ids) in &store.parent_to_children {
+                for &cid in child_ids {
+                    let child = store.get(cid).expect("index references non-existent child token");
+                    prop_assert_eq!(
+                        child.parent,
+                        Some(parent_id),
+                        "children({:?}) includes {:?} but that token's parent is {:?}",
+                        parent_id,
+                        cid,
+                        child.parent
+                    );
+                }
+            }
+        }
+
+        /// Every token in the affected set is either a retraction root itself or
+        /// a descendant of a root in the returned set.
+        #[test]
+        fn retraction_roots_coverage(ops in scenario_strategy()) {
+            let (store, _model) = run_scenario(&ops);
+
+            if store.is_empty() {
+                return Ok(());
+            }
+
+            let all_live: HashSet<TokenId> = store.tokens.keys().collect();
+            let roots = store.retraction_roots(&all_live);
+            let roots_set: HashSet<TokenId> = roots.iter().copied().collect();
+
+            for &affected_id in &all_live {
+                // Walk up to see if this token's ancestor chain hits a root.
+                let mut current = affected_id;
+                let mut covered = false;
+                loop {
+                    if roots_set.contains(&current) {
+                        covered = true;
+                        break;
+                    }
+                    match store.get(current).and_then(|t| t.parent) {
+                        Some(parent_id) if store.get(parent_id).is_some() => {
+                            current = parent_id;
+                        }
+                        _ => break,
+                    }
+                }
+                prop_assert!(
+                    covered,
+                    "token {:?} is not covered by any retraction root",
+                    affected_id
+                );
+            }
+        }
+
+        /// No root returned by `retraction_roots` has an ancestor that is also
+        /// in the affected set.
+        #[test]
+        fn retraction_roots_minimality(ops in scenario_strategy()) {
+            let (store, _model) = run_scenario(&ops);
+
+            if store.is_empty() {
+                return Ok(());
+            }
+
+            let all_live: HashSet<TokenId> = store.tokens.keys().collect();
+            let roots = store.retraction_roots(&all_live);
+
+            for &root_id in &roots {
+                let mut current = root_id;
+                while let Some(token) = store.get(current) {
+                    match token.parent {
+                        Some(parent_id) => {
+                            prop_assert!(
+                                !all_live.contains(&parent_id),
+                                "retraction root {:?} has ancestor {:?} in the affected set",
+                                root_id,
+                                parent_id
+                            );
+                            current = parent_id;
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+
+        /// A token whose `facts` vec contains the same `FactId` twice still only
+        /// appears once in `fact_to_tokens` for that fact.
+        #[test]
+        fn duplicate_fact_dedup_in_index(count in 1..30_usize) {
+            let mut fact_pool: SlotMap<FactId, ()> = SlotMap::with_key();
+            let fid = fact_pool.insert(());
+
+            let mut store = TokenStore::new();
 
             #[allow(clippy::cast_possible_truncation)]
             for i in 0..count {
-                let fact_id = temp_facts.insert(());
-                let token = Token {
-                    facts: smallvec::smallvec![fact_id],
+                // Each token references the same FactId twice.
+                let t = Token {
+                    facts: smallvec::smallvec![fid, fid],
                     bindings: BindingSet::new(),
                     parent: None,
                     owner_node: NodeId(i as u32),
                 };
-                store.insert(token);
+                store.insert(t);
             }
 
-            prop_assert_eq!(store.len(), count);
+            // There should be exactly `count` tokens in the index (one per token,
+            // no duplicates within a token's entry).
+            let indexed: Vec<_> = store.tokens_containing(fid).collect();
+            prop_assert_eq!(
+                indexed.len(),
+                count,
+                "expected {} entries in fact_to_tokens but found {}",
+                count,
+                indexed.len()
+            );
             store.debug_assert_consistency();
         }
 
+        /// Removing an already-removed `TokenId` returns `None`
+        /// and does not change `len()`.
         #[test]
-        fn insert_then_remove_cascade_leaves_empty_store(depth in 1..10_usize) {
+        fn remove_already_removed_is_noop(count in 1..20_usize) {
             let mut store = TokenStore::new();
-            let mut temp_facts: SlotMap<FactId, ()> = SlotMap::with_key();
 
-            // Build a chain: t0 -> t1 -> t2 -> ... -> t[depth-1]
-            let mut parent_id = None;
-            let mut root_id = None;
+            // Insert `count` tokens, then remove the first and try again.
+            let mut ids = Vec::new();
+            #[allow(clippy::cast_possible_truncation)]
+            for i in 0..count {
+                let id = store.insert(Token {
+                    facts: SmallVec::new(),
+                    bindings: BindingSet::new(),
+                    parent: None,
+                    owner_node: NodeId(i as u32),
+                });
+                ids.push(id);
+            }
+
+            let target = ids[0];
+            let first = store.remove(target);
+            prop_assert!(first.is_some(), "first remove must return Some");
+            store.debug_assert_consistency();
+
+            let before_len = store.len();
+            let second = store.remove(target);
+            prop_assert!(second.is_none(), "second remove of same ID returned Some");
+            prop_assert_eq!(store.len(), before_len, "len changed after removing already-removed ID");
+            store.debug_assert_consistency();
+        }
+
+        /// When the entire store is a single chain (root → … → leaf) and we
+        /// cascade from the root, the store becomes empty.
+        #[test]
+        fn cascade_from_root_empties_store(depth in 1..20_usize) {
+            let mut fact_pool: SlotMap<FactId, ()> = SlotMap::with_key();
+            let fact_ids: Vec<FactId> = (0..depth).map(|_| fact_pool.insert(())).collect();
+
+            let mut store = TokenStore::new();
+            let mut parent_id: Option<TokenId> = None;
+            let mut root_id: Option<TokenId> = None;
 
             #[allow(clippy::cast_possible_truncation)]
-            for i in 0..depth {
-                let fact_id = temp_facts.insert(());
-                let token = Token {
+            for (i, &fact_id) in fact_ids.iter().enumerate().take(depth) {
+                let t = Token {
                     facts: smallvec::smallvec![fact_id],
                     bindings: BindingSet::new(),
                     parent: parent_id,
                     owner_node: NodeId(i as u32),
                 };
-                let id = store.insert(token);
-
-                if i == 0 {
+                let id = store.insert(t);
+                if root_id.is_none() {
                     root_id = Some(id);
                 }
                 parent_id = Some(id);
             }
 
             prop_assert_eq!(store.len(), depth);
-
-            // Cascade from root should remove everything
             store.remove_cascade(root_id.unwrap());
-            prop_assert!(store.is_empty());
+            prop_assert!(store.is_empty(), "store not empty after cascading from chain root");
             store.debug_assert_consistency();
-        }
-
-        #[test]
-        fn retraction_roots_never_returns_ancestors_of_other_affected_tokens(
-            // Generate random tree structure
-            ops in prop::collection::vec((0..10_usize, any::<bool>()), 1..30)
-        ) {
-            let mut store = TokenStore::new();
-            let mut temp_facts: SlotMap<FactId, ()> = SlotMap::with_key();
-            let mut token_ids = Vec::new();
-
-            // Build tokens with random parent relationships
-            #[allow(clippy::cast_possible_truncation)]
-            for (parent_idx, has_parent) in ops {
-                let fact_id = temp_facts.insert(());
-                let parent = if has_parent && !token_ids.is_empty() {
-                    let idx = parent_idx % token_ids.len();
-                    Some(token_ids[idx])
-                } else {
-                    None
-                };
-
-                let token = Token {
-                    facts: smallvec::smallvec![fact_id],
-                    bindings: BindingSet::new(),
-                    parent,
-                    owner_node: NodeId(token_ids.len() as u32),
-                };
-                let id = store.insert(token);
-                token_ids.push(id);
-            }
-
-            if token_ids.is_empty() {
-                return Ok(());
-            }
-
-            // Pick a random subset as affected
-            let affected: HashSet<_> = token_ids.iter()
-                .enumerate()
-                .filter(|(i, _)| i % 2 == 0)
-                .map(|(_, &id)| id)
-                .collect();
-
-            if affected.is_empty() {
-                return Ok(());
-            }
-
-            let roots = store.retraction_roots(&affected);
-
-            // Verify: for each root, none of its ancestors should be in affected
-            for &root_id in &roots {
-                let mut current = root_id;
-                while let Some(token) = store.get(current) {
-                    if let Some(parent_id) = token.parent {
-                        prop_assert!(
-                            !affected.contains(&parent_id),
-                            "root {:?} has ancestor {:?} in affected set",
-                            root_id,
-                            parent_id
-                        );
-                        current = parent_id;
-                    } else {
-                        break;
-                    }
-                }
-            }
         }
     }
 }
