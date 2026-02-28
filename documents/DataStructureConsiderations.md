@@ -156,6 +156,22 @@ For each experiment:
 - The structure is straightforward, but it touches several related registries,
   so this should land as one tightly scoped change with focused tests.
 
+**Experiment note (2026-02-28)**
+
+- `crates/ferric-runtime/src/functions.rs` had already moved to the nested
+  `ModuleNameMap<T>` layout before this pass, so the remaining work here was the
+  three module-ownership bookkeeping maps in `crates/ferric-runtime/src/engine.rs`.
+- Converting `function_modules`, `global_modules`, and `generic_modules` from
+  `HashMap<(ModuleId, String), ModuleId>` to `ModuleNameMap<ModuleId>` was kept.
+- The targeted load-path microbenchmarks all stayed within Criterion's noise
+  threshold after the conversion:
+  - `function_owner_map_load_cycle`: roughly `310.7 us` to `314.7 us`
+  - `global_owner_map_load_cycle`: roughly `228.0 us` to `226.4 us`
+  - `generic_owner_map_load_cycle`: roughly `173.8 us` to `176.1 us`
+- That makes the runtime impact effectively neutral while aligning these fields
+  with the already-nested registries and removing the temporary owned-string
+  lookup in debug consistency checks.
+
 ### 3. Replace `RuleId`-Keyed Hash Maps with Dense Indexed Vectors
 
 **Current structures**

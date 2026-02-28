@@ -7,7 +7,6 @@
 //! into a normalized `RuntimeExpr`, which is then evaluated against a set of
 //! variable bindings to produce a runtime `Value`.
 
-use rustc_hash::FxHashMap as HashMap;
 use std::collections::VecDeque;
 
 use ferric_core::binding::{BindingSet, VarMap};
@@ -189,11 +188,11 @@ pub struct EvalContext<'a> {
     /// Module registry for visibility checks.
     pub module_registry: &'a crate::modules::ModuleRegistry,
     /// Function-to-module map for visibility checking.
-    pub function_modules: &'a HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
+    pub function_modules: &'a crate::functions::ModuleNameMap<crate::modules::ModuleId>,
     /// Global-to-module map for visibility checking.
-    pub global_modules: &'a HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
+    pub global_modules: &'a crate::functions::ModuleNameMap<crate::modules::ModuleId>,
     /// Generic-to-module map for visibility checking.
-    pub generic_modules: &'a HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>,
+    pub generic_modules: &'a crate::functions::ModuleNameMap<crate::modules::ModuleId>,
     /// Active method dispatch chain for `call-next-method` (None when not inside a generic method).
     pub method_chain: Option<MethodChain>,
     /// Input buffer for `read`/`readline`. `None` when no input source is connected.
@@ -3177,7 +3176,7 @@ mod tests {
     use ferric_core::binding::{BindingSet, VarMap};
     use std::rc::Rc;
 
-    type ModuleNameMap = HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>;
+    type ModuleOwnershipMap = crate::functions::ModuleNameMap<crate::modules::ModuleId>;
     type TestCtx = (
         SymbolTable,
         VarMap,
@@ -3187,7 +3186,7 @@ mod tests {
         GlobalStore,
         GenericRegistry,
         crate::modules::ModuleRegistry,
-        ModuleNameMap,
+        ModuleOwnershipMap,
     );
 
     /// Create a default test context tuple.
@@ -3200,7 +3199,7 @@ mod tests {
         let globals = GlobalStore::new();
         let generics = GenericRegistry::new();
         let module_registry = crate::modules::ModuleRegistry::new();
-        let empty_modules: ModuleNameMap = HashMap::default();
+        let empty_modules: ModuleOwnershipMap = rustc_hash::FxHashMap::default();
         (
             symbol_table,
             var_map,

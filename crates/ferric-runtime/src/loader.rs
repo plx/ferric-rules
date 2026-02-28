@@ -39,7 +39,7 @@ use ferric_parser::{
 
 use crate::actions::CompiledRuleInfo;
 use crate::engine::{Engine, EngineError};
-use crate::functions::UserFunction;
+use crate::functions::{get_or_insert_module_entry_with, insert_module_entry, UserFunction};
 use crate::templates::RegisteredTemplate;
 // GenericRegistry accessed via self.generics (field on Engine)
 
@@ -287,8 +287,12 @@ impl Engine {
                             ));
                             continue;
                         }
-                        self.function_modules
-                            .insert((owning_module, func.name.clone()), owning_module);
+                        insert_module_entry(
+                            &mut self.function_modules,
+                            owning_module,
+                            func.name.clone(),
+                            owning_module,
+                        );
                         // Register in the function environment for runtime use.
                         self.functions.register(
                             owning_module,
@@ -305,8 +309,12 @@ impl Engine {
                         // Record the owning module for each global defined in this construct.
                         let owning_module = self.module_registry.current_module();
                         for def in &global.globals {
-                            self.global_modules
-                                .insert((owning_module, def.name.clone()), owning_module);
+                            insert_module_entry(
+                                &mut self.global_modules,
+                                owning_module,
+                                def.name.clone(),
+                                owning_module,
+                            );
                         }
                         // Evaluate initial values and store in the global store.
                         if let Err(e) = self.process_global_construct(&global) {
@@ -345,8 +353,12 @@ impl Engine {
                                 &generic.span,
                             ));
                         } else {
-                            self.generic_modules
-                                .insert((owning_module, generic.name.clone()), owning_module);
+                            insert_module_entry(
+                                &mut self.generic_modules,
+                                owning_module,
+                                generic.name.clone(),
+                                owning_module,
+                            );
                             // Register the generic function declaration.
                             self.generics.register_generic(owning_module, &generic.name);
                             result.generics.push(generic);
@@ -382,9 +394,12 @@ impl Engine {
                         }
                         // Auto-create the generic module entry if it doesn't exist yet
                         // (a defmethod with no preceding defgeneric auto-creates the generic).
-                        self.generic_modules
-                            .entry((owning_module, method.name.clone()))
-                            .or_insert(owning_module);
+                        let _ = get_or_insert_module_entry_with(
+                            &mut self.generic_modules,
+                            owning_module,
+                            &method.name,
+                            || owning_module,
+                        );
                         // Register the method in the generic registry.
                         // Extract parameter names and type restrictions from MethodParameter structs.
                         let param_names: Vec<String> =

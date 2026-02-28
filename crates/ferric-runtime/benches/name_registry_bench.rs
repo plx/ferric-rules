@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ferric_runtime::functions::{FunctionEnv, GenericRegistry, GlobalStore, UserFunction};
-use ferric_runtime::{ModuleId, ModuleRegistry};
+use ferric_runtime::{Engine, EngineConfig, ModuleId, ModuleRegistry};
 
 fn module_ids(count: usize) -> Vec<ModuleId> {
     (0..count).map(|idx| ModuleId(idx as u32)).collect()
@@ -63,6 +63,45 @@ fn build_module_registry(names: &[String]) -> ModuleRegistry {
         registry.register(name, Vec::new(), Vec::new());
     }
     registry
+}
+
+fn many_deffunctions_source(module_count: usize, names_per_module: usize) -> String {
+    let mut source = String::new();
+    for module_idx in 0..module_count {
+        if module_idx > 0 {
+            source.push_str(&format!("(defmodule M{module_idx} (export ?ALL))\n"));
+        }
+        for name_idx in 0..names_per_module {
+            source.push_str(&format!("(deffunction f{name_idx} (?x) ?x)\n"));
+        }
+    }
+    source
+}
+
+fn many_defglobals_source(module_count: usize, names_per_module: usize) -> String {
+    let mut source = String::new();
+    for module_idx in 0..module_count {
+        if module_idx > 0 {
+            source.push_str(&format!("(defmodule G{module_idx} (export ?ALL))\n"));
+        }
+        for name_idx in 0..names_per_module {
+            source.push_str(&format!("(defglobal ?*g{name_idx}* = {name_idx})\n"));
+        }
+    }
+    source
+}
+
+fn many_defgenerics_source(module_count: usize, names_per_module: usize) -> String {
+    let mut source = String::new();
+    for module_idx in 0..module_count {
+        if module_idx > 0 {
+            source.push_str(&format!("(defmodule D{module_idx} (export ?ALL))\n"));
+        }
+        for name_idx in 0..names_per_module {
+            source.push_str(&format!("(defgeneric h{name_idx})\n"));
+        }
+    }
+    source
 }
 
 fn bench_function_env_lookup(c: &mut Criterion) {
@@ -170,11 +209,59 @@ fn bench_module_registry_lookup(c: &mut Criterion) {
     });
 }
 
+fn bench_function_owner_map_load(c: &mut Criterion) {
+    let source = many_deffunctions_source(16, 32);
+
+    c.bench_function("function_owner_map_load_cycle", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            black_box(
+                engine
+                    .load_str(black_box(&source))
+                    .expect("load deffunctions"),
+            );
+        });
+    });
+}
+
+fn bench_global_owner_map_load(c: &mut Criterion) {
+    let source = many_defglobals_source(16, 32);
+
+    c.bench_function("global_owner_map_load_cycle", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            black_box(
+                engine
+                    .load_str(black_box(&source))
+                    .expect("load defglobals"),
+            );
+        });
+    });
+}
+
+fn bench_generic_owner_map_load(c: &mut Criterion) {
+    let source = many_defgenerics_source(16, 32);
+
+    c.bench_function("generic_owner_map_load_cycle", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            black_box(
+                engine
+                    .load_str(black_box(&source))
+                    .expect("load defgenerics"),
+            );
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_function_env_lookup,
     bench_global_store_lookup,
     bench_generic_registry_lookup,
     bench_module_registry_lookup,
+    bench_function_owner_map_load,
+    bench_global_owner_map_load,
+    bench_generic_owner_map_load,
 );
 criterion_main!(benches);

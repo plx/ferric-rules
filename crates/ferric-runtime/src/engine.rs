@@ -20,7 +20,7 @@ use ferric_core::{
 use crate::actions::{self, ActionError, CompiledRuleInfo};
 use crate::config::EngineConfig;
 use crate::execution::{FiredRule, HaltReason, RunLimit, RunResult};
-use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore};
+use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore, ModuleNameMap};
 use crate::modules::{ModuleId, ModuleRegistry};
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
@@ -126,11 +126,11 @@ pub struct Engine {
     /// Template-to-module association for visibility checking.
     pub(crate) template_modules: slotmap::SecondaryMap<ferric_core::TemplateId, ModuleId>,
     /// Function-to-module association for consistency-check bookkeeping.
-    pub(crate) function_modules: HashMap<(ModuleId, String), ModuleId>,
+    pub(crate) function_modules: ModuleNameMap<ModuleId>,
     /// Global-to-module association for consistency-check bookkeeping.
-    pub(crate) global_modules: HashMap<(ModuleId, String), ModuleId>,
+    pub(crate) global_modules: ModuleNameMap<ModuleId>,
     /// Generic-to-module association for consistency-check bookkeeping.
-    pub(crate) generic_modules: HashMap<(ModuleId, String), ModuleId>,
+    pub(crate) generic_modules: ModuleNameMap<ModuleId>,
     /// The `FactId` of the synthetic `(initial-fact)` in working memory, if present.
     ///
     /// `(initial-fact)` is asserted by the engine to provide a root token for
@@ -873,45 +873,54 @@ impl Engine {
         for (&module_id, local_names) in &self.functions.functions {
             for name in local_names.keys() {
                 assert!(
-                    self.function_modules
-                        .contains_key(&(module_id, name.to_string())),
+                    crate::functions::contains_module_entry(
+                        &self.function_modules,
+                        module_id,
+                        name
+                    ),
                     "function `{name}` in module {module_id:?} missing from function_modules"
                 );
             }
         }
-        for ((module_id, name), &owner_module) in &self.function_modules {
-            assert!(
-                self.functions.contains(*module_id, name),
-                "function_modules contains `{name}` in module {module_id:?} but function not registered"
-            );
-            assert!(
-                self.module_registry.get(owner_module).is_some(),
-                "function `{name}` points to unknown module {owner_module:?}"
-            );
+        for (&module_id, local_names) in &self.function_modules {
+            for (name, &owner_module) in local_names {
+                assert!(
+                    self.functions.contains(module_id, name),
+                    "function_modules contains `{name}` in module {module_id:?} but function not registered"
+                );
+                assert!(
+                    self.module_registry.get(owner_module).is_some(),
+                    "function `{name}` points to unknown module {owner_module:?}"
+                );
+            }
         }
 
         // Verify global module associations
-        for ((module_id, name), &owner_module) in &self.global_modules {
-            assert!(
-                self.globals.contains(*module_id, name),
-                "global_modules contains `{name}` in module {module_id:?} but global not registered"
-            );
-            assert!(
-                self.module_registry.get(owner_module).is_some(),
-                "global `{name}` points to unknown module {owner_module:?}"
-            );
+        for (&module_id, local_names) in &self.global_modules {
+            for (name, &owner_module) in local_names {
+                assert!(
+                    self.globals.contains(module_id, name),
+                    "global_modules contains `{name}` in module {module_id:?} but global not registered"
+                );
+                assert!(
+                    self.module_registry.get(owner_module).is_some(),
+                    "global `{name}` points to unknown module {owner_module:?}"
+                );
+            }
         }
 
         // Verify generic module associations
-        for ((module_id, name), &owner_module) in &self.generic_modules {
-            assert!(
-                self.generics.contains(*module_id, name),
-                "generic_modules contains `{name}` in module {module_id:?} but generic not registered"
-            );
-            assert!(
-                self.module_registry.get(owner_module).is_some(),
-                "generic `{name}` points to unknown module {owner_module:?}"
-            );
+        for (&module_id, local_names) in &self.generic_modules {
+            for (name, &owner_module) in local_names {
+                assert!(
+                    self.generics.contains(module_id, name),
+                    "generic_modules contains `{name}` in module {module_id:?} but generic not registered"
+                );
+                assert!(
+                    self.module_registry.get(owner_module).is_some(),
+                    "generic `{name}` points to unknown module {owner_module:?}"
+                );
+            }
         }
     }
 }

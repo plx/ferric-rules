@@ -26,7 +26,7 @@ use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
 
 type OrderedFields = smallvec::SmallVec<[Value; 8]>;
-type ModuleLookup = HashMap<(crate::modules::ModuleId, String), crate::modules::ModuleId>;
+type ModuleLookup = crate::functions::ModuleNameMap<crate::modules::ModuleId>;
 
 pub(crate) struct ActionExecutionContext<'a> {
     pub fact_base: &'a mut FactBase,
