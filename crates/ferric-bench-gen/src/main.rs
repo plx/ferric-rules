@@ -135,6 +135,125 @@ fn generate_manners_source(n_guests: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Join-width generator (from crates/ferric/benches/join_bench.rs)
+// ---------------------------------------------------------------------------
+
+fn generate_join_source(width: usize, n_keys: usize) -> String {
+    let mut source = String::new();
+
+    for w in 0..width {
+        writeln!(source, "(deftemplate layer-{w} (slot key) (slot val))").unwrap();
+    }
+    writeln!(source, "(deftemplate result (slot key) (slot matched))").unwrap();
+    source.push('\n');
+
+    source.push_str("(deffacts data\n");
+    for w in 0..width {
+        for k in 0..n_keys {
+            writeln!(source, "    (layer-{w} (key k{k}) (val v{w}-{k}))").unwrap();
+        }
+    }
+    source.push_str(")\n\n");
+
+    source.push_str("(defrule wide-join\n");
+    for w in 0..width {
+        writeln!(source, "    (layer-{w} (key ?k) (val ?v{w}))").unwrap();
+    }
+    source.push_str("    =>\n");
+    source.push_str("    (assert (result (key ?k) (matched yes))))\n");
+
+    source
+}
+
+// ---------------------------------------------------------------------------
+// Churn generator (from crates/ferric/benches/churn_bench.rs)
+// ---------------------------------------------------------------------------
+
+fn generate_churn_source(n_items: usize) -> String {
+    let mut source = String::from(
+        "\
+(deftemplate item (slot id) (slot status (default pending)))
+(deftemplate phase (slot name))
+
+(deffacts initial
+    (phase (name run))\n",
+    );
+
+    for i in 0..n_items {
+        writeln!(source, "    (item (id {i}) (status pending))").unwrap();
+    }
+
+    source.push_str(
+        ")
+
+(defrule process-item
+    (declare (salience 10))
+    (phase (name run))
+    ?item <- (item (id ?id) (status pending))
+    =>
+    (modify ?item (status done)))
+
+(defrule cleanup-item
+    (declare (salience 5))
+    (phase (name run))
+    ?item <- (item (id ?id) (status done))
+    =>
+    (retract ?item))
+
+(defrule all-done
+    (declare (salience -10))
+    (phase (name run))
+    (not (item))
+    =>
+    (printout t \"All items processed\" crlf))
+",
+    );
+    source
+}
+
+// ---------------------------------------------------------------------------
+// Negation generator (from crates/ferric/benches/negation_bench.rs)
+// ---------------------------------------------------------------------------
+
+fn generate_negation_source(n_blockers: usize) -> String {
+    let mut source = String::from(
+        "\
+(deftemplate signal (slot name))
+(deftemplate blocker (slot name) (slot seq))
+(deftemplate phase (slot name))
+
+(deffacts setup
+    (phase (name clear))
+    (signal (name S))\n",
+    );
+
+    for i in 0..n_blockers {
+        writeln!(source, "    (blocker (name S) (seq {i}))").unwrap();
+    }
+
+    source.push_str(
+        ")
+
+(defrule remove-blocker
+    (declare (salience 10))
+    (phase (name clear))
+    ?b <- (blocker)
+    =>
+    (retract ?b))
+
+(defrule signal-clear
+    (declare (salience -10))
+    (phase (name clear))
+    (signal (name ?n))
+    (not (blocker (name ?n)))
+    =>
+    (printout t \"Signal clear\" crlf))
+",
+    );
+    source
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -195,6 +314,9 @@ fn main() {
 
     let waltz_sizes = [5, 20, 50, 100];
     let manners_sizes = [8, 16, 32, 64];
+    let join_widths = [3, 5, 7, 9];
+    let churn_sizes = [100, 500, 2000, 10000];
+    let negation_sizes = [50, 200, 1000, 5000];
 
     for &n in &waltz_sizes {
         let source = generate_waltz_source(n);
@@ -212,9 +334,39 @@ fn main() {
         }
     }
 
+    let join_n_keys = 100;
+    for &w in &join_widths {
+        let source = generate_join_source(w, join_n_keys);
+        if let Err(e) = write_workload(&config.output_dir, &format!("join-{w}"), &source) {
+            eprintln!("error writing join-{w}.clp: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    for &n in &churn_sizes {
+        let source = generate_churn_source(n);
+        if let Err(e) = write_workload(&config.output_dir, &format!("churn-{n}"), &source) {
+            eprintln!("error writing churn-{n}.clp: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    for &n in &negation_sizes {
+        let source = generate_negation_source(n);
+        if let Err(e) = write_workload(&config.output_dir, &format!("negation-{n}"), &source) {
+            eprintln!("error writing negation-{n}.clp: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    let total = waltz_sizes.len()
+        + manners_sizes.len()
+        + join_widths.len()
+        + churn_sizes.len()
+        + negation_sizes.len();
     eprintln!(
         "Done. {} workloads written to {}",
-        waltz_sizes.len() + manners_sizes.len(),
+        total,
         config.output_dir.display()
     );
 }

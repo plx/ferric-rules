@@ -27,5 +27,17 @@ harness = false
 name = "waltz_bench"
 harness = false
 
+[[bench]]
+name = "join_bench"
+harness = false
+
+[[bench]]
+name = "churn_bench"
+harness = false
+
+[[bench]]
+name = "negation_bench"
+harness = false
+
 [lints]
 workspace = true

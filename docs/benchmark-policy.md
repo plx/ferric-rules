@@ -27,6 +27,20 @@ Thresholds are evaluated against Criterion `median.point_estimate` (ns) from
 These thresholds are intentionally conservative to minimize CI flake while still
 failing catastrophic regressions deterministically.
 
+### Stress Benchmarks (no thresholds yet)
+
+The following stress-test suites are run by `bench-thresholds` for data collection
+but do not yet have enforced thresholds (pending baseline data):
+
+| Suite | Benchmarks | Target subsystem |
+|---|---|---|
+| `join_bench` | `join_{3,5,7,9}_wide` | Beta network depth / token propagation |
+| `churn_bench` | `churn_{100,500,2000,10000}_facts` | Fact assert/modify/retract volume |
+| `negation_bench` | `negation_{50,200,1000,5000}_blockers` | Negative node blocker management |
+
+These are designed to reveal superlinear scaling by comparing runtimes across sizes.
+Thresholds will be added once baseline measurements are established.
+
 ## CI Integration
 
 | Job | Trigger | Mode | Blocking? |
