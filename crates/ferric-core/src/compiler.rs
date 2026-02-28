@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
 use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
+use crate::fact::FactBase;
 use crate::rete::ReteNetwork;
 use crate::symbol::Symbol;
 use crate::token::NodeId;
@@ -130,25 +131,27 @@ impl ReteCompiler {
     pub fn compile_rule(
         &mut self,
         rete: &mut ReteNetwork,
+        fact_base: &FactBase,
         rule: &CompilableRule,
     ) -> Result<CompileResult, CompileError> {
         Self::ensure_non_empty(&rule.patterns)?;
         Self::validate_rule_patterns(&rule.patterns)?;
         let conditions = Self::patterns_as_conditions(&rule.patterns);
-        self.compile_conditions_unchecked(rete, rule.rule_id, rule.salience, &conditions)
+        self.compile_conditions_unchecked(rete, fact_base, rule.rule_id, rule.salience, &conditions)
     }
 
     /// Compile a sequence of conditional elements into the rete network.
     pub fn compile_conditions(
         &mut self,
         rete: &mut ReteNetwork,
+        fact_base: &FactBase,
         rule_id: RuleId,
         salience: Salience,
         conditions: &[CompilableCondition],
     ) -> Result<CompileResult, CompileError> {
         Self::ensure_non_empty(conditions)?;
         Self::validate_conditions(conditions)?;
-        self.compile_conditions_unchecked(rete, rule_id, salience, conditions)
+        self.compile_conditions_unchecked(rete, fact_base, rule_id, salience, conditions)
     }
 
     fn ensure_non_empty<T>(items: &[T]) -> Result<(), CompileError> {
@@ -169,6 +172,7 @@ impl ReteCompiler {
     fn compile_conditions_unchecked(
         &mut self,
         rete: &mut ReteNetwork,
+        fact_base: &FactBase,
         rule_id: RuleId,
         salience: Salience,
         conditions: &[CompilableCondition],
@@ -183,6 +187,7 @@ impl ReteCompiler {
                 CompilableCondition::Pattern(pattern) => {
                     current_parent = self.compile_pattern(
                         rete,
+                        fact_base,
                         current_parent,
                         pattern,
                         &mut var_map,
@@ -193,6 +198,7 @@ impl ReteCompiler {
                 CompilableCondition::Ncc(subpatterns) => {
                     current_parent = self.compile_ncc_condition(
                         rete,
+                        fact_base,
                         current_parent,
                         subpatterns,
                         &mut var_map,
@@ -426,6 +432,7 @@ impl ReteCompiler {
     fn compile_pattern(
         &mut self,
         rete: &mut ReteNetwork,
+        fact_base: &FactBase,
         current_parent: NodeId,
         pattern: &CompilablePattern,
         var_map: &mut VarMap,
@@ -469,6 +476,16 @@ impl ReteCompiler {
             });
         }
 
+        // Request alpha memory indexing for equality join tests so that
+        // left activations can use O(1) hash lookups instead of full scans.
+        for test in &join_tests {
+            if test.test_type == JoinTestType::Equal {
+                if let Some(mem) = rete.alpha.get_memory_mut(alpha_mem) {
+                    mem.request_index(test.alpha_slot, fact_base);
+                }
+            }
+        }
+
         if pattern.negated {
             let (neg_id, _beta_mem, _neg_mem) =
                 rete.beta
@@ -496,6 +513,7 @@ impl ReteCompiler {
     fn compile_ncc_condition(
         &mut self,
         rete: &mut ReteNetwork,
+        fact_base: &FactBase,
         current_parent: NodeId,
         subconditions: &[CompilableCondition],
         var_map: &mut VarMap,
@@ -523,6 +541,7 @@ impl ReteCompiler {
                 CompilableCondition::Pattern(pattern) => {
                     sub_parent = self.compile_pattern(
                         rete,
+                        fact_base,
                         sub_parent,
                         pattern,
                         var_map,
@@ -533,6 +552,7 @@ impl ReteCompiler {
                 CompilableCondition::Ncc(inner_conditions) => {
                     sub_parent = self.compile_ncc_condition(
                         rete,
+                        fact_base,
                         sub_parent,
                         inner_conditions,
                         var_map,
@@ -605,6 +625,7 @@ mod tests {
     fn test_compile_empty_rule_error() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let rule_id = compiler.allocate_rule_id();
 
         let rule = CompilableRule {
@@ -613,7 +634,7 @@ mod tests {
             patterns: vec![],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule);
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule);
         assert!(matches!(result, Err(CompileError::EmptyRule)));
     }
 
@@ -621,6 +642,7 @@ mod tests {
     fn test_single_pattern_no_tests_no_variables() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let relation = intern(&mut table, "person");
@@ -641,7 +663,7 @@ mod tests {
             patterns: vec![pattern],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.rule_id, rule_id);
         assert_eq!(result.alpha_memories.len(), 1);
@@ -662,6 +684,7 @@ mod tests {
     fn test_single_pattern_with_constant_test() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let relation = intern(&mut table, "person");
@@ -688,7 +711,7 @@ mod tests {
             patterns: vec![pattern],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.rule_id, rule_id);
         assert_eq!(result.alpha_memories.len(), 1);
@@ -702,6 +725,7 @@ mod tests {
     fn test_single_pattern_with_variable() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let relation = intern(&mut table, "person");
@@ -723,7 +747,7 @@ mod tests {
             patterns: vec![pattern],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.rule_id, rule_id);
         assert_eq!(result.alpha_memories.len(), 1);
@@ -744,6 +768,7 @@ mod tests {
     fn test_two_patterns_shared_variable_creates_join_test() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let rel1 = intern(&mut table, "person");
@@ -775,7 +800,7 @@ mod tests {
             patterns: vec![pattern1, pattern2],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.rule_id, rule_id);
         assert_eq!(result.alpha_memories.len(), 2);
@@ -791,6 +816,7 @@ mod tests {
     fn test_two_patterns_different_variables_no_join_test() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let rel1 = intern(&mut table, "person");
@@ -823,7 +849,7 @@ mod tests {
             patterns: vec![pattern1, pattern2],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.rule_id, rule_id);
         assert_eq!(result.alpha_memories.len(), 2);
@@ -833,6 +859,7 @@ mod tests {
     fn test_alpha_path_sharing_same_pattern() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let relation = intern(&mut table, "person");
@@ -853,7 +880,9 @@ mod tests {
             salience: Salience::DEFAULT,
             patterns: vec![pattern.clone()],
         };
-        let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
+        let result1 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule1)
+            .unwrap();
 
         // Compile second rule with same pattern
         let rule_id2 = compiler.allocate_rule_id();
@@ -862,7 +891,9 @@ mod tests {
             salience: Salience::DEFAULT,
             patterns: vec![pattern.clone()],
         };
-        let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
+        let result2 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule2)
+            .unwrap();
 
         // Both rules should share the same alpha memory
         assert_eq!(result1.alpha_memories[0], result2.alpha_memories[0]);
@@ -872,6 +903,7 @@ mod tests {
     fn test_alpha_path_sharing_different_patterns() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let rel1 = intern(&mut table, "person");
@@ -902,7 +934,9 @@ mod tests {
             salience: Salience::DEFAULT,
             patterns: vec![pattern1.clone()],
         };
-        let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
+        let result1 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule1)
+            .unwrap();
 
         // Compile second rule with different pattern
         let rule_id2 = compiler.allocate_rule_id();
@@ -911,7 +945,9 @@ mod tests {
             salience: Salience::DEFAULT,
             patterns: vec![pattern2.clone()],
         };
-        let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
+        let result2 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule2)
+            .unwrap();
 
         // Different patterns should have different alpha memories
         assert_ne!(result1.alpha_memories[0], result2.alpha_memories[0]);
@@ -921,6 +957,7 @@ mod tests {
     fn test_join_node_sharing_same_structure_across_rules() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let rel1 = intern(&mut table, "person");
@@ -950,7 +987,9 @@ mod tests {
             salience: Salience::DEFAULT,
             patterns: vec![pattern1.clone(), pattern2.clone()],
         };
-        let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
+        let result1 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule1)
+            .unwrap();
 
         let rule_id2 = compiler.allocate_rule_id();
         let rule2 = CompilableRule {
@@ -958,7 +997,9 @@ mod tests {
             salience: Salience::DEFAULT,
             patterns: vec![pattern1, pattern2],
         };
-        let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
+        let result2 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule2)
+            .unwrap();
 
         let join2_id_1 = terminal_parent(&rete, result1.terminal_node);
         let join2_id_2 = terminal_parent(&rete, result2.terminal_node);
@@ -996,6 +1037,7 @@ mod tests {
     fn test_join_node_not_shared_when_bindings_differ() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let relation = intern(&mut table, "person");
@@ -1027,8 +1069,12 @@ mod tests {
             }],
         };
 
-        let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
-        let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
+        let result1 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule1)
+            .unwrap();
+        let result2 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule2)
+            .unwrap();
 
         // Same alpha path, different join bindings => different join key.
         assert_eq!(result1.alpha_memories[0], result2.alpha_memories[0]);
@@ -1042,6 +1088,7 @@ mod tests {
     fn test_deterministic_compilation() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let relation = intern(&mut table, "person");
@@ -1063,7 +1110,7 @@ mod tests {
             patterns: vec![pattern.clone()],
         };
 
-        let result1 = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result1 = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         // Compile same rule again (with new rule_id)
         let rule_id2 = compiler.allocate_rule_id();
@@ -1072,7 +1119,9 @@ mod tests {
             salience: Salience::DEFAULT,
             patterns: vec![pattern],
         };
-        let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
+        let result2 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule2)
+            .unwrap();
 
         // Should share alpha memory
         assert_eq!(result1.alpha_memories[0], result2.alpha_memories[0]);
@@ -1082,6 +1131,7 @@ mod tests {
     fn test_multiple_constant_tests_chain() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let relation = intern(&mut table, "person");
@@ -1112,7 +1162,7 @@ mod tests {
             patterns: vec![pattern],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.alpha_memories.len(), 1);
         // Verify memory exists
@@ -1124,6 +1174,7 @@ mod tests {
     fn test_constant_test_not_equal() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let relation = intern(&mut table, "person");
@@ -1149,7 +1200,7 @@ mod tests {
             patterns: vec![pattern],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.alpha_memories.len(), 1);
         // Verify memory exists
@@ -1161,6 +1212,7 @@ mod tests {
     fn test_three_pattern_rule_with_variable_binding_chain() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let rel1 = intern(&mut table, "person");
@@ -1202,7 +1254,7 @@ mod tests {
             patterns: vec![pattern1, pattern2, pattern3],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.rule_id, rule_id);
         assert_eq!(result.alpha_memories.len(), 3);
@@ -1216,6 +1268,7 @@ mod tests {
     fn test_alpha_path_sharing_with_constant_tests() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let relation = intern(&mut table, "person");
@@ -1241,7 +1294,9 @@ mod tests {
             salience: Salience::DEFAULT,
             patterns: vec![pattern.clone()],
         };
-        let result1 = compiler.compile_rule(&mut rete, &rule1).unwrap();
+        let result1 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule1)
+            .unwrap();
 
         // Compile second rule with same pattern including constant test
         let rule_id2 = compiler.allocate_rule_id();
@@ -1250,7 +1305,9 @@ mod tests {
             salience: Salience::DEFAULT,
             patterns: vec![pattern],
         };
-        let result2 = compiler.compile_rule(&mut rete, &rule2).unwrap();
+        let result2 = compiler
+            .compile_rule(&mut rete, &fact_base, &rule2)
+            .unwrap();
 
         // Both rules should share the same alpha memory
         assert_eq!(result1.alpha_memories[0], result2.alpha_memories[0]);
@@ -1260,6 +1317,7 @@ mod tests {
     fn test_beta_network_structure() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         // Create template IDs for testing
@@ -1297,7 +1355,7 @@ mod tests {
             patterns: vec![pattern1, pattern2],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.alpha_memories.len(), 2);
 
@@ -1326,6 +1384,7 @@ mod tests {
     fn test_negated_pattern_creates_negative_node() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let item_rel = intern(&mut table, "item");
@@ -1356,7 +1415,7 @@ mod tests {
             patterns: vec![positive_pattern, negated_pattern],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.alpha_memories.len(), 2);
 
@@ -1378,6 +1437,7 @@ mod tests {
     fn test_negated_pattern_with_join_test() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let item_rel = intern(&mut table, "item");
@@ -1410,7 +1470,7 @@ mod tests {
             patterns: vec![pattern1, pattern2],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         assert_eq!(result.alpha_memories.len(), 2);
 
@@ -1435,6 +1495,7 @@ mod tests {
     fn test_exists_pattern_creates_exists_node() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let trigger_rel = intern(&mut table, "trigger");
@@ -1465,7 +1526,7 @@ mod tests {
             patterns: vec![pattern1, pattern2],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
 
         // Walk up from terminal: terminal's parent should be an Exists node
         let terminal = rete.beta.get_node(result.terminal_node).unwrap();
@@ -1484,6 +1545,7 @@ mod tests {
     fn test_negated_pattern_does_not_bind_new_variables() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let a_rel = intern(&mut table, "a");
@@ -1514,7 +1576,7 @@ mod tests {
             patterns: vec![pattern1, pattern2],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
         let join_id = terminal_parent(&rete, result.terminal_node);
         let join_node = rete.beta.get_node(join_id).unwrap();
         match join_node {
@@ -1529,6 +1591,7 @@ mod tests {
     fn test_exists_pattern_does_not_bind_new_variables() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let a_rel = intern(&mut table, "a");
@@ -1559,7 +1622,7 @@ mod tests {
             patterns: vec![pattern1, pattern2],
         };
 
-        let result = compiler.compile_rule(&mut rete, &rule).unwrap();
+        let result = compiler.compile_rule(&mut rete, &fact_base, &rule).unwrap();
         let join_id = terminal_parent(&rete, result.terminal_node);
         let join_node = rete.beta.get_node(join_id).unwrap();
         match join_node {
@@ -1574,6 +1637,7 @@ mod tests {
     fn test_ncc_condition_creates_ncc_and_partner_nodes() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
 
         let item_rel = intern(&mut table, "item");
@@ -1616,7 +1680,13 @@ mod tests {
         ];
 
         let result = compiler
-            .compile_conditions(&mut rete, rule_id, Salience::DEFAULT, &conditions)
+            .compile_conditions(
+                &mut rete,
+                &fact_base,
+                rule_id,
+                Salience::DEFAULT,
+                &conditions,
+            )
             .unwrap();
 
         let terminal = rete.beta.get_node(result.terminal_node).unwrap();
@@ -1642,11 +1712,13 @@ mod tests {
     fn test_compile_conditions_rejects_empty_ncc() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let rule_id = compiler.allocate_rule_id();
 
         let err = compiler
             .compile_conditions(
                 &mut rete,
+                &fact_base,
                 rule_id,
                 Salience::DEFAULT,
                 &[CompilableCondition::Ncc(vec![])],
@@ -1671,6 +1743,7 @@ mod tests {
         // desugaring to NCC([P, neg(Q)]).
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
         let mut table = new_table();
         let rule_id = compiler.allocate_rule_id();
         let rel = intern(&mut table, "checked");
@@ -1696,6 +1769,7 @@ mod tests {
         // Should succeed: NCC([item, neg(checked)]) is the forall(item, checked) desugaring.
         let result = compiler.compile_conditions(
             &mut rete,
+            &fact_base,
             rule_id,
             Salience::DEFAULT,
             &[CompilableCondition::Ncc(vec![
@@ -1729,21 +1803,24 @@ mod tests {
 
         let mut rule_compiler = ReteCompiler::new();
         let mut rule_rete = ReteNetwork::new();
+        let rule_fact_base = FactBase::new();
         let rule = CompilableRule {
             rule_id: rule_compiler.allocate_rule_id(),
             salience: Salience::DEFAULT,
             patterns: vec![invalid_pattern.clone()],
         };
         let rule_error = rule_compiler
-            .compile_rule(&mut rule_rete, &rule)
+            .compile_rule(&mut rule_rete, &rule_fact_base, &rule)
             .unwrap_err();
 
         let mut condition_compiler = ReteCompiler::new();
         let mut condition_rete = ReteNetwork::new();
+        let condition_fact_base = FactBase::new();
         let condition_rule_id = condition_compiler.allocate_rule_id();
         let condition_error = condition_compiler
             .compile_conditions(
                 &mut condition_rete,
+                &condition_fact_base,
                 condition_rule_id,
                 Salience::DEFAULT,
                 &[CompilableCondition::Pattern(invalid_pattern)],
@@ -1793,17 +1870,21 @@ mod tests {
 
         let mut rule_compiler = ReteCompiler::new();
         let mut rule_rete = ReteNetwork::new();
+        let rule_fact_base = FactBase::new();
         let rule = CompilableRule {
             rule_id: rule_compiler.allocate_rule_id(),
             salience: Salience::new(5),
             patterns: vec![pattern_1.clone(), pattern_2.clone()],
         };
-        let rule_result = rule_compiler.compile_rule(&mut rule_rete, &rule).unwrap();
+        let rule_result = rule_compiler
+            .compile_rule(&mut rule_rete, &rule_fact_base, &rule)
+            .unwrap();
         let rule_join_id = terminal_parent(&rule_rete, rule_result.terminal_node);
         let rule_join = rule_rete.beta.get_node(rule_join_id).unwrap();
 
         let mut condition_compiler = ReteCompiler::new();
         let mut condition_rete = ReteNetwork::new();
+        let condition_fact_base = FactBase::new();
         let condition_rule_id = condition_compiler.allocate_rule_id();
         let conditions = vec![
             CompilableCondition::Pattern(pattern_1),
@@ -1812,6 +1893,7 @@ mod tests {
         let condition_result = condition_compiler
             .compile_conditions(
                 &mut condition_rete,
+                &condition_fact_base,
                 condition_rule_id,
                 Salience::new(5),
                 &conditions,
@@ -1897,6 +1979,7 @@ mod tests {
         fn empty_rule_rejected(salience_val in i32::MIN..=i32::MAX) {
             let mut compiler = ReteCompiler::new();
             let mut rete = ReteNetwork::new();
+            let fact_base = FactBase::new();
             let rule_id = compiler.allocate_rule_id();
 
             let rule = CompilableRule {
@@ -1905,7 +1988,7 @@ mod tests {
                 patterns: vec![],
             };
 
-            let result = compiler.compile_rule(&mut rete, &rule);
+            let result = compiler.compile_rule(&mut rete, &fact_base, &rule);
             // Postcondition: empty patterns always yield CompileError::EmptyRule.
             prop_assert!(
                 matches!(result, Err(CompileError::EmptyRule)),
@@ -1927,6 +2010,7 @@ mod tests {
             let (_, symbols) = make_test_symbols();
             let mut compiler = ReteCompiler::new();
             let mut rete = ReteNetwork::new();
+            let fact_base = FactBase::new();
             let rule_id = compiler.allocate_rule_id();
 
             let patterns: Vec<CompilablePattern> = relation_indices
@@ -1940,7 +2024,7 @@ mod tests {
                 patterns,
             };
 
-            let result = compiler.compile_rule(&mut rete, &rule)
+            let result = compiler.compile_rule(&mut rete, &fact_base, &rule)
                 .expect("valid positive-only rule must compile successfully");
 
             // Postcondition: terminal_node is present in the beta network.
@@ -1971,18 +2055,19 @@ mod tests {
             let (_, symbols) = make_test_symbols();
             let mut compiler = ReteCompiler::new();
             let mut rete = ReteNetwork::new();
+            let fact_base = FactBase::new();
 
             let pattern = make_positive_pattern(&symbols, relation_idx, &[]);
 
             let rule_id1 = compiler.allocate_rule_id();
-            let result1 = compiler.compile_rule(&mut rete, &CompilableRule {
+            let result1 = compiler.compile_rule(&mut rete, &fact_base, &CompilableRule {
                 rule_id: rule_id1,
                 salience: Salience::DEFAULT,
                 patterns: vec![pattern.clone()],
             }).unwrap();
 
             let rule_id2 = compiler.allocate_rule_id();
-            let result2 = compiler.compile_rule(&mut rete, &CompilableRule {
+            let result2 = compiler.compile_rule(&mut rete, &fact_base, &CompilableRule {
                 rule_id: rule_id2,
                 salience: Salience::DEFAULT,
                 patterns: vec![pattern],
@@ -2010,16 +2095,17 @@ mod tests {
             let (_, symbols) = make_test_symbols();
             let mut compiler = ReteCompiler::new();
             let mut rete = ReteNetwork::new();
+            let fact_base = FactBase::new();
 
             let rule_id1 = compiler.allocate_rule_id();
-            let result1 = compiler.compile_rule(&mut rete, &CompilableRule {
+            let result1 = compiler.compile_rule(&mut rete, &fact_base, &CompilableRule {
                 rule_id: rule_id1,
                 salience: Salience::DEFAULT,
                 patterns: vec![make_positive_pattern(&symbols, rel_a, &[])],
             }).unwrap();
 
             let rule_id2 = compiler.allocate_rule_id();
-            let result2 = compiler.compile_rule(&mut rete, &CompilableRule {
+            let result2 = compiler.compile_rule(&mut rete, &fact_base, &CompilableRule {
                 rule_id: rule_id2,
                 salience: Salience::DEFAULT,
                 patterns: vec![make_positive_pattern(&symbols, rel_b, &[])],
@@ -2046,13 +2132,14 @@ mod tests {
             let (_, symbols) = make_test_symbols();
             let mut compiler = ReteCompiler::new();
             let mut rete = ReteNetwork::new();
+            let fact_base = FactBase::new();
 
             let pattern = make_positive_pattern(&symbols, relation_idx, &[]);
             let mut first_mem_id = None;
 
             for _ in 0..n {
                 let rule_id = compiler.allocate_rule_id();
-                let result = compiler.compile_rule(&mut rete, &CompilableRule {
+                let result = compiler.compile_rule(&mut rete, &fact_base, &CompilableRule {
                     rule_id,
                     salience: Salience::DEFAULT,
                     patterns: vec![pattern.clone()],
@@ -2082,6 +2169,7 @@ mod tests {
             let (_, symbols) = make_test_symbols();
             let mut compiler = ReteCompiler::new();
             let mut rete = ReteNetwork::new();
+            let fact_base = FactBase::new();
             let rule_id = compiler.allocate_rule_id();
 
             // Build N patterns; relations from symbols[0..n], variables from symbols[n..2n].
@@ -2113,7 +2201,7 @@ mod tests {
                 seen.len()
             };
 
-            let result = compiler.compile_rule(&mut rete, &CompilableRule {
+            let result = compiler.compile_rule(&mut rete, &fact_base, &CompilableRule {
                 rule_id,
                 salience: Salience::DEFAULT,
                 patterns,
@@ -2124,6 +2212,95 @@ mod tests {
                 result.var_map.len(),
                 n_unique_vars,
                 "var_map must have exactly one entry per distinct variable symbol"
+            );
+        }
+    }
+
+    #[test]
+    fn index_backfill_on_shared_alpha_memory() {
+        // Regression: when a second rule reuses an alpha memory that already
+        // contains facts, request_index must backfill the existing facts into
+        // the slot index so that collect_candidate_facts hash lookups work.
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut table = new_table();
+
+        let person_sym = intern(&mut table, "person");
+        let shape_sym = intern(&mut table, "shape");
+        let var_x = intern(&mut table, "?x");
+
+        // Rule A: single pattern (person ?x) — no join test, creates the alpha memory.
+        let rule_a = CompilableRule {
+            rule_id: compiler.allocate_rule_id(),
+            salience: Salience::DEFAULT,
+            patterns: vec![CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(person_sym),
+                constant_tests: vec![],
+                variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+                negated_variable_slots: Vec::new(),
+                negated: false,
+                exists: false,
+            }],
+        };
+        let result_a = compiler
+            .compile_rule(&mut rete, &fact_base, &rule_a)
+            .unwrap();
+        let person_alpha_mem = result_a.alpha_memories[0];
+
+        // Assert 20 person facts so we exceed INDEX_SCAN_THRESHOLD (16).
+        for i in 0..20 {
+            let name = intern(&mut table, &format!("name{i}"));
+            let fid = fact_base
+                .assert_ordered(person_sym, smallvec::smallvec![crate::Value::Symbol(name)]);
+            let fact = fact_base.get(fid).unwrap().fact.clone();
+            rete.assert_fact(fid, &fact, &fact_base);
+        }
+
+        // Rule B: (shape ?x) (person ?x) — creates equality join test on
+        // the SHARED person alpha memory.
+        let rule_b = CompilableRule {
+            rule_id: compiler.allocate_rule_id(),
+            salience: Salience::DEFAULT,
+            patterns: vec![
+                CompilablePattern {
+                    entry_type: AlphaEntryType::OrderedRelation(shape_sym),
+                    constant_tests: vec![],
+                    variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+                    negated_variable_slots: Vec::new(),
+                    negated: false,
+                    exists: false,
+                },
+                CompilablePattern {
+                    entry_type: AlphaEntryType::OrderedRelation(person_sym),
+                    constant_tests: vec![],
+                    variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
+                    negated_variable_slots: Vec::new(),
+                    negated: false,
+                    exists: false,
+                },
+            ],
+        };
+        compiler
+            .compile_rule(&mut rete, &fact_base, &rule_b)
+            .unwrap();
+
+        // The person alpha memory should now be indexed on slot 0.
+        let alpha_mem = rete.alpha.get_memory(person_alpha_mem).unwrap();
+        assert!(
+            alpha_mem.is_slot_indexed(SlotIndex::Ordered(0)),
+            "person alpha memory should be indexed after compiling rule B"
+        );
+
+        // Verify that all 20 pre-existing facts are present in the index.
+        assert_eq!(alpha_mem.len(), 20);
+        for i in 0..20 {
+            let name = intern(&mut table, &format!("name{i}"));
+            let key = AtomKey::Symbol(name);
+            let hits = alpha_mem.lookup_by_slot(SlotIndex::Ordered(0), &key);
+            assert!(
+                hits.is_some() && !hits.unwrap().is_empty(),
+                "fact name{i} should be found via indexed lookup"
             );
         }
     }

@@ -216,6 +216,24 @@ impl AlphaMemory {
         }
     }
 
+    /// Request indexing on a particular slot without backfilling.
+    ///
+    /// Use this at compile time when the alpha memory is known to be empty.
+    /// The slot will be indexed for all future `insert()` calls.
+    pub fn request_index_empty(&mut self, slot: SlotIndex) {
+        assert!(
+            self.facts.is_empty(),
+            "request_index_empty called on non-empty alpha memory; use request_index() to backfill"
+        );
+        self.indexed_slots.insert(slot);
+    }
+
+    /// Returns `true` if the given slot has been requested for indexing.
+    #[must_use]
+    pub fn is_slot_indexed(&self, slot: SlotIndex) -> bool {
+        self.indexed_slots.contains(&slot)
+    }
+
     /// Lookup facts by slot value.
     ///
     /// Returns `None` if the slot is not indexed or the key is not present.

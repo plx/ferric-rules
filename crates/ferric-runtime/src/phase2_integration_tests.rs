@@ -222,7 +222,9 @@ mod tests {
             }],
         };
 
-        compiler.compile_rule(&mut rete, &rule).unwrap();
+        compiler
+            .compile_rule(&mut rete, &engine.fact_base, &rule)
+            .unwrap();
 
         // Assert facts via engine, propagate through standalone rete
         let facts = load_ok(
