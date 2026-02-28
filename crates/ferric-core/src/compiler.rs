@@ -6,6 +6,7 @@
 //! alpha path and positive join caching.
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use smallvec::SmallVec;
 
 use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
 use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId, Salience};
@@ -464,9 +465,9 @@ impl ReteCompiler {
         let alpha_mem = self.ensure_alpha_path(&mut rete.alpha, pattern);
         alpha_memories.push(alpha_mem);
 
-        let mut join_tests = Vec::new();
-        let mut binding_extractions = Vec::new();
-        let mut new_bindings = Vec::new();
+        let mut join_tests = SmallVec::<[JoinTest; 8]>::new();
+        let mut binding_extractions = SmallVec::<[(SlotIndex, VarId); 8]>::new();
+        let mut new_bindings = SmallVec::<[Symbol; 8]>::new();
 
         for &(slot, var_sym) in &pattern.variable_slots {
             let var_id = var_map
@@ -488,12 +489,12 @@ impl ReteCompiler {
         if pattern.negated {
             let (neg_id, _beta_mem, _neg_mem) =
                 rete.beta
-                    .create_negative_node(current_parent, alpha_mem, join_tests);
+                    .create_negative_node(current_parent, alpha_mem, join_tests.into_vec());
             Ok(neg_id)
         } else if pattern.exists {
             let (exists_id, _beta_mem, _exists_mem) =
                 rete.beta
-                    .create_exists_node(current_parent, alpha_mem, join_tests);
+                    .create_exists_node(current_parent, alpha_mem, join_tests.into_vec());
             Ok(exists_id)
         } else {
             bound_vars.extend(new_bindings);
@@ -501,8 +502,8 @@ impl ReteCompiler {
                 &mut rete.beta,
                 current_parent,
                 alpha_mem,
-                join_tests,
-                binding_extractions,
+                join_tests.into_vec(),
+                binding_extractions.into_vec(),
             );
             Ok(join_id)
         }

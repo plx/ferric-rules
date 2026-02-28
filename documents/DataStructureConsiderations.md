@@ -1023,6 +1023,57 @@ For each experiment:
   `4.47 us` to `4.65 us` (about `+4.1%`), so the existing hash map remains the
   better fit for this short-lived validation path.
 
+### 18. Replace Tiny Compiler Scratch Vectors with `SmallVec`
+
+**Current structures**
+
+- `crates/ferric-core/src/compiler.rs`
+  - `join_tests: Vec<JoinTest>`
+  - `binding_extractions: Vec<(SlotIndex, VarId)>`
+  - `new_bindings: Vec<Symbol>`
+  - all local to `compile_pattern`
+
+**Proposed substitution**
+
+- Replace each with `SmallVec` and convert back to `Vec` only at the existing
+  API boundaries that still take `Vec`.
+
+**Where we'd use it**
+
+- Temporary per-pattern scratch storage during rule compilation.
+
+**Additional adjustments**
+
+- Choose inline capacities sized for the expected "small pattern" case:
+  `8` elements for each scratch collection.
+- Keep `BetaNetwork` and join-node APIs unchanged by calling `.into_vec()` only
+  when handing the values off.
+- Reuse the existing `compiler_bound_var_cycle` microbenchmark because it
+  heavily exercises `compile_pattern` with multiple variable slots per pattern.
+
+**Reasoning**
+
+- Most patterns bind only a small number of variables, so these scratch vectors
+  usually stay tiny.
+- The existing heap-backed `Vec` allocations are avoidable overhead on the
+  compile path.
+- `SmallVec` is already a workspace dependency and is a good fit for these
+  short-lived, bounded collections.
+
+**Risk**
+
+- Low.
+- The change is local and mechanically simple, but the benefit depends on the
+  actual variable-slot counts seen during compilation.
+
+**Experiment note (2026-02-28)**
+
+- Converting the three `compile_pattern` scratch vectors in
+  `crates/ferric-core/src/compiler.rs` to `SmallVec` was kept.
+- Using a fresh `compiler_bound_var_cycle` baseline, the compile cycle
+  improved from roughly `11.57 us` to `11.25 us` (about `-2.6%`), making this
+  a straightforward win for the current small-pattern workload.
+
 ## Areas to Deprioritize for Now
 
 These are existing structures that currently look well-matched to their
