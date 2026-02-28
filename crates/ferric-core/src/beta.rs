@@ -189,7 +189,7 @@ pub struct BetaNetwork {
     nodes: HashMap<NodeId, BetaNode>,
     memories: Vec<BetaMemory>,
     neg_memories: Vec<NegativeMemory>,
-    ncc_memories: HashMap<NccMemoryId, NccMemory>,
+    ncc_memories: Vec<NccMemory>,
     exists_memories: HashMap<ExistsMemoryId, ExistsMemory>,
     root_id: NodeId,
     next_node_id: u32,
@@ -227,7 +227,7 @@ impl BetaNetwork {
             nodes,
             memories: Vec::new(),
             neg_memories: Vec::new(),
-            ncc_memories: HashMap::default(),
+            ncc_memories: Vec::new(),
             exists_memories: HashMap::default(),
             root_id: root_node_id,
             next_node_id,
@@ -362,7 +362,8 @@ impl BetaNetwork {
     pub fn allocate_ncc_memory(&mut self) -> NccMemoryId {
         let id = NccMemoryId(self.next_ncc_memory_id);
         self.next_ncc_memory_id += 1;
-        self.ncc_memories.insert(id, NccMemory::new(id));
+        debug_assert_eq!(self.ncc_memories.len(), id.0 as usize);
+        self.ncc_memories.push(NccMemory::new(id));
         id
     }
 
@@ -527,12 +528,12 @@ impl BetaNetwork {
     /// Get an NCC memory by ID.
     #[must_use]
     pub fn get_ncc_memory(&self, id: NccMemoryId) -> Option<&NccMemory> {
-        self.ncc_memories.get(&id)
+        self.ncc_memory(id)
     }
 
     /// Get a mutable reference to an NCC memory by ID.
     pub fn get_ncc_memory_mut(&mut self, id: NccMemoryId) -> Option<&mut NccMemory> {
-        self.ncc_memories.get_mut(&id)
+        self.ncc_memory_mut(id)
     }
 
     /// Get an exists memory by ID.
@@ -578,7 +579,7 @@ impl BetaNetwork {
         for neg_memory in &mut self.neg_memories {
             neg_memory.clear();
         }
-        for ncc_memory in self.ncc_memories.values_mut() {
+        for ncc_memory in &mut self.ncc_memories {
             ncc_memory.clear();
         }
         for exists_memory in self.exists_memories.values_mut() {
@@ -608,7 +609,7 @@ impl BetaNetwork {
 
     /// Iterate over all NCC memory IDs.
     pub fn ncc_memory_ids(&self) -> impl Iterator<Item = NccMemoryId> + '_ {
-        self.ncc_memories.keys().copied()
+        self.ncc_memories.iter().map(|memory| memory.id)
     }
 
     /// Find the NCC node that owns the given NCC memory.
@@ -718,7 +719,7 @@ impl BetaNetwork {
                         "NCC node {node_id:?} references non-existent beta memory {memory:?}"
                     );
                     assert!(
-                        self.ncc_memories.contains_key(ncc_memory),
+                        self.ncc_memory(*ncc_memory).is_some(),
                         "NCC node {node_id:?} references non-existent NCC memory {ncc_memory:?}"
                     );
                     assert!(
@@ -736,7 +737,7 @@ impl BetaNetwork {
                         "NCC partner node {node_id:?} references non-existent NCC node {ncc_node:?}"
                     );
                     assert!(
-                        self.ncc_memories.contains_key(ncc_memory),
+                        self.ncc_memory(*ncc_memory).is_some(),
                         "NCC partner node {node_id:?} references non-existent NCC memory {ncc_memory:?}"
                     );
                 }
@@ -828,8 +829,7 @@ impl BetaNetwork {
         }
 
         // Check 7: All NCC memories are internally consistent
-        for (ncc_mem_id, ncc_mem) in &self.ncc_memories {
-            let _ = ncc_mem_id;
+        for ncc_mem in &self.ncc_memories {
             ncc_mem.debug_assert_consistency();
         }
 
@@ -854,6 +854,14 @@ impl BetaNetwork {
 
     fn neg_memory_mut(&mut self, id: NegativeMemoryId) -> Option<&mut NegativeMemory> {
         self.neg_memories.get_mut(id.0 as usize)
+    }
+
+    fn ncc_memory(&self, id: NccMemoryId) -> Option<&NccMemory> {
+        self.ncc_memories.get(id.0 as usize)
+    }
+
+    fn ncc_memory_mut(&mut self, id: NccMemoryId) -> Option<&mut NccMemory> {
+        self.ncc_memories.get_mut(id.0 as usize)
     }
 }
 

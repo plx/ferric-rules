@@ -444,6 +444,11 @@ For each experiment:
 - The targeted microbenchmark `beta_negative_memory_store_cycle` improved from
   roughly `2.12 ms` to `2.00 ms` (about `-5.6%`), so the dense negative-memory
   table also benefits from direct indexing.
+- Converting `BetaNetwork.ncc_memories` in `crates/ferric-core/src/beta.rs`
+  from `HashMap<NccMemoryId, NccMemory>` to `Vec<NccMemory>` was kept.
+- The targeted microbenchmark `beta_ncc_memory_store_cycle` improved from
+  roughly `654 us` to `499 us` (about `-24%`), making direct indexing another
+  clear win for the dense NCC-memory table.
 
 ### 8. Replace Tiny Hash Sets with `SmallVec` in Clearly Small Cardinality Cases
 
