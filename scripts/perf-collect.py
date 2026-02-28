@@ -153,6 +153,12 @@ def run_benchmarks(sample_size, warm_up_time, measurement_time):
     ]
 
     for suite, filter_regex in SUITES:
+        # Check if the bench target exists at the current checkout
+        bench_source = Path(__file__).resolve().parent.parent / "crates" / "ferric" / "benches" / f"{suite}.rs"
+        if not bench_source.exists():
+            print(f"==> Skipping {suite} (not present at current checkout)", flush=True)
+            continue
+
         cmd = ["cargo", "bench", "-p", "ferric", "--bench", suite, "--"]
         cmd.extend(base_flags)
         if filter_regex:

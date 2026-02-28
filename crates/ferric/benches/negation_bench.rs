@@ -13,7 +13,7 @@ use ferric::runtime::{Engine, EngineConfig, RunLimit};
 /// via `(not (blocker (name ?n)))`.
 ///
 /// Total: N+1 rule firings.  Each blocker retraction updates the negative
-/// node's blocker map.  If removal cost is O(remaining_blockers), total
+/// node's blocker map.  If removal cost is O(`remaining_blockers`), total
 /// is O(N^2/2).  If O(1) per removal, total is O(N).
 ///
 /// It exercises:
@@ -22,7 +22,6 @@ use ferric::runtime::{Engine, EngineConfig, RunLimit};
 /// - Negative node blocker map at scale
 /// - Retraction through negative nodes
 /// - Agenda management with N initial activations
-
 fn generate_negation_source(n_blockers: usize) -> String {
     let mut source = String::from(
         "\

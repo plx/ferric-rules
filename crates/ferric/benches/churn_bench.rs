@@ -25,7 +25,6 @@ use ferric::runtime::{Engine, EngineConfig, RunLimit};
 /// - `retract` at scale (N retractions)
 /// - `not` over a template pattern (finish condition)
 /// - Working memory lifecycle: assert -> modify -> retract
-
 fn generate_churn_source(n_items: usize) -> String {
     let mut source = String::from(
         "\
