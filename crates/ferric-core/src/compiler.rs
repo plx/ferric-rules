@@ -469,6 +469,16 @@ impl ReteCompiler {
             });
         }
 
+        // Request alpha memory indexing for equality join tests so that
+        // left activations can use O(1) hash lookups instead of full scans.
+        for test in &join_tests {
+            if test.test_type == JoinTestType::Equal {
+                if let Some(mem) = rete.alpha.get_memory_mut(alpha_mem) {
+                    mem.request_index_empty(test.alpha_slot);
+                }
+            }
+        }
+
         if pattern.negated {
             let (neg_id, _beta_mem, _neg_mem) =
                 rete.beta

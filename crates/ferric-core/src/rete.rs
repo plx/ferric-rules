@@ -8,9 +8,9 @@ use smallvec::SmallVec;
 use std::cmp::Ordering;
 
 use crate::agenda::{Activation, ActivationId, ActivationSeq, Agenda};
-use crate::alpha::{get_slot_value, AlphaMemoryId, AlphaNetwork};
+use crate::alpha::{get_slot_value, AlphaMemory, AlphaMemoryId, AlphaNetwork, SlotIndex};
 use crate::beta::{BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType};
-use crate::binding::BindingSet;
+use crate::binding::{BindingSet, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
 use crate::negative::NegativeMemoryId;
 use crate::strategy::ConflictResolutionStrategy;
@@ -384,11 +384,11 @@ impl ReteNetwork {
         let parent_facts = parent_token.facts.clone();
         let parent_bindings = parent_token.bindings.clone();
 
-        // 3. Get all fact IDs from alpha memory (clone before mutation)
+        // 3. Get candidate fact IDs from alpha memory, using indexed lookup when possible
         let Some(alpha_memory) = self.alpha.get_memory(alpha_memory_id) else {
             return;
         };
-        let fact_ids: Vec<FactId> = alpha_memory.iter().collect();
+        let fact_ids = collect_candidate_facts(alpha_memory, &tests, &parent_bindings);
 
         // 4. For each fact, try to join
         for fact_id in fact_ids {
@@ -479,11 +479,11 @@ impl ReteNetwork {
         let parent_facts = parent_token.facts.clone();
         let parent_bindings = parent_token.bindings.clone();
 
-        // Check all facts in the alpha memory for matches
+        // Check candidate facts in the alpha memory for matches (indexed when possible)
         let Some(alpha_memory) = self.alpha.get_memory(alpha_memory_id) else {
             return;
         };
-        let fact_ids: Vec<FactId> = alpha_memory.iter().collect();
+        let fact_ids = collect_candidate_facts(alpha_memory, &tests, &parent_bindings);
 
         let mut blocking_facts = Vec::new();
         for fact_id in fact_ids {
@@ -1001,11 +1001,11 @@ impl ReteNetwork {
         let parent_facts = parent_token.facts.clone();
         let parent_bindings = parent_token.bindings.clone();
 
-        // Check all facts in the alpha memory for support
+        // Check candidate facts in the alpha memory for support (indexed when possible)
         let Some(alpha_memory) = self.alpha.get_memory(alpha_memory_id) else {
             return;
         };
-        let fact_ids: Vec<FactId> = alpha_memory.iter().collect();
+        let fact_ids = collect_candidate_facts(alpha_memory, &tests, &parent_bindings);
 
         let mut supporting_facts = Vec::new();
         for fact_id in fact_ids {
@@ -1387,6 +1387,51 @@ impl Default for ReteNetwork {
 
 /// Evaluate join tests between a fact and a token.
 ///
+/// Find the first equality join test suitable for indexed alpha memory lookup.
+///
+/// Returns `(alpha_slot, beta_var)` for the first `JoinTestType::Equal` test,
+/// or `None` if no equality tests exist.
+fn find_index_test(tests: &[JoinTest]) -> Option<(SlotIndex, VarId)> {
+    tests.iter().find_map(|t| {
+        if t.test_type == JoinTestType::Equal {
+            Some((t.alpha_slot, t.beta_var))
+        } else {
+            None
+        }
+    })
+}
+
+/// Collect fact IDs from alpha memory, using an indexed lookup when possible.
+///
+/// If the join tests include an equality test and the parent token has a bound
+/// value for the corresponding variable, performs an O(1) hash lookup instead
+/// of scanning all facts. Falls back to a full scan otherwise.
+/// Minimum alpha memory size before indexed lookup beats a linear scan.
+/// Below this threshold, the hash computation overhead exceeds the savings.
+const INDEX_SCAN_THRESHOLD: usize = 16;
+
+fn collect_candidate_facts(
+    alpha_memory: &AlphaMemory,
+    tests: &[JoinTest],
+    parent_bindings: &BindingSet,
+) -> Vec<FactId> {
+    if alpha_memory.len() >= INDEX_SCAN_THRESHOLD {
+        if let Some((alpha_slot, beta_var)) = find_index_test(tests) {
+            if alpha_memory.is_slot_indexed(alpha_slot) {
+                if let Some(bound_value) = parent_bindings.get(beta_var) {
+                    if let Some(key) = AtomKey::from_value(bound_value) {
+                        return alpha_memory
+                            .lookup_by_slot(alpha_slot, &key)
+                            .map(|set| set.iter().copied().collect())
+                            .unwrap_or_default();
+                    }
+                }
+            }
+        }
+    }
+    alpha_memory.iter().collect()
+}
+
 /// Returns `true` if all tests pass, `false` otherwise.
 ///
 /// If `token` is `None`, treats this as a root-level match (no bindings to check).
