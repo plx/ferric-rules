@@ -671,6 +671,51 @@ For each experiment:
   workload, so the current `FxHashMap<String, usize>` remains the better fit
   for runtime template slot lookup.
 
+### 11. Probe Slotmap-Native Membership Sets in `AlphaMemory`
+
+**Current structures**
+
+- `crates/ferric-core/src/alpha.rs`
+  - `AlphaMemory.facts: HashSet<FactId>`
+
+**Proposed substitution**
+
+- Replace the membership set with `SparseSecondaryMap<FactId, ()>`.
+
+**Where we'd use it**
+
+- The primary fact-membership set for each alpha memory.
+
+**Additional adjustments**
+
+- Keep the public helper surface the same (`insert`, `remove`, `contains`,
+  `iter`, `len`, `clear`) while swapping the internal storage.
+- Leave `slot_indices` untouched so the measurement isolates only the main fact
+  set.
+
+**Reasoning**
+
+- `FactId` is a `slotmap` key, so this is another place where direct
+  membership storage is available without hashing.
+- The alpha path already keeps a separate reverse index; this experiment tests
+  whether the main per-memory membership check can also benefit from slotmap
+  native storage.
+
+**Risk**
+
+- Low.
+- The change is mechanically simple, but this set sits directly on the
+  assert/retract hot path.
+
+**Experiment note (2026-02-28)**
+
+- Converting `AlphaMemory.facts` in `crates/ferric-core/src/alpha.rs` from
+  `HashSet<FactId>` to `SparseSecondaryMap<FactId, ()>` was tested and
+  reverted.
+- Reusing the existing `alpha_network_reverse_index_cycle` microbenchmark, the
+  change regressed from roughly `70.3 us` to `76.5 us` (about `+7.8%`), so the
+  current `FxHashSet` remains the better fit for this membership path.
+
 ## Areas to Deprioritize for Now
 
 These are existing structures that currently look well-matched to their
