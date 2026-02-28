@@ -409,6 +409,14 @@ For each experiment:
 - Low to moderate.
 - Safe where density is real; harmful where IDs are intentionally sparse.
 
+**Experiment note (2026-02-28)**
+
+- Converting `AlphaNetwork.memories` in `crates/ferric-core/src/alpha.rs`
+  from `HashMap<AlphaMemoryId, AlphaMemory>` to `Vec<AlphaMemory>` was kept.
+- The targeted microbenchmark `alpha_network_reverse_index_cycle` improved from
+  roughly `70.4 us` to `65.3 us` (about `-7.2%`), which makes this a clear win
+  for one of the dense sequential-ID stores in `AlphaNetwork`.
+
 ### 8. Replace Tiny Hash Sets with `SmallVec` in Clearly Small Cardinality Cases
 
 **Current structures**
