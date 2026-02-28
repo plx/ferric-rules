@@ -190,7 +190,7 @@ pub struct BetaNetwork {
     memories: Vec<BetaMemory>,
     neg_memories: Vec<NegativeMemory>,
     ncc_memories: Vec<NccMemory>,
-    exists_memories: HashMap<ExistsMemoryId, ExistsMemory>,
+    exists_memories: Vec<ExistsMemory>,
     root_id: NodeId,
     next_node_id: u32,
     next_memory_id: u32,
@@ -228,7 +228,7 @@ impl BetaNetwork {
             memories: Vec::new(),
             neg_memories: Vec::new(),
             ncc_memories: Vec::new(),
-            exists_memories: HashMap::default(),
+            exists_memories: Vec::new(),
             root_id: root_node_id,
             next_node_id,
             next_memory_id: 0,
@@ -477,8 +477,9 @@ impl BetaNetwork {
         self.nodes.insert(node_id, node);
         debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
         self.memories.push(BetaMemory::new(memory_id));
+        debug_assert_eq!(self.exists_memories.len(), exists_memory_id.0 as usize);
         self.exists_memories
-            .insert(exists_memory_id, ExistsMemory::new(exists_memory_id));
+            .push(ExistsMemory::new(exists_memory_id));
 
         self.attach_child_to_parent(parent, node_id);
 
@@ -539,12 +540,12 @@ impl BetaNetwork {
     /// Get an exists memory by ID.
     #[must_use]
     pub fn get_exists_memory(&self, id: ExistsMemoryId) -> Option<&ExistsMemory> {
-        self.exists_memories.get(&id)
+        self.exists_memory(id)
     }
 
     /// Get a mutable reference to an exists memory by ID.
     pub fn get_exists_memory_mut(&mut self, id: ExistsMemoryId) -> Option<&mut ExistsMemory> {
-        self.exists_memories.get_mut(&id)
+        self.exists_memory_mut(id)
     }
 
     /// Get the list of join nodes that subscribe to a given alpha memory.
@@ -582,7 +583,7 @@ impl BetaNetwork {
         for ncc_memory in &mut self.ncc_memories {
             ncc_memory.clear();
         }
-        for exists_memory in self.exists_memories.values_mut() {
+        for exists_memory in &mut self.exists_memories {
             exists_memory.clear();
         }
     }
@@ -623,7 +624,7 @@ impl BetaNetwork {
 
     /// Iterate over all exists memory IDs.
     pub fn exists_memory_ids(&self) -> impl Iterator<Item = ExistsMemoryId> + '_ {
-        self.exists_memories.keys().copied()
+        self.exists_memories.iter().map(|memory| memory.id)
     }
 
     fn attach_child_to_parent(&mut self, parent: NodeId, child_id: NodeId) {
@@ -751,7 +752,7 @@ impl BetaNetwork {
                         "Exists node {node_id:?} references non-existent beta memory {memory:?}"
                     );
                     assert!(
-                        self.exists_memories.contains_key(exists_memory),
+                        self.exists_memory(*exists_memory).is_some(),
                         "Exists node {node_id:?} references non-existent exists memory {exists_memory:?}"
                     );
                 }
@@ -834,8 +835,7 @@ impl BetaNetwork {
         }
 
         // Check 8: All exists memories are internally consistent
-        for (exists_mem_id, exists_mem) in &self.exists_memories {
-            let _ = exists_mem_id;
+        for exists_mem in &self.exists_memories {
             exists_mem.debug_assert_consistency();
         }
     }
@@ -862,6 +862,14 @@ impl BetaNetwork {
 
     fn ncc_memory_mut(&mut self, id: NccMemoryId) -> Option<&mut NccMemory> {
         self.ncc_memories.get_mut(id.0 as usize)
+    }
+
+    fn exists_memory(&self, id: ExistsMemoryId) -> Option<&ExistsMemory> {
+        self.exists_memories.get(id.0 as usize)
+    }
+
+    fn exists_memory_mut(&mut self, id: ExistsMemoryId) -> Option<&mut ExistsMemory> {
+        self.exists_memories.get_mut(id.0 as usize)
     }
 }
 

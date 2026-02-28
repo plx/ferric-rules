@@ -449,6 +449,11 @@ For each experiment:
 - The targeted microbenchmark `beta_ncc_memory_store_cycle` improved from
   roughly `654 us` to `499 us` (about `-24%`), making direct indexing another
   clear win for the dense NCC-memory table.
+- Converting `BetaNetwork.exists_memories` in `crates/ferric-core/src/beta.rs`
+  from `HashMap<ExistsMemoryId, ExistsMemory>` to `Vec<ExistsMemory>` was kept.
+- The targeted microbenchmark `beta_exists_memory_store_cycle` improved from
+  roughly `2.24 ms` to `2.12 ms` (about `-5.5%`), so the dense exists-memory
+  table also benefits from direct indexing.
 
 ### 8. Replace Tiny Hash Sets with `SmallVec` in Clearly Small Cardinality Cases
 
