@@ -855,12 +855,14 @@ impl Engine {
         }
 
         // Verify function module associations
-        for (module_id, name) in self.functions.functions.keys() {
-            assert!(
-                self.function_modules
-                    .contains_key(&(*module_id, name.clone())),
-                "function `{name}` in module {module_id:?} missing from function_modules"
-            );
+        for (&module_id, local_names) in &self.functions.functions {
+            for name in local_names.keys() {
+                assert!(
+                    self.function_modules
+                        .contains_key(&(module_id, name.to_string())),
+                    "function `{name}` in module {module_id:?} missing from function_modules"
+                );
+            }
         }
         for ((module_id, name), &owner_module) in &self.function_modules {
             assert!(

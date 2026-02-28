@@ -18,6 +18,11 @@ rustc-hash = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 tempfile = "3.8"
+criterion = { workspace = true }
+
+[[bench]]
+name = "name_registry_bench"
+harness = false
 
 [lints]
 workspace = true

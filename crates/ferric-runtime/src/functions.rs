@@ -11,18 +11,60 @@ use rustc_hash::FxHashMap as HashMap;
 
 use crate::modules::ModuleId;
 
-fn modules_for_name_from_keys<T>(
-    entries: &HashMap<(ModuleId, String), T>,
-    name: &str,
-) -> Vec<ModuleId> {
+pub(crate) type LocalNameMap<T> = HashMap<Box<str>, T>;
+pub(crate) type ModuleNameMap<T> = HashMap<ModuleId, LocalNameMap<T>>;
+
+fn modules_for_name_from_keys<T>(entries: &ModuleNameMap<T>, name: &str) -> Vec<ModuleId> {
     entries
-        .keys()
-        .filter_map(|(module_id, local_name)| (local_name == name).then_some(*module_id))
+        .iter()
+        .filter_map(|(&module_id, local_names)| local_names.contains_key(name).then_some(module_id))
         .collect()
 }
 
-fn module_name_key(module: ModuleId, name: &str) -> (ModuleId, String) {
-    (module, name.to_string())
+pub(crate) fn get_module_entry<'a, T>(
+    entries: &'a ModuleNameMap<T>,
+    module: ModuleId,
+    name: &str,
+) -> Option<&'a T> {
+    entries.get(&module)?.get(name)
+}
+
+pub(crate) fn contains_module_entry<T>(
+    entries: &ModuleNameMap<T>,
+    module: ModuleId,
+    name: &str,
+) -> bool {
+    get_module_entry(entries, module, name).is_some()
+}
+
+pub(crate) fn insert_module_entry<T>(
+    entries: &mut ModuleNameMap<T>,
+    module: ModuleId,
+    name: impl Into<Box<str>>,
+    value: T,
+) -> Option<T> {
+    entries
+        .entry(module)
+        .or_default()
+        .insert(name.into(), value)
+}
+
+pub(crate) fn get_or_insert_module_entry_with<'a, T, F>(
+    entries: &'a mut ModuleNameMap<T>,
+    module: ModuleId,
+    name: &str,
+    init: F,
+) -> &'a mut T
+where
+    F: FnOnce() -> T,
+{
+    let local_names = entries.entry(module).or_default();
+    if !local_names.contains_key(name) {
+        local_names.insert(name.into(), init());
+    }
+    local_names
+        .get_mut(name)
+        .expect("module entry should exist after insertion check")
 }
 
 // ---------------------------------------------------------------------------
@@ -45,7 +87,7 @@ pub struct UserFunction {
 /// Registry of all user-defined functions loaded into the engine.
 #[derive(Clone, Debug, Default)]
 pub struct FunctionEnv {
-    pub(crate) functions: HashMap<(ModuleId, String), UserFunction>,
+    pub(crate) functions: ModuleNameMap<UserFunction>,
 }
 
 impl FunctionEnv {
@@ -58,19 +100,19 @@ impl FunctionEnv {
     /// Register a user-defined function in a module, replacing any existing
     /// definition in that same module with the same local name.
     pub fn register(&mut self, module: ModuleId, func: UserFunction) {
-        self.functions.insert((module, func.name.clone()), func);
+        insert_module_entry(&mut self.functions, module, func.name.clone(), func);
     }
 
     /// Look up a user-defined function by module and local name.
     #[must_use]
     pub fn get(&self, module: ModuleId, name: &str) -> Option<&UserFunction> {
-        self.functions.get(&module_name_key(module, name))
+        get_module_entry(&self.functions, module, name)
     }
 
     /// Check whether a function with this local name exists in the given module.
     #[must_use]
     pub fn contains(&self, module: ModuleId, name: &str) -> bool {
-        self.functions.contains_key(&module_name_key(module, name))
+        contains_module_entry(&self.functions, module, name)
     }
 
     /// Return all module IDs that define a function with this local name.
@@ -82,12 +124,15 @@ impl FunctionEnv {
     /// Debug-only structural checks for function registry bookkeeping.
     #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
-        for ((_, name), func) in &self.functions {
-            assert_eq!(
-                &func.name, name,
-                "function registry key `{name}` does not match function.name `{}`",
-                func.name
-            );
+        for local_names in self.functions.values() {
+            for (name, func) in local_names {
+                assert_eq!(
+                    func.name.as_str(),
+                    name.as_ref(),
+                    "function registry key `{name}` does not match function.name `{}`",
+                    func.name
+                );
+            }
         }
     }
 }
@@ -102,7 +147,7 @@ impl FunctionEnv {
 /// current runtime values.
 #[derive(Clone, Debug, Default)]
 pub struct GlobalStore {
-    values: HashMap<(ModuleId, String), Value>,
+    values: ModuleNameMap<Value>,
 }
 
 impl GlobalStore {
@@ -117,13 +162,13 @@ impl GlobalStore {
     /// Returns `None` if the variable has not been set.
     #[must_use]
     pub fn get(&self, module: ModuleId, name: &str) -> Option<&Value> {
-        self.values.get(&module_name_key(module, name))
+        get_module_entry(&self.values, module, name)
     }
 
     /// Check whether a global has a value in the given module.
     #[must_use]
     pub fn contains(&self, module: ModuleId, name: &str) -> bool {
-        self.values.contains_key(&module_name_key(module, name))
+        contains_module_entry(&self.values, module, name)
     }
 
     /// Return all module IDs that define a global with this local name.
@@ -136,7 +181,7 @@ impl GlobalStore {
     ///
     /// If the variable was previously set, its value is replaced.
     pub fn set(&mut self, module: ModuleId, name: &str, value: Value) {
-        self.values.insert((module, name.to_string()), value);
+        insert_module_entry(&mut self.values, module, name, value);
     }
 
     /// Clear all global variables (used during engine reset).
@@ -147,11 +192,13 @@ impl GlobalStore {
     /// Debug-only structural checks for global store bookkeeping.
     #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
-        for (_, name) in self.values.keys() {
-            assert!(
-                !name.is_empty(),
-                "global store contains an empty-name entry"
-            );
+        for local_names in self.values.values() {
+            for name in local_names.keys() {
+                assert!(
+                    !name.is_empty(),
+                    "global store contains an empty-name entry"
+                );
+            }
         }
     }
 }
@@ -217,7 +264,7 @@ impl GenericFunction {
 /// Registry of generic functions and their methods.
 #[derive(Clone, Debug, Default)]
 pub struct GenericRegistry {
-    generics: HashMap<(ModuleId, String), GenericFunction>,
+    generics: ModuleNameMap<GenericFunction>,
 }
 
 impl GenericRegistry {
@@ -229,9 +276,9 @@ impl GenericRegistry {
 
     /// Register a generic function declaration. If already exists, this is a no-op.
     pub fn register_generic(&mut self, module: ModuleId, name: &str) {
-        self.generics
-            .entry(module_name_key(module, name))
-            .or_insert_with(|| GenericFunction::new(name.to_string()));
+        let _ = get_or_insert_module_entry_with(&mut self.generics, module, name, || {
+            GenericFunction::new(name.to_string())
+        });
     }
 
     /// Register a method. Auto-creates the generic if it doesn't exist.
@@ -246,10 +293,9 @@ impl GenericRegistry {
         wildcard_parameter: Option<String>,
         body: Vec<ferric_parser::ActionExpr>,
     ) {
-        let generic = self
-            .generics
-            .entry(module_name_key(module, name))
-            .or_insert_with(|| GenericFunction::new(name.to_string()));
+        let generic = get_or_insert_module_entry_with(&mut self.generics, module, name, || {
+            GenericFunction::new(name.to_string())
+        });
         let actual_index = index.unwrap_or_else(|| generic.next_auto_index());
         generic.add_method(RegisteredMethod {
             index: actual_index,
@@ -263,13 +309,13 @@ impl GenericRegistry {
     /// Look up a generic function by name.
     #[must_use]
     pub fn get(&self, module: ModuleId, name: &str) -> Option<&GenericFunction> {
-        self.generics.get(&module_name_key(module, name))
+        get_module_entry(&self.generics, module, name)
     }
 
     /// Check whether a generic with this local name exists in the given module.
     #[must_use]
     pub fn contains(&self, module: ModuleId, name: &str) -> bool {
-        self.generics.contains_key(&module_name_key(module, name))
+        contains_module_entry(&self.generics, module, name)
     }
 
     /// Return all module IDs that define a generic with this local name.
@@ -281,27 +327,29 @@ impl GenericRegistry {
     /// Check whether a generic already has a method with the given index.
     #[must_use]
     pub fn has_method_index(&self, module: ModuleId, name: &str, index: i32) -> bool {
-        self.generics
-            .get(&module_name_key(module, name))
+        get_module_entry(&self.generics, module, name)
             .is_some_and(|g| g.methods.iter().any(|m| m.index == index))
     }
 
     /// Debug-only structural checks for generic/method bookkeeping.
     #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
-        for ((_, name), generic) in &self.generics {
-            assert_eq!(
-                &generic.name, name,
-                "generic registry key `{name}` does not match generic.name `{}`",
-                generic.name
-            );
-            for w in generic.methods.windows(2) {
-                assert!(
-                    w[0].index < w[1].index,
-                    "generic `{name}` has non-increasing/duplicate method indices: {} then {}",
-                    w[0].index,
-                    w[1].index
+        for local_names in self.generics.values() {
+            for (name, generic) in local_names {
+                assert_eq!(
+                    generic.name.as_str(),
+                    name.as_ref(),
+                    "generic registry key `{name}` does not match generic.name `{}`",
+                    generic.name
                 );
+                for w in generic.methods.windows(2) {
+                    assert!(
+                        w[0].index < w[1].index,
+                        "generic `{name}` has non-increasing/duplicate method indices: {} then {}",
+                        w[0].index,
+                        w[1].index
+                    );
+                }
             }
         }
     }

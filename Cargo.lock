@@ -408,6 +408,7 @@ dependencies = [
 name = "ferric-runtime"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "ferric-core",
  "ferric-parser",
  "proptest",
