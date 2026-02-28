@@ -102,7 +102,7 @@ pub struct AlphaMemory {
     /// Slot indices: `SlotIndex` -> `AtomKey` -> `FactId`s with that key in that slot.
     slot_indices: HashMap<SlotIndex, HashMap<AtomKey, HashSet<FactId>>>,
     /// Which slots are currently indexed.
-    indexed_slots: HashSet<SlotIndex>,
+    indexed_slots: SmallVec<[SlotIndex; 4]>,
 }
 
 impl AlphaMemory {
@@ -113,7 +113,7 @@ impl AlphaMemory {
             id,
             facts: HashSet::default(),
             slot_indices: HashMap::default(),
-            indexed_slots: HashSet::default(),
+            indexed_slots: SmallVec::new(),
         }
     }
 
@@ -170,7 +170,7 @@ impl AlphaMemory {
             return;
         }
 
-        self.indexed_slots.insert(slot);
+        self.indexed_slots.push(slot);
 
         // Backfill existing facts
         for &fact_id in &self.facts {

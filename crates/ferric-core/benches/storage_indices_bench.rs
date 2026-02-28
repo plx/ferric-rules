@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use ferric_core::{
-    Activation, ActivationId, ActivationSeq, Agenda, AlphaEntryType, AlphaNetwork, BindingSet,
-    Fact, FactBase, FactId, NodeId, RuleId, Salience, StringEncoding, Symbol, SymbolTable,
-    Timestamp, Token, TokenId, TokenStore,
+    Activation, ActivationId, ActivationSeq, Agenda, AlphaEntryType, AlphaMemory, AlphaMemoryId,
+    AlphaNetwork, BindingSet, Fact, FactBase, FactId, NodeId, RuleId, Salience, SlotIndex,
+    StringEncoding, Symbol, SymbolTable, Timestamp, Token, TokenId, TokenStore, Value,
 };
 use slotmap::SlotMap;
 use smallvec::SmallVec;
@@ -174,6 +174,66 @@ fn bench_alpha_network_reverse_index_cycle(c: &mut Criterion) {
     });
 }
 
+fn bench_alpha_memory_indexed_slots_cycle(c: &mut Criterion) {
+    let mut symbols = SymbolTable::new();
+    let relation = symbols
+        .intern_symbol("alpha-memory-item", StringEncoding::Ascii)
+        .expect("ASCII symbol");
+
+    c.bench_function("alpha_memory_indexed_slots_cycle", |b| {
+        b.iter_batched(
+            || {
+                let mut fact_base = FactBase::new();
+                let mut facts = Vec::with_capacity(256);
+
+                for idx in 0..256 {
+                    let fact_id = fact_base.assert_ordered(
+                        relation,
+                        smallvec::smallvec![
+                            Value::Integer((idx % 8) as i64),
+                            Value::Integer((idx % 16) as i64),
+                            Value::Integer((idx % 32) as i64),
+                        ],
+                    );
+                    let fact = fact_base
+                        .get(fact_id)
+                        .expect("fact must exist")
+                        .fact
+                        .clone();
+                    facts.push((fact_id, fact));
+                }
+
+                (fact_base, facts)
+            },
+            |(fact_base, facts)| {
+                let mut memory = AlphaMemory::new(AlphaMemoryId(0));
+                memory.request_index(SlotIndex::Ordered(0), &fact_base);
+                memory.request_index(SlotIndex::Ordered(1), &fact_base);
+                memory.request_index(SlotIndex::Ordered(2), &fact_base);
+
+                for (fact_id, fact) in &facts {
+                    memory.insert(*fact_id, fact);
+                }
+
+                let lookups = [
+                    memory.lookup_by_slot(SlotIndex::Ordered(0), &ferric_core::AtomKey::Integer(3)),
+                    memory.lookup_by_slot(SlotIndex::Ordered(1), &ferric_core::AtomKey::Integer(7)),
+                    memory
+                        .lookup_by_slot(SlotIndex::Ordered(2), &ferric_core::AtomKey::Integer(15)),
+                ];
+                black_box(lookups);
+
+                for (fact_id, fact) in &facts {
+                    memory.remove(*fact_id, fact);
+                }
+
+                black_box(memory.len());
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn bench_agenda_token_index_cycle(c: &mut Criterion) {
     let token_pool = token_ids(128);
 
@@ -218,6 +278,7 @@ criterion_group!(
     bench_fact_base_relation_index_cycle,
     bench_token_store_reverse_index_cycle,
     bench_alpha_network_reverse_index_cycle,
+    bench_alpha_memory_indexed_slots_cycle,
     bench_agenda_token_index_cycle,
 );
 criterion_main!(benches);

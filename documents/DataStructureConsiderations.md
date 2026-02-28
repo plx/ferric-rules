@@ -446,6 +446,14 @@ For each experiment:
 - Low.
 - This is a classic "small set" optimization and easy to revert.
 
+**Experiment note (2026-02-28)**
+
+- Converting `AlphaMemory.indexed_slots` in `crates/ferric-core/src/alpha.rs`
+  from `HashSet<SlotIndex>` to `SmallVec<[SlotIndex; 4]>` was kept.
+- The targeted microbenchmark `alpha_memory_indexed_slots_cycle` improved from
+  roughly `37.2 us` to `35.5 us` (about `-4.5%`), confirming that the small
+  inline set fits this access pattern better than hashing.
+
 ### 9. Replace Tiny Fan-Out Lists with `SmallVec`
 
 **Current structures**
