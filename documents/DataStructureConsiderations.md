@@ -414,6 +414,12 @@ For each experiment:
   roughly `7.24 us` to `24.3 us` (about `+236%`).
 - Across all three, the current high-churn update patterns favor the existing
   `FxHashMap`-based outer maps over `SparseSecondaryMap`.
+- Converting `BetaMemory.tokens` in `crates/ferric-core/src/beta.rs` from
+  `HashSet<TokenId>` to `SparseSecondaryMap<TokenId, ()>` was also tested and
+  reverted.
+- Reusing the existing `beta_memory_store_cycle` microbenchmark, the change
+  regressed from roughly `101.6 us` to `339.4 us` (about `+236%`), so the
+  token-membership path strongly favors the current `FxHashSet`.
 
 ### 7. Replace Dense `u32`-Indexed Maps with `Vec` / `Vec<Option<_>>` in Core Networks
 
