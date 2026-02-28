@@ -355,4 +355,105 @@ mod tests {
         assert_eq!(error.stage, ValidationStage::ReteCompilation);
         assert!(error.suggestion.is_some());
     }
+
+    // -----------------------------------------------------------------------
+    // Property-based tests
+    // -----------------------------------------------------------------------
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_violation() -> impl Strategy<Value = PatternViolation> {
+            prop_oneof![
+                (1..100_usize, 1..50_usize)
+                    .prop_map(|(depth, max)| PatternViolation::NestingTooDeep { depth, max }),
+                Just(PatternViolation::ForallConditionNotSinglePattern),
+                Just(PatternViolation::NestedForall),
+                "[a-zA-Z][a-zA-Z0-9_]{0,10}"
+                    .prop_map(|var_name| PatternViolation::ForallUnboundVariable { var_name }),
+                "[a-zA-Z ]{1,30}".prop_map(|desc| {
+                    PatternViolation::UnsupportedNestingCombination { description: desc }
+                }),
+            ]
+        }
+
+        fn arb_stage() -> impl Strategy<Value = ValidationStage> {
+            prop_oneof![
+                Just(ValidationStage::AstInterpretation),
+                Just(ValidationStage::ReteCompilation),
+            ]
+        }
+
+        fn arb_location() -> impl Strategy<Value = SourceLocation> {
+            (1..1000_u32, 1..200_u32, 1..1000_u32, 1..200_u32)
+                .prop_map(|(l, c, el, ec)| SourceLocation::new(l, c, el, ec))
+        }
+
+        proptest! {
+            /// Every violation has a unique, stable error code.
+            #[test]
+            fn code_is_stable(violation in arb_violation()) {
+                let code = violation.code();
+                prop_assert!(
+                    ["E0001", "E0002", "E0003", "E0004", "E0005"].contains(&code),
+                    "unexpected code: {code}"
+                );
+            }
+
+            /// Every violation produces a non-empty suggestion.
+            #[test]
+            fn suggestion_always_present(violation in arb_violation()) {
+                let suggestion = violation.suggestion();
+                prop_assert!(suggestion.is_some());
+                prop_assert!(!suggestion.unwrap().is_empty());
+            }
+
+            /// `PatternValidationError.code` always matches `kind.code()`.
+            #[test]
+            fn error_code_matches_kind(
+                violation in arb_violation(),
+                has_loc in any::<bool>(),
+                stage in arb_stage(),
+                loc in arb_location(),
+            ) {
+                let location = if has_loc { Some(loc) } else { None };
+                let error = PatternValidationError::new(violation.clone(), location, stage);
+                prop_assert_eq!(error.code, violation.code());
+            }
+
+            /// Display output always contains the error code.
+            #[test]
+            fn display_contains_code(
+                violation in arb_violation(),
+                stage in arb_stage(),
+            ) {
+                let error = PatternValidationError::new(violation.clone(), None, stage);
+                let display = format!("{error}");
+                prop_assert!(
+                    display.contains(violation.code()),
+                    "display '{}' missing code '{}'",
+                    display,
+                    violation.code()
+                );
+            }
+
+            /// `SourceLocation` display: single-line vs multi-line format.
+            #[test]
+            fn source_location_display_format(loc in arb_location()) {
+                let display = format!("{loc}");
+                if loc.line == loc.end_line {
+                    // Single-line format: "line:col-endcol"
+                    prop_assert!(
+                        !display.contains(&format!("-{}:", loc.end_line)),
+                        "single-line location should not contain end_line prefix: {display}"
+                    );
+                } else {
+                    // Multi-line format: "line:col-endline:endcol"
+                    let expected = format!("{}:{}-{}:{}", loc.line, loc.column, loc.end_line, loc.end_column);
+                    prop_assert_eq!(display, expected);
+                }
+            }
+        }
+    }
 }
