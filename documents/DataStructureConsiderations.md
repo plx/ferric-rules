@@ -541,6 +541,16 @@ For each experiment:
 - Moderate for the `SmallVec` small-map variant, because it changes the lookup
   code shape and depends on actual template slot counts.
 
+**Experiment note (2026-02-28)**
+
+- Converting `RegisteredTemplate.slot_index` in
+  `crates/ferric-runtime/src/templates.rs` from `HashMap<String, usize>` to
+  `HashMap<Box<str>, usize>` was tested and reverted.
+- In `template_registry_bench`, `load_many_templates` showed no meaningful
+  change, but `template_modify_reset_run` regressed from roughly `1.75 us` to
+  `1.84 us` (about `+4.1%`), so this specific `Box<str>` substitution is not a
+  win for the current slot-lookup path.
+
 ## Areas to Deprioritize for Now
 
 These are existing structures that currently look well-matched to their
