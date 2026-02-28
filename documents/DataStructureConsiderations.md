@@ -367,6 +367,23 @@ For each experiment:
 - The logic is sensitive, but the change can be phased so the first experiment
   remains mechanically simple.
 
+**Experiment note (2026-02-28)**
+
+- Converting the outer `HashMap` layers in `crates/ferric-core/src/negative.rs`
+  to `SparseSecondaryMap` was tested and reverted.
+- The targeted microbenchmark `negative_memory_outer_index_cycle` regressed
+  from roughly `22.9 us` to `44.8 us` (about `+94%`).
+- Converting the outer `HashMap` layers in `crates/ferric-core/src/exists.rs`
+  to `SparseSecondaryMap` was tested and reverted.
+- The targeted microbenchmark `exists_memory_outer_index_cycle` regressed from
+  roughly `24.8 us` to `52.1 us` (about `+111%`).
+- Converting the outer `HashMap` layers in `crates/ferric-core/src/ncc.rs`
+  to `SparseSecondaryMap` was tested and reverted.
+- The targeted microbenchmark `ncc_memory_outer_index_cycle` regressed from
+  roughly `7.24 us` to `24.3 us` (about `+236%`).
+- Across all three, the current high-churn update patterns favor the existing
+  `FxHashMap`-based outer maps over `SparseSecondaryMap`.
+
 ### 7. Replace Dense `u32`-Indexed Maps with `Vec` / `Vec<Option<_>>` in Core Networks
 
 **Current structures**

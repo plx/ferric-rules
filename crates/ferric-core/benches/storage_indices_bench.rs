@@ -1,8 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use ferric_core::{
     Activation, ActivationId, ActivationSeq, Agenda, AlphaEntryType, AlphaMemory, AlphaMemoryId,
-    AlphaNetwork, BetaNetwork, BindingSet, Fact, FactBase, FactId, NodeId, RuleId, Salience,
-    SlotIndex, StringEncoding, Symbol, SymbolTable, Timestamp, Token, TokenId, TokenStore, Value,
+    AlphaNetwork, BetaNetwork, BindingSet, ExistsMemory, ExistsMemoryId, Fact, FactBase, FactId,
+    NccMemory, NccMemoryId, NegativeMemory, NegativeMemoryId, NodeId, RuleId, Salience, SlotIndex,
+    StringEncoding, Symbol, SymbolTable, Timestamp, Token, TokenId, TokenStore, Value,
 };
 use slotmap::SlotMap;
 use smallvec::SmallVec;
@@ -288,6 +289,135 @@ fn bench_beta_fanout_index_cycle(c: &mut Criterion) {
     });
 }
 
+fn bench_negative_memory_outer_index_cycle(c: &mut Criterion) {
+    let token_pool = token_ids(256);
+    let fact_pool = fact_ids(128);
+
+    c.bench_function("negative_memory_outer_index_cycle", |b| {
+        b.iter_batched(
+            || NegativeMemory::new(NegativeMemoryId(0)),
+            |mut memory| {
+                for idx in 0..1024 {
+                    memory.add_blocker(
+                        token_pool[idx % token_pool.len()],
+                        fact_pool[idx % fact_pool.len()],
+                    );
+                }
+
+                for idx in 0..64 {
+                    memory.set_unblocked(
+                        token_pool[(idx * 3) % token_pool.len()],
+                        token_pool[(idx * 5 + 1) % token_pool.len()],
+                    );
+                }
+
+                let mut blocked = 0usize;
+                for &fact_id in fact_pool.iter().take(16) {
+                    blocked += memory.tokens_blocked_by(fact_id).len();
+                }
+                black_box(blocked);
+
+                for idx in 0..1024 {
+                    black_box(memory.remove_blocker(
+                        token_pool[idx % token_pool.len()],
+                        fact_pool[idx % fact_pool.len()],
+                    ));
+                }
+
+                for &token_id in token_pool.iter().take(64) {
+                    memory.remove_parent_token(token_id);
+                }
+
+                black_box(memory.unblocked_count());
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_exists_memory_outer_index_cycle(c: &mut Criterion) {
+    let token_pool = token_ids(256);
+    let fact_pool = fact_ids(128);
+
+    c.bench_function("exists_memory_outer_index_cycle", |b| {
+        b.iter_batched(
+            || ExistsMemory::new(ExistsMemoryId(0)),
+            |mut memory| {
+                for idx in 0..1024 {
+                    black_box(memory.add_support(
+                        token_pool[idx % token_pool.len()],
+                        fact_pool[idx % fact_pool.len()],
+                    ));
+                }
+
+                for idx in 0..64 {
+                    memory.set_satisfied(
+                        token_pool[(idx * 3) % token_pool.len()],
+                        token_pool[(idx * 5 + 1) % token_pool.len()],
+                    );
+                }
+
+                let mut supported = 0usize;
+                for &fact_id in fact_pool.iter().take(16) {
+                    supported += memory.parents_supported_by(fact_id).len();
+                }
+                black_box(supported);
+
+                for idx in 0..1024 {
+                    black_box(memory.remove_support(
+                        token_pool[idx % token_pool.len()],
+                        fact_pool[idx % fact_pool.len()],
+                    ));
+                }
+
+                for &token_id in token_pool.iter().take(64) {
+                    memory.remove_parent_token(token_id);
+                }
+
+                black_box(memory.is_empty());
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_ncc_memory_outer_index_cycle(c: &mut Criterion) {
+    let token_pool = token_ids(512);
+
+    c.bench_function("ncc_memory_outer_index_cycle", |b| {
+        b.iter_batched(
+            || NccMemory::new(NccMemoryId(0)),
+            |mut memory| {
+                for idx in 0..256 {
+                    black_box(memory.add_result(token_pool[idx], token_pool[idx + 256]));
+                }
+
+                for idx in 0..64 {
+                    memory.set_unblocked(token_pool[idx], token_pool[idx + 128]);
+                }
+
+                let mut total = 0usize;
+                for &token_id in token_pool.iter().take(64) {
+                    total += memory.result_count(token_id);
+                    total += usize::from(memory.get_passthrough(token_id).is_some());
+                }
+                black_box(total);
+
+                for &result_token_id in token_pool.iter().skip(256).take(256) {
+                    black_box(memory.remove_result(result_token_id));
+                }
+
+                for &token_id in token_pool.iter().take(64) {
+                    memory.remove_parent_token(token_id);
+                }
+
+                black_box(memory.is_empty());
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn bench_agenda_token_index_cycle(c: &mut Criterion) {
     let token_pool = token_ids(128);
 
@@ -334,6 +464,9 @@ criterion_group!(
     bench_alpha_network_reverse_index_cycle,
     bench_alpha_memory_indexed_slots_cycle,
     bench_beta_fanout_index_cycle,
+    bench_negative_memory_outer_index_cycle,
+    bench_exists_memory_outer_index_cycle,
+    bench_ncc_memory_outer_index_cycle,
     bench_agenda_token_index_cycle,
 );
 criterion_main!(benches);
