@@ -4,6 +4,7 @@
 //! facts by type (template or ordered relation) and applies constant tests.
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use slotmap::SparseSecondaryMap;
 use smallvec::SmallVec;
 
 use crate::fact::{Fact, FactBase, FactId, TemplateId};
@@ -273,7 +274,7 @@ pub struct AlphaNetwork {
     /// Reverse index: which alpha memories contain each fact.
     /// Populated on assertion, pruned on retraction. Eliminates the full
     /// alpha-memory scan in `memories_containing_fact`.
-    fact_to_memories: HashMap<FactId, SmallVec<[AlphaMemoryId; 4]>>,
+    fact_to_memories: SparseSecondaryMap<FactId, SmallVec<[AlphaMemoryId; 4]>>,
     next_node_id: u32,
     next_memory_id: u32,
 }
@@ -286,7 +287,7 @@ impl AlphaNetwork {
             nodes: HashMap::default(),
             memories: HashMap::default(),
             entry_nodes: HashMap::default(),
-            fact_to_memories: HashMap::default(),
+            fact_to_memories: SparseSecondaryMap::new(),
             next_node_id: 0,
             next_memory_id: 0,
         }
@@ -409,7 +410,7 @@ impl AlphaNetwork {
         };
 
         self.retract_propagate(entry_node, fact_id, fact);
-        self.fact_to_memories.remove(&fact_id);
+        self.fact_to_memories.remove(fact_id);
     }
 
     /// Get a reference to a node.
@@ -424,7 +425,7 @@ impl AlphaNetwork {
     /// rather than scanning all memories.
     pub fn memories_containing_fact(&self, fact_id: FactId) -> Vec<AlphaMemoryId> {
         self.fact_to_memories
-            .get(&fact_id)
+            .get(fact_id)
             .map(|mems| mems.to_vec())
             .unwrap_or_default()
     }

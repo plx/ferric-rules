@@ -297,6 +297,12 @@ For each experiment:
 - The likely issue is `SparseSecondaryMap`'s insertion/update path for these
   fan-out lists being more expensive than the existing `FxHashMap` `entry`
   pattern under this workload.
+- Converting `AlphaNetwork.fact_to_memories` in `crates/ferric-core/src/alpha.rs`
+  from `HashMap` to `SparseSecondaryMap` was kept.
+- The targeted microbenchmark `alpha_network_reverse_index_cycle` moved from
+  roughly `63.4 us` to `64.0 us`, which Criterion flagged as within the noise
+  threshold, so it meets the current "no less efficient" acceptance bar while
+  simplifying the slotmap-keyed reverse index.
 
 ### 6. Convert Slotmap-Keyed Runtime State Maps in Negative/Exists/NCC Paths
 
