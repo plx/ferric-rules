@@ -1074,6 +1074,59 @@ For each experiment:
   improved from roughly `11.57 us` to `11.25 us` (about `-2.6%`), making this
   a straightforward win for the current small-pattern workload.
 
+### 19. Replace Compiler Cache-Key Vectors with `SmallVec`
+
+**Current structures**
+
+- `crates/ferric-core/src/compiler.rs`
+  - `AlphaPathKey.tests: Vec<ConstantTest>`
+  - `JoinNodeKey.tests: Vec<JoinTest>`
+  - `JoinNodeKey.bindings: Vec<(SlotIndex, VarId)>`
+
+**Proposed substitution**
+
+- Replace the key-owned `Vec`s with `SmallVec`, using inline capacities sized
+  for the common small-pattern case.
+
+**Where we'd use it**
+
+- The structural cache keys for `alpha_path_cache` and `join_node_cache` in the
+  compiler.
+
+**Additional adjustments**
+
+- Reuse the existing `compiler_bound_var_cycle` benchmark because it already
+  exercises both `ensure_alpha_path` and `ensure_join_node`.
+- Keep the surrounding cache tables unchanged and limit the change to the
+  key-owned collection fields.
+- On the positive join path, pass the existing scratch `SmallVec`s into
+  `ensure_join_node` directly instead of converting them to `Vec` first.
+
+**Reasoning**
+
+- These cache keys are cloned and hashed during compilation.
+- The key vectors are usually small, so inline storage looks attractive at
+  first glance.
+- If it worked, this would reduce heap traffic inside the compiler caches
+  without changing any external behavior.
+
+**Risk**
+
+- Low.
+- The code change is straightforward, but `SmallVec` can also make hashing and
+  cloning more expensive depending on the exact hot-path mix.
+
+**Experiment note (2026-02-28)**
+
+- Converting the compiler cache-key vectors in
+  `crates/ferric-core/src/compiler.rs` to `SmallVec` was tested and reverted.
+- Using a fresh `compiler_bound_var_cycle` baseline, the change regressed from
+  roughly `10.82 us` to `12.44 us` (about `+15.2%`), so the existing key-owned
+  `Vec`s remain the better fit for these cache structures.
+- Post-revert reruns landed only a little above the saved baseline
+  (roughly `+1.8%`), which suggests some benchmark drift, but the experimental
+  regression itself was large enough to be decisive.
+
 ## Areas to Deprioritize for Now
 
 These are existing structures that currently look well-matched to their
