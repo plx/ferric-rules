@@ -24,5 +24,9 @@ criterion = { workspace = true }
 name = "name_registry_bench"
 harness = false
 
+[[bench]]
+name = "rule_index_bench"
+harness = false
+
 [lints]
 workspace = true

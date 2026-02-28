@@ -914,8 +914,13 @@ impl Engine {
             test_conditions: translated.test_conditions,
             runtime_actions,
         };
-        self.rule_info.insert(compile_result.rule_id, Rc::new(info));
-        self.rule_modules.insert(
+        crate::engine::rule_index_insert(
+            &mut self.rule_info,
+            compile_result.rule_id,
+            Rc::new(info),
+        );
+        crate::engine::rule_index_insert(
+            &mut self.rule_modules,
             compile_result.rule_id,
             self.module_registry.current_module(),
         );

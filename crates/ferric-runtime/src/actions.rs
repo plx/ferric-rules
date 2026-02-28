@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use std::fmt::Write as FmtWrite;
 use std::rc::Rc;
 
-use ferric_core::beta::{RuleId, Salience};
+use ferric_core::beta::Salience;
 use ferric_core::binding::VarMap;
 use ferric_core::token::Token;
 use ferric_core::{
@@ -46,7 +46,7 @@ pub(crate) struct ActionExecutionContext<'a> {
     pub global_modules: &'a ModuleLookup,
     pub generic_modules: &'a ModuleLookup,
     pub input_buffer: &'a mut VecDeque<String>,
-    pub all_rule_info: &'a HashMap<RuleId, Rc<CompiledRuleInfo>>,
+    pub all_rule_info: &'a crate::engine::RuleIndex<Rc<CompiledRuleInfo>>,
 }
 
 struct ActionEvalEnv<'a> {
@@ -267,7 +267,7 @@ fn execute_single_action(
     template_defs: &HashMap<TemplateId, RegisteredTemplate>,
     router: &mut OutputRouter,
     focus_requests: &mut Vec<String>,
-    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
+    all_rule_info: &crate::engine::RuleIndex<Rc<CompiledRuleInfo>>,
     eval_env: &mut ActionEvalEnv<'_>,
 ) -> Result<(), ActionError> {
     match call.name.as_str() {
@@ -391,12 +391,11 @@ fn execute_list_focus_stack(
 fn execute_agenda(
     rete: &ReteNetwork,
     router: &mut OutputRouter,
-    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
+    all_rule_info: &crate::engine::RuleIndex<Rc<CompiledRuleInfo>>,
 ) -> Result<(), ActionError> {
     let mut output = String::new();
     for activation in rete.agenda.iter_activations() {
-        let rule_name = all_rule_info
-            .get(&activation.rule)
+        let rule_name = crate::engine::rule_index_get(all_rule_info, activation.rule)
             .map_or("???", |info| info.name.as_str());
         let _ = writeln!(output, "{} {rule_name}", activation.salience.get());
     }

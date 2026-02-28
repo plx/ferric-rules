@@ -25,6 +25,24 @@ use crate::modules::{ModuleId, ModuleRegistry};
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
 
+pub(crate) type RuleIndex<T> = Vec<Option<T>>;
+
+pub(crate) fn rule_index_get<T>(entries: &[Option<T>], rule_id: RuleId) -> Option<&T> {
+    entries.get(rule_id.0 as usize)?.as_ref()
+}
+
+pub(crate) fn rule_index_insert<T>(
+    entries: &mut RuleIndex<T>,
+    rule_id: RuleId,
+    value: T,
+) -> Option<T> {
+    let index = rule_id.0 as usize;
+    if entries.len() <= index {
+        entries.resize_with(index + 1, || None);
+    }
+    entries[index].replace(value)
+}
+
 fn propagate_fact_assertion(rete: &mut ReteNetwork, fact_base: &FactBase, fact_id: FactId) {
     let fact = fact_base
         .get(fact_id)
@@ -86,7 +104,7 @@ pub struct Engine {
     /// Registered deffacts for re-assertion on reset.
     pub(crate) registered_deffacts: Vec<Vec<Fact>>,
     /// Compiled rule info for action execution.
-    pub(crate) rule_info: HashMap<RuleId, Rc<CompiledRuleInfo>>,
+    pub(crate) rule_info: RuleIndex<Rc<CompiledRuleInfo>>,
     /// Registered template definitions: name → `TemplateId`.
     pub(crate) template_ids: HashMap<String, TemplateId>,
     /// Template slot metadata indexed by `TemplateId`.
@@ -106,7 +124,7 @@ pub struct Engine {
     /// Module registry: module definitions, focus stack, visibility.
     pub(crate) module_registry: ModuleRegistry,
     /// Rule-to-module association for focus-aware execution.
-    pub(crate) rule_modules: HashMap<RuleId, ModuleId>,
+    pub(crate) rule_modules: RuleIndex<ModuleId>,
     /// Template-to-module association for visibility checking.
     pub(crate) template_modules: HashMap<ferric_core::TemplateId, ModuleId>,
     /// Function-to-module association for consistency-check bookkeeping.
@@ -144,7 +162,7 @@ impl Engine {
             rete: ReteNetwork::with_strategy(strategy),
             compiler: ReteCompiler::new(),
             registered_deffacts: Vec::new(),
-            rule_info: HashMap::default(),
+            rule_info: Vec::new(),
             template_ids: HashMap::default(),
             template_defs: HashMap::default(),
             template_id_alloc: slotmap::SlotMap::with_key(),
@@ -154,7 +172,7 @@ impl Engine {
             registered_globals: Vec::new(),
             generics: GenericRegistry::new(),
             module_registry: ModuleRegistry::new(),
-            rule_modules: HashMap::default(),
+            rule_modules: Vec::new(),
             template_modules: HashMap::default(),
             function_modules: HashMap::default(),
             global_modules: HashMap::default(),
@@ -330,10 +348,11 @@ impl Engine {
     /// Returns a vector of `(name, salience)` pairs for every rule
     /// that has been compiled into the Rete network.
     pub fn rules(&self) -> Vec<(&str, i32)> {
-        self.rule_info
-            .values()
-            .map(|info| (info.name.as_str(), info.salience.get()))
-            .collect()
+        let mut rules = Vec::with_capacity(self.rule_info.len().saturating_sub(1));
+        for info in self.rule_info.iter().skip(1).flatten() {
+            rules.push((info.name.as_str(), info.salience.get()));
+        }
+        rules
     }
 
     /// List the names of all registered templates.
@@ -345,7 +364,7 @@ impl Engine {
     ///
     /// Returns `None` if the ID does not correspond to a known rule.
     pub fn rule_name(&self, rule_id: RuleId) -> Option<&str> {
-        self.rule_info.get(&rule_id).map(|info| info.name.as_str())
+        rule_index_get(&self.rule_info, rule_id).map(|info| info.name.as_str())
     }
 
     /// Check that the current thread is the same as the creator thread.
@@ -378,14 +397,12 @@ impl Engine {
 
         // Clone the handle so we can pass both this rule and the full map to
         // action helpers without deep-cloning `CompiledRuleInfo`.
-        let Some(info) = self.rule_info.get(&rule_id).cloned() else {
+        let Some(info) = rule_index_get(&self.rule_info, rule_id).cloned() else {
             // No compiled rule info — treat as not fired.
             return (false, false, false);
         };
 
-        let current_module = self
-            .rule_modules
-            .get(&rule_id)
+        let current_module = rule_index_get(&self.rule_modules, rule_id)
             .copied()
             .unwrap_or_else(|| self.module_registry.main_module_id());
 
@@ -449,11 +466,9 @@ impl Engine {
             let focus_module = self.module_registry.current_focus()?;
             let rule_modules = &self.rule_modules;
 
-            if let Some(activation) = self
-                .rete
-                .agenda
-                .pop_matching(|a| rule_modules.get(&a.rule).copied() == Some(focus_module))
-            {
+            if let Some(activation) = self.rete.agenda.pop_matching(|a| {
+                rule_index_get(rule_modules, a.rule).copied() == Some(focus_module)
+            }) {
                 return Some(activation);
             }
 
@@ -824,7 +839,11 @@ impl Engine {
         self.globals.debug_assert_consistency();
         self.generics.debug_assert_consistency();
 
-        for (rule_id, module_id) in &self.rule_modules {
+        for (index, maybe_module_id) in self.rule_modules.iter().enumerate() {
+            let Some(module_id) = maybe_module_id else {
+                continue;
+            };
+            let rule_id = RuleId(index as u32);
             assert!(
                 self.module_registry.get(*module_id).is_some(),
                 "rule {rule_id:?} points to unknown module {module_id:?}"
