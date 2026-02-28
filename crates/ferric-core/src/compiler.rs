@@ -11,7 +11,7 @@ use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, Sl
 use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
 use crate::rete::ReteNetwork;
-use crate::symbol::Symbol;
+use crate::symbol::{Symbol, SymbolId};
 use crate::token::NodeId;
 use crate::validation::{PatternValidationError, PatternViolation, ValidationStage};
 
@@ -85,6 +85,57 @@ struct JoinNodeKey {
     alpha_memory: AlphaMemoryId,
     tests: Vec<JoinTest>,
     bindings: Vec<(SlotIndex, VarId)>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SymbolSet {
+    ascii: Vec<u8>,
+    utf8: Vec<u8>,
+}
+
+impl SymbolSet {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn contains(&self, key: &Symbol) -> bool {
+        match key.0 {
+            SymbolId::Ascii(idx) => self.ascii.get(idx as usize).copied().unwrap_or(0) != 0,
+            SymbolId::Utf8(idx) => self.utf8.get(idx as usize).copied().unwrap_or(0) != 0,
+        }
+    }
+
+    fn insert(&mut self, key: Symbol) {
+        *self.slot_mut_or_grow(key) = 1;
+    }
+
+    fn extend<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = Symbol>,
+    {
+        for key in iter {
+            self.insert(key);
+        }
+    }
+
+    fn slot_mut_or_grow(&mut self, key: Symbol) -> &mut u8 {
+        match key.0 {
+            SymbolId::Ascii(idx) => {
+                let idx = idx as usize;
+                if idx >= self.ascii.len() {
+                    self.ascii.resize(idx + 1, 0);
+                }
+                &mut self.ascii[idx]
+            }
+            SymbolId::Utf8(idx) => {
+                let idx = idx as usize;
+                if idx >= self.utf8.len() {
+                    self.utf8.resize(idx + 1, 0);
+                }
+                &mut self.utf8[idx]
+            }
+        }
+    }
 }
 
 /// Compiles rule patterns into shared Rete network nodes.
@@ -170,7 +221,7 @@ impl ReteCompiler {
     ) -> Result<CompileResult, CompileError> {
         let mut alpha_memories = Vec::new();
         let mut var_map = VarMap::new();
-        let mut bound_vars: HashSet<Symbol> = HashSet::default();
+        let mut bound_vars = SymbolSet::new();
         let mut current_parent = rete.beta.root_id();
 
         for condition in conditions {
@@ -407,7 +458,7 @@ impl ReteCompiler {
         current_parent: NodeId,
         pattern: &CompilablePattern,
         var_map: &mut VarMap,
-        bound_vars: &mut HashSet<Symbol>,
+        bound_vars: &mut SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
     ) -> Result<NodeId, CompileError> {
         let alpha_mem = self.ensure_alpha_path(&mut rete.alpha, pattern);
@@ -464,7 +515,7 @@ impl ReteCompiler {
         current_parent: NodeId,
         subpatterns: &[CompilablePattern],
         var_map: &mut VarMap,
-        bound_vars: &HashSet<Symbol>,
+        bound_vars: &SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
     ) -> Result<NodeId, CompileError> {
         if subpatterns.is_empty() {

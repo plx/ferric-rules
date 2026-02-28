@@ -1,9 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use ferric_core::{
     Activation, ActivationId, ActivationSeq, Agenda, AlphaEntryType, AlphaMemory, AlphaMemoryId,
-    AlphaNetwork, AtomKey, BetaMemoryId, BetaNetwork, BindingSet, ConstantTest, ConstantTestType,
-    ExistsMemory, ExistsMemoryId, Fact, FactBase, FactId, NccMemory, NccMemoryId, NegativeMemory,
-    NegativeMemoryId, NodeId, RuleId, Salience, SlotIndex, StringEncoding, Symbol, SymbolTable,
+    AlphaNetwork, AtomKey, BetaMemoryId, BetaNetwork, BindingSet, CompilableCondition,
+    CompilablePattern, ConstantTest, ConstantTestType, ExistsMemory, ExistsMemoryId, Fact,
+    FactBase, FactId, NccMemory, NccMemoryId, NegativeMemory, NegativeMemoryId, NodeId,
+    ReteCompiler, ReteNetwork, RuleId, Salience, SlotIndex, StringEncoding, Symbol, SymbolTable,
     TemplateId, Timestamp, Token, TokenId, TokenStore, Value, VarMap,
 };
 use slotmap::SlotMap;
@@ -124,6 +125,137 @@ fn bench_var_map_symbol_lookup_cycle(c: &mut Criterion) {
                     }
                 }
                 black_box(found);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
+    let mut symbols = SymbolTable::new();
+    let relations = ascii_symbols(&mut symbols, 8);
+    let mut variables = Vec::with_capacity(32);
+
+    for idx in 0..512 {
+        black_box(
+            symbols
+                .intern_symbol(&format!("pad_bound_ascii_{idx}"), StringEncoding::Ascii)
+                .expect("ASCII symbol"),
+        );
+    }
+
+    for idx in 0..16 {
+        variables.push(
+            symbols
+                .intern_symbol(&format!("bound_ascii_{idx}"), StringEncoding::Ascii)
+                .expect("ASCII symbol"),
+        );
+    }
+
+    for idx in 0..512 {
+        black_box(
+            symbols
+                .intern_symbol(&format!("pad_bound_utf8_{idx}"), StringEncoding::Utf8)
+                .expect("UTF-8 symbol"),
+        );
+    }
+
+    for idx in 0..16 {
+        variables.push(
+            symbols
+                .intern_symbol(&format!("bound_utf8_{idx}"), StringEncoding::Utf8)
+                .expect("UTF-8 symbol"),
+        );
+    }
+
+    let mut conditions = Vec::with_capacity(25);
+    for pattern_idx in 0..20 {
+        let base = (pattern_idx * 3) % variables.len();
+        conditions.push(CompilableCondition::Pattern(CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(relations[pattern_idx % relations.len()]),
+            constant_tests: Vec::new(),
+            variable_slots: vec![
+                (SlotIndex::Ordered(0), variables[base]),
+                (
+                    SlotIndex::Ordered(1),
+                    variables[(base + 1) % variables.len()],
+                ),
+                (
+                    SlotIndex::Ordered(2),
+                    variables[(base + 8) % variables.len()],
+                ),
+                (
+                    SlotIndex::Ordered(3),
+                    variables[(base + 2) % variables.len()],
+                ),
+                (
+                    SlotIndex::Ordered(4),
+                    variables[(base + 9) % variables.len()],
+                ),
+                (
+                    SlotIndex::Ordered(5),
+                    variables[(base + 3) % variables.len()],
+                ),
+            ],
+            negated: false,
+            exists: false,
+        }));
+    }
+
+    conditions.insert(
+        10,
+        CompilableCondition::Ncc(vec![
+            CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(relations[2]),
+                constant_tests: Vec::new(),
+                variable_slots: vec![
+                    (SlotIndex::Ordered(0), variables[4]),
+                    (SlotIndex::Ordered(1), variables[12]),
+                    (SlotIndex::Ordered(2), variables[20]),
+                    (SlotIndex::Ordered(3), variables[28]),
+                ],
+                negated: false,
+                exists: false,
+            },
+            CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(relations[3]),
+                constant_tests: Vec::new(),
+                variable_slots: vec![
+                    (SlotIndex::Ordered(0), variables[6]),
+                    (SlotIndex::Ordered(1), variables[14]),
+                    (SlotIndex::Ordered(2), variables[22]),
+                    (SlotIndex::Ordered(3), variables[30]),
+                ],
+                negated: false,
+                exists: false,
+            },
+            CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(relations[4]),
+                constant_tests: Vec::new(),
+                variable_slots: vec![
+                    (SlotIndex::Ordered(0), variables[1]),
+                    (SlotIndex::Ordered(1), variables[9]),
+                    (SlotIndex::Ordered(2), variables[17]),
+                    (SlotIndex::Ordered(3), variables[25]),
+                ],
+                negated: false,
+                exists: false,
+            },
+        ]),
+    );
+
+    c.bench_function("compiler_bound_var_cycle", |b| {
+        b.iter_batched(
+            || (ReteCompiler::new(), ReteNetwork::new()),
+            |(mut compiler, mut rete)| {
+                let result = compiler
+                    .compile_conditions(&mut rete, RuleId(1), Salience::DEFAULT, &conditions)
+                    .expect("compile succeeds");
+                black_box((
+                    result.terminal_node,
+                    result.alpha_memories.len(),
+                    result.var_map.len(),
+                ));
             },
             BatchSize::SmallInput,
         );
@@ -856,6 +988,7 @@ criterion_group!(
     benches,
     bench_symbol_table_ascii_intern,
     bench_var_map_symbol_lookup_cycle,
+    bench_compiler_bound_var_cycle,
     bench_fact_base_relation_index_cycle,
     bench_fact_base_relation_symbol_index_cycle,
     bench_fact_base_template_index_cycle,

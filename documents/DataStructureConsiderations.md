@@ -917,6 +917,61 @@ For each experiment:
 - That makes the outer symbol-key direct-indexing change a consistent win on
   both tested relation-index workloads.
 
+### 16. Replace Compiler `bound_vars` Hash Lookups with Direct Pool Indexing
+
+**Current structures**
+
+- `crates/ferric-core/src/compiler.rs`
+  - `bound_vars: HashSet<Symbol>` during condition compilation
+
+**Proposed substitution**
+
+- Replace the hash set with a split direct-indexed symbol set:
+  - `ascii: Vec<u8>`
+  - `utf8: Vec<u8>`
+
+**Where we'd use it**
+
+- The running "which variables are already bound?" set in the compiler's
+  positive-pattern/NCC compilation path.
+
+**Additional adjustments**
+
+- Keep the validation-time `variable_bindings: HashMap<Symbol, SlotIndex>`
+  logic unchanged so the experiment isolates only the compile-path bound-var
+  set.
+- Implement `contains`, `insert`, `extend`, and `clone` semantics on top of
+  the split vectors.
+- Add a targeted compiler benchmark that uses mixed ASCII/UTF-8 variable
+  symbols, padded symbol IDs, repeated variable reuse, and one NCC to cover the
+  `clone` path.
+
+**Reasoning**
+
+- The compiler repeatedly checks whether a variable symbol has already been
+  bound before deciding whether to emit a join test or a new binding.
+- Those symbols are already interned and numerically identified, so re-hashing
+  them is avoidable work.
+- Direct pool indexing aligns naturally with the symbol representation and
+  keeps the hot check on the compile path very small.
+
+**Risk**
+
+- Low to moderate.
+- CPU cost should improve, but memory use can grow if bound variable symbols
+  land at very sparse symbol IDs.
+
+**Experiment note (2026-02-28)**
+
+- Added a dedicated `compiler_bound_var_cycle` microbenchmark to
+  `crates/ferric-core/benches/storage_indices_bench.rs`.
+- Converting the compiler's `bound_vars` set in
+  `crates/ferric-core/src/compiler.rs` from `HashSet<Symbol>` to a split
+  direct-indexed symbol set was kept.
+- Using the new targeted benchmark, the compile cycle improved from roughly
+  `11.47 us` to `11.09 us` (about `-3.6%`), making this a clear win for the
+  current compile-path bound-variable checks.
+
 ## Areas to Deprioritize for Now
 
 These are existing structures that currently look well-matched to their
