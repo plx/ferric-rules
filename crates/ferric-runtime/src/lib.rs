@@ -76,14 +76,14 @@ pub(crate) mod test_helpers;
 
 // Re-export types from ferric-core for convenience.
 pub use ferric_core::{
-    AtomKey, EncodingError, ExternalAddress, ExternalTypeId, FerricString, Multifield,
-    StringEncoding, Symbol, Value,
+    AtomKey, EncodingError, ExternalAddress, ExternalTypeId, FerricString, IntoFieldValues,
+    Multifield, StringEncoding, Symbol, Value,
 };
 
 // Re-export primary types at crate root for convenience.
 pub use actions::ActionError;
 pub use config::EngineConfig;
-pub use engine::{Engine, EngineError};
+pub use engine::{Engine, EngineError, InitError};
 pub use execution::{FiredRule, HaltReason, RunLimit, RunResult};
 pub use functions::{FunctionEnv, GenericRegistry, GlobalStore};
 pub use loader::{LoadError, LoadResult, RuleDef};

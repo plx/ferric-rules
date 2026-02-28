@@ -97,6 +97,9 @@ check: fmt-check clippy test cargo-check
 # Same as `check` — alias for the preflight script
 preflight: check
 
+# PR preflight: auto-fix formatting, then clippy + tests + cargo check
+preflight-pr: fmt clippy test cargo-check
+
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 
 # Run all Criterion benchmarks

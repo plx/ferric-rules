@@ -235,6 +235,110 @@ impl Value {
     }
 }
 
+// ---------------------------------------------------------------------------
+// From implementations for convenient Value construction
+// ---------------------------------------------------------------------------
+
+impl From<i64> for Value {
+    fn from(v: i64) -> Self {
+        Value::Integer(v)
+    }
+}
+
+impl From<i32> for Value {
+    fn from(v: i32) -> Self {
+        Value::Integer(i64::from(v))
+    }
+}
+
+impl From<f64> for Value {
+    fn from(v: f64) -> Self {
+        Value::Float(v)
+    }
+}
+
+impl From<Symbol> for Value {
+    fn from(s: Symbol) -> Self {
+        Value::Symbol(s)
+    }
+}
+
+impl From<FerricString> for Value {
+    fn from(s: FerricString) -> Self {
+        Value::String(s)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IntoFieldValues: generic conversion for ordered-fact field arguments
+// ---------------------------------------------------------------------------
+
+/// Trait for types that can be converted into a field list for ordered facts.
+///
+/// This enables `Engine::assert_ordered` to accept single values, vectors,
+/// arrays, and primitive types directly — without requiring the caller to
+/// wrap everything in `vec![Value::...]`.
+pub trait IntoFieldValues {
+    /// Convert into the internal field representation.
+    fn into_field_values(self) -> SmallVec<[Value; 8]>;
+}
+
+impl IntoFieldValues for Vec<Value> {
+    fn into_field_values(self) -> SmallVec<[Value; 8]> {
+        self.into_iter().collect()
+    }
+}
+
+impl IntoFieldValues for SmallVec<[Value; 8]> {
+    fn into_field_values(self) -> SmallVec<[Value; 8]> {
+        self
+    }
+}
+
+impl IntoFieldValues for Value {
+    fn into_field_values(self) -> SmallVec<[Value; 8]> {
+        smallvec::smallvec![self]
+    }
+}
+
+impl<const N: usize> IntoFieldValues for [Value; N] {
+    fn into_field_values(self) -> SmallVec<[Value; 8]> {
+        self.into_iter().collect()
+    }
+}
+
+// Primitive → single-field conversions (combines From<T> for Value).
+
+impl IntoFieldValues for i64 {
+    fn into_field_values(self) -> SmallVec<[Value; 8]> {
+        smallvec::smallvec![Value::Integer(self)]
+    }
+}
+
+impl IntoFieldValues for i32 {
+    fn into_field_values(self) -> SmallVec<[Value; 8]> {
+        smallvec::smallvec![Value::Integer(i64::from(self))]
+    }
+}
+
+impl IntoFieldValues for f64 {
+    fn into_field_values(self) -> SmallVec<[Value; 8]> {
+        smallvec::smallvec![Value::Float(self)]
+    }
+}
+
+impl IntoFieldValues for Symbol {
+    fn into_field_values(self) -> SmallVec<[Value; 8]> {
+        smallvec::smallvec![Value::Symbol(self)]
+    }
+}
+
+impl IntoFieldValues for FerricString {
+    fn into_field_values(self) -> SmallVec<[Value; 8]> {
+        smallvec::smallvec![Value::String(self)]
+    }
+}
+
 /// A value that can be used as a hash key in alpha-memory indices
 /// and constant-test definitions.
 ///
