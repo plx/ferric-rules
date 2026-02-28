@@ -173,10 +173,7 @@ impl SymbolTable {
                     .get(s.as_bytes())
                     .map(|&id| Symbol(SymbolId::Ascii(id)))
             }
-            StringEncoding::Utf8 => self
-                .utf8_to_id
-                .get(s)
-                .map(|&id| Symbol(SymbolId::Utf8(id))),
+            StringEncoding::Utf8 => self.utf8_to_id.get(s).map(|&id| Symbol(SymbolId::Utf8(id))),
         }
     }
 }
