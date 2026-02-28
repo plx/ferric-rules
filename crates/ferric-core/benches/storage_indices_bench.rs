@@ -1,6 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use ferric_core::{
-    BindingSet, FactBase, FactId, NodeId, StringEncoding, Symbol, SymbolTable, Token, TokenStore,
+    Activation, ActivationId, ActivationSeq, Agenda, AlphaEntryType, AlphaNetwork, BindingSet,
+    Fact, FactBase, FactId, NodeId, RuleId, Salience, StringEncoding, Symbol, SymbolTable,
+    Timestamp, Token, TokenId, TokenStore,
 };
 use slotmap::SlotMap;
 use smallvec::SmallVec;
@@ -18,6 +20,15 @@ fn ascii_symbols(table: &mut SymbolTable, count: usize) -> Vec<Symbol> {
 fn fact_ids(count: usize) -> Vec<FactId> {
     let mut ids = Vec::with_capacity(count);
     let mut temp: SlotMap<FactId, ()> = SlotMap::with_key();
+    for _ in 0..count {
+        ids.push(temp.insert(()));
+    }
+    ids
+}
+
+fn token_ids(count: usize) -> Vec<TokenId> {
+    let mut ids = Vec::with_capacity(count);
+    let mut temp: SlotMap<TokenId, ()> = SlotMap::with_key();
     for _ in 0..count {
         ids.push(temp.insert(()));
     }
@@ -122,10 +133,91 @@ fn bench_token_store_reverse_index_cycle(c: &mut Criterion) {
     });
 }
 
+fn bench_alpha_network_reverse_index_cycle(c: &mut Criterion) {
+    let mut symbols = SymbolTable::new();
+    let relation = symbols
+        .intern_symbol("alpha-item", StringEncoding::Ascii)
+        .expect("ASCII symbol");
+
+    c.bench_function("alpha_network_reverse_index_cycle", |b| {
+        b.iter_batched(
+            || {
+                let mut network = AlphaNetwork::new();
+                let entry = network.create_entry_node(AlphaEntryType::OrderedRelation(relation));
+                let _ = network.create_memory(entry);
+                network
+            },
+            |mut network| {
+                let mut fact_base = FactBase::new();
+                let mut asserted: Vec<(FactId, Fact)> = Vec::with_capacity(512);
+                let mut accepted = 0usize;
+
+                for _ in 0..512 {
+                    let fact_id = fact_base.assert_ordered(relation, SmallVec::new());
+                    let fact = fact_base
+                        .get(fact_id)
+                        .expect("fact must exist")
+                        .fact
+                        .clone();
+                    accepted += network.assert_fact(fact_id, &fact).len();
+                    asserted.push((fact_id, fact));
+                }
+
+                black_box(accepted);
+
+                for (fact_id, fact) in asserted {
+                    network.retract_fact(fact_id, &fact);
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+fn bench_agenda_token_index_cycle(c: &mut Criterion) {
+    let token_pool = token_ids(128);
+
+    c.bench_function("agenda_token_index_cycle", |b| {
+        b.iter_batched(
+            || {
+                let mut temp: SlotMap<ActivationId, ()> = SlotMap::with_key();
+                (Agenda::new(), temp.insert(()))
+            },
+            |(mut agenda, placeholder_id)| {
+                for idx in 0..1024 {
+                    let activation = Activation {
+                        id: placeholder_id,
+                        rule: RuleId((idx + 1) as u32),
+                        token: token_pool[idx % token_pool.len()],
+                        salience: Salience::new((idx % 8) as i32),
+                        timestamp: Timestamp::new(idx as u64),
+                        activation_seq: ActivationSeq::ZERO,
+                        recency: SmallVec::new(),
+                    };
+                    black_box(agenda.add(activation));
+                }
+
+                let mut removed = 0usize;
+                for &token_id in token_pool.iter().take(32) {
+                    removed += agenda.remove_activations_for_token(token_id).len();
+                }
+                black_box(removed);
+
+                while let Some(activation) = agenda.pop() {
+                    black_box(activation.id);
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 criterion_group!(
     benches,
     bench_symbol_table_ascii_intern,
     bench_fact_base_relation_index_cycle,
     bench_token_store_reverse_index_cycle,
+    bench_alpha_network_reverse_index_cycle,
+    bench_agenda_token_index_cycle,
 );
 criterion_main!(benches);

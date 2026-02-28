@@ -286,6 +286,18 @@ For each experiment:
 - The storage types are appropriate, but the affected code tends to sit in the
   assert/retract machinery, so test coverage matters.
 
+**Experiment note (2026-02-28)**
+
+- Converting `TokenStore.fact_to_tokens` and `TokenStore.parent_to_children`
+  in `crates/ferric-core/src/token.rs` from `HashMap` to
+  `SparseSecondaryMap` was tested and reverted.
+- The targeted microbenchmark `token_store_reverse_index_cycle` regressed from
+  roughly `60.1 us` to `109.8 us` (about `+80%`), so that specific
+  substitution is not a good fit for this code path.
+- The likely issue is `SparseSecondaryMap`'s insertion/update path for these
+  fan-out lists being more expensive than the existing `FxHashMap` `entry`
+  pattern under this workload.
+
 ### 6. Convert Slotmap-Keyed Runtime State Maps in Negative/Exists/NCC Paths
 
 **Current structures**
