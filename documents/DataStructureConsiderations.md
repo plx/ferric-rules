@@ -438,6 +438,12 @@ For each experiment:
 - The targeted microbenchmark `beta_memory_store_cycle` improved from roughly
   `202.3 us` to `101.1 us` (about `-50%`), making direct indexing a clear win
   for the main beta-memory table as well.
+- Converting `BetaNetwork.neg_memories` in `crates/ferric-core/src/beta.rs`
+  from `HashMap<NegativeMemoryId, NegativeMemory>` to `Vec<NegativeMemory>` was
+  kept.
+- The targeted microbenchmark `beta_negative_memory_store_cycle` improved from
+  roughly `2.12 ms` to `2.00 ms` (about `-5.6%`), so the dense negative-memory
+  table also benefits from direct indexing.
 
 ### 8. Replace Tiny Hash Sets with `SmallVec` in Clearly Small Cardinality Cases
 

@@ -329,6 +329,50 @@ fn bench_beta_memory_store_cycle(c: &mut Criterion) {
     });
 }
 
+fn bench_beta_negative_memory_store_cycle(c: &mut Criterion) {
+    let token_pool = token_ids(256);
+    let fact_pool = fact_ids(128);
+
+    c.bench_function("beta_negative_memory_store_cycle", |b| {
+        b.iter_batched(
+            || {
+                let mut beta = BetaNetwork::new(NodeId(100_000));
+                let root_id = beta.root_id();
+
+                for idx in 0..128 {
+                    let alpha_mem = AlphaMemoryId((idx % 8) as u32);
+                    let _ = beta.create_negative_node(root_id, alpha_mem, Vec::new());
+                }
+
+                let neg_memory_ids: Vec<NegativeMemoryId> = beta.neg_memory_ids().collect();
+                (beta, neg_memory_ids)
+            },
+            |(mut beta, neg_memory_ids)| {
+                let mut touched = 0usize;
+
+                for round in 0..256 {
+                    let token_id = token_pool[round % token_pool.len()];
+                    let fact_id = fact_pool[round % fact_pool.len()];
+
+                    for &neg_memory_id in &neg_memory_ids {
+                        if let Some(memory) = beta.get_neg_memory_mut(neg_memory_id) {
+                            memory.add_blocker(token_id, fact_id);
+                            black_box(memory.remove_blocker(token_id, fact_id));
+                        }
+
+                        touched += beta
+                            .get_neg_memory(neg_memory_id)
+                            .map_or(0, |memory| memory.blocked_count());
+                    }
+                }
+
+                black_box(touched);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn bench_negative_memory_outer_index_cycle(c: &mut Criterion) {
     let token_pool = token_ids(256);
     let fact_pool = fact_ids(128);
@@ -505,6 +549,7 @@ criterion_group!(
     bench_alpha_memory_indexed_slots_cycle,
     bench_beta_fanout_index_cycle,
     bench_beta_memory_store_cycle,
+    bench_beta_negative_memory_store_cycle,
     bench_negative_memory_outer_index_cycle,
     bench_exists_memory_outer_index_cycle,
     bench_ncc_memory_outer_index_cycle,

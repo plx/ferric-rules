@@ -188,7 +188,7 @@ pub enum BetaNode {
 pub struct BetaNetwork {
     nodes: HashMap<NodeId, BetaNode>,
     memories: Vec<BetaMemory>,
-    neg_memories: HashMap<NegativeMemoryId, NegativeMemory>,
+    neg_memories: Vec<NegativeMemory>,
     ncc_memories: HashMap<NccMemoryId, NccMemory>,
     exists_memories: HashMap<ExistsMemoryId, ExistsMemory>,
     root_id: NodeId,
@@ -226,7 +226,7 @@ impl BetaNetwork {
         Self {
             nodes,
             memories: Vec::new(),
-            neg_memories: HashMap::default(),
+            neg_memories: Vec::new(),
             ncc_memories: HashMap::default(),
             exists_memories: HashMap::default(),
             root_id: root_node_id,
@@ -341,8 +341,8 @@ impl BetaNetwork {
         self.nodes.insert(node_id, node);
         debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
         self.memories.push(BetaMemory::new(memory_id));
-        self.neg_memories
-            .insert(neg_memory_id, NegativeMemory::new(neg_memory_id));
+        debug_assert_eq!(self.neg_memories.len(), neg_memory_id.0 as usize);
+        self.neg_memories.push(NegativeMemory::new(neg_memory_id));
 
         self.attach_child_to_parent(parent, node_id);
 
@@ -516,12 +516,12 @@ impl BetaNetwork {
     /// Get a negative memory by ID.
     #[must_use]
     pub fn get_neg_memory(&self, id: NegativeMemoryId) -> Option<&NegativeMemory> {
-        self.neg_memories.get(&id)
+        self.neg_memory(id)
     }
 
     /// Get a mutable reference to a negative memory by ID.
     pub fn get_neg_memory_mut(&mut self, id: NegativeMemoryId) -> Option<&mut NegativeMemory> {
-        self.neg_memories.get_mut(&id)
+        self.neg_memory_mut(id)
     }
 
     /// Get an NCC memory by ID.
@@ -575,7 +575,7 @@ impl BetaNetwork {
         for memory in &mut self.memories {
             memory.clear();
         }
-        for neg_memory in self.neg_memories.values_mut() {
+        for neg_memory in &mut self.neg_memories {
             neg_memory.clear();
         }
         for ncc_memory in self.ncc_memories.values_mut() {
@@ -603,7 +603,7 @@ impl BetaNetwork {
 
     /// Iterate over all negative memory IDs.
     pub fn neg_memory_ids(&self) -> impl Iterator<Item = NegativeMemoryId> + '_ {
-        self.neg_memories.keys().copied()
+        self.neg_memories.iter().map(|memory| memory.id)
     }
 
     /// Iterate over all NCC memory IDs.
@@ -703,7 +703,7 @@ impl BetaNetwork {
                         "Negative node {node_id:?} references non-existent beta memory {memory:?}"
                     );
                     assert!(
-                        self.neg_memories.contains_key(neg_memory),
+                        self.neg_memory(*neg_memory).is_some(),
                         "Negative node {node_id:?} references non-existent negative memory {neg_memory:?}"
                     );
                 }
@@ -823,8 +823,7 @@ impl BetaNetwork {
         );
 
         // Check 6: All negative memories are internally consistent
-        for (neg_mem_id, neg_mem) in &self.neg_memories {
-            let _ = neg_mem_id;
+        for neg_mem in &self.neg_memories {
             neg_mem.debug_assert_consistency();
         }
 
@@ -847,6 +846,14 @@ impl BetaNetwork {
 
     fn memory_mut(&mut self, id: BetaMemoryId) -> Option<&mut BetaMemory> {
         self.memories.get_mut(id.0 as usize)
+    }
+
+    fn neg_memory(&self, id: NegativeMemoryId) -> Option<&NegativeMemory> {
+        self.neg_memories.get(id.0 as usize)
+    }
+
+    fn neg_memory_mut(&mut self, id: NegativeMemoryId) -> Option<&mut NegativeMemory> {
+        self.neg_memories.get_mut(id.0 as usize)
     }
 }
 
