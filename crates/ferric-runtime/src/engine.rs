@@ -12,8 +12,8 @@ use thiserror::Error;
 
 use ferric_core::beta::RuleId;
 use ferric_core::{
-    EncodingError, Fact, FactBase, FactId, FerricString, ReteCompiler, ReteNetwork, Symbol,
-    SymbolTable, TemplateId, Value,
+    EncodingError, Fact, FactBase, FactId, FerricString, IntoFieldValues, ReteCompiler,
+    ReteNetwork, Symbol, SymbolTable, TemplateId, Value,
 };
 
 use crate::actions::{self, ActionError, CompiledRuleInfo};
@@ -167,19 +167,64 @@ impl Engine {
         }
     }
 
+    /// Create an engine, load CLIPS source, and reset — all in one call.
+    ///
+    /// Uses the default configuration ([`EngineConfig::default()`], which is UTF-8).
+    /// Equivalent to:
+    /// ```ignore
+    /// let mut engine = Engine::new(EngineConfig::default());
+    /// engine.load_str(source)?;
+    /// engine.reset()?;
+    /// ```
+    ///
+    /// For access to the [`LoadResult`](crate::loader::LoadResult) (warnings,
+    /// parsed constructs), use the three-step manual flow instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InitError::Load`] if parsing/loading fails, or
+    /// [`InitError::Reset`] if the post-load reset fails.
+    pub fn with_rules(source: &str) -> Result<Self, InitError> {
+        Self::with_rules_config(source, EngineConfig::default())
+    }
+
+    /// Create an engine with explicit configuration, load CLIPS source, and reset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InitError::Load`] if parsing/loading fails, or
+    /// [`InitError::Reset`] if the post-load reset fails.
+    pub fn with_rules_config(source: &str, config: EngineConfig) -> Result<Self, InitError> {
+        let mut engine = Self::new(config);
+        engine.load_str(source).map_err(InitError::Load)?;
+        engine.reset().map_err(InitError::Reset)?;
+        Ok(engine)
+    }
+
     /// Assert an ordered fact into working memory.
     ///
-    /// The relation name is interned as a symbol. Field values are used as-is.
+    /// The relation name is interned as a symbol. Fields can be passed as a
+    /// `Vec<Value>`, a single `Value`, a primitive (`i64`, `i32`, `f64`),
+    /// a `Symbol`, a `FerricString`, or a fixed-size array of `Value`s.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// engine.assert_ordered("count", 42_i64)?;           // single integer
+    /// engine.assert_ordered("tier", free_symbol)?;        // single Symbol
+    /// engine.assert_ordered("pair", vec![v1, v2])?;       // multiple values
+    /// engine.assert_ordered("empty", vec![])?;            // no fields
+    /// ```
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The relation name violates encoding constraints (e.g., non-ASCII in ASCII mode)
     /// - The engine is called from the wrong thread
-    pub fn assert_ordered(
+    pub fn assert_ordered<F: IntoFieldValues>(
         &mut self,
         relation: &str,
-        fields: Vec<Value>,
+        fields: F,
     ) -> Result<FactId, EngineError> {
         self.check_thread_affinity()?;
 
@@ -187,7 +232,7 @@ impl Engine {
             .symbol_table
             .intern_symbol(relation, self.config.string_encoding)?;
 
-        let fields_small = fields.into_iter().collect();
+        let fields_small = fields.into_field_values();
         let id = self.fact_base.assert_ordered(relation_sym, fields_small);
 
         // Propagate through rete network
@@ -277,6 +322,36 @@ impl Engine {
             .map(|(id, entry)| (id, &entry.fact)))
     }
 
+    /// Find ordered facts by relation name.
+    ///
+    /// Returns a vector of `(FactId, &Fact)` pairs for all ordered facts
+    /// whose relation matches the given name. Returns an empty vector if the
+    /// relation name has not been interned or no matching facts exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine is called from the wrong thread.
+    pub fn find_facts(&self, relation: &str) -> Result<Vec<(FactId, &Fact)>, EngineError> {
+        self.check_thread_affinity()?;
+
+        // Look up the relation symbol without interning it (read-only query).
+        let Some(relation_sym) = self
+            .symbol_table
+            .find_symbol(relation, self.config.string_encoding)
+        else {
+            return Ok(Vec::new());
+        };
+
+        Ok(self
+            .fact_base
+            .facts_by_relation(relation_sym)
+            .filter_map(|fid| {
+                let entry = self.fact_base.get(fid)?;
+                Some((fid, &entry.fact))
+            })
+            .collect())
+    }
+
     /// Intern a symbol.
     ///
     /// Symbols are interned strings that are cheap to copy and compare.
@@ -307,6 +382,77 @@ impl Engine {
         self.check_thread_affinity()?;
 
         Ok(FerricString::new(s, self.config.string_encoding)?)
+    }
+
+    /// Intern a symbol and wrap it as a [`Value::Symbol`].
+    ///
+    /// This is a convenience for the common pattern of
+    /// `Value::Symbol(engine.intern_symbol(s)?)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The string violates encoding constraints
+    /// - The engine is called from the wrong thread
+    pub fn symbol_value(&mut self, s: &str) -> Result<Value, EngineError> {
+        Ok(Value::Symbol(self.intern_symbol(s)?))
+    }
+
+    /// Assert a single-field ordered fact whose value is a symbol.
+    ///
+    /// Combines symbol interning and fact assertion into one call. Equivalent to:
+    /// ```ignore
+    /// let sym = engine.intern_symbol(symbol_name)?;
+    /// engine.assert_ordered(relation, Value::Symbol(sym))?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Either name violates encoding constraints
+    /// - The engine is called from the wrong thread
+    pub fn assert_ordered_symbol(
+        &mut self,
+        relation: &str,
+        symbol_name: &str,
+    ) -> Result<FactId, EngineError> {
+        self.check_thread_affinity()?;
+
+        let relation_sym = self
+            .symbol_table
+            .intern_symbol(relation, self.config.string_encoding)?;
+        let value_sym = self
+            .symbol_table
+            .intern_symbol(symbol_name, self.config.string_encoding)?;
+
+        let fields = smallvec::smallvec![Value::Symbol(value_sym)];
+        let id = self.fact_base.assert_ordered(relation_sym, fields);
+
+        propagate_fact_assertion(&mut self.rete, &self.fact_base, id);
+
+        Ok(id)
+    }
+
+    /// Return the CLIPS `TRUE` symbol as a [`Value`].
+    ///
+    /// The symbol is interned on first use and cached thereafter.
+    pub fn clips_true(&mut self) -> Value {
+        let sym = self
+            .symbol_table
+            .intern_symbol("TRUE", self.config.string_encoding)
+            .expect("TRUE is valid in all encodings");
+        Value::Symbol(sym)
+    }
+
+    /// Return the CLIPS `FALSE` symbol as a [`Value`].
+    ///
+    /// The symbol is interned on first use and cached thereafter.
+    pub fn clips_false(&mut self) -> Value {
+        let sym = self
+            .symbol_table
+            .intern_symbol("FALSE", self.config.string_encoding)
+            .expect("FALSE is valid in all encodings");
+        Value::Symbol(sym)
     }
 
     /// Resolve a [`Symbol`] to its string representation.
@@ -901,6 +1047,45 @@ pub enum EngineError {
 
     #[error("module not found: {0}")]
     ModuleNotFound(String),
+}
+
+/// Errors that can occur when initializing an engine via
+/// [`Engine::with_rules`] or [`Engine::with_rules_config`].
+///
+/// This preserves full error granularity from both the loading phase
+/// (parsing, compilation) and the reset phase.
+#[derive(Debug, Error)]
+pub enum InitError {
+    /// One or more errors occurred while parsing or loading source code.
+    ///
+    /// The vector may contain multiple errors (e.g., several parse errors
+    /// collected from the same source).
+    #[error("load errors: {}", format_load_errors(.0))]
+    Load(Vec<crate::loader::LoadError>),
+
+    /// An error occurred during the post-load `reset()` call.
+    #[error("reset error: {0}")]
+    Reset(EngineError),
+}
+
+impl From<Vec<crate::loader::LoadError>> for InitError {
+    fn from(errors: Vec<crate::loader::LoadError>) -> Self {
+        InitError::Load(errors)
+    }
+}
+
+impl From<EngineError> for InitError {
+    fn from(error: EngineError) -> Self {
+        InitError::Reset(error)
+    }
+}
+
+fn format_load_errors(errors: &[crate::loader::LoadError]) -> String {
+    errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 #[cfg(test)]

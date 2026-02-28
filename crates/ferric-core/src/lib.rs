@@ -74,4 +74,4 @@ pub use string::FerricString;
 pub use symbol::{Symbol, SymbolTable};
 pub use token::{NodeId, Token, TokenId, TokenStore};
 pub use validation::{PatternValidationError, PatternViolation, SourceLocation, ValidationStage};
-pub use value::{AtomKey, ExternalAddress, ExternalTypeId, Multifield, Value};
+pub use value::{AtomKey, ExternalAddress, ExternalTypeId, IntoFieldValues, Multifield, Value};

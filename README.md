@@ -145,29 +145,23 @@ run the engine. The highest-priority matching rule fires and the `(show ...)`
 fact tells you what to do.
 
 ```rust
-use ferric::core::Value;
-use ferric::runtime::{Engine, EngineConfig, RunLimit};
+use ferric::runtime::{Engine, RunLimit};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rules = include_str!("rules/engagement.clp");
 
-    let mut engine = Engine::new(EngineConfig::utf8());
-    engine.load_str(rules)?;
-    engine.reset()?;
+    let mut engine = Engine::with_rules(rules)?;
 
     // Assert what we know about this user right now.
-    let free = Value::Symbol(engine.intern_symbol("free")?);
-    engine.assert_ordered("user-tier", vec![free])?;
-    engine.assert_ordered("session-count", vec![Value::Integer(12)])?;
-    engine.assert_ordered("days-since-install", vec![Value::Integer(14)])?;
+    engine.assert_ordered_symbol("user-tier", "free")?;
+    engine.assert_ordered("session-count", 12_i64)?;
+    engine.assert_ordered("days-since-install", 14_i64)?;
 
-    let no = Value::Symbol(engine.intern_symbol("no")?);
-    engine.assert_ordered("has-rated", vec![no.clone()])?;
-    engine.assert_ordered("has-crashed", vec![no])?;
+    engine.assert_ordered_symbol("has-rated", "no")?;
+    engine.assert_ordered_symbol("has-crashed", "no")?;
 
-    let high = Value::Symbol(engine.intern_symbol("high")?);
-    engine.assert_ordered("feature-usage", vec![high])?;
-    engine.assert_ordered("social-shares", vec![Value::Integer(1)])?;
+    engine.assert_ordered_symbol("feature-usage", "high")?;
+    engine.assert_ordered("social-shares", 1_i64)?;
 
     // Run the engine. One rule fires.
     let result = engine.run(RunLimit::Count(100))?;

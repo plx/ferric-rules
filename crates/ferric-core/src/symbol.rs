@@ -156,6 +156,29 @@ impl SymbolTable {
             StringEncoding::Utf8 => Ok(Symbol(self.intern_utf8(s))),
         }
     }
+
+    /// Look up a previously-interned symbol without interning it.
+    ///
+    /// Returns `None` if the symbol has not been interned in this table.
+    /// This is useful for read-only queries (e.g., searching for facts by
+    /// relation name) where interning a new symbol would be undesirable.
+    #[must_use]
+    pub fn find_symbol(&self, s: &str, encoding: StringEncoding) -> Option<Symbol> {
+        match encoding {
+            StringEncoding::Ascii | StringEncoding::AsciiSymbolsUtf8Strings => {
+                if !s.is_ascii() {
+                    return None;
+                }
+                self.ascii_to_id
+                    .get(s.as_bytes())
+                    .map(|&id| Symbol(SymbolId::Ascii(id)))
+            }
+            StringEncoding::Utf8 => self
+                .utf8_to_id
+                .get(s)
+                .map(|&id| Symbol(SymbolId::Utf8(id))),
+        }
+    }
 }
 
 impl Default for SymbolTable {
