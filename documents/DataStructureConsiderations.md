@@ -614,6 +614,13 @@ For each experiment:
   roughly `16.54 us` to `16.78 us`; Criterion reported that as within the
   configured noise threshold, so the runtime cost is effectively flat while the
   stored keys become more compact.
+- Converting `Engine.template_ids` in `crates/ferric-runtime/src/engine.rs`
+  from `HashMap<String, TemplateId>` to `HashMap<Box<str>, TemplateId>` was
+  kept.
+- The targeted microbenchmark `template_registry_list_cycle` shifted from
+  roughly `201.5 ns` to `202.3 ns`; Criterion reported that as within the
+  configured noise threshold, so the steady-state read cost is effectively flat
+  while the template-name keys become more compact.
 
 ## Areas to Deprioritize for Now
 

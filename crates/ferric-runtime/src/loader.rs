@@ -556,7 +556,7 @@ impl Engine {
     ) -> Result<FactId, LoadError> {
         let template_id = self
             .template_ids
-            .get(&template.template)
+            .get(template.template.as_str())
             .copied()
             .ok_or_else(|| {
                 LoadError::Compile(format!(
@@ -652,7 +652,8 @@ impl Engine {
         };
         let template_id = self.template_defs.insert(registered);
 
-        self.template_ids.insert(template.name.clone(), template_id);
+        self.template_ids
+            .insert(template.name.clone().into_boxed_str(), template_id);
         self.template_modules
             .insert(template_id, self.module_registry.current_module());
 
@@ -1164,7 +1165,7 @@ impl Engine {
             Pattern::Template(template) => {
                 let template_id = self
                     .template_ids
-                    .get(&template.template)
+                    .get(template.template.as_str())
                     .copied()
                     .ok_or_else(|| {
                         Self::unsupported_pattern(

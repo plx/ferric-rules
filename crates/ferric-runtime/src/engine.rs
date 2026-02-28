@@ -106,7 +106,7 @@ pub struct Engine {
     /// Compiled rule info for action execution.
     pub(crate) rule_info: RuleIndex<Rc<CompiledRuleInfo>>,
     /// Registered template definitions: name → `TemplateId`.
-    pub(crate) template_ids: HashMap<String, TemplateId>,
+    pub(crate) template_ids: HashMap<Box<str>, TemplateId>,
     /// Template slot metadata indexed by `TemplateId`.
     pub(crate) template_defs: slotmap::SlotMap<TemplateId, RegisteredTemplate>,
     /// Output router for capturing `printout` and related I/O.
@@ -354,7 +354,7 @@ impl Engine {
 
     /// List the names of all registered templates.
     pub fn templates(&self) -> Vec<&str> {
-        self.template_ids.keys().map(String::as_str).collect()
+        self.template_ids.keys().map(Box::as_ref).collect()
     }
 
     /// Look up a rule name by its internal ID.

@@ -35,6 +35,15 @@ fn load_modify_engine() -> Engine {
     engine
 }
 
+fn load_many_templates_engine(template_count: usize, slot_count: usize) -> Engine {
+    let source = many_templates_source(template_count, slot_count);
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine
+        .load_str(&source)
+        .expect("load many templates for registry bench");
+    engine
+}
+
 fn bench_template_registry(c: &mut Criterion) {
     let load_source = many_templates_source(128, 8);
 
@@ -54,6 +63,15 @@ fn bench_template_registry(c: &mut Criterion) {
         b.iter(|| {
             engine.reset().expect("reset");
             black_box(engine.run(RunLimit::Unlimited).expect("run"));
+        });
+    });
+
+    let engine = load_many_templates_engine(256, 8);
+    c.bench_function("template_registry_list_cycle", |b| {
+        b.iter(|| {
+            let names = engine.templates();
+            black_box(names.last().copied());
+            black_box(names.len());
         });
     });
 }
