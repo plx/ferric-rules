@@ -69,6 +69,21 @@ BENCHMARKS = [
     ("manners_16_guests",     "manners_bench", "manners_16_guests/new/estimates.json"),
     ("manners_32_guests",     "manners_bench", "manners_32_guests/new/estimates.json"),
     ("manners_64_guests",     "manners_bench", "manners_64/manners_64_guests/new/estimates.json"),
+    # join_bench (4, excluding _run_only)
+    ("join_3_wide",           "join_bench",    "join_3_wide/new/estimates.json"),
+    ("join_5_wide",           "join_bench",    "join_5_wide/new/estimates.json"),
+    ("join_7_wide",           "join_bench",    "join_7_wide/new/estimates.json"),
+    ("join_9_wide",           "join_bench",    "join_9_wide/new/estimates.json"),
+    # churn_bench (4, excluding _run_only)
+    ("churn_100_facts",       "churn_bench",   "churn_100_facts/new/estimates.json"),
+    ("churn_500_facts",       "churn_bench",   "churn_500_facts/new/estimates.json"),
+    ("churn_2000_facts",      "churn_bench",   "churn_2000_facts/new/estimates.json"),
+    ("churn_10000_facts",     "churn_bench",   "churn_10000/churn_10000_facts/new/estimates.json"),
+    # negation_bench (4, excluding _run_only)
+    ("negation_50_blockers",  "negation_bench", "negation_50_blockers/new/estimates.json"),
+    ("negation_200_blockers", "negation_bench", "negation_200_blockers/new/estimates.json"),
+    ("negation_1000_blockers","negation_bench", "negation_1000_blockers/new/estimates.json"),
+    ("negation_5000_blockers","negation_bench", "negation_5000/negation_5000_blockers/new/estimates.json"),
 ]
 
 # Suites and their Criterion filter regexes (to exclude _run_only variants)
@@ -76,18 +91,33 @@ SUITES = [
     ("engine_bench",  None),              # no filter needed (no _run_only variants)
     ("waltz_bench",   "junctions$"),      # excludes waltz_5_junctions_run_only
     ("manners_bench", "guests$"),         # excludes manners_8_guests_run_only
+    ("join_bench",    "wide$"),           # excludes join_3_wide_run_only
+    ("churn_bench",   "facts$"),          # excludes churn_100_facts_run_only
+    ("negation_bench", "blockers$"),      # excludes negation_50_blockers_run_only
 ]
 
 # Criterion benchmark name -> .clp workload filename (for CLIPS reference)
 CLIPS_WORKLOADS = {
-    "waltz_5_junctions":   "waltz-5.clp",
-    "waltz_20_junctions":  "waltz-20.clp",
-    "waltz_50_junctions":  "waltz-50.clp",
-    "waltz_100_junctions": "waltz-100.clp",
-    "manners_8_guests":    "manners-8.clp",
-    "manners_16_guests":   "manners-16.clp",
-    "manners_32_guests":   "manners-32.clp",
-    "manners_64_guests":   "manners-64.clp",
+    "waltz_5_junctions":     "waltz-5.clp",
+    "waltz_20_junctions":    "waltz-20.clp",
+    "waltz_50_junctions":    "waltz-50.clp",
+    "waltz_100_junctions":   "waltz-100.clp",
+    "manners_8_guests":      "manners-8.clp",
+    "manners_16_guests":     "manners-16.clp",
+    "manners_32_guests":     "manners-32.clp",
+    "manners_64_guests":     "manners-64.clp",
+    "join_3_wide":           "join-3.clp",
+    "join_5_wide":           "join-5.clp",
+    "join_7_wide":           "join-7.clp",
+    "join_9_wide":           "join-9.clp",
+    "churn_100_facts":       "churn-100.clp",
+    "churn_500_facts":       "churn-500.clp",
+    "churn_2000_facts":      "churn-2000.clp",
+    "churn_10000_facts":     "churn-10000.clp",
+    "negation_50_blockers":  "negation-50.clp",
+    "negation_200_blockers": "negation-200.clp",
+    "negation_1000_blockers":"negation-1000.clp",
+    "negation_5000_blockers":"negation-5000.clp",
 }
 
 
@@ -123,6 +153,12 @@ def run_benchmarks(sample_size, warm_up_time, measurement_time):
     ]
 
     for suite, filter_regex in SUITES:
+        # Check if the bench target exists at the current checkout
+        bench_source = Path(__file__).resolve().parent.parent / "crates" / "ferric" / "benches" / f"{suite}.rs"
+        if not bench_source.exists():
+            print(f"==> Skipping {suite} (not present at current checkout)", flush=True)
+            continue
+
         cmd = ["cargo", "bench", "-p", "ferric", "--bench", suite, "--"]
         cmd.extend(base_flags)
         if filter_regex:
