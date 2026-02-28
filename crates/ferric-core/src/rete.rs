@@ -3419,8 +3419,15 @@ mod tests {
                 CompilableCondition::Pattern(ncc_sub_2),
             ]),
         ];
+        let fact_base = FactBase::new();
         compiler
-            .compile_conditions(&mut rete, rule_id, Salience::DEFAULT, &conditions)
+            .compile_conditions(
+                &mut rete,
+                &fact_base,
+                rule_id,
+                Salience::DEFAULT,
+                &conditions,
+            )
             .expect("NCC rule should compile");
 
         (rete, item_sym, block_sym, reason_sym)
@@ -3538,6 +3545,7 @@ mod tests {
         compiler
             .compile_conditions(
                 &mut rete,
+                &fact_base,
                 rule_id,
                 Salience::DEFAULT,
                 &[CompilableCondition::Pattern(pattern)],

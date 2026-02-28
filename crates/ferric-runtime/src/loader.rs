@@ -1692,6 +1692,7 @@ impl Engine {
             .compiler
             .compile_conditions(
                 &mut self.rete,
+                &self.fact_base,
                 translated.rule_id,
                 translated.salience,
                 &translated.conditions,
