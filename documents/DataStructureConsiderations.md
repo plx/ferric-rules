@@ -863,6 +863,60 @@ For each experiment:
   improved from roughly `5.96 us` to `2.42 us` (about `-59.3%`), making this
   a clear win for the current symbol-ID-driven lookup path.
 
+### 15. Replace `FactBase.by_relation`'s Symbol Hash Lookup with Direct Pool Indexing
+
+**Current structures**
+
+- `crates/ferric-core/src/fact.rs`
+  - `FactBase.by_relation: HashMap<Symbol, HashSet<FactId>>`
+
+**Proposed substitution**
+
+- Replace the outer symbol-keyed hash map with split direct-indexed vectors:
+  - `ascii: Vec<Option<HashSet<FactId>>>`
+  - `utf8: Vec<Option<HashSet<FactId>>>`
+
+**Where we'd use it**
+
+- Ordered-fact relation lookup in `FactBase`.
+
+**Additional adjustments**
+
+- Keep the inner `HashSet<FactId>` buckets unchanged so the experiment isolates
+  only the outer symbol-key lookup.
+- Add a dedicated mixed-pool benchmark with padded symbol IDs to measure a
+  less-dense symbol-ID workload alongside the existing dense relation-index
+  benchmark.
+- Preserve the existing `facts_by_relation` API and index cleanup behavior.
+
+**Reasoning**
+
+- Relation names are already interned `Symbol` values with compact numeric IDs.
+- The existing structure hashes those IDs on every insert, lookup, and retract.
+- Direct pool indexing keeps the same semantics while reducing the outer-key
+  path to bounds checks and vector access.
+
+**Risk**
+
+- Low to moderate.
+- CPU cost should improve, but memory use can grow if relation symbols are very
+  sparse within a symbol table.
+
+**Experiment note (2026-02-28)**
+
+- Added a dedicated `fact_base_relation_symbol_index_cycle` microbenchmark to
+  `crates/ferric-core/benches/storage_indices_bench.rs`.
+- Converting `FactBase.by_relation` in `crates/ferric-core/src/fact.rs` from
+  `HashMap<Symbol, HashSet<FactId>>` to a split direct-indexed symbol map was
+  kept.
+- On the new mixed-pool, padded-ID benchmark, the relation index shifted from
+  roughly `54.8 us` to `53.7 us` (about `-1.7%`).
+- Using a fresh same-experiment baseline on the existing dense workload, the
+  original `fact_base_relation_index_cycle` shifted from roughly `53.9 us` to
+  `50.8 us` (about `-4.8%`).
+- That makes the outer symbol-key direct-indexing change a consistent win on
+  both tested relation-index workloads.
+
 ## Areas to Deprioritize for Now
 
 These are existing structures that currently look well-matched to their

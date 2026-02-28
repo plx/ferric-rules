@@ -159,6 +159,67 @@ fn bench_fact_base_relation_index_cycle(c: &mut Criterion) {
     });
 }
 
+fn bench_fact_base_relation_symbol_index_cycle(c: &mut Criterion) {
+    let mut symbols = SymbolTable::new();
+    let mut relations = Vec::with_capacity(32);
+
+    for idx in 0..512 {
+        black_box(
+            symbols
+                .intern_symbol(&format!("pad_relation_ascii_{idx}"), StringEncoding::Ascii)
+                .expect("ASCII symbol"),
+        );
+    }
+
+    for idx in 0..16 {
+        relations.push(
+            symbols
+                .intern_symbol(&format!("rel_ascii_{idx}"), StringEncoding::Ascii)
+                .expect("ASCII symbol"),
+        );
+    }
+
+    for idx in 0..512 {
+        black_box(
+            symbols
+                .intern_symbol(&format!("pad_relation_utf8_{idx}"), StringEncoding::Utf8)
+                .expect("UTF-8 symbol"),
+        );
+    }
+
+    for idx in 0..16 {
+        relations.push(
+            symbols
+                .intern_symbol(&format!("rel_utf8_{idx}"), StringEncoding::Utf8)
+                .expect("UTF-8 symbol"),
+        );
+    }
+
+    c.bench_function("fact_base_relation_symbol_index_cycle", |b| {
+        b.iter_batched(
+            FactBase::new,
+            |mut fact_base| {
+                let mut ids = Vec::with_capacity(1024);
+                for idx in 0..1024 {
+                    let relation = relations[idx % relations.len()];
+                    ids.push(fact_base.assert_ordered(relation, SmallVec::new()));
+                }
+
+                let total_indexed: usize = relations
+                    .iter()
+                    .map(|&relation| fact_base.facts_by_relation(relation).count())
+                    .sum();
+                black_box(total_indexed);
+
+                for id in ids {
+                    black_box(fact_base.retract(id));
+                }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
 fn bench_fact_base_template_index_cycle(c: &mut Criterion) {
     let templates = template_ids(32);
 
@@ -796,6 +857,7 @@ criterion_group!(
     bench_symbol_table_ascii_intern,
     bench_var_map_symbol_lookup_cycle,
     bench_fact_base_relation_index_cycle,
+    bench_fact_base_relation_symbol_index_cycle,
     bench_fact_base_template_index_cycle,
     bench_token_store_reverse_index_cycle,
     bench_alpha_network_reverse_index_cycle,
