@@ -225,7 +225,9 @@ impl AlphaMemory {
             self.facts.is_empty(),
             "request_index_empty called on non-empty alpha memory; use request_index() to backfill"
         );
-        self.indexed_slots.insert(slot);
+        if !self.indexed_slots.contains(&slot) {
+            self.indexed_slots.push(slot);
+        }
     }
 
     /// Returns `true` if the given slot has been requested for indexing.

@@ -259,10 +259,16 @@ fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
 
     c.bench_function("compiler_bound_var_cycle", |b| {
         b.iter_batched(
-            || (ReteCompiler::new(), ReteNetwork::new()),
-            |(mut compiler, mut rete)| {
+            || (ReteCompiler::new(), ReteNetwork::new(), FactBase::default()),
+            |(mut compiler, mut rete, fact_base)| {
                 let result = compiler
-                    .compile_conditions(&mut rete, RuleId(1), Salience::DEFAULT, &conditions)
+                    .compile_conditions(
+                        &mut rete,
+                        &fact_base,
+                        RuleId(1),
+                        Salience::DEFAULT,
+                        &conditions,
+                    )
                     .expect("compile succeeds");
                 black_box((
                     result.terminal_node,
@@ -328,10 +334,16 @@ fn bench_compiler_validation_symbol_slot_cycle(c: &mut Criterion) {
 
     c.bench_function("compiler_validation_symbol_slot_cycle", |b| {
         b.iter_batched(
-            || (ReteCompiler::new(), ReteNetwork::new()),
-            |(mut compiler, mut rete)| {
+            || (ReteCompiler::new(), ReteNetwork::new(), FactBase::default()),
+            |(mut compiler, mut rete, fact_base)| {
                 let err = compiler
-                    .compile_conditions(&mut rete, RuleId(1), Salience::DEFAULT, &conditions)
+                    .compile_conditions(
+                        &mut rete,
+                        &fact_base,
+                        RuleId(1),
+                        Salience::DEFAULT,
+                        &conditions,
+                    )
                     .expect_err("validation should fail");
                 black_box(err);
             },
