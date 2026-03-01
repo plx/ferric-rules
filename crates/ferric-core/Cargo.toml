@@ -11,9 +11,15 @@ repository.workspace = true
 thiserror = { workspace = true }
 slotmap = { workspace = true }
 smallvec = { workspace = true }
+rustc-hash = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "storage_indices_bench"
+harness = false
 
 [lints]
 workspace = true

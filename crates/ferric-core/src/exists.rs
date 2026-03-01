@@ -21,7 +21,7 @@
 //!
 //! - Pass 010: Exists node and exists memory
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::fact::FactId;
 use crate::token::TokenId;
@@ -52,9 +52,9 @@ impl ExistsMemory {
     pub fn new(id: ExistsMemoryId) -> Self {
         Self {
             id,
-            support: HashMap::new(),
-            satisfied: HashMap::new(),
-            fact_to_parents: HashMap::new(),
+            support: HashMap::default(),
+            satisfied: HashMap::default(),
+            fact_to_parents: HashMap::default(),
         }
     }
 

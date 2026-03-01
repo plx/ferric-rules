@@ -3,9 +3,9 @@
 //! Tokens represent partial matches through the beta network. They have stable
 //! identities to support efficient retraction and cascading deletes.
 
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use slotmap::SlotMap;
 use smallvec::SmallVec;
-use std::collections::{HashMap, HashSet};
 
 use crate::binding::BindingSet;
 use crate::fact::FactId;
@@ -51,8 +51,8 @@ impl TokenStore {
     pub fn new() -> Self {
         Self {
             tokens: SlotMap::with_key(),
-            fact_to_tokens: HashMap::new(),
-            parent_to_children: HashMap::new(),
+            fact_to_tokens: HashMap::default(),
+            parent_to_children: HashMap::default(),
         }
     }
 
@@ -607,7 +607,7 @@ mod tests {
 
         // If t0, t1, and t2 are all affected, only t0 should be a root
         // t3 is independent, so it's also a root
-        let mut affected = HashSet::new();
+        let mut affected = HashSet::default();
         affected.insert(t0);
         affected.insert(t1);
         affected.insert(t2);
@@ -629,7 +629,7 @@ mod tests {
         let t1 = store.insert(make_token(vec![facts[1]], None, NodeId(1)));
         let t2 = store.insert(make_token(vec![facts[2]], None, NodeId(2)));
 
-        let mut affected = HashSet::new();
+        let mut affected = HashSet::default();
         affected.insert(t0);
         affected.insert(t1);
         affected.insert(t2);
@@ -740,7 +740,7 @@ mod proptests {
         /// Collect `id` and all its descendants (tokens whose ancestor chain
         /// reaches `id`) from the live set.
         fn subtree(&self, root: TokenId) -> HashSet<TokenId> {
-            let mut result = HashSet::new();
+            let mut result = HashSet::default();
             let mut stack = vec![root];
             while let Some(id) = stack.pop() {
                 if result.insert(id) {
@@ -1048,7 +1048,7 @@ mod proptests {
                 // Compute expected subtree before cascading.
                 let subtree: HashSet<TokenId> = {
                     // Walk live_vec in the store to find all descendants.
-                    let mut desc = HashSet::new();
+                    let mut desc = HashSet::default();
                     let mut stack = vec![root];
                     while let Some(id) = stack.pop() {
                         if desc.insert(id) {
@@ -1097,7 +1097,7 @@ mod proptests {
 
             // Compute the subtree of that root.
             let subtree: HashSet<TokenId> = {
-                let mut desc = HashSet::new();
+                let mut desc = HashSet::default();
                 let mut stack = vec![root];
                 while let Some(id) = stack.pop() {
                     if desc.insert(id) {

@@ -4,9 +4,9 @@
 //! modules only affect which rules fire (based on focus) and which
 //! templates/constructs are visible across module boundaries.
 
-use std::collections::{HashMap, HashSet};
-
+use std::collections::HashSet;
 use ferric_parser::{ImportSpec, ModuleSpec};
+use rustc_hash::FxHashMap as HashMap;
 
 /// Simple module identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -32,7 +32,7 @@ pub const MAIN_MODULE_NAME: &str = "MAIN";
 /// stack that controls which module's rules fire during execution.
 pub struct ModuleRegistry {
     modules: HashMap<ModuleId, RuntimeModule>,
-    name_to_id: HashMap<String, ModuleId>,
+    name_to_id: HashMap<Box<str>, ModuleId>,
     next_id: u32,
     /// The module that new constructs belong to.
     current_module: ModuleId,
@@ -54,10 +54,10 @@ impl ModuleRegistry {
             exports: vec![ModuleSpec::All],
             imports: vec![],
         };
-        let mut modules = HashMap::new();
+        let mut modules = HashMap::default();
         modules.insert(main_id, main_module);
-        let mut name_to_id = HashMap::new();
-        name_to_id.insert(MAIN_MODULE_NAME.to_string(), main_id);
+        let mut name_to_id = HashMap::default();
+        name_to_id.insert(MAIN_MODULE_NAME.into(), main_id);
 
         Self {
             modules,
@@ -96,7 +96,7 @@ impl ModuleRegistry {
             imports,
         };
         self.modules.insert(id, module);
-        self.name_to_id.insert(name_owned, id);
+        self.name_to_id.insert(name_owned.into_boxed_str(), id);
         id
     }
 
@@ -246,7 +246,7 @@ impl ModuleRegistry {
 
         let visible = self.modules.get(&from_module).is_some_and(|importer| {
             importer.imports.iter().any(|import| {
-                let Some(&import_from_id) = self.name_to_id.get(&import.module_name) else {
+                let Some(&import_from_id) = self.name_to_id.get(import.module_name.as_str()) else {
                     return false;
                 };
 
@@ -327,14 +327,15 @@ impl ModuleRegistry {
                 .get(id)
                 .unwrap_or_else(|| panic!("name_to_id points to unknown module id {id:?}"));
             assert_eq!(
-                module.name, *name,
+                module.name.as_str(),
+                name.as_ref(),
                 "name_to_id key `{name}` does not match module.name `{}`",
                 module.name
             );
         }
 
         for (id, module) in &self.modules {
-            let mapped = self.name_to_id.get(&module.name);
+            let mapped = self.name_to_id.get(module.name.as_str());
             assert_eq!(
                 mapped,
                 Some(id),

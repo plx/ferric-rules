@@ -4,7 +4,7 @@
 //! A `SymbolId` is only valid within the `SymbolTable` (and thus the engine)
 //! that created it.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use crate::encoding::{EncodingError, StringEncoding};
 
@@ -43,9 +43,9 @@ impl SymbolTable {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            ascii_to_id: HashMap::new(),
+            ascii_to_id: HashMap::default(),
             ascii_strings: Vec::new(),
-            utf8_to_id: HashMap::new(),
+            utf8_to_id: HashMap::default(),
             utf8_strings: Vec::new(),
         }
     }
