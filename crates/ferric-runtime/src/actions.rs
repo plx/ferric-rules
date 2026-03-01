@@ -2012,6 +2012,7 @@ fn selected_rule_ids(
                     .iter()
                     .enumerate()
                     .filter_map(|(index, compiled)| {
+                        #[allow(clippy::cast_possible_truncation)]
                         compiled.as_ref().map(|_| RuleId(index as u32))
                     }),
             );
@@ -2029,6 +2030,7 @@ fn selected_rule_ids(
                     let Some(owner_module) = owner_module else {
                         continue;
                     };
+                    #[allow(clippy::cast_possible_truncation)]
                     let rule_id = RuleId(index as u32);
                     if *owner_module == module_id
                         && crate::engine::rule_index_get(all_rule_info, rule_id).is_some()
@@ -2051,6 +2053,7 @@ fn selected_rule_ids(
                         continue;
                     };
                     if compiled.name == name {
+                        #[allow(clippy::cast_possible_truncation)]
                         selected.insert(RuleId(index as u32));
                     }
                 }
@@ -2066,6 +2069,7 @@ fn selected_rule_ids(
                     if compiled.name != name {
                         continue;
                     }
+                    #[allow(clippy::cast_possible_truncation)]
                     let rule_id = RuleId(index as u32);
                     if crate::engine::rule_index_get(rule_modules, rule_id).copied()
                         == Some(module_id)

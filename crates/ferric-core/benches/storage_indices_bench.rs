@@ -1,3 +1,12 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::redundant_closure_for_method_calls
+)]
+
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use ferric_core::{
     Activation, ActivationId, ActivationSeq, Agenda, AlphaEntryType, AlphaMemory, AlphaMemoryId,
@@ -199,13 +208,14 @@ fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
             ],
             negated: false,
             exists: false,
+            negated_variable_slots: Vec::new(),
         }));
     }
 
     conditions.insert(
         10,
         CompilableCondition::Ncc(vec![
-            CompilablePattern {
+            CompilableCondition::Pattern(CompilablePattern {
                 entry_type: AlphaEntryType::OrderedRelation(relations[2]),
                 constant_tests: Vec::new(),
                 variable_slots: vec![
@@ -216,8 +226,9 @@ fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
                 ],
                 negated: false,
                 exists: false,
-            },
-            CompilablePattern {
+                negated_variable_slots: Vec::new(),
+            }),
+            CompilableCondition::Pattern(CompilablePattern {
                 entry_type: AlphaEntryType::OrderedRelation(relations[3]),
                 constant_tests: Vec::new(),
                 variable_slots: vec![
@@ -228,8 +239,9 @@ fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
                 ],
                 negated: false,
                 exists: false,
-            },
-            CompilablePattern {
+                negated_variable_slots: Vec::new(),
+            }),
+            CompilableCondition::Pattern(CompilablePattern {
                 entry_type: AlphaEntryType::OrderedRelation(relations[4]),
                 constant_tests: Vec::new(),
                 variable_slots: vec![
@@ -240,7 +252,8 @@ fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
                 ],
                 negated: false,
                 exists: false,
-            },
+                negated_variable_slots: Vec::new(),
+            }),
         ]),
     );
 
@@ -310,6 +323,7 @@ fn bench_compiler_validation_symbol_slot_cycle(c: &mut Criterion) {
         variable_slots,
         negated: false,
         exists: false,
+        negated_variable_slots: Vec::new(),
     })];
 
     c.bench_function("compiler_validation_symbol_slot_cycle", |b| {

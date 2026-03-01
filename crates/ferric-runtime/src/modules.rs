@@ -4,9 +4,9 @@
 //! modules only affect which rules fire (based on focus) and which
 //! templates/constructs are visible across module boundaries.
 
-use std::collections::HashSet;
 use ferric_parser::{ImportSpec, ModuleSpec};
 use rustc_hash::FxHashMap as HashMap;
+use std::collections::HashSet;
 
 /// Simple module identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

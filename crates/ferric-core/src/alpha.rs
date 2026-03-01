@@ -3,10 +3,10 @@
 //! The alpha network is the first stage of the Rete algorithm. It discriminates
 //! facts by type (template or ordered relation) and applies constant tests.
 
-use std::cmp::Ordering;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use slotmap::SparseSecondaryMap;
 use smallvec::SmallVec;
+use std::cmp::Ordering;
 
 use crate::fact::{Fact, FactBase, FactId, TemplateId};
 use crate::symbol::Symbol;
@@ -504,6 +504,7 @@ impl AlphaNetwork {
 
         // Check 2: All node IDs in children fields exist in nodes map
         for (index, node) in self.nodes.iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
             let node_id = NodeId(index as u32);
             for child_id in node.children() {
                 assert!(
@@ -515,6 +516,7 @@ impl AlphaNetwork {
 
         // Check 3: No duplicate children in any node
         for (index, node) in self.nodes.iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
             let node_id = NodeId(index as u32);
             let mut seen = HashSet::default();
             for child_id in node.children() {

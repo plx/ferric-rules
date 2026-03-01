@@ -68,16 +68,16 @@ impl<T> SymbolMap<T> {
     }
 
     #[cfg(test)]
-    fn contains_key(&self, key: &Symbol) -> bool {
+    fn contains_key(&self, key: Symbol) -> bool {
         self.get(key).is_some()
     }
 
-    fn get(&self, key: &Symbol) -> Option<&T> {
-        self.slot(*key).and_then(Option::as_ref)
+    fn get(&self, key: Symbol) -> Option<&T> {
+        self.slot(key).and_then(Option::as_ref)
     }
 
-    fn get_mut(&mut self, key: &Symbol) -> Option<&mut T> {
-        self.slot_mut(*key).and_then(Option::as_mut)
+    fn get_mut(&mut self, key: Symbol) -> Option<&mut T> {
+        self.slot_mut(key).and_then(Option::as_mut)
     }
 
     fn get_or_insert_with(&mut self, key: Symbol, f: impl FnOnce() -> T) -> &mut T {
@@ -92,8 +92,8 @@ impl<T> SymbolMap<T> {
             .filter_map(Option::as_ref)
     }
 
-    fn remove(&mut self, key: &Symbol) -> Option<T> {
-        self.slot_mut(*key).and_then(Option::take)
+    fn remove(&mut self, key: Symbol) -> Option<T> {
+        self.slot_mut(key).and_then(Option::take)
     }
 
     fn slot(&self, key: Symbol) -> Option<&Option<T>> {
@@ -132,13 +132,13 @@ impl<T> SymbolMap<T> {
 
 fn remove_from_symbol_set_index(index: &mut SymbolMap<HashSet<FactId>>, key: Symbol, id: FactId) {
     let mut remove_key = false;
-    if let Some(set) = index.get_mut(&key) {
+    if let Some(set) = index.get_mut(key) {
         set.remove(&id);
         remove_key = set.is_empty();
     }
 
     if remove_key {
-        index.remove(&key);
+        index.remove(key);
     }
 }
 
@@ -301,7 +301,7 @@ impl FactBase {
     /// Query facts by relation (ordered facts only).
     pub fn facts_by_relation(&self, relation: Symbol) -> impl Iterator<Item = FactId> + '_ {
         self.by_relation
-            .get(&relation)
+            .get(relation)
             .into_iter()
             .flat_map(|set| set.iter().copied())
     }
@@ -457,10 +457,10 @@ mod tests {
         let rel = table.intern_symbol("test", StringEncoding::Ascii).unwrap();
 
         let id = fb.assert_ordered(rel, smallvec::smallvec![]);
-        assert!(fb.by_relation.contains_key(&rel));
+        assert!(fb.by_relation.contains_key(rel));
 
         fb.retract(id);
-        assert!(!fb.by_relation.contains_key(&rel));
+        assert!(!fb.by_relation.contains_key(rel));
     }
 
     #[test]
@@ -954,10 +954,10 @@ mod proptests {
             for (rel_idx, &rel) in relations.iter().enumerate() {
                 let model_set = model.ids_for_relation(rel_idx);
                 if model_set.is_empty() {
-                    prop_assert!(!fb.by_relation.contains_key(&rel),
+                    prop_assert!(!fb.by_relation.contains_key(rel),
                         "by_relation still has entry for rel{rel_idx} with no live facts");
                 } else {
-                    prop_assert!(fb.by_relation.contains_key(&rel),
+                    prop_assert!(fb.by_relation.contains_key(rel),
                         "by_relation missing entry for rel{rel_idx} that has live facts");
                 }
             }
@@ -986,7 +986,7 @@ mod proptests {
             for (id, entry) in fb.iter() {
                 match &entry.fact {
                     Fact::Ordered(o) => {
-                        let in_rel = fb.by_relation.get(&o.relation).is_some_and(|s| s.contains(&id));
+                        let in_rel = fb.by_relation.get(o.relation).is_some_and(|s| s.contains(&id));
                         prop_assert!(in_rel, "ordered fact {id:?} absent from by_relation");
                         let in_tmpl = fb.by_template.values().any(|s| s.contains(&id));
                         prop_assert!(!in_tmpl, "ordered fact {id:?} incorrectly in by_template");

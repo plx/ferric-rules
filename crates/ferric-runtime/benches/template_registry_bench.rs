@@ -1,3 +1,5 @@
+#![allow(clippy::format_push_string, clippy::needless_raw_string_hashes)]
+
 use std::fmt::Write as _;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};

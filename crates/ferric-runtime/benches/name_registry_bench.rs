@@ -1,3 +1,9 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::format_push_string
+)]
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use ferric_runtime::functions::{FunctionEnv, GenericRegistry, GlobalStore, UserFunction};
 use ferric_runtime::{Engine, EngineConfig, ModuleId, ModuleRegistry};

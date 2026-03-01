@@ -1,3 +1,5 @@
+#![allow(clippy::cast_possible_truncation)]
+
 use std::fmt::Write as _;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};

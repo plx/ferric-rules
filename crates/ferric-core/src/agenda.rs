@@ -362,7 +362,7 @@ impl Agenda {
         }
 
         // 2. Every reverse key references the same entry in ordering and a live activation.
-        for (activation_id, key) in self.id_to_key.iter() {
+        for (activation_id, key) in &self.id_to_key {
             assert!(
                 self.activations.contains_key(activation_id),
                 "id_to_key references non-existent activation {activation_id:?}"

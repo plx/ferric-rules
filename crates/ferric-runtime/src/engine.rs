@@ -973,6 +973,7 @@ impl Engine {
             let Some(module_id) = maybe_module_id else {
                 continue;
             };
+            #[allow(clippy::cast_possible_truncation)]
             let rule_id = RuleId(index as u32);
             assert!(
                 self.module_registry.get(*module_id).is_some(),
@@ -980,7 +981,7 @@ impl Engine {
             );
         }
 
-        for (template_id, module_id) in self.template_modules.iter() {
+        for (template_id, module_id) in &self.template_modules {
             assert!(
                 self.template_defs.contains_key(template_id),
                 "template_modules contains unknown template id {template_id:?}"

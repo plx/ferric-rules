@@ -105,7 +105,7 @@ impl SymbolSet {
         Self::default()
     }
 
-    fn contains(&self, key: &Symbol) -> bool {
+    fn contains(&self, key: Symbol) -> bool {
         match key.0 {
             SymbolId::Ascii(idx) => self.ascii.get(idx as usize).copied().unwrap_or(0) != 0,
             SymbolId::Utf8(idx) => self.utf8.get(idx as usize).copied().unwrap_or(0) != 0,
@@ -503,7 +503,7 @@ impl ReteCompiler {
                 .get_or_create(var_sym)
                 .map_err(|_| CompileError::VarMapOverflow)?;
 
-            if bound_vars.contains(&var_sym) {
+            if bound_vars.contains(var_sym) {
                 join_tests.push(JoinTest {
                     alpha_slot: slot,
                     beta_var: var_id,
