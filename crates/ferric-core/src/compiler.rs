@@ -538,6 +538,20 @@ impl ReteCompiler {
             }
         }
 
+        // Request beta memory indexing on the parent for equality join tests so that
+        // right activations can use O(1) hash lookups instead of full parent-token scans.
+        if current_parent != rete.beta.root_id() {
+            if let Some(parent_mem_id) = rete.beta.memory_id_for_node(current_parent) {
+                for test in &join_tests {
+                    if test.test_type == JoinTestType::Equal {
+                        if let Some(parent_mem) = rete.beta.get_memory_mut(parent_mem_id) {
+                            parent_mem.request_var_index(test.beta_var);
+                        }
+                    }
+                }
+            }
+        }
+
         if pattern.negated {
             let (neg_id, _beta_mem, _neg_mem) =
                 rete.beta

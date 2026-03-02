@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 
 use crate::agenda::{Activation, ActivationId, ActivationSeq, Agenda};
 use crate::alpha::{get_slot_value, AlphaMemory, AlphaMemoryId, AlphaNetwork, SlotIndex};
-use crate::beta::{BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType};
+use crate::beta::{BetaMemory, BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType};
 use crate::binding::{BindingSet, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
 use crate::negative::NegativeMemoryId;
@@ -164,7 +164,7 @@ impl ReteNetwork {
             // Remove token from the owning beta memory in O(1) via token.owner_node.
             if let Some(mem_id) = self.find_memory_for_node(token.owner_node) {
                 if let Some(memory) = self.beta.get_memory_mut(mem_id) {
-                    memory.remove(*token_id);
+                    memory.remove_indexed(*token_id, &token.bindings);
                 }
             }
 
@@ -255,19 +255,14 @@ impl ReteNetwork {
             _ => return,
         };
 
-        // Get parent tokens
+        // Get parent tokens (indexed when possible for O(1) lookup)
         let parent_tokens: Vec<TokenId> = if parent_id == self.beta.root_id() {
             // Special case: root node has no memory, create dummy token
             vec![]
         } else {
-            // Find the parent's beta memory
             self.find_memory_for_node(parent_id)
-                .map(|mem_id| {
-                    self.beta
-                        .get_memory(mem_id)
-                        .map(|mem| mem.iter().collect())
-                        .unwrap_or_default()
-                })
+                .and_then(|mem_id| self.beta.get_memory(mem_id))
+                .map(|mem| collect_candidate_parent_tokens(mem, &tests, fact))
                 .unwrap_or_default()
         };
 
@@ -295,9 +290,10 @@ impl ReteNetwork {
 
                 let token_id = self.token_store.insert(new_token);
 
-                // Add to join's beta memory
+                // Add to join's beta memory (with index maintenance)
                 if let Some(memory) = self.beta.get_memory_mut(join_memory_id) {
-                    memory.insert(token_id);
+                    let bindings = &self.token_store.get(token_id).unwrap().bindings;
+                    memory.insert_indexed(token_id, bindings);
                 }
 
                 // Propagate to children
@@ -332,9 +328,10 @@ impl ReteNetwork {
 
                     let token_id = self.token_store.insert(new_token);
 
-                    // Add to join's beta memory
+                    // Add to join's beta memory (with index maintenance)
                     if let Some(memory) = self.beta.get_memory_mut(join_memory_id) {
-                        memory.insert(token_id);
+                        let bindings = &self.token_store.get(token_id).unwrap().bindings;
+                        memory.insert_indexed(token_id, bindings);
                     }
 
                     // Propagate to children
@@ -430,9 +427,10 @@ impl ReteNetwork {
 
             let token_id = self.token_store.insert(new_token);
 
-            // Add to join's beta memory
+            // Add to join's beta memory (with index maintenance)
             if let Some(memory) = self.beta.get_memory_mut(join_memory_id) {
-                memory.insert(token_id);
+                let bindings = &self.token_store.get(token_id).unwrap().bindings;
+                memory.insert_indexed(token_id, bindings);
             }
 
             // Propagate to children
@@ -710,7 +708,7 @@ impl ReteNetwork {
             // Remove token from the owning beta memory
             if let Some(mem_id) = self.find_memory_for_node(token.owner_node) {
                 if let Some(memory) = self.beta.get_memory_mut(mem_id) {
-                    memory.remove(tid);
+                    memory.remove_indexed(tid, &token.bindings);
                 }
             }
 
@@ -1437,6 +1435,34 @@ fn collect_candidate_facts(
     alpha_memory.iter().collect()
 }
 
+/// Collect parent token IDs from beta memory, using an indexed lookup when possible.
+///
+/// Mirror of `collect_candidate_facts` for the beta (token) side. If the join tests
+/// include an equality test on a variable that is indexed in the parent beta memory,
+/// and the incoming fact has a value for the corresponding alpha slot, performs an
+/// O(1) hash lookup instead of scanning all parent tokens.
+fn collect_candidate_parent_tokens(
+    parent_memory: &BetaMemory,
+    tests: &[JoinTest],
+    fact: &Fact,
+) -> Vec<TokenId> {
+    if parent_memory.len() >= INDEX_SCAN_THRESHOLD {
+        if let Some((alpha_slot, beta_var)) = find_index_test(tests) {
+            if parent_memory.is_var_indexed(beta_var) {
+                if let Some(fact_value) = get_slot_value(fact, alpha_slot) {
+                    if let Some(key) = AtomKey::from_value(fact_value) {
+                        return parent_memory
+                            .lookup_by_var(beta_var, &key)
+                            .map(|tokens| tokens.to_vec())
+                            .unwrap_or_default();
+                    }
+                }
+            }
+        }
+    }
+    parent_memory.iter().collect()
+}
+
 /// Returns `true` if all tests pass, `false` otherwise.
 ///
 /// If `token` is `None`, treats this as a root-level match (no bindings to check).
@@ -1451,16 +1477,8 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
         };
 
         let matches = match test.test_type {
-            JoinTestType::Equal => {
-                atom_key_pair_matches(fact_value, token_value, |fact_key, token_key| {
-                    fact_key == token_key
-                })
-            }
-            JoinTestType::NotEqual => {
-                atom_key_pair_matches(fact_value, token_value, |fact_key, token_key| {
-                    fact_key != token_key
-                })
-            }
+            JoinTestType::Equal => values_atom_eq(fact_value, token_value),
+            JoinTestType::NotEqual => !values_atom_eq(fact_value, token_value),
             JoinTestType::GreaterThan => numeric_compare_matches(fact_value, token_value, |ord| {
                 matches!(ord, Ordering::Greater)
             }),
@@ -1539,18 +1557,24 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
     true
 }
 
-fn atom_key_pair_matches<F>(fact_value: &Value, token_value: &Value, predicate: F) -> bool
-where
-    F: FnOnce(&AtomKey, &AtomKey) -> bool,
-{
-    let Some(fact_key) = AtomKey::from_value(fact_value) else {
-        return false;
-    };
-    let Some(token_key) = AtomKey::from_value(token_value) else {
-        return false;
-    };
-    predicate(&fact_key, &token_key)
+/// Direct atom-level equality test between two values.
+///
+/// Equivalent to constructing `AtomKey` from each value and comparing, but avoids
+/// the intermediate `AtomKey` allocation. Returns `false` for `Multifield`/`Void`
+/// (same as `AtomKey::from_value` returning `None`).
+fn values_atom_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+        (Value::String(a), Value::String(b)) => a == b,
+        (Value::ExternalAddress(a), Value::ExternalAddress(b)) => {
+            a.type_id == b.type_id && std::ptr::eq(a.pointer, b.pointer)
+        }
+        _ => false, // Multifield, Void, or type mismatch
+    }
 }
+
 
 fn numeric_compare_matches<F>(lhs: &Value, rhs: &Value, predicate: F) -> bool
 where
@@ -3887,6 +3911,114 @@ mod tests {
                 "agenda should contain only activations from matching targets");
 
             // Structural oracle
+            rete.debug_assert_consistency();
+        }
+
+        /// After asserting then retracting all facts through a multi-join network,
+        /// beta memory variable indices are empty (no stale entries).
+        #[test]
+        fn beta_var_indices_empty_after_full_retraction(
+            n_facts in 1..20_usize,
+        ) {
+            use crate::binding::VarId;
+
+            let mut symbol_table = SymbolTable::new();
+            let mut fact_base = FactBase::new();
+            let mut rete = ReteNetwork::new();
+
+            let rel_a = make_symbol(&mut symbol_table, "a");
+            let rel_b = make_symbol(&mut symbol_table, "b");
+
+            // Alpha path for relation "a"
+            let a_entry = rete.alpha
+                .create_entry_node(AlphaEntryType::OrderedRelation(rel_a));
+            let a_mem = rete.alpha.create_memory(a_entry);
+
+            // Alpha path for relation "b"
+            let b_entry = rete.alpha
+                .create_entry_node(AlphaEntryType::OrderedRelation(rel_b));
+            let b_mem = rete.alpha.create_memory(b_entry);
+
+            // Join node 1: matches (a ?x) — parent is root
+            let var_x = VarId(0);
+            let root = rete.beta.root_id();
+            let (join1, join1_mem_id) = rete.beta.create_join_node(
+                root,
+                a_mem,
+                vec![],
+                vec![(SlotIndex::Ordered(0), var_x)],
+            );
+
+            // Request var index on join1's memory for var_x
+            // (this simulates what the compiler does for the child join's equality test)
+            if let Some(mem) = rete.beta.get_memory_mut(join1_mem_id) {
+                mem.request_var_index(var_x);
+            }
+
+            // Request alpha memory indexing
+            if let Some(mem) = rete.alpha.get_memory_mut(b_mem) {
+                mem.request_index(SlotIndex::Ordered(0), &fact_base);
+            }
+
+            // Join node 2: matches (b ?x) — joins on ?x
+            let (join2, _join2_mem_id) = rete.beta.create_join_node(
+                join1,
+                b_mem,
+                vec![JoinTest {
+                    alpha_slot: SlotIndex::Ordered(0),
+                    beta_var: var_x,
+                    test_type: JoinTestType::Equal,
+                }],
+                vec![],
+            );
+            rete.beta.create_terminal_node(join2, RuleId(99), Salience::DEFAULT);
+
+            // Assert n_facts for each relation with matching values
+            let mut fact_ids = Vec::new();
+            for i in 0..n_facts {
+                let val = Value::Integer(i as i64);
+                let fid_a = fact_base.assert_ordered(rel_a, smallvec![val.clone()]);
+                let fact_a = fact_base.get(fid_a).unwrap().fact.clone();
+                rete.assert_fact(fid_a, &fact_a, &fact_base);
+                fact_ids.push(fid_a);
+
+                let fid_b = fact_base.assert_ordered(rel_b, smallvec![val]);
+                let fact_b = fact_base.get(fid_b).unwrap().fact.clone();
+                rete.assert_fact(fid_b, &fact_b, &fact_base);
+                fact_ids.push(fid_b);
+            }
+
+            // Should have n_facts activations
+            prop_assert_eq!(rete.agenda.len(), n_facts,
+                "should have one activation per matching pair");
+            rete.debug_assert_consistency();
+
+            // Retract all facts
+            for fid in &fact_ids {
+                let fact = fact_base.get(*fid).unwrap().fact.clone();
+                rete.retract_fact(*fid, &fact, &fact_base);
+                fact_base.retract(*fid);
+            }
+
+            // After full retraction: agenda empty, token store empty
+            prop_assert!(rete.agenda.is_empty(), "agenda must be empty after full retraction");
+            prop_assert!(rete.token_store.is_empty(), "token store must be empty after full retraction");
+
+            // Beta memory var indices must also be empty
+            if let Some(mem) = rete.beta.get_memory(join1_mem_id) {
+                prop_assert!(mem.is_empty(), "join1 beta memory must be empty");
+                // Check that index has no entries
+                for key_val in 0..n_facts as i64 {
+                    let atom_key = AtomKey::Integer(key_val);
+                    let result = mem.lookup_by_var(var_x, &atom_key);
+                    prop_assert!(
+                        result.is_none() || result.unwrap().is_empty(),
+                        "beta var index should be empty for key={} after full retraction",
+                        key_val
+                    );
+                }
+            }
+
             rete.debug_assert_consistency();
         }
     }
