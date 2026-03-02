@@ -1575,7 +1575,6 @@ fn values_atom_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
-
 fn numeric_compare_matches<F>(lhs: &Value, rhs: &Value, predicate: F) -> bool
 where
     F: FnOnce(Ordering) -> bool,
@@ -3976,7 +3975,7 @@ mod tests {
             // Assert n_facts for each relation with matching values
             let mut fact_ids = Vec::new();
             for i in 0..n_facts {
-                let val = Value::Integer(i as i64);
+                let val = Value::Integer(i64::try_from(i).unwrap());
                 let fid_a = fact_base.assert_ordered(rel_a, smallvec![val.clone()]);
                 let fact_a = fact_base.get(fid_a).unwrap().fact.clone();
                 rete.assert_fact(fid_a, &fact_a, &fact_base);
@@ -4008,7 +4007,7 @@ mod tests {
             if let Some(mem) = rete.beta.get_memory(join1_mem_id) {
                 prop_assert!(mem.is_empty(), "join1 beta memory must be empty");
                 // Check that index has no entries
-                for key_val in 0..n_facts as i64 {
+                for key_val in 0..i64::try_from(n_facts).unwrap() {
                     let atom_key = AtomKey::Integer(key_val);
                     let result = mem.lookup_by_var(var_x, &atom_key);
                     prop_assert!(

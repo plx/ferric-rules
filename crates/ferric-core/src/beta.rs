@@ -96,7 +96,7 @@ pub struct BetaMemoryId(pub u32);
 pub struct BetaMemory {
     pub id: BetaMemoryId,
     tokens: HashSet<TokenId>,
-    /// Variable indices: VarId → AtomKey → set of TokenIds with that binding value.
+    /// Variable indices: `VarId` → `AtomKey` → set of `TokenId`s with that binding value.
     /// Enables O(1) lookup during right activation instead of full parent-token scans.
     var_indices: HashMap<VarId, HashMap<AtomKey, SmallVec<[TokenId; 4]>>>,
     /// Which variables are currently indexed. Survives `clear()` (like alpha memory's
@@ -1307,13 +1307,16 @@ mod proptests {
     use crate::value::{AtomKey, Value};
     use std::rc::Rc;
 
-    /// Shadow model for indexed BetaMemory: tracks both the token set and a
+    /// Shadow model for indexed `BetaMemory`: tracks both the token set and a
     /// per-variable, per-key set of token IDs.
     #[derive(Default)]
     struct IndexedBetaModel {
         tokens: std::collections::HashSet<usize>,
-        /// var_idx -> key_idx -> set of token indices
-        var_index: std::collections::HashMap<usize, std::collections::HashMap<i64, std::collections::HashSet<usize>>>,
+        /// `var_idx` -> `key_idx` -> set of token indices
+        var_index: std::collections::HashMap<
+            usize,
+            std::collections::HashMap<i64, std::collections::HashSet<usize>>,
+        >,
     }
 
     impl IndexedBetaModel {
@@ -1361,9 +1364,7 @@ mod proptests {
                 token_idx: t,
                 key_val: k,
             }),
-            (0..5_usize).prop_map(|t| IndexedBetaOp::Remove {
-                token_idx: t,
-            }),
+            (0..5_usize).prop_map(|t| IndexedBetaOp::Remove { token_idx: t }),
         ]
     }
 
