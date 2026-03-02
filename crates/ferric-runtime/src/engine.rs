@@ -25,6 +25,17 @@ use crate::modules::{ModuleId, ModuleRegistry};
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
 
+/// Dense indexed storage for per-rule data, keyed by `RuleId`.
+///
+/// This uses a `Vec<Option<T>>` instead of a `HashMap` because `RuleId`s are
+/// allocated by `ReteCompiler` as a strictly monotonic, gap-free sequence
+/// starting at 1 — a new ID is only consumed after successful compilation,
+/// so failed compiles never create gaps. `undefrule` sets slots to `None`
+/// but does not grow the Vec beyond its natural size (8 bytes per hole).
+///
+/// Direct indexed access provides faster O(1) lookups on the execution hot
+/// path (activation selection, rule firing, agenda display) compared to
+/// hash-based lookup.
 pub(crate) type RuleIndex<T> = Vec<Option<T>>;
 
 pub(crate) fn rule_index_get<T>(entries: &[Option<T>], rule_id: RuleId) -> Option<&T> {
