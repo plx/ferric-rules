@@ -23,7 +23,7 @@
 //! - Pass 006: Negative node (single-pattern) and blocker tracking
 //! - Pass 010: NCC and exists nodes extend this foundation
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use crate::fact::FactId;
 use crate::token::TokenId;
@@ -55,9 +55,9 @@ impl NegativeMemory {
     pub fn new(id: NegativeMemoryId) -> Self {
         Self {
             id,
-            blocked: HashMap::new(),
-            fact_to_blocked: HashMap::new(),
-            unblocked: HashMap::new(),
+            blocked: HashMap::default(),
+            fact_to_blocked: HashMap::default(),
+            unblocked: HashMap::default(),
         }
     }
 

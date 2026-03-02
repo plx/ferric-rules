@@ -295,7 +295,7 @@ fn eval_fact_slot_ref_call(
             let registered = context
                 .engine
                 .template_defs
-                .get(&template_fact.template_id)
+                .get(template_fact.template_id)
                 .ok_or_else(|| {
                     ActionError::EvalError(format!(
                         "{FACT_SLOT_REF_FN}: unknown template id {}",
@@ -1734,12 +1734,11 @@ fn execute_list_focus_stack(
 fn execute_agenda(
     rete: &ReteNetwork,
     router: &mut OutputRouter,
-    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
+    all_rule_info: &crate::engine::RuleIndex<Rc<CompiledRuleInfo>>,
 ) -> Result<(), ActionError> {
     let mut output = String::new();
     for activation in rete.agenda.iter_activations() {
-        let rule_name = all_rule_info
-            .get(&activation.rule)
+        let rule_name = crate::engine::rule_index_get(all_rule_info, activation.rule)
             .map_or("???", |info| info.name.as_str());
         let _ = writeln!(output, "{} {rule_name}", activation.salience.get());
     }
@@ -1773,7 +1772,8 @@ fn execute_rules(
     let mut names: Vec<&str> = context
         .engine
         .rule_info
-        .values()
+        .iter()
+        .flatten()
         .map(|info| info.name.as_str())
         .collect();
     names.sort_unstable();
@@ -1816,8 +1816,12 @@ fn execute_undefrule(
     )?;
 
     for rule_id in selected {
-        context.engine.rule_info.remove(&rule_id);
-        context.engine.rule_modules.remove(&rule_id);
+        if let Some(slot) = context.engine.rule_info.get_mut(rule_id.0 as usize) {
+            *slot = None;
+        }
+        if let Some(slot) = context.engine.rule_modules.get_mut(rule_id.0 as usize) {
+            *slot = None;
+        }
         context.engine.rete.disable_rule(rule_id);
     }
 
@@ -1855,30 +1859,18 @@ fn execute_ppdefrule(
 
     let mut ordered_ids: Vec<_> = selected.into_iter().collect();
     ordered_ids.sort_by(|left, right| {
-        let left_name = context
-            .engine
-            .rule_info
-            .get(left)
+        let left_name = crate::engine::rule_index_get(&context.engine.rule_info, *left)
             .map_or("???", |info| info.name.as_str())
             .to_ascii_lowercase();
-        let right_name = context
-            .engine
-            .rule_info
-            .get(right)
+        let right_name = crate::engine::rule_index_get(&context.engine.rule_info, *right)
             .map_or("???", |info| info.name.as_str())
             .to_ascii_lowercase();
 
-        let left_module = context
-            .engine
-            .rule_modules
-            .get(left)
+        let left_module = crate::engine::rule_index_get(&context.engine.rule_modules, *left)
             .and_then(|module_id| context.engine.module_registry.module_name(*module_id))
             .unwrap_or("")
             .to_ascii_lowercase();
-        let right_module = context
-            .engine
-            .rule_modules
-            .get(right)
+        let right_module = crate::engine::rule_index_get(&context.engine.rule_modules, *right)
             .and_then(|module_id| context.engine.module_registry.module_name(*module_id))
             .unwrap_or("")
             .to_ascii_lowercase();
@@ -1888,7 +1880,8 @@ fn execute_ppdefrule(
 
     let mut output = String::new();
     for rule_id in ordered_ids {
-        let Some(compiled) = context.engine.rule_info.get(&rule_id) else {
+        let Some(compiled) = crate::engine::rule_index_get(&context.engine.rule_info, rule_id)
+        else {
             continue;
         };
 
@@ -1898,7 +1891,9 @@ fn execute_ppdefrule(
             continue;
         }
 
-        let qualified_name = if let Some(module_id) = context.engine.rule_modules.get(&rule_id) {
+        let qualified_name = if let Some(module_id) =
+            crate::engine::rule_index_get(&context.engine.rule_modules, rule_id)
+        {
             if let Some(module_name) = context.engine.module_registry.module_name(*module_id) {
                 format!("{module_name}::{}", compiled.name)
             } else {
@@ -2004,15 +1999,23 @@ fn evaluated_rule_selectors(
 
 fn selected_rule_ids(
     selectors: &[String],
-    all_rule_info: &HashMap<RuleId, Rc<CompiledRuleInfo>>,
-    rule_modules: &HashMap<RuleId, crate::modules::ModuleId>,
+    all_rule_info: &crate::engine::RuleIndex<Rc<CompiledRuleInfo>>,
+    rule_modules: &crate::engine::RuleIndex<crate::modules::ModuleId>,
     module_registry: &ModuleRegistry,
     command_name: &str,
 ) -> Result<HashSet<RuleId>, ActionError> {
     let mut selected = HashSet::new();
     for selector in selectors {
         if selector == "*" {
-            selected.extend(all_rule_info.keys().copied());
+            selected.extend(
+                all_rule_info
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, compiled)| {
+                        #[allow(clippy::cast_possible_truncation)]
+                        compiled.as_ref().map(|_| RuleId(index as u32))
+                    }),
+            );
             continue;
         }
 
@@ -2023,9 +2026,16 @@ fn selected_rule_ids(
                 )));
             }
             if let Some(module_id) = module_registry.get_by_name(module_name) {
-                for (rule_id, owner_module) in rule_modules {
-                    if *owner_module == module_id && all_rule_info.contains_key(rule_id) {
-                        selected.insert(*rule_id);
+                for (index, owner_module) in rule_modules.iter().enumerate() {
+                    let Some(owner_module) = owner_module else {
+                        continue;
+                    };
+                    #[allow(clippy::cast_possible_truncation)]
+                    let rule_id = RuleId(index as u32);
+                    if *owner_module == module_id
+                        && crate::engine::rule_index_get(all_rule_info, rule_id).is_some()
+                    {
+                        selected.insert(rule_id);
                     }
                 }
             }
@@ -2038,9 +2048,13 @@ fn selected_rule_ids(
 
         match parsed {
             QualifiedName::Unqualified(name) => {
-                for (rule_id, compiled) in all_rule_info {
+                for (index, compiled) in all_rule_info.iter().enumerate() {
+                    let Some(compiled) = compiled.as_ref() else {
+                        continue;
+                    };
                     if compiled.name == name {
-                        selected.insert(*rule_id);
+                        #[allow(clippy::cast_possible_truncation)]
+                        selected.insert(RuleId(index as u32));
                     }
                 }
             }
@@ -2048,12 +2062,19 @@ fn selected_rule_ids(
                 let Some(module_id) = module_registry.get_by_name(&module) else {
                     continue;
                 };
-                for (rule_id, compiled) in all_rule_info {
+                for (index, compiled) in all_rule_info.iter().enumerate() {
+                    let Some(compiled) = compiled.as_ref() else {
+                        continue;
+                    };
                     if compiled.name != name {
                         continue;
                     }
-                    if rule_modules.get(rule_id).copied() == Some(module_id) {
-                        selected.insert(*rule_id);
+                    #[allow(clippy::cast_possible_truncation)]
+                    let rule_id = RuleId(index as u32);
+                    if crate::engine::rule_index_get(rule_modules, rule_id).copied()
+                        == Some(module_id)
+                    {
+                        selected.insert(rule_id);
                     }
                 }
             }
@@ -2343,7 +2364,7 @@ fn execute_fact_mutation(
             let registered = context
                 .engine
                 .template_defs
-                .get(&template.template_id)
+                .get(template.template_id)
                 .cloned()
                 .ok_or_else(|| {
                     ActionError::UnknownAction(format!(

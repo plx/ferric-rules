@@ -3,7 +3,8 @@
 //! The beta network is the second stage of the Rete algorithm. It performs
 //! joins between alpha memories (facts) and beta memories (partial matches/tokens).
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use smallvec::SmallVec;
 
 use crate::alpha::{AlphaMemoryId, SlotIndex};
 use crate::binding::VarId;
@@ -12,6 +13,8 @@ use crate::ncc::{NccMemory, NccMemoryId};
 use crate::negative::{NegativeMemory, NegativeMemoryId};
 use crate::token::NodeId;
 use crate::token::TokenId;
+
+type FanoutNodes = SmallVec<[NodeId; 4]>;
 
 /// Rule priority in CLIPS.
 ///
@@ -97,7 +100,7 @@ impl BetaMemory {
     pub fn new(id: BetaMemoryId) -> Self {
         Self {
             id,
-            tokens: HashSet::new(),
+            tokens: HashSet::default(),
         }
     }
 
@@ -212,10 +215,10 @@ pub enum BetaNode {
 /// to perform joins and produce activations.
 pub struct BetaNetwork {
     nodes: HashMap<NodeId, BetaNode>,
-    memories: HashMap<BetaMemoryId, BetaMemory>,
-    neg_memories: HashMap<NegativeMemoryId, NegativeMemory>,
-    ncc_memories: HashMap<NccMemoryId, NccMemory>,
-    exists_memories: HashMap<ExistsMemoryId, ExistsMemory>,
+    memories: Vec<BetaMemory>,
+    neg_memories: Vec<NegativeMemory>,
+    ncc_memories: Vec<NccMemory>,
+    exists_memories: Vec<ExistsMemory>,
     root_id: NodeId,
     next_node_id: u32,
     next_memory_id: u32,
@@ -223,11 +226,11 @@ pub struct BetaNetwork {
     next_ncc_memory_id: u32,
     next_exists_memory_id: u32,
     /// Reverse index: alpha memory -> list of join nodes that subscribe to it.
-    alpha_to_joins: HashMap<AlphaMemoryId, Vec<NodeId>>,
+    alpha_to_joins: HashMap<AlphaMemoryId, FanoutNodes>,
     /// Reverse index: alpha memory -> list of negative nodes that subscribe to it.
-    alpha_to_negatives: HashMap<AlphaMemoryId, Vec<NodeId>>,
+    alpha_to_negatives: HashMap<AlphaMemoryId, FanoutNodes>,
     /// Reverse index: alpha memory -> list of exists nodes that subscribe to it.
-    alpha_to_exists: HashMap<AlphaMemoryId, Vec<NodeId>>,
+    alpha_to_exists: HashMap<AlphaMemoryId, FanoutNodes>,
 }
 
 impl BetaNetwork {
@@ -237,7 +240,7 @@ impl BetaNetwork {
     /// node ID allocation.
     #[must_use]
     pub fn new(root_node_id: NodeId) -> Self {
-        let mut nodes = HashMap::new();
+        let mut nodes = HashMap::default();
         nodes.insert(
             root_node_id,
             BetaNode::Root {
@@ -250,19 +253,19 @@ impl BetaNetwork {
 
         Self {
             nodes,
-            memories: HashMap::new(),
-            neg_memories: HashMap::new(),
-            ncc_memories: HashMap::new(),
-            exists_memories: HashMap::new(),
+            memories: Vec::new(),
+            neg_memories: Vec::new(),
+            ncc_memories: Vec::new(),
+            exists_memories: Vec::new(),
             root_id: root_node_id,
             next_node_id,
             next_memory_id: 0,
             next_neg_memory_id: 0,
             next_ncc_memory_id: 0,
             next_exists_memory_id: 0,
-            alpha_to_joins: HashMap::new(),
-            alpha_to_negatives: HashMap::new(),
-            alpha_to_exists: HashMap::new(),
+            alpha_to_joins: HashMap::default(),
+            alpha_to_negatives: HashMap::default(),
+            alpha_to_exists: HashMap::default(),
         }
     }
 
@@ -293,7 +296,8 @@ impl BetaNetwork {
         };
 
         self.nodes.insert(node_id, node);
-        self.memories.insert(memory_id, BetaMemory::new(memory_id));
+        debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
+        self.memories.push(BetaMemory::new(memory_id));
 
         self.attach_child_to_parent(parent, node_id);
 
@@ -363,9 +367,10 @@ impl BetaNetwork {
         };
 
         self.nodes.insert(node_id, node);
-        self.memories.insert(memory_id, BetaMemory::new(memory_id));
-        self.neg_memories
-            .insert(neg_memory_id, NegativeMemory::new(neg_memory_id));
+        debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
+        self.memories.push(BetaMemory::new(memory_id));
+        debug_assert_eq!(self.neg_memories.len(), neg_memory_id.0 as usize);
+        self.neg_memories.push(NegativeMemory::new(neg_memory_id));
 
         self.attach_child_to_parent(parent, node_id);
 
@@ -385,7 +390,8 @@ impl BetaNetwork {
     pub fn allocate_ncc_memory(&mut self) -> NccMemoryId {
         let id = NccMemoryId(self.next_ncc_memory_id);
         self.next_ncc_memory_id += 1;
-        self.ncc_memories.insert(id, NccMemory::new(id));
+        debug_assert_eq!(self.ncc_memories.len(), id.0 as usize);
+        self.ncc_memories.push(NccMemory::new(id));
         id
     }
 
@@ -418,7 +424,8 @@ impl BetaNetwork {
         };
 
         self.nodes.insert(node_id, node);
-        self.memories.insert(memory_id, BetaMemory::new(memory_id));
+        debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
+        self.memories.push(BetaMemory::new(memory_id));
 
         self.attach_child_to_parent(parent, node_id);
 
@@ -496,9 +503,11 @@ impl BetaNetwork {
         };
 
         self.nodes.insert(node_id, node);
-        self.memories.insert(memory_id, BetaMemory::new(memory_id));
+        debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
+        self.memories.push(BetaMemory::new(memory_id));
+        debug_assert_eq!(self.exists_memories.len(), exists_memory_id.0 as usize);
         self.exists_memories
-            .insert(exists_memory_id, ExistsMemory::new(exists_memory_id));
+            .push(ExistsMemory::new(exists_memory_id));
 
         self.attach_child_to_parent(parent, node_id);
 
@@ -520,12 +529,12 @@ impl BetaNetwork {
     /// Get a beta memory by ID.
     #[must_use]
     pub fn get_memory(&self, id: BetaMemoryId) -> Option<&BetaMemory> {
-        self.memories.get(&id)
+        self.memory(id)
     }
 
     /// Get a mutable reference to a beta memory by ID.
     pub fn get_memory_mut(&mut self, id: BetaMemoryId) -> Option<&mut BetaMemory> {
-        self.memories.get_mut(&id)
+        self.memory_mut(id)
     }
 
     /// Get the root node ID.
@@ -537,34 +546,34 @@ impl BetaNetwork {
     /// Get a negative memory by ID.
     #[must_use]
     pub fn get_neg_memory(&self, id: NegativeMemoryId) -> Option<&NegativeMemory> {
-        self.neg_memories.get(&id)
+        self.neg_memory(id)
     }
 
     /// Get a mutable reference to a negative memory by ID.
     pub fn get_neg_memory_mut(&mut self, id: NegativeMemoryId) -> Option<&mut NegativeMemory> {
-        self.neg_memories.get_mut(&id)
+        self.neg_memory_mut(id)
     }
 
     /// Get an NCC memory by ID.
     #[must_use]
     pub fn get_ncc_memory(&self, id: NccMemoryId) -> Option<&NccMemory> {
-        self.ncc_memories.get(&id)
+        self.ncc_memory(id)
     }
 
     /// Get a mutable reference to an NCC memory by ID.
     pub fn get_ncc_memory_mut(&mut self, id: NccMemoryId) -> Option<&mut NccMemory> {
-        self.ncc_memories.get_mut(&id)
+        self.ncc_memory_mut(id)
     }
 
     /// Get an exists memory by ID.
     #[must_use]
     pub fn get_exists_memory(&self, id: ExistsMemoryId) -> Option<&ExistsMemory> {
-        self.exists_memories.get(&id)
+        self.exists_memory(id)
     }
 
     /// Get a mutable reference to an exists memory by ID.
     pub fn get_exists_memory_mut(&mut self, id: ExistsMemoryId) -> Option<&mut ExistsMemory> {
-        self.exists_memories.get_mut(&id)
+        self.exists_memory_mut(id)
     }
 
     /// Get the list of join nodes that subscribe to a given alpha memory.
@@ -593,16 +602,16 @@ impl BetaNetwork {
 
     /// Clear all runtime state from beta and negative memories, preserving network structure.
     pub fn clear_all_runtime(&mut self) {
-        for memory in self.memories.values_mut() {
+        for memory in &mut self.memories {
             memory.clear();
         }
-        for neg_memory in self.neg_memories.values_mut() {
+        for neg_memory in &mut self.neg_memories {
             neg_memory.clear();
         }
-        for ncc_memory in self.ncc_memories.values_mut() {
+        for ncc_memory in &mut self.ncc_memories {
             ncc_memory.clear();
         }
-        for exists_memory in self.exists_memories.values_mut() {
+        for exists_memory in &mut self.exists_memories {
             exists_memory.clear();
         }
     }
@@ -619,17 +628,17 @@ impl BetaNetwork {
 
     /// Iterate over all beta memory IDs.
     pub fn memory_ids(&self) -> impl Iterator<Item = BetaMemoryId> + '_ {
-        self.memories.keys().copied()
+        self.memories.iter().map(|memory| memory.id)
     }
 
     /// Iterate over all negative memory IDs.
     pub fn neg_memory_ids(&self) -> impl Iterator<Item = NegativeMemoryId> + '_ {
-        self.neg_memories.keys().copied()
+        self.neg_memories.iter().map(|memory| memory.id)
     }
 
     /// Iterate over all NCC memory IDs.
     pub fn ncc_memory_ids(&self) -> impl Iterator<Item = NccMemoryId> + '_ {
-        self.ncc_memories.keys().copied()
+        self.ncc_memories.iter().map(|memory| memory.id)
     }
 
     /// Find the NCC node that owns the given NCC memory.
@@ -643,7 +652,7 @@ impl BetaNetwork {
 
     /// Iterate over all exists memory IDs.
     pub fn exists_memory_ids(&self) -> impl Iterator<Item = ExistsMemoryId> + '_ {
-        self.exists_memories.keys().copied()
+        self.exists_memories.iter().map(|memory| memory.id)
     }
 
     fn attach_child_to_parent(&mut self, parent: NodeId, child_id: NodeId) {
@@ -712,7 +721,7 @@ impl BetaNetwork {
             match node {
                 BetaNode::Join { memory, .. } => {
                     assert!(
-                        self.memories.contains_key(memory),
+                        self.memory(*memory).is_some(),
                         "Join node {node_id:?} references non-existent memory {memory:?}"
                     );
                 }
@@ -720,11 +729,11 @@ impl BetaNetwork {
                     memory, neg_memory, ..
                 } => {
                     assert!(
-                        self.memories.contains_key(memory),
+                        self.memory(*memory).is_some(),
                         "Negative node {node_id:?} references non-existent beta memory {memory:?}"
                     );
                     assert!(
-                        self.neg_memories.contains_key(neg_memory),
+                        self.neg_memory(*neg_memory).is_some(),
                         "Negative node {node_id:?} references non-existent negative memory {neg_memory:?}"
                     );
                 }
@@ -735,11 +744,11 @@ impl BetaNetwork {
                     ..
                 } => {
                     assert!(
-                        self.memories.contains_key(memory),
+                        self.memory(*memory).is_some(),
                         "NCC node {node_id:?} references non-existent beta memory {memory:?}"
                     );
                     assert!(
-                        self.ncc_memories.contains_key(ncc_memory),
+                        self.ncc_memory(*ncc_memory).is_some(),
                         "NCC node {node_id:?} references non-existent NCC memory {ncc_memory:?}"
                     );
                     assert!(
@@ -757,7 +766,7 @@ impl BetaNetwork {
                         "NCC partner node {node_id:?} references non-existent NCC node {ncc_node:?}"
                     );
                     assert!(
-                        self.ncc_memories.contains_key(ncc_memory),
+                        self.ncc_memory(*ncc_memory).is_some(),
                         "NCC partner node {node_id:?} references non-existent NCC memory {ncc_memory:?}"
                     );
                 }
@@ -767,11 +776,11 @@ impl BetaNetwork {
                     ..
                 } => {
                     assert!(
-                        self.memories.contains_key(memory),
+                        self.memory(*memory).is_some(),
                         "Exists node {node_id:?} references non-existent beta memory {memory:?}"
                     );
                     assert!(
-                        self.exists_memories.contains_key(exists_memory),
+                        self.exists_memory(*exists_memory).is_some(),
                         "Exists node {node_id:?} references non-existent exists memory {exists_memory:?}"
                     );
                 }
@@ -844,22 +853,51 @@ impl BetaNetwork {
         );
 
         // Check 6: All negative memories are internally consistent
-        for (neg_mem_id, neg_mem) in &self.neg_memories {
-            let _ = neg_mem_id;
+        for neg_mem in &self.neg_memories {
             neg_mem.debug_assert_consistency();
         }
 
         // Check 7: All NCC memories are internally consistent
-        for (ncc_mem_id, ncc_mem) in &self.ncc_memories {
-            let _ = ncc_mem_id;
+        for ncc_mem in &self.ncc_memories {
             ncc_mem.debug_assert_consistency();
         }
 
         // Check 8: All exists memories are internally consistent
-        for (exists_mem_id, exists_mem) in &self.exists_memories {
-            let _ = exists_mem_id;
+        for exists_mem in &self.exists_memories {
             exists_mem.debug_assert_consistency();
         }
+    }
+
+    fn memory(&self, id: BetaMemoryId) -> Option<&BetaMemory> {
+        self.memories.get(id.0 as usize)
+    }
+
+    fn memory_mut(&mut self, id: BetaMemoryId) -> Option<&mut BetaMemory> {
+        self.memories.get_mut(id.0 as usize)
+    }
+
+    fn neg_memory(&self, id: NegativeMemoryId) -> Option<&NegativeMemory> {
+        self.neg_memories.get(id.0 as usize)
+    }
+
+    fn neg_memory_mut(&mut self, id: NegativeMemoryId) -> Option<&mut NegativeMemory> {
+        self.neg_memories.get_mut(id.0 as usize)
+    }
+
+    fn ncc_memory(&self, id: NccMemoryId) -> Option<&NccMemory> {
+        self.ncc_memories.get(id.0 as usize)
+    }
+
+    fn ncc_memory_mut(&mut self, id: NccMemoryId) -> Option<&mut NccMemory> {
+        self.ncc_memories.get_mut(id.0 as usize)
+    }
+
+    fn exists_memory(&self, id: ExistsMemoryId) -> Option<&ExistsMemory> {
+        self.exists_memories.get(id.0 as usize)
+    }
+
+    fn exists_memory_mut(&mut self, id: ExistsMemoryId) -> Option<&mut ExistsMemory> {
+        self.exists_memories.get_mut(id.0 as usize)
     }
 }
 

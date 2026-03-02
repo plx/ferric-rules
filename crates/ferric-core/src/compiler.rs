@@ -5,14 +5,15 @@
 //! binding tests, and terminal nodes. Node sharing is achieved through canonical
 //! alpha path and positive join caching.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashMap as HashMap;
+use smallvec::SmallVec;
 
 use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
 use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
 use crate::fact::FactBase;
 use crate::rete::ReteNetwork;
-use crate::symbol::Symbol;
+use crate::symbol::{Symbol, SymbolId};
 use crate::token::NodeId;
 use crate::validation::{PatternValidationError, PatternViolation, ValidationStage};
 
@@ -93,6 +94,57 @@ struct JoinNodeKey {
     bindings: Vec<(SlotIndex, VarId)>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct SymbolSet {
+    ascii: Vec<u8>,
+    utf8: Vec<u8>,
+}
+
+impl SymbolSet {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn contains(&self, key: Symbol) -> bool {
+        match key.0 {
+            SymbolId::Ascii(idx) => self.ascii.get(idx as usize).copied().unwrap_or(0) != 0,
+            SymbolId::Utf8(idx) => self.utf8.get(idx as usize).copied().unwrap_or(0) != 0,
+        }
+    }
+
+    fn insert(&mut self, key: Symbol) {
+        *self.slot_mut_or_grow(key) = 1;
+    }
+
+    fn extend<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = Symbol>,
+    {
+        for key in iter {
+            self.insert(key);
+        }
+    }
+
+    fn slot_mut_or_grow(&mut self, key: Symbol) -> &mut u8 {
+        match key.0 {
+            SymbolId::Ascii(idx) => {
+                let idx = idx as usize;
+                if idx >= self.ascii.len() {
+                    self.ascii.resize(idx + 1, 0);
+                }
+                &mut self.ascii[idx]
+            }
+            SymbolId::Utf8(idx) => {
+                let idx = idx as usize;
+                if idx >= self.utf8.len() {
+                    self.utf8.resize(idx + 1, 0);
+                }
+                &mut self.utf8[idx]
+            }
+        }
+    }
+}
+
 /// Compiles rule patterns into shared Rete network nodes.
 ///
 /// The compiler maintains caches to ensure that rules with identical alpha
@@ -111,8 +163,8 @@ impl ReteCompiler {
     /// Create a new compiler with an empty cache.
     pub fn new() -> Self {
         Self {
-            alpha_path_cache: HashMap::new(),
-            join_node_cache: HashMap::new(),
+            alpha_path_cache: HashMap::default(),
+            join_node_cache: HashMap::default(),
             next_rule_id: 1, // Start from 1, reserve 0
         }
     }
@@ -179,7 +231,7 @@ impl ReteCompiler {
     ) -> Result<CompileResult, CompileError> {
         let mut alpha_memories = Vec::new();
         let mut var_map = VarMap::new();
-        let mut bound_vars: HashSet<Symbol> = HashSet::new();
+        let mut bound_vars = SymbolSet::new();
         let mut current_parent = rete.beta.root_id();
 
         for condition in conditions {
@@ -348,7 +400,7 @@ impl ReteCompiler {
             Self::push_unsupported_structure_error(errors, format!("{context} cannot be exists"));
         }
 
-        let mut variable_bindings: HashMap<Symbol, SlotIndex> = HashMap::new();
+        let mut variable_bindings: HashMap<Symbol, SlotIndex> = HashMap::default();
         for &(slot, var_sym) in &pattern.variable_slots {
             if let Some(previous_slot) = variable_bindings.insert(var_sym, slot) {
                 if previous_slot != slot {
@@ -436,22 +488,22 @@ impl ReteCompiler {
         current_parent: NodeId,
         pattern: &CompilablePattern,
         var_map: &mut VarMap,
-        bound_vars: &mut HashSet<Symbol>,
+        bound_vars: &mut SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
     ) -> Result<NodeId, CompileError> {
         let alpha_mem = self.ensure_alpha_path(&mut rete.alpha, pattern);
         alpha_memories.push(alpha_mem);
 
-        let mut join_tests = Vec::new();
-        let mut binding_extractions = Vec::new();
-        let mut new_bindings = Vec::new();
+        let mut join_tests = SmallVec::<[JoinTest; 8]>::new();
+        let mut binding_extractions = SmallVec::<[(SlotIndex, VarId); 8]>::new();
+        let mut new_bindings = SmallVec::<[Symbol; 8]>::new();
 
         for &(slot, var_sym) in &pattern.variable_slots {
             let var_id = var_map
                 .get_or_create(var_sym)
                 .map_err(|_| CompileError::VarMapOverflow)?;
 
-            if bound_vars.contains(&var_sym) {
+            if bound_vars.contains(var_sym) {
                 join_tests.push(JoinTest {
                     alpha_slot: slot,
                     beta_var: var_id,
@@ -489,12 +541,12 @@ impl ReteCompiler {
         if pattern.negated {
             let (neg_id, _beta_mem, _neg_mem) =
                 rete.beta
-                    .create_negative_node(current_parent, alpha_mem, join_tests);
+                    .create_negative_node(current_parent, alpha_mem, join_tests.into_vec());
             Ok(neg_id)
         } else if pattern.exists {
             let (exists_id, _beta_mem, _exists_mem) =
                 rete.beta
-                    .create_exists_node(current_parent, alpha_mem, join_tests);
+                    .create_exists_node(current_parent, alpha_mem, join_tests.into_vec());
             Ok(exists_id)
         } else {
             bound_vars.extend(new_bindings);
@@ -502,8 +554,8 @@ impl ReteCompiler {
                 &mut rete.beta,
                 current_parent,
                 alpha_mem,
-                join_tests,
-                binding_extractions,
+                join_tests.into_vec(),
+                binding_extractions.into_vec(),
             );
             Ok(join_id)
         }
@@ -517,7 +569,7 @@ impl ReteCompiler {
         current_parent: NodeId,
         subconditions: &[CompilableCondition],
         var_map: &mut VarMap,
-        bound_vars: &HashSet<Symbol>,
+        bound_vars: &SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
     ) -> Result<NodeId, CompileError> {
         if subconditions.is_empty() {

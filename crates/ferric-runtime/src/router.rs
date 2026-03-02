@@ -5,7 +5,7 @@
 //! that captures output per channel name, enabling tests to inspect output
 //! without relying on global state or process-level I/O.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// An output router that captures output by logical channel name.
 ///

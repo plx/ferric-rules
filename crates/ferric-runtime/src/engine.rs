@@ -4,7 +4,8 @@
 //! for embedding applications. Phase 1 includes basic fact assertion/retraction
 //! and thread affinity checking.
 
-use std::collections::{HashMap, VecDeque};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::thread::ThreadId;
@@ -19,10 +20,39 @@ use ferric_core::{
 use crate::actions::{self, ActionError, CompiledRuleInfo};
 use crate::config::EngineConfig;
 use crate::execution::{FiredRule, HaltReason, RunLimit, RunResult};
-use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore};
+use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore, ModuleNameMap};
 use crate::modules::{ModuleId, ModuleRegistry};
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
+
+/// Dense indexed storage for per-rule data, keyed by `RuleId`.
+///
+/// This uses a `Vec<Option<T>>` instead of a `HashMap` because `RuleId`s are
+/// allocated by `ReteCompiler` as a strictly monotonic, gap-free sequence
+/// starting at 1 — a new ID is only consumed after successful compilation,
+/// so failed compiles never create gaps. `undefrule` sets slots to `None`
+/// but does not grow the Vec beyond its natural size (8 bytes per hole).
+///
+/// Direct indexed access provides faster O(1) lookups on the execution hot
+/// path (activation selection, rule firing, agenda display) compared to
+/// hash-based lookup.
+pub(crate) type RuleIndex<T> = Vec<Option<T>>;
+
+pub(crate) fn rule_index_get<T>(entries: &[Option<T>], rule_id: RuleId) -> Option<&T> {
+    entries.get(rule_id.0 as usize)?.as_ref()
+}
+
+pub(crate) fn rule_index_insert<T>(
+    entries: &mut RuleIndex<T>,
+    rule_id: RuleId,
+    value: T,
+) -> Option<T> {
+    let index = rule_id.0 as usize;
+    if entries.len() <= index {
+        entries.resize_with(index + 1, || None);
+    }
+    entries[index].replace(value)
+}
 
 fn propagate_fact_assertion(rete: &mut ReteNetwork, fact_base: &FactBase, fact_id: FactId) {
     let fact = fact_base
@@ -85,13 +115,11 @@ pub struct Engine {
     /// Registered deffacts for re-assertion on reset.
     pub(crate) registered_deffacts: Vec<Vec<Fact>>,
     /// Compiled rule info for action execution.
-    pub(crate) rule_info: HashMap<RuleId, Rc<CompiledRuleInfo>>,
+    pub(crate) rule_info: RuleIndex<Rc<CompiledRuleInfo>>,
     /// Registered template definitions: name → `TemplateId`.
-    pub(crate) template_ids: HashMap<String, TemplateId>,
+    pub(crate) template_ids: HashMap<Box<str>, TemplateId>,
     /// Template slot metadata indexed by `TemplateId`.
-    pub(crate) template_defs: HashMap<TemplateId, RegisteredTemplate>,
-    /// Allocator for `TemplateId` keys.
-    pub(crate) template_id_alloc: slotmap::SlotMap<TemplateId, ()>,
+    pub(crate) template_defs: slotmap::SlotMap<TemplateId, RegisteredTemplate>,
     /// Output router for capturing `printout` and related I/O.
     pub(crate) router: OutputRouter,
     /// Registry of user-defined functions loaded via `deffunction`.
@@ -105,15 +133,15 @@ pub struct Engine {
     /// Module registry: module definitions, focus stack, visibility.
     pub(crate) module_registry: ModuleRegistry,
     /// Rule-to-module association for focus-aware execution.
-    pub(crate) rule_modules: HashMap<RuleId, ModuleId>,
+    pub(crate) rule_modules: RuleIndex<ModuleId>,
     /// Template-to-module association for visibility checking.
-    pub(crate) template_modules: HashMap<ferric_core::TemplateId, ModuleId>,
+    pub(crate) template_modules: slotmap::SecondaryMap<ferric_core::TemplateId, ModuleId>,
     /// Function-to-module association for consistency-check bookkeeping.
-    pub(crate) function_modules: HashMap<(ModuleId, String), ModuleId>,
+    pub(crate) function_modules: ModuleNameMap<ModuleId>,
     /// Global-to-module association for consistency-check bookkeeping.
-    pub(crate) global_modules: HashMap<(ModuleId, String), ModuleId>,
+    pub(crate) global_modules: ModuleNameMap<ModuleId>,
     /// Generic-to-module association for consistency-check bookkeeping.
-    pub(crate) generic_modules: HashMap<(ModuleId, String), ModuleId>,
+    pub(crate) generic_modules: ModuleNameMap<ModuleId>,
     /// The `FactId` of the synthetic `(initial-fact)` in working memory, if present.
     ///
     /// `(initial-fact)` is asserted by the engine to provide a root token for
@@ -143,21 +171,20 @@ impl Engine {
             rete: ReteNetwork::with_strategy(strategy),
             compiler: ReteCompiler::new(),
             registered_deffacts: Vec::new(),
-            rule_info: HashMap::new(),
-            template_ids: HashMap::new(),
-            template_defs: HashMap::new(),
-            template_id_alloc: slotmap::SlotMap::with_key(),
+            rule_info: Vec::new(),
+            template_ids: HashMap::default(),
+            template_defs: slotmap::SlotMap::with_key(),
             router: OutputRouter::new(),
             functions: FunctionEnv::new(),
             globals: GlobalStore::new(),
             registered_globals: Vec::new(),
             generics: GenericRegistry::new(),
             module_registry: ModuleRegistry::new(),
-            rule_modules: HashMap::new(),
-            template_modules: HashMap::new(),
-            function_modules: HashMap::new(),
-            global_modules: HashMap::new(),
-            generic_modules: HashMap::new(),
+            rule_modules: Vec::new(),
+            template_modules: slotmap::SecondaryMap::new(),
+            function_modules: HashMap::default(),
+            global_modules: HashMap::default(),
+            generic_modules: HashMap::default(),
             initial_fact_id: None,
             action_diagnostics: Vec::new(),
             halted: false,
@@ -477,22 +504,23 @@ impl Engine {
     /// Returns a vector of `(name, salience)` pairs for every rule
     /// that has been compiled into the Rete network.
     pub fn rules(&self) -> Vec<(&str, i32)> {
-        self.rule_info
-            .values()
-            .map(|info| (info.name.as_str(), info.salience.get()))
-            .collect()
+        let mut rules = Vec::with_capacity(self.rule_info.len().saturating_sub(1));
+        for info in self.rule_info.iter().skip(1).flatten() {
+            rules.push((info.name.as_str(), info.salience.get()));
+        }
+        rules
     }
 
     /// List the names of all registered templates.
     pub fn templates(&self) -> Vec<&str> {
-        self.template_ids.keys().map(String::as_str).collect()
+        self.template_ids.keys().map(Box::as_ref).collect()
     }
 
     /// Look up a rule name by its internal ID.
     ///
     /// Returns `None` if the ID does not correspond to a known rule.
     pub fn rule_name(&self, rule_id: RuleId) -> Option<&str> {
-        self.rule_info.get(&rule_id).map(|info| info.name.as_str())
+        rule_index_get(&self.rule_info, rule_id).map(|info| info.name.as_str())
     }
 
     /// Check that the current thread is the same as the creator thread.
@@ -525,14 +553,12 @@ impl Engine {
 
         // Clone the handle so we can pass both this rule and the full map to
         // action helpers without deep-cloning `CompiledRuleInfo`.
-        let Some(info) = self.rule_info.get(&rule_id).cloned() else {
+        let Some(info) = rule_index_get(&self.rule_info, rule_id).cloned() else {
             // No compiled rule info — treat as not fired.
             return (false, false, false);
         };
 
-        let current_module = self
-            .rule_modules
-            .get(&rule_id)
+        let current_module = rule_index_get(&self.rule_modules, rule_id)
             .copied()
             .unwrap_or_else(|| self.module_registry.main_module_id());
 
@@ -582,11 +608,9 @@ impl Engine {
             let focus_module = self.module_registry.current_focus()?;
             let rule_modules = &self.rule_modules;
 
-            if let Some(activation) = self
-                .rete
-                .agenda
-                .pop_matching(|a| rule_modules.get(&a.rule).copied() == Some(focus_module))
-            {
+            if let Some(activation) = self.rete.agenda.pop_matching(|a| {
+                rule_index_get(rule_modules, a.rule).copied() == Some(focus_module)
+            }) {
                 return Some(activation);
             }
 
@@ -804,8 +828,7 @@ impl Engine {
         self.registered_deffacts.clear();
         self.rule_info.clear();
         self.template_ids.clear();
-        self.template_defs.clear();
-        self.template_id_alloc = slotmap::SlotMap::with_key();
+        self.template_defs = slotmap::SlotMap::with_key();
         self.router.clear();
         self.functions = FunctionEnv::new();
         self.globals = GlobalStore::new();
@@ -813,7 +836,7 @@ impl Engine {
         self.generics = GenericRegistry::new();
         self.module_registry = ModuleRegistry::new();
         self.rule_modules.clear();
-        self.template_modules.clear();
+        self.template_modules = slotmap::SecondaryMap::new();
         self.function_modules.clear();
         self.global_modules.clear();
         self.generic_modules.clear();
@@ -957,7 +980,12 @@ impl Engine {
         self.globals.debug_assert_consistency();
         self.generics.debug_assert_consistency();
 
-        for (rule_id, module_id) in &self.rule_modules {
+        for (index, maybe_module_id) in self.rule_modules.iter().enumerate() {
+            let Some(module_id) = maybe_module_id else {
+                continue;
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            let rule_id = RuleId(index as u32);
             assert!(
                 self.module_registry.get(*module_id).is_some(),
                 "rule {rule_id:?} points to unknown module {module_id:?}"
@@ -988,46 +1016,57 @@ impl Engine {
         }
 
         // Verify function module associations
-        for (module_id, name) in self.functions.functions.keys() {
-            assert!(
-                self.function_modules
-                    .contains_key(&(*module_id, name.clone())),
-                "function `{name}` in module {module_id:?} missing from function_modules"
-            );
+        for (&module_id, local_names) in &self.functions.functions {
+            for name in local_names.keys() {
+                assert!(
+                    crate::functions::contains_module_entry(
+                        &self.function_modules,
+                        module_id,
+                        name
+                    ),
+                    "function `{name}` in module {module_id:?} missing from function_modules"
+                );
+            }
         }
-        for ((module_id, name), &owner_module) in &self.function_modules {
-            assert!(
-                self.functions.contains(*module_id, name),
-                "function_modules contains `{name}` in module {module_id:?} but function not registered"
-            );
-            assert!(
-                self.module_registry.get(owner_module).is_some(),
-                "function `{name}` points to unknown module {owner_module:?}"
-            );
+        for (&module_id, local_names) in &self.function_modules {
+            for (name, &owner_module) in local_names {
+                assert!(
+                    self.functions.contains(module_id, name),
+                    "function_modules contains `{name}` in module {module_id:?} but function not registered"
+                );
+                assert!(
+                    self.module_registry.get(owner_module).is_some(),
+                    "function `{name}` points to unknown module {owner_module:?}"
+                );
+            }
         }
 
         // Verify global module associations
-        for ((module_id, name), &owner_module) in &self.global_modules {
-            assert!(
-                self.globals.contains(*module_id, name),
-                "global_modules contains `{name}` in module {module_id:?} but global not registered"
-            );
-            assert!(
-                self.module_registry.get(owner_module).is_some(),
-                "global `{name}` points to unknown module {owner_module:?}"
-            );
+        for (&module_id, local_names) in &self.global_modules {
+            for (name, &owner_module) in local_names {
+                assert!(
+                    self.globals.contains(module_id, name),
+                    "global_modules contains `{name}` in module {module_id:?} but global not registered"
+                );
+                assert!(
+                    self.module_registry.get(owner_module).is_some(),
+                    "global `{name}` points to unknown module {owner_module:?}"
+                );
+            }
         }
 
         // Verify generic module associations
-        for ((module_id, name), &owner_module) in &self.generic_modules {
-            assert!(
-                self.generics.contains(*module_id, name),
-                "generic_modules contains `{name}` in module {module_id:?} but generic not registered"
-            );
-            assert!(
-                self.module_registry.get(owner_module).is_some(),
-                "generic `{name}` points to unknown module {owner_module:?}"
-            );
+        for (&module_id, local_names) in &self.generic_modules {
+            for (name, &owner_module) in local_names {
+                assert!(
+                    self.generics.contains(module_id, name),
+                    "generic_modules contains `{name}` in module {module_id:?} but generic not registered"
+                );
+                assert!(
+                    self.module_registry.get(owner_module).is_some(),
+                    "generic `{name}` points to unknown module {owner_module:?}"
+                );
+            }
         }
     }
 }

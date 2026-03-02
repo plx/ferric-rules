@@ -3,8 +3,8 @@
 //! This module provides variable ID management and binding storage for
 //! the pattern matcher.
 
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::symbol::Symbol;
@@ -20,9 +20,12 @@ pub struct VarId(pub u16);
 /// Maps variable names (symbols) to their IDs.
 ///
 /// Used during pattern compilation to assign stable IDs to variables.
+/// Uses `FxHashMap` for the name→id mapping so that memory and clone costs
+/// scale with the number of variables in the rule rather than the highest
+/// interned `SymbolId` in the program.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VarMap {
-    by_name: HashMap<Symbol, VarId>,
+    by_name: FxHashMap<Symbol, VarId>,
     by_id: Vec<Symbol>,
 }
 
@@ -31,7 +34,7 @@ impl VarMap {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            by_name: HashMap::new(),
+            by_name: FxHashMap::default(),
             by_id: Vec::new(),
         }
     }

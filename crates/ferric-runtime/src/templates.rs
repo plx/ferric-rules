@@ -4,9 +4,8 @@
 //! metadata for a `deftemplate` construct after it has been registered with the
 //! engine. Both `loader.rs` and `actions.rs` need access to this type.
 
-use std::collections::HashMap;
-
 use ferric_core::Value;
+use rustc_hash::FxHashMap as HashMap;
 
 /// Runtime representation of a registered template.
 ///
@@ -27,6 +26,13 @@ pub(crate) struct RegisteredTemplate {
     /// Default values for each slot position (`Value::Void` if no default is
     /// declared or the default is `?NONE` / `?DERIVE`).
     pub defaults: Vec<Value>,
+}
+
+impl RegisteredTemplate {
+    #[must_use]
+    pub fn slot_index(&self, name: &str) -> Option<usize> {
+        self.slot_index.get(name).copied()
+    }
 }
 
 #[cfg(test)]

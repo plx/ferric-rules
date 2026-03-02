@@ -3,11 +3,11 @@
 //! Facts are the working memory of the rules engine. This module provides
 //! ordered facts, template facts, and the fact base that stores and indexes them.
 
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use slotmap::SlotMap;
 use smallvec::SmallVec;
-use std::collections::{HashMap, HashSet};
 
-use crate::symbol::Symbol;
+use crate::symbol::{Symbol, SymbolId};
 use crate::value::Value;
 
 /// Monotonically increasing timestamp assigned to facts as they enter working memory.
@@ -50,6 +50,95 @@ where
 
     if remove_key {
         index.remove(&key);
+    }
+}
+
+#[derive(Debug)]
+struct SymbolMap<T> {
+    ascii: Vec<Option<T>>,
+    utf8: Vec<Option<T>>,
+}
+
+impl<T> SymbolMap<T> {
+    fn new() -> Self {
+        Self {
+            ascii: Vec::new(),
+            utf8: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, key: Symbol) -> bool {
+        self.get(key).is_some()
+    }
+
+    fn get(&self, key: Symbol) -> Option<&T> {
+        self.slot(key).and_then(Option::as_ref)
+    }
+
+    fn get_mut(&mut self, key: Symbol) -> Option<&mut T> {
+        self.slot_mut(key).and_then(Option::as_mut)
+    }
+
+    fn get_or_insert_with(&mut self, key: Symbol, f: impl FnOnce() -> T) -> &mut T {
+        self.slot_mut_or_grow(key).get_or_insert_with(f)
+    }
+
+    #[cfg(test)]
+    fn values(&self) -> impl Iterator<Item = &T> + '_ {
+        self.ascii
+            .iter()
+            .chain(self.utf8.iter())
+            .filter_map(Option::as_ref)
+    }
+
+    fn remove(&mut self, key: Symbol) -> Option<T> {
+        self.slot_mut(key).and_then(Option::take)
+    }
+
+    fn slot(&self, key: Symbol) -> Option<&Option<T>> {
+        match key.0 {
+            SymbolId::Ascii(idx) => self.ascii.get(idx as usize),
+            SymbolId::Utf8(idx) => self.utf8.get(idx as usize),
+        }
+    }
+
+    fn slot_mut(&mut self, key: Symbol) -> Option<&mut Option<T>> {
+        match key.0 {
+            SymbolId::Ascii(idx) => self.ascii.get_mut(idx as usize),
+            SymbolId::Utf8(idx) => self.utf8.get_mut(idx as usize),
+        }
+    }
+
+    fn slot_mut_or_grow(&mut self, key: Symbol) -> &mut Option<T> {
+        match key.0 {
+            SymbolId::Ascii(idx) => {
+                let idx = idx as usize;
+                if idx >= self.ascii.len() {
+                    self.ascii.resize_with(idx + 1, || None);
+                }
+                &mut self.ascii[idx]
+            }
+            SymbolId::Utf8(idx) => {
+                let idx = idx as usize;
+                if idx >= self.utf8.len() {
+                    self.utf8.resize_with(idx + 1, || None);
+                }
+                &mut self.utf8[idx]
+            }
+        }
+    }
+}
+
+fn remove_from_symbol_set_index(index: &mut SymbolMap<HashSet<FactId>>, key: Symbol, id: FactId) {
+    let mut remove_key = false;
+    if let Some(set) = index.get_mut(key) {
+        set.remove(&id);
+        remove_key = set.is_empty();
+    }
+
+    if remove_key {
+        index.remove(key);
     }
 }
 
@@ -126,7 +215,7 @@ pub struct FactEntry {
 pub struct FactBase {
     facts: SlotMap<FactId, FactEntry>,
     by_template: HashMap<TemplateId, HashSet<FactId>>,
-    by_relation: HashMap<Symbol, HashSet<FactId>>,
+    by_relation: SymbolMap<HashSet<FactId>>,
     next_timestamp: Timestamp,
 }
 
@@ -136,8 +225,8 @@ impl FactBase {
     pub fn new() -> Self {
         Self {
             facts: SlotMap::with_key(),
-            by_template: HashMap::new(),
-            by_relation: HashMap::new(),
+            by_template: HashMap::default(),
+            by_relation: SymbolMap::new(),
             next_timestamp: Timestamp::ZERO,
         }
     }
@@ -160,7 +249,9 @@ impl FactBase {
         let id = self.insert_fact(Fact::Ordered(OrderedFact { relation, fields }));
 
         // Update relation index
-        self.by_relation.entry(relation).or_default().insert(id);
+        self.by_relation
+            .get_or_insert_with(relation, HashSet::default)
+            .insert(id);
 
         id
     }
@@ -186,7 +277,7 @@ impl FactBase {
         // Clean up indices
         match &entry.fact {
             Fact::Ordered(ordered) => {
-                remove_from_set_index(&mut self.by_relation, ordered.relation, id);
+                remove_from_symbol_set_index(&mut self.by_relation, ordered.relation, id);
             }
             Fact::Template(template) => {
                 remove_from_set_index(&mut self.by_template, template.template_id, id);
@@ -210,7 +301,7 @@ impl FactBase {
     /// Query facts by relation (ordered facts only).
     pub fn facts_by_relation(&self, relation: Symbol) -> impl Iterator<Item = FactId> + '_ {
         self.by_relation
-            .get(&relation)
+            .get(relation)
             .into_iter()
             .flat_map(|set| set.iter().copied())
     }
@@ -366,10 +457,10 @@ mod tests {
         let rel = table.intern_symbol("test", StringEncoding::Ascii).unwrap();
 
         let id = fb.assert_ordered(rel, smallvec::smallvec![]);
-        assert!(fb.by_relation.contains_key(&rel));
+        assert!(fb.by_relation.contains_key(rel));
 
         fb.retract(id);
-        assert!(!fb.by_relation.contains_key(&rel));
+        assert!(!fb.by_relation.contains_key(rel));
     }
 
     #[test]
@@ -525,7 +616,7 @@ mod proptests {
     impl Model {
         fn new() -> Self {
             Self {
-                live: HashMap::new(),
+                live: HashMap::default(),
                 timestamps: Vec::new(),
             }
         }
@@ -863,10 +954,10 @@ mod proptests {
             for (rel_idx, &rel) in relations.iter().enumerate() {
                 let model_set = model.ids_for_relation(rel_idx);
                 if model_set.is_empty() {
-                    prop_assert!(!fb.by_relation.contains_key(&rel),
+                    prop_assert!(!fb.by_relation.contains_key(rel),
                         "by_relation still has entry for rel{rel_idx} with no live facts");
                 } else {
-                    prop_assert!(fb.by_relation.contains_key(&rel),
+                    prop_assert!(fb.by_relation.contains_key(rel),
                         "by_relation missing entry for rel{rel_idx} that has live facts");
                 }
             }
@@ -895,7 +986,7 @@ mod proptests {
             for (id, entry) in fb.iter() {
                 match &entry.fact {
                     Fact::Ordered(o) => {
-                        let in_rel = fb.by_relation.get(&o.relation).is_some_and(|s| s.contains(&id));
+                        let in_rel = fb.by_relation.get(o.relation).is_some_and(|s| s.contains(&id));
                         prop_assert!(in_rel, "ordered fact {id:?} absent from by_relation");
                         let in_tmpl = fb.by_template.values().any(|s| s.contains(&id));
                         prop_assert!(!in_tmpl, "ordered fact {id:?} incorrectly in by_template");
@@ -918,7 +1009,7 @@ mod proptests {
             let (fb, _model, _rels, _tmpl, _live) =
                 run_scenario(n_relations, n_templates, &ops);
 
-            let mut seen: HashSet<u64> = HashSet::new();
+            let mut seen: HashSet<u64> = HashSet::default();
             for (_id, entry) in fb.iter() {
                 let raw = entry.timestamp.get();
                 prop_assert!(seen.insert(raw), "duplicate timestamp {raw} found");
@@ -933,11 +1024,11 @@ mod proptests {
             let (fb, _model, _rels, _tmpl, _live) =
                 run_scenario(n_relations, n_templates, &ops);
 
-            let mut from_rel: HashSet<FactId> = HashSet::new();
+            let mut from_rel: HashSet<FactId> = HashSet::default();
             for set in fb.by_relation.values() {
                 from_rel.extend(set.iter().copied());
             }
-            let mut from_tmpl: HashSet<FactId> = HashSet::new();
+            let mut from_tmpl: HashSet<FactId> = HashSet::default();
             for set in fb.by_template.values() {
                 from_tmpl.extend(set.iter().copied());
             }

@@ -77,7 +77,8 @@ impl ReteNetwork {
 
         // 2. For each affected alpha memory, perform right activations on subscribed joins
         for &alpha_mem_id in &affected_memories {
-            let join_nodes = self.beta.join_nodes_for_alpha(alpha_mem_id).to_vec();
+            let join_nodes: SmallVec<[NodeId; 4]> =
+                SmallVec::from_slice(self.beta.join_nodes_for_alpha(alpha_mem_id));
 
             for join_node_id in join_nodes {
                 self.right_activate(join_node_id, fact_id, fact, fact_base, &mut new_activations);
@@ -86,7 +87,8 @@ impl ReteNetwork {
 
         // 3. For each affected alpha memory, perform right activations on subscribed negative nodes
         for &alpha_mem_id in &affected_memories {
-            let neg_nodes = self.beta.negative_nodes_for_alpha(alpha_mem_id).to_vec();
+            let neg_nodes: SmallVec<[NodeId; 4]> =
+                SmallVec::from_slice(self.beta.negative_nodes_for_alpha(alpha_mem_id));
 
             for neg_node_id in neg_nodes {
                 self.negative_right_activate(
@@ -101,7 +103,8 @@ impl ReteNetwork {
 
         // 4. For each affected alpha memory, perform right activations on subscribed exists nodes
         for &alpha_mem_id in &affected_memories {
-            let exists_nodes = self.beta.exists_nodes_for_alpha(alpha_mem_id).to_vec();
+            let exists_nodes: SmallVec<[NodeId; 4]> =
+                SmallVec::from_slice(self.beta.exists_nodes_for_alpha(alpha_mem_id));
 
             for exists_node_id in exists_nodes {
                 self.exists_right_activate(
@@ -129,7 +132,7 @@ impl ReteNetwork {
         fact: &Fact,
         fact_base: &FactBase,
     ) -> Vec<Activation> {
-        use std::collections::HashSet;
+        use rustc_hash::FxHashSet as HashSet;
 
         let mut removed_activations = Vec::new();
 
@@ -611,7 +614,8 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         for &alpha_mem_id in affected_alpha_mems {
-            let neg_nodes = self.beta.negative_nodes_for_alpha(alpha_mem_id).to_vec();
+            let neg_nodes: SmallVec<[NodeId; 4]> =
+                SmallVec::from_slice(self.beta.negative_nodes_for_alpha(alpha_mem_id));
 
             for neg_node_id in neg_nodes {
                 // Find tokens blocked by this fact in this negative node
@@ -1180,7 +1184,8 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         for &alpha_mem_id in affected_alpha_mems {
-            let exists_nodes = self.beta.exists_nodes_for_alpha(alpha_mem_id).to_vec();
+            let exists_nodes: SmallVec<[NodeId; 4]> =
+                SmallVec::from_slice(self.beta.exists_nodes_for_alpha(alpha_mem_id));
 
             for exists_node_id in exists_nodes {
                 let Some(exists_node) = self.beta.get_node(exists_node_id) else {

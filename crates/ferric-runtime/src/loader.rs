@@ -42,7 +42,7 @@ use crate::actions::{
     CompiledRuleInfo, CompiledTestCondition, MultifieldTailBindingHint, NegatedPatternRuntimeCheck,
 };
 use crate::engine::{Engine, EngineError};
-use crate::functions::UserFunction;
+use crate::functions::{get_or_insert_module_entry_with, insert_module_entry, UserFunction};
 use crate::templates::RegisteredTemplate;
 // GenericRegistry accessed via self.generics (field on Engine)
 
@@ -449,8 +449,12 @@ impl Engine {
                             ));
                             continue;
                         }
-                        self.function_modules
-                            .insert((owning_module, func.name.clone()), owning_module);
+                        insert_module_entry(
+                            &mut self.function_modules,
+                            owning_module,
+                            func.name.clone(),
+                            owning_module,
+                        );
                         // Register in the function environment for runtime use.
                         self.functions.register(
                             owning_module,
@@ -467,8 +471,12 @@ impl Engine {
                         // Record the owning module for each global defined in this construct.
                         let owning_module = self.module_registry.current_module();
                         for def in &global.globals {
-                            self.global_modules
-                                .insert((owning_module, def.name.clone()), owning_module);
+                            insert_module_entry(
+                                &mut self.global_modules,
+                                owning_module,
+                                def.name.clone(),
+                                owning_module,
+                            );
                         }
                         // Evaluate initial values and store in the global store.
                         if let Err(e) = self.process_global_construct(&global) {
@@ -507,8 +515,12 @@ impl Engine {
                                 &generic.span,
                             ));
                         } else {
-                            self.generic_modules
-                                .insert((owning_module, generic.name.clone()), owning_module);
+                            insert_module_entry(
+                                &mut self.generic_modules,
+                                owning_module,
+                                generic.name.clone(),
+                                owning_module,
+                            );
                             // Register the generic function declaration.
                             self.generics.register_generic(owning_module, &generic.name);
                             result.generics.push(generic);
@@ -544,9 +556,12 @@ impl Engine {
                         }
                         // Auto-create the generic module entry if it doesn't exist yet
                         // (a defmethod with no preceding defgeneric auto-creates the generic).
-                        self.generic_modules
-                            .entry((owning_module, method.name.clone()))
-                            .or_insert(owning_module);
+                        let _ = get_or_insert_module_entry_with(
+                            &mut self.generic_modules,
+                            owning_module,
+                            &method.name,
+                            || owning_module,
+                        );
                         // Register the method in the generic registry.
                         // Extract parameter names and type restrictions from MethodParameter structs.
                         let param_names: Vec<String> =
@@ -724,10 +739,10 @@ impl Engine {
         let current_module_label = self.module_label_for_error(current_module);
 
         let mut candidates: Vec<(ferric_core::TemplateId, crate::modules::ModuleId)> = Vec::new();
-        for (&template_id, registered) in &self.template_defs {
+        for (template_id, registered) in &self.template_defs {
             let template_module = self
                 .template_modules
-                .get(&template_id)
+                .get(template_id)
                 .copied()
                 .unwrap_or_else(|| self.module_registry.main_module_id());
             let local_name = Self::template_local_name(&registered.name);
@@ -880,7 +895,7 @@ impl Engine {
 
         let registered = self
             .template_defs
-            .get(&template_id)
+            .get(template_id)
             .cloned()
             .ok_or_else(|| {
                 LoadError::Compile(format!(
@@ -894,16 +909,12 @@ impl Engine {
 
         // Apply slot values from the deffacts body.
         for slot_val in &template.slot_values {
-            let slot_idx = registered
-                .slot_index
-                .get(&slot_val.name)
-                .copied()
-                .ok_or_else(|| {
-                    LoadError::Compile(format!(
-                        "unknown slot `{}` in template `{}`",
-                        slot_val.name, template.template
-                    ))
-                })?;
+            let slot_idx = registered.slot_index(&slot_val.name).ok_or_else(|| {
+                LoadError::Compile(format!(
+                    "unknown slot `{}` in template `{}`",
+                    slot_val.name, template.template
+                ))
+            })?;
 
             if let Some(value) = self.fact_value_to_value(&slot_val.value, result) {
                 slots[slot_idx] = value;
@@ -945,12 +956,10 @@ impl Engine {
         template: &TemplateConstruct,
         result: &mut LoadResult,
     ) -> Result<(), LoadError> {
-        // Allocate a new TemplateId.
-        let template_id = self.template_id_alloc.insert(());
-
         let slot_count = template.slots.len();
         let mut slot_names = Vec::with_capacity(slot_count);
-        let mut slot_index = HashMap::with_capacity(slot_count);
+        let mut slot_index = HashMap::default();
+        slot_index.reserve(slot_count);
         let mut defaults = Vec::with_capacity(slot_count);
 
         for (i, slot_def) in template.slots.iter().enumerate() {
@@ -973,9 +982,10 @@ impl Engine {
             slot_index,
             defaults,
         };
+        let template_id = self.template_defs.insert(registered);
 
-        self.template_ids.insert(template.name.clone(), template_id);
-        self.template_defs.insert(template_id, registered);
+        self.template_ids
+            .insert(template.name.clone().into_boxed_str(), template_id);
         self.template_modules
             .insert(template_id, self.module_registry.current_module());
 
@@ -986,7 +996,7 @@ impl Engine {
     /// register it in both the active global store and the snapshot used for reset.
     fn process_global_construct(&mut self, global: &GlobalConstruct) -> Result<(), LoadError> {
         let current_module = self.module_registry.current_module();
-        let mut seen_in_construct: HashSet<&str> = HashSet::new();
+        let mut seen_in_construct: HashSet<&str> = HashSet::default();
         for def in &global.globals {
             if !seen_in_construct.insert(def.name.as_str())
                 || self.globals.contains(current_module, &def.name)
@@ -1731,8 +1741,13 @@ impl Engine {
             runtime_actions,
             multifield_tail_bindings: translated.multifield_tail_bindings,
         };
-        self.rule_info.insert(compile_result.rule_id, Rc::new(info));
-        self.rule_modules.insert(
+        crate::engine::rule_index_insert(
+            &mut self.rule_info,
+            compile_result.rule_id,
+            Rc::new(info),
+        );
+        crate::engine::rule_index_insert(
+            &mut self.rule_modules,
             compile_result.rule_id,
             self.module_registry.current_module(),
         );
@@ -2820,7 +2835,7 @@ impl Engine {
 
                 let registered =
                     self.template_defs
-                        .get(&template_id)
+                        .get(template_id)
                         .cloned()
                         .ok_or_else(|| {
                             Self::compile_error_at(
@@ -2837,11 +2852,8 @@ impl Engine {
                 let mut slot_runtime_vars = HashMap::new();
 
                 for slot_constraint in &template.slot_constraints {
-                    let slot_idx = registered
-                        .slot_index
-                        .get(&slot_constraint.slot_name)
-                        .copied()
-                        .ok_or_else(|| {
+                    let slot_idx = registered.slot_index(&slot_constraint.slot_name).ok_or_else(
+                        || {
                             Self::compile_error_at(
                                 &slot_constraint.span,
                                 &format!(
@@ -2849,7 +2861,8 @@ impl Engine {
                                     slot_constraint.slot_name, template.template
                                 ),
                             )
-                        })?;
+                        },
+                    )?;
 
                     let slot = SlotIndex::Template(slot_idx);
                     self.translate_constraint(

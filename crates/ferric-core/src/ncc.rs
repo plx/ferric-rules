@@ -23,7 +23,7 @@
 //!
 //! - Pass 010: NCC node, NCC partner, and NCC memory
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use crate::token::TokenId;
 
@@ -53,9 +53,9 @@ impl NccMemory {
     pub fn new(id: NccMemoryId) -> Self {
         Self {
             id,
-            result_count: HashMap::new(),
-            result_owner: HashMap::new(),
-            unblocked: HashMap::new(),
+            result_count: HashMap::default(),
+            result_owner: HashMap::default(),
+            unblocked: HashMap::default(),
         }
     }
 
@@ -194,7 +194,7 @@ impl NccMemory {
         }
 
         // Check 3: each tracked result token points to a parent with a non-zero count.
-        let mut per_parent_results: HashMap<TokenId, usize> = HashMap::new();
+        let mut per_parent_results: HashMap<TokenId, usize> = HashMap::default();
         for (&result_token, &parent_token) in &self.result_owner {
             let _ = result_token;
             assert!(
