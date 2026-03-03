@@ -7,12 +7,13 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::SmallVec;
 
 use crate::alpha::{AlphaMemoryId, SlotIndex};
-use crate::binding::VarId;
+use crate::binding::{BindingSet, VarId};
 use crate::exists::{ExistsMemory, ExistsMemoryId};
 use crate::ncc::{NccMemory, NccMemoryId};
 use crate::negative::{NegativeMemory, NegativeMemoryId};
 use crate::token::NodeId;
 use crate::token::TokenId;
+use crate::value::AtomKey;
 
 type FanoutNodes = SmallVec<[NodeId; 4]>;
 
@@ -89,9 +90,18 @@ pub struct BetaMemoryId(pub u32);
 ///
 /// Each beta memory is associated with a join node or other beta node
 /// and holds the tokens that have successfully matched up to that point.
+///
+/// Optionally maintains variable-binding indices for O(1) right-activation
+/// lookups, mirroring the alpha memory's slot-based indexing.
 pub struct BetaMemory {
     pub id: BetaMemoryId,
     tokens: HashSet<TokenId>,
+    /// Variable indices: `VarId` → `AtomKey` → set of `TokenId`s with that binding value.
+    /// Enables O(1) lookup during right activation instead of full parent-token scans.
+    var_indices: HashMap<VarId, HashMap<AtomKey, SmallVec<[TokenId; 4]>>>,
+    /// Which variables are currently indexed. Survives `clear()` (like alpha memory's
+    /// `indexed_slots`), since the index configuration is a compile-time decision.
+    indexed_vars: SmallVec<[VarId; 4]>,
 }
 
 impl BetaMemory {
@@ -101,7 +111,35 @@ impl BetaMemory {
         Self {
             id,
             tokens: HashSet::default(),
+            var_indices: HashMap::default(),
+            indexed_vars: SmallVec::new(),
         }
+    }
+
+    /// Request indexing on a particular variable binding.
+    ///
+    /// Called during compilation when a child join node has an equality test on
+    /// `var_id`. Idempotent — duplicate requests are ignored. No backfill is needed
+    /// because beta memories are always empty at compile time.
+    pub fn request_var_index(&mut self, var_id: VarId) {
+        if !self.indexed_vars.contains(&var_id) {
+            self.indexed_vars.push(var_id);
+        }
+    }
+
+    /// Returns `true` if the given variable has been requested for indexing.
+    #[must_use]
+    pub fn is_var_indexed(&self, var_id: VarId) -> bool {
+        self.indexed_vars.contains(&var_id)
+    }
+
+    /// Lookup tokens by variable binding value.
+    ///
+    /// Returns the set of tokens whose binding for `var_id` matches `key`,
+    /// or `None` if no tokens match (or the variable is not indexed).
+    #[must_use]
+    pub fn lookup_by_var(&self, var_id: VarId, key: &AtomKey) -> Option<&SmallVec<[TokenId; 4]>> {
+        self.var_indices.get(&var_id)?.get(key)
     }
 
     /// Insert a token into the memory.
@@ -111,11 +149,53 @@ impl BetaMemory {
         self.tokens.insert(token_id);
     }
 
+    /// Insert a token with its bindings, updating variable indices.
+    ///
+    /// If the memory has indexed variables, extracts the corresponding binding
+    /// values and adds the token to the appropriate index entries.
+    pub fn insert_indexed(&mut self, token_id: TokenId, bindings: &BindingSet) {
+        self.tokens.insert(token_id);
+        for &var_id in &self.indexed_vars {
+            if let Some(value) = bindings.get(var_id) {
+                if let Some(key) = AtomKey::from_value(value) {
+                    self.var_indices
+                        .entry(var_id)
+                        .or_default()
+                        .entry(key)
+                        .or_default()
+                        .push(token_id);
+                }
+            }
+        }
+    }
+
     /// Remove a token from the memory.
     ///
     /// If the token is not present, this is a no-op.
     pub fn remove(&mut self, token_id: TokenId) {
         self.tokens.remove(&token_id);
+    }
+
+    /// Remove a token with its bindings, updating variable indices.
+    ///
+    /// Mirrors `insert_indexed`: removes the token from all variable index entries
+    /// that correspond to its binding values.
+    pub fn remove_indexed(&mut self, token_id: TokenId, bindings: &BindingSet) {
+        self.tokens.remove(&token_id);
+        for &var_id in &self.indexed_vars {
+            if let Some(value) = bindings.get(var_id) {
+                if let Some(key) = AtomKey::from_value(value) {
+                    if let Some(key_map) = self.var_indices.get_mut(&var_id) {
+                        if let Some(token_vec) = key_map.get_mut(&key) {
+                            token_vec.retain(|tid| *tid != token_id);
+                            if token_vec.is_empty() {
+                                key_map.remove(&key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Check if the memory contains a specific token.
@@ -141,9 +221,13 @@ impl BetaMemory {
         self.tokens.len()
     }
 
-    /// Clear all tokens from this memory.
+    /// Clear all tokens and index entries from this memory.
+    ///
+    /// Preserves `indexed_vars` (the index configuration), since that is a
+    /// compile-time decision. Only runtime data is cleared.
     pub fn clear(&mut self) {
         self.tokens.clear();
+        self.var_indices.clear();
     }
 }
 
@@ -541,6 +625,20 @@ impl BetaNetwork {
     #[must_use]
     pub fn root_id(&self) -> NodeId {
         self.root_id
+    }
+
+    /// Get the beta memory ID associated with a node.
+    ///
+    /// Returns `None` for root nodes or nodes without a beta memory.
+    #[must_use]
+    pub fn memory_id_for_node(&self, node_id: NodeId) -> Option<BetaMemoryId> {
+        match self.get_node(node_id)? {
+            BetaNode::Join { memory, .. }
+            | BetaNode::Negative { memory, .. }
+            | BetaNode::Ncc { memory, .. }
+            | BetaNode::Exists { memory, .. } => Some(*memory),
+            _ => None,
+        }
     }
 
     /// Get a negative memory by ID.
@@ -1198,6 +1296,265 @@ mod proptests {
 
             prop_assert!(mem.is_empty(), "is_empty must be true after clear()");
             prop_assert_eq!(mem.len(), 0, "len must be 0 after clear()");
+        }
+    }
+
+    // ===========================================================================
+    // BetaMemory variable-index property tests
+    // ===========================================================================
+
+    use crate::binding::BindingSet;
+    use crate::value::{AtomKey, Value};
+    use std::rc::Rc;
+
+    /// Shadow model for indexed `BetaMemory`: tracks both the token set and a
+    /// per-variable, per-key set of token IDs.
+    #[derive(Default)]
+    struct IndexedBetaModel {
+        tokens: std::collections::HashSet<usize>,
+        /// `var_idx` -> `key_idx` -> set of token indices
+        var_index: std::collections::HashMap<
+            usize,
+            std::collections::HashMap<i64, std::collections::HashSet<usize>>,
+        >,
+    }
+
+    impl IndexedBetaModel {
+        fn insert(&mut self, idx: usize, key_val: i64, indexed_var: usize) {
+            self.tokens.insert(idx);
+            self.var_index
+                .entry(indexed_var)
+                .or_default()
+                .entry(key_val)
+                .or_default()
+                .insert(idx);
+        }
+
+        fn remove(&mut self, idx: usize, key_val: i64, indexed_var: usize) {
+            self.tokens.remove(&idx);
+            if let Some(key_map) = self.var_index.get_mut(&indexed_var) {
+                if let Some(set) = key_map.get_mut(&key_val) {
+                    set.remove(&idx);
+                    if set.is_empty() {
+                        key_map.remove(&key_val);
+                    }
+                }
+            }
+        }
+
+        fn lookup(&self, var_idx: usize, key_val: i64) -> std::collections::HashSet<usize> {
+            self.var_index
+                .get(&var_idx)
+                .and_then(|m| m.get(&key_val))
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+
+    /// An operation for the indexed beta memory tests.
+    #[derive(Clone, Debug)]
+    enum IndexedBetaOp {
+        Insert { token_idx: usize, key_val: i64 },
+        Remove { token_idx: usize },
+    }
+
+    fn indexed_beta_op_strategy() -> impl Strategy<Value = IndexedBetaOp> {
+        prop_oneof![
+            (0..5_usize, 0..4_i64).prop_map(|(t, k)| IndexedBetaOp::Insert {
+                token_idx: t,
+                key_val: k,
+            }),
+            (0..5_usize).prop_map(|t| IndexedBetaOp::Remove { token_idx: t }),
+        ]
+    }
+
+    /// Create a `BindingSet` with a single integer binding at `VarId(var_idx)`.
+    fn make_bindings(var_idx: u16, key_val: i64) -> BindingSet {
+        let mut bs = BindingSet::new();
+        bs.set(VarId(var_idx), Rc::new(Value::Integer(key_val)));
+        bs
+    }
+
+    proptest! {
+        /// After arbitrary insert_indexed/remove_indexed ops, the variable index
+        /// matches a shadow model. Every token in the index is also in the main
+        /// token set, and every token in the main set with a matching binding
+        /// appears in the index.
+        #[test]
+        fn beta_memory_var_index_tracks_tokens(
+            ops in proptest::collection::vec(indexed_beta_op_strategy(), 0..80)
+        ) {
+            let mut token_map: SlotMap<TokenId, ()> = SlotMap::with_key();
+            let tokens: Vec<TokenId> = (0..5).map(|_| token_map.insert(())).collect();
+
+            let indexed_var = VarId(0);
+            let mut mem = BetaMemory::new(BetaMemoryId(0));
+            mem.request_var_index(indexed_var);
+
+            let mut model = IndexedBetaModel::default();
+
+            // Track the last key value each token was inserted with (for removal)
+            let mut token_keys: std::collections::HashMap<usize, i64> = std::collections::HashMap::new();
+
+            for op in &ops {
+                match *op {
+                    IndexedBetaOp::Insert { token_idx, key_val } => {
+                        // If already present with a different key, remove first
+                        if let Some(&old_key) = token_keys.get(&token_idx) {
+                            if model.tokens.contains(&token_idx) {
+                                let old_bindings = make_bindings(0, old_key);
+                                mem.remove_indexed(tokens[token_idx], &old_bindings);
+                                model.remove(token_idx, old_key, 0);
+                            }
+                        }
+                        let bindings = make_bindings(0, key_val);
+                        mem.insert_indexed(tokens[token_idx], &bindings);
+                        model.insert(token_idx, key_val, 0);
+                        token_keys.insert(token_idx, key_val);
+                    }
+                    IndexedBetaOp::Remove { token_idx } => {
+                        if let Some(&stored_key) = token_keys.get(&token_idx) {
+                            if model.tokens.contains(&token_idx) {
+                                let bindings = make_bindings(0, stored_key);
+                                mem.remove_indexed(tokens[token_idx], &bindings);
+                                model.remove(token_idx, stored_key, 0);
+                                token_keys.remove(&token_idx);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Verify: for each key value, lookup matches model
+            for key_val in 0..4_i64 {
+                let atom_key = AtomKey::Integer(key_val);
+                let actual: std::collections::HashSet<TokenId> = mem
+                    .lookup_by_var(indexed_var, &atom_key)
+                    .map(|sv| sv.iter().copied().collect())
+                    .unwrap_or_default();
+                let expected_indices = model.lookup(0, key_val);
+                let expected: std::collections::HashSet<TokenId> =
+                    expected_indices.iter().map(|&idx| tokens[idx]).collect();
+                prop_assert_eq!(
+                    actual, expected,
+                    "lookup_by_var mismatch for key_val={}",
+                    key_val
+                );
+            }
+
+            // Verify: every token in the index is in the main set
+            for key_val in 0..4_i64 {
+                let atom_key = AtomKey::Integer(key_val);
+                if let Some(indexed_tokens) = mem.lookup_by_var(indexed_var, &atom_key) {
+                    for &tid in indexed_tokens {
+                        prop_assert!(
+                            mem.contains(tid),
+                            "indexed token {:?} not in main token set (key={})",
+                            tid,
+                            key_val
+                        );
+                    }
+                }
+            }
+        }
+
+        /// `lookup_by_var` returns the same result as a full scan+filter.
+        #[test]
+        fn beta_memory_lookup_matches_scan(
+            key_vals in proptest::collection::vec(0..4_i64, 5..=5)
+        ) {
+            let mut token_map: SlotMap<TokenId, ()> = SlotMap::with_key();
+            let tokens: Vec<TokenId> = (0..5).map(|_| token_map.insert(())).collect();
+
+            let indexed_var = VarId(0);
+            let mut mem = BetaMemory::new(BetaMemoryId(0));
+            mem.request_var_index(indexed_var);
+
+            // Build a map from TokenId -> key_val for brute-force scanning
+            let mut tid_to_key: std::collections::HashMap<TokenId, i64> =
+                std::collections::HashMap::new();
+
+            // Insert 5 tokens with potentially overlapping keys
+            for (i, &kv) in key_vals.iter().enumerate() {
+                let bindings = make_bindings(0, kv);
+                mem.insert_indexed(tokens[i], &bindings);
+                tid_to_key.insert(tokens[i], kv);
+            }
+
+            // For each possible key, verify lookup matches a brute-force scan
+            for query_key in 0..4_i64 {
+                let atom_key = AtomKey::Integer(query_key);
+
+                // Indexed lookup
+                let indexed_result: std::collections::HashSet<TokenId> = mem
+                    .lookup_by_var(indexed_var, &atom_key)
+                    .map(|sv| sv.iter().copied().collect())
+                    .unwrap_or_default();
+
+                // Brute-force scan using tid_to_key map
+                let scan_result: std::collections::HashSet<TokenId> = mem
+                    .iter()
+                    .filter(|tid| tid_to_key.get(tid) == Some(&query_key))
+                    .collect();
+
+                prop_assert_eq!(
+                    indexed_result, scan_result,
+                    "index lookup vs scan mismatch for key={}",
+                    query_key
+                );
+            }
+        }
+
+        /// After `clear()`, `indexed_vars` is preserved but lookups return empty.
+        #[test]
+        fn beta_memory_clear_preserves_indexed_vars(
+            key_vals in proptest::collection::vec(0..4_i64, 1..5)
+        ) {
+            let mut token_map: SlotMap<TokenId, ()> = SlotMap::with_key();
+            let tokens: Vec<TokenId> = (0..5).map(|_| token_map.insert(())).collect();
+
+            let indexed_var = VarId(0);
+            let mut mem = BetaMemory::new(BetaMemoryId(0));
+            mem.request_var_index(indexed_var);
+
+            for (i, &kv) in key_vals.iter().enumerate() {
+                let bindings = make_bindings(0, kv);
+                mem.insert_indexed(tokens[i], &bindings);
+            }
+
+            mem.clear();
+
+            // Index config preserved
+            prop_assert!(mem.is_var_indexed(indexed_var),
+                "indexed_vars must survive clear()");
+
+            // Lookups return empty
+            for kv in 0..4_i64 {
+                let atom_key = AtomKey::Integer(kv);
+                let result = mem.lookup_by_var(indexed_var, &atom_key);
+                prop_assert!(
+                    result.is_none() || result.unwrap().is_empty(),
+                    "lookup must return empty after clear() for key={}",
+                    kv
+                );
+            }
+        }
+
+        /// `request_var_index` is idempotent: calling it twice doesn't duplicate.
+        #[test]
+        fn beta_memory_request_var_index_idempotent(var_id in 0..10_u16) {
+            let mut mem = BetaMemory::new(BetaMemoryId(0));
+            let vid = VarId(var_id);
+
+            mem.request_var_index(vid);
+            prop_assert!(mem.is_var_indexed(vid));
+
+            mem.request_var_index(vid);
+            prop_assert!(mem.is_var_indexed(vid));
+
+            // indexed_vars should have exactly one entry for this var
+            let count = mem.indexed_vars.iter().filter(|&&v| v == vid).count();
+            prop_assert_eq!(count, 1, "duplicate entry in indexed_vars after double request");
         }
     }
 
