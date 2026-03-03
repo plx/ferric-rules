@@ -514,9 +514,10 @@ impl ReteNetwork {
 
             let pt_id = self.token_store.insert(passthrough_token);
 
-            // Add to negative node's beta memory
+            // Add to negative node's beta memory (with index maintenance)
             if let Some(memory) = self.beta.get_memory_mut(beta_memory_id) {
-                memory.insert(pt_id);
+                let bindings = &self.token_store.get(pt_id).unwrap().bindings;
+                memory.insert_indexed(pt_id, bindings);
             }
 
             // Track as unblocked
@@ -661,9 +662,10 @@ impl ReteNetwork {
 
                         let pt_id = self.token_store.insert(passthrough_token);
 
-                        // Add to beta memory
+                        // Add to beta memory (with index maintenance)
                         if let Some(memory) = self.beta.get_memory_mut(beta_memory_id) {
-                            memory.insert(pt_id);
+                            let bindings = &self.token_store.get(pt_id).unwrap().bindings;
+                            memory.insert_indexed(pt_id, bindings);
                         }
 
                         // Track as unblocked
@@ -797,9 +799,10 @@ impl ReteNetwork {
 
             let pt_id = self.token_store.insert(passthrough_token);
 
-            // Add to NCC node's beta memory
+            // Add to NCC node's beta memory (with index maintenance)
             if let Some(memory) = self.beta.get_memory_mut(beta_memory_id) {
-                memory.insert(pt_id);
+                let bindings = &self.token_store.get(pt_id).unwrap().bindings;
+                memory.insert_indexed(pt_id, bindings);
             }
 
             // Track as unblocked
@@ -953,7 +956,8 @@ impl ReteNetwork {
         let pt_id = self.token_store.insert(passthrough_token);
 
         if let Some(memory) = self.beta.get_memory_mut(beta_memory_id) {
-            memory.insert(pt_id);
+            let bindings = &self.token_store.get(pt_id).unwrap().bindings;
+            memory.insert_indexed(pt_id, bindings);
         }
         if let Some(ncc_mem) = self.beta.get_ncc_memory_mut(ncc_memory_id) {
             ncc_mem.set_unblocked(parent_token_id, pt_id);
@@ -1044,9 +1048,10 @@ impl ReteNetwork {
 
             let pt_id = self.token_store.insert(passthrough_token);
 
-            // Add to exists node's beta memory
+            // Add to exists node's beta memory (with index maintenance)
             if let Some(memory) = self.beta.get_memory_mut(beta_memory_id) {
-                memory.insert(pt_id);
+                let bindings = &self.token_store.get(pt_id).unwrap().bindings;
+                memory.insert_indexed(pt_id, bindings);
             }
 
             // Track as satisfied
@@ -1152,9 +1157,10 @@ impl ReteNetwork {
 
                     let pt_id = self.token_store.insert(passthrough_token);
 
-                    // Add to beta memory
+                    // Add to beta memory (with index maintenance)
                     if let Some(memory) = self.beta.get_memory_mut(beta_memory_id) {
-                        memory.insert(pt_id);
+                        let bindings = &self.token_store.get(pt_id).unwrap().bindings;
+                        memory.insert_indexed(pt_id, bindings);
                     }
 
                     // Track as satisfied
@@ -1477,8 +1483,10 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
         };
 
         let matches = match test.test_type {
-            JoinTestType::Equal => values_atom_eq(fact_value, token_value),
-            JoinTestType::NotEqual => !values_atom_eq(fact_value, token_value),
+            JoinTestType::Equal => values_atom_eq(fact_value, token_value).unwrap_or(false),
+            JoinTestType::NotEqual => {
+                values_atom_eq(fact_value, token_value).is_some_and(|eq| !eq)
+            }
             JoinTestType::GreaterThan => numeric_compare_matches(fact_value, token_value, |ord| {
                 matches!(ord, Ordering::Greater)
             }),
@@ -1560,18 +1568,19 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
 /// Direct atom-level equality test between two values.
 ///
 /// Equivalent to constructing `AtomKey` from each value and comparing, but avoids
-/// the intermediate `AtomKey` allocation. Returns `false` for `Multifield`/`Void`
-/// (same as `AtomKey::from_value` returning `None`).
-fn values_atom_eq(a: &Value, b: &Value) -> bool {
+/// the intermediate `AtomKey` allocation. Returns `None` for non-comparable values
+/// (`Multifield`/`Void`/type mismatches), so callers can distinguish "not equal"
+/// from "non-comparable".
+fn values_atom_eq(a: &Value, b: &Value) -> Option<bool> {
     match (a, b) {
-        (Value::Symbol(a), Value::Symbol(b)) => a == b,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-        (Value::String(a), Value::String(b)) => a == b,
+        (Value::Symbol(a), Value::Symbol(b)) => Some(a == b),
+        (Value::Integer(a), Value::Integer(b)) => Some(a == b),
+        (Value::Float(a), Value::Float(b)) => Some(a.to_bits() == b.to_bits()),
+        (Value::String(a), Value::String(b)) => Some(a == b),
         (Value::ExternalAddress(a), Value::ExternalAddress(b)) => {
-            a.type_id == b.type_id && std::ptr::eq(a.pointer, b.pointer)
+            Some(a.type_id == b.type_id && std::ptr::eq(a.pointer, b.pointer))
         }
-        _ => false, // Multifield, Void, or type mismatch
+        _ => None, // Multifield, Void, or type mismatch → non-comparable
     }
 }
 
