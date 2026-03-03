@@ -1484,9 +1484,7 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
 
         let matches = match test.test_type {
             JoinTestType::Equal => values_atom_eq(fact_value, token_value).unwrap_or(false),
-            JoinTestType::NotEqual => {
-                values_atom_eq(fact_value, token_value).is_some_and(|eq| !eq)
-            }
+            JoinTestType::NotEqual => values_atom_eq(fact_value, token_value).is_some_and(|eq| !eq),
             JoinTestType::GreaterThan => numeric_compare_matches(fact_value, token_value, |ord| {
                 matches!(ord, Ordering::Greater)
             }),
