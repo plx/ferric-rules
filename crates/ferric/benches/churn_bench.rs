@@ -140,7 +140,7 @@ fn bench_churn_5000(c: &mut Criterion) {
 }
 
 fn bench_churn_10000(c: &mut Criterion) {
-    let source = generate_churn_source(10000);
+    let source = generate_churn_source(10_000);
     let mut group = c.benchmark_group("churn_10000");
     group.sample_size(10);
     group.bench_function("churn_10000_facts", |b| {
@@ -155,7 +155,7 @@ fn bench_churn_10000(c: &mut Criterion) {
 }
 
 fn bench_churn_25000(c: &mut Criterion) {
-    let source = generate_churn_source(25000);
+    let source = generate_churn_source(25_000);
     let mut group = c.benchmark_group("churn_25000");
     group.sample_size(10);
     group.bench_function("churn_25000_facts", |b| {
@@ -170,7 +170,7 @@ fn bench_churn_25000(c: &mut Criterion) {
 }
 
 fn bench_churn_50000(c: &mut Criterion) {
-    let source = generate_churn_source(50000);
+    let source = generate_churn_source(50_000);
     let mut group = c.benchmark_group("churn_50000");
     group.sample_size(10);
     group.bench_function("churn_50000_facts", |b| {
@@ -185,7 +185,7 @@ fn bench_churn_50000(c: &mut Criterion) {
 }
 
 fn bench_churn_100000(c: &mut Criterion) {
-    let source = generate_churn_source(100000);
+    let source = generate_churn_source(100_000);
     let mut group = c.benchmark_group("churn_100000");
     group.sample_size(10);
     group.bench_function("churn_100000_facts", |b| {

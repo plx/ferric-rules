@@ -148,7 +148,7 @@ fn bench_negation_5000(c: &mut Criterion) {
 }
 
 fn bench_negation_10000(c: &mut Criterion) {
-    let source = generate_negation_source(10000);
+    let source = generate_negation_source(10_000);
     let mut group = c.benchmark_group("negation_10000");
     group.sample_size(10);
     group.bench_function("negation_10000_blockers", |b| {
@@ -163,7 +163,7 @@ fn bench_negation_10000(c: &mut Criterion) {
 }
 
 fn bench_negation_25000(c: &mut Criterion) {
-    let source = generate_negation_source(25000);
+    let source = generate_negation_source(25_000);
     let mut group = c.benchmark_group("negation_25000");
     group.sample_size(10);
     group.bench_function("negation_25000_blockers", |b| {
@@ -178,7 +178,7 @@ fn bench_negation_25000(c: &mut Criterion) {
 }
 
 fn bench_negation_50000(c: &mut Criterion) {
-    let source = generate_negation_source(50000);
+    let source = generate_negation_source(50_000);
     let mut group = c.benchmark_group("negation_50000");
     group.sample_size(10);
     group.bench_function("negation_50000_blockers", |b| {
