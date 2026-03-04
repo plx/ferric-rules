@@ -312,11 +312,13 @@ fn main() {
 
     eprintln!("Generating comparative benchmark workloads:");
 
-    let waltz_sizes = [5, 20, 50, 100];
-    let manners_sizes = [8, 16, 32, 64];
-    let join_widths = [3, 5, 7, 9];
-    let churn_sizes = [100, 500, 2000, 10000];
-    let negation_sizes = [50, 200, 1000, 5000];
+    let waltz_sizes = [5, 10, 20, 50, 100, 150, 200, 300, 500, 750, 1000];
+    let manners_sizes = [8, 16, 32, 48, 64, 96, 128, 256, 512];
+    let join_widths = [3, 5, 7, 9, 11, 13, 15, 17, 19, 21];
+    let churn_sizes = [
+        100, 250, 500, 1000, 2000, 5000, 10_000, 25_000, 50_000, 100_000,
+    ];
+    let negation_sizes = [50, 100, 200, 500, 1000, 2500, 5000, 10_000, 25_000, 50_000];
 
     for &n in &waltz_sizes {
         let source = generate_waltz_source(n);

@@ -72,9 +72,33 @@ fn bench_negation_50(c: &mut Criterion) {
     });
 }
 
+fn bench_negation_100(c: &mut Criterion) {
+    let source = generate_negation_source(100);
+    c.bench_function("negation_100_blockers", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+}
+
 fn bench_negation_200(c: &mut Criterion) {
     let source = generate_negation_source(200);
     c.bench_function("negation_200_blockers", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+}
+
+fn bench_negation_500(c: &mut Criterion) {
+    let source = generate_negation_source(500);
+    c.bench_function("negation_500_blockers", |b| {
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -96,11 +120,68 @@ fn bench_negation_1000(c: &mut Criterion) {
     });
 }
 
+fn bench_negation_2500(c: &mut Criterion) {
+    let source = generate_negation_source(2500);
+    c.bench_function("negation_2500_blockers", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+}
+
 fn bench_negation_5000(c: &mut Criterion) {
     let source = generate_negation_source(5000);
     let mut group = c.benchmark_group("negation_5000");
     group.sample_size(10);
     group.bench_function("negation_5000_blockers", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_negation_10000(c: &mut Criterion) {
+    let source = generate_negation_source(10_000);
+    let mut group = c.benchmark_group("negation_10000");
+    group.sample_size(10);
+    group.bench_function("negation_10000_blockers", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_negation_25000(c: &mut Criterion) {
+    let source = generate_negation_source(25_000);
+    let mut group = c.benchmark_group("negation_25000");
+    group.sample_size(10);
+    group.bench_function("negation_25000_blockers", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_negation_50000(c: &mut Criterion) {
+    let source = generate_negation_source(50_000);
+    let mut group = c.benchmark_group("negation_50000");
+    group.sample_size(10);
+    group.bench_function("negation_50000_blockers", |b| {
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -126,9 +207,15 @@ fn bench_negation_50_run_only(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_negation_50,
+    bench_negation_100,
     bench_negation_200,
+    bench_negation_500,
     bench_negation_1000,
+    bench_negation_2500,
     bench_negation_5000,
+    bench_negation_10000,
+    bench_negation_25000,
+    bench_negation_50000,
     bench_negation_50_run_only,
 );
 criterion_main!(benches);

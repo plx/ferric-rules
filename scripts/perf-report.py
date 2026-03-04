@@ -11,8 +11,14 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
+
+
+def _natural_sort_key(s):
+    """Sort key that orders embedded numbers numerically (natural sort)."""
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
 
 
 def load_manifest(path):
@@ -124,7 +130,7 @@ def print_summary(manifest):
 
     print(f"{'Suite':<20s} {'Collected':>10s} {'Total':>6s}")
     print(f"{'-'*20} {'-'*10} {'-'*6}")
-    for suite in sorted(suite_stats):
+    for suite in sorted(suite_stats, key=_natural_sort_key):
         s = suite_stats[suite]
         print(f"{suite:<20s} {s['collected']:>10d} {s['total']:>6d}")
 
@@ -199,7 +205,7 @@ def write_report(manifest, report_path, repo=None, commit_sha=None):
     lines.append("")
     lines.append("| Suite | Benchmarks | Status |")
     lines.append("|---|---:|---|")
-    for suite in sorted(suite_stats):
+    for suite in sorted(suite_stats, key=_natural_sort_key):
         s = suite_stats[suite]
         lines.append(f"| {suite} | {s['total']} | {s['collected']}/{s['total']} collected |")
     lines.append(f"| **total** | **{summary['total_benchmarks']}** | "

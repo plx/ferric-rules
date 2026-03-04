@@ -79,9 +79,33 @@ fn bench_churn_100(c: &mut Criterion) {
     });
 }
 
+fn bench_churn_250(c: &mut Criterion) {
+    let source = generate_churn_source(250);
+    c.bench_function("churn_250_facts", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+}
+
 fn bench_churn_500(c: &mut Criterion) {
     let source = generate_churn_source(500);
     c.bench_function("churn_500_facts", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+}
+
+fn bench_churn_1000(c: &mut Criterion) {
+    let source = generate_churn_source(1000);
+    c.bench_function("churn_1000_facts", |b| {
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -103,11 +127,68 @@ fn bench_churn_2000(c: &mut Criterion) {
     });
 }
 
+fn bench_churn_5000(c: &mut Criterion) {
+    let source = generate_churn_source(5000);
+    c.bench_function("churn_5000_facts", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+}
+
 fn bench_churn_10000(c: &mut Criterion) {
-    let source = generate_churn_source(10000);
+    let source = generate_churn_source(10_000);
     let mut group = c.benchmark_group("churn_10000");
     group.sample_size(10);
     group.bench_function("churn_10000_facts", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_churn_25000(c: &mut Criterion) {
+    let source = generate_churn_source(25_000);
+    let mut group = c.benchmark_group("churn_25000");
+    group.sample_size(10);
+    group.bench_function("churn_25000_facts", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_churn_50000(c: &mut Criterion) {
+    let source = generate_churn_source(50_000);
+    let mut group = c.benchmark_group("churn_50000");
+    group.sample_size(10);
+    group.bench_function("churn_50000_facts", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_churn_100000(c: &mut Criterion) {
+    let source = generate_churn_source(100_000);
+    let mut group = c.benchmark_group("churn_100000");
+    group.sample_size(10);
+    group.bench_function("churn_100000_facts", |b| {
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -133,9 +214,15 @@ fn bench_churn_100_run_only(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_churn_100,
+    bench_churn_250,
     bench_churn_500,
+    bench_churn_1000,
     bench_churn_2000,
+    bench_churn_5000,
     bench_churn_10000,
+    bench_churn_25000,
+    bench_churn_50000,
+    bench_churn_100000,
     bench_churn_100_run_only,
 );
 criterion_main!(benches);
