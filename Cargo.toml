@@ -7,6 +7,7 @@ members = [
     "crates/ferric-ffi",
     "crates/ferric-parser",
     "crates/ferric-runtime",
+    "crates/ferric-python",
 ]
 resolver = "2"
 
@@ -38,6 +39,10 @@ smallvec = "1"
 
 # Faster internal hash tables/sets
 rustc-hash = "2"
+
+# PyO3 Python bindings
+pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3-build-config = "0.23"
 
 # Property-based testing
 proptest = "1"

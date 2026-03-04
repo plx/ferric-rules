@@ -16,7 +16,7 @@ EOF
 }
 
 run_check() {
-    cargo check --workspace
+    cargo check --workspace --exclude ferric-python
 }
 
 run_fmt() {
@@ -24,11 +24,11 @@ run_fmt() {
 }
 
 run_clippy() {
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --exclude ferric-python -- -D warnings
 }
 
 run_test() {
-    cargo test --workspace
+    cargo test --workspace --exclude ferric-python
 }
 
 command="${1:-all}"

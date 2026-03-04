@@ -523,6 +523,13 @@ impl Engine {
         Some(def.slot_names.iter().map(String::as_str).collect())
     }
 
+    /// Return the slot names for a template by its `TemplateId`, or `None`
+    /// if the ID is not registered.
+    pub fn template_slot_names_by_id(&self, tid: TemplateId) -> Option<Vec<&str>> {
+        let def = self.template_defs.get(tid)?;
+        Some(def.slot_names.iter().map(String::as_str).collect())
+    }
+
     /// Return the template name for a `TemplateId`, or `None` if the ID
     /// is not registered.
     pub fn template_name_by_id(&self, tid: TemplateId) -> Option<&str> {
