@@ -516,6 +516,25 @@ impl Engine {
         self.template_ids.keys().map(Box::as_ref).collect()
     }
 
+    /// Return the slot names for a named template, or `None` if the template
+    /// does not exist.
+    pub fn template_slot_names(&self, name: &str) -> Option<Vec<&str>> {
+        let tid = self.template_ids.get(name)?;
+        let def = self.template_defs.get(*tid)?;
+        Some(def.slot_names.iter().map(String::as_str).collect())
+    }
+
+    /// Return the template name for a `TemplateId`, or `None` if the ID
+    /// is not registered.
+    pub fn template_name_by_id(&self, tid: TemplateId) -> Option<&str> {
+        self.template_defs.get(tid).map(|def| def.name.as_str())
+    }
+
+    /// Return the names of all registered modules.
+    pub fn modules(&self) -> Vec<&str> {
+        self.module_registry.module_names()
+    }
+
     /// Look up a rule name by its internal ID.
     ///
     /// Returns `None` if the ID does not correspond to a known rule.

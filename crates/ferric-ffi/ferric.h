@@ -141,6 +141,19 @@ typedef enum FerricValueType {
     FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6,
 } FerricValueType;
 
+// C-facing fact type discriminant.
+typedef enum FerricFactType {
+    FERRIC_FACT_TYPE_ORDERED = 0,
+    FERRIC_FACT_TYPE_TEMPLATE = 1,
+} FerricFactType;
+
+// C-facing halt reason returned by `ferric_engine_run_ex`.
+typedef enum FerricHaltReason {
+    FERRIC_HALT_REASON_AGENDA_EMPTY = 0,
+    FERRIC_HALT_REASON_LIMIT_REACHED = 1,
+    FERRIC_HALT_REASON_HALT_REQUESTED = 2,
+} FerricHaltReason;
+
 // C-facing string-encoding configuration for `FerricConfig`.
 typedef enum FerricStringEncoding {
     FERRIC_STRING_ENCODING_ASCII = 0,
@@ -452,6 +465,341 @@ enum FerricError ferric_engine_get_global(const struct FerricEngine *engine,
                                           const char * FERRIC_NULL_TERMINATED name,
                                           struct FerricValue *out_value);
 
+// Copy all user-visible fact IDs to a caller-provided array.
+//
+// - Size query: `out_ids == NULL && max_ids == 0` → `*out_count` receives total count.
+// - Partial copy: copies up to `max_ids` IDs, `*out_count` always receives total count.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_count` must be a valid pointer.
+// - If `out_ids` is non-null, it must point to space for at least `max_ids` `u64`s.
+enum FerricError ferric_engine_fact_ids(const struct FerricEngine *engine,
+                                        uint64_t *out_ids FERRIC_COUNTED_BY(max_ids),
+                                        uintptr_t max_ids,
+                                        uintptr_t *out_count);
+
+// Find fact IDs by relation name.
+//
+// Same size-query pattern as `ferric_engine_fact_ids`.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `relation` must be a valid NUL-terminated string.
+// - `out_count` must be a valid pointer.
+// - If `out_ids` is non-null, it must point to space for at least `max_ids` `u64`s.
+enum FerricError ferric_engine_find_fact_ids(const struct FerricEngine *engine,
+                                             const char * FERRIC_NULL_TERMINATED relation,
+                                             uint64_t *out_ids FERRIC_COUNTED_BY(max_ids),
+                                             uintptr_t max_ids,
+                                             uintptr_t *out_count);
+
+// Discriminate ordered vs. template fact.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_type` must be a valid pointer.
+enum FerricError ferric_engine_get_fact_type(const struct FerricEngine *engine,
+                                             uint64_t fact_id,
+                                             enum FerricFactType *out_type);
+
+// Get the relation name for an ordered fact.
+//
+// Standard buffer copy pattern.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_len` must be a valid pointer.
+// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+enum FerricError ferric_engine_get_fact_relation(const struct FerricEngine *engine,
+                                                 uint64_t fact_id,
+                                                 char *buf FERRIC_SIZED_BY(buf_len),
+                                                 uintptr_t buf_len,
+                                                 uintptr_t *out_len);
+
+// Get the template name for a template fact.
+//
+// Standard buffer copy pattern.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_len` must be a valid pointer.
+// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+enum FerricError ferric_engine_get_fact_template_name(const struct FerricEngine *engine,
+                                                      uint64_t fact_id,
+                                                      char *buf FERRIC_SIZED_BY(buf_len),
+                                                      uintptr_t buf_len,
+                                                      uintptr_t *out_len);
+
+// Assert an ordered fact from structured values, bypassing CLIPS source parsing.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `relation` must be a valid NUL-terminated string.
+// - If `fields` is non-null, it must point to `field_count` valid `FerricValue`s.
+// - `out_fact_id` may be null.
+enum FerricError ferric_engine_assert_ordered(struct FerricEngine *engine,
+                                              const char * FERRIC_NULL_TERMINATED relation,
+                                              const struct FerricValue *fields FERRIC_COUNTED_BY(field_count),
+                                              uintptr_t field_count,
+                                              uint64_t *out_fact_id);
+
+// Get the number of registered templates.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_count` must be a valid pointer.
+enum FerricError ferric_engine_template_count(const struct FerricEngine *engine,
+                                              uintptr_t *out_count);
+
+// Get the name of a template by zero-based index.
+//
+// Standard buffer copy pattern.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_len` must be a valid pointer.
+// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+enum FerricError ferric_engine_template_name(const struct FerricEngine *engine,
+                                             uintptr_t index,
+                                             char *buf FERRIC_SIZED_BY(buf_len),
+                                             uintptr_t buf_len,
+                                             uintptr_t *out_len);
+
+// Get the number of slots in a named template.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `template_name` must be a valid NUL-terminated string.
+// - `out_count` must be a valid pointer.
+enum FerricError ferric_engine_template_slot_count(const struct FerricEngine *engine,
+                                                   const char * FERRIC_NULL_TERMINATED template_name,
+                                                   uintptr_t *out_count);
+
+// Get the name of a slot in a named template by zero-based index.
+//
+// Standard buffer copy pattern.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `template_name` must be a valid NUL-terminated string.
+// - `out_len` must be a valid pointer.
+// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+enum FerricError ferric_engine_template_slot_name(const struct FerricEngine *engine,
+                                                  const char * FERRIC_NULL_TERMINATED template_name,
+                                                  uintptr_t slot_index,
+                                                  char *buf FERRIC_SIZED_BY(buf_len),
+                                                  uintptr_t buf_len,
+                                                  uintptr_t *out_len);
+
+// Get the number of registered rules.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_count` must be a valid pointer.
+enum FerricError ferric_engine_rule_count(const struct FerricEngine *engine, uintptr_t *out_count);
+
+// Get the name and salience of a rule by zero-based index.
+//
+// The rule name is written to `buf` using the standard buffer copy pattern.
+// Salience is written to `*out_salience` if non-null.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_len` must be a valid pointer.
+// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+// - `out_salience` may be null.
+enum FerricError ferric_engine_rule_info(const struct FerricEngine *engine,
+                                         uintptr_t index,
+                                         char *buf FERRIC_SIZED_BY(buf_len),
+                                         uintptr_t buf_len,
+                                         uintptr_t *out_len,
+                                         int32_t *out_salience);
+
+// Get the current module name.
+//
+// Standard buffer copy pattern.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_len` must be a valid pointer.
+// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+enum FerricError ferric_engine_current_module(const struct FerricEngine *engine,
+                                              char *buf FERRIC_SIZED_BY(buf_len),
+                                              uintptr_t buf_len,
+                                              uintptr_t *out_len);
+
+// Get the name of the module at the top of the focus stack.
+//
+// Standard buffer copy pattern. Returns `NotFound` if the focus stack is empty.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_len` must be a valid pointer.
+// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+enum FerricError ferric_engine_get_focus(const struct FerricEngine *engine,
+                                         char *buf FERRIC_SIZED_BY(buf_len),
+                                         uintptr_t buf_len,
+                                         uintptr_t *out_len);
+
+// Get the depth of the focus stack.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_depth` must be a valid pointer.
+enum FerricError ferric_engine_focus_stack_depth(const struct FerricEngine *engine,
+                                                 uintptr_t *out_depth);
+
+// Get a focus stack entry by zero-based index.
+//
+// Index 0 = bottom of stack, last index = top (current focus).
+// Standard buffer copy pattern.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_len` must be a valid pointer.
+// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+enum FerricError ferric_engine_focus_stack_entry(const struct FerricEngine *engine,
+                                                 uintptr_t index,
+                                                 char *buf FERRIC_SIZED_BY(buf_len),
+                                                 uintptr_t buf_len,
+                                                 uintptr_t *out_len);
+
+// Get the number of registered modules.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_count` must be a valid pointer.
+enum FerricError ferric_engine_module_count(const struct FerricEngine *engine,
+                                            uintptr_t *out_count);
+
+// Get the name of a module by zero-based index.
+//
+// Standard buffer copy pattern.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_len` must be a valid pointer.
+// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+enum FerricError ferric_engine_module_name(const struct FerricEngine *engine,
+                                           uintptr_t index,
+                                           char *buf FERRIC_SIZED_BY(buf_len),
+                                           uintptr_t buf_len,
+                                           uintptr_t *out_len);
+
+// Get the number of activations on the agenda.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_count` must be a valid pointer.
+enum FerricError ferric_engine_agenda_count(const struct FerricEngine *engine,
+                                            uintptr_t *out_count);
+
+// Check whether the engine is halted.
+//
+// Writes 1 to `*out_halted` if halted, 0 if not halted.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_halted` must be a valid pointer.
+enum FerricError ferric_engine_is_halted(const struct FerricEngine *engine, int32_t *out_halted);
+
+// Request the engine to halt.
+//
+// Always succeeds. Idempotent — halting an already-halted engine is a no-op.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+enum FerricError ferric_engine_halt(struct FerricEngine *engine);
+
+// Push an input line for the engine's `read`/`readline` functions.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `line` must be a valid NUL-terminated string.
+enum FerricError ferric_engine_push_input(struct FerricEngine *engine, const char * FERRIC_NULL_TERMINATED line);
+
+// Reset the engine to a blank slate.
+//
+// Removes all facts, rules, templates, globals, functions, generics, and
+// modules except MAIN. Always succeeds.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+enum FerricError ferric_engine_clear(struct FerricEngine *engine);
+
+// Create an engine from CLIPS source with default configuration.
+//
+// Returns a heap-allocated engine handle, or null on parse/compile error
+// (sets global error message). The engine has already been loaded and reset.
+//
+// # Safety
+//
+// - `source` must be a valid NUL-terminated UTF-8 string, or null.
+// - Returned pointer must be freed with `ferric_engine_free`.
+struct FerricEngine *ferric_engine_new_with_source(const char * FERRIC_NULL_TERMINATED source);
+
+// Create an engine from CLIPS source with explicit configuration.
+//
+// If `config` is null, defaults are used.
+// Returns null on parse/compile error (sets global error message).
+//
+// # Safety
+//
+// - `source` must be a valid NUL-terminated UTF-8 string, or null.
+// - `config` may be null.
+// - Returned pointer must be freed with `ferric_engine_free`.
+struct FerricEngine *ferric_engine_new_with_source_config(const char * FERRIC_NULL_TERMINATED source,
+                                                          const struct FerricConfig *config);
+
+// Clear a specific output channel.
+//
+// Always succeeds — clearing a non-existent channel is a no-op.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `channel` must be a valid NUL-terminated string.
+enum FerricError ferric_engine_clear_output(struct FerricEngine *engine, const char * FERRIC_NULL_TERMINATED channel);
+
+// Extended run with halt reason output.
+//
+// Same limit semantics as `ferric_engine_run` (negative = unlimited).
+// Additionally writes the halt reason to `*out_reason` if non-null.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_fired` may be null.
+// - `out_reason` may be null.
+enum FerricError ferric_engine_run_ex(struct FerricEngine *engine,
+                                      int64_t limit,
+                                      uint64_t *out_fired,
+                                      enum FerricHaltReason *out_reason);
+
 // Retrieve the last global error message as a C string pointer.
 //
 // Returns a pointer to a NUL-terminated UTF-8 string, or null if no error
@@ -489,6 +837,35 @@ void ferric_clear_error_global(void);
 // - `buf` must point to `buf_len` writable bytes, or be null for size query.
 // - `out_len` must be a valid pointer (non-null).
 enum FerricError ferric_last_error_global_copy(char *buf FERRIC_SIZED_BY(buf_len), uintptr_t buf_len, uintptr_t *out_len);
+
+// Create an integer `FerricValue`.
+struct FerricValue ferric_value_integer(int64_t value);
+
+// Create a float `FerricValue`.
+struct FerricValue ferric_value_float(double value);
+
+// Create a symbol `FerricValue` with a heap-copied string.
+//
+// Returns a void value if `name` is null. The caller owns the
+// `string_ptr` and must free it with `ferric_value_free`.
+//
+// # Safety
+//
+// - `name` must be a valid NUL-terminated string, or null.
+struct FerricValue ferric_value_symbol(const char * FERRIC_NULL_TERMINATED name);
+
+// Create a string `FerricValue` with a heap-copied string.
+//
+// Returns a void value if `s` is null. The caller owns the
+// `string_ptr` and must free it with `ferric_value_free`.
+//
+// # Safety
+//
+// - `s` must be a valid NUL-terminated string, or null.
+struct FerricValue ferric_value_string(const char * FERRIC_NULL_TERMINATED s);
+
+// Create a void `FerricValue` with all fields zeroed/null.
+struct FerricValue ferric_value_void(void);
 
 // Free a heap-allocated C string returned by the FFI.
 //

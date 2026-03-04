@@ -141,23 +141,70 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
     //
     // ferric_engine_load_string: source is NUL-terminated.
     (
-        "const char *source);",
-        "const char * FERRIC_NULL_TERMINATED source);",
+        "ferric_engine_load_string(struct FerricEngine *engine, const char *source);",
+        "ferric_engine_load_string(struct FerricEngine *engine, const char * FERRIC_NULL_TERMINATED source);",
+    ),
+    // ferric_engine_new_with_source: source is NUL-terminated.
+    (
+        "ferric_engine_new_with_source(const char *source);",
+        "ferric_engine_new_with_source(const char * FERRIC_NULL_TERMINATED source);",
+    ),
+    // ferric_engine_new_with_source_config: source is NUL-terminated.
+    // (source is the first param, on the same line as the function name)
+    (
+        "ferric_engine_new_with_source_config(const char *source,",
+        "ferric_engine_new_with_source_config(const char * FERRIC_NULL_TERMINATED source,",
     ),
     // ferric_engine_assert_string: source is NUL-terminated.
+    // (multi-line signature — source is on the continuation line)
     (
-        "const char *source,",
-        "const char * FERRIC_NULL_TERMINATED source,",
+        "ferric_engine_assert_string(struct FerricEngine *engine,\n                                             const char *source,",
+        "ferric_engine_assert_string(struct FerricEngine *engine,\n                                             const char * FERRIC_NULL_TERMINATED source,",
     ),
     // ferric_engine_get_output: channel is NUL-terminated.
     (
-        "const char *channel);",
-        "const char * FERRIC_NULL_TERMINATED channel);",
+        "ferric_engine_get_output(const struct FerricEngine *engine, const char *channel);",
+        "ferric_engine_get_output(const struct FerricEngine *engine, const char * FERRIC_NULL_TERMINATED channel);",
+    ),
+    // ferric_engine_clear_output: channel is NUL-terminated.
+    (
+        "ferric_engine_clear_output(struct FerricEngine *engine, const char *channel);",
+        "ferric_engine_clear_output(struct FerricEngine *engine, const char * FERRIC_NULL_TERMINATED channel);",
     ),
     // ferric_engine_get_global: name is NUL-terminated.
+    // (multi-line signature — name is on the continuation line)
     (
-        "const char *name,",
-        "const char * FERRIC_NULL_TERMINATED name,",
+        "ferric_engine_get_global(const struct FerricEngine *engine,\n                                          const char *name,",
+        "ferric_engine_get_global(const struct FerricEngine *engine,\n                                          const char * FERRIC_NULL_TERMINATED name,",
+    ),
+    // ferric_engine_push_input: line is NUL-terminated.
+    (
+        "ferric_engine_push_input(struct FerricEngine *engine, const char *line);",
+        "ferric_engine_push_input(struct FerricEngine *engine, const char * FERRIC_NULL_TERMINATED line);",
+    ),
+    // ferric_engine_find_fact_ids: relation is NUL-terminated.
+    // (multi-line signature — relation is on the continuation line)
+    (
+        "ferric_engine_find_fact_ids(const struct FerricEngine *engine,\n                                             const char *relation,",
+        "ferric_engine_find_fact_ids(const struct FerricEngine *engine,\n                                             const char * FERRIC_NULL_TERMINATED relation,",
+    ),
+    // ferric_engine_assert_ordered: relation is NUL-terminated.
+    // (multi-line signature — relation is on the continuation line)
+    (
+        "ferric_engine_assert_ordered(struct FerricEngine *engine,\n                                              const char *relation,",
+        "ferric_engine_assert_ordered(struct FerricEngine *engine,\n                                              const char * FERRIC_NULL_TERMINATED relation,",
+    ),
+    // ferric_engine_template_slot_count: template_name is NUL-terminated.
+    // (multi-line signature — template_name is on the continuation line)
+    (
+        "ferric_engine_template_slot_count(const struct FerricEngine *engine,\n                                                   const char *template_name,",
+        "ferric_engine_template_slot_count(const struct FerricEngine *engine,\n                                                   const char * FERRIC_NULL_TERMINATED template_name,",
+    ),
+    // ferric_engine_template_slot_name: template_name is NUL-terminated.
+    // (multi-line signature — template_name is on the continuation line)
+    (
+        "ferric_engine_template_slot_name(const struct FerricEngine *engine,\n                                                  const char *template_name,",
+        "ferric_engine_template_slot_name(const struct FerricEngine *engine,\n                                                  const char * FERRIC_NULL_TERMINATED template_name,",
     ),
     // ferric_string_free: ptr is a NUL-terminated string.
     (
@@ -187,6 +234,77 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
     (
         "uintptr_t index,\n                                                      char *buf,",
         "uintptr_t index,\n                                                      char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+    // ferric_engine_assert_ordered: fields is an array of field_count FerricValues.
+    // (multi-line signature — fields is on the continuation line)
+    (
+        "const struct FerricValue *fields,\n                                              uintptr_t field_count,",
+        "const struct FerricValue *fields FERRIC_COUNTED_BY(field_count),\n                                              uintptr_t field_count,",
+    ),
+    // ferric_engine_get_fact_relation: buf is a byte buffer of buf_len bytes.
+    (
+        "uint64_t fact_id,\n                                                 char *buf,\n                                                 uintptr_t buf_len,\n                                                 uintptr_t *out_len);",
+        "uint64_t fact_id,\n                                                 char *buf FERRIC_SIZED_BY(buf_len),\n                                                 uintptr_t buf_len,\n                                                 uintptr_t *out_len);",
+    ),
+    // ferric_engine_get_fact_template_name: buf is a byte buffer of buf_len bytes.
+    (
+        "uint64_t fact_id,\n                                                      char *buf,\n                                                      uintptr_t buf_len,\n                                                      uintptr_t *out_len);",
+        "uint64_t fact_id,\n                                                      char *buf FERRIC_SIZED_BY(buf_len),\n                                                      uintptr_t buf_len,\n                                                      uintptr_t *out_len);",
+    ),
+    // ferric_engine_template_name: buf is a byte buffer of buf_len bytes.
+    (
+        "ferric_engine_template_name(const struct FerricEngine *engine,\n                                             uintptr_t index,\n                                             char *buf,",
+        "ferric_engine_template_name(const struct FerricEngine *engine,\n                                             uintptr_t index,\n                                             char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+    // ferric_engine_template_slot_name: buf is a byte buffer of buf_len bytes.
+    (
+        "uintptr_t slot_index,\n                                                  char *buf,",
+        "uintptr_t slot_index,\n                                                  char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+    // ferric_engine_rule_info: buf is a byte buffer of buf_len bytes.
+    (
+        "ferric_engine_rule_info(const struct FerricEngine *engine,\n                                         uintptr_t index,\n                                         char *buf,",
+        "ferric_engine_rule_info(const struct FerricEngine *engine,\n                                         uintptr_t index,\n                                         char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+    // ferric_engine_current_module: buf is a byte buffer of buf_len bytes.
+    (
+        "ferric_engine_current_module(const struct FerricEngine *engine,\n                                              char *buf,",
+        "ferric_engine_current_module(const struct FerricEngine *engine,\n                                              char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+    // ferric_engine_get_focus: buf is a byte buffer of buf_len bytes.
+    (
+        "ferric_engine_get_focus(const struct FerricEngine *engine,\n                                         char *buf,",
+        "ferric_engine_get_focus(const struct FerricEngine *engine,\n                                         char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+    // ferric_engine_focus_stack_entry: buf is a byte buffer of buf_len bytes.
+    (
+        "uintptr_t index,\n                                                 char *buf,\n                                                 uintptr_t buf_len,\n                                                 uintptr_t *out_len);",
+        "uintptr_t index,\n                                                 char *buf FERRIC_SIZED_BY(buf_len),\n                                                 uintptr_t buf_len,\n                                                 uintptr_t *out_len);",
+    ),
+    // ferric_engine_module_name: buf is a byte buffer of buf_len bytes.
+    (
+        "ferric_engine_module_name(const struct FerricEngine *engine,\n                                           uintptr_t index,\n                                           char *buf,",
+        "ferric_engine_module_name(const struct FerricEngine *engine,\n                                           uintptr_t index,\n                                           char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+    // ferric_engine_fact_ids: out_ids is an array of max_ids u64s.
+    (
+        "ferric_engine_fact_ids(const struct FerricEngine *engine,\n                                        uint64_t *out_ids,",
+        "ferric_engine_fact_ids(const struct FerricEngine *engine,\n                                        uint64_t *out_ids FERRIC_COUNTED_BY(max_ids),",
+    ),
+    // ferric_engine_find_fact_ids: out_ids is an array of max_ids u64s.
+    (
+        "const char * FERRIC_NULL_TERMINATED relation,\n                                             uint64_t *out_ids,",
+        "const char * FERRIC_NULL_TERMINATED relation,\n                                             uint64_t *out_ids FERRIC_COUNTED_BY(max_ids),",
+    ),
+    // ferric_value_symbol: name is NUL-terminated.
+    (
+        "ferric_value_symbol(const char *name)",
+        "ferric_value_symbol(const char * FERRIC_NULL_TERMINATED name)",
+    ),
+    // ferric_value_string: s is NUL-terminated.
+    (
+        "ferric_value_string(const char *s)",
+        "ferric_value_string(const char * FERRIC_NULL_TERMINATED s)",
     ),
 ];
 

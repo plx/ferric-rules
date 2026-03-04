@@ -22,6 +22,8 @@ include = [
     "FerricStringEncoding",
     "FerricConflictStrategy",
     "FerricConfig",
+    "FerricFactType",
+    "FerricHaltReason",
     "FerricValueType",
     "FerricValue",
 ]

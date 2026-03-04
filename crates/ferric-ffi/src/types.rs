@@ -4,8 +4,10 @@ use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 use std::ptr;
 
+use std::ffi::CStr;
+
 use ferric_core::{ConflictResolutionStrategy, StringEncoding};
-use ferric_runtime::{Engine, EngineConfig};
+use ferric_runtime::{Engine, EngineConfig, HaltReason};
 
 /// C-facing string-encoding configuration for `FerricConfig`.
 #[repr(C)]
@@ -142,6 +144,33 @@ pub(crate) fn engine_config_from_ffi(config: &FerricConfig) -> Result<EngineConf
     EngineConfig::try_from(config)
 }
 
+/// C-facing fact type discriminant.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FerricFactType {
+    Ordered = 0,
+    Template = 1,
+}
+
+/// C-facing halt reason returned by `ferric_engine_run_ex`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FerricHaltReason {
+    AgendaEmpty = 0,
+    LimitReached = 1,
+    HaltRequested = 2,
+}
+
+impl From<HaltReason> for FerricHaltReason {
+    fn from(reason: HaltReason) -> Self {
+        match reason {
+            HaltReason::AgendaEmpty => Self::AgendaEmpty,
+            HaltReason::LimitReached => Self::LimitReached,
+            HaltReason::HaltRequested => Self::HaltRequested,
+        }
+    }
+}
+
 /// C-facing value type discriminant.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,6 +300,142 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> FerricValue {
         },
         Value::Void => FerricValue::void(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// C-to-Rust value conversion
+// ---------------------------------------------------------------------------
+
+/// Convert a C-facing `FerricValue` to a Rust `Value`.
+///
+/// For Symbol and String types, the `string_ptr` is read as a NUL-terminated
+/// C string. For Symbol, the string is interned via the engine's symbol table.
+///
+/// # Safety
+///
+/// - `fv` must be a valid `FerricValue` with active fields matching `value_type`.
+/// - `string_ptr` (for Symbol/String) must be a valid NUL-terminated string.
+/// - `multifield_ptr` (for Multifield) must point to `multifield_len` valid `FerricValue`s.
+pub(crate) unsafe fn ferric_to_value(
+    fv: &FerricValue,
+    engine: &mut Engine,
+) -> Result<Value, String> {
+    match fv.value_type {
+        FerricValueType::Void => Ok(Value::Void),
+        FerricValueType::Integer => Ok(Value::Integer(fv.integer)),
+        FerricValueType::Float => Ok(Value::Float(fv.float)),
+        FerricValueType::Symbol => {
+            if fv.string_ptr.is_null() {
+                return Err("symbol string_ptr is null".to_string());
+            }
+            let name = CStr::from_ptr(fv.string_ptr)
+                .to_str()
+                .map_err(|e| format!("symbol is not valid UTF-8: {e}"))?;
+            let sym = engine.intern_symbol(name).map_err(|e| e.to_string())?;
+            Ok(Value::Symbol(sym))
+        }
+        FerricValueType::String => {
+            if fv.string_ptr.is_null() {
+                return Err("string string_ptr is null".to_string());
+            }
+            let s = CStr::from_ptr(fv.string_ptr)
+                .to_str()
+                .map_err(|e| format!("string is not valid UTF-8: {e}"))?;
+            let fs = engine.create_string(s).map_err(|e| e.to_string())?;
+            Ok(Value::String(fs))
+        }
+        FerricValueType::Multifield => {
+            if fv.multifield_len == 0 {
+                return Ok(Value::Multifield(Box::new(ferric_core::Multifield::new())));
+            }
+            if fv.multifield_ptr.is_null() {
+                return Err("multifield_ptr is null with non-zero length".to_string());
+            }
+            let mut mf = ferric_core::Multifield::new();
+            for i in 0..fv.multifield_len {
+                let elem = &*fv.multifield_ptr.add(i);
+                mf.push(ferric_to_value(elem, engine)?);
+            }
+            Ok(Value::Multifield(Box::new(mf)))
+        }
+        FerricValueType::ExternalAddress => {
+            Err("ExternalAddress cannot be converted from FFI".to_string())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C API: Value construction helpers
+// ---------------------------------------------------------------------------
+
+/// Create an integer `FerricValue`.
+#[no_mangle]
+pub extern "C" fn ferric_value_integer(value: i64) -> FerricValue {
+    FerricValue {
+        value_type: FerricValueType::Integer,
+        integer: value,
+        ..FerricValue::void()
+    }
+}
+
+/// Create a float `FerricValue`.
+#[no_mangle]
+pub extern "C" fn ferric_value_float(value: f64) -> FerricValue {
+    FerricValue {
+        value_type: FerricValueType::Float,
+        float: value,
+        ..FerricValue::void()
+    }
+}
+
+/// Create a symbol `FerricValue` with a heap-copied string.
+///
+/// Returns a void value if `name` is null. The caller owns the
+/// `string_ptr` and must free it with `ferric_value_free`.
+///
+/// # Safety
+///
+/// - `name` must be a valid NUL-terminated string, or null.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_value_symbol(name: *const c_char) -> FerricValue {
+    if name.is_null() {
+        return FerricValue::void();
+    }
+    let cstr = CStr::from_ptr(name);
+    let cstring = CString::new(cstr.to_bytes()).unwrap_or_default();
+    FerricValue {
+        value_type: FerricValueType::Symbol,
+        string_ptr: cstring.into_raw(),
+        ..FerricValue::void()
+    }
+}
+
+/// Create a string `FerricValue` with a heap-copied string.
+///
+/// Returns a void value if `s` is null. The caller owns the
+/// `string_ptr` and must free it with `ferric_value_free`.
+///
+/// # Safety
+///
+/// - `s` must be a valid NUL-terminated string, or null.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_value_string(s: *const c_char) -> FerricValue {
+    if s.is_null() {
+        return FerricValue::void();
+    }
+    let cstr = CStr::from_ptr(s);
+    let cstring = CString::new(cstr.to_bytes()).unwrap_or_default();
+    FerricValue {
+        value_type: FerricValueType::String,
+        string_ptr: cstring.into_raw(),
+        ..FerricValue::void()
+    }
+}
+
+/// Create a void `FerricValue` with all fields zeroed/null.
+#[no_mangle]
+pub extern "C" fn ferric_value_void() -> FerricValue {
+    FerricValue::void()
 }
 
 // ---------------------------------------------------------------------------

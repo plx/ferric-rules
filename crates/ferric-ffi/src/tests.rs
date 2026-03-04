@@ -41,3 +41,6 @@ mod diagnostic_parity;
 
 #[cfg(test)]
 mod contract_lock;
+
+#[cfg(test)]
+mod ffi_expansion;
