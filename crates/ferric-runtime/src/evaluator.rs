@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 
-use ferric_core::binding::{BindingSet, VarMap};
+use ferric_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_core::string::FerricString;
 use ferric_core::symbol::SymbolTable;
 use ferric_core::value::{Multifield, Value};
@@ -664,7 +664,7 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                                 actual: var.clone(),
                                 span: span.clone(),
                             })?;
-                    iter_bindings.set(var_id, std::rc::Rc::new(Value::Integer(counter)));
+                    iter_bindings.set(var_id, ValueRef::new(Value::Integer(counter)));
                 }
 
                 let mut iter_ctx = EvalContext {
@@ -745,7 +745,7 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                             actual: var_name.clone(),
                             span: span.clone(),
                         })?;
-                iter_bindings.set(elem_var_id, std::rc::Rc::new(element.clone()));
+                iter_bindings.set(elem_var_id, ValueRef::new(element.clone()));
 
                 // Bind the index variable (<var>-index).
                 let idx_sym = ctx
@@ -766,7 +766,7 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                             actual: index_var_name.clone(),
                             span: span.clone(),
                         })?;
-                iter_bindings.set(idx_var_id, std::rc::Rc::new(Value::Integer(one_based)));
+                iter_bindings.set(idx_var_id, ValueRef::new(Value::Integer(one_based)));
 
                 let mut iter_ctx = EvalContext {
                     bindings: &iter_bindings,
@@ -1511,7 +1511,7 @@ fn bind_parameter(
             actual: parameter_name.to_string(),
             span: span.cloned(),
         })?;
-    bindings.set(var_id, std::rc::Rc::new(value));
+    bindings.set(var_id, ValueRef::new(value));
     Ok(())
 }
 
@@ -4322,8 +4322,7 @@ fn builtin_get_focus_stack(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ferric_core::binding::{BindingSet, VarMap};
-    use std::rc::Rc;
+    use ferric_core::binding::{BindingSet, ValueRef, VarMap};
 
     type ModuleOwnershipMap = crate::functions::ModuleNameMap<crate::modules::ModuleId>;
     type TestCtx = (
@@ -4452,7 +4451,7 @@ mod tests {
         let (mut st, mut vm, mut bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
         let sym = st.intern_symbol("x", StringEncoding::Utf8).unwrap();
         let var_id = vm.get_or_create(sym).unwrap();
-        bs.set(var_id, Rc::new(Value::Integer(99)));
+        bs.set(var_id, ValueRef::new(Value::Integer(99)));
 
         let mut ctx = EvalContext {
             bindings: &bs,

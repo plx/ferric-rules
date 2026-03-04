@@ -5,6 +5,7 @@
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::SmallVec;
+use std::rc::Rc;
 
 use crate::alpha::{AlphaMemoryId, SlotIndex};
 use crate::binding::{BindingSet, VarId};
@@ -241,15 +242,15 @@ pub struct RuleId(pub u32);
 #[derive(Clone, Debug)]
 pub enum BetaNode {
     /// Root node: entry point for all matches.
-    Root { children: Vec<NodeId> },
+    Root { children: Rc<[NodeId]> },
     /// Join node: combines left (parent beta memory) with right (alpha memory).
     Join {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
-        tests: Vec<JoinTest>,
-        bindings: Vec<(SlotIndex, VarId)>,
+        tests: Rc<[JoinTest]>,
+        bindings: Rc<[(SlotIndex, VarId)]>,
         memory: BetaMemoryId,
-        children: Vec<NodeId>,
+        children: Rc<[NodeId]>,
     },
     /// Terminal node: produces activations for a rule.
     Terminal {
@@ -261,10 +262,10 @@ pub enum BetaNode {
     Negative {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
-        tests: Vec<JoinTest>,
+        tests: Rc<[JoinTest]>,
         memory: BetaMemoryId,
         neg_memory: NegativeMemoryId,
-        children: Vec<NodeId>,
+        children: Rc<[NodeId]>,
     },
     /// NCC node: blocks parent tokens when a subnetwork conjunction has results.
     Ncc {
@@ -273,7 +274,7 @@ pub enum BetaNode {
         partner: NodeId,
         memory: BetaMemoryId,
         ncc_memory: NccMemoryId,
-        children: Vec<NodeId>,
+        children: Rc<[NodeId]>,
     },
     /// NCC partner node: sits at bottom of subnetwork, reports results to NCC node.
     NccPartner {
@@ -286,10 +287,10 @@ pub enum BetaNode {
     Exists {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
-        tests: Vec<JoinTest>,
+        tests: Rc<[JoinTest]>,
         memory: BetaMemoryId,
         exists_memory: ExistsMemoryId,
-        children: Vec<NodeId>,
+        children: Rc<[NodeId]>,
     },
 }
 
@@ -328,7 +329,7 @@ impl BetaNetwork {
         nodes.insert(
             root_node_id,
             BetaNode::Root {
-                children: Vec::new(),
+                children: Rc::from([]),
             },
         );
 
@@ -373,10 +374,10 @@ impl BetaNetwork {
         let node = BetaNode::Join {
             parent,
             alpha_memory,
-            tests,
-            bindings,
+            tests: tests.into(),
+            bindings: bindings.into(),
             memory: memory_id,
-            children: Vec::new(),
+            children: Rc::from([]),
         };
 
         self.nodes.insert(node_id, node);
@@ -444,10 +445,10 @@ impl BetaNetwork {
         let node = BetaNode::Negative {
             parent,
             alpha_memory,
-            tests,
+            tests: tests.into(),
             memory: memory_id,
             neg_memory: neg_memory_id,
-            children: Vec::new(),
+            children: Rc::from([]),
         };
 
         self.nodes.insert(node_id, node);
@@ -504,7 +505,7 @@ impl BetaNetwork {
             partner,
             memory: memory_id,
             ncc_memory: ncc_memory_id,
-            children: Vec::new(),
+            children: Rc::from([]),
         };
 
         self.nodes.insert(node_id, node);
@@ -580,10 +581,10 @@ impl BetaNetwork {
         let node = BetaNode::Exists {
             parent,
             alpha_memory,
-            tests,
+            tests: tests.into(),
             memory: memory_id,
             exists_memory: exists_memory_id,
-            children: Vec::new(),
+            children: Rc::from([]),
         };
 
         self.nodes.insert(node_id, node);
@@ -761,7 +762,9 @@ impl BetaNetwork {
                 | BetaNode::Negative { children, .. }
                 | BetaNode::Ncc { children, .. }
                 | BetaNode::Exists { children, .. } => {
-                    children.push(child_id);
+                    let mut v: Vec<NodeId> = children.to_vec();
+                    v.push(child_id);
+                    *children = v.into();
                 }
                 BetaNode::Terminal { .. } | BetaNode::NccPartner { .. } => {
                     // Terminal and NccPartner nodes cannot have children
@@ -788,7 +791,7 @@ impl BetaNetwork {
                 BetaNode::Terminal { .. } | BetaNode::NccPartner { .. } => continue,
             };
 
-            for child_id in children {
+            for child_id in children.iter() {
                 assert!(
                     self.nodes.contains_key(child_id),
                     "Node {node_id:?} has non-existent child {child_id:?}"
@@ -1085,7 +1088,7 @@ mod tests {
         {
             assert_eq!(*parent, root);
             assert_eq!(*alpha_memory, alpha_mem);
-            assert_eq!(node_tests, &tests);
+            assert_eq!(&**node_tests, &tests[..]);
             assert!(bindings.is_empty(), "No bindings in this test");
             assert_eq!(*memory, mem_id);
             assert!(children.is_empty());
@@ -1303,9 +1306,8 @@ mod proptests {
     // BetaMemory variable-index property tests
     // ===========================================================================
 
-    use crate::binding::BindingSet;
+    use crate::binding::{BindingSet, ValueRef};
     use crate::value::{AtomKey, Value};
-    use std::rc::Rc;
 
     /// Shadow model for indexed `BetaMemory`: tracks both the token set and a
     /// per-variable, per-key set of token IDs.
@@ -1371,7 +1373,7 @@ mod proptests {
     /// Create a `BindingSet` with a single integer binding at `VarId(var_idx)`.
     fn make_bindings(var_idx: u16, key_val: i64) -> BindingSet {
         let mut bs = BindingSet::new();
-        bs.set(VarId(var_idx), Rc::new(Value::Integer(key_val)));
+        bs.set(VarId(var_idx), ValueRef::new(Value::Integer(key_val)));
         bs
     }
 
@@ -1861,7 +1863,7 @@ mod proptests {
                 //  those node types. We only assert for non-terminal parents.)
                 if let Some(node_id) = node_id_opt {
                     if let Some(parent_node) = net.get_node(parent_id) {
-                        let children: Option<&Vec<NodeId>> = match parent_node {
+                        let children: Option<&Rc<[NodeId]>> = match parent_node {
                             BetaNode::Root { children }
                             | BetaNode::Join { children, .. }
                             | BetaNode::Negative { children, .. }

@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use crate::agenda::{Activation, ActivationId, ActivationSeq, Agenda};
 use crate::alpha::{get_slot_value, AlphaMemory, AlphaMemoryId, AlphaNetwork, SlotIndex};
 use crate::beta::{BetaMemory, BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType};
-use crate::binding::{BindingSet, VarId};
+use crate::binding::{BindingSet, ValueRef, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
 use crate::negative::NegativeMemoryId;
 use crate::strategy::ConflictResolutionStrategy;
@@ -70,7 +70,7 @@ impl ReteNetwork {
         fact: &Fact,
         fact_base: &FactBase,
     ) -> Vec<ActivationId> {
-        let mut new_activations = Vec::new();
+        let mut new_activations = Vec::with_capacity(4);
 
         // 1. Propagate through alpha network
         let affected_memories = self.alpha.assert_fact(fact_id, fact);
@@ -134,7 +134,7 @@ impl ReteNetwork {
     ) -> Vec<Activation> {
         use rustc_hash::FxHashSet as HashSet;
 
-        let mut removed_activations = Vec::new();
+        let mut removed_activations = Vec::with_capacity(4);
 
         // 1. Find all tokens containing this fact
         let affected: HashSet<TokenId> = self.token_store.tokens_containing(fact_id).collect();
@@ -143,7 +143,7 @@ impl ReteNetwork {
         let roots = self.token_store.retraction_roots(&affected);
 
         // 3. For each root, cascade remove and collect removed tokens
-        let mut all_removed_tokens = Vec::new();
+        let mut all_removed_tokens = Vec::with_capacity(affected.len());
         for root_id in roots {
             let removed = self.token_store.remove_cascade(root_id);
             all_removed_tokens.extend(removed);
@@ -256,9 +256,9 @@ impl ReteNetwork {
         };
 
         // Get parent tokens (indexed when possible for O(1) lookup)
-        let parent_tokens: Vec<TokenId> = if parent_id == self.beta.root_id() {
+        let parent_tokens: SmallVec<[TokenId; 8]> = if parent_id == self.beta.root_id() {
             // Special case: root node has no memory, create dummy token
-            vec![]
+            SmallVec::new()
         } else {
             self.find_memory_for_node(parent_id)
                 .and_then(|mem_id| self.beta.get_memory(mem_id))
@@ -275,9 +275,9 @@ impl ReteNetwork {
 
                 // Extract bindings from the fact
                 let mut new_bindings = BindingSet::new();
-                for &(slot, var_id) in &bindings {
+                for &(slot, var_id) in bindings.iter() {
                     if let Some(value) = get_slot_value(fact, slot) {
-                        new_bindings.set(var_id, std::rc::Rc::new(value.clone()));
+                        new_bindings.set(var_id, ValueRef::new(value.clone()));
                     }
                 }
 
@@ -313,9 +313,9 @@ impl ReteNetwork {
 
                     // Clone parent bindings and add new bindings from this fact
                     let mut new_bindings = parent_token.bindings.clone();
-                    for &(slot, var_id) in &bindings {
+                    for &(slot, var_id) in bindings.iter() {
                         if let Some(value) = get_slot_value(fact, slot) {
-                            new_bindings.set(var_id, std::rc::Rc::new(value.clone()));
+                            new_bindings.set(var_id, ValueRef::new(value.clone()));
                         }
                     }
 
@@ -412,9 +412,9 @@ impl ReteNetwork {
             new_facts.push(fact_id);
 
             let mut new_bindings = parent_bindings.clone();
-            for &(slot, var_id) in &bindings {
+            for &(slot, var_id) in bindings.iter() {
                 if let Some(value) = get_slot_value(fact, slot) {
-                    new_bindings.set(var_id, std::rc::Rc::new(value.clone()));
+                    new_bindings.set(var_id, ValueRef::new(value.clone()));
                 }
             }
 
@@ -636,7 +636,7 @@ impl ReteNetwork {
                     continue;
                 };
 
-                let tokens_to_check: Vec<TokenId> = neg_mem.tokens_blocked_by(fact_id);
+                let tokens_to_check = neg_mem.tokens_blocked_by(fact_id);
 
                 for parent_token_id in tokens_to_check {
                     // Remove blocker; check if now unblocked
@@ -1423,7 +1423,7 @@ fn collect_candidate_facts(
     alpha_memory: &AlphaMemory,
     tests: &[JoinTest],
     parent_bindings: &BindingSet,
-) -> Vec<FactId> {
+) -> SmallVec<[FactId; 8]> {
     if alpha_memory.len() >= INDEX_SCAN_THRESHOLD {
         if let Some((alpha_slot, beta_var)) = find_index_test(tests) {
             if alpha_memory.is_slot_indexed(alpha_slot) {
@@ -1451,7 +1451,7 @@ fn collect_candidate_parent_tokens(
     parent_memory: &BetaMemory,
     tests: &[JoinTest],
     fact: &Fact,
-) -> Vec<TokenId> {
+) -> SmallVec<[TokenId; 8]> {
     if parent_memory.len() >= INDEX_SCAN_THRESHOLD {
         if let Some((alpha_slot, beta_var)) = find_index_test(tests) {
             if parent_memory.is_var_indexed(beta_var) {
@@ -1459,7 +1459,7 @@ fn collect_candidate_parent_tokens(
                     if let Some(key) = AtomKey::from_value(fact_value) {
                         return parent_memory
                             .lookup_by_var(beta_var, &key)
-                            .map(|tokens| tokens.to_vec())
+                            .map(|tokens| tokens.iter().copied().collect())
                             .unwrap_or_default();
                     }
                 }
