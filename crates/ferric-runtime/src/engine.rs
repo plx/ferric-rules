@@ -55,12 +55,11 @@ pub(crate) fn rule_index_insert<T>(
 }
 
 fn propagate_fact_assertion(rete: &mut ReteNetwork, fact_base: &FactBase, fact_id: FactId) {
-    let fact = fact_base
+    let fact = &fact_base
         .get(fact_id)
         .expect("asserted fact should exist in fact base")
-        .fact
-        .clone();
-    rete.assert_fact(fact_id, &fact, fact_base);
+        .fact;
+    rete.assert_fact(fact_id, fact, fact_base);
 }
 
 /// The Ferric rules engine.

@@ -24,6 +24,7 @@
 //! - Pass 010: NCC and exists nodes extend this foundation
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use smallvec::SmallVec;
 
 use crate::fact::FactId;
 use crate::token::TokenId;
@@ -111,7 +112,7 @@ impl NegativeMemory {
     }
 
     /// Get all parent tokens blocked by a specific fact.
-    pub fn tokens_blocked_by(&self, fact_id: FactId) -> Vec<TokenId> {
+    pub fn tokens_blocked_by(&self, fact_id: FactId) -> SmallVec<[TokenId; 4]> {
         self.fact_to_blocked
             .get(&fact_id)
             .map(|tokens| tokens.iter().copied().collect())

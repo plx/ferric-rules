@@ -12,7 +12,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use ferric_core::beta::{RuleId, Salience};
-use ferric_core::binding::{BindingSet, VarId, VarMap};
+use ferric_core::binding::{BindingSet, ValueRef, VarId, VarMap};
 use ferric_core::token::Token;
 use ferric_core::{
     AtomKey, EncodingError, Fact, FactBase, FactId, OrderedFact, ReteNetwork, Symbol, SymbolTable,
@@ -562,7 +562,7 @@ fn collect_outer_runtime_bindings(
         let Some(name) = symbol_table.resolve_symbol_str(symbol) else {
             continue;
         };
-        insert_runtime_binding(&mut env, name, value_ref.as_ref().clone());
+        insert_runtime_binding(&mut env, name, Value::clone(value_ref));
     }
     env
 }
@@ -781,7 +781,7 @@ fn build_runtime_eval_bindings(
         let var_id = var_map
             .get_or_create(symbol)
             .map_err(|e| ActionError::EvalError(e.to_string()))?;
-        bindings.set(var_id, Rc::new(value.clone()));
+        bindings.set(var_id, ValueRef::new(value.clone()));
     }
 
     Ok((bindings, var_map))
@@ -1414,7 +1414,7 @@ fn augment_bindings_with_var(
         .map_err(|_| ActionError::EvalError(format!("loop: too many variables for {var_name}")))?;
 
     let mut new_token = token.clone();
-    new_token.bindings.set(var_id, std::rc::Rc::new(value));
+    new_token.bindings.set(var_id, ValueRef::new(value));
 
     Ok((new_token, new_rule_info))
 }
@@ -2409,12 +2409,11 @@ fn assert_ordered_and_propagate(
     fields: OrderedFields,
 ) -> FactId {
     let fact_id = fact_base.assert_ordered(relation, fields);
-    let fact = fact_base
+    let fact = &fact_base
         .get(fact_id)
         .expect("asserted fact should be present in fact base")
-        .fact
-        .clone();
-    rete.assert_fact(fact_id, &fact, fact_base);
+        .fact;
+    rete.assert_fact(fact_id, fact, fact_base);
     fact_id
 }
 
@@ -2425,12 +2424,11 @@ fn assert_template_and_propagate(
     slots: Box<[Value]>,
 ) -> FactId {
     let fact_id = fact_base.assert_template(template_id, slots);
-    let fact = fact_base
+    let fact = &fact_base
         .get(fact_id)
         .expect("asserted fact should be present in fact base")
-        .fact
-        .clone();
-    rete.assert_fact(fact_id, &fact, fact_base);
+        .fact;
+    rete.assert_fact(fact_id, fact, fact_base);
     fact_id
 }
 

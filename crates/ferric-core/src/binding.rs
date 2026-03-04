@@ -102,8 +102,45 @@ pub enum VarMapError {
     TooManyVariables,
 }
 
-/// Reference-counted value for shared bindings.
-pub type ValueRef = Rc<Value>;
+/// Smart reference for bound values. Stores small/Copy-like variants inline
+/// to avoid Rc heap allocation; wraps heap-owning variants in Rc for cheap cloning.
+#[derive(Debug)]
+pub enum ValueRef {
+    /// Symbol, Integer, Float, ExternalAddress, Void — no heap alloc needed.
+    Inline(Value),
+    /// String, Multifield — heap-allocated data, share via Rc.
+    Shared(Rc<Value>),
+}
+
+impl ValueRef {
+    /// Wrap a `Value`, choosing inline or shared storage automatically.
+    pub fn new(value: Value) -> Self {
+        match &value {
+            Value::String(_) | Value::Multifield(_) => Self::Shared(Rc::new(value)),
+            _ => Self::Inline(value),
+        }
+    }
+}
+
+impl Clone for ValueRef {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Inline(v) => Self::Inline(v.clone()),
+            Self::Shared(rc) => Self::Shared(rc.clone()),
+        }
+    }
+}
+
+impl std::ops::Deref for ValueRef {
+    type Target = Value;
+
+    fn deref(&self) -> &Value {
+        match self {
+            Self::Inline(v) => v,
+            Self::Shared(rc) => rc,
+        }
+    }
+}
 
 /// A set of variable bindings.
 ///
@@ -111,7 +148,7 @@ pub type ValueRef = Rc<Value>;
 /// are represented as `None`.
 #[derive(Clone, Debug)]
 pub struct BindingSet {
-    bindings: SmallVec<[Option<ValueRef>; 16]>,
+    bindings: SmallVec<[Option<ValueRef>; 4]>,
 }
 
 impl BindingSet {
@@ -277,19 +314,19 @@ mod tests {
     #[test]
     fn binding_set_set_and_get() {
         let mut bs = BindingSet::new();
-        let val = Rc::new(Value::Integer(42));
+        let val = ValueRef::new(Value::Integer(42));
 
-        bs.set(VarId(0), val.clone());
+        bs.set(VarId(0), val);
 
         assert_eq!(bs.bound_count(), 1);
         let retrieved = bs.get(VarId(0)).unwrap();
-        assert!(Rc::ptr_eq(retrieved, &val));
+        assert!(matches!(**retrieved, Value::Integer(42)));
     }
 
     #[test]
     fn binding_set_set_extends_capacity() {
         let mut bs = BindingSet::new();
-        let val = Rc::new(Value::Integer(42));
+        let val = ValueRef::new(Value::Integer(42));
 
         bs.set(VarId(5), val);
 
@@ -304,22 +341,18 @@ mod tests {
         let mut bs1 = BindingSet::new();
         let mut bs2 = BindingSet::new();
 
-        let val_x = Rc::new(Value::Integer(1));
-        let val_y = Rc::new(Value::Integer(2));
-        let val_z = Rc::new(Value::Integer(3));
+        bs1.set(VarId(0), ValueRef::new(Value::Integer(1)));
+        bs1.set(VarId(2), ValueRef::new(Value::Integer(3)));
 
-        bs1.set(VarId(0), val_x.clone());
-        bs1.set(VarId(2), val_z.clone());
-
-        bs2.set(VarId(0), Rc::new(Value::Integer(999))); // Should not overwrite
-        bs2.set(VarId(1), val_y.clone());
+        bs2.set(VarId(0), ValueRef::new(Value::Integer(999))); // Should not overwrite
+        bs2.set(VarId(1), ValueRef::new(Value::Integer(2)));
 
         bs1.extend_from(&bs2);
 
-        // bs1 should have x (original), y (from bs2), z (original)
-        assert!(Rc::ptr_eq(bs1.get(VarId(0)).unwrap(), &val_x));
-        assert!(Rc::ptr_eq(bs1.get(VarId(1)).unwrap(), &val_y));
-        assert!(Rc::ptr_eq(bs1.get(VarId(2)).unwrap(), &val_z));
+        // bs1 should have 1 (original), 2 (from bs2), 3 (original)
+        assert!(matches!(**bs1.get(VarId(0)).unwrap(), Value::Integer(1)));
+        assert!(matches!(**bs1.get(VarId(1)).unwrap(), Value::Integer(2)));
+        assert!(matches!(**bs1.get(VarId(2)).unwrap(), Value::Integer(3)));
     }
 
     #[test]
@@ -327,23 +360,20 @@ mod tests {
         let mut bs1 = BindingSet::new();
         let mut bs2 = BindingSet::new();
 
-        let val1 = Rc::new(Value::Integer(1));
-        let val2 = Rc::new(Value::Integer(2));
-
-        bs1.set(VarId(0), val1.clone());
-        bs2.set(VarId(0), val2);
+        bs1.set(VarId(0), ValueRef::new(Value::Integer(1)));
+        bs2.set(VarId(0), ValueRef::new(Value::Integer(2)));
 
         bs1.extend_from(&bs2);
 
         // bs1's binding for VarId(0) should remain unchanged
-        assert!(Rc::ptr_eq(bs1.get(VarId(0)).unwrap(), &val1));
+        assert!(matches!(**bs1.get(VarId(0)).unwrap(), Value::Integer(1)));
     }
 
     #[test]
     fn binding_set_bound_count() {
         let mut bs = BindingSet::new();
-        bs.set(VarId(0), Rc::new(Value::Integer(1)));
-        bs.set(VarId(2), Rc::new(Value::Integer(2)));
+        bs.set(VarId(0), ValueRef::new(Value::Integer(1)));
+        bs.set(VarId(2), ValueRef::new(Value::Integer(2)));
 
         assert_eq!(bs.capacity(), 3);
         assert_eq!(bs.bound_count(), 2);
@@ -357,7 +387,6 @@ mod proptests {
     use crate::StringEncoding;
     use proptest::prelude::*;
     use std::collections::{HashMap, HashSet};
-    use std::rc::Rc;
 
     // ---------------------------------------------------------------------------
     // VarMap property tests
@@ -492,7 +521,7 @@ mod proptests {
             let mut last_written: HashMap<u16, i64> = HashMap::new();
 
             for (var_id, value) in ops {
-                bs.set(VarId(var_id), Rc::new(Value::Integer(value)));
+                bs.set(VarId(var_id), ValueRef::new(Value::Integer(value)));
                 last_written.insert(var_id, value);
             }
 
@@ -514,7 +543,7 @@ mod proptests {
             let var = VarId(3);
 
             for &v in &writes {
-                bs.set(var, Rc::new(Value::Integer(v)));
+                bs.set(var, ValueRef::new(Value::Integer(v)));
             }
 
             let last = *writes.last().unwrap();
@@ -530,7 +559,7 @@ mod proptests {
         #[test]
         fn auto_expansion(k in 0..100_u16) {
             let mut bs = BindingSet::new();
-            bs.set(VarId(k), Rc::new(Value::Integer(0)));
+            bs.set(VarId(k), ValueRef::new(Value::Integer(0)));
             prop_assert!(bs.capacity() > (k as usize));
         }
 
@@ -544,7 +573,7 @@ mod proptests {
             let mut distinct: HashSet<u16> = HashSet::new();
 
             for (var_id, value) in ops {
-                bs.set(VarId(var_id), Rc::new(Value::Integer(value)));
+                bs.set(VarId(var_id), ValueRef::new(Value::Integer(value)));
                 distinct.insert(var_id);
             }
 
@@ -561,7 +590,7 @@ mod proptests {
             let mut distinct: HashSet<u16> = HashSet::new();
 
             for (var_id, value) in ops {
-                bs.set(VarId(var_id), Rc::new(Value::Integer(value)));
+                bs.set(VarId(var_id), ValueRef::new(Value::Integer(value)));
                 distinct.insert(var_id);
             }
 
@@ -576,7 +605,7 @@ mod proptests {
             let mut bs = BindingSet::new();
 
             for (var_id, value) in ops {
-                bs.set(VarId(var_id), Rc::new(Value::Integer(value)));
+                bs.set(VarId(var_id), ValueRef::new(Value::Integer(value)));
             }
 
             prop_assert!(bs.bound_count() <= bs.capacity());
@@ -595,11 +624,11 @@ mod proptests {
             // Track the last value written to `a` for each var.
             let mut a_last: HashMap<u16, i64> = HashMap::new();
             for (var_id, value) in a_ops {
-                a.set(VarId(var_id), Rc::new(Value::Integer(value)));
+                a.set(VarId(var_id), ValueRef::new(Value::Integer(value)));
                 a_last.insert(var_id, value);
             }
             for (var_id, value) in b_ops {
-                b.set(VarId(var_id), Rc::new(Value::Integer(value)));
+                b.set(VarId(var_id), ValueRef::new(Value::Integer(value)));
             }
 
             a.extend_from(&b);
@@ -629,12 +658,12 @@ mod proptests {
 
             for (idx, &var_id) in a_ids.iter().enumerate() {
                 #[allow(clippy::cast_possible_wrap)]
-                a.set(VarId(var_id), Rc::new(Value::Integer(idx as i64)));
+                a.set(VarId(var_id), ValueRef::new(Value::Integer(idx as i64)));
             }
             for (idx, &var_id) in b_ids.iter().enumerate() {
                 #[allow(clippy::cast_possible_wrap)]
                 let v = (idx as i64) + 100;
-                b.set(VarId(var_id), Rc::new(Value::Integer(v)));
+                b.set(VarId(var_id), ValueRef::new(Value::Integer(v)));
                 b_values.insert(var_id, v);
             }
 
@@ -661,10 +690,10 @@ mod proptests {
             let mut a = BindingSet::new();
             let mut b = BindingSet::new();
             for (var_id, value) in &a_ops {
-                a.set(VarId(*var_id), Rc::new(Value::Integer(*value)));
+                a.set(VarId(*var_id), ValueRef::new(Value::Integer(*value)));
             }
             for (var_id, value) in &b_ops {
-                b.set(VarId(*var_id), Rc::new(Value::Integer(*value)));
+                b.set(VarId(*var_id), ValueRef::new(Value::Integer(*value)));
             }
 
             // Apply extend once and snapshot.
