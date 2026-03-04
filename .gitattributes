@@ -1,3 +1,4 @@
 # Exclude CLIPS test fixtures from GitHub language statistics.
 # See: https://github.com/github-linguist/linguist/blob/main/docs/overrides.md
 *.clp linguist-vendored
+*.bat linguist-vendored
