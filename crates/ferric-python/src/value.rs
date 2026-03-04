@@ -8,11 +8,22 @@ use ferric_runtime::{Engine, Multifield, Value};
 /// Convert a Rust `Value` to a Python object.
 pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyObject {
     match val {
-        Value::Integer(i) => i.into_pyobject(py).expect("int conversion").into_any().unbind(),
-        Value::Float(f) => f.into_pyobject(py).expect("float conversion").into_any().unbind(),
+        Value::Integer(i) => i
+            .into_pyobject(py)
+            .expect("int conversion")
+            .into_any()
+            .unbind(),
+        Value::Float(f) => f
+            .into_pyobject(py)
+            .expect("float conversion")
+            .into_any()
+            .unbind(),
         Value::Symbol(sym) => {
             let s = engine.resolve_symbol(*sym).unwrap_or("<unknown>");
-            s.into_pyobject(py).expect("str conversion").into_any().unbind()
+            s.into_pyobject(py)
+                .expect("str conversion")
+                .into_any()
+                .unbind()
         }
         Value::String(s) => s
             .as_str()

@@ -125,7 +125,12 @@ impl PyEngine {
     /// * `relation` — The fact relation name.
     /// * `args` — The field values.
     #[pyo3(signature = (relation, *args))]
-    fn assert_fact(&mut self, py: Python<'_>, relation: &str, args: &Bound<'_, PyTuple>) -> PyResult<u64> {
+    fn assert_fact(
+        &mut self,
+        py: Python<'_>,
+        relation: &str,
+        args: &Bound<'_, PyTuple>,
+    ) -> PyResult<u64> {
         let mut values = Vec::with_capacity(args.len());
         for item in args.iter() {
             values.push(python_to_value(&item, &mut self.engine)?);
@@ -147,10 +152,7 @@ impl PyEngine {
     /// Get a fact by its ID, or `None` if it does not exist.
     fn get_fact(&self, py: Python<'_>, fact_id: u64) -> PyResult<Option<Fact>> {
         let fid = FactId::from(KeyData::from_ffi(fact_id));
-        let fact = self
-            .engine
-            .get_fact(fid)
-            .map_err(engine_error_to_pyerr)?;
+        let fact = self.engine.get_fact(fid).map_err(engine_error_to_pyerr)?;
         match fact {
             Some(f) => Ok(Some(fact_to_python(py, fid, f, &self.engine)?)),
             None => Ok(None),
@@ -285,10 +287,13 @@ impl PyEngine {
         let rules = self.engine.rules();
         let list = PyList::empty(py);
         for (name, salience) in rules {
-            let tuple = pyo3::types::PyTuple::new(py, [
-                name.into_pyobject(py)?.into_any(),
-                salience.into_pyobject(py)?.into_any(),
-            ])?;
+            let tuple = pyo3::types::PyTuple::new(
+                py,
+                [
+                    name.into_pyobject(py)?.into_any(),
+                    salience.into_pyobject(py)?.into_any(),
+                ],
+            )?;
             list.append(tuple)?;
         }
         Ok(list.into_any().unbind())
@@ -296,7 +301,11 @@ impl PyEngine {
 
     /// Return a list of template names.
     fn templates(&self) -> Vec<String> {
-        self.engine.templates().into_iter().map(String::from).collect()
+        self.engine
+            .templates()
+            .into_iter()
+            .map(String::from)
+            .collect()
     }
 
     /// Get the value of a global variable, or `None`.

@@ -9,10 +9,30 @@ use ferric_runtime::loader::LoadError;
 use ferric_runtime::InitError;
 
 // Exception hierarchy: FerricError (base) with specific subtypes.
-create_exception!(ferric, FerricError, PyException, "Base exception for all ferric errors.");
-create_exception!(ferric, FerricParseError, FerricError, "Error parsing CLIPS source.");
-create_exception!(ferric, FerricCompileError, FerricError, "Error compiling a rule.");
-create_exception!(ferric, FerricRuntimeError, FerricError, "Runtime engine error.");
+create_exception!(
+    ferric,
+    FerricError,
+    PyException,
+    "Base exception for all ferric errors."
+);
+create_exception!(
+    ferric,
+    FerricParseError,
+    FerricError,
+    "Error parsing CLIPS source."
+);
+create_exception!(
+    ferric,
+    FerricCompileError,
+    FerricError,
+    "Error compiling a rule."
+);
+create_exception!(
+    ferric,
+    FerricRuntimeError,
+    FerricError,
+    "Runtime engine error."
+);
 create_exception!(
     ferric,
     FerricFactNotFoundError,
@@ -73,8 +93,14 @@ pub fn init_error_to_pyerr(err: InitError) -> PyErr {
 pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("FerricError", m.py().get_type::<FerricError>())?;
     m.add("FerricParseError", m.py().get_type::<FerricParseError>())?;
-    m.add("FerricCompileError", m.py().get_type::<FerricCompileError>())?;
-    m.add("FerricRuntimeError", m.py().get_type::<FerricRuntimeError>())?;
+    m.add(
+        "FerricCompileError",
+        m.py().get_type::<FerricCompileError>(),
+    )?;
+    m.add(
+        "FerricRuntimeError",
+        m.py().get_type::<FerricRuntimeError>(),
+    )?;
     m.add(
         "FerricFactNotFoundError",
         m.py().get_type::<FerricFactNotFoundError>(),
