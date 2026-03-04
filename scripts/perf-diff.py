@@ -19,7 +19,13 @@ Stdout is always the comparison table (suitable for $GITHUB_STEP_SUMMARY).
 
 import argparse
 import json
+import re
 import sys
+
+
+def _natural_sort_key(s):
+    """Sort key that orders embedded numbers numerically (natural sort)."""
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
 
 # Threshold for classifying changes (percentage)
 REGRESSION_THRESHOLD = 5.0   # >+5% is a regression
@@ -105,7 +111,8 @@ def compute_diff(base, head):
     added = []
     removed = []
 
-    all_names = sorted(set(base_benchmarks) | set(head_benchmarks))
+    all_names = sorted(set(base_benchmarks) | set(head_benchmarks),
+                       key=_natural_sort_key)
 
     for name in all_names:
         b = base_benchmarks.get(name)
