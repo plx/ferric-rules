@@ -1071,9 +1071,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_relation(
                     copy_str_to_buffer(name, buf, buf_len, out_len)
                 }
                 Fact::Template(_) => {
-                    set_global_error(
-                        "fact is a template fact, not an ordered fact".to_string(),
-                    );
+                    set_global_error("fact is a template fact, not an ordered fact".to_string());
                     FerricError::InvalidArgument
                 }
             }
@@ -1127,9 +1125,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_template_name(
                     copy_str_to_buffer(name, buf, buf_len, out_len)
                 }
                 Fact::Ordered(_) => {
-                    set_global_error(
-                        "fact is an ordered fact, not a template fact".to_string(),
-                    );
+                    set_global_error("fact is an ordered fact, not a template fact".to_string());
                     FerricError::InvalidArgument
                 }
             }
@@ -1732,9 +1728,7 @@ pub unsafe extern "C" fn ferric_engine_clear(engine: *mut FerricEngine) -> Ferri
 /// - `source` must be a valid NUL-terminated UTF-8 string, or null.
 /// - Returned pointer must be freed with `ferric_engine_free`.
 #[no_mangle]
-pub unsafe extern "C" fn ferric_engine_new_with_source(
-    source: *const c_char,
-) -> *mut FerricEngine {
+pub unsafe extern "C" fn ferric_engine_new_with_source(source: *const c_char) -> *mut FerricEngine {
     ferric_engine_new_with_source_config(source, ptr::null())
 }
 

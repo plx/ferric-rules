@@ -24,17 +24,16 @@ use std::ptr;
 
 use crate::engine::{
     ferric_engine_agenda_count, ferric_engine_assert_ordered, ferric_engine_clear,
-    ferric_engine_clear_output, ferric_engine_fact_ids, ferric_engine_find_fact_ids,
-    ferric_engine_focus_stack_depth, ferric_engine_focus_stack_entry, ferric_engine_free,
-    ferric_engine_get_fact_relation, ferric_engine_get_fact_template_name,
+    ferric_engine_clear_output, ferric_engine_current_module, ferric_engine_fact_ids,
+    ferric_engine_find_fact_ids, ferric_engine_focus_stack_depth, ferric_engine_focus_stack_entry,
+    ferric_engine_free, ferric_engine_get_fact_relation, ferric_engine_get_fact_template_name,
     ferric_engine_get_fact_type, ferric_engine_get_focus, ferric_engine_halt,
     ferric_engine_is_halted, ferric_engine_load_string, ferric_engine_module_count,
     ferric_engine_module_name, ferric_engine_new, ferric_engine_new_with_source,
     ferric_engine_new_with_source_config, ferric_engine_push_input, ferric_engine_reset,
-    ferric_engine_rule_count, ferric_engine_rule_info, ferric_engine_run,
-    ferric_engine_run_ex, ferric_engine_template_count, ferric_engine_template_name,
-    ferric_engine_template_slot_count, ferric_engine_template_slot_name,
-    ferric_engine_current_module,
+    ferric_engine_rule_count, ferric_engine_rule_info, ferric_engine_run, ferric_engine_run_ex,
+    ferric_engine_template_count, ferric_engine_template_name, ferric_engine_template_slot_count,
+    ferric_engine_template_slot_name,
 };
 use crate::error::FerricError;
 use crate::types::{
@@ -194,13 +193,8 @@ fn find_fact_ids_unknown_relation() {
 
         let relation = CString::new("nonexistent-relation").unwrap();
         let mut count: usize = 999;
-        let result = ferric_engine_find_fact_ids(
-            engine,
-            relation.as_ptr(),
-            ptr::null_mut(),
-            0,
-            &mut count,
-        );
+        let result =
+            ferric_engine_find_fact_ids(engine, relation.as_ptr(), ptr::null_mut(), 0, &mut count);
 
         assert_eq!(result, FerricError::Ok);
         assert_eq!(count, 0, "unknown relation should yield 0 matching facts");
@@ -217,13 +211,8 @@ fn find_fact_ids_null_relation() {
         ferric_engine_reset(engine);
 
         let mut count: usize = 0;
-        let result = ferric_engine_find_fact_ids(
-            engine,
-            ptr::null(),
-            ptr::null_mut(),
-            0,
-            &mut count,
-        );
+        let result =
+            ferric_engine_find_fact_ids(engine, ptr::null(), ptr::null_mut(), 0, &mut count);
         assert_eq!(result, FerricError::NullPointer);
 
         ferric_engine_free(engine);
@@ -351,12 +340,20 @@ fn get_fact_relation_ordered() {
 
         let mut buf = vec![0i8; 64];
         let mut out_len: usize = 0;
-        let result =
-            ferric_engine_get_fact_relation(engine, fact_id, buf.as_mut_ptr(), buf.len(), &mut out_len);
+        let result = ferric_engine_get_fact_relation(
+            engine,
+            fact_id,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut out_len,
+        );
 
         assert_eq!(result, FerricError::Ok);
         let name = CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
-        assert_eq!(name, "color", "relation name must match the asserted fact head");
+        assert_eq!(
+            name, "color",
+            "relation name must match the asserted fact head"
+        );
 
         ferric_engine_free(engine);
     }
@@ -392,8 +389,13 @@ fn get_fact_relation_template_is_error() {
 
         let mut buf = vec![0i8; 64];
         let mut out_len: usize = 0;
-        let result =
-            ferric_engine_get_fact_relation(engine, fact_id, buf.as_mut_ptr(), buf.len(), &mut out_len);
+        let result = ferric_engine_get_fact_relation(
+            engine,
+            fact_id,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut out_len,
+        );
 
         assert_eq!(
             result,
@@ -424,9 +426,13 @@ fn get_fact_relation_buffer_pattern() {
 
         // Size query: null buf, buf_len = 0
         let mut out_len: usize = 0;
-        let result = ferric_engine_get_fact_relation(engine, fact_id, ptr::null_mut(), 0, &mut out_len);
+        let result =
+            ferric_engine_get_fact_relation(engine, fact_id, ptr::null_mut(), 0, &mut out_len);
         assert_eq!(result, FerricError::Ok);
-        assert_eq!(out_len, expected_len, "size query must report exact byte count");
+        assert_eq!(
+            out_len, expected_len,
+            "size query must report exact byte count"
+        );
 
         // Exact-fit copy
         let mut exact_buf = vec![0i8; expected_len];
@@ -451,10 +457,17 @@ fn get_fact_relation_buffer_pattern() {
             &mut out_len,
         );
         assert_eq!(result, FerricError::BufferTooSmall);
-        assert_eq!(out_len, expected_len, "out_len still reports full needed size");
+        assert_eq!(
+            out_len, expected_len,
+            "out_len still reports full needed size"
+        );
         // The truncated buffer is NUL-terminated
         let truncated = CStr::from_ptr(tiny_buf.as_ptr()).to_str().unwrap();
-        assert_eq!(truncated.len(), 5, "truncated to 5 chars + NUL in a 6-byte buffer");
+        assert_eq!(
+            truncated.len(),
+            5,
+            "truncated to 5 chars + NUL in a 6-byte buffer"
+        );
 
         ferric_engine_free(engine);
     }
@@ -556,13 +569,8 @@ fn assert_ordered_simple() {
         let field = ferric_value_symbol(sym_name.as_ptr());
 
         let mut out_fact_id: u64 = 0;
-        let result = ferric_engine_assert_ordered(
-            engine,
-            relation.as_ptr(),
-            &field,
-            1,
-            &mut out_fact_id,
-        );
+        let result =
+            ferric_engine_assert_ordered(engine, relation.as_ptr(), &field, 1, &mut out_fact_id);
 
         assert_eq!(result, FerricError::Ok, "structured assert must succeed");
         assert_ne!(out_fact_id, 0, "a valid fact ID must be returned");
@@ -615,13 +623,8 @@ fn assert_ordered_null_relation() {
         ferric_engine_reset(engine);
 
         let mut out_fact_id: u64 = 0;
-        let result = ferric_engine_assert_ordered(
-            engine,
-            ptr::null(),
-            ptr::null(),
-            0,
-            &mut out_fact_id,
-        );
+        let result =
+            ferric_engine_assert_ordered(engine, ptr::null(), ptr::null(), 0, &mut out_fact_id);
 
         assert_eq!(result, FerricError::NullPointer);
 
@@ -670,7 +673,11 @@ fn assert_ordered_zero_fields() {
             &mut out_fact_id,
         );
 
-        assert_eq!(result, FerricError::Ok, "zero-field ordered assert must succeed");
+        assert_eq!(
+            result,
+            FerricError::Ok,
+            "zero-field ordered assert must succeed"
+        );
         assert_ne!(out_fact_id, 0);
 
         ferric_engine_free(engine);
@@ -755,7 +762,10 @@ fn value_string_constructor() {
         let v = ferric_value_string(raw.as_ptr());
 
         assert_eq!(v.value_type, FerricValueType::String);
-        assert!(!v.string_ptr.is_null(), "string value must own a heap string");
+        assert!(
+            !v.string_ptr.is_null(),
+            "string value must own a heap string"
+        );
         let s = CStr::from_ptr(v.string_ptr).to_str().unwrap();
         assert_eq!(s, "hello, world");
 
@@ -897,8 +907,7 @@ fn template_slot_count() {
     // A template with two slots reports slot_count = 2.
     unsafe {
         let engine = ferric_engine_new();
-        let source =
-            CString::new("(deftemplate person (slot name) (slot age))").unwrap();
+        let source = CString::new("(deftemplate person (slot name) (slot age))").unwrap();
         assert_eq!(
             ferric_engine_load_string(engine, source.as_ptr()),
             FerricError::Ok
@@ -921,8 +930,7 @@ fn template_slot_name_by_index() {
     // Slot names can be enumerated by index in definition order.
     unsafe {
         let engine = ferric_engine_new();
-        let source =
-            CString::new("(deftemplate person (slot name) (slot age))").unwrap();
+        let source = CString::new("(deftemplate person (slot name) (slot age))").unwrap();
         assert_eq!(
             ferric_engine_load_string(engine, source.as_ptr()),
             FerricError::Ok
@@ -1035,10 +1043,9 @@ fn rule_info_name_and_salience() {
         let engine = ferric_engine_new();
         // Salience 75 is deliberately non-default (default is 0) to verify the
         // value is actually read from the rule and not hardcoded.
-        let source = CString::new(
-            "(defrule priority-rule (declare (salience 75)) (initial-fact) => )",
-        )
-        .unwrap();
+        let source =
+            CString::new("(defrule priority-rule (declare (salience 75)) (initial-fact) => )")
+                .unwrap();
         assert_eq!(
             ferric_engine_load_string(engine, source.as_ptr()),
             FerricError::Ok
@@ -1107,7 +1114,8 @@ fn current_module_is_main() {
 
         let mut buf = vec![0i8; 64];
         let mut out_len: usize = 0;
-        let result = ferric_engine_current_module(engine, buf.as_mut_ptr(), buf.len(), &mut out_len);
+        let result =
+            ferric_engine_current_module(engine, buf.as_mut_ptr(), buf.len(), &mut out_len);
 
         assert_eq!(result, FerricError::Ok);
         let name = CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
@@ -1184,7 +1192,10 @@ fn module_count_default() {
         let result = ferric_engine_module_count(engine, &mut count);
 
         assert_eq!(result, FerricError::Ok);
-        assert!(count >= 1, "at least the MAIN module must always be present");
+        assert!(
+            count >= 1,
+            "at least the MAIN module must always be present"
+        );
 
         ferric_engine_free(engine);
     }
@@ -1249,8 +1260,7 @@ fn agenda_count_after_reset() {
     // After loading a rule and resetting, the agenda has at least one activation.
     unsafe {
         let engine = ferric_engine_new();
-        let source =
-            CString::new("(defrule check (initial-fact) => )").unwrap();
+        let source = CString::new("(defrule check (initial-fact) => )").unwrap();
         assert_eq!(
             ferric_engine_load_string(engine, source.as_ptr()),
             FerricError::Ok
@@ -1261,7 +1271,10 @@ fn agenda_count_after_reset() {
         let result = ferric_engine_agenda_count(engine, &mut count);
 
         assert_eq!(result, FerricError::Ok);
-        assert!(count >= 1, "rule matching initial-fact should be on the agenda");
+        assert!(
+            count >= 1,
+            "rule matching initial-fact should be on the agenda"
+        );
 
         ferric_engine_free(engine);
     }
@@ -1278,7 +1291,10 @@ fn is_halted_false_initially() {
         let result = ferric_engine_is_halted(engine, &mut halted);
 
         assert_eq!(result, FerricError::Ok);
-        assert_eq!(halted, 0, "engine must not be halted immediately after creation");
+        assert_eq!(
+            halted, 0,
+            "engine must not be halted immediately after creation"
+        );
 
         ferric_engine_free(engine);
     }
@@ -1297,7 +1313,10 @@ fn halt_and_check() {
         let result = ferric_engine_is_halted(engine, &mut halted);
 
         assert_eq!(result, FerricError::Ok);
-        assert_eq!(halted, 1, "engine must be reported as halted after ferric_engine_halt");
+        assert_eq!(
+            halted, 1,
+            "engine must be reported as halted after ferric_engine_halt"
+        );
 
         ferric_engine_free(engine);
     }
@@ -1394,17 +1413,21 @@ fn new_with_source_valid() {
     // ferric_engine_new_with_source creates a fully initialised engine from
     // CLIPS source text. The engine is immediately ready to run.
     unsafe {
-        let source = CString::new(
-            r#"(defrule hello (initial-fact) => (printout t "world" crlf))"#,
-        )
-        .unwrap();
+        let source =
+            CString::new(r#"(defrule hello (initial-fact) => (printout t "world" crlf))"#).unwrap();
         let engine = ferric_engine_new_with_source(source.as_ptr());
-        assert!(!engine.is_null(), "new_with_source must return a non-null engine on valid input");
+        assert!(
+            !engine.is_null(),
+            "new_with_source must return a non-null engine on valid input"
+        );
 
         // The engine should already be reset; running it should fire the rule once.
         let mut fired: u64 = 0;
         assert_eq!(ferric_engine_run(engine, -1, &mut fired), FerricError::Ok);
-        assert_eq!(fired, 1, "rule should fire once on a freshly-created engine");
+        assert_eq!(
+            fired, 1,
+            "rule should fire once on a freshly-created engine"
+        );
 
         ferric_engine_free(engine);
     }
@@ -1436,7 +1459,10 @@ fn new_with_source_config_null_config() {
         let source =
             CString::new(r#"(defrule r (initial-fact) => (printout t "ok" crlf))"#).unwrap();
         let engine = ferric_engine_new_with_source_config(source.as_ptr(), ptr::null());
-        assert!(!engine.is_null(), "null config means default config, not failure");
+        assert!(
+            !engine.is_null(),
+            "null config means default config, not failure"
+        );
 
         let mut fired: u64 = 0;
         assert_eq!(ferric_engine_run(engine, -1, &mut fired), FerricError::Ok);
@@ -1452,8 +1478,7 @@ fn clear_output_channel() {
     unsafe {
         let engine = ferric_engine_new();
         let source =
-            CString::new(r#"(defrule emit (initial-fact) => (printout t "data" crlf))"#)
-                .unwrap();
+            CString::new(r#"(defrule emit (initial-fact) => (printout t "data" crlf))"#).unwrap();
         assert_eq!(
             ferric_engine_load_string(engine, source.as_ptr()),
             FerricError::Ok
@@ -1467,7 +1492,10 @@ fn clear_output_channel() {
         // Verify output exists before clearing
         let t_channel = CString::new("t").unwrap();
         let output_before = crate::engine::ferric_engine_get_output(engine, t_channel.as_ptr());
-        assert!(!output_before.is_null(), "output must be present before clear");
+        assert!(
+            !output_before.is_null(),
+            "output must be present before clear"
+        );
 
         // Clear the channel
         assert_eq!(
@@ -1562,8 +1590,7 @@ fn run_ex_halt_requested() {
     // When a rule fires the (halt) action, run_ex reports HaltRequested.
     unsafe {
         let engine = ferric_engine_new();
-        let source =
-            CString::new("(defrule stop-now (initial-fact) => (halt))").unwrap();
+        let source = CString::new("(defrule stop-now (initial-fact) => (halt))").unwrap();
         assert_eq!(
             ferric_engine_load_string(engine, source.as_ptr()),
             FerricError::Ok
