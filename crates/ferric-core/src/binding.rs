@@ -106,7 +106,7 @@ pub enum VarMapError {
 /// to avoid Rc heap allocation; wraps heap-owning variants in Rc for cheap cloning.
 #[derive(Debug)]
 pub enum ValueRef {
-    /// Symbol, Integer, Float, ExternalAddress, Void — no heap alloc needed.
+    /// Symbol, Integer, Float, `ExternalAddress`, Void — no heap alloc needed.
     Inline(Value),
     /// String, Multifield — heap-allocated data, share via Rc.
     Shared(Rc<Value>),
