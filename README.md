@@ -196,37 +196,6 @@ These scenarios are verified as tests in
 [`crates/ferric/tests/clips_compat.rs`](crates/ferric/tests/clips_compat.rs)
 (look for `test_engagement_*`), so they won't silently go stale.
 
-## Development
-
-### Pre-flight checks
-
-Run the same checks CI uses before opening a PR:
-
-```bash
-./scripts/preflight.sh all
-```
-
-Or run an individual gate:
-
-```bash
-./scripts/preflight.sh clippy
-```
-
-### CLIPS reference harness
-
-To compare behavior against upstream CLIPS, this repository includes a
-Docker-based reference harness:
-
-```bash
-# Build the image
-scripts/clips-reference.sh build --load
-
-# Run a fixture
-scripts/clips-reference.sh run --file path/to/rules.clp --op '(reset)' --op '(run)'
-```
-
-See `documents/reference/CLIPSContainerHarness.md` for details.
-
 ## License
 
 MIT OR Apache-2.0
