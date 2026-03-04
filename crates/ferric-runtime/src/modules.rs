@@ -170,6 +170,11 @@ impl ModuleRegistry {
         self.modules.get(&id).map(|m| m.name.as_str())
     }
 
+    /// Return the names of all registered modules.
+    pub fn module_names(&self) -> Vec<&str> {
+        self.modules.values().map(|m| m.name.as_str()).collect()
+    }
+
     fn specific_spec_matches(
         spec_construct_type: &str,
         names: &[String],

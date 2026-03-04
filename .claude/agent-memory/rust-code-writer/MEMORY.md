@@ -202,6 +202,20 @@ See `phase5-pass-notes.md` for detailed notes on each Phase 5 pass.
 - Added 2 CLI diagnostic parity tests to `crates/ferric-cli/tests/cli_integration.rs`
 - `cargo fmt` auto-applies after writing: always run `cargo fmt --all` then `cargo fmt --all --check`
 - Do NOT leave stray `let _ = ();` lines from edit mistakes — re-read after every Edit
+
+### build.rs bounds-safety annotation system (CRITICAL for ferric-ffi)
+- Each pattern in `BOUNDS_ANNOTATIONS` must match EXACTLY ONCE in the generated header
+- When adding new FFI functions with `const char *` params, short patterns like `"const char *source);"` will collide — always use function-name-qualified patterns
+- cbindgen wraps long signatures: inspect actual output before writing patterns
+- To capture raw header: temporarily replace `build.rs main()` with one that writes to `/tmp/ferric_raw.h`, then restore the backup
+- Multi-param function continuation lines have specific alignment spaces, e.g. `"                                             const char *source,"`
+- Patterns span the `\n` and all whitespace literally: `"ferric_engine_assert_string(struct FerricEngine *engine,\n                                             const char *source,"`
+
+### Clippy for FFI loops
+- `for i in 0..count { *ptr.add(i) = vec[i]; }` → clippy::needless_range_loop
+- Fix: `for (i, &val) in vec.iter().enumerate().take(count) { *ptr.add(i) = val; }`
+- `match option { Some(x) => ..., None => ... }` → clippy::single_match_else
+- Fix: use `if let Some(x) = option { ... } else { ... }`
 - Total test count: 1200 after pass 012
 
 ## Phase 6 Benchmarks
