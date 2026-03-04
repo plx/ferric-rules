@@ -1502,9 +1502,8 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
             JoinTestType::LexEqual => lexeme_compare_matches(fact_value, token_value, |ord| {
                 matches!(ord, Ordering::Equal)
             }),
-            JoinTestType::LexNotEqual => !lexeme_compare_matches(fact_value, token_value, |ord| {
-                matches!(ord, Ordering::Equal)
-            }),
+            JoinTestType::LexNotEqual => compare_lexeme_values(fact_value, token_value)
+                .is_some_and(|ord| !matches!(ord, Ordering::Equal)),
             JoinTestType::LexGreaterThan => {
                 lexeme_compare_matches(fact_value, token_value, |ord| {
                     matches!(ord, Ordering::Greater)
@@ -1528,11 +1527,9 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
                     matches!(ord, Ordering::Equal)
                 })
             }
-            JoinTestType::NotEqualOffset(offset) => {
-                !offset_compare_matches(fact_value, token_value, offset, |ord| {
-                    matches!(ord, Ordering::Equal)
-                })
-            }
+            JoinTestType::NotEqualOffset(offset) => add_integer_offset(token_value, offset)
+                .and_then(|adjusted| compare_numeric_values(fact_value, &adjusted))
+                .is_some_and(|ord| !matches!(ord, Ordering::Equal)),
             JoinTestType::GreaterThanOffset(offset) => {
                 offset_compare_matches(fact_value, token_value, offset, |ord| {
                     matches!(ord, Ordering::Greater)
@@ -1565,10 +1562,12 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
 
 /// Direct atom-level equality test between two values.
 ///
-/// Equivalent to constructing `AtomKey` from each value and comparing, but avoids
-/// the intermediate `AtomKey` allocation. Returns `None` for non-comparable values
-/// (`Multifield`/`Void`/type mismatches), so callers can distinguish "not equal"
-/// from "non-comparable".
+/// Returns `Some(true)` when both values are the same atomic type and equal,
+/// `Some(false)` when both are atomic but unequal (including cross-type comparisons),
+/// and `None` when either value is `Multifield` or `Void` (non-comparable).
+///
+/// This matches CLIPS semantics where `(eq 1 abc)` is FALSE (cross-type atomic
+/// values are definitively not-equal) while multifield comparisons are non-comparable.
 fn values_atom_eq(a: &Value, b: &Value) -> Option<bool> {
     match (a, b) {
         (Value::Symbol(a), Value::Symbol(b)) => Some(a == b),
@@ -1578,7 +1577,10 @@ fn values_atom_eq(a: &Value, b: &Value) -> Option<bool> {
         (Value::ExternalAddress(a), Value::ExternalAddress(b)) => {
             Some(a.type_id == b.type_id && std::ptr::eq(a.pointer, b.pointer))
         }
-        _ => None, // Multifield, Void, or type mismatch → non-comparable
+        // Either value is Multifield or Void → non-comparable
+        (Value::Multifield(_) | Value::Void, _) | (_, Value::Multifield(_) | Value::Void) => None,
+        // Cross-type atomic comparisons → definitively not equal
+        _ => Some(false),
     }
 }
 
@@ -4026,6 +4028,449 @@ mod tests {
             }
 
             rete.debug_assert_consistency();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Unit tests for `values_atom_eq`
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn values_atom_eq_same_type_equal() {
+        use crate::encoding::StringEncoding;
+        let mut symbol_table = SymbolTable::new();
+        let sym = make_symbol(&mut symbol_table, "abc");
+
+        assert_eq!(
+            values_atom_eq(&Value::Symbol(sym), &Value::Symbol(sym)),
+            Some(true)
+        );
+        assert_eq!(
+            values_atom_eq(&Value::Integer(42), &Value::Integer(42)),
+            Some(true)
+        );
+        assert_eq!(
+            values_atom_eq(&Value::Float(3.14), &Value::Float(3.14)),
+            Some(true)
+        );
+        let s = FerricString::new("hello", StringEncoding::Ascii).unwrap();
+        assert_eq!(
+            values_atom_eq(&Value::String(s.clone()), &Value::String(s)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn values_atom_eq_same_type_unequal() {
+        use crate::encoding::StringEncoding;
+        let mut symbol_table = SymbolTable::new();
+        let sym_a = make_symbol(&mut symbol_table, "abc");
+        let sym_b = make_symbol(&mut symbol_table, "xyz");
+
+        assert_eq!(
+            values_atom_eq(&Value::Symbol(sym_a), &Value::Symbol(sym_b)),
+            Some(false)
+        );
+        assert_eq!(
+            values_atom_eq(&Value::Integer(1), &Value::Integer(2)),
+            Some(false)
+        );
+        assert_eq!(
+            values_atom_eq(&Value::Float(1.0), &Value::Float(2.0)),
+            Some(false)
+        );
+        let s1 = FerricString::new("hello", StringEncoding::Ascii).unwrap();
+        let s2 = FerricString::new("world", StringEncoding::Ascii).unwrap();
+        assert_eq!(
+            values_atom_eq(&Value::String(s1), &Value::String(s2)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn values_atom_eq_cross_type_atomic_returns_some_false() {
+        use crate::encoding::StringEncoding;
+        let mut symbol_table = SymbolTable::new();
+        let sym = make_symbol(&mut symbol_table, "abc");
+        let s = FerricString::new("hello", StringEncoding::Ascii).unwrap();
+
+        // Integer vs Symbol
+        assert_eq!(
+            values_atom_eq(&Value::Integer(1), &Value::Symbol(sym)),
+            Some(false)
+        );
+        assert_eq!(
+            values_atom_eq(&Value::Symbol(sym), &Value::Integer(1)),
+            Some(false)
+        );
+        // Float vs String
+        assert_eq!(
+            values_atom_eq(&Value::Float(1.0), &Value::String(s.clone())),
+            Some(false)
+        );
+        assert_eq!(
+            values_atom_eq(&Value::String(s), &Value::Float(1.0)),
+            Some(false)
+        );
+        // Integer vs Float (cross-type in the atom sense)
+        assert_eq!(
+            values_atom_eq(&Value::Integer(1), &Value::Float(1.0)),
+            Some(false)
+        );
+        assert_eq!(
+            values_atom_eq(&Value::Float(1.0), &Value::Integer(1)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn values_atom_eq_multifield_and_void_return_none() {
+        use crate::value::Multifield;
+
+        let mf = Value::Multifield(Box::new(Multifield::new()));
+
+        // Multifield vs atomic
+        assert_eq!(values_atom_eq(&mf, &Value::Integer(1)), None);
+        assert_eq!(values_atom_eq(&Value::Integer(1), &mf), None);
+        // Multifield vs Multifield
+        assert_eq!(
+            values_atom_eq(&mf, &Value::Multifield(Box::new(Multifield::new()))),
+            None
+        );
+        // Void vs atomic
+        assert_eq!(values_atom_eq(&Value::Void, &Value::Integer(1)), None);
+        assert_eq!(values_atom_eq(&Value::Integer(1), &Value::Void), None);
+        // Void vs Void
+        assert_eq!(values_atom_eq(&Value::Void, &Value::Void), None);
+        // Multifield vs Void
+        assert_eq!(values_atom_eq(&mf, &Value::Void), None);
+        assert_eq!(values_atom_eq(&Value::Void, &mf), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper for integration tests
+    // -----------------------------------------------------------------------
+
+    /// Build a two-pattern rule: (base ?x) (target <join_test> ?x) => activation.
+    fn build_two_pattern_rule_with_join_test(
+        symbol_table: &mut SymbolTable,
+        test_type: JoinTestType,
+    ) -> (ReteNetwork, FactBase, Symbol, Symbol) {
+        use crate::binding::VarId;
+
+        let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
+
+        let base_rel = make_symbol(symbol_table, "base");
+        let target_rel = make_symbol(symbol_table, "target");
+
+        let base_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(base_rel));
+        let base_alpha = rete.alpha.create_memory(base_entry);
+        let target_entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(target_rel));
+        let target_alpha = rete.alpha.create_memory(target_entry);
+
+        let root = rete.beta.root_id();
+        let var_x = VarId(0);
+        let (join1, _) = rete.beta.create_join_node(
+            root,
+            base_alpha,
+            vec![],
+            vec![(SlotIndex::Ordered(0), var_x)],
+        );
+        let (join2, _) = rete.beta.create_join_node(
+            join1,
+            target_alpha,
+            vec![JoinTest {
+                alpha_slot: SlotIndex::Ordered(0),
+                beta_var: var_x,
+                test_type,
+            }],
+            vec![],
+        );
+        rete.beta
+            .create_terminal_node(join2, RuleId(100), Salience::DEFAULT);
+
+        (rete, fact_base, base_rel, target_rel)
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: NotEqual join
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn not_equal_join_same_type_equal_no_activation() {
+        let mut st = SymbolTable::new();
+        let (mut rete, mut fb, base_rel, target_rel) =
+            build_two_pattern_rule_with_join_test(&mut st, JoinTestType::NotEqual);
+
+        let base_id = fb.assert_ordered(base_rel, smallvec![Value::Integer(42)]);
+        let base_fact = fb.get(base_id).unwrap().fact.clone();
+        rete.assert_fact(base_id, &base_fact, &fb);
+
+        let target_id = fb.assert_ordered(target_rel, smallvec![Value::Integer(42)]);
+        let target_fact = fb.get(target_id).unwrap().fact.clone();
+        let acts = rete.assert_fact(target_id, &target_fact, &fb);
+        assert_eq!(
+            acts.len(),
+            0,
+            "NotEqual with equal same-type values should not activate"
+        );
+    }
+
+    #[test]
+    fn not_equal_join_same_type_unequal_activates() {
+        let mut st = SymbolTable::new();
+        let (mut rete, mut fb, base_rel, target_rel) =
+            build_two_pattern_rule_with_join_test(&mut st, JoinTestType::NotEqual);
+
+        let base_id = fb.assert_ordered(base_rel, smallvec![Value::Integer(42)]);
+        let base_fact = fb.get(base_id).unwrap().fact.clone();
+        rete.assert_fact(base_id, &base_fact, &fb);
+
+        let target_id = fb.assert_ordered(target_rel, smallvec![Value::Integer(99)]);
+        let target_fact = fb.get(target_id).unwrap().fact.clone();
+        let acts = rete.assert_fact(target_id, &target_fact, &fb);
+        assert_eq!(
+            acts.len(),
+            1,
+            "NotEqual with unequal same-type values should activate"
+        );
+    }
+
+    #[test]
+    fn not_equal_join_cross_type_activates() {
+        let mut st = SymbolTable::new();
+        let (mut rete, mut fb, base_rel, target_rel) =
+            build_two_pattern_rule_with_join_test(&mut st, JoinTestType::NotEqual);
+
+        // Base binds ?x to an integer
+        let base_id = fb.assert_ordered(base_rel, smallvec![Value::Integer(42)]);
+        let base_fact = fb.get(base_id).unwrap().fact.clone();
+        rete.assert_fact(base_id, &base_fact, &fb);
+
+        // Target has a symbol — cross-type, so NotEqual should pass (CLIPS: neq 42 abc → TRUE)
+        let sym = make_symbol(&mut st, "abc");
+        let target_id = fb.assert_ordered(target_rel, smallvec![Value::Symbol(sym)]);
+        let target_fact = fb.get(target_id).unwrap().fact.clone();
+        let acts = rete.assert_fact(target_id, &target_fact, &fb);
+        assert_eq!(
+            acts.len(),
+            1,
+            "NotEqual with cross-type values should activate (regression test)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: LexNotEqual join
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lex_not_equal_join_equal_strings_no_activation() {
+        use crate::encoding::StringEncoding;
+        let mut st = SymbolTable::new();
+        let (mut rete, mut fb, base_rel, target_rel) =
+            build_two_pattern_rule_with_join_test(&mut st, JoinTestType::LexNotEqual);
+
+        let s = FerricString::new("hello", StringEncoding::Ascii).unwrap();
+        let base_id = fb.assert_ordered(base_rel, smallvec![Value::String(s.clone())]);
+        let base_fact = fb.get(base_id).unwrap().fact.clone();
+        rete.assert_fact(base_id, &base_fact, &fb);
+
+        let target_id = fb.assert_ordered(target_rel, smallvec![Value::String(s)]);
+        let target_fact = fb.get(target_id).unwrap().fact.clone();
+        let acts = rete.assert_fact(target_id, &target_fact, &fb);
+        assert_eq!(
+            acts.len(),
+            0,
+            "LexNotEqual with equal strings should not activate"
+        );
+    }
+
+    #[test]
+    fn lex_not_equal_join_different_strings_activates() {
+        use crate::encoding::StringEncoding;
+        let mut st = SymbolTable::new();
+        let (mut rete, mut fb, base_rel, target_rel) =
+            build_two_pattern_rule_with_join_test(&mut st, JoinTestType::LexNotEqual);
+
+        let s1 = FerricString::new("hello", StringEncoding::Ascii).unwrap();
+        let s2 = FerricString::new("world", StringEncoding::Ascii).unwrap();
+        let base_id = fb.assert_ordered(base_rel, smallvec![Value::String(s1)]);
+        let base_fact = fb.get(base_id).unwrap().fact.clone();
+        rete.assert_fact(base_id, &base_fact, &fb);
+
+        let target_id = fb.assert_ordered(target_rel, smallvec![Value::String(s2)]);
+        let target_fact = fb.get(target_id).unwrap().fact.clone();
+        let acts = rete.assert_fact(target_id, &target_fact, &fb);
+        assert_eq!(
+            acts.len(),
+            1,
+            "LexNotEqual with different strings should activate"
+        );
+    }
+
+    #[test]
+    fn lex_not_equal_join_non_string_no_activation() {
+        let mut st = SymbolTable::new();
+        let (mut rete, mut fb, base_rel, target_rel) =
+            build_two_pattern_rule_with_join_test(&mut st, JoinTestType::LexNotEqual);
+
+        // Integers are not strings — lexeme comparison is non-comparable
+        let base_id = fb.assert_ordered(base_rel, smallvec![Value::Integer(1)]);
+        let base_fact = fb.get(base_id).unwrap().fact.clone();
+        rete.assert_fact(base_id, &base_fact, &fb);
+
+        let target_id = fb.assert_ordered(target_rel, smallvec![Value::Integer(2)]);
+        let target_fact = fb.get(target_id).unwrap().fact.clone();
+        let acts = rete.assert_fact(target_id, &target_fact, &fb);
+        assert_eq!(
+            acts.len(),
+            0,
+            "LexNotEqual with non-string values should not activate (non-comparable)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: NotEqualOffset join
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn not_equal_offset_matching_offset_no_activation() {
+        let mut st = SymbolTable::new();
+        let (mut rete, mut fb, base_rel, target_rel) =
+            build_two_pattern_rule_with_join_test(&mut st, JoinTestType::NotEqualOffset(1));
+
+        // Base: (base 5), offset +1 → adjusted = 6
+        let base_id = fb.assert_ordered(base_rel, smallvec![Value::Integer(5)]);
+        let base_fact = fb.get(base_id).unwrap().fact.clone();
+        rete.assert_fact(base_id, &base_fact, &fb);
+
+        // Target: (target 6), fact_value=6, adjusted=6, equal → no activation
+        let target_id = fb.assert_ordered(target_rel, smallvec![Value::Integer(6)]);
+        let target_fact = fb.get(target_id).unwrap().fact.clone();
+        let acts = rete.assert_fact(target_id, &target_fact, &fb);
+        assert_eq!(
+            acts.len(),
+            0,
+            "NotEqualOffset with matching offset should not activate"
+        );
+    }
+
+    #[test]
+    fn not_equal_offset_nonmatching_offset_activates() {
+        let mut st = SymbolTable::new();
+        let (mut rete, mut fb, base_rel, target_rel) =
+            build_two_pattern_rule_with_join_test(&mut st, JoinTestType::NotEqualOffset(1));
+
+        let base_id = fb.assert_ordered(base_rel, smallvec![Value::Integer(5)]);
+        let base_fact = fb.get(base_id).unwrap().fact.clone();
+        rete.assert_fact(base_id, &base_fact, &fb);
+
+        // Target: (target 7), fact_value=7, adjusted=6, not equal → activation
+        let target_id = fb.assert_ordered(target_rel, smallvec![Value::Integer(7)]);
+        let target_fact = fb.get(target_id).unwrap().fact.clone();
+        let acts = rete.assert_fact(target_id, &target_fact, &fb);
+        assert_eq!(
+            acts.len(),
+            1,
+            "NotEqualOffset with non-matching offset should activate"
+        );
+    }
+
+    #[test]
+    fn not_equal_offset_non_numeric_no_activation() {
+        let mut st = SymbolTable::new();
+        let (mut rete, mut fb, base_rel, target_rel) =
+            build_two_pattern_rule_with_join_test(&mut st, JoinTestType::NotEqualOffset(1));
+
+        // Base has a symbol — can't compute integer offset
+        let sym = make_symbol(&mut st, "abc");
+        let base_id = fb.assert_ordered(base_rel, smallvec![Value::Symbol(sym)]);
+        let base_fact = fb.get(base_id).unwrap().fact.clone();
+        rete.assert_fact(base_id, &base_fact, &fb);
+
+        let target_id = fb.assert_ordered(target_rel, smallvec![Value::Integer(7)]);
+        let target_fact = fb.get(target_id).unwrap().fact.clone();
+        let acts = rete.assert_fact(target_id, &target_fact, &fb);
+        assert_eq!(
+            acts.len(),
+            0,
+            "NotEqualOffset with non-numeric base should not activate (non-comparable)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Property tests for values_atom_eq and negated join semantics
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        /// Reflexivity: values_atom_eq(v, v) is Some(true) for all integer/float values.
+        #[test]
+        fn values_atom_eq_reflexive_for_atomics(
+            i in proptest::num::i64::ANY,
+            f in proptest::num::f64::ANY,
+        ) {
+            prop_assert_eq!(
+                values_atom_eq(&Value::Integer(i), &Value::Integer(i)),
+                Some(true),
+                "integer reflexivity"
+            );
+            prop_assert_eq!(
+                values_atom_eq(&Value::Float(f), &Value::Float(f)),
+                Some(true),
+                "float reflexivity (bitwise)"
+            );
+        }
+
+        /// Symmetry: values_atom_eq(a, b) == values_atom_eq(b, a) for cross-type pairs.
+        #[test]
+        fn values_atom_eq_symmetric(
+            a_int in proptest::num::i64::ANY,
+            b_float in proptest::num::f64::ANY,
+        ) {
+            let a = Value::Integer(a_int);
+            let b = Value::Float(b_float);
+            prop_assert_eq!(
+                values_atom_eq(&a, &b),
+                values_atom_eq(&b, &a),
+                "symmetry for Integer vs Float"
+            );
+        }
+
+        /// For same-type integer values, NotEqual is the logical negation of Equal.
+        #[test]
+        fn not_equal_is_negation_of_equal_for_integers(
+            base_val in proptest::num::i64::ANY,
+            target_val in proptest::num::i64::ANY,
+        ) {
+            let base = Value::Integer(base_val);
+            let target = Value::Integer(target_val);
+
+            let eq_result = values_atom_eq(&base, &target).unwrap_or(false);
+            let neq_result = values_atom_eq(&base, &target).is_some_and(|eq| !eq);
+
+            prop_assert_eq!(eq_result, !neq_result,
+                "for same-type atomics, NotEqual must be the negation of Equal");
+        }
+
+        /// Cross-type atomic comparisons: Equal is always false, NotEqual is always true.
+        #[test]
+        fn cross_type_atomic_not_equal_always_true(
+            i in proptest::num::i64::ANY,
+            f in proptest::num::f64::ANY,
+        ) {
+            let int_val = Value::Integer(i);
+            let float_val = Value::Float(f);
+
+            let eq_result = values_atom_eq(&int_val, &float_val).unwrap_or(false);
+            prop_assert!(!eq_result, "cross-type Equal must be false");
+
+            let neq_result = values_atom_eq(&int_val, &float_val).is_some_and(|eq| !eq);
+            prop_assert!(neq_result, "cross-type NotEqual must be true");
         }
     }
 }
