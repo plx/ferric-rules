@@ -26,7 +26,7 @@ CLIPS_BIN="clips"
 HYPERFINE_WARMUP=3
 HYPERFINE_RUNS=10
 
-ALL_WORKLOADS="waltz-5 waltz-20 waltz-50 waltz-100 manners-8 manners-16 manners-32 manners-64 join-3 join-5 join-7 join-9 churn-100 churn-500 churn-2000 churn-10000 negation-50 negation-200 negation-1000 negation-5000"
+ALL_WORKLOADS="waltz-5 waltz-10 waltz-20 waltz-50 waltz-100 waltz-150 waltz-200 waltz-300 waltz-500 waltz-750 waltz-1000 manners-8 manners-16 manners-32 manners-48 manners-64 manners-96 manners-128 manners-256 manners-512 join-3 join-5 join-7 join-9 join-11 join-13 join-15 join-17 join-19 join-21 churn-100 churn-250 churn-500 churn-1000 churn-2000 churn-5000 churn-10000 churn-25000 churn-50000 churn-100000 negation-50 negation-100 negation-200 negation-500 negation-1000 negation-2500 negation-5000 negation-10000 negation-25000 negation-50000"
 QUICK_WORKLOADS="waltz-5 waltz-20 manners-8 manners-16 join-3 churn-100 negation-50"
 WORKLOADS=""
 

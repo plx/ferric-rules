@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Collect Criterion benchmark results into a performance manifest.
 
-Runs the three Criterion benchmark suites (engine_bench, waltz_bench,
-manners_bench) with reduced CI-appropriate settings, then walks the
+Runs the Criterion benchmark suites (engine_bench, waltz_bench,
+manners_bench, join_bench, churn_bench, negation_bench) with reduced
+CI-appropriate settings, then walks the
 target/criterion/ directory to collect estimates into a unified
 perf-manifest.json.
 
@@ -59,31 +60,61 @@ BENCHMARKS = [
     ("reset_run_join_3",      "engine_bench", "reset_run_join_3/new/estimates.json"),
     ("reset_run_retract_3",   "engine_bench", "reset_run_retract_3/new/estimates.json"),
     ("compile_template_rule", "engine_bench", "compile_template_rule/new/estimates.json"),
-    # waltz_bench (4, excluding _run_only)
+    # waltz_bench (11, excluding _run_only)
     ("waltz_5_junctions",     "waltz_bench",  "waltz_5_junctions/new/estimates.json"),
+    ("waltz_10_junctions",    "waltz_bench",  "waltz_10_junctions/new/estimates.json"),
     ("waltz_20_junctions",    "waltz_bench",  "waltz_20_junctions/new/estimates.json"),
     ("waltz_50_junctions",    "waltz_bench",  "waltz_50_junctions/new/estimates.json"),
     ("waltz_100_junctions",   "waltz_bench",  "waltz_100_junctions/new/estimates.json"),
-    # manners_bench (4, excluding _run_only)
+    ("waltz_150_junctions",   "waltz_bench",  "waltz_150_junctions/new/estimates.json"),
+    ("waltz_200_junctions",   "waltz_bench",  "waltz_200/waltz_200_junctions/new/estimates.json"),
+    ("waltz_300_junctions",   "waltz_bench",  "waltz_300/waltz_300_junctions/new/estimates.json"),
+    ("waltz_500_junctions",   "waltz_bench",  "waltz_500/waltz_500_junctions/new/estimates.json"),
+    ("waltz_750_junctions",   "waltz_bench",  "waltz_750/waltz_750_junctions/new/estimates.json"),
+    ("waltz_1000_junctions",  "waltz_bench",  "waltz_1000/waltz_1000_junctions/new/estimates.json"),
+    # manners_bench (9, excluding _run_only)
     ("manners_8_guests",      "manners_bench", "manners_8_guests/new/estimates.json"),
     ("manners_16_guests",     "manners_bench", "manners_16_guests/new/estimates.json"),
     ("manners_32_guests",     "manners_bench", "manners_32_guests/new/estimates.json"),
+    ("manners_48_guests",     "manners_bench", "manners_48_guests/new/estimates.json"),
     ("manners_64_guests",     "manners_bench", "manners_64/manners_64_guests/new/estimates.json"),
-    # join_bench (4, excluding _run_only)
+    ("manners_96_guests",     "manners_bench", "manners_96/manners_96_guests/new/estimates.json"),
+    ("manners_128_guests",    "manners_bench", "manners_128/manners_128_guests/new/estimates.json"),
+    ("manners_256_guests",    "manners_bench", "manners_256/manners_256_guests/new/estimates.json"),
+    ("manners_512_guests",    "manners_bench", "manners_512/manners_512_guests/new/estimates.json"),
+    # join_bench (10, excluding _run_only)
     ("join_3_wide",           "join_bench",    "join_3_wide/new/estimates.json"),
     ("join_5_wide",           "join_bench",    "join_5_wide/new/estimates.json"),
     ("join_7_wide",           "join_bench",    "join_7_wide/new/estimates.json"),
     ("join_9_wide",           "join_bench",    "join_9_wide/new/estimates.json"),
-    # churn_bench (4, excluding _run_only)
+    ("join_11_wide",          "join_bench",    "join_11_wide/new/estimates.json"),
+    ("join_13_wide",          "join_bench",    "join_13_wide/new/estimates.json"),
+    ("join_15_wide",          "join_bench",    "join_15/join_15_wide/new/estimates.json"),
+    ("join_17_wide",          "join_bench",    "join_17/join_17_wide/new/estimates.json"),
+    ("join_19_wide",          "join_bench",    "join_19/join_19_wide/new/estimates.json"),
+    ("join_21_wide",          "join_bench",    "join_21/join_21_wide/new/estimates.json"),
+    # churn_bench (10, excluding _run_only)
     ("churn_100_facts",       "churn_bench",   "churn_100_facts/new/estimates.json"),
+    ("churn_250_facts",       "churn_bench",   "churn_250_facts/new/estimates.json"),
     ("churn_500_facts",       "churn_bench",   "churn_500_facts/new/estimates.json"),
+    ("churn_1000_facts",      "churn_bench",   "churn_1000_facts/new/estimates.json"),
     ("churn_2000_facts",      "churn_bench",   "churn_2000_facts/new/estimates.json"),
+    ("churn_5000_facts",      "churn_bench",   "churn_5000_facts/new/estimates.json"),
     ("churn_10000_facts",     "churn_bench",   "churn_10000/churn_10000_facts/new/estimates.json"),
-    # negation_bench (4, excluding _run_only)
+    ("churn_25000_facts",     "churn_bench",   "churn_25000/churn_25000_facts/new/estimates.json"),
+    ("churn_50000_facts",     "churn_bench",   "churn_50000/churn_50000_facts/new/estimates.json"),
+    ("churn_100000_facts",    "churn_bench",   "churn_100000/churn_100000_facts/new/estimates.json"),
+    # negation_bench (10, excluding _run_only)
     ("negation_50_blockers",  "negation_bench", "negation_50_blockers/new/estimates.json"),
+    ("negation_100_blockers", "negation_bench", "negation_100_blockers/new/estimates.json"),
     ("negation_200_blockers", "negation_bench", "negation_200_blockers/new/estimates.json"),
+    ("negation_500_blockers", "negation_bench", "negation_500_blockers/new/estimates.json"),
     ("negation_1000_blockers","negation_bench", "negation_1000_blockers/new/estimates.json"),
+    ("negation_2500_blockers","negation_bench", "negation_2500_blockers/new/estimates.json"),
     ("negation_5000_blockers","negation_bench", "negation_5000/negation_5000_blockers/new/estimates.json"),
+    ("negation_10000_blockers","negation_bench","negation_10000/negation_10000_blockers/new/estimates.json"),
+    ("negation_25000_blockers","negation_bench","negation_25000/negation_25000_blockers/new/estimates.json"),
+    ("negation_50000_blockers","negation_bench","negation_50000/negation_50000_blockers/new/estimates.json"),
 ]
 
 # Suites and their Criterion filter regexes (to exclude _run_only variants)
@@ -99,25 +130,55 @@ SUITES = [
 # Criterion benchmark name -> .clp workload filename (for CLIPS reference)
 CLIPS_WORKLOADS = {
     "waltz_5_junctions":     "waltz-5.clp",
+    "waltz_10_junctions":    "waltz-10.clp",
     "waltz_20_junctions":    "waltz-20.clp",
     "waltz_50_junctions":    "waltz-50.clp",
     "waltz_100_junctions":   "waltz-100.clp",
+    "waltz_150_junctions":   "waltz-150.clp",
+    "waltz_200_junctions":   "waltz-200.clp",
+    "waltz_300_junctions":   "waltz-300.clp",
+    "waltz_500_junctions":   "waltz-500.clp",
+    "waltz_750_junctions":   "waltz-750.clp",
+    "waltz_1000_junctions":  "waltz-1000.clp",
     "manners_8_guests":      "manners-8.clp",
     "manners_16_guests":     "manners-16.clp",
     "manners_32_guests":     "manners-32.clp",
+    "manners_48_guests":     "manners-48.clp",
     "manners_64_guests":     "manners-64.clp",
+    "manners_96_guests":     "manners-96.clp",
+    "manners_128_guests":    "manners-128.clp",
+    "manners_256_guests":    "manners-256.clp",
+    "manners_512_guests":    "manners-512.clp",
     "join_3_wide":           "join-3.clp",
     "join_5_wide":           "join-5.clp",
     "join_7_wide":           "join-7.clp",
     "join_9_wide":           "join-9.clp",
+    "join_11_wide":          "join-11.clp",
+    "join_13_wide":          "join-13.clp",
+    "join_15_wide":          "join-15.clp",
+    "join_17_wide":          "join-17.clp",
+    "join_19_wide":          "join-19.clp",
+    "join_21_wide":          "join-21.clp",
     "churn_100_facts":       "churn-100.clp",
+    "churn_250_facts":       "churn-250.clp",
     "churn_500_facts":       "churn-500.clp",
+    "churn_1000_facts":      "churn-1000.clp",
     "churn_2000_facts":      "churn-2000.clp",
+    "churn_5000_facts":      "churn-5000.clp",
     "churn_10000_facts":     "churn-10000.clp",
+    "churn_25000_facts":     "churn-25000.clp",
+    "churn_50000_facts":     "churn-50000.clp",
+    "churn_100000_facts":    "churn-100000.clp",
     "negation_50_blockers":  "negation-50.clp",
+    "negation_100_blockers": "negation-100.clp",
     "negation_200_blockers": "negation-200.clp",
+    "negation_500_blockers": "negation-500.clp",
     "negation_1000_blockers":"negation-1000.clp",
+    "negation_2500_blockers":"negation-2500.clp",
     "negation_5000_blockers":"negation-5000.clp",
+    "negation_10000_blockers":"negation-10000.clp",
+    "negation_25000_blockers":"negation-25000.clp",
+    "negation_50000_blockers":"negation-50000.clp",
 }
 
 
