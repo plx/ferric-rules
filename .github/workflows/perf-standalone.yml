@@ -25,6 +25,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install Python tools
+        working-directory: tools/ferric-tools
+        run: uv sync
+
       - name: Install native CLIPS
         run: |
           sudo apt-get update -qq
@@ -32,13 +42,13 @@ jobs:
 
       - name: Collect benchmark results
         run: |
-          python3 scripts/perf-collect.py \
+          cd tools/ferric-tools && uv run ferric-perf-collect \
             --commit-sha "${{ github.sha }}" \
             --clips-reference
 
       - name: Generate standalone report
         run: |
-          python3 scripts/perf-report.py \
+          cd tools/ferric-tools && uv run ferric-perf-report \
             --report /tmp/perf-report.md \
             --repo "${{ github.repository }}" \
             --commit-sha "${{ github.sha }}" \

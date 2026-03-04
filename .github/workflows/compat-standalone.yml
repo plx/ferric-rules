@@ -27,6 +27,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install Python tools
+        working-directory: tools/ferric-tools
+        run: uv sync
+
       - name: Build CLIPS reference image
         run: docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
 
@@ -34,14 +44,14 @@ jobs:
         run: cargo build --release -p ferric-cli
 
       - name: Run compat scan
-        run: python3 scripts/compat-scan.py
+        run: cd tools/ferric-tools && uv run ferric-compat-scan
 
       - name: Run compat assessment
-        run: python3 scripts/compat-run.py --workers 4 --timeout 30
+        run: cd tools/ferric-tools && uv run ferric-compat-run --workers 4 --timeout 30
 
       - name: Generate standalone report
         run: |
-          python3 scripts/compat-report.py \
+          cd tools/ferric-tools && uv run ferric-compat-report \
             --tsv /tmp/compat-report.tsv \
             --report /tmp/compat-report.md \
             --repo "${{ github.repository }}" \

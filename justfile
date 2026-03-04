@@ -89,16 +89,42 @@ clippy:
 cargo-check:
     cargo check --workspace
 
+# ── Python tooling ───────────────────────────────────────────────────────────
+
+# Helper to run ferric-tools commands
+_uv *args:
+    cd tools/ferric-tools && uv run {{args}}
+
+# Check Python formatting
+py-fmt-check:
+    cd tools/ferric-tools && uv run ruff format --check src/ tests/
+
+# Apply Python formatting
+py-fmt:
+    cd tools/ferric-tools && uv run ruff format src/ tests/
+
+# Run Python linter
+py-lint:
+    cd tools/ferric-tools && uv run ruff check src/ tests/
+
+# Run Python linter with auto-fix
+py-lint-fix:
+    cd tools/ferric-tools && uv run ruff check --fix src/ tests/
+
+# Run Python tests
+py-test:
+    cd tools/ferric-tools && uv run pytest
+
 # ── Composite checks ────────────────────────────────────────────────────────
 
-# Full preflight: format check, clippy, all tests, cargo check
-check: fmt-check clippy test cargo-check
+# Full preflight: format check, clippy, all tests, cargo check, Python checks
+check: fmt-check clippy test cargo-check py-fmt-check py-lint py-test
 
 # Same as `check` — alias for the preflight script
 preflight: check
 
-# PR preflight: auto-fix formatting, then clippy + tests + cargo check
-preflight-pr: fmt clippy test cargo-check
+# PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks
+preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test
 
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 
@@ -130,37 +156,63 @@ bench-compare *args:
 
 # Scan test files and produce a compatibility manifest
 compat-scan *args:
-    python3 scripts/compat-scan.py {{args}}
+    just _uv ferric-compat-scan {{args}}
 
 # Run compatibility tests against ferric and CLIPS
 compat-run *args:
-    python3 scripts/compat-run.py {{args}}
+    just _uv ferric-compat-run {{args}}
 
 # Generate compatibility report from manifest
 compat-report *args:
-    python3 scripts/compat-report.py {{args}}
+    just _uv ferric-compat-report {{args}}
+
+# Compare two compat manifests
+compat-diff *args:
+    just _uv ferric-compat-diff {{args}}
 
 # Full compatibility assessment: scan, run, report
 assess-compatibility: compat-scan compat-run compat-report
+
+# ── Bat processing ───────────────────────────────────────────────────────────
+
+# Analyze .bat files from the test suite
+bat-analyze *args:
+    just _uv ferric-bat-analyze {{args}}
+
+# Extract standalone .clp segments from .bat analysis
+bat-extract *args:
+    just _uv ferric-bat-extract {{args}}
+
+# Convert benchmark .bat files into self-contained .clp files
+bat-convert *args:
+    just _uv ferric-bat-convert {{args}}
+
+# Generate harness files for library-only .clp files
+harness-gen *args:
+    just _uv ferric-harness-gen {{args}}
+
+# Run segment check against extracted segments
+segment-check *args:
+    just _uv ferric-segment-check {{args}}
 
 # ── Performance assessment ─────────────────────────────────────────────────
 
 # Collect Criterion benchmark results into a performance manifest
 perf-collect *args:
-    python3 scripts/perf-collect.py {{args}}
+    just _uv ferric-perf-collect {{args}}
 
 # Generate performance report from manifest
 perf-report *args:
-    python3 scripts/perf-report.py {{args}}
+    just _uv ferric-perf-report {{args}}
 
 # Compare two performance manifests
 perf-diff *args:
-    python3 scripts/perf-diff.py {{args}}
+    just _uv ferric-perf-diff {{args}}
 
 # Full performance assessment: collect (with CLIPS reference) and report
 assess-performance: clips-build
-    python3 scripts/perf-collect.py --clips-reference
-    python3 scripts/perf-report.py
+    just _uv ferric-perf-collect --clips-reference
+    just _uv ferric-perf-report
 
 # ── CLIPS reference ─────────────────────────────────────────────────────────
 

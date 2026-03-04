@@ -1,41 +1,25 @@
-#!/usr/bin/env python3
-"""Compare two compatibility manifests and produce a Markdown summary.
+"""Compare two compatibility manifests and produce a Markdown summary."""
 
-Reads a "base" and "head" manifest (as produced by compat-scan.py /
-compat-run.py) and emits a Markdown table showing classification
-changes between the two.
+from __future__ import annotations
 
-Usage:
-    python scripts/compat-diff.py BASE_MANIFEST HEAD_MANIFEST [options]
-
-Options:
-    --tsv FILE          Write per-file raw data as TSV
-    --report FILE       Write a self-contained Markdown report with context
-    --repo OWNER/REPO   GitHub repository (for commit links)
-    --base-sha SHA      Base commit SHA (for commit links)
-    --head-sha SHA      Head commit SHA (for commit links)
-
-Stdout is always the comparison table (suitable for $GITHUB_STEP_SUMMARY).
-"""
-
-import argparse
 import csv
-import json
-import sys
+from typing import Annotated
+
+import typer
+from rich.console import Console
+
+from ferric_tools._manifest import load_manifest
+
+app = typer.Typer(help="Compare two compat manifests.")
+console = Console(stderr=True)
 
 DISPLAY_ORDER = ["equivalent", "divergent", "incompatible", "pending"]
 
 # Ordered from best to worst for determining regressions vs improvements.
-# equivalent (best) > divergent > pending > incompatible (worst)
 RANK = {"equivalent": 0, "divergent": 1, "pending": 2, "incompatible": 3}
 
 
-def load_manifest(path):
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def fmt_delta(n):
+def fmt_delta(n: int) -> str:
     if n > 0:
         return f"+{n}"
     if n < 0:
@@ -43,7 +27,7 @@ def fmt_delta(n):
     return "0"
 
 
-def compute_diff(base, head):
+def compute_diff(base: dict, head: dict) -> tuple[dict, dict, list, list, list]:
     """Compute counts and per-file changes between two manifests.
 
     Returns (base_counts, head_counts, regressions, real_improvements, reason_changes).
@@ -64,8 +48,8 @@ def compute_diff(base, head):
         if cls in head_counts:
             head_counts[cls] += 1
 
-    improvements = []
-    regressions = []
+    improvements: list[tuple] = []
+    regressions: list[tuple] = []
 
     all_keys = sorted(set(base_files) | set(head_files))
     for key in all_keys:
@@ -100,15 +84,21 @@ def compute_diff(base, head):
     return base_counts, head_counts, regressions, real_improvements, reason_changes
 
 
-def format_markdown(base_counts, head_counts, regressions, real_improvements,
-                    reason_changes, *, repo=None, base_sha=None, head_sha=None):
+def format_markdown(
+    base_counts: dict,
+    head_counts: dict,
+    regressions: list,
+    real_improvements: list,
+    reason_changes: list,
+    *,
+    repo: str | None = None,
+    base_sha: str | None = None,
+    head_sha: str | None = None,
+) -> list[str]:
     """Build the full Markdown report as a list of lines."""
-    lines = []
-
+    lines: list[str] = []
     lines.append("## CLIPS Compatibility Report")
     lines.append("")
-
-    # Context blurb + commit links
     lines.append("Compares ferric's compatibility with CLIPS across a corpus of")
     lines.append("example `.clp` files. Each file is classified as **equivalent**")
     lines.append("(output matches CLIPS), **divergent** (runs but output differs),")
@@ -130,13 +120,12 @@ def format_markdown(base_counts, head_counts, regressions, real_improvements,
         b = base_counts[cls]
         h = head_counts[cls]
         d = h - b
-        delta_str = f"**{fmt_delta(d)}**" if d != 0 else "—"
+        delta_str = f"**{fmt_delta(d)}**" if d != 0 else "\u2014"
         lines.append(f"| {cls} | {b} | {h} | {delta_str} |")
     d_total = head_total - base_total
-    delta_total = f"**{fmt_delta(d_total)}**" if d_total != 0 else "—"
+    delta_total = f"**{fmt_delta(d_total)}**" if d_total != 0 else "\u2014"
     lines.append(f"| **total** | **{base_total}** | **{head_total}** | {delta_total} |")
 
-    # Regressions
     lines.append("")
     if regressions:
         lines.append(f"### Regressions ({len(regressions)})")
@@ -150,7 +139,6 @@ def format_markdown(base_counts, head_counts, regressions, real_improvements,
         lines.append("")
         lines.append("None")
 
-    # Improvements
     lines.append("")
     if real_improvements:
         lines.append(f"### Improvements ({len(real_improvements)})")
@@ -164,14 +152,16 @@ def format_markdown(base_counts, head_counts, regressions, real_improvements,
         lines.append("")
         lines.append("None")
 
-    # Reason-only changes
     if reason_changes:
         lines.append("")
-        lines.append(f"<details><summary>Reason changes within same classification ({len(reason_changes)})</summary>")
+        lines.append(
+            "<details><summary>Reason changes within same classification"
+            f" ({len(reason_changes)})</summary>"
+        )
         lines.append("")
         lines.append("| File | Classification | Before | After |")
         lines.append("|---|---|---|---|")
-        for path, b_cls, b_reason, h_cls, h_reason in reason_changes:
+        for path, b_cls, b_reason, _h_cls, h_reason in reason_changes:
             lines.append(f"| `{path}` | {b_cls} | {b_reason} | {h_reason} |")
         lines.append("")
         lines.append("</details>")
@@ -179,16 +169,19 @@ def format_markdown(base_counts, head_counts, regressions, real_improvements,
     return lines
 
 
-def write_tsv(base, head, tsv_path):
+def write_tsv(base: dict, head: dict, tsv_path: str) -> None:
     """Write per-file raw data as TSV."""
     base_files = base.get("files", {})
     head_files = head.get("files", {})
     all_keys = sorted(set(base_files) | set(head_files))
 
     fieldnames = [
-        "path", "source",
-        "base_classification", "base_reason",
-        "head_classification", "head_reason",
+        "path",
+        "source",
+        "base_classification",
+        "base_reason",
+        "head_classification",
+        "head_reason",
         "change",
     ]
 
@@ -204,7 +197,7 @@ def write_tsv(base, head, tsv_path):
             b_reason = b.get("reason", "") if b else ""
             h_cls = h["classification"] if h else ""
             h_reason = h.get("reason", "") if h else ""
-            source = (h or b).get("source", "")
+            source_val = (h or b).get("source", "")
 
             if not b:
                 change = "added"
@@ -219,57 +212,60 @@ def write_tsv(base, head, tsv_path):
             else:
                 change = "unchanged"
 
-            writer.writerow({
-                "path": key,
-                "source": source,
-                "base_classification": b_cls,
-                "base_reason": b_reason,
-                "head_classification": h_cls,
-                "head_reason": h_reason,
-                "change": change,
-            })
+            writer.writerow(
+                {
+                    "path": key,
+                    "source": source_val,
+                    "base_classification": b_cls,
+                    "base_reason": b_reason,
+                    "head_classification": h_cls,
+                    "head_reason": h_reason,
+                    "change": change,
+                }
+            )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Compare two compat manifests")
-    parser.add_argument("base_manifest", help="Base manifest JSON")
-    parser.add_argument("head_manifest", help="Head manifest JSON")
-    parser.add_argument("--tsv", metavar="FILE", help="Write per-file data as TSV")
-    parser.add_argument("--report", metavar="FILE", help="Write self-contained Markdown report")
-    parser.add_argument("--repo", metavar="OWNER/REPO", help="GitHub repository for commit links")
-    parser.add_argument("--base-sha", metavar="SHA", help="Base commit SHA")
-    parser.add_argument("--head-sha", metavar="SHA", help="Head commit SHA")
+@app.command()
+def main(
+    base_manifest: Annotated[str, typer.Argument(help="Base manifest JSON")],
+    head_manifest: Annotated[str, typer.Argument(help="Head manifest JSON")],
+    tsv: Annotated[str | None, typer.Option(help="Write per-file data as TSV")] = None,
+    report: Annotated[str | None, typer.Option(help="Write self-contained Markdown report")] = None,
+    repo: Annotated[str | None, typer.Option(help="GitHub repository for commit links")] = None,
+    base_sha: Annotated[str | None, typer.Option(help="Base commit SHA")] = None,
+    head_sha: Annotated[str | None, typer.Option(help="Head commit SHA")] = None,
+) -> None:
+    """Compare two compat manifests."""
+    base = load_manifest(base_manifest)
+    head = load_manifest(head_manifest)
 
-    args = parser.parse_args()
+    base_counts, head_counts, regressions, real_improvements, reason_changes = compute_diff(
+        base, head
+    )
 
-    base = load_manifest(args.base_manifest)
-    head = load_manifest(args.head_manifest)
-
-    base_counts, head_counts, regressions, real_improvements, reason_changes = compute_diff(base, head)
-
-    # Always write the comparison table to stdout (for $GITHUB_STEP_SUMMARY)
     md_lines = format_markdown(
-        base_counts, head_counts, regressions, real_improvements, reason_changes,
-        repo=args.repo, base_sha=args.base_sha, head_sha=args.head_sha,
+        base_counts,
+        head_counts,
+        regressions,
+        real_improvements,
+        reason_changes,
+        repo=repo,
+        base_sha=base_sha,
+        head_sha=head_sha,
     )
     print("\n".join(md_lines))
 
-    # Optional: write self-contained Markdown report to file
-    if args.report:
-        with open(args.report, "w", encoding="utf-8") as f:
+    if report:
+        with open(report, "w", encoding="utf-8") as f:
             f.write("\n".join(md_lines))
             f.write("\n")
 
-    # Optional: write TSV
-    if args.tsv:
-        write_tsv(base, head, args.tsv)
+    if tsv:
+        write_tsv(base, head, tsv)
 
-    # Exit with code 1 if there are regressions.
-    # The CI workflow uses continue-on-error so this surfaces as a
-    # visible warning rather than a hard failure.
     if regressions:
-        sys.exit(1)
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    app()
