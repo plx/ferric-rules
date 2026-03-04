@@ -130,8 +130,9 @@ pub fn fact_to_python(
                 .collect();
             let fields_list = pyo3::types::PyList::new(py, &fields)?.into_any().unbind();
 
-            // Build slots dict if we can resolve slot names
-            let slots = if let Some(slot_names) = engine.template_slot_names(&tmpl_name) {
+            // Build slots dict if we can resolve slot names (by ID to avoid
+            // name-collision mismatches).
+            let slots = if let Some(slot_names) = engine.template_slot_names_by_id(template.template_id) {
                 let dict = PyDict::new(py);
                 for (name, val) in slot_names.iter().zip(fields.iter()) {
                     dict.set_item(name, val)?;
