@@ -1,8 +1,11 @@
 # ferric-rules
 
-`ferric-rules` is intending to be an *almost* drop-in replacement for the CLIPS rules engine.
-It will be written in Rust and will be designed for easy building and for easy embedding within other applications.
+`ferric-rules` is intended to be an *almost* drop-in replacement for the CLIPS rules engine.
 
-The `documents` folder contains a detailed implementation plan for the project (`FerricImplementationPlan.md`), and is where any other planning documents will be stored.
+It is written in Rust and has been designed for easy building and for easy embedding within other applications.
 
-Note that the project has a thorough *implementation plan* but remains *very* early in development.
+At this point we have a fully-functional prototype with all core functionality implemented and *apparently* working, and are continuing to focus on validation, polish, and performance.
+
+We primarily use `just` to organize project-related commands, but feel free to make direct use of `cargo`, etc., when convenient.
+
+Please always run `just preflight-pr` before opening a PR or pushing code to update a PR—let's find-and-fix formatting and linter issues locally, rather than in CI.
