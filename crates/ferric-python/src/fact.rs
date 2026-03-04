@@ -132,15 +132,16 @@ pub fn fact_to_python(
 
             // Build slots dict if we can resolve slot names (by ID to avoid
             // name-collision mismatches).
-            let slots = if let Some(slot_names) = engine.template_slot_names_by_id(template.template_id) {
-                let dict = PyDict::new(py);
-                for (name, val) in slot_names.iter().zip(fields.iter()) {
-                    dict.set_item(name, val)?;
-                }
-                Some(dict.into_any().unbind())
-            } else {
-                None
-            };
+            let slots =
+                if let Some(slot_names) = engine.template_slot_names_by_id(template.template_id) {
+                    let dict = PyDict::new(py);
+                    for (name, val) in slot_names.iter().zip(fields.iter()) {
+                        dict.set_item(name, val)?;
+                    }
+                    Some(dict.into_any().unbind())
+                } else {
+                    None
+                };
 
             Ok(Fact {
                 id,
