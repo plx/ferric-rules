@@ -3028,6 +3028,10 @@ mod tests {
                     | "exists"
                     | "forall"
                     | "logical"
+                    | "if"
+                    | "while"
+                    | "switch"
+                    | "foreach"
             )
         })
     }
