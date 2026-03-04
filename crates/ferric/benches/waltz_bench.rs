@@ -99,6 +99,18 @@ fn bench_waltz_5(c: &mut Criterion) {
     });
 }
 
+fn bench_waltz_10(c: &mut Criterion) {
+    let source = generate_waltz_source(10);
+    c.bench_function("waltz_10_junctions", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+}
+
 fn bench_waltz_20(c: &mut Criterion) {
     let source = generate_waltz_source(20);
     c.bench_function("waltz_20_junctions", |b| {
@@ -135,6 +147,93 @@ fn bench_waltz_100(c: &mut Criterion) {
     });
 }
 
+fn bench_waltz_150(c: &mut Criterion) {
+    let source = generate_waltz_source(150);
+    c.bench_function("waltz_150_junctions", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+}
+
+fn bench_waltz_200(c: &mut Criterion) {
+    let source = generate_waltz_source(200);
+    let mut group = c.benchmark_group("waltz_200");
+    group.sample_size(10);
+    group.bench_function("waltz_200_junctions", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_waltz_300(c: &mut Criterion) {
+    let source = generate_waltz_source(300);
+    let mut group = c.benchmark_group("waltz_300");
+    group.sample_size(10);
+    group.bench_function("waltz_300_junctions", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_waltz_500(c: &mut Criterion) {
+    let source = generate_waltz_source(500);
+    let mut group = c.benchmark_group("waltz_500");
+    group.sample_size(10);
+    group.bench_function("waltz_500_junctions", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_waltz_750(c: &mut Criterion) {
+    let source = generate_waltz_source(750);
+    let mut group = c.benchmark_group("waltz_750");
+    group.sample_size(10);
+    group.bench_function("waltz_750_junctions", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_waltz_1000(c: &mut Criterion) {
+    let source = generate_waltz_source(1000);
+    let mut group = c.benchmark_group("waltz_1000");
+    group.sample_size(10);
+    group.bench_function("waltz_1000_junctions", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
 fn bench_waltz_5_run_only(c: &mut Criterion) {
     let source = generate_waltz_source(5);
     let mut engine = Engine::new(EngineConfig::utf8());
@@ -150,9 +249,16 @@ fn bench_waltz_5_run_only(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_waltz_5,
+    bench_waltz_10,
     bench_waltz_20,
     bench_waltz_50,
     bench_waltz_100,
+    bench_waltz_150,
+    bench_waltz_200,
+    bench_waltz_300,
+    bench_waltz_500,
+    bench_waltz_750,
+    bench_waltz_1000,
     bench_waltz_5_run_only,
 );
 criterion_main!(benches);

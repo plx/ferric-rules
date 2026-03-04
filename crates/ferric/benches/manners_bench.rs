@@ -109,11 +109,83 @@ fn bench_manners_32(c: &mut Criterion) {
     });
 }
 
+fn bench_manners_48(c: &mut Criterion) {
+    let source = generate_manners_source(48);
+    c.bench_function("manners_48_guests", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+}
+
 fn bench_manners_64(c: &mut Criterion) {
     let source = generate_manners_source(64);
     let mut group = c.benchmark_group("manners_64");
     group.sample_size(10);
     group.bench_function("manners_64_guests", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_manners_96(c: &mut Criterion) {
+    let source = generate_manners_source(96);
+    let mut group = c.benchmark_group("manners_96");
+    group.sample_size(10);
+    group.bench_function("manners_96_guests", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_manners_128(c: &mut Criterion) {
+    let source = generate_manners_source(128);
+    let mut group = c.benchmark_group("manners_128");
+    group.sample_size(10);
+    group.bench_function("manners_128_guests", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_manners_256(c: &mut Criterion) {
+    let source = generate_manners_source(256);
+    let mut group = c.benchmark_group("manners_256");
+    group.sample_size(10);
+    group.bench_function("manners_256_guests", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+    group.finish();
+}
+
+fn bench_manners_512(c: &mut Criterion) {
+    let source = generate_manners_source(512);
+    let mut group = c.benchmark_group("manners_512");
+    group.sample_size(10);
+    group.bench_function("manners_512_guests", |b| {
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -141,7 +213,12 @@ criterion_group!(
     bench_manners_8,
     bench_manners_16,
     bench_manners_32,
+    bench_manners_48,
     bench_manners_64,
+    bench_manners_96,
+    bench_manners_128,
+    bench_manners_256,
+    bench_manners_512,
     bench_manners_8_run_only,
 );
 criterion_main!(benches);
