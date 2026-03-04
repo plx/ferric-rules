@@ -4050,7 +4050,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            values_atom_eq(&Value::Float(3.14), &Value::Float(3.14)),
+            values_atom_eq(&Value::Float(2.72), &Value::Float(2.72)),
             Some(true)
         );
         let s = FerricString::new("hello", StringEncoding::Ascii).unwrap();
@@ -4125,16 +4125,14 @@ mod tests {
 
     #[test]
     fn values_atom_eq_multifield_and_void_return_none() {
-        use crate::value::Multifield;
-
-        let mf = Value::Multifield(Box::new(Multifield::new()));
+        let mf = Value::Multifield(Box::default());
 
         // Multifield vs atomic
         assert_eq!(values_atom_eq(&mf, &Value::Integer(1)), None);
         assert_eq!(values_atom_eq(&Value::Integer(1), &mf), None);
         // Multifield vs Multifield
         assert_eq!(
-            values_atom_eq(&mf, &Value::Multifield(Box::new(Multifield::new()))),
+            values_atom_eq(&mf, &Value::Multifield(Box::default())),
             None
         );
         // Void vs atomic
@@ -4151,7 +4149,7 @@ mod tests {
     // Helper for integration tests
     // -----------------------------------------------------------------------
 
-    /// Build a two-pattern rule: (base ?x) (target <join_test> ?x) => activation.
+    /// Build a two-pattern rule: `(base ?x) (target <join_test> ?x)` => activation.
     fn build_two_pattern_rule_with_join_test(
         symbol_table: &mut SymbolTable,
         test_type: JoinTestType,
