@@ -73,6 +73,23 @@ jobs:
           uv sync
           uv run pytest tests/ -v
 
+  python-tools:
+    name: Python Tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install and check
+        working-directory: tools/ferric-tools
+        run: |
+          uv sync
+          uv run ruff format --check src/ tests/
+          uv run ruff check src/ tests/
+          uv run pytest -v
+
   clips-compat:
     name: CLIPS Compat
     runs-on: ubuntu-latest

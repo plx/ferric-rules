@@ -45,6 +45,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
       - name: Install native CLIPS
         run: |
           sudo apt-get update -qq
@@ -54,9 +60,10 @@ jobs:
       - name: Benchmark base branch
         run: |
           git checkout ${{ inputs.base_sha }}
-          git checkout ${{ inputs.head_sha }} -- scripts/
+          git checkout ${{ inputs.head_sha }} -- tools/ferric-tools/
+          uv sync --project tools/ferric-tools
           rm -rf target/criterion
-          python3 scripts/perf-collect.py \
+          uv run --project tools/ferric-tools ferric-perf-collect \
             --commit-sha "${{ inputs.base_sha }}" \
             --output /tmp/base-perf-manifest.json
 
@@ -64,8 +71,9 @@ jobs:
       - name: Benchmark head
         run: |
           git checkout ${{ inputs.head_sha }}
+          uv sync --project tools/ferric-tools
           rm -rf target/criterion
-          python3 scripts/perf-collect.py \
+          uv run --project tools/ferric-tools ferric-perf-collect \
             --commit-sha "${{ inputs.head_sha }}" \
             --output /tmp/head-perf-manifest.json \
             --clips-reference
@@ -73,7 +81,7 @@ jobs:
       # ── Comparison report ──────────────────────────────────────────────
       - name: Generate comparison report
         run: |
-          python3 scripts/perf-diff.py \
+          uv run --project tools/ferric-tools ferric-perf-diff \
             /tmp/base-perf-manifest.json /tmp/head-perf-manifest.json \
             --report /tmp/perf-diff-report.md \
             --repo "${{ github.repository }}" \

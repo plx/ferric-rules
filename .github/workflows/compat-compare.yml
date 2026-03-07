@@ -45,6 +45,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
       - name: Build CLIPS reference image
         run: docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
 
@@ -52,10 +58,10 @@ jobs:
       - name: Assess base branch
         run: |
           git checkout ${{ inputs.base_sha }}
-          git checkout ${{ inputs.head_sha }} -- scripts/
+          git checkout ${{ inputs.head_sha }} -- tools/ferric-tools/
           cargo build --release -p ferric-cli
-          python3 scripts/compat-scan.py
-          python3 scripts/compat-run.py --workers 4 --timeout 30
+          uv run --project tools/ferric-tools ferric-compat-scan
+          uv run --project tools/ferric-tools ferric-compat-run --workers 4 --timeout 30
           cp tests/examples/compat-manifest.json /tmp/base-compat-manifest.json
           rm -f tests/examples/compat-manifest.json
           git checkout ${{ inputs.head_sha }}
@@ -65,16 +71,16 @@ jobs:
         run: cargo build --release -p ferric-cli
 
       - name: Run compat scan
-        run: python3 scripts/compat-scan.py
+        run: uv run --project tools/ferric-tools ferric-compat-scan
 
       - name: Run compat assessment
-        run: python3 scripts/compat-run.py --workers 4 --timeout 30
+        run: uv run --project tools/ferric-tools ferric-compat-run --workers 4 --timeout 30
 
       # ── Comparison report ──────────────────────────────────────────────
       - name: Generate comparison report
         continue-on-error: true
         run: |
-          python3 scripts/compat-diff.py \
+          uv run --project tools/ferric-tools ferric-compat-diff \
             /tmp/base-compat-manifest.json tests/examples/compat-manifest.json \
             --tsv /tmp/compat-diff.tsv \
             --report /tmp/compat-diff-report.md \

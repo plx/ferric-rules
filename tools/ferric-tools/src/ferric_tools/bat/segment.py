@@ -1,21 +1,21 @@
-#!/usr/bin/env python3
-"""Run `ferric check` across extracted test-suite segments with expectations.
+"""Run `ferric check` across extracted test-suite segments with expectations."""
 
-This gives a compatibility-focused view that separates:
-- passing segments,
-- expected failures (intentional invalid fixtures),
-- unexpected failures (real blockers),
-- expectation mismatches (diagnostic drift / stale expectations).
-"""
+from __future__ import annotations
 
-import argparse
 import fnmatch
 import json
 import subprocess
-import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
+
+from ferric_tools._manifest import save_manifest
+from ferric_tools._subprocess import parallel_run
+
+app = typer.Typer(help="Sweep generated segments with expected-failure classification.")
+console = Console(stderr=True)
 
 
 def load_expectations(path: Path) -> dict:
@@ -33,7 +33,7 @@ def load_expectations(path: Path) -> dict:
 
 
 def run_check(file_path: Path, ferric_cmd: list[str]) -> tuple[int, str]:
-    cmd = ferric_cmd + [str(file_path)]
+    cmd = [*ferric_cmd, str(file_path)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     stderr = (proc.stderr or "").strip()
     stdout = (proc.stdout or "").strip()
@@ -45,7 +45,6 @@ def summarize_signature(diagnostic: str) -> str:
     if not diagnostic:
         return ""
     first = diagnostic.splitlines()[0]
-    # Trim source-position tail to group similar failures.
     marker = " at line "
     idx = first.find(marker)
     if idx >= 0:
@@ -65,7 +64,9 @@ def resolve_expectation(filename: str, expectations: dict) -> dict | None:
     return None
 
 
-def classify_result(filename: str, exit_code: int, diagnostic: str, expectation: dict | None) -> str:
+def classify_result(
+    filename: str, exit_code: int, diagnostic: str, expectation: dict | None
+) -> str:
     failed = exit_code != 0
     if expectation is None:
         return "unexpected_fail" if failed else "pass"
@@ -84,75 +85,43 @@ def classify_result(filename: str, exit_code: int, diagnostic: str, expectation:
     return "unexpected_fail"
 
 
-def worker(args):
+def _worker(args: tuple) -> tuple[str, int, str]:
     file_path, ferric_cmd = args
     exit_code, diagnostic = run_check(file_path, ferric_cmd)
     return file_path.name, exit_code, diagnostic
 
 
-def run_jobs(files: list[Path], ferric_cmd: list[str], workers: int):
-    args = [(f, ferric_cmd) for f in files]
-    max_workers = max(1, workers)
+@app.command()
+def main(
+    segments_dir: Annotated[
+        str,
+        typer.Option(help="Directory containing extracted segment .clp files"),
+    ] = "tests/generated/test-suite-segments",
+    expectations: Annotated[
+        str,
+        typer.Option(help="JSON file containing expected failing segment diagnostics"),
+    ] = "tests/generated/segment-check-expectations.json",
+    workers: Annotated[int, typer.Option(help="Parallel worker count")] = 4,
+    json_out: Annotated[
+        str | None,
+        typer.Option(help="Optional JSON output path for detailed results"),
+    ] = None,
+    ferric_bin: Annotated[
+        str | None,
+        typer.Option(help="Path to ferric binary"),
+    ] = None,
+) -> None:
+    """Sweep generated segments with expected-failure classification."""
+    seg_dir = Path(segments_dir)
+    if not seg_dir.is_dir():
+        console.print(f"[red]error:[/] segments directory not found: {seg_dir}")
+        raise typer.Exit(2)
 
-    # Prefer process pool for throughput, but degrade gracefully in restricted
-    # environments where semaphore/process limits are blocked.
-    try:
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(worker, a) for a in args]
-            for fut in as_completed(futures):
-                yield fut.result()
-        return
-    except PermissionError:
-        pass
-    except OSError:
-        pass
+    expectations_path = Path(expectations)
+    expect_data = load_expectations(expectations_path)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = [ex.submit(worker, a) for a in args]
-        for fut in as_completed(futures):
-            yield fut.result()
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Sweep generated segments with expected-failure classification.")
-    parser.add_argument(
-        "--segments-dir",
-        default="tests/generated/test-suite-segments",
-        help="Directory containing extracted segment .clp files.",
-    )
-    parser.add_argument(
-        "--expectations",
-        default="tests/generated/segment-check-expectations.json",
-        help="JSON file containing expected failing segment diagnostics.",
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=4,
-        help="Parallel worker count.",
-    )
-    parser.add_argument(
-        "--json-out",
-        default=None,
-        help="Optional JSON output path for detailed results.",
-    )
-    parser.add_argument(
-        "--ferric-bin",
-        default=None,
-        help="Path to ferric binary. Defaults to target/debug/ferric if present, else cargo run.",
-    )
-    args = parser.parse_args()
-
-    segments_dir = Path(args.segments_dir)
-    if not segments_dir.is_dir():
-        print(f"error: segments directory not found: {segments_dir}", file=sys.stderr)
-        return 2
-
-    expectations_path = Path(args.expectations)
-    expectations = load_expectations(expectations_path)
-
-    if args.ferric_bin:
-        ferric_cmd = [args.ferric_bin, "check"]
+    if ferric_bin:
+        ferric_cmd = [ferric_bin, "check"]
     else:
         debug_bin = Path("target/debug/ferric")
         if debug_bin.exists():
@@ -160,12 +129,12 @@ def main() -> int:
         else:
             ferric_cmd = ["cargo", "run", "-q", "-p", "ferric-cli", "--", "check"]
 
-    files = sorted(segments_dir.glob("*.clp"))
+    files = sorted(seg_dir.glob("*.clp"))
     if not files:
-        print(f"error: no .clp files found in {segments_dir}", file=sys.stderr)
-        return 2
+        console.print(f"[red]error:[/] no .clp files found in {seg_dir}")
+        raise typer.Exit(2)
 
-    detailed = {}
+    detailed: dict[str, dict] = {}
     counts = {
         "pass": 0,
         "expected_fail": 0,
@@ -173,11 +142,11 @@ def main() -> int:
         "expected_mismatch": 0,
         "unexpected_pass": 0,
     }
+    sig_counts: dict[str, int] = {}
 
-    sig_counts = {}
-
-    for filename, exit_code, diagnostic in run_jobs(files, ferric_cmd, args.workers):
-        expectation = resolve_expectation(filename, expectations)
+    work_items = [(f, ferric_cmd) for f in files]
+    for filename, exit_code, diagnostic in parallel_run(_worker, work_items, workers=workers):
+        expectation = resolve_expectation(filename, expect_data)
         status = classify_result(filename, exit_code, diagnostic, expectation)
         counts[status] += 1
         sig = summarize_signature(diagnostic)
@@ -206,18 +175,18 @@ def main() -> int:
         for sig, n in sorted(sig_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:20]:
             print(f"{n:3d}  {sig}")
 
-    if args.json_out:
-        out_path = Path(args.json_out)
+    if json_out:
+        out_path = Path(json_out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "segments_dir": str(segments_dir),
+            "segments_dir": str(seg_dir),
             "expectations": str(expectations_path),
             "ferric_cmd": ferric_cmd,
             "counts": counts,
             "total": total,
             "files": detailed,
         }
-        out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        save_manifest(out_path, payload)
         print(f"\nDetailed JSON: {out_path}")
 
     has_unexpected = (
@@ -225,8 +194,8 @@ def main() -> int:
         or counts["expected_mismatch"] > 0
         or counts["unexpected_pass"] > 0
     )
-    return 1 if has_unexpected else 0
+    raise typer.Exit(1 if has_unexpected else 0)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    app()

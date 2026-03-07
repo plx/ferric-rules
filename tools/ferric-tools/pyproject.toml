@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ferric-tools"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.15",
+    "rich>=13",
+    "natsort>=8",
+]
+
+[project.scripts]
+ferric-compat-scan = "ferric_tools.compat.scan:app"
+ferric-compat-run = "ferric_tools.compat.run:app"
+ferric-compat-report = "ferric_tools.compat.report:app"
+ferric-compat-diff = "ferric_tools.compat.diff:app"
+ferric-bat-analyze = "ferric_tools.bat.analyze:app"
+ferric-bat-extract = "ferric_tools.bat.extract:app"
+ferric-bat-convert = "ferric_tools.bat.convert:app"
+ferric-harness-gen = "ferric_tools.bat.harness:app"
+ferric-segment-check = "ferric_tools.bat.segment:app"
+ferric-perf-collect = "ferric_tools.perf.collect:app"
+ferric-perf-report = "ferric_tools.perf.report:app"
+ferric-perf-diff = "ferric_tools.perf.diff:app"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.9"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
