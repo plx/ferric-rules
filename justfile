@@ -1,6 +1,9 @@
 # ferric-rules justfile
 # Run `just --list` to see all available recipes.
 
+# Pin PyO3 to a uv-managed Python 3.12 so builds work regardless of system Python.
+export PYO3_PYTHON := `uv python find 3.12 2>/dev/null || echo python3`
+
 # ── Workspace-wide builds ────────────────────────────────────────────────────
 
 # Build the entire workspace (debug)
