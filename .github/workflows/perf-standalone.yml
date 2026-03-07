@@ -31,10 +31,6 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
-      - name: Install Python tools
-        working-directory: tools/ferric-tools
-        run: uv sync
-
       - name: Install native CLIPS
         run: |
           sudo apt-get update -qq
@@ -42,13 +38,13 @@ jobs:
 
       - name: Collect benchmark results
         run: |
-          cd tools/ferric-tools && uv run ferric-perf-collect \
+          uv run --project tools/ferric-tools ferric-perf-collect \
             --commit-sha "${{ github.sha }}" \
             --clips-reference
 
       - name: Generate standalone report
         run: |
-          cd tools/ferric-tools && uv run ferric-perf-report \
+          uv run --project tools/ferric-tools ferric-perf-report \
             --report /tmp/perf-report.md \
             --repo "${{ github.repository }}" \
             --commit-sha "${{ github.sha }}" \

@@ -51,10 +51,6 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
-      - name: Install Python tools
-        working-directory: tools/ferric-tools
-        run: uv sync
-
       - name: Build CLIPS reference image
         run: docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
 
@@ -64,8 +60,8 @@ jobs:
           git checkout ${{ inputs.base_sha }}
           git checkout ${{ inputs.head_sha }} -- tools/ferric-tools/
           cargo build --release -p ferric-cli
-          cd tools/ferric-tools && uv run ferric-compat-scan
-          cd tools/ferric-tools && uv run ferric-compat-run --workers 4 --timeout 30
+          uv run --project tools/ferric-tools ferric-compat-scan
+          uv run --project tools/ferric-tools ferric-compat-run --workers 4 --timeout 30
           cp tests/examples/compat-manifest.json /tmp/base-compat-manifest.json
           rm -f tests/examples/compat-manifest.json
           git checkout ${{ inputs.head_sha }}
@@ -75,16 +71,16 @@ jobs:
         run: cargo build --release -p ferric-cli
 
       - name: Run compat scan
-        run: cd tools/ferric-tools && uv run ferric-compat-scan
+        run: uv run --project tools/ferric-tools ferric-compat-scan
 
       - name: Run compat assessment
-        run: cd tools/ferric-tools && uv run ferric-compat-run --workers 4 --timeout 30
+        run: uv run --project tools/ferric-tools ferric-compat-run --workers 4 --timeout 30
 
       # ── Comparison report ──────────────────────────────────────────────
       - name: Generate comparison report
         continue-on-error: true
         run: |
-          cd tools/ferric-tools && uv run ferric-compat-diff \
+          uv run --project tools/ferric-tools ferric-compat-diff \
             /tmp/base-compat-manifest.json tests/examples/compat-manifest.json \
             --tsv /tmp/compat-diff.tsv \
             --report /tmp/compat-diff-report.md \

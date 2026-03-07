@@ -61,9 +61,9 @@ jobs:
         run: |
           git checkout ${{ inputs.base_sha }}
           git checkout ${{ inputs.head_sha }} -- tools/ferric-tools/
-          cd tools/ferric-tools && uv sync
+          uv sync --project tools/ferric-tools
           rm -rf target/criterion
-          cd tools/ferric-tools && uv run ferric-perf-collect \
+          uv run --project tools/ferric-tools ferric-perf-collect \
             --commit-sha "${{ inputs.base_sha }}" \
             --output /tmp/base-perf-manifest.json
 
@@ -71,9 +71,9 @@ jobs:
       - name: Benchmark head
         run: |
           git checkout ${{ inputs.head_sha }}
-          cd tools/ferric-tools && uv sync
+          uv sync --project tools/ferric-tools
           rm -rf target/criterion
-          cd tools/ferric-tools && uv run ferric-perf-collect \
+          uv run --project tools/ferric-tools ferric-perf-collect \
             --commit-sha "${{ inputs.head_sha }}" \
             --output /tmp/head-perf-manifest.json \
             --clips-reference
@@ -81,7 +81,7 @@ jobs:
       # ── Comparison report ──────────────────────────────────────────────
       - name: Generate comparison report
         run: |
-          cd tools/ferric-tools && uv run ferric-perf-diff \
+          uv run --project tools/ferric-tools ferric-perf-diff \
             /tmp/base-perf-manifest.json /tmp/head-perf-manifest.json \
             --report /tmp/perf-diff-report.md \
             --repo "${{ github.repository }}" \
