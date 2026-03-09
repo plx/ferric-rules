@@ -578,6 +578,7 @@ impl Engine {
         ferric_span!(debug_span, "fire_rule", rule = rule_id.0);
         let Some(token) = self.rete.token_store.get(token_id).cloned() else {
             // No token — treat as not fired.
+            ferric_event!(debug, rule = rule_id.0, token = ?token_id, "activation_missing_token");
             return (false, false, false);
         };
 
@@ -585,6 +586,7 @@ impl Engine {
         // action helpers without deep-cloning `CompiledRuleInfo`.
         let Some(info) = rule_index_get(&self.rule_info, rule_id).cloned() else {
             // No compiled rule info — treat as not fired.
+            ferric_event!(debug, rule = rule_id.0, "activation_missing_rule_info");
             return (false, false, false);
         };
 
@@ -612,6 +614,16 @@ impl Engine {
             }
         }
 
+        ferric_event!(
+            debug,
+            rule = rule_id.0,
+            fired,
+            reset_requested,
+            clear_requested,
+            diagnostics = errors.len(),
+            focus_requests = focus_requests.len(),
+            "activation_actions_complete"
+        );
         self.action_diagnostics.extend(errors);
         (fired, reset_requested, clear_requested)
     }
@@ -668,6 +680,7 @@ impl Engine {
         self.action_diagnostics.clear();
 
         let Some(activation) = self.pop_next_focus_activation() else {
+            ferric_event!(debug, "engine_step_no_activation");
             return Ok(None);
         };
 
@@ -679,8 +692,17 @@ impl Engine {
         // Execute actions (errors are currently silently ignored).
         // The boolean return indicates whether test CEs passed, but step()
         // always returns Some(fired) to indicate an activation was processed.
-        let (_, reset_requested, clear_requested) =
+        let (_logically_fired, reset_requested, clear_requested) =
             self.execute_activation_actions(activation.rule, activation.token);
+        ferric_event!(
+            debug,
+            rule = activation.rule.0,
+            token = ?activation.token,
+            logically_fired = _logically_fired,
+            reset_requested,
+            clear_requested,
+            "engine_step_activation_processed"
+        );
 
         if clear_requested {
             self.clear();
@@ -723,6 +745,12 @@ impl Engine {
 
         while rules_fired < max_fires {
             if self.halted {
+                ferric_event!(
+                    info,
+                    rules_fired,
+                    halt_reason = "halt_requested",
+                    "engine_run_complete"
+                );
                 return Ok(RunResult {
                     rules_fired,
                     halt_reason: HaltReason::HaltRequested,
@@ -732,6 +760,12 @@ impl Engine {
             // Focus-aware activation selection preserves the final baseline
             // focus when no activations are eligible.
             let Some(activation) = self.pop_next_focus_activation() else {
+                ferric_event!(
+                    info,
+                    rules_fired,
+                    halt_reason = "agenda_empty",
+                    "engine_run_complete"
+                );
                 return Ok(RunResult {
                     rules_fired,
                     halt_reason: HaltReason::AgendaEmpty,
@@ -744,9 +778,25 @@ impl Engine {
             if logically_fired {
                 rules_fired += 1;
             }
+            ferric_event!(
+                debug,
+                rule = activation.rule.0,
+                token = ?activation.token,
+                logically_fired,
+                reset_requested,
+                clear_requested,
+                rules_fired,
+                "engine_run_activation_processed"
+            );
 
             if clear_requested {
                 self.clear();
+                ferric_event!(
+                    info,
+                    rules_fired,
+                    halt_reason = "clear_requested",
+                    "engine_run_complete"
+                );
                 return Ok(RunResult {
                     rules_fired,
                     halt_reason: HaltReason::HaltRequested,
@@ -757,6 +807,12 @@ impl Engine {
                 let _ = self.reset();
                 // Stop execution after reset — the caller can invoke run() again
                 // with the freshly-reset working memory.
+                ferric_event!(
+                    info,
+                    rules_fired,
+                    halt_reason = "reset_requested",
+                    "engine_run_complete"
+                );
                 return Ok(RunResult {
                     rules_fired,
                     halt_reason: HaltReason::HaltRequested,
@@ -764,6 +820,12 @@ impl Engine {
             }
         }
 
+        ferric_event!(
+            info,
+            rules_fired,
+            halt_reason = "limit_reached",
+            "engine_run_complete"
+        );
         Ok(RunResult {
             rules_fired,
             halt_reason: HaltReason::LimitReached,

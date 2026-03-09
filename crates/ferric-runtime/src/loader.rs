@@ -44,7 +44,7 @@ use crate::actions::{
 use crate::engine::{Engine, EngineError};
 use crate::functions::{get_or_insert_module_entry_with, insert_module_entry, UserFunction};
 use crate::templates::RegisteredTemplate;
-use crate::tracing_support::ferric_span;
+use crate::tracing_support::{ferric_event, ferric_span};
 // GenericRegistry accessed via self.generics (field on Engine)
 
 /// Translated rule data including fact-address variable bindings.
@@ -325,6 +325,12 @@ impl Engine {
             ferric_span!(debug_span, "load_parse");
             parse_sexprs(source, FileId(0))
         };
+        ferric_event!(
+            debug,
+            top_level_forms = parse_result.exprs.len(),
+            parse_error_count = parse_result.errors.len(),
+            "load_parse_complete"
+        );
 
         // Convert parse errors to LoadError
         if !parse_result.errors.is_empty() {
@@ -333,6 +339,7 @@ impl Engine {
                 .into_iter()
                 .map(LoadError::Parse)
                 .collect();
+            ferric_event!(warn, "engine_load_str_failed_parse");
             return Err(errors);
         }
 
@@ -388,6 +395,14 @@ impl Engine {
                 ));
             }
         }
+        ferric_event!(
+            debug,
+            assert_forms = assert_forms.len(),
+            construct_forms = construct_forms.len(),
+            unsupported_forms = errors.len(),
+            warning_count = result.warnings.len(),
+            "load_forms_partitioned"
+        );
 
         // Interpret constructs via Stage 2
         if !construct_forms.is_empty() {
@@ -635,8 +650,22 @@ impl Engine {
         }
 
         if errors.is_empty() {
+            ferric_event!(
+                info,
+                asserted_facts = result.asserted_facts.len(),
+                rules = result.rules.len(),
+                templates = result.templates.len(),
+                functions = result.functions.len(),
+                globals = result.globals.len(),
+                modules = result.modules.len(),
+                generics = result.generics.len(),
+                methods = result.methods.len(),
+                warning_count = result.warnings.len(),
+                "engine_load_str_complete"
+            );
             Ok(result)
         } else {
+            ferric_event!(warn, error_count = errors.len(), "engine_load_str_failed");
             Err(errors)
         }
     }
