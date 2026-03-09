@@ -24,6 +24,7 @@ slotmap::new_key_type! {
 /// Distinct from `Timestamp` (which tracks fact assertion order) — this tracks
 /// the order in which activations are added to the agenda.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActivationSeq(u64);
 
 impl ActivationSeq {
@@ -63,6 +64,7 @@ fn remove_from_token_index(
 
 /// An activation: a rule that is ready to fire with a specific token.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Activation {
     pub id: ActivationId,
     pub rule: RuleId,
@@ -79,6 +81,7 @@ pub struct Activation {
 /// The ordering is designed so that `BTreeMap` naturally pops the highest-priority
 /// activation first (using `pop_first`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StrategyOrd {
     Depth(std::cmp::Reverse<Timestamp>), // Higher timestamp first
     Breadth(Timestamp),                  // Lower timestamp first
@@ -94,6 +97,7 @@ pub enum StrategyOrd {
 /// Provides total ordering across all conflict resolution strategies:
 /// salience > strategy-specific ordering > activation sequence.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AgendaKey {
     /// Higher salience first (Reverse).
     pub salience: std::cmp::Reverse<Salience>,
@@ -108,6 +112,7 @@ pub struct AgendaKey {
 /// Activations are ordered by salience (priority), strategy-specific ordering,
 /// and sequence (tiebreaker). The conflict resolution strategy determines how
 /// activations with the same salience are ordered.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Agenda {
     /// Ordered activations: key -> `ActivationId`.
     ordering: BTreeMap<AgendaKey, ActivationId>,
@@ -116,6 +121,7 @@ pub struct Agenda {
     /// Reverse index: `ActivationId` -> `AgendaKey` for removal.
     id_to_key: SecondaryMap<ActivationId, AgendaKey>,
     /// Reverse index: `TokenId` -> `ActivationId`s for retraction.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     token_to_activations: HashMap<TokenId, SmallVec<[ActivationId; 2]>>,
     /// Next activation sequence number.
     next_seq: ActivationSeq,

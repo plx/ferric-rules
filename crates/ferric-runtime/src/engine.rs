@@ -149,14 +149,14 @@ pub struct Engine {
     /// It is tracked here so that `facts()` can exclude it from user-visible results.
     pub(crate) initial_fact_id: Option<FactId>,
     /// Non-fatal action diagnostics captured during execution.
-    action_diagnostics: Vec<ActionError>,
+    pub(crate) action_diagnostics: Vec<ActionError>,
     /// Whether a halt has been requested.
-    halted: bool,
+    pub(crate) halted: bool,
     /// Input buffer for `read`/`readline` calls from rules.
     pub(crate) input_buffer: VecDeque<String>,
-    creator_thread: ThreadId,
+    pub(crate) creator_thread: ThreadId,
     // Marker to ensure Engine is !Send + !Sync
-    _not_send_sync: PhantomData<*mut ()>,
+    pub(crate) _not_send_sync: PhantomData<*mut ()>,
 }
 
 impl Engine {

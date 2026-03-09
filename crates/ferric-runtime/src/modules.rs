@@ -10,10 +10,12 @@ use std::collections::HashSet;
 
 /// Simple module identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ModuleId(pub u32);
 
 /// A registered module in the engine.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RuntimeModule {
     /// Module name (e.g., "MAIN", "SENSOR").
     pub name: String,
@@ -30,8 +32,17 @@ pub const MAIN_MODULE_NAME: &str = "MAIN";
 ///
 /// Manages module definitions, import/export visibility, and the focus
 /// stack that controls which module's rules fire during execution.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ModuleRegistry {
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "ferric_core::serde_helpers::fx_hash_map")
+    )]
     modules: HashMap<ModuleId, RuntimeModule>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "ferric_core::serde_helpers::fx_hash_map")
+    )]
     name_to_id: HashMap<Box<str>, ModuleId>,
     next_id: u32,
     /// The module that new constructs belong to.

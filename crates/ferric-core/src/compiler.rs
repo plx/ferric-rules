@@ -80,6 +80,7 @@ pub enum CompileError {
 
 /// Canonical key for alpha network paths, used for node sharing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct AlphaPathKey {
     entry_type: AlphaEntryType,
     tests: Vec<ConstantTest>,
@@ -87,6 +88,7 @@ struct AlphaPathKey {
 
 /// Canonical key for positive join nodes, used for node sharing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct JoinNodeKey {
     parent: NodeId,
     alpha_memory: AlphaMemoryId,
@@ -95,6 +97,7 @@ struct JoinNodeKey {
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct SymbolSet {
     ascii: Vec<u8>,
     utf8: Vec<u8>,
@@ -150,10 +153,13 @@ impl SymbolSet {
 /// The compiler maintains caches to ensure that rules with identical alpha
 /// patterns share alpha network paths/memories, and identical positive join
 /// structures share join nodes. Sharing is keyed by canonical structural keys.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReteCompiler {
     /// Cache: alpha path → memory ID. Ensures identical alpha paths share memory.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     alpha_path_cache: HashMap<AlphaPathKey, AlphaMemoryId>,
     /// Cache: join structure → join node ID. Ensures identical joins share nodes.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     join_node_cache: HashMap<JoinNodeKey, NodeId>,
     /// Next rule ID counter.
     next_rule_id: u32,

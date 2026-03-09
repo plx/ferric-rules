@@ -26,6 +26,7 @@ use std::fmt;
 
 /// A pattern in a rule's LHS.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Pattern {
     /// Ordered fact pattern: (relation constraint ...)
     Ordered(OrderedPattern),
@@ -54,6 +55,7 @@ pub enum Pattern {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct OrderedPattern {
     pub relation: String,
     pub constraints: Vec<Constraint>,
@@ -61,6 +63,7 @@ pub struct OrderedPattern {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TemplatePattern {
     pub template: String,
     pub slot_constraints: Vec<SlotConstraint>,
@@ -68,6 +71,7 @@ pub struct TemplatePattern {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SlotConstraint {
     pub slot_name: String,
     pub constraint: Constraint,
@@ -80,6 +84,7 @@ pub struct SlotConstraint {
 
 /// A constraint on a pattern field or slot.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Constraint {
     /// Literal value
     Literal(LiteralValue),
@@ -105,12 +110,14 @@ pub enum Constraint {
 
 /// A literal value in a pattern or fact body.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LiteralValue {
     pub value: LiteralKind,
     pub span: Span,
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LiteralKind {
     Integer(i64),
     Float(f64),
@@ -124,11 +131,13 @@ pub enum LiteralKind {
 
 /// An action in a rule's RHS.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Action {
     pub call: FunctionCall,
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FunctionCall {
     pub name: String,
     pub args: Vec<ActionExpr>,
@@ -138,6 +147,7 @@ pub struct FunctionCall {
 const FACT_SLOT_REF_FN: &str = "__fact_slot_ref";
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ActionExpr {
     Literal(LiteralValue),
     Variable(String, Span),
@@ -213,6 +223,7 @@ pub enum ActionExpr {
 // ============================================================================
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SlotDefinition {
     pub name: String,
     pub slot_type: SlotType,
@@ -221,12 +232,14 @@ pub struct SlotDefinition {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SlotType {
     Single,
     Multi,
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DefaultValue {
     /// (default ?NONE) - field is required
     None,
@@ -241,12 +254,14 @@ pub enum DefaultValue {
 // ============================================================================
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FactBody {
     Ordered(OrderedFactBody),
     Template(TemplateFactBody),
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct OrderedFactBody {
     pub relation: String,
     pub values: Vec<FactValue>,
@@ -254,6 +269,7 @@ pub struct OrderedFactBody {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TemplateFactBody {
     pub template: String,
     pub slot_values: Vec<FactSlotValue>,
@@ -261,6 +277,7 @@ pub struct TemplateFactBody {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactSlotValue {
     pub name: String,
     pub value: FactValue,
@@ -268,6 +285,7 @@ pub struct FactSlotValue {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FactValue {
     Literal(LiteralValue),
     Variable(String, Span),
@@ -282,6 +300,7 @@ pub enum FactValue {
 
 /// A top-level construct produced by Stage 2 interpretation.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Construct {
     Rule(RuleConstruct),
     Template(TemplateConstruct),
@@ -295,6 +314,7 @@ pub enum Construct {
 
 /// Interpreted `(defrule ...)`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RuleConstruct {
     pub name: String,
     pub span: Span,
@@ -310,6 +330,7 @@ pub struct RuleConstruct {
 
 /// Interpreted `(deftemplate ...)`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TemplateConstruct {
     pub name: String,
     pub span: Span,
@@ -320,6 +341,7 @@ pub struct TemplateConstruct {
 
 /// Interpreted `(deffacts ...)`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactsConstruct {
     pub name: String,
     pub span: Span,
@@ -330,6 +352,7 @@ pub struct FactsConstruct {
 
 /// Interpreted `(deffunction ...)`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FunctionConstruct {
     /// Function name.
     pub name: String,
@@ -347,6 +370,7 @@ pub struct FunctionConstruct {
 
 /// A single global variable definition.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GlobalDefinition {
     /// Global variable name (without `?*` and `*` delimiters).
     pub name: String,
@@ -358,6 +382,7 @@ pub struct GlobalDefinition {
 
 /// Interpreted `(defglobal ...)`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GlobalConstruct {
     /// Source span of the entire construct.
     pub span: Span,
@@ -367,6 +392,7 @@ pub struct GlobalConstruct {
 
 /// A module import/export specification.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ModuleSpec {
     /// Export/import everything (`?ALL`).
     All,
@@ -385,6 +411,7 @@ pub enum ModuleSpec {
 
 /// An import declaration within a defmodule.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ImportSpec {
     /// The module to import from.
     pub module_name: String,
@@ -396,6 +423,7 @@ pub struct ImportSpec {
 
 /// Interpreted `(defmodule ...)`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ModuleConstruct {
     /// Module name.
     pub name: String,
@@ -411,6 +439,7 @@ pub struct ModuleConstruct {
 
 /// Interpreted `(defgeneric ...)`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GenericConstruct {
     /// Generic function name.
     pub name: String,
@@ -422,6 +451,7 @@ pub struct GenericConstruct {
 
 /// A method parameter with optional type restriction.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MethodParameter {
     /// Parameter name (without `?` prefix).
     pub name: String,
@@ -433,6 +463,7 @@ pub struct MethodParameter {
 
 /// Interpreted `(defmethod ...)`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MethodConstruct {
     /// The generic function name this method belongs to.
     pub name: String,
@@ -450,6 +481,7 @@ pub struct MethodConstruct {
 
 /// Configuration for Stage 2 interpretation.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InterpreterConfig {
     /// If true, stop on first error. If false, collect all errors.
     pub strict: bool,
@@ -457,6 +489,7 @@ pub struct InterpreterConfig {
 
 /// Error during Stage 2 construct interpretation.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InterpretError {
     pub message: String,
     pub span: Span,
@@ -465,6 +498,7 @@ pub struct InterpretError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum InterpretErrorKind {
     /// Expected a construct (top-level list), got something else.
     ExpectedConstruct,
@@ -565,6 +599,7 @@ impl std::error::Error for InterpretError {}
 
 /// Result of Stage 2 interpretation.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InterpretResult {
     pub constructs: Vec<Construct>,
     pub errors: Vec<InterpretError>,

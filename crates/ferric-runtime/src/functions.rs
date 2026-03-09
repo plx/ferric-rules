@@ -73,6 +73,7 @@ where
 
 /// A registered user-defined function from a `deffunction` form.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct UserFunction {
     /// The function name.
     pub name: String,
@@ -86,7 +87,12 @@ pub struct UserFunction {
 
 /// Registry of all user-defined functions loaded into the engine.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FunctionEnv {
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "ferric_core::serde_helpers::fx_hash_map_of_fx_hash_map")
+    )]
     pub(crate) functions: ModuleNameMap<UserFunction>,
 }
 
@@ -146,7 +152,12 @@ impl FunctionEnv {
 /// Maps global variable names (without the `?*` and `*` delimiters) to their
 /// current runtime values.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GlobalStore {
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "ferric_core::serde_helpers::fx_hash_map_of_fx_hash_map")
+    )]
     values: ModuleNameMap<Value>,
     gensym_counter: i64,
     printout_events: Vec<(String, String)>,
@@ -248,6 +259,7 @@ impl GlobalStore {
 
 /// A registered method for a generic function.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RegisteredMethod {
     /// Method index (determines dispatch priority; lower = tried first).
     pub index: i32,
@@ -264,6 +276,7 @@ pub struct RegisteredMethod {
 
 /// A generic function with its collection of methods.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GenericFunction {
     /// Generic function name.
     pub name: String,
@@ -302,7 +315,12 @@ impl GenericFunction {
 
 /// Registry of generic functions and their methods.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GenericRegistry {
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "ferric_core::serde_helpers::fx_hash_map_of_fx_hash_map")
+    )]
     generics: ModuleNameMap<GenericFunction>,
 }
 

@@ -6,6 +6,7 @@
 /// compilation context. The actual mapping from `FileId` to file paths
 /// is maintained externally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FileId(pub u32);
 
 /// A position in source code.
@@ -13,6 +14,7 @@ pub struct FileId(pub u32);
 /// Tracks both byte offset (for slicing) and line/column (for human-readable
 /// error messages). Lines and columns are 1-indexed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Position {
     /// Byte offset from the start of the file.
     pub offset: usize,
@@ -64,6 +66,7 @@ impl std::fmt::Display for Position {
 ///
 /// Represents a half-open range `[start, end)` in a source file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Span {
     /// Starting position (inclusive).
     pub start: Position,

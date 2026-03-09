@@ -15,6 +15,7 @@ use crate::value::Value;
 /// `VarIds` are assigned sequentially starting from 0 when variables are
 /// encountered during pattern compilation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VarId(pub u16);
 
 /// Maps variable names (symbols) to their IDs.
@@ -24,7 +25,9 @@ pub struct VarId(pub u16);
 /// scale with the number of variables in the rule rather than the highest
 /// interned `SymbolId` in the program.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VarMap {
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     by_name: FxHashMap<Symbol, VarId>,
     by_id: Vec<Symbol>,
 }
@@ -105,6 +108,7 @@ pub enum VarMapError {
 /// Smart reference for bound values. Stores small/Copy-like variants inline
 /// to avoid Rc heap allocation; wraps heap-owning variants in Rc for cheap cloning.
 #[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ValueRef {
     /// Symbol, Integer, Float, `ExternalAddress`, Void — no heap alloc needed.
     Inline(Value),
@@ -147,6 +151,7 @@ impl std::ops::Deref for ValueRef {
 /// Bindings are stored in a vector indexed by `VarId`. Unbound variables
 /// are represented as `None`.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BindingSet {
     bindings: SmallVec<[Option<ValueRef>; 4]>,
 }

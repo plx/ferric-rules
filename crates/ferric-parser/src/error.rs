@@ -19,6 +19,7 @@ macro_rules! define_diagnostic_error {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
         #[derive(Clone, Debug)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
         pub struct $name {
             /// Human-readable error message.
             pub message: String,
@@ -58,6 +59,7 @@ define_diagnostic_error!(
 
 /// Categories of parse errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ParseErrorKind {
     /// Encountered a character that is not valid in any token.
     UnexpectedCharacter,

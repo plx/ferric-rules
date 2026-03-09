@@ -16,6 +16,7 @@ use crate::value::{AtomKey, Value};
 
 /// A simple way to reference a field in a fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SlotIndex {
     /// Ordered fact field by position (0-based).
     Ordered(usize),
@@ -25,6 +26,7 @@ pub enum SlotIndex {
 
 /// Alpha entry type: identifies facts by their type (template or ordered relation).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AlphaEntryType {
     Template(TemplateId),
     OrderedRelation(Symbol),
@@ -32,10 +34,12 @@ pub enum AlphaEntryType {
 
 /// Unique identifier for an alpha memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlphaMemoryId(pub u32);
 
 /// A constant test applied to a single slot of a fact.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConstantTest {
     pub slot: SlotIndex,
     pub test_type: ConstantTestType,
@@ -43,6 +47,7 @@ pub struct ConstantTest {
 
 /// The type of constant test to perform.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ConstantTestType {
     Equal(AtomKey),
     NotEqual(AtomKey),
@@ -79,6 +84,7 @@ pub enum ConstantTestType {
 /// Entry nodes discriminate by fact type; constant test nodes apply tests to slots.
 /// Nodes may have an attached alpha memory that stores matching facts.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AlphaNode {
     Entry {
         entry_type: AlphaEntryType,
@@ -124,10 +130,16 @@ impl AlphaNode {
 ///
 /// Maintains a set of facts and optional slot indices for efficient lookup
 /// by slot value.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlphaMemory {
     pub id: AlphaMemoryId,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_set"))]
     facts: HashSet<FactId>,
     /// Slot indices: `SlotIndex` -> `AtomKey` -> `FactId`s with that key in that slot.
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_map_of_fx_hash_set")
+    )]
     slot_indices: HashMap<SlotIndex, HashMap<AtomKey, HashSet<FactId>>>,
     /// Which slots are currently indexed.
     indexed_slots: SmallVec<[SlotIndex; 4]>,
@@ -314,10 +326,12 @@ fn remove_from_slot_index(
 ///
 /// Stores all alpha nodes and memories, and provides methods to propagate facts
 /// through the network.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlphaNetwork {
     nodes: Vec<AlphaNode>,
     memories: Vec<AlphaMemory>,
     /// Entry points: `AlphaEntryType` -> `NodeId`.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     entry_nodes: HashMap<AlphaEntryType, NodeId>,
     /// Reverse index: which alpha memories contain each fact.
     /// Populated on assertion, pruned on retraction. Eliminates the full

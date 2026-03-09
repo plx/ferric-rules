@@ -7,13 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+serde = ["ferric-runtime/serde"]
+tracing = ["ferric-runtime/tracing"]
+
 [dependencies]
 ferric-core = { workspace = true }
 ferric-parser = { workspace = true }
 ferric-runtime = { workspace = true }
-
-[features]
-tracing = ["ferric-runtime/tracing"]
 
 [dev-dependencies]
 criterion = { workspace = true }

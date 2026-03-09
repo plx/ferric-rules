@@ -12,6 +12,7 @@ use crate::encoding::{EncodingError, StringEncoding};
 /// Ordering is lexicographic by byte value, which for UTF-8 is equivalent
 /// to ordering by Unicode scalar value.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FerricString {
     /// ASCII-only string (all bytes are in 0..=127).
     Ascii(Box<[u8]>),

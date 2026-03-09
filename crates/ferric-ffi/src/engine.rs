@@ -1860,3 +1860,161 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
         Err(ref err) => set_engine_runtime_error(handle, err),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Engine serialization / deserialization
+// ---------------------------------------------------------------------------
+
+/// Callback type for caller-controlled memory allocation.
+///
+/// When non-null, called by `ferric_engine_serialize` with the exact byte
+/// count needed. The `context` parameter is passed through unchanged from
+/// the serialize call.
+///
+/// Must return a pointer to at least `size` writable bytes, or null to
+/// signal allocation failure.
+#[cfg(feature = "serde")]
+pub type FerricAllocFn =
+    Option<unsafe extern "C" fn(size: usize, context: *mut std::ffi::c_void) -> *mut u8>;
+
+/// Serialize engine state to bytes.
+///
+/// Produces a binary snapshot that can be passed to `ferric_engine_deserialize`
+/// to reconstruct an equivalent engine, skipping the parse/compile pipeline.
+///
+/// ## Memory allocation
+///
+/// - If `alloc_fn` is **non-null**: the callback is called once with the exact
+///   byte count needed. The serialized data is written into the returned
+///   buffer. The caller owns this memory and is responsible for freeing it
+///   (via their own allocator). `alloc_context` is passed through unchanged.
+///
+/// - If `alloc_fn` is **null**: Rust allocates the output buffer internally.
+///   The caller must free it with `ferric_bytes_free(out_data, out_len)`.
+///
+/// In both cases, `*out_data` and `*out_len` are set on success.
+///
+/// # Safety
+///
+/// - `engine` must be a valid engine pointer.
+/// - `out_data` and `out_len` must be valid, non-null pointers.
+/// - If `alloc_fn` is non-null, it must return a valid pointer to `size` bytes
+///   (or null to signal failure).
+#[no_mangle]
+#[cfg(feature = "serde")]
+pub unsafe extern "C" fn ferric_engine_serialize(
+    engine: *const FerricEngine,
+    alloc_fn: FerricAllocFn,
+    alloc_context: *mut std::ffi::c_void,
+    out_data: *mut *mut u8,
+    out_len: *mut usize,
+) -> FerricError {
+    // Validate output pointers
+    if out_data.is_null() || out_len.is_null() {
+        set_global_error("out_data and out_len must be non-null".to_string());
+        return FerricError::NullPointer;
+    }
+
+    // Validate engine and check thread affinity
+    let handle = match borrow_engine_checked(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+
+    // Serialize to internal Vec<u8>
+    let bytes = match handle.engine.serialize_to_bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            set_global_error(e.to_string());
+            return FerricError::SerializationError;
+        }
+    };
+
+    let len = bytes.len();
+
+    if let Some(alloc) = alloc_fn {
+        // Caller-provided allocator path
+        let buf = alloc(len, alloc_context);
+        if buf.is_null() {
+            set_global_error("caller allocator returned null".to_string());
+            return FerricError::SerializationError;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, len);
+        *out_data = buf;
+    } else {
+        // Rust-allocated path: leak the Vec as a Box<[u8]>
+        let boxed: Box<[u8]> = bytes.into_boxed_slice();
+        *out_data = Box::into_raw(boxed).cast::<u8>();
+    }
+
+    *out_len = len;
+    FerricError::Ok
+}
+
+/// Deserialize an engine from bytes previously produced by
+/// `ferric_engine_serialize`.
+///
+/// The returned engine handle is ready for use (e.g. `ferric_engine_run`).
+/// Its thread affinity is set to the calling thread.
+///
+/// # Safety
+///
+/// - `data` must point to `len` valid, readable bytes.
+/// - `out_engine` must be a valid, non-null pointer.
+/// - The returned engine must be freed with `ferric_engine_free`.
+#[no_mangle]
+#[cfg(feature = "serde")]
+pub unsafe extern "C" fn ferric_engine_deserialize(
+    data: *const u8,
+    len: usize,
+    out_engine: *mut *mut FerricEngine,
+) -> FerricError {
+    if data.is_null() {
+        set_global_error("data pointer is null".to_string());
+        return FerricError::NullPointer;
+    }
+    if out_engine.is_null() {
+        set_global_error("out_engine pointer is null".to_string());
+        return FerricError::NullPointer;
+    }
+
+    let slice = std::slice::from_raw_parts(data, len);
+
+    let engine = match ferric_runtime::Engine::deserialize_from_bytes(slice) {
+        Ok(e) => e,
+        Err(e) => {
+            set_global_error(e.to_string());
+            return FerricError::SerializationError;
+        }
+    };
+
+    let handle = FerricEngine {
+        engine,
+        error_state: EngineErrorState::new(),
+        error_cstring: RefCell::new(None),
+    };
+
+    *out_engine = Box::into_raw(Box::new(handle));
+    FerricError::Ok
+}
+
+/// Free a byte buffer that was allocated by `ferric_engine_serialize` when
+/// `alloc_fn` was null.
+///
+/// Null pointers and zero lengths are safely ignored.
+///
+/// # Safety
+///
+/// - `data` must be a pointer returned by `ferric_engine_serialize` (with
+///   null `alloc_fn`), or null.
+/// - `len` must be the length reported by the corresponding serialize call.
+/// - The buffer must not have been previously freed.
+#[no_mangle]
+#[cfg(feature = "serde")]
+pub unsafe extern "C" fn ferric_bytes_free(data: *mut u8, len: usize) {
+    if data.is_null() || len == 0 {
+        return;
+    }
+    let slice_ptr = std::ptr::slice_from_raw_parts_mut(data, len);
+    drop(Box::from_raw(slice_ptr));
+}

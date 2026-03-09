@@ -13,6 +13,7 @@ use rustc_hash::FxHashMap as HashMap;
 /// fact assertions, pattern compilation, and `modify`/`duplicate` actions can
 /// resolve slot names to positions and fill in defaults.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct RegisteredTemplate {
     /// The template name (e.g. `"person"`).
     pub name: String,
@@ -22,6 +23,10 @@ pub(crate) struct RegisteredTemplate {
     #[allow(dead_code)]
     pub slot_names: Vec<String>,
     /// Slot name → positional index mapping.
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "ferric_core::serde_helpers::fx_hash_map")
+    )]
     pub slot_index: HashMap<String, usize>,
     /// Default values for each slot position (`Value::Void` if no default is
     /// declared or the default is `?NONE` / `?DERIVE`).

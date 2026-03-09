@@ -6,6 +6,7 @@ use crate::span::{FileId, Span};
 
 /// An S-expression: either an atom or a list.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SExpr {
     /// Atomic value (number, string, symbol, variable, connective).
     Atom(Atom, Span),
@@ -52,6 +53,7 @@ impl SExpr {
 
 /// An atomic value in an S-expression.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Atom {
     /// Integer literal.
     Integer(i64),
@@ -73,6 +75,7 @@ pub enum Atom {
 
 /// Connective operators in CLIPS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Connective {
     /// `&` (and)
     And,
@@ -107,6 +110,7 @@ impl std::fmt::Display for Connective {
 /// Contains both successfully parsed expressions and any errors encountered.
 /// The parser attempts error recovery to parse as much as possible.
 #[derive(Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParseResult {
     /// Successfully parsed S-expressions.
     pub exprs: Vec<SExpr>,

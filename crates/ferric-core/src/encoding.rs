@@ -9,6 +9,7 @@ use thiserror::Error;
 ///
 /// Controls what byte sequences are accepted when creating symbols and strings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StringEncoding {
     /// ASCII only for both symbols and strings. Maximum CLIPS compatibility.
     Ascii,
@@ -21,6 +22,7 @@ pub enum StringEncoding {
 
 /// Errors arising from encoding mode enforcement.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EncodingError {
     #[error("non-ASCII symbol: {0:?}")]
     NonAsciiSymbol(String),
