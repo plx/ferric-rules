@@ -25,6 +25,7 @@ use crate::modules::ModuleRegistry;
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
+use crate::tracing_support::ferric_span;
 use crate::Engine;
 
 type OrderedFields = smallvec::SmallVec<[Value; 8]>;
@@ -418,6 +419,7 @@ pub(crate) fn execute_actions(
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
 ) -> (bool, bool, bool, Vec<ActionError>) {
+    ferric_span!(debug_span, "execute_actions");
     let mut errors = Vec::new();
     let mut reset_requested = false;
     let mut clear_requested = false;

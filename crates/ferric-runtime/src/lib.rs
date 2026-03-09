@@ -51,6 +51,8 @@
 //! - `if`/`then`/`else` expression form not supported.
 //! - `sub-string` uses Unicode scalar value positions (not grapheme clusters).
 
+mod tracing_support;
+
 pub mod actions;
 pub mod config;
 pub mod engine;

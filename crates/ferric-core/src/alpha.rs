@@ -11,6 +11,7 @@ use std::cmp::Ordering;
 use crate::fact::{Fact, FactBase, FactId, TemplateId};
 use crate::symbol::Symbol;
 use crate::token::NodeId;
+use crate::tracing_support::ferric_span;
 use crate::value::{AtomKey, Value};
 
 /// A simple way to reference a field in a fact.
@@ -425,6 +426,7 @@ impl AlphaNetwork {
     ///
     /// Propagates the fact through the network and returns all memories that accepted it.
     pub fn assert_fact(&mut self, fact_id: FactId, fact: &Fact) -> Vec<AlphaMemoryId> {
+        ferric_span!(trace_span, "alpha_assert", fact_id = ?fact_id);
         let entry_type = match fact {
             Fact::Ordered(ordered) => AlphaEntryType::OrderedRelation(ordered.relation),
             Fact::Template(template) => AlphaEntryType::Template(template.template_id),
@@ -449,6 +451,7 @@ impl AlphaNetwork {
     ///
     /// Removes the fact from all alpha memories.
     pub fn retract_fact(&mut self, fact_id: FactId, fact: &Fact) {
+        ferric_span!(trace_span, "alpha_retract", fact_id = ?fact_id);
         let entry_type = match fact {
             Fact::Ordered(ordered) => AlphaEntryType::OrderedRelation(ordered.relation),
             Fact::Template(template) => AlphaEntryType::Template(template.template_id),

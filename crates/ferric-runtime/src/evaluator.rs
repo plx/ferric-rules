@@ -20,6 +20,7 @@ use crate::functions::{FunctionEnv, GenericFunction, GenericRegistry, GlobalStor
 // Qualified name utilities: wired into dispatch chain in passes 003/004.
 #[allow(unused_imports)]
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
+use crate::tracing_support::ferric_span;
 
 // ---------------------------------------------------------------------------
 // Source span for diagnostics
@@ -461,6 +462,7 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                 })
         }
         RuntimeExpr::Call { name, args, span } => {
+            ferric_span!(debug_span, "eval_call", name = %name);
             // call-next-method: advance to next method in the dispatch chain.
             if name == "call-next-method" {
                 return dispatch_call_next_method(ctx, args, span.clone());

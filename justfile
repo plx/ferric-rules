@@ -129,6 +129,14 @@ preflight: check
 # PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks
 preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test
 
+# ── Tracing / profiling ────────────────────────────────────────────────────
+
+# Check that tracing feature compiles and passes clippy + tests
+check-tracing:
+    cargo check --workspace --exclude ferric-python --features tracing
+    cargo clippy --workspace --exclude ferric-python --features tracing --all-targets -- -D warnings
+    cargo test --workspace --exclude ferric-python --features tracing
+
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 
 # Run all Criterion benchmarks

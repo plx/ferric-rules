@@ -14,6 +14,10 @@ thiserror = { workspace = true }
 smallvec = { workspace = true }
 slotmap = { workspace = true }
 rustc-hash = { workspace = true }
+tracing = { workspace = true, optional = true }
+
+[features]
+tracing = ["dep:tracing", "ferric-core/tracing"]
 
 [dev-dependencies]
 proptest = { workspace = true }

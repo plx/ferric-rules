@@ -24,6 +24,7 @@ use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore, ModuleNameMap}
 use crate::modules::{ModuleId, ModuleRegistry};
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
+use crate::tracing_support::{ferric_event, ferric_span};
 
 /// Dense indexed storage for per-rule data, keyed by `RuleId`.
 ///
@@ -253,6 +254,7 @@ impl Engine {
         fields: F,
     ) -> Result<FactId, EngineError> {
         self.check_thread_affinity()?;
+        ferric_span!(info_span, "engine_assert_ordered", relation);
 
         let relation_sym = self
             .symbol_table
@@ -274,6 +276,7 @@ impl Engine {
     /// Returns an error if the engine is called from the wrong thread.
     pub fn assert(&mut self, fact: Fact) -> Result<FactId, EngineError> {
         self.check_thread_affinity()?;
+        ferric_span!(info_span, "engine_assert");
 
         let id = match fact {
             Fact::Ordered(ordered) => self
@@ -299,6 +302,7 @@ impl Engine {
     /// - The engine is called from the wrong thread
     pub fn retract(&mut self, fact_id: FactId) -> Result<(), EngineError> {
         self.check_thread_affinity()?;
+        ferric_span!(info_span, "engine_retract", fact_id = ?fact_id);
 
         let entry = self
             .fact_base
@@ -571,6 +575,7 @@ impl Engine {
         rule_id: RuleId,
         token_id: ferric_core::token::TokenId,
     ) -> (bool, bool, bool) {
+        ferric_span!(debug_span, "fire_rule", rule = rule_id.0);
         let Some(token) = self.rete.token_store.get(token_id).cloned() else {
             // No token — treat as not fired.
             return (false, false, false);
@@ -659,6 +664,7 @@ impl Engine {
     /// Returns an error if the engine is called from the wrong thread.
     pub fn step(&mut self) -> Result<Option<FiredRule>, EngineError> {
         self.check_thread_affinity()?;
+        ferric_span!(info_span, "engine_step");
         self.action_diagnostics.clear();
 
         let Some(activation) = self.pop_next_focus_activation() else {
@@ -704,6 +710,7 @@ impl Engine {
     /// Returns an error if the engine is called from the wrong thread.
     pub fn run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
         self.check_thread_affinity()?;
+        ferric_span!(info_span, "engine_run", limit = ?limit);
         self.halted = false;
         self.action_diagnostics.clear();
 
@@ -768,6 +775,7 @@ impl Engine {
     /// This sets a flag that is checked between rule firings during `run`.
     /// Has no effect if the engine is not currently running.
     pub fn halt(&mut self) {
+        ferric_event!(info, "engine_halt");
         self.halted = true;
     }
 
@@ -781,6 +789,7 @@ impl Engine {
     /// Returns an error if the engine is called from the wrong thread.
     pub fn reset(&mut self) -> Result<(), EngineError> {
         self.check_thread_affinity()?;
+        ferric_span!(info_span, "engine_reset");
 
         // Clear all runtime state
         self.fact_base = FactBase::new();
@@ -847,6 +856,7 @@ impl Engine {
     /// Unlike `reset()`, which preserves compiled rules and templates,
     /// `clear()` removes everything.
     pub fn clear(&mut self) {
+        ferric_span!(info_span, "engine_clear");
         self.fact_base = FactBase::new();
         self.rete = ReteNetwork::with_strategy(self.config.strategy);
         self.compiler = ReteCompiler::new();

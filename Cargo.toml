@@ -50,6 +50,11 @@ proptest = "1"
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }
 
+# Tracing / profiling (optional, feature-gated)
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "registry"] }
+tracing-chrome = "0.7"
+
 # Internal crates
 ferric = { path = "crates/ferric" }
 ferric-core = { path = "crates/ferric-core" }

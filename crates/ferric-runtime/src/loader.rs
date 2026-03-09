@@ -44,6 +44,7 @@ use crate::actions::{
 use crate::engine::{Engine, EngineError};
 use crate::functions::{get_or_insert_module_entry_with, insert_module_entry, UserFunction};
 use crate::templates::RegisteredTemplate;
+use crate::tracing_support::ferric_span;
 // GenericRegistry accessed via self.generics (field on Engine)
 
 /// Translated rule data including fact-address variable bindings.
@@ -317,9 +318,13 @@ impl Engine {
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         self.check_thread_affinity()
             .map_err(|e| vec![LoadError::Engine(e)])?;
+        ferric_span!(info_span, "engine_load_str", len = source.len());
 
         // Parse the source into S-expressions (Stage 1)
-        let parse_result = parse_sexprs(source, FileId(0));
+        let parse_result = {
+            ferric_span!(debug_span, "load_parse");
+            parse_sexprs(source, FileId(0))
+        };
 
         // Convert parse errors to LoadError
         if !parse_result.errors.is_empty() {
@@ -387,7 +392,10 @@ impl Engine {
         // Interpret constructs via Stage 2
         if !construct_forms.is_empty() {
             let config = InterpreterConfig::default();
-            let interpret_result = interpret_constructs(&construct_forms, &config);
+            let interpret_result = {
+                ferric_span!(debug_span, "load_interpret");
+                interpret_constructs(&construct_forms, &config)
+            };
 
             // Convert interpret errors to LoadError
             if !interpret_result.errors.is_empty() {
@@ -672,6 +680,7 @@ impl Engine {
     /// - File cannot be read
     /// - Source parsing or processing fails
     pub fn load_file(&mut self, path: &Path) -> Result<LoadResult, Vec<LoadError>> {
+        ferric_span!(info_span, "engine_load_file", path = %path.display());
         let source = std::fs::read_to_string(path).map_err(|e| vec![LoadError::Io(e)])?;
         self.load_str(&source)
     }
