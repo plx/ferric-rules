@@ -51,14 +51,30 @@ create_exception!(
     FerricError,
     "String encoding constraint violated."
 );
+create_exception!(
+    ferric,
+    FerricTemplateNotFoundError,
+    FerricError,
+    "Requested template does not exist."
+);
+create_exception!(
+    ferric,
+    FerricSlotNotFoundError,
+    FerricError,
+    "Requested slot does not exist in template."
+);
 
 /// Convert an `EngineError` into a Python exception.
 pub fn engine_error_to_pyerr(err: EngineError) -> PyErr {
     match err {
-        EngineError::WrongThread { .. } => FerricRuntimeError::new_err(err.to_string()),
+        EngineError::WrongThread { .. } | EngineError::NotATemplateFact(_) => {
+            FerricRuntimeError::new_err(err.to_string())
+        }
         EngineError::FactNotFound(_) => FerricFactNotFoundError::new_err(err.to_string()),
         EngineError::Encoding(_) => FerricEncodingError::new_err(err.to_string()),
         EngineError::ModuleNotFound(_) => FerricModuleNotFoundError::new_err(err.to_string()),
+        EngineError::TemplateNotFound(_) => FerricTemplateNotFoundError::new_err(err.to_string()),
+        EngineError::SlotNotFound { .. } => FerricSlotNotFoundError::new_err(err.to_string()),
     }
 }
 
@@ -112,6 +128,14 @@ pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "FerricEncodingError",
         m.py().get_type::<FerricEncodingError>(),
+    )?;
+    m.add(
+        "FerricTemplateNotFoundError",
+        m.py().get_type::<FerricTemplateNotFoundError>(),
+    )?;
+    m.add(
+        "FerricSlotNotFoundError",
+        m.py().get_type::<FerricSlotNotFoundError>(),
     )?;
     Ok(())
 }

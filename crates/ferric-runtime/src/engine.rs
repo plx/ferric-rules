@@ -14,7 +14,7 @@ use thiserror::Error;
 use ferric_core::beta::RuleId;
 use ferric_core::{
     EncodingError, Fact, FactBase, FactId, FerricString, IntoFieldValues, ReteCompiler,
-    ReteNetwork, Symbol, SymbolTable, TemplateId, Value,
+    ReteNetwork, Symbol, SymbolTable, TemplateFact, TemplateId, Value,
 };
 
 use crate::actions::{self, ActionError, CompiledRuleInfo};
@@ -291,6 +291,105 @@ impl Engine {
         propagate_fact_assertion(&mut self.rete, &self.fact_base, id);
 
         Ok(id)
+    }
+
+    /// Assert a template fact by template name and named slot values.
+    ///
+    /// Looks up the template definition, resolves each slot name to its
+    /// positional index, fills in defaults for any unspecified slots, and
+    /// asserts the resulting fact into working memory.
+    ///
+    /// `slot_names` and `slot_values` must have the same length. Each
+    /// `slot_names[i]` is matched to the corresponding `slot_values[i]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The template name is not registered
+    /// - A slot name does not exist in the template
+    /// - The engine is called from the wrong thread
+    pub fn assert_template(
+        &mut self,
+        template_name: &str,
+        slot_names: &[&str],
+        slot_values: Vec<Value>,
+    ) -> Result<FactId, EngineError> {
+        self.check_thread_affinity()?;
+
+        let tid = *self
+            .template_ids
+            .get(template_name)
+            .ok_or_else(|| EngineError::TemplateNotFound(template_name.to_string()))?;
+
+        let def = self
+            .template_defs
+            .get(tid)
+            .ok_or_else(|| EngineError::TemplateNotFound(template_name.to_string()))?;
+
+        // Start with default values for all slots.
+        let mut slots = def.defaults.clone().into_boxed_slice();
+
+        // Overwrite specified slots.
+        for (name, value) in slot_names.iter().zip(slot_values.into_iter()) {
+            let idx = def
+                .slot_index(name)
+                .ok_or_else(|| EngineError::SlotNotFound {
+                    template: template_name.to_string(),
+                    slot: (*name).to_string(),
+                })?;
+            slots[idx] = value;
+        }
+
+        let fact = Fact::Template(TemplateFact {
+            template_id: tid,
+            slots,
+        });
+
+        self.assert(fact)
+    }
+
+    /// Get the value of a template fact's slot by name.
+    ///
+    /// Returns the slot value for the given fact and slot name. The fact must
+    /// be a template fact; ordered facts produce an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The fact ID does not exist
+    /// - The fact is not a template fact
+    /// - The slot name does not exist in the template
+    /// - The engine is called from the wrong thread
+    pub fn get_fact_slot_by_name(
+        &self,
+        fact_id: FactId,
+        slot_name: &str,
+    ) -> Result<&Value, EngineError> {
+        self.check_thread_affinity()?;
+
+        let fact = self
+            .fact_base
+            .get(fact_id)
+            .ok_or(EngineError::FactNotFound(fact_id))?;
+
+        match &fact.fact {
+            Fact::Template(t) => {
+                let def = self
+                    .template_defs
+                    .get(t.template_id)
+                    .ok_or(EngineError::FactNotFound(fact_id))?;
+
+                let idx = def
+                    .slot_index(slot_name)
+                    .ok_or_else(|| EngineError::SlotNotFound {
+                        template: def.name.clone(),
+                        slot: slot_name.to_string(),
+                    })?;
+
+                t.slots.get(idx).ok_or(EngineError::FactNotFound(fact_id))
+            }
+            Fact::Ordered(_) => Err(EngineError::NotATemplateFact(fact_id)),
+        }
     }
 
     /// Retract a fact from working memory.
@@ -1185,6 +1284,15 @@ pub enum EngineError {
 
     #[error("module not found: {0}")]
     ModuleNotFound(String),
+
+    #[error("template not found: {0}")]
+    TemplateNotFound(String),
+
+    #[error("fact {0:?} is not a template fact")]
+    NotATemplateFact(FactId),
+
+    #[error("slot not found: template \"{template}\" has no slot \"{slot}\"")]
+    SlotNotFound { template: String, slot: String },
 }
 
 /// Errors that can occur when initializing an engine via

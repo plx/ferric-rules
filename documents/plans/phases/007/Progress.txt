@@ -1,0 +1,100 @@
+Phase 007: Go Bindings — Progress
+
+Pre-Pass: Template Fact FFI + Python Bindings [COMPLETE]
+  - Added EngineError variants: TemplateNotFound, NotATemplateFact, SlotNotFound
+  - Added Engine::assert_template() and Engine::get_fact_slot_by_name() to ferric-runtime
+  - Added ferric_engine_assert_template() to ferric-ffi (C FFI)
+  - Added ferric_engine_get_fact_slot_by_name() to ferric-ffi (C FFI)
+  - Added ferric_engine_free_unchecked() to ferric-ffi (C FFI)
+  - Updated ferric.h with bounds-safety annotations for new functions
+  - Updated Python bindings: engine.assert_template("person", name="Alice", age=30)
+  - Added FerricTemplateNotFoundError, FerricSlotNotFoundError Python exceptions
+  - 15 new FFI tests, 13 new Python tests, all passing
+  - Header tests updated to verify new symbols
+  - Total: 1413 Rust tests + 108 Python tests, zero failures
+
+Pass 1: Scaffold + Low-Level FFI [COMPLETE]
+  - Go module at bindings/go/ (github.com/prb/ferric-rules/bindings/go)
+  - Copied ferric.h and libferric_ffi.a into internal/ffi/lib/
+  - internal/ffi/types.go: Go mirrors of all C enums (ErrorCode, ValueType,
+    FactType, HaltReason, StringEncoding, ConflictStrategy) and structs (Config, Value)
+  - internal/ffi/ffi.go: CGo wrappers for all 60+ C FFI functions:
+    lifecycle, loading, execution, fact assertion (ordered + template),
+    fact queries, globals, output/input, diagnostics, introspection
+    (templates, rules, modules, focus stack, agenda), error retrieval,
+    value construction/deallocation
+  - getString helper implements two-call buffer-copy pattern
+  - 17 passing Go tests covering: engine lifecycle, source loading, load+run,
+    fact CRUD, template facts with slot-by-name, step execution, introspection
+    (templates, rules, modules), globals, halt, agenda, free_unchecked from
+    different thread, error retrieval, ordered assertion, clear, push input,
+    config, focus stack
+  - Added justfile targets: build-go-ffi, test-go, test-go-race
+
+Pass 2: Idiomatic Engine API [COMPLETE]
+  - engine.go: Full Engine type with NewEngine, Close (+ finalizer with
+    free_unchecked), Load, AssertString, AssertFact, AssertTemplate, Retract,
+    GetFact, Facts, FindFacts, FactCount, Run (context-aware), RunWithLimit
+    (batch-based with context checking), Step, Halt, Reset, Clear, Rules,
+    Templates, GetGlobal, CurrentModule, Focus, FocusStack, AgendaSize,
+    IsHalted, GetOutput, ClearOutput, PushInput, Diagnostics, ClearDiagnostics
+  - engine_options.go: Functional options (WithStrategy, WithEncoding,
+    WithMaxCallDepth, WithSource)
+  - fact.go: Fact, FactType (FactOrdered, FactTemplate)
+  - result.go: RunResult, FiredRule, RuleInfo, Strategy, Encoding, HaltReason
+  - errors.go: FerricError base + sentinel errors (ErrParse, ErrCompile,
+    ErrRuntime, ErrNotFound, ErrIO, ErrThreadViolation, ErrInvalidArgument)
+    + concrete types (ParseError, CompileError, RuntimeError, NotFoundError,
+    IOError) with errors.Is/As support + errorFromFFI translation
+  - values.go: Symbol type, goToFFIValue, ffiValueToGo, ffiValueToGoAndFree
+  - wire_types.go: WireValue, WireFactInput, WireFact, EvaluateRequest,
+    EvaluateResult with JSON tags
+  - wire_conv.go: NativeToWireValue, WireToNativeValue, WireSliceToNative,
+    WireMapToNative, FactToWire, FactsToWire
+  - wire_helpers.go: IntValue, FloatValue, SymbolValue, StringValue,
+    MultifieldValue, OrderedFact, TemplateFact constructors
+  - ferric.go: Package documentation
+  - internal/ffi/accessors.go: Value field accessors + MakeConfig helper
+  - 35 public API tests + 17 FFI tests = 52 total Go tests, all passing
+
+Pass 3: Coordinator + Manager [COMPLETE]
+  - coordinator.go: Coordinator with worker goroutines, LockOSThread,
+    lazy per-spec engine instantiation, round-robin dispatch policy,
+    DispatchPolicy interface, graceful shutdown (done + stop channels)
+  - coordinator_options.go: CoordinatorOption (Threads, WithDispatchPolicy),
+    EngineSpec type
+  - manager.go: Manager as thin dispatch shim, Do(ctx, fn), Evaluate (wire-level
+    one-shot), EvaluateNative (Go-convenience wrapper), NativeFactInput,
+    EvaluateNativeRequest, EvaluateNativeResult, StandaloneManager via NewManager
+  - All tests pass with -race: concurrent access (20 goroutines × 4 threads),
+    multiple specs, shutdown race, context cancellation, lazy instantiation,
+    stateless evaluation, engine reuse across Do calls, JSON roundtrip
+  - 52 public tests + 17 FFI tests = 69 total, zero race conditions
+
+Pass 4: Temporal Integration [COMPLETE]
+  - temporal/activity.go: RulesActivity struct with per-spec activity
+    registration ("ferric.Evaluate.<specName>"), Register(worker.Worker)
+  - temporal/activity_options.go: ActivityOption, WithCoordinatorOptions
+  - Wire types serialize cleanly via Temporal's JSON codec — verified via
+    round-trip tests for requests, results, and multifield values
+  - 6 temporal tests: activity creation, multi-spec, direct evaluate,
+    wire payload roundtrip, wire result roundtrip, multifield roundtrip
+  - Total: 52 public + 17 FFI + 6 temporal = 75 Go tests, all passing
+
+Pass 5: Build System + Distribution [COMPLETE]
+  - justfile targets: build-go-ffi (Rust → Go lib copy), test-go (verbose),
+    test-go-race (with -race), go-full (end-to-end pipeline)
+  - .gitignore: excludes platform-specific libferric_ffi.a from VCS
+  - ferric.h committed to VCS for Go's CGo to find at build time
+  - End-to-end pipeline verified: cargo build → cp artifacts → go test -race
+  - Total: 1767 Rust tests + 75 Go tests, all passing
+
+Pass 6: Polish + Optimization [COMPLETE]
+  - iterators.go: iter.Seq-based iterators for FactIter, RuleIter,
+    TemplateIter, DiagnosticIter — supports range-over-func with early break
+  - go vet clean on all packages
+  - 81 Go tests total (56 public + 17 FFI + 6 temporal + 2 iterator-specific),
+    all passing with -race
+  - Deferred to future: ferric_engine_eval_string, ferric_engine_facts_snapshot,
+    workload-aware dispatch policy, chained multi-step API (these are explicitly
+    marked as v2+ items in the plan)

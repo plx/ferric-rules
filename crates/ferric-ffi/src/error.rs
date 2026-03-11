@@ -110,8 +110,11 @@ use ferric_runtime::loader::LoadError;
 pub(crate) fn map_engine_error(err: &EngineError) -> FerricError {
     match err {
         EngineError::WrongThread { .. } => FerricError::ThreadViolation,
-        EngineError::FactNotFound(_) | EngineError::ModuleNotFound(_) => FerricError::NotFound,
-        EngineError::Encoding(_) => FerricError::InvalidArgument,
+        EngineError::FactNotFound(_)
+        | EngineError::ModuleNotFound(_)
+        | EngineError::TemplateNotFound(_)
+        | EngineError::SlotNotFound { .. } => FerricError::NotFound,
+        EngineError::NotATemplateFact(_) | EngineError::Encoding(_) => FerricError::InvalidArgument,
         #[allow(unreachable_patterns)]
         _ => FerricError::InternalError,
     }

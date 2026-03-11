@@ -306,6 +306,23 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
         "ferric_value_string(const char *s)",
         "ferric_value_string(const char * FERRIC_NULL_TERMINATED s)",
     ),
+    // ferric_engine_assert_template: template_name is NUL-terminated.
+    // (multi-line signature — template_name is on the continuation line)
+    (
+        "ferric_engine_assert_template(struct FerricEngine *engine,\n                                               const char *template_name,",
+        "ferric_engine_assert_template(struct FerricEngine *engine,\n                                               const char * FERRIC_NULL_TERMINATED template_name,",
+    ),
+    // ferric_engine_assert_template: slot_names is an array of count pointers.
+    (
+        "const char *const *slot_names,\n                                               const struct FerricValue *slot_values,\n                                               uintptr_t count,",
+        "const char *const *slot_names FERRIC_COUNTED_BY(count),\n                                               const struct FerricValue *slot_values FERRIC_COUNTED_BY(count),\n                                               uintptr_t count,",
+    ),
+    // ferric_engine_get_fact_slot_by_name: slot_name is NUL-terminated.
+    // (multi-line signature — slot_name is on the continuation line)
+    (
+        "ferric_engine_get_fact_slot_by_name(const struct FerricEngine *engine,\n                                                     uint64_t fact_id,\n                                                     const char *slot_name,",
+        "ferric_engine_get_fact_slot_by_name(const struct FerricEngine *engine,\n                                                     uint64_t fact_id,\n                                                     const char * FERRIC_NULL_TERMINATED slot_name,",
+    ),
 ];
 
 fn main() {

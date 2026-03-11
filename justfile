@@ -245,6 +245,25 @@ doc:
 doc-open:
     cargo doc --workspace --no-deps --open
 
+# ── Go bindings ─────────────────────────────────────────────────────────────
+
+# Build the Rust static library for Go bindings
+build-go-ffi:
+    cargo build -p ferric-ffi --release
+    cp target/release/libferric_ffi.a bindings/go/internal/ffi/lib/
+    cp crates/ferric-ffi/ferric.h bindings/go/internal/ffi/lib/
+
+# Run Go binding tests
+test-go:
+    cd bindings/go && go test -v ./...
+
+# Run Go binding tests with race detector
+test-go-race:
+    cd bindings/go && go test -race -v ./...
+
+# Full Go build pipeline: build Rust static lib, then run Go tests
+go-full: build-go-ffi test-go-race
+
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 
 # Remove build artifacts

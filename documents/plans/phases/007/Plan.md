@@ -51,6 +51,8 @@ The `ferric-python` crate provides a high-level Pythonic API via PyO3. It wraps 
 
 5. **Coordinator + Manager architecture** (see Layer 3 below).
 
+6. **v1 execution model is explicitly stateless.** `Evaluate` is the primary API and is one-call/one-result. `Manager.Do` is single-call escape-hatch access and does not guarantee worker affinity across calls.
+
 ---
 
 ## Architecture Decision: CGo + Existing C FFI
@@ -83,6 +85,9 @@ bindings/go/                          # Go module root (within ferric-rules mono
 ├── result.go                         # RunResult, HaltReason, FiredRule
 ├── errors.go                         # Error types (FerricError, ParseError, etc.)
 ├── values.go                         # Go ↔ FerricValue conversion
+├── wire_types.go                     # Stable tagged wire schema (Temporal/cross-language)
+├── wire_conv.go                      # Go-native <-> wire conversion helpers
+├── wire_helpers.go                   # Ergonomic constructors/builders for Go callers
 ├── internal/
 │   └── ffi/
 │       ├── ffi.go                    # CGo declarations, raw C function wrappers
@@ -221,7 +226,7 @@ const (
 // Symbol is a distinct type to differentiate CLIPS symbols from strings.
 type Symbol string
 
-// Value conversion from C FFI values produces:
+// Go-native value conversion from C FFI values produces:
 //   Integer       → int64
 //   Float         → float64
 //   Symbol        → ferric.Symbol
@@ -230,7 +235,7 @@ type Symbol string
 //   Void          → nil
 //   ExternalAddr  → unsafe.Pointer (rare)
 //
-// Value conversion to C FFI values accepts:
+// Go-native value conversion to C FFI values accepts:
 //   int, int64    → Integer
 //   float64       → Float
 //   Symbol        → Symbol
@@ -239,6 +244,31 @@ type Symbol string
 //   bool          → Symbol (TRUE/FALSE)
 //   nil           → Void
 ```
+
+For cross-language and Temporal payloads, we use a **separate tagged wire schema** (not `any`):
+
+```go
+type WireValueKind string
+
+const (
+    WireValueVoid       WireValueKind = "void"
+    WireValueInteger    WireValueKind = "integer"
+    WireValueFloat      WireValueKind = "float"
+    WireValueSymbol     WireValueKind = "symbol"
+    WireValueString     WireValueKind = "string"
+    WireValueMultifield WireValueKind = "multifield"
+)
+
+type WireValue struct {
+    Kind       WireValueKind `json:"kind"`
+    Integer    int64         `json:"integer,omitempty"`
+    Float      float64       `json:"float,omitempty"`
+    Text       string        `json:"text,omitempty"`       // symbol/string payload
+    Multifield []WireValue   `json:"multifield,omitempty"` // recursive
+}
+```
+
+`WireValue` is the compatibility contract for Temporal and non-Go clients. Go-only convenience APIs can continue using native values and convert via helpers.
 
 ### Fact Type
 
@@ -466,6 +496,8 @@ Finalizers in Go run on arbitrary threads. Since `ferric_engine_free` enforces t
 - **Coordinator** is initialized once with the full inventory of engine specs (types + options). It owns the thread pool. Engine types are fixed at construction time — no dynamic registration.
 - Each **worker thread** (locked OS thread) lazily instantiates engines by spec name on first use. A thread may hold 0..N engines (one per spec that has been dispatched to it).
 - **Manager** is a cheap, lightweight shim: just a pointer back to the coordinator plus a spec name. Obtained from `coord.Manager("risk")`. Multiple goroutines can share a Manager safely — it's just a dispatch handle.
+- **v1 semantics are stateless.** `Evaluate` is one-shot (reset → assert → run → snapshot). Reusing engine state across multiple API calls is not guaranteed.
+- **Extension seam:** routing stays policy-driven so we can later add workload-aware "prefer warm engine" scheduling and multi-step chained requests without breaking the public API.
 
 ### EngineSpec
 
@@ -478,6 +510,30 @@ type EngineSpec struct {
 }
 ```
 
+### Dispatch Policy (Extension Seam)
+
+```go
+// RouteHint carries request metadata used by dispatch policy.
+// v1 only uses SpecName; additional fields can be added later.
+type RouteHint struct {
+    SpecName string
+}
+
+// DispatchPolicy picks a worker index for a request.
+// Default implementation is round-robin.
+type DispatchPolicy interface {
+    PickWorker(hint RouteHint, workers []*worker, rr uint64) int
+}
+
+type roundRobinPolicy struct{}
+
+func (roundRobinPolicy) PickWorker(_ RouteHint, workers []*worker, rr uint64) int {
+    return int(rr % uint64(len(workers)))
+}
+```
+
+Future optimization (non-v1): a warm-aware policy can prefer workers that already have `hint.SpecName` instantiated, then fall back to queue depth and round-robin tie-breaks.
+
 ### Coordinator
 
 ```go
@@ -489,10 +545,13 @@ type EngineSpec struct {
 // Create with NewCoordinator, obtain Managers with Manager(),
 // shut down with Close().
 type Coordinator struct {
-    specs   map[string][]EngineOption  // engine spec registry (immutable after init)
-    workers []*worker
-    next    atomic.Uint64              // round-robin dispatch
-    closed  atomic.Bool
+    specs     map[string][]EngineOption  // engine spec registry (immutable after init)
+    specIndex map[string]uint16          // stable per-spec index for routing hints
+    workers   []*worker
+    next      atomic.Uint64              // monotonic counter for policy tie-breakers
+    policy    DispatchPolicy             // round-robin by default; swappable
+    done      chan struct{}              // closed once shutdown begins
+    closed    atomic.Bool
 }
 ```
 
@@ -503,11 +562,20 @@ type Coordinator struct {
 type CoordinatorOption func(*coordConfig)
 
 type coordConfig struct {
-    threads int  // number of OS threads (default: 1)
+    threads int
+    policy  DispatchPolicy
 }
 
 func Threads(n int) CoordinatorOption {
     return func(c *coordConfig) { c.threads = n }
+}
+
+func WithDispatchPolicy(p DispatchPolicy) CoordinatorOption {
+    return func(c *coordConfig) {
+        if p != nil {
+            c.policy = p
+        }
+    }
 }
 
 // NewCoordinator creates a Coordinator with the given engine specs
@@ -516,16 +584,26 @@ func Threads(n int) CoordinatorOption {
 // All engine specs must be provided upfront. The set of engine types
 // is fixed for the lifetime of the Coordinator.
 func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator, error) {
-    cfg := coordConfig{threads: 1}
+    cfg := coordConfig{
+        threads: 1,
+        policy:  roundRobinPolicy{},
+    }
     for _, opt := range opts {
         opt(&cfg)
     }
+    if cfg.threads < 1 {
+        return nil, errors.New("ferric: thread count must be >= 1")
+    }
 
     c := &Coordinator{
-        specs: make(map[string][]EngineOption, len(specs)),
+        specs:     make(map[string][]EngineOption, len(specs)),
+        specIndex: make(map[string]uint16, len(specs)),
+        policy:    cfg.policy,
+        done:      make(chan struct{}),
     }
-    for _, s := range specs {
+    for i, s := range specs {
         c.specs[s.Name] = s.Options
+        c.specIndex[s.Name] = uint16(i)
     }
 
     // Start worker goroutines
@@ -540,6 +618,12 @@ func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator
     }
     return c, nil
 }
+
+func (c *Coordinator) pickWorker(hint RouteHint) *worker {
+    rr := c.next.Add(1) - 1
+    idx := c.policy.PickWorker(hint, c.workers, rr)
+    return c.workers[idx]
+}
 ```
 
 #### Worker (internal)
@@ -550,12 +634,15 @@ Each worker runs on a locked OS thread and maintains a map of lazily-instantiate
 type worker struct {
     specs    map[string][]EngineOption  // shared reference to spec registry
     engines  map[string]*Engine         // lazily instantiated per-spec
+    warm     map[uint16]bool            // which spec indices are already instantiated
     requests chan workerRequest
+    stop     chan struct{}
     done     chan struct{}
 }
 
 type workerRequest struct {
     specName string
+    specIdx  uint16
     fn       func(*Engine) error
     resp     chan error
 }
@@ -564,11 +651,13 @@ func newWorker(specs map[string][]EngineOption) (*worker, error) {
     w := &worker{
         specs:    specs,
         engines:  make(map[string]*Engine),
+        warm:     make(map[uint16]bool),
         requests: make(chan workerRequest, 16),
+        stop:     make(chan struct{}),
         done:     make(chan struct{}),
     }
 
-    initDone := make(chan error, 1)
+    ready := make(chan struct{})
 
     go func() {
         runtime.LockOSThread()
@@ -576,21 +665,25 @@ func newWorker(specs map[string][]EngineOption) (*worker, error) {
         defer close(w.done)
         defer w.closeAllEngines()
 
-        close(initDone) // thread is locked and ready
+        close(ready) // thread is locked and ready
 
-        for req := range w.requests {
-            engine, err := w.getOrCreateEngine(req.specName)
-            if err != nil {
-                req.resp <- err
-                continue
+        for {
+            select {
+            case <-w.stop:
+                return
+            case req := <-w.requests:
+                engine, err := w.getOrCreateEngine(req.specName)
+                if err != nil {
+                    req.resp <- err
+                    continue
+                }
+                w.warm[req.specIdx] = true
+                req.resp <- req.fn(engine)
             }
-            req.resp <- req.fn(engine)
         }
     }()
 
-    if err := <-initDone; err != nil {
-        return nil, err
-    }
+    <-ready
     return w, nil
 }
 
@@ -628,16 +721,18 @@ func (w *worker) closeAllEngines() {
 type Manager struct {
     coord    *Coordinator
     specName string
+    specIdx  uint16
 }
 
 // Manager returns a Manager handle for the named engine spec.
 // The spec must have been provided when creating the Coordinator.
 // Managers are cheap and safe to share across goroutines.
 func (c *Coordinator) Manager(specName string) (*Manager, error) {
-    if _, ok := c.specs[specName]; !ok {
+    specIdx, ok := c.specIndex[specName]
+    if !ok {
         return nil, fmt.Errorf("ferric: unknown engine spec %q", specName)
     }
-    return &Manager{coord: c, specName: specName}, nil
+    return &Manager{coord: c, specName: specName, specIdx: specIdx}, nil
 }
 ```
 
@@ -647,18 +742,38 @@ func (c *Coordinator) Manager(specName string) (*Manager, error) {
 // Do dispatches a function to an engine of this Manager's type.
 // The function runs on a thread-locked worker goroutine. The Engine
 // must not be retained beyond the closure's return.
-func (m *Manager) Do(fn func(*Engine) error) error {
+func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) error {
+    if ctx == nil {
+        ctx = context.Background()
+    }
     if m.coord.closed.Load() {
         return errors.New("ferric: coordinator is closed")
     }
-    w := m.coord.nextWorker()
+    w := m.coord.pickWorker(RouteHint{SpecName: m.specName})
     resp := make(chan error, 1)
-    w.requests <- workerRequest{
+    req := workerRequest{
         specName: m.specName,
+        specIdx:  m.specIdx,
         fn:       fn,
         resp:     resp,
     }
-    return <-resp
+
+    select {
+    case <-ctx.Done():
+        return ctx.Err()
+    case <-m.coord.done:
+        return errors.New("ferric: coordinator is closed")
+    case w.requests <- req:
+    }
+
+    select {
+    case <-ctx.Done():
+        return ctx.Err()
+    case <-m.coord.done:
+        return errors.New("ferric: coordinator is closed")
+    case err := <-resp:
+        return err
+    }
 }
 
 // Evaluate resets the engine, asserts the given facts, runs to
@@ -666,22 +781,38 @@ func (m *Manager) Do(fn func(*Engine) error) error {
 // This is the primary entry point for most use cases.
 func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*EvaluateResult, error) {
     var result *EvaluateResult
-    err := m.Do(func(e *Engine) error {
+    err := m.Do(ctx, func(e *Engine) error {
         // Reset (not Clear+Load) — rules stay compiled from the spec's WithSource
         if err := e.Reset(); err != nil {
             return err
         }
-        // Assert request facts
-        for _, f := range req.Facts {
-            switch {
-            case f.TemplateName != "" && f.Slots != nil:
-                if _, err := e.AssertTemplate(f.TemplateName, f.Slots); err != nil {
+        // Assert request facts from tagged wire schema
+        for _, wf := range req.Facts {
+            switch wf.Kind {
+            case WireFactKindOrdered:
+                if wf.Ordered == nil {
+                    return errors.New("ferric: ordered fact payload missing")
+                }
+                fields, err := WireSliceToNative(wf.Ordered.Fields)
+                if err != nil {
+                    return err
+                }
+                if _, err := e.AssertFact(wf.Ordered.Relation, fields...); err != nil {
+                    return err
+                }
+            case WireFactKindTemplate:
+                if wf.Template == nil {
+                    return errors.New("ferric: template fact payload missing")
+                }
+                slots, err := WireMapToNative(wf.Template.Slots)
+                if err != nil {
+                    return err
+                }
+                if _, err := e.AssertTemplate(wf.Template.TemplateName, slots); err != nil {
                     return err
                 }
             default:
-                if _, err := e.AssertFact(f.Relation, f.Fields...); err != nil {
-                    return err
-                }
+                return fmt.Errorf("ferric: unsupported fact kind %q", wf.Kind)
             }
         }
         // Run
@@ -697,7 +828,11 @@ func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*Evaluate
             return err
         }
         // Collect results
-        facts, err := e.Facts()
+        nativeFacts, err := e.Facts()
+        if err != nil {
+            return err
+        }
+        wireFacts, err := FactsToWire(nativeFacts)
         if err != nil {
             return err
         }
@@ -710,7 +845,7 @@ func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*Evaluate
         }
         result = &EvaluateResult{
             RunResult: *runResult,
-            Facts:     facts,
+            Facts:     wireFacts,
             Output:    output,
         }
         return nil
@@ -719,48 +854,148 @@ func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*Evaluate
 }
 ```
 
+`Do` is still **single-call** in v1: there is no guarantee that two separate `Do` calls hit the same worker/engine instance.
+
+#### Future Extension: Chained Multi-Step Calls
+
+To support workflows that need typed state transitions across multiple engine operations, we can add an explicit chain API later without changing `Evaluate` semantics.
+
+Core (dynamic) form:
+
+```go
+type ChainStep struct {
+    SpecName string
+    Fn       func(*Engine, any) (any, error)
+}
+
+func (c *Coordinator) Chain(ctx context.Context, initial any, steps []ChainStep) (any, error)
+```
+
+This runs as one dispatched request on one locked worker thread, so every step preserves thread affinity.
+
+Typed convenience wrappers can be layered on top for common fixed-length chains:
+
+```go
+func Chain2[A, B, C any](
+    ctx context.Context,
+    c *Coordinator,
+    s1 struct{ Spec string; Fn func(*Engine, A) (B, error) },
+    s2 struct{ Spec string; Fn func(*Engine, B) (C, error) },
+    initial A,
+) (C, error)
+```
+
+This gives us an ergonomic path from `A -> B -> C -> ... -> Y` without forcing v1 users into a "grab-bag" state type.
+
 #### Request/Result Types
 
 ```go
-// EvaluateRequest describes facts to assert and evaluation parameters.
-type EvaluateRequest struct {
-    Facts []FactInput `json:"facts"`
-    Limit int         `json:"limit,omitempty"` // 0 = unlimited
+type WireFactKind string
+
+const (
+    WireFactKindOrdered  WireFactKind = "ordered"
+    WireFactKindTemplate WireFactKind = "template"
+)
+
+type WireOrderedFactInput struct {
+    Relation string      `json:"relation"`
+    Fields   []WireValue `json:"fields,omitempty"`
 }
 
-// FactInput describes a fact to assert.
-type FactInput struct {
-    // For ordered facts:
-    Relation string `json:"relation,omitempty"`
-    Fields   []any  `json:"fields,omitempty"`
+type WireTemplateFactInput struct {
+    TemplateName string               `json:"template_name"`
+    Slots        map[string]WireValue `json:"slots,omitempty"`
+}
 
-    // For template facts:
-    TemplateName string         `json:"template_name,omitempty"`
-    Slots        map[string]any `json:"slots,omitempty"`
+type WireFactInput struct {
+    Kind     WireFactKind           `json:"kind"`
+    Ordered  *WireOrderedFactInput  `json:"ordered,omitempty"`
+    Template *WireTemplateFactInput `json:"template,omitempty"`
+}
+
+// EvaluateRequest describes facts to assert and evaluation parameters.
+type EvaluateRequest struct {
+    Facts []WireFactInput `json:"facts"`
+    Limit int             `json:"limit,omitempty"` // 0 = unlimited
+}
+
+type WireOrderedFact struct {
+    Relation string      `json:"relation"`
+    Fields   []WireValue `json:"fields,omitempty"`
+}
+
+type WireTemplateFact struct {
+    TemplateName string               `json:"template_name"`
+    Slots        map[string]WireValue `json:"slots,omitempty"`
+}
+
+type WireFact struct {
+    ID       uint64            `json:"id"`
+    Kind     WireFactKind      `json:"kind"`
+    Ordered  *WireOrderedFact  `json:"ordered,omitempty"`
+    Template *WireTemplateFact `json:"template,omitempty"`
 }
 
 // EvaluateResult contains the full outcome of an evaluation.
 type EvaluateResult struct {
     RunResult
-    Facts  []Fact            `json:"facts"`
+    Facts  []WireFact        `json:"facts"`
     Output map[string]string `json:"output,omitempty"`
 }
 ```
 
-All request/result types use JSON struct tags for Temporal serialization compatibility.
+`EvaluateRequest`/`EvaluateResult` are the **stable cross-language wire contract** for Temporal integration.
+
+Go-native convenience wrappers remain separate APIs:
+
+```go
+// Native (Go ergonomic) input types.
+type NativeFactInput struct {
+    Relation     string
+    Fields       []any
+    TemplateName string
+    Slots        map[string]any
+}
+
+type EvaluateNativeRequest struct {
+    Facts []NativeFactInput
+    Limit int
+}
+
+type EvaluateNativeResult struct {
+    RunResult
+    Facts  []Fact
+    Output map[string]string
+}
+
+// EvaluateNative is a Go convenience wrapper over wire-level Evaluate.
+func (m *Manager) EvaluateNative(ctx context.Context, req *EvaluateNativeRequest) (*EvaluateNativeResult, error)
+
+// Wire helpers for concise request construction.
+func IntValue(v int64) WireValue
+func FloatValue(v float64) WireValue
+func SymbolValue(v string) WireValue
+func StringValue(v string) WireValue
+func MultifieldValue(v ...WireValue) WireValue
+
+func OrderedFact(relation string, fields ...WireValue) WireFactInput
+func TemplateFact(templateName string, slots map[string]WireValue) WireFactInput
+```
 
 #### Coordinator Lifecycle
 
 ```go
 // Close shuts down all worker goroutines and frees all engines.
 // Blocks until all in-flight requests complete.
+// Requests arriving after shutdown begins fail fast with "coordinator is closed".
 func (c *Coordinator) Close() error {
     if !c.closed.CompareAndSwap(false, true) {
         return nil
     }
+    close(c.done)
     for _, w := range c.workers {
         if w != nil {
-            close(w.requests)
+            close(w.stop)
         }
     }
     for _, w := range c.workers {
@@ -811,7 +1046,7 @@ Usage:
 // Simple: single engine type, single thread
 mgr, _ := ferric.NewManager(ferric.WithSource(rules))
 defer mgr.Close()
-result, _ := mgr.Evaluate(ctx, &ferric.EvaluateRequest{...})
+result, _ := mgr.EvaluateNative(ctx, &ferric.EvaluateNativeRequest{...})
 
 // Full: multiple engine types sharing a thread pool
 coord, _ := ferric.NewCoordinator(
@@ -836,6 +1071,8 @@ result2, _ := pricingMgr.Evaluate(ctx, pricingReq)
 ## Layer 4: Temporal Integration (`ferric/temporal`)
 
 Optional sub-package providing Temporal-idiomatic wrappers.
+
+Temporal-facing activities use the wire-level `EvaluateRequest`/`EvaluateResult` contract. Go-native convenience request/response types are converted before activity invocation and are not part of the cross-language ABI.
 
 ```go
 package temporal
@@ -921,9 +1158,9 @@ func main() {
 func MyWorkflow(ctx workflow.Context, input Input) (Output, error) {
     var result ferric.EvaluateResult
     err := workflow.ExecuteActivity(ctx, "ferric.Evaluate.risk", &ferric.EvaluateRequest{
-        Facts: []ferric.FactInput{
-            {Relation: "applicant-age", Fields: []any{35}},
-            {Relation: "credit-score", Fields: []any{720}},
+        Facts: []ferric.WireFactInput{
+            ferric.OrderedFact("applicant-age", ferric.IntValue(35)),
+            ferric.OrderedFact("credit-score", ferric.IntValue(720)),
         },
     }).Get(ctx, &result)
     if err != nil {
@@ -935,7 +1172,7 @@ func MyWorkflow(ctx workflow.Context, input Input) (Output, error) {
 
 ### Temporal-Specific Considerations
 
-1. **Serialization:** `EvaluateRequest` and `EvaluateResult` have JSON struct tags. All field types are JSON-primitive (strings, ints, maps, slices).
+1. **Serialization:** `EvaluateRequest` and `EvaluateResult` are tagged wire types (`WireValue`, `WireFactInput`, `WireFact`) with JSON struct tags. This preserves cross-language type fidelity (`symbol` vs `string`, integer vs float, recursive multifield structure).
 
 2. **Idempotency:** Activity retries re-execute safely. Each invocation resets the engine (clearing previous facts, preserving compiled rules).
 
@@ -995,6 +1232,8 @@ The "required" functions should be added early (Pass 1 or as a pre-pass). The "n
 - Implement functional options
 - Implement all Engine methods
 - Value conversion layer (Go `any` ↔ `FerricValue`)
+- Implement stable tagged wire schema (`WireValue`, `WireFactInput`, `WireFact`)
+- Implement Go-native ↔ wire conversion helpers and ergonomic wire constructors
 - `Fact` snapshot construction from FFI queries
 - Error type hierarchy with `errors.Is`/`errors.As` support
 - `context.Context`-aware `Run`/`RunWithLimit` via step loop
@@ -1006,13 +1245,15 @@ The "required" functions should be added early (Pass 1 or as a pre-pass). The "n
 **Goal:** Thread-safe Coordinator with lazy engine instantiation.
 
 - Implement worker goroutine with `LockOSThread` and per-spec engine map
-- Implement `Coordinator` with round-robin dispatch
+- Implement `Coordinator` with pluggable dispatch policy (`DispatchPolicy`), default round-robin
 - Implement `Manager` as thin dispatch shim
-- Implement `Do()` for raw access, `Evaluate()` for one-shot use
+- Implement `Do(ctx, fn)` for raw single-call access, `Evaluate()` for wire-level one-shot use
+- Implement `EvaluateNative()` as Go convenience wrapper over wire-level `Evaluate()`
+- Implement shutdown-safe request flow (`done` + `stop` channels), avoiding send-on-closed-channel races
 - Engine reuse via `Reset()` (rules stay compiled)
 - `NewManager()` convenience for single-engine case
 - `Close()` with graceful shutdown
-- Concurrent tests: multiple goroutines, multiple managers, shared threads
+- Concurrent tests: multiple goroutines, multiple managers, shared threads, shutdown-race coverage
 - Benchmark: throughput, latency distribution, lazy instantiation overhead
 
 ### Pass 4: Temporal Integration
@@ -1020,7 +1261,8 @@ The "required" functions should be added early (Pass 1 or as a pre-pass). The "n
 **Goal:** `ferric/temporal` sub-package.
 
 - Implement `RulesActivity` struct with per-spec activity registration
-- Ensure request/result types serialize cleanly via Temporal's JSON codec
+- Ensure wire request/result types serialize cleanly via Temporal's JSON codec
+- Add compatibility tests for tagged wire payload round-trips (Go SDK + JSON fixtures for non-Go workers)
 - Integration test with `testsuite.WorkflowTestSuite`
 - Example: Temporal worker with multiple engine types
 
@@ -1039,6 +1281,8 @@ The "required" functions should be added early (Pass 1 or as a pre-pass). The "n
 
 - Add `ferric_engine_eval_string` and `ferric_engine_facts_snapshot` to FFI
 - Bulk fact snapshot for reduced FFI round-trips
+- Workload-aware dispatch policy (prefer workers with warm engines for requested spec)
+- Optional chained multi-step API for stateful `A -> B -> ... -> Y` flows on one worker thread
 - `iter.Seq`-based iterators for facts, rules, etc.
 - Performance benchmarks and optimization
 - Go doc comments, package-level examples, usage guide
@@ -1051,9 +1295,9 @@ The "required" functions should be added early (Pass 1 or as a pre-pass). The "n
 |-------|------|-----|
 | FFI unit | Each C function wrapper works | `internal/ffi/ffi_test.go` |
 | Engine unit | Each Engine method works | `engine_test.go`, `fact_test.go`, etc. (mirror Python tests) |
-| Coordinator | Concurrent access, lazy instantiation, lifecycle | `coordinator_test.go` with `-race` |
+| Coordinator | Concurrent access, lazy instantiation, lifecycle, shutdown races | `coordinator_test.go` with `-race` |
 | Manager | Dispatch correctness, multiple types | `manager_test.go` with `-race` |
-| Temporal | Activity registration, execution, retry | `temporal/activity_test.go` via `testsuite` |
+| Temporal | Activity registration, execution, retry, wire payload compatibility | `temporal/activity_test.go` + wire round-trip fixtures |
 | End-to-end | Load real CLIPS programs, verify output | `testdata/*.clp` fixture files |
 
 All tests run with `-race` in CI.

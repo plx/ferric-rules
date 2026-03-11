@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyDict, PyList};
 
 use ferric_core::FactId;
 use ferric_runtime::config::EngineConfig;
@@ -140,6 +140,46 @@ impl PyEngine {
             .assert_ordered(relation, values)
             .map_err(engine_error_to_pyerr)?;
         let _ = py;
+        Ok(fid.data().as_ffi())
+    }
+
+    /// Assert a structured template fact.
+    ///
+    /// # Arguments
+    ///
+    /// * `template_name` — The deftemplate name.
+    /// * `kwargs` — Slot name/value pairs.
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// engine.assert_template("person", name="Alice", age=30)
+    /// ```
+    #[pyo3(signature = (template_name, **kwargs))]
+    fn assert_template(
+        &mut self,
+        template_name: &str,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<u64> {
+        let (names, values) = match kwargs {
+            Some(dict) => {
+                let mut names = Vec::with_capacity(dict.len());
+                let mut values = Vec::with_capacity(dict.len());
+                for (key, val) in dict.iter() {
+                    let name: String = key.extract()?;
+                    names.push(name);
+                    values.push(python_to_value(&val, &mut self.engine)?);
+                }
+                (names, values)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let fid = self
+            .engine
+            .assert_template(template_name, &name_refs, values)
+            .map_err(engine_error_to_pyerr)?;
         Ok(fid.data().as_ffi())
     }
 
