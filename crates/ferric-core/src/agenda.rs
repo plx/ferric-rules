@@ -12,6 +12,7 @@ use crate::beta::{RuleId, Salience};
 use crate::fact::Timestamp;
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::TokenId;
+use crate::tracing_support::ferric_span;
 
 slotmap::new_key_type! {
     /// Unique identifier for an activation.
@@ -181,6 +182,7 @@ impl Agenda {
     /// The activation's `activation_seq` field will be overwritten with
     /// the next sequence number. Returns the activation ID.
     pub fn add(&mut self, mut activation: Activation) -> ActivationId {
+        ferric_span!(trace_span, "agenda_add", rule = ?activation.rule, salience = activation.salience.get());
         activation.activation_seq = self.next_seq;
         self.next_seq = self.next_seq.next();
 

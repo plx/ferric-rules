@@ -44,6 +44,7 @@ use crate::actions::{
 use crate::engine::{Engine, EngineError};
 use crate::functions::{get_or_insert_module_entry_with, insert_module_entry, UserFunction};
 use crate::templates::RegisteredTemplate;
+use crate::tracing_support::{ferric_event, ferric_span};
 // GenericRegistry accessed via self.generics (field on Engine)
 
 /// Translated rule data including fact-address variable bindings.
@@ -317,9 +318,19 @@ impl Engine {
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         self.check_thread_affinity()
             .map_err(|e| vec![LoadError::Engine(e)])?;
+        ferric_span!(info_span, "engine_load_str", len = source.len());
 
         // Parse the source into S-expressions (Stage 1)
-        let parse_result = parse_sexprs(source, FileId(0));
+        let parse_result = {
+            ferric_span!(debug_span, "load_parse");
+            parse_sexprs(source, FileId(0))
+        };
+        ferric_event!(
+            debug,
+            top_level_forms = parse_result.exprs.len(),
+            parse_error_count = parse_result.errors.len(),
+            "load_parse_complete"
+        );
 
         // Convert parse errors to LoadError
         if !parse_result.errors.is_empty() {
@@ -328,6 +339,7 @@ impl Engine {
                 .into_iter()
                 .map(LoadError::Parse)
                 .collect();
+            ferric_event!(warn, "engine_load_str_failed_parse");
             return Err(errors);
         }
 
@@ -383,11 +395,22 @@ impl Engine {
                 ));
             }
         }
+        ferric_event!(
+            debug,
+            assert_forms = assert_forms.len(),
+            construct_forms = construct_forms.len(),
+            unsupported_forms = errors.len(),
+            warning_count = result.warnings.len(),
+            "load_forms_partitioned"
+        );
 
         // Interpret constructs via Stage 2
         if !construct_forms.is_empty() {
             let config = InterpreterConfig::default();
-            let interpret_result = interpret_constructs(&construct_forms, &config);
+            let interpret_result = {
+                ferric_span!(debug_span, "load_interpret");
+                interpret_constructs(&construct_forms, &config)
+            };
 
             // Convert interpret errors to LoadError
             if !interpret_result.errors.is_empty() {
@@ -627,8 +650,22 @@ impl Engine {
         }
 
         if errors.is_empty() {
+            ferric_event!(
+                info,
+                asserted_facts = result.asserted_facts.len(),
+                rules = result.rules.len(),
+                templates = result.templates.len(),
+                functions = result.functions.len(),
+                globals = result.globals.len(),
+                modules = result.modules.len(),
+                generics = result.generics.len(),
+                methods = result.methods.len(),
+                warning_count = result.warnings.len(),
+                "engine_load_str_complete"
+            );
             Ok(result)
         } else {
+            ferric_event!(warn, error_count = errors.len(), "engine_load_str_failed");
             Err(errors)
         }
     }
@@ -672,6 +709,7 @@ impl Engine {
     /// - File cannot be read
     /// - Source parsing or processing fails
     pub fn load_file(&mut self, path: &Path) -> Result<LoadResult, Vec<LoadError>> {
+        ferric_span!(info_span, "engine_load_file", path = %path.display());
         let source = std::fs::read_to_string(path).map_err(|e| vec![LoadError::Io(e)])?;
         self.load_str(&source)
     }

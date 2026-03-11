@@ -25,6 +25,7 @@ use crate::modules::ModuleRegistry;
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
+use crate::tracing_support::{ferric_event, ferric_span};
 use crate::Engine;
 
 type OrderedFields = smallvec::SmallVec<[Value; 8]>;
@@ -413,11 +414,19 @@ pub enum ActionError {
 /// - `reset_requested` is `true` if a `(reset)` action was executed.
 /// - `clear_requested` is `true` if a `(clear)` action was executed.
 /// - `errors` is a list of non-fatal action errors that occurred during execution.
+#[allow(clippy::too_many_lines)] // Sequential action/test evaluation flow with explicit error branches.
 pub(crate) fn execute_actions(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
 ) -> (bool, bool, bool, Vec<ActionError>) {
+    ferric_span!(
+        debug_span,
+        "execute_actions",
+        rule = %rule_info.name,
+        action_count = rule_info.actions.len(),
+        test_count = rule_info.test_conditions.len()
+    );
     let mut errors = Vec::new();
     let mut reset_requested = false;
     let mut clear_requested = false;
@@ -442,6 +451,12 @@ pub(crate) fn execute_actions(
                 match eval_env.eval_runtime_expr(token, rule_info, test_expr, context) {
                     Ok(value) => crate::evaluator::is_truthy(&value, &context.engine.symbol_table),
                     Err(e) => {
+                        ferric_event!(
+                            warn,
+                            rule = %rule_info.name,
+                            error = %e,
+                            "test_condition_eval_error"
+                        );
                         flush_deferred_printout(context);
                         errors.push(e);
                         return (false, false, false, errors);
@@ -458,6 +473,12 @@ pub(crate) fn execute_actions(
                 ) {
                     Ok(passed) => passed,
                     Err(e) => {
+                        ferric_event!(
+                            warn,
+                            rule = %rule_info.name,
+                            error = %e,
+                            "test_condition_eval_error"
+                        );
                         flush_deferred_printout(context);
                         errors.push(e);
                         return (false, false, false, errors);
@@ -468,6 +489,7 @@ pub(crate) fn execute_actions(
         flush_deferred_printout(context);
 
         if !condition_passed {
+            ferric_event!(debug, rule = %rule_info.name, "rule_skipped_by_test_condition");
             return (false, false, false, errors); // Test CE falsy — rule did not fire
         }
     }
@@ -487,15 +509,39 @@ pub(crate) fn execute_actions(
             context,
             &mut eval_env,
         ) {
+            ferric_event!(
+                warn,
+                rule = %rule_info.name,
+                action_index = index,
+                action_name = %action.call.name,
+                error = %e,
+                "rule_action_error"
+            );
             errors.push(e);
         }
         flush_deferred_printout(context);
         // Stop executing further actions if clear/reset was requested.
         if clear_requested || reset_requested {
+            ferric_event!(
+                debug,
+                rule = %rule_info.name,
+                action_index = index,
+                reset_requested,
+                clear_requested,
+                "rule_action_short_circuit"
+            );
             break;
         }
     }
 
+    ferric_event!(
+        debug,
+        rule = %rule_info.name,
+        error_count = errors.len(),
+        reset_requested,
+        clear_requested,
+        "execute_actions_complete"
+    );
     (true, reset_requested, clear_requested, errors)
 }
 

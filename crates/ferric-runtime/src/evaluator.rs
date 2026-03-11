@@ -7,6 +7,8 @@
 //! into a normalized `RuntimeExpr`, which is then evaluated against a set of
 //! variable bindings to produce a runtime `Value`.
 
+#[cfg(feature = "tracing")]
+use std::cell::Cell;
 use std::collections::VecDeque;
 
 use ferric_core::binding::{BindingSet, ValueRef, VarMap};
@@ -20,6 +22,9 @@ use crate::functions::{FunctionEnv, GenericFunction, GenericRegistry, GlobalStor
 // Qualified name utilities: wired into dispatch chain in passes 003/004.
 #[allow(unused_imports)]
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
+use crate::tracing_support::ferric_event;
+#[cfg(feature = "tracing")]
+use crate::tracing_support::ferric_span;
 
 // ---------------------------------------------------------------------------
 // Source span for diagnostics
@@ -395,9 +400,64 @@ fn resolve_unqualified_callable_module(
 // Main evaluation function
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "tracing")]
+thread_local! {
+    static EVAL_RUN_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(feature = "tracing")]
+struct EvalRunGuard;
+
+#[cfg(feature = "tracing")]
+impl EvalRunGuard {
+    fn is_active() -> bool {
+        EVAL_RUN_ACTIVE.with(Cell::get)
+    }
+
+    fn enter_root() -> Self {
+        EVAL_RUN_ACTIVE.with(|active| {
+            debug_assert!(
+                !active.get(),
+                "eval root guard should be entered once per run"
+            );
+            active.set(true);
+        });
+        Self
+    }
+}
+
+#[cfg(feature = "tracing")]
+impl Drop for EvalRunGuard {
+    fn drop(&mut self) {
+        EVAL_RUN_ACTIVE.with(|active| active.set(false));
+    }
+}
+
 /// Evaluate a runtime expression to a `Value`.
+///
+/// Root entrypoint for expression evaluation. Recursive evaluation should flow
+/// through `eval_inner`, which keeps tracing lightweight on deep call stacks.
 #[allow(clippy::too_many_lines)] // The visibility checks add necessary verbosity
 pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
+    #[cfg(feature = "tracing")]
+    {
+        if EvalRunGuard::is_active() {
+            return eval_inner(ctx, expr);
+        }
+
+        let _run_guard = EvalRunGuard::enter_root();
+        ferric_span!(debug_span, "eval_root", call_depth = ctx.call_depth);
+        return eval_inner(ctx, expr);
+    }
+
+    #[cfg(not(feature = "tracing"))]
+    {
+        eval_inner(ctx, expr)
+    }
+}
+
+#[allow(clippy::too_many_lines)] // The visibility checks add necessary verbosity
+fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
     match expr {
         RuntimeExpr::Literal(v) => Ok(v.clone()),
         RuntimeExpr::BoundVar { name, span } => {
@@ -461,6 +521,12 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                 })
         }
         RuntimeExpr::Call { name, args, span } => {
+            // Per-call events preserve call structure without per-frame spans.
+            // Cap deep-call emission to avoid amplifying stack pressure in
+            // pathological recursion.
+            if ctx.call_depth <= 128 {
+                ferric_event!(debug, name = %name, call_depth = ctx.call_depth, "eval_call");
+            }
             // call-next-method: advance to next method in the dispatch chain.
             if name == "call-next-method" {
                 return dispatch_call_next_method(ctx, args, span.clone());
@@ -536,7 +602,7 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
             else_branch,
             ..
         } => {
-            let cond_value = eval(ctx, condition)?;
+            let cond_value = eval_inner(ctx, condition)?;
             let branch = if is_truthy(&cond_value, ctx.symbol_table) {
                 then_branch
             } else {
@@ -545,11 +611,11 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
             let mut result = Value::Void;
             for (action_expr, rt_expr) in branch {
                 if let Some(rt) = rt_expr {
-                    result = eval(ctx, rt)?;
+                    result = eval_inner(ctx, rt)?;
                 } else {
                     // Pre-compilation failed; translate on the fly.
                     let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                    result = eval(ctx, &rt)?;
+                    result = eval_inner(ctx, &rt)?;
                 }
             }
             Ok(result)
@@ -560,7 +626,7 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
             let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
             let mut iterations = 0usize;
             loop {
-                let cond_value = eval(ctx, condition)?;
+                let cond_value = eval_inner(ctx, condition)?;
                 if !is_truthy(&cond_value, ctx.symbol_table) {
                     break;
                 }
@@ -575,10 +641,10 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                 }
                 for (action_expr, rt_expr) in body {
                     if let Some(rt) = rt_expr {
-                        result = eval(ctx, rt)?;
+                        result = eval_inner(ctx, rt)?;
                     } else {
                         let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                        result = eval(ctx, &rt)?;
+                        result = eval_inner(ctx, &rt)?;
                     }
                 }
             }
@@ -591,8 +657,8 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
             body,
             span,
         } => {
-            let start_val = eval(ctx, start)?;
-            let end_val = eval(ctx, end)?;
+            let start_val = eval_inner(ctx, start)?;
+            let end_val = eval_inner(ctx, end)?;
             #[allow(clippy::cast_possible_truncation)] // intentional float-to-int for loop bounds
             let start_int = match &start_val {
                 Value::Integer(n) => *n,
@@ -687,11 +753,11 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
 
                 for (action_expr, rt_expr) in body {
                     if let Some(rt) = rt_expr {
-                        result = eval(&mut iter_ctx, rt)?;
+                        result = eval_inner(&mut iter_ctx, rt)?;
                     } else {
                         let rt =
                             from_action_expr(action_expr, iter_ctx.symbol_table, iter_ctx.config)?;
-                        result = eval(&mut iter_ctx, &rt)?;
+                        result = eval_inner(&mut iter_ctx, &rt)?;
                     }
                 }
             }
@@ -703,7 +769,7 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
             body,
             span,
         } => {
-            let list_val = eval(ctx, list_expr)?;
+            let list_val = eval_inner(ctx, list_expr)?;
             let elements: Vec<Value> = match list_val {
                 Value::Multifield(mf) => mf.as_slice().to_vec(),
                 // A scalar value is treated as a single-element multifield.
@@ -788,11 +854,11 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
 
                 for (action_expr, rt_expr) in body {
                     if let Some(rt) = rt_expr {
-                        result = eval(&mut iter_ctx, rt)?;
+                        result = eval_inner(&mut iter_ctx, rt)?;
                     } else {
                         let rt =
                             from_action_expr(action_expr, iter_ctx.symbol_table, iter_ctx.config)?;
-                        result = eval(&mut iter_ctx, &rt)?;
+                        result = eval_inner(&mut iter_ctx, &rt)?;
                     }
                 }
             }
@@ -804,18 +870,18 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
             default,
             ..
         } => {
-            let disc_value = eval(ctx, expr)?;
+            let disc_value = eval_inner(ctx, expr)?;
             // Find matching case (equality comparison)
             for (test_val_expr, case_body) in cases {
-                let test_value = eval(ctx, test_val_expr)?;
+                let test_value = eval_inner(ctx, test_val_expr)?;
                 if disc_value.structural_eq(&test_value) {
                     let mut result = Value::Void;
                     for (action_expr, rt_expr) in case_body {
                         if let Some(rt) = rt_expr {
-                            result = eval(ctx, rt)?;
+                            result = eval_inner(ctx, rt)?;
                         } else {
                             let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                            result = eval(ctx, &rt)?;
+                            result = eval_inner(ctx, &rt)?;
                         }
                     }
                     return Ok(result);
@@ -826,10 +892,10 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
                 let mut result = Value::Void;
                 for (action_expr, rt_expr) in default_body {
                     if let Some(rt) = rt_expr {
-                        result = eval(ctx, rt)?;
+                        result = eval_inner(ctx, rt)?;
                     } else {
                         let rt = from_action_expr(action_expr, ctx.symbol_table, ctx.config)?;
-                        result = eval(ctx, &rt)?;
+                        result = eval_inner(ctx, &rt)?;
                     }
                 }
                 Ok(result)
@@ -1052,9 +1118,24 @@ fn execute_callable_body(
 
     let mut result = Value::Void;
     for body_expr in &body_exprs {
-        result = eval(&mut inner_ctx, body_expr)?;
+        result = eval_inner(&mut inner_ctx, body_expr)?;
     }
     Ok(result)
+}
+
+fn effective_max_call_depth(ctx: &EvalContext<'_>) -> usize {
+    #[cfg(feature = "tracing")]
+    {
+        // Tracing increases per-frame stack pressure in deep recursive call paths.
+        // Clamp to a conservative ceiling until recursive evaluation is replaced
+        // with an iterative frame stack.
+        ctx.config.max_call_depth.min(32)
+    }
+
+    #[cfg(not(feature = "tracing"))]
+    {
+        ctx.config.max_call_depth
+    }
 }
 
 /// Dispatch a call to a user-defined function.
@@ -1067,9 +1148,17 @@ fn dispatch_user_function(
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
     let span_ref = span.as_ref();
+    let max_call_depth = effective_max_call_depth(ctx);
 
     // Check recursion limit before doing anything else.
-    if ctx.call_depth >= ctx.config.max_call_depth {
+    if ctx.call_depth >= max_call_depth {
+        ferric_event!(
+            warn,
+            callable = %func.name,
+            call_depth = ctx.call_depth,
+            max_call_depth,
+            "eval_recursion_limit_reached"
+        );
         return Err(EvalError::RecursionLimit {
             name: func.name.clone(),
             depth: ctx.call_depth,
@@ -1305,6 +1394,7 @@ fn dispatch_generic(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
+    let max_call_depth = effective_max_call_depth(ctx);
     // Evaluate all arguments first (eager evaluation).
     let arg_values = eval_args(ctx, args)?;
 
@@ -1318,6 +1408,12 @@ fn dispatch_generic(
     applicable.sort_by(compare_method_specificity);
 
     if applicable.is_empty() {
+        ferric_event!(
+            debug,
+            callable = %generic.name,
+            arg_count = arg_values.len(),
+            "dispatch_generic_no_applicable_method"
+        );
         let types: Vec<&str> = arg_values.iter().map(generic_value_type_name).collect();
         return Err(EvalError::NoApplicableMethod {
             name: generic.name.clone(),
@@ -1329,7 +1425,14 @@ fn dispatch_generic(
     let method = applicable[0].clone();
 
     // Check recursion limit.
-    if ctx.call_depth >= ctx.config.max_call_depth {
+    if ctx.call_depth >= max_call_depth {
+        ferric_event!(
+            warn,
+            callable = %generic.name,
+            call_depth = ctx.call_depth,
+            max_call_depth,
+            "eval_recursion_limit_reached"
+        );
         return Err(EvalError::RecursionLimit {
             name: generic.name.clone(),
             depth: ctx.call_depth,
@@ -1372,6 +1475,7 @@ fn dispatch_call_next_method(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
+    let max_call_depth = effective_max_call_depth(ctx);
     // call-next-method takes no arguments.
     if !args.is_empty() {
         return Err(EvalError::ArityMismatch {
@@ -1397,6 +1501,12 @@ fn dispatch_call_next_method(
 
     let next_index = chain.current_index + 1;
     if next_index >= chain.applicable_methods.len() {
+        ferric_event!(
+            debug,
+            callable = %chain.generic_name,
+            current_index = chain.current_index,
+            "call_next_method_missing_next"
+        );
         return Err(EvalError::NoApplicableMethod {
             name: format!("call-next-method for `{}`", chain.generic_name),
             actual_types: "no next method in dispatch chain".to_string(),
@@ -1405,7 +1515,14 @@ fn dispatch_call_next_method(
     }
 
     // Recursion limit check.
-    if ctx.call_depth >= ctx.config.max_call_depth {
+    if ctx.call_depth >= max_call_depth {
+        ferric_event!(
+            warn,
+            callable = %chain.generic_name,
+            call_depth = ctx.call_depth,
+            max_call_depth,
+            "eval_recursion_limit_reached"
+        );
         return Err(EvalError::RecursionLimit {
             name: format!("call-next-method for `{}`", chain.generic_name),
             depth: ctx.call_depth,
@@ -2160,7 +2277,7 @@ fn dispatch_bind(
     match &args[0] {
         RuntimeExpr::GlobalVar { name, .. } => {
             let name = name.clone();
-            let value = eval(ctx, &args[1])?;
+            let value = eval_inner(ctx, &args[1])?;
             let target_module = if name.contains("::") {
                 let qualified =
                     parse_qualified_name(&name).map_err(|msg| EvalError::TypeError {
@@ -2303,7 +2420,7 @@ fn check_arity_min(
 fn eval_args(ctx: &mut EvalContext<'_>, args: &[RuntimeExpr]) -> Result<Vec<Value>, EvalError> {
     let mut values = Vec::with_capacity(args.len());
     for arg in args {
-        values.push(eval(ctx, arg)?);
+        values.push(eval_inner(ctx, arg)?);
     }
     Ok(values)
 }
@@ -2740,7 +2857,7 @@ fn builtin_and(
     _span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     for arg in args {
-        let v = eval(ctx, arg)?;
+        let v = eval_inner(ctx, arg)?;
         if !is_truthy(&v, ctx.symbol_table) {
             return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
         }
@@ -2755,7 +2872,7 @@ fn builtin_or(
     _span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     for arg in args {
-        let v = eval(ctx, arg)?;
+        let v = eval_inner(ctx, arg)?;
         if is_truthy(&v, ctx.symbol_table) {
             return Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding));
         }
@@ -2770,7 +2887,7 @@ fn builtin_not(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("not", args, 1, span)?;
-    let v = eval(ctx, &args[0])?;
+    let v = eval_inner(ctx, &args[0])?;
     Ok(clips_bool(
         !is_truthy(&v, ctx.symbol_table),
         ctx.symbol_table,
@@ -2886,7 +3003,7 @@ fn builtin_evenp(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("evenp", args, 1, span)?;
-    let val = eval(ctx, &args[0])?;
+    let val = eval_inner(ctx, &args[0])?;
     match val {
         Value::Integer(n) => Ok(clips_bool(
             n % 2 == 0,
@@ -2908,7 +3025,7 @@ fn builtin_oddp(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("oddp", args, 1, span)?;
-    let val = eval(ctx, &args[0])?;
+    let val = eval_inner(ctx, &args[0])?;
     match val {
         Value::Integer(n) => Ok(clips_bool(
             n % 2 != 0,
@@ -2931,7 +3048,7 @@ fn builtin_to_integer(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("integer", args, 1, span)?;
-    let val = eval(ctx, &args[0])?;
+    let val = eval_inner(ctx, &args[0])?;
     match val {
         Value::Integer(_) => Ok(val),
         #[allow(clippy::cast_possible_truncation)]
@@ -2952,7 +3069,7 @@ fn builtin_to_float(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("float", args, 1, span)?;
-    let val = eval(ctx, &args[0])?;
+    let val = eval_inner(ctx, &args[0])?;
     match val {
         Value::Float(_) => Ok(val),
         Value::Integer(n) => Ok(Value::Float(n as f64)),
@@ -3113,7 +3230,7 @@ fn builtin_setgen(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("setgen", args, 1, span)?;
-    let value = eval(ctx, &args[0])?;
+    let value = eval_inner(ctx, &args[0])?;
     match value {
         Value::Integer(n) if n >= 1 => {
             ctx.globals.set_gensym_counter(n);
@@ -3141,7 +3258,7 @@ fn builtin_set_fact_duplication(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("set-fact-duplication", args, 1, span)?;
-    let value = eval(ctx, &args[0])?;
+    let value = eval_inner(ctx, &args[0])?;
     Ok(clips_bool(
         is_truthy(&value, ctx.symbol_table),
         ctx.symbol_table,
@@ -3190,7 +3307,7 @@ fn builtin_str_length(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-length", args, 1, span)?;
-    let val = eval(ctx, &args[0])?;
+    let val = eval_inner(ctx, &args[0])?;
     match &val {
         Value::String(s) => {
             let char_len = i64::try_from(s.as_str().chars().count()).unwrap_or(i64::MAX);
@@ -3337,7 +3454,7 @@ fn builtin_length(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("length", args, 1, span)?;
-    let val = eval(ctx, &args[0])?;
+    let val = eval_inner(ctx, &args[0])?;
     match &val {
         #[allow(clippy::cast_possible_wrap)] // container length fits in i64 in practice
         Value::Multifield(mf) => Ok(Value::Integer(mf.len() as i64)),
@@ -3363,7 +3480,7 @@ fn builtin_length_mf(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("length$", args, 1, span)?;
-    let val = eval(ctx, &args[0])?;
+    let val = eval_inner(ctx, &args[0])?;
     match &val {
         #[allow(clippy::cast_possible_wrap)] // multifield length fits in i64 in practice
         Value::Multifield(mf) => Ok(Value::Integer(mf.len() as i64)),
@@ -3483,7 +3600,7 @@ fn builtin_implode_mf(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("implode$", args, 1, span)?;
-    let val = eval(ctx, &args[0])?;
+    let val = eval_inner(ctx, &args[0])?;
     match &val {
         Value::Multifield(mf) => {
             let mut result = String::new();
@@ -3667,7 +3784,7 @@ fn builtin_close(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("close", args, 1, span)?;
-    let _ = eval(ctx, &args[0])?;
+    let _ = eval_inner(ctx, &args[0])?;
     Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
 }
 
@@ -3679,7 +3796,7 @@ fn builtin_return(
 ) -> Result<Value, EvalError> {
     match args {
         [] => Ok(Value::Void),
-        [expr] => eval(ctx, expr),
+        [expr] => eval_inner(ctx, expr),
         _ => Err(EvalError::ArityMismatch {
             name: "return".to_string(),
             expected: "0 or 1".to_string(),
@@ -3696,7 +3813,7 @@ fn builtin_load(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("load", args, 1, span)?;
-    let path_value = eval(ctx, &args[0])?;
+    let path_value = eval_inner(ctx, &args[0])?;
     match path_value {
         Value::String(_) | Value::Symbol(_) => {
             Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
@@ -3728,7 +3845,7 @@ fn builtin_ppdefrule(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("ppdefrule", args, 1, span)?;
-    let _ = eval(ctx, &args[0])?;
+    let _ = eval_inner(ctx, &args[0])?;
     Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
 }
 
@@ -3747,7 +3864,7 @@ fn builtin_rules(
         });
     }
     if let Some(arg) = args.first() {
-        let _ = eval(ctx, arg)?;
+        let _ = eval_inner(ctx, arg)?;
     }
     Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
 }
@@ -3823,12 +3940,12 @@ fn builtin_printout(
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_min("printout", args, 1, span)?;
-    let channel_value = eval(ctx, &args[0])?;
+    let channel_value = eval_inner(ctx, &args[0])?;
     let channel = printout_channel_name(&channel_value, ctx.symbol_table, span)?;
 
     let mut output = String::new();
     for expr in &args[1..] {
-        let value = eval(ctx, expr)?;
+        let value = eval_inner(ctx, expr)?;
         append_printout_value(&value, ctx.symbol_table, &mut output);
     }
 
@@ -3862,10 +3979,10 @@ fn builtin_format(
     check_arity_min("format", args, 2, span)?;
 
     // First arg is channel (evaluate but don't use for output)
-    let _channel = eval(ctx, &args[0])?;
+    let _channel = eval_inner(ctx, &args[0])?;
 
     // Second arg is format string
-    let fmt_str = match eval(ctx, &args[1])? {
+    let fmt_str = match eval_inner(ctx, &args[1])? {
         Value::String(s) => s.as_str().to_string(),
         other => {
             return Err(EvalError::TypeError {
@@ -4153,7 +4270,7 @@ fn builtin_read(
     }
     // Evaluate channel arg if present (but don't use it)
     if !args.is_empty() {
-        let _ = eval(ctx, &args[0])?;
+        let _ = eval_inner(ctx, &args[0])?;
     }
 
     let Some(buffer) = ctx.input_buffer.as_deref_mut() else {
@@ -4229,7 +4346,7 @@ fn builtin_readline(
         });
     }
     if !args.is_empty() {
-        let _ = eval(ctx, &args[0])?;
+        let _ = eval_inner(ctx, &args[0])?;
     }
 
     let Some(buffer) = ctx.input_buffer.as_deref_mut() else {
@@ -4884,6 +5001,69 @@ mod tests {
         let expr = call("inf", vec![int(1)]);
         let result = eval(&mut ctx, &expr);
         assert!(matches!(result, Err(EvalError::RecursionLimit { .. })));
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn eval_run_guard_tracks_root_scope() {
+        assert!(!EvalRunGuard::is_active());
+        {
+            let _guard = EvalRunGuard::enter_root();
+            assert!(EvalRunGuard::is_active());
+        }
+        assert!(!EvalRunGuard::is_active());
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn eval_root_guard_resets_after_error() {
+        let func = UserFunction {
+            name: "inf".to_string(),
+            parameters: vec!["x".to_string()],
+            wildcard_parameter: None,
+            body: vec![ferric_parser::ActionExpr::FunctionCall(
+                ferric_parser::FunctionCall {
+                    name: "inf".to_string(),
+                    args: vec![ferric_parser::ActionExpr::Variable(
+                        "x".to_string(),
+                        dummy_span(),
+                    )],
+                    span: dummy_span(),
+                },
+            )],
+        };
+        let (mut st, vm, bs, mut cfg, mut fenv, mut gs, generics, mr, em) = test_ctx();
+        cfg.max_call_depth = 3;
+        fenv.register(mr.main_module_id(), func);
+        let mut ctx = EvalContext {
+            bindings: &bs,
+            var_map: &vm,
+            symbol_table: &mut st,
+            config: &cfg,
+            functions: &fenv,
+            globals: &mut gs,
+            generics: &generics,
+            call_depth: 0,
+            current_module: mr.main_module_id(),
+            module_registry: &mr,
+            function_modules: &em,
+            global_modules: &em,
+            generic_modules: &em,
+            method_chain: None,
+            input_buffer: None,
+        };
+        let recursive_expr = call("inf", vec![int(1)]);
+        let first_result = eval(&mut ctx, &recursive_expr);
+        assert!(matches!(
+            first_result,
+            Err(EvalError::RecursionLimit { .. })
+        ));
+        assert!(!EvalRunGuard::is_active());
+
+        let literal_expr = int(42);
+        let second_result = eval(&mut ctx, &literal_expr);
+        assert!(matches!(second_result, Ok(Value::Integer(42))));
+        assert!(!EvalRunGuard::is_active());
     }
 
     #[test]

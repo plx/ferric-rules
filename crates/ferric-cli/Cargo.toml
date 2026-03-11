@@ -18,6 +18,13 @@ ferric-parser = { workspace = true }
 ferric-runtime = { workspace = true }
 rustyline = { workspace = true }
 slotmap = { workspace = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+tracing-chrome = { workspace = true, optional = true }
+
+[features]
+tracing = ["trace-chrome"]
+trace-chrome = ["dep:tracing", "dep:tracing-chrome", "dep:tracing-subscriber", "ferric-runtime/tracing"]
 
 [dev-dependencies]
 proptest = { workspace = true }

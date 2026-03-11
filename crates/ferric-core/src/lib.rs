@@ -29,6 +29,8 @@
 //! - `forall` CE node type.
 //! - Expression evaluation infrastructure for `test` CE and RHS functions.
 
+mod tracing_support;
+
 pub mod agenda;
 pub mod alpha;
 pub mod beta;

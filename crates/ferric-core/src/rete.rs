@@ -7,6 +7,8 @@ use slotmap::Key;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 
+use crate::tracing_support::ferric_span;
+
 use crate::agenda::{Activation, ActivationId, ActivationSeq, Agenda};
 use crate::alpha::{get_slot_value, AlphaMemory, AlphaMemoryId, AlphaNetwork, SlotIndex};
 use crate::beta::{BetaMemory, BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType};
@@ -70,6 +72,7 @@ impl ReteNetwork {
         fact: &Fact,
         fact_base: &FactBase,
     ) -> Vec<ActivationId> {
+        ferric_span!(trace_span, "rete_assert", fact_id = ?fact_id);
         let mut new_activations = Vec::with_capacity(4);
 
         // 1. Propagate through alpha network
@@ -133,6 +136,7 @@ impl ReteNetwork {
         fact_base: &FactBase,
     ) -> Vec<Activation> {
         use rustc_hash::FxHashSet as HashSet;
+        ferric_span!(trace_span, "rete_retract", fact_id = ?fact_id);
 
         let mut removed_activations = Vec::with_capacity(4);
 
@@ -233,6 +237,7 @@ impl ReteNetwork {
         fact_base: &FactBase,
         new_activations: &mut Vec<ActivationId>,
     ) {
+        ferric_span!(trace_span, "rete_right_activate", node = ?join_node_id);
         let Some(join_node) = self.beta.get_node(join_node_id) else {
             return;
         };
@@ -354,6 +359,7 @@ impl ReteNetwork {
         fact_base: &FactBase,
         new_activations: &mut Vec<ActivationId>,
     ) {
+        ferric_span!(trace_span, "rete_left_activate", node = ?join_node_id);
         // 1. Get join node info
         let Some(join_node) = self.beta.get_node(join_node_id) else {
             return;
@@ -1260,6 +1266,7 @@ impl ReteNetwork {
         fact_base: &FactBase,
         new_activations: &mut Vec<ActivationId>,
     ) {
+        ferric_span!(trace_span, "rete_propagate", token = ?token_id);
         for &child_id in children {
             let Some(child_node) = self.beta.get_node(child_id) else {
                 continue;

@@ -12,6 +12,9 @@ ferric-core = { workspace = true }
 ferric-parser = { workspace = true }
 ferric-runtime = { workspace = true }
 
+[features]
+tracing = ["ferric-runtime/tracing"]
+
 [dev-dependencies]
 criterion = { workspace = true }
 

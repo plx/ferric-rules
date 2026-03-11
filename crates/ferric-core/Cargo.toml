@@ -12,6 +12,10 @@ thiserror = { workspace = true }
 slotmap = { workspace = true }
 smallvec = { workspace = true }
 rustc-hash = { workspace = true }
+tracing = { workspace = true, optional = true }
+
+[features]
+tracing = ["dep:tracing"]
 
 [dev-dependencies]
 proptest = { workspace = true }
