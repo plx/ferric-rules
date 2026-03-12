@@ -4,7 +4,9 @@ package ferric
 type FactType int
 
 const (
-	FactOrdered  FactType = iota
+	// FactOrdered represents an ordered fact.
+	FactOrdered FactType = iota
+	// FactTemplate represents a template fact.
 	FactTemplate
 )
 

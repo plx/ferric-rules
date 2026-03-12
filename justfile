@@ -261,6 +261,30 @@ test-go:
 test-go-race:
     cd bindings/go && go test -race -v ./...
 
+# Runs the golang-ci linter suite.
+run-golang-ci:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if command -v golangci-lint >/dev/null 2>&1; then
+        cd bindings/go
+        golangci-lint run --default all
+        exit 0
+    fi
+
+    if [[ -x ./bin/golangci-lint ]]; then
+        cd bindings/go
+        ../../bin/golangci-lint run --default all
+        exit 0
+    fi
+
+    echo "missing tool: golangci-lint (install via PATH or ./bin/golangci-lint)" >&2
+    exit 1
+
+# Run Go lint checks for bindings.
+go-lint: build-go-ffi
+    just run-golang-ci
+
 # Full Go build pipeline: build Rust static lib, then run Go tests
 go-full: build-go-ffi test-go-race
 

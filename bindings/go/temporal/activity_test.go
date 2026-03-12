@@ -20,7 +20,7 @@ func TestNewRulesActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ra.Close()
+	defer mustClose(t, ra)
 }
 
 func TestNewRulesActivityMultipleSpecs(t *testing.T) {
@@ -34,7 +34,7 @@ func TestNewRulesActivityMultipleSpecs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ra.Close()
+	defer mustClose(t, ra)
 }
 
 func TestRulesActivityDirectEvaluate(t *testing.T) {
@@ -49,7 +49,7 @@ func TestRulesActivityDirectEvaluate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ra.Close()
+	defer mustClose(t, ra)
 
 	// Access the manager directly to test evaluate.
 	mgr := ra.managers["greet"]

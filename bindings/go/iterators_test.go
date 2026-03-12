@@ -16,11 +16,11 @@ func TestFactIter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
-	e.AssertFact("color", Symbol("red"))
-	e.AssertFact("color", Symbol("blue"))
-	e.AssertTemplate("person", map[string]any{"name": "Alice"})
+	mustAssertFact(t, e, "color", Symbol("red"))
+	mustAssertFact(t, e, "color", Symbol("blue"))
+	mustAssertTemplate(t, e, "person", map[string]any{"name": "Alice"})
 
 	count := 0
 	for f := range e.FactIter() {
@@ -39,12 +39,12 @@ func TestFactIterEarlyBreak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
-	e.Reset()
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
 
-	e.AssertFact("a", Symbol("1"))
-	e.AssertFact("b", Symbol("2"))
-	e.AssertFact("c", Symbol("3"))
+	mustAssertFact(t, e, "a", Symbol("1"))
+	mustAssertFact(t, e, "b", Symbol("2"))
+	mustAssertFact(t, e, "c", Symbol("3"))
 
 	count := 0
 	for range e.FactIter() {
@@ -66,7 +66,7 @@ func TestRuleIter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	names := map[string]bool{}
 	for r := range e.RuleIter() {
@@ -85,7 +85,7 @@ func TestTemplateIter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	found := map[string]bool{}
 	for name := range e.TemplateIter() {

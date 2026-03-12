@@ -17,7 +17,7 @@ func TestManagerEvaluate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mgr.Close()
+	defer mustClose(t, mgr)
 
 	result, err := mgr.Evaluate(context.Background(), &EvaluateRequest{
 		Facts: []WireFactInput{
@@ -58,7 +58,7 @@ func TestManagerEvaluateTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mgr.Close()
+	defer mustClose(t, mgr)
 
 	result, err := mgr.Evaluate(context.Background(), &EvaluateRequest{
 		Facts: []WireFactInput{
@@ -90,7 +90,7 @@ func TestManagerEvaluateNative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mgr.Close()
+	defer mustClose(t, mgr)
 
 	result, err := mgr.EvaluateNative(context.Background(), &EvaluateNativeRequest{
 		Facts: []NativeFactInput{
@@ -116,7 +116,7 @@ func TestManagerEvaluateStateless(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mgr.Close()
+	defer mustClose(t, mgr)
 
 	// First evaluation
 	r1, err := mgr.Evaluate(context.Background(), &EvaluateRequest{
@@ -158,7 +158,7 @@ func TestManagerConcurrentEvaluate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer coord.Close()
+	defer mustClose(t, coord)
 
 	mgr, _ := coord.Manager("test")
 
@@ -193,15 +193,21 @@ func TestManagerDoEngineReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mgr.Close()
+	defer mustClose(t, mgr)
 
 	// Call Do multiple times. Each time reset and assert, but the global
 	// should be re-initialized by reset.
 	for range 3 {
 		err = mgr.Do(context.Background(), func(e *Engine) error {
-			e.Reset()
-			e.AssertFact("trigger")
-			e.Run(context.Background())
+			if err := e.Reset(); err != nil {
+				return err
+			}
+			if _, err := e.AssertFact("trigger"); err != nil {
+				return err
+			}
+			if _, err := e.Run(context.Background()); err != nil {
+				return err
+			}
 			val, err := e.GetGlobal("counter")
 			if err != nil {
 				return err
@@ -222,7 +228,7 @@ func TestNewManagerConvenience(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mgr.Close()
+	defer mustClose(t, mgr)
 
 	result, err := mgr.Evaluate(context.Background(), &EvaluateRequest{})
 	if err != nil {
@@ -238,7 +244,7 @@ func TestEvaluateResultJSONRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mgr.Close()
+	defer mustClose(t, mgr)
 
 	result, err := mgr.Evaluate(context.Background(), &EvaluateRequest{
 		Facts: []WireFactInput{
@@ -278,7 +284,7 @@ func TestManagerEvaluateWithLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mgr.Close()
+	defer mustClose(t, mgr)
 
 	result, err := mgr.Evaluate(context.Background(), &EvaluateRequest{
 		Limit: 2,

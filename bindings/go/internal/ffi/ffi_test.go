@@ -109,6 +109,7 @@ func TestLoadAndRun(t *testing.T) {
 	}
 }
 
+//nolint:funlen // integration test intentionally exercises end-to-end fact APIs in one flow.
 func TestFactOperations(t *testing.T) {
 	h := EngineNew()
 	if h == nil {
@@ -213,6 +214,7 @@ func TestFactOperations(t *testing.T) {
 	}
 }
 
+//nolint:funlen // integration test intentionally covers full template-slot lifecycle in one flow.
 func TestTemplateFactSlotByName(t *testing.T) {
 	h := EngineNew()
 	if h == nil {
@@ -326,6 +328,7 @@ func TestEngineStep(t *testing.T) {
 	}
 }
 
+//nolint:funlen // integration test intentionally validates multiple introspection surfaces together.
 func TestIntrospection(t *testing.T) {
 	h := EngineNewWithSource(`
 		(deftemplate sensor
@@ -513,7 +516,7 @@ func TestErrorRetrieval(t *testing.T) {
 	rc := EngineLoadString(h, "(defrule bad ())") // malformed
 	if rc == ErrOK {
 		// The parser may accept weird forms, so let's try something definitely bad
-		rc = EngineLoadString(h, "(this is not valid CLIPS at all !!!")
+		_ = EngineLoadString(h, "(this is not valid CLIPS at all !!!")
 	}
 	// We mostly just want to confirm the error retrieval functions don't crash
 	_ = EngineLastError(h)

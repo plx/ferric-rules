@@ -20,7 +20,7 @@ func TestNewEngineDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 }
 
 func TestNewEngineWithSource(t *testing.T) {
@@ -28,7 +28,7 @@ func TestNewEngineWithSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 }
 
 func TestNewEngineWithConfig(t *testing.T) {
@@ -40,7 +40,7 @@ func TestNewEngineWithConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 }
 
 func TestNewEngineWithSourceAndConfig(t *testing.T) {
@@ -51,7 +51,7 @@ func TestNewEngineWithSourceAndConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 }
 
 func TestNewEngineInvalidSource(t *testing.T) {
@@ -87,7 +87,7 @@ func TestLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	err = e.Load(`
 		(deftemplate person (slot name) (slot age))
@@ -111,7 +111,7 @@ func TestLoadInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	err = e.Load(`(defrule bad`)
 	if err == nil {
@@ -128,8 +128,8 @@ func TestAssertStringAndFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
-	e.Reset()
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
 
 	id, err := e.AssertString("(assert (color red))")
 	if err != nil {
@@ -159,8 +159,8 @@ func TestAssertFact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
-	e.Reset()
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
 
 	id, err := e.AssertFact("temperature", Symbol("high"))
 	if err != nil {
@@ -184,8 +184,8 @@ func TestRetract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
-	e.Reset()
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
 
 	id, err := e.AssertFact("color", Symbol("red"))
 	if err != nil {
@@ -211,12 +211,12 @@ func TestFindFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
-	e.Reset()
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
 
-	e.AssertFact("color", Symbol("red"))
-	e.AssertFact("color", Symbol("blue"))
-	e.AssertFact("shape", Symbol("circle"))
+	mustAssertFact(t, e, "color", Symbol("red"))
+	mustAssertFact(t, e, "color", Symbol("blue"))
+	mustAssertFact(t, e, "shape", Symbol("circle"))
 
 	colors, err := e.FindFacts("color")
 	if err != nil {
@@ -240,8 +240,8 @@ func TestGetFact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
-	e.Reset()
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
 
 	id, err := e.AssertFact("color", Symbol("red"))
 	if err != nil {
@@ -280,7 +280,7 @@ func TestAssertTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	id, err := e.AssertTemplate("person", map[string]any{
 		"name": "Alice",
@@ -318,7 +318,7 @@ func TestAssertTemplateDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	id, err := e.AssertTemplate("person", map[string]any{
 		"name": "Bob",
@@ -344,8 +344,8 @@ func TestAssertTemplateNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
-	e.Reset()
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
 
 	_, err = e.AssertTemplate("nonexistent", map[string]any{})
 	if err == nil {
@@ -367,7 +367,7 @@ func TestRunAndOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	result, err := e.Run(context.Background())
 	if err != nil {
@@ -398,7 +398,7 @@ func TestRunWithLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	result, err := e.RunWithLimit(context.Background(), 2)
 	if err != nil {
@@ -421,7 +421,7 @@ func TestRunWithLimitSmall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	result, err := e.RunWithLimit(context.Background(), 1)
 	if err != nil {
@@ -441,7 +441,7 @@ func TestRunContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -460,7 +460,7 @@ func TestStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	fired, err := e.Step()
 	if err != nil {
@@ -485,7 +485,7 @@ func TestHalt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	e.Halt()
 	if !e.IsHalted() {
@@ -500,10 +500,10 @@ func TestReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	// Run to completion.
-	e.Run(context.Background())
+	mustRun(context.Background(), t, e)
 
 	count, _ := e.FactCount()
 	if count == 0 {
@@ -536,7 +536,7 @@ func TestClear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	rules := e.Rules()
 	if len(rules) != 1 {
@@ -563,7 +563,7 @@ func TestRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	rules := e.Rules()
 	if len(rules) != 2 {
@@ -590,7 +590,7 @@ func TestTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	tmpls := e.Templates()
 	if len(tmpls) < 2 {
@@ -611,7 +611,7 @@ func TestGetGlobal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	val, err := e.GetGlobal("threshold")
 	if err != nil {
@@ -627,7 +627,7 @@ func TestCurrentModule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	mod := e.CurrentModule()
 	if mod != "MAIN" {
@@ -643,7 +643,7 @@ func TestAgendaSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	size := e.AgendaSize()
 	if size != 2 {
@@ -662,9 +662,9 @@ func TestOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
-	e.Run(context.Background())
+	mustRun(context.Background(), t, e)
 
 	out, ok := e.GetOutput("t")
 	if !ok {
@@ -686,7 +686,7 @@ func TestPushInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	// Just test it doesn't panic.
 	e.PushInput("hello")
@@ -701,7 +701,7 @@ func TestDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	// Initially no diagnostics.
 	diags := e.Diagnostics()
@@ -721,8 +721,8 @@ func TestErrorIs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
-	e.Reset()
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
 
 	// Retract a nonexistent fact.
 	err = e.Retract(999999)
@@ -760,7 +760,7 @@ func TestValueConversionRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	// Integer
 	v, err := e.GetGlobal("int-val")
@@ -828,7 +828,7 @@ func TestRuleFiresOnTemplateFact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
+	defer mustClose(t, e)
 
 	// Assert a fact that should trigger the rule.
 	_, err = e.AssertTemplate("sensor", map[string]any{

@@ -5,6 +5,7 @@ package temporal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	ferric "github.com/prb/ferric-rules/bindings/go"
@@ -24,13 +25,15 @@ type RulesActivity struct {
 func NewRulesActivity(specs []ferric.EngineSpec, opts ...ferric.CoordinatorOption) (*RulesActivity, error) {
 	coord, err := ferric.NewCoordinator(specs, opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("temporal: creating coordinator: %w", err)
 	}
 	managers := make(map[string]*ferric.Manager, len(specs))
 	for _, s := range specs {
 		mgr, err := coord.Manager(s.Name)
 		if err != nil {
-			coord.Close()
+			if closeErr := coord.Close(); closeErr != nil {
+				return nil, fmt.Errorf("temporal: getting manager for %q: %w", s.Name, errors.Join(err, closeErr))
+			}
 			return nil, fmt.Errorf("temporal: getting manager for %q: %w", s.Name, err)
 		}
 		managers[s.Name] = mgr
@@ -42,7 +45,6 @@ func NewRulesActivity(specs []ferric.EngineSpec, opts ...ferric.CoordinatorOptio
 // Each spec produces an activity named "ferric.Evaluate.<specName>".
 func (a *RulesActivity) Register(w worker.Worker) {
 	for name, mgr := range a.managers {
-		mgr := mgr
 		activityName := "ferric.Evaluate." + name
 		w.RegisterActivityWithOptions(
 			func(ctx context.Context, req *ferric.EvaluateRequest) (*ferric.EvaluateResult, error) {
@@ -55,5 +57,8 @@ func (a *RulesActivity) Register(w worker.Worker) {
 
 // Close shuts down the Coordinator. Call from worker shutdown hook.
 func (a *RulesActivity) Close() error {
-	return a.coord.Close()
+	if err := a.coord.Close(); err != nil {
+		return fmt.Errorf("temporal: closing coordinator: %w", err)
+	}
+	return nil
 }

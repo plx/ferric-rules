@@ -13,6 +13,8 @@ import (
 
 // FerricError is the base error type for all errors returned by the ferric
 // engine. It carries a numeric error code and a human-readable message.
+//
+//nolint:revive // Public API name retained for clarity and backward compatibility.
 type FerricError struct {
 	Code    int
 	Message string
@@ -26,6 +28,7 @@ func (e *FerricError) Error() string {
 // Sentinel errors (for errors.Is)
 // ---------------------------------------------------------------------------
 
+// Sentinel errors for stable errors.Is matching across ferric APIs.
 var (
 	ErrParse           = errors.New("ferric: parse error")
 	ErrCompile         = errors.New("ferric: compile error")
@@ -46,6 +49,7 @@ type ParseError struct {
 	FerricError
 }
 
+// Is reports whether target matches ErrParse.
 func (e *ParseError) Is(target error) bool {
 	return target == ErrParse
 }
@@ -55,6 +59,7 @@ type CompileError struct {
 	FerricError
 }
 
+// Is reports whether target matches ErrCompile.
 func (e *CompileError) Is(target error) bool {
 	return target == ErrCompile
 }
@@ -64,6 +69,7 @@ type RuntimeError struct {
 	FerricError
 }
 
+// Is reports whether target matches ErrRuntime.
 func (e *RuntimeError) Is(target error) bool {
 	return target == ErrRuntime
 }
@@ -73,6 +79,7 @@ type NotFoundError struct {
 	FerricError
 }
 
+// Is reports whether target matches ErrNotFound.
 func (e *NotFoundError) Is(target error) bool {
 	return target == ErrNotFound
 }
@@ -82,6 +89,7 @@ type IOError struct {
 	FerricError
 }
 
+// Is reports whether target matches ErrIO.
 func (e *IOError) Is(target error) bool {
 	return target == ErrIO
 }

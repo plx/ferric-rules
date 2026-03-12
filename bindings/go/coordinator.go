@@ -7,6 +7,11 @@ import (
 	"sync/atomic"
 )
 
+var (
+	errInvalidThreadCount = errors.New("ferric: thread count must be >= 1")
+	errUnknownEngineSpec  = errors.New("ferric: unknown engine spec")
+)
+
 // RouteHint carries request metadata for dispatch policy selection.
 type RouteHint struct {
 	SpecName string
@@ -20,6 +25,10 @@ type DispatchPolicy interface {
 type roundRobinPolicy struct{}
 
 func (roundRobinPolicy) PickWorker(_ RouteHint, numWorkers int, counter uint64) int {
+	if numWorkers <= 0 {
+		return 0
+	}
+	//nolint:gosec // numWorkers is derived from len(c.workers) and is non-negative.
 	return int(counter % uint64(numWorkers))
 }
 
@@ -45,7 +54,7 @@ func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator
 		opt(&cfg)
 	}
 	if cfg.threads < 1 {
-		return nil, errors.New("ferric: thread count must be >= 1")
+		return nil, errInvalidThreadCount
 	}
 
 	c := &Coordinator{
@@ -59,11 +68,7 @@ func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator
 
 	c.workers = make([]*worker, cfg.threads)
 	for i := range c.workers {
-		w, err := newWorker(c.specs)
-		if err != nil {
-			c.Close()
-			return nil, fmt.Errorf("ferric: starting worker %d: %w", i, err)
-		}
+		w := newWorker(c.specs)
 		c.workers[i] = w
 	}
 	return c, nil
@@ -113,7 +118,7 @@ type worker struct {
 	done     chan struct{}
 }
 
-func newWorker(specs map[string][]EngineOption) (*worker, error) {
+func newWorker(specs map[string][]EngineOption) *worker {
 	w := &worker{
 		specs:    specs,
 		engines:  make(map[string]*Engine),
@@ -148,7 +153,7 @@ func newWorker(specs map[string][]EngineOption) (*worker, error) {
 	}()
 
 	<-ready
-	return w, nil
+	return w
 }
 
 func (w *worker) getOrCreateEngine(specName string) (*Engine, error) {
@@ -157,7 +162,7 @@ func (w *worker) getOrCreateEngine(specName string) (*Engine, error) {
 	}
 	opts, ok := w.specs[specName]
 	if !ok {
-		return nil, fmt.Errorf("ferric: unknown engine spec %q", specName)
+		return nil, fmt.Errorf("%w %q", errUnknownEngineSpec, specName)
 	}
 	eng, err := NewEngine(opts...)
 	if err != nil {
@@ -169,6 +174,6 @@ func (w *worker) getOrCreateEngine(specName string) (*Engine, error) {
 
 func (w *worker) closeAllEngines() {
 	for _, eng := range w.engines {
-		eng.Close()
+		_ = eng.Close()
 	}
 }

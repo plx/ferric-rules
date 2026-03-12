@@ -11,6 +11,7 @@ type EngineHandle = *C.struct_FerricEngine
 // ErrorCode mirrors the C FerricError enum.
 type ErrorCode = C.enum_FerricError
 
+// ErrorCode values mirror C.FERRIC_ERROR_*.
 const (
 	ErrOK              ErrorCode = C.FERRIC_ERROR_OK
 	ErrNullPointer     ErrorCode = C.FERRIC_ERROR_NULL_POINTER
@@ -28,6 +29,7 @@ const (
 // ValueType mirrors the C FerricValueType enum.
 type ValueType = C.enum_FerricValueType
 
+// ValueType values mirror C.FERRIC_VALUE_TYPE_*.
 const (
 	ValueTypeVoid            ValueType = C.FERRIC_VALUE_TYPE_VOID
 	ValueTypeInteger         ValueType = C.FERRIC_VALUE_TYPE_INTEGER
@@ -41,6 +43,7 @@ const (
 // FactType mirrors the C FerricFactType enum.
 type FactType = C.enum_FerricFactType
 
+// FactType values mirror C.FERRIC_FACT_TYPE_*.
 const (
 	FactTypeOrdered  FactType = C.FERRIC_FACT_TYPE_ORDERED
 	FactTypeTemplate FactType = C.FERRIC_FACT_TYPE_TEMPLATE
@@ -49,6 +52,7 @@ const (
 // HaltReason mirrors the C FerricHaltReason enum.
 type HaltReason = C.enum_FerricHaltReason
 
+// HaltReason values mirror C.FERRIC_HALT_REASON_*.
 const (
 	HaltReasonAgendaEmpty   HaltReason = C.FERRIC_HALT_REASON_AGENDA_EMPTY
 	HaltReasonLimitReached  HaltReason = C.FERRIC_HALT_REASON_LIMIT_REACHED
@@ -58,6 +62,7 @@ const (
 // StringEncoding mirrors the C FerricStringEncoding enum.
 type StringEncoding = C.enum_FerricStringEncoding
 
+// StringEncoding values mirror C.FERRIC_STRING_ENCODING_*.
 const (
 	StringEncodingASCII                   StringEncoding = C.FERRIC_STRING_ENCODING_ASCII
 	StringEncodingUTF8                    StringEncoding = C.FERRIC_STRING_ENCODING_UTF8
@@ -67,6 +72,7 @@ const (
 // ConflictStrategy mirrors the C FerricConflictStrategy enum.
 type ConflictStrategy = C.enum_FerricConflictStrategy
 
+// ConflictStrategy values mirror C.FERRIC_CONFLICT_STRATEGY_*.
 const (
 	ConflictStrategyDepth   ConflictStrategy = C.FERRIC_CONFLICT_STRATEGY_DEPTH
 	ConflictStrategyBreadth ConflictStrategy = C.FERRIC_CONFLICT_STRATEGY_BREADTH

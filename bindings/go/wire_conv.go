@@ -1,6 +1,14 @@
 package ferric
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+var (
+	errUnsupportedWireConversionType = errors.New("ferric: unsupported type for wire conversion")
+	errUnknownWireValueKind          = errors.New("ferric: unknown wire value kind")
+)
 
 // --- Go-native → Wire conversion ---
 
@@ -40,7 +48,7 @@ func NativeToWireValue(v any) (WireValue, error) {
 		}
 		return WireValue{Kind: WireValueMultifield, Multifield: elements}, nil
 	default:
-		return WireValue{}, fmt.Errorf("unsupported type for wire conversion: %T", v)
+		return WireValue{}, fmt.Errorf("%w: %T", errUnsupportedWireConversionType, v)
 	}
 }
 
@@ -48,7 +56,7 @@ func NativeToWireValue(v any) (WireValue, error) {
 func WireToNativeValue(w WireValue) (any, error) {
 	switch w.Kind {
 	case WireValueVoid:
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil is the canonical native representation of a wire void value.
 	case WireValueInteger:
 		return w.Integer, nil
 	case WireValueFloat:
@@ -68,7 +76,7 @@ func WireToNativeValue(w WireValue) (any, error) {
 		}
 		return result, nil
 	default:
-		return nil, fmt.Errorf("unknown wire value kind: %q", w.Kind)
+		return nil, fmt.Errorf("%w: %q", errUnknownWireValueKind, w.Kind)
 	}
 }
 

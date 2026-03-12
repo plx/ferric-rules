@@ -4,9 +4,13 @@ package ferric
 type Strategy int
 
 const (
-	StrategyDepth   Strategy = iota
+	// StrategyDepth prioritizes depth in conflict resolution.
+	StrategyDepth Strategy = iota
+	// StrategyBreadth prioritizes breadth in conflict resolution.
 	StrategyBreadth
+	// StrategyLEX uses CLIPS LEX ordering.
 	StrategyLEX
+	// StrategyMEA uses CLIPS MEA ordering.
 	StrategyMEA
 )
 
@@ -14,8 +18,11 @@ const (
 type Encoding int
 
 const (
-	EncodingASCII                   Encoding = iota
+	// EncodingASCII encodes strings and symbols as ASCII.
+	EncodingASCII Encoding = iota
+	// EncodingUTF8 encodes strings and symbols as UTF-8.
 	EncodingUTF8
+	// EncodingASCIISymbolsUTF8Strings uses ASCII symbols and UTF-8 strings.
 	EncodingASCIISymbolsUTF8Strings
 )
 
@@ -23,8 +30,11 @@ const (
 type HaltReason int
 
 const (
-	HaltAgendaEmpty  HaltReason = iota
+	// HaltAgendaEmpty means execution stopped because no activations remained.
+	HaltAgendaEmpty HaltReason = iota
+	// HaltLimitReached means execution stopped due to a run limit.
 	HaltLimitReached
+	// HaltRequested means execution stopped because halt was requested.
 	HaltRequested
 )
 

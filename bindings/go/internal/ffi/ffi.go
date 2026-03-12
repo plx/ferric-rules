@@ -278,7 +278,9 @@ func EngineGetFactFieldCount(h EngineHandle, factID uint64) (uintptr, ErrorCode)
 // The caller owns the returned Value and must free it with ValueFree.
 func EngineGetFactField(h EngineHandle, factID uint64, index uintptr) (Value, ErrorCode) {
 	var val C.struct_FerricValue
-	rc := ErrorCode(C.ferric_engine_get_fact_field(h, C.uint64_t(factID), C.uintptr_t(index), &val))
+	//nolint:gocritic // false positive from cgo pointer argument pattern.
+	rawRC := C.ferric_engine_get_fact_field(h, C.uint64_t(factID), C.uintptr_t(index), &val)
+	rc := ErrorCode(rawRC)
 	return Value(val), rc
 }
 
@@ -302,7 +304,9 @@ func EngineGetFactSlotByName(h EngineHandle, factID uint64, slotName string) (Va
 	cs := C.CString(slotName)
 	defer C.free(unsafe.Pointer(cs))
 	var val C.struct_FerricValue
-	rc := ErrorCode(C.ferric_engine_get_fact_slot_by_name(h, C.uint64_t(factID), cs, &val))
+	//nolint:gocritic // false positive from cgo pointer argument pattern.
+	rawRC := C.ferric_engine_get_fact_slot_by_name(h, C.uint64_t(factID), cs, &val)
+	rc := ErrorCode(rawRC)
 	return Value(val), rc
 }
 
@@ -316,7 +320,9 @@ func EngineGetGlobal(h EngineHandle, name string) (Value, ErrorCode) {
 	cn := C.CString(name)
 	defer C.free(unsafe.Pointer(cn))
 	var val C.struct_FerricValue
-	rc := ErrorCode(C.ferric_engine_get_global(h, cn, &val))
+	//nolint:gocritic // false positive from cgo pointer argument pattern.
+	rawRC := C.ferric_engine_get_global(h, cn, &val)
+	rc := ErrorCode(rawRC)
 	return Value(val), rc
 }
 

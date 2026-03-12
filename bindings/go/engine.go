@@ -2,14 +2,13 @@ package ferric
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 
 	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
 )
 
-// smallRunThreshold is the maximum rule limit for a direct (non-stepping)
-// run call. Below this, we skip per-step context checking.
-const smallRunThreshold = 100
+var errIntOverflow = fmt.Errorf("ferric: integer overflow")
 
 // Engine wraps a single ferric rules engine instance.
 //
@@ -34,10 +33,15 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 		opt(&cfg)
 	}
 
+	config, err := makeConfig(&cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	var h ffi.EngineHandle
 	if cfg.source != "" {
 		if cfg.strategy != 0 || cfg.encoding != 0 || cfg.maxCallDepth != 256 {
-			h = ffi.EngineNewWithSourceConfig(cfg.source, makeConfig(&cfg))
+			h = ffi.EngineNewWithSourceConfig(cfg.source, config)
 		} else {
 			h = ffi.EngineNewWithSource(cfg.source)
 		}
@@ -50,7 +54,7 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 		}
 	} else {
 		if cfg.strategy != 0 || cfg.encoding != 0 || cfg.maxCallDepth != 256 {
-			h = ffi.EngineNewWithConfig(makeConfig(&cfg))
+			h = ffi.EngineNewWithConfig(config)
 		} else {
 			h = ffi.EngineNew()
 		}
@@ -68,12 +72,80 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 	return e, nil
 }
 
-func makeConfig(cfg *engineConfig) *ffi.Config {
-	return ffi.MakeConfig(
-		ffi.StringEncoding(cfg.encoding),
-		ffi.ConflictStrategy(cfg.strategy),
-		uintptr(cfg.maxCallDepth),
-	)
+func makeConfig(cfg *engineConfig) (*ffi.Config, error) {
+	encoding, err := toFFIStringEncoding(cfg.encoding)
+	if err != nil {
+		return nil, err
+	}
+	strategy, err := toFFIConflictStrategy(cfg.strategy)
+	if err != nil {
+		return nil, err
+	}
+	maxCallDepth, err := intToUintptr(cfg.maxCallDepth)
+	if err != nil {
+		return nil, err
+	}
+
+	return ffi.MakeConfig(encoding, strategy, maxCallDepth), nil
+}
+
+func toFFIStringEncoding(e Encoding) (ffi.StringEncoding, error) {
+	switch e {
+	case EncodingASCII:
+		return ffi.StringEncodingASCII, nil
+	case EncodingUTF8:
+		return ffi.StringEncodingUTF8, nil
+	case EncodingASCIISymbolsUTF8Strings:
+		return ffi.StringEncodingASCIISymbolsUTF8Strings, nil
+	default:
+		return 0, fmt.Errorf("%w: unsupported encoding %d", ErrInvalidArgument, e)
+	}
+}
+
+func toFFIConflictStrategy(s Strategy) (ffi.ConflictStrategy, error) {
+	switch s {
+	case StrategyDepth:
+		return ffi.ConflictStrategyDepth, nil
+	case StrategyBreadth:
+		return ffi.ConflictStrategyBreadth, nil
+	case StrategyLEX:
+		return ffi.ConflictStrategyLEX, nil
+	case StrategyMEA:
+		return ffi.ConflictStrategyMEA, nil
+	default:
+		return 0, fmt.Errorf("%w: unsupported conflict strategy %d", ErrInvalidArgument, s)
+	}
+}
+
+func intToUintptr(n int) (uintptr, error) {
+	if n < 0 {
+		return 0, fmt.Errorf("%w: negative max call depth %d", ErrInvalidArgument, n)
+	}
+	return uintptr(n), nil
+}
+
+func uint64ToInt(n uint64) (int, error) {
+	maxInt := uint64(^uint(0) >> 1)
+	if n > maxInt {
+		return 0, fmt.Errorf("%w: uint64 value %d exceeds int", errIntOverflow, n)
+	}
+	return int(n), nil
+}
+
+func uintptrToInt(n uintptr) (int, error) {
+	maxInt := uintptr(^uint(0) >> 1)
+	if n > maxInt {
+		return 0, fmt.Errorf("%w: uintptr value %d exceeds int", errIntOverflow, n)
+	}
+	return int(n), nil
+}
+
+func clampUintptrToInt(n uintptr) int {
+	maxInt := uintptr(^uint(0) >> 1)
+	if n > maxInt {
+		return int(maxInt)
+	}
+	return int(n)
 }
 
 // Close frees the engine. Implements io.Closer.
@@ -205,7 +277,7 @@ func (e *Engine) FactCount() (int, error) {
 	if rc != ffi.ErrOK {
 		return 0, errorFromFFI(rc, e.handle)
 	}
-	return int(count), nil
+	return uintptrToInt(count)
 }
 
 // --- Execution ---
@@ -220,7 +292,7 @@ func (e *Engine) Run(ctx context.Context) (*RunResult, error) {
 // batches of rule firings.
 func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error) {
 	if ctx == nil {
-		ctx = context.Background()
+		return nil, errNilContext
 	}
 
 	// If context has no deadline/cancel, use a single direct FFI call.
@@ -237,7 +309,7 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 	totalFired := 0
 	for {
 		if err := ctx.Err(); err != nil {
-			return &RunResult{RulesFired: totalFired, HaltReason: HaltRequested}, err
+			return &RunResult{RulesFired: totalFired, HaltReason: HaltRequested}, fmt.Errorf("ferric: run canceled: %w", err)
 		}
 
 		// Compute batch limit.
@@ -256,7 +328,11 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 		if rc != ffi.ErrOK {
 			return &RunResult{RulesFired: totalFired}, errorFromFFI(rc, e.handle)
 		}
-		totalFired += int(fired)
+		firedCount, err := uint64ToInt(fired)
+		if err != nil {
+			return &RunResult{RulesFired: totalFired}, err
+		}
+		totalFired += firedCount
 
 		switch reason {
 		case ffi.HaltReasonAgendaEmpty:
@@ -287,7 +363,11 @@ func (e *Engine) runDirect(limit int64) (*RunResult, error) {
 	case ffi.HaltReasonHaltRequested:
 		hr = HaltRequested
 	}
-	return &RunResult{RulesFired: int(fired), HaltReason: hr}, nil
+	firedCount, err := uint64ToInt(fired)
+	if err != nil {
+		return nil, err
+	}
+	return &RunResult{RulesFired: firedCount, HaltReason: hr}, nil
 }
 
 // Step executes a single rule firing.
@@ -298,7 +378,7 @@ func (e *Engine) Step() (*FiredRule, error) {
 		return nil, errorFromFFI(rc, e.handle)
 	}
 	if status != 1 {
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil indicates agenda empty and is part of Step's public contract.
 	}
 	// The C FFI doesn't currently return the rule name from step.
 	return &FiredRule{}, nil
@@ -412,7 +492,7 @@ func (e *Engine) AgendaSize() int {
 	if rc != ffi.ErrOK {
 		return 0
 	}
-	return int(count)
+	return clampUintptrToInt(count)
 }
 
 // IsHalted returns true if the engine is halted.

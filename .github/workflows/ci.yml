@@ -54,6 +54,24 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: ./scripts/preflight.sh test
 
+  go-lint:
+    name: Go Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bindings/go/go.mod
+      - name: Install Go lint tools
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v2.8.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: just go-lint
+
   python-bindings:
     name: Python Bindings
     runs-on: ubuntu-latest

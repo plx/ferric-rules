@@ -1,0 +1,33 @@
+version: "2"
+
+linters:
+  default: all
+  disable:
+    # Deprecated in favor of wsl_v5; keep the modern one only when needed.
+    - wsl
+
+    # Very low-signal for this codebase without substantial custom policy.
+    - depguard
+    - exhaustruct
+    - varnamelen
+    - nlreturn
+    - noinlineerr
+    - unconvert
+    - testpackage
+    - paralleltest
+    - gochecknoinits
+    - embeddedstructfieldcheck
+    - funcorder
+    - cyclop
+    - gocognit
+    - lll
+    - mnd
+    - nestif
+    - musttag
+    - tagliatelle
+    - perfsprint
+    - wsl_v5
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

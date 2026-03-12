@@ -8,11 +8,17 @@ package ferric
 type WireValueKind string
 
 const (
-	WireValueVoid       WireValueKind = "void"
-	WireValueInteger    WireValueKind = "integer"
-	WireValueFloat      WireValueKind = "float"
-	WireValueSymbol     WireValueKind = "symbol"
-	WireValueString     WireValueKind = "string"
+	// WireValueVoid represents a null/void value.
+	WireValueVoid WireValueKind = "void"
+	// WireValueInteger represents an int64 value.
+	WireValueInteger WireValueKind = "integer"
+	// WireValueFloat represents a float64 value.
+	WireValueFloat WireValueKind = "float"
+	// WireValueSymbol represents a CLIPS symbol.
+	WireValueSymbol WireValueKind = "symbol"
+	// WireValueString represents a string literal.
+	WireValueString WireValueKind = "string"
+	// WireValueMultifield represents a recursive multifield value.
 	WireValueMultifield WireValueKind = "multifield"
 )
 
@@ -29,7 +35,9 @@ type WireValue struct {
 type WireFactKind string
 
 const (
-	WireFactKindOrdered  WireFactKind = "ordered"
+	// WireFactKindOrdered identifies an ordered fact payload.
+	WireFactKindOrdered WireFactKind = "ordered"
+	// WireFactKindTemplate identifies a template fact payload.
 	WireFactKindTemplate WireFactKind = "template"
 )
 
@@ -72,9 +80,9 @@ type WireTemplateFact struct {
 
 // WireFact is a tagged fact in evaluation results.
 type WireFact struct {
-	ID       uint64           `json:"id"`
-	Kind     WireFactKind     `json:"kind"`
-	Ordered  *WireOrderedFact `json:"ordered,omitempty"`
+	ID       uint64            `json:"id"`
+	Kind     WireFactKind      `json:"kind"`
+	Ordered  *WireOrderedFact  `json:"ordered,omitempty"`
 	Template *WireTemplateFact `json:"template,omitempty"`
 }
 

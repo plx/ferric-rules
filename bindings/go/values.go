@@ -1,9 +1,15 @@
 package ferric
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
+)
+
+var (
+	errMultifieldAssertionUnsupported = errors.New("ferric: multifield conversion not yet supported for assertion")
+	errUnsupportedGoTypeForFFI        = errors.New("ferric: unsupported Go type for FFI conversion")
 )
 
 // Symbol is a distinct type representing a CLIPS symbol value.
@@ -36,9 +42,9 @@ func goToFFIValue(v any) (ffi.Value, error) {
 	case nil:
 		return ffi.ValueVoid(), nil
 	case []any:
-		return ffi.Value{}, fmt.Errorf("multifield conversion not yet supported for assertion")
+		return ffi.Value{}, errMultifieldAssertionUnsupported
 	default:
-		return ffi.Value{}, fmt.Errorf("unsupported Go type for FFI conversion: %T", v)
+		return ffi.Value{}, fmt.Errorf("%w: %T", errUnsupportedGoTypeForFFI, v)
 	}
 }
 

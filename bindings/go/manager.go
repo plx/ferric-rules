@@ -6,6 +6,15 @@ import (
 	"fmt"
 )
 
+var (
+	errNilContext                 = errors.New("ferric: nil context")
+	errNilEvaluateRequest         = errors.New("ferric: nil evaluate request")
+	errCoordinatorClosed          = errors.New("ferric: coordinator is closed")
+	errOrderedFactPayloadMissing  = errors.New("ferric: ordered fact payload missing")
+	errTemplateFactPayloadMissing = errors.New("ferric: template fact payload missing")
+	errUnsupportedFactKind        = errors.New("ferric: unsupported fact kind")
+)
+
 // Manager is a handle for interacting with a specific engine type.
 // It dispatches operations to the Coordinator's thread pool.
 // Safe for concurrent use from multiple goroutines.
@@ -18,7 +27,7 @@ type Manager struct {
 // The spec must have been provided when creating the Coordinator.
 func (c *Coordinator) Manager(specName string) (*Manager, error) {
 	if _, ok := c.specs[specName]; !ok {
-		return nil, fmt.Errorf("ferric: unknown engine spec %q", specName)
+		return nil, fmt.Errorf("%w %q", errUnknownEngineSpec, specName)
 	}
 	return &Manager{coord: c, specName: specName}, nil
 }
@@ -28,10 +37,10 @@ func (c *Coordinator) Manager(specName string) (*Manager, error) {
 // must not be retained beyond the closure's return.
 func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) error {
 	if ctx == nil {
-		ctx = context.Background()
+		return errNilContext
 	}
 	if m.coord.closed.Load() {
-		return errors.New("ferric: coordinator is closed")
+		return errCoordinatorClosed
 	}
 	w := m.coord.pickWorker(RouteHint{SpecName: m.specName})
 	resp := make(chan error, 1)
@@ -43,17 +52,17 @@ func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) error {
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("ferric: request canceled before dispatch: %w", ctx.Err())
 	case <-m.coord.done:
-		return errors.New("ferric: coordinator is closed")
+		return errCoordinatorClosed
 	case w.requests <- req:
 	}
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("ferric: request canceled while waiting for worker: %w", ctx.Err())
 	case <-m.coord.done:
-		return errors.New("ferric: coordinator is closed")
+		return errCoordinatorClosed
 	case err := <-resp:
 		return err
 	}
@@ -63,80 +72,94 @@ func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) error {
 // and returns the resulting facts and output. This is the primary entry
 // point for stateless one-shot evaluation.
 func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*EvaluateResult, error) {
+	if req == nil {
+		return nil, errNilEvaluateRequest
+	}
+
 	var result *EvaluateResult
 	err := m.Do(ctx, func(e *Engine) error {
 		if err := e.Reset(); err != nil {
 			return err
 		}
 
-		// Assert request facts from wire schema.
-		for _, wf := range req.Facts {
-			switch wf.Kind {
-			case WireFactKindOrdered:
-				if wf.Ordered == nil {
-					return errors.New("ferric: ordered fact payload missing")
-				}
-				fields, err := WireSliceToNative(wf.Ordered.Fields)
-				if err != nil {
-					return err
-				}
-				if _, err := e.AssertFact(wf.Ordered.Relation, fields...); err != nil {
-					return err
-				}
-			case WireFactKindTemplate:
-				if wf.Template == nil {
-					return errors.New("ferric: template fact payload missing")
-				}
-				slots, err := WireMapToNative(wf.Template.Slots)
-				if err != nil {
-					return err
-				}
-				if _, err := e.AssertTemplate(wf.Template.TemplateName, slots); err != nil {
-					return err
-				}
-			default:
-				return fmt.Errorf("ferric: unsupported fact kind %q", wf.Kind)
-			}
+		if err := assertWireFacts(e, req.Facts); err != nil {
+			return err
 		}
 
-		// Run.
-		var runResult *RunResult
-		var err error
-		if req.Limit > 0 {
-			runResult, err = e.RunWithLimit(ctx, req.Limit)
-		} else {
-			runResult, err = e.Run(ctx)
-		}
+		runResult, err := runEvaluate(ctx, e, req.Limit)
 		if err != nil {
 			return err
 		}
 
-		// Collect results.
-		nativeFacts, err := e.Facts()
-		if err != nil {
-			return err
-		}
-		wireFacts, err := FactsToWire(nativeFacts)
-		if err != nil {
-			return err
-		}
-
-		output := make(map[string]string)
-		if s, ok := e.GetOutput("t"); ok {
-			output["stdout"] = s
-		}
-		if s, ok := e.GetOutput("stderr"); ok {
-			output["stderr"] = s
-		}
-
-		result = &EvaluateResult{
-			RunResult: *runResult,
-			Facts:     wireFacts,
-			Output:    output,
-		}
-		return nil
+		result, err = buildEvaluateResult(e, runResult)
+		return err
 	})
 	return result, err
+}
+
+func assertWireFacts(e *Engine, facts []WireFactInput) error {
+	for _, wf := range facts {
+		switch wf.Kind {
+		case WireFactKindOrdered:
+			if wf.Ordered == nil {
+				return errOrderedFactPayloadMissing
+			}
+			fields, err := WireSliceToNative(wf.Ordered.Fields)
+			if err != nil {
+				return err
+			}
+			if _, err := e.AssertFact(wf.Ordered.Relation, fields...); err != nil {
+				return err
+			}
+		case WireFactKindTemplate:
+			if wf.Template == nil {
+				return errTemplateFactPayloadMissing
+			}
+			slots, err := WireMapToNative(wf.Template.Slots)
+			if err != nil {
+				return err
+			}
+			if _, err := e.AssertTemplate(wf.Template.TemplateName, slots); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%w %q", errUnsupportedFactKind, wf.Kind)
+		}
+	}
+
+	return nil
+}
+
+func runEvaluate(ctx context.Context, e *Engine, limit int) (*RunResult, error) {
+	if limit > 0 {
+		return e.RunWithLimit(ctx, limit)
+	}
+	return e.Run(ctx)
+}
+
+func buildEvaluateResult(e *Engine, runResult *RunResult) (*EvaluateResult, error) {
+	nativeFacts, err := e.Facts()
+	if err != nil {
+		return nil, err
+	}
+	wireFacts, err := FactsToWire(nativeFacts)
+	if err != nil {
+		return nil, err
+	}
+
+	output := make(map[string]string)
+	if s, ok := e.GetOutput("t"); ok {
+		output["stdout"] = s
+	}
+	if s, ok := e.GetOutput("stderr"); ok {
+		output["stderr"] = s
+	}
+
+	return &EvaluateResult{
+		RunResult: *runResult,
+		Facts:     wireFacts,
+		Output:    output,
+	}, nil
 }
 
 // EvaluateNative is a Go-convenience wrapper that works with native
