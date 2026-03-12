@@ -23,11 +23,13 @@ use crate::value::{AtomKey, Value};
 ///
 /// Combines alpha network (fact discrimination), beta network (joins),
 /// token store (partial matches), and agenda (activations).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReteNetwork {
     pub alpha: AlphaNetwork,
     pub beta: BetaNetwork,
     pub token_store: TokenStore,
     pub agenda: Agenda,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::std_hash_set"))]
     disabled_rules: std::collections::HashSet<crate::beta::RuleId>,
 }
 

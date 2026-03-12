@@ -14,10 +14,12 @@ use crate::encoding::{EncodingError, StringEncoding};
 /// Comparing symbols from different engines is undefined behavior at the
 /// semantic level (though it won't cause memory unsafety).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Symbol(pub(crate) SymbolId);
 
 /// Internal symbol identifier, distinguishing ASCII and UTF-8 interning pools.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum SymbolId {
     Ascii(u32),
     Utf8(u32),
@@ -28,12 +30,15 @@ pub(crate) enum SymbolId {
 /// Maintains two separate pools (ASCII and UTF-8) to support the
 /// `AsciiSymbolsUtf8Strings` encoding mode, where symbols are ASCII-only
 /// even though strings may be UTF-8.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SymbolTable {
     /// ASCII symbols (used in `Ascii` and `AsciiSymbolsUtf8Strings` modes)
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     ascii_to_id: HashMap<Box<[u8]>, u32>,
     ascii_strings: Vec<Box<[u8]>>,
 
     /// UTF-8 symbols (used in `Utf8` mode)
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     utf8_to_id: HashMap<Box<str>, u32>,
     utf8_strings: Vec<Box<str>>,
 }

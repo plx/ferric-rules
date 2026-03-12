@@ -23,6 +23,7 @@ type FanoutNodes = SmallVec<[NodeId; 4]>;
 /// Higher salience values indicate higher priority. The default salience is 0.
 /// This newtype prevents accidental mixing with other `i32` values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Salience(i32);
 
 impl Salience {
@@ -42,6 +43,7 @@ impl Salience {
 /// A join test compares a variable binding from the left (token) with
 /// a slot value from the right (fact).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct JoinTest {
     pub alpha_slot: SlotIndex,
     pub beta_var: VarId,
@@ -50,6 +52,7 @@ pub struct JoinTest {
 
 /// The type of join test to perform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum JoinTestType {
     Equal,
     NotEqual,
@@ -85,6 +88,7 @@ pub enum JoinTestType {
 
 /// Unique identifier for a beta memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BetaMemoryId(pub u32);
 
 /// Beta memory: stores tokens (partial matches).
@@ -94,11 +98,17 @@ pub struct BetaMemoryId(pub u32);
 ///
 /// Optionally maintains variable-binding indices for O(1) right-activation
 /// lookups, mirroring the alpha memory's slot-based indexing.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BetaMemory {
     pub id: BetaMemoryId,
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_set"))]
     tokens: HashSet<TokenId>,
     /// Variable indices: `VarId` → `AtomKey` → set of `TokenId`s with that binding value.
     /// Enables O(1) lookup during right activation instead of full parent-token scans.
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_map")
+    )]
     var_indices: HashMap<VarId, HashMap<AtomKey, SmallVec<[TokenId; 4]>>>,
     /// Which variables are currently indexed. Survives `clear()` (like alpha memory's
     /// `indexed_slots`), since the index configuration is a compile-time decision.
@@ -234,12 +244,14 @@ impl BetaMemory {
 
 /// Simple identifier for rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RuleId(pub u32);
 
 /// A node in the beta network.
 ///
 /// Phase 1 includes only root, join, and terminal nodes.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BetaNode {
     /// Root node: entry point for all matches.
     Root { children: Rc<[NodeId]> },
@@ -298,7 +310,9 @@ pub enum BetaNode {
 ///
 /// Manages beta nodes and beta memories. Coordinates with the alpha network
 /// to perform joins and produce activations.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BetaNetwork {
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     nodes: HashMap<NodeId, BetaNode>,
     memories: Vec<BetaMemory>,
     neg_memories: Vec<NegativeMemory>,
@@ -311,10 +325,13 @@ pub struct BetaNetwork {
     next_ncc_memory_id: u32,
     next_exists_memory_id: u32,
     /// Reverse index: alpha memory -> list of join nodes that subscribe to it.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     alpha_to_joins: HashMap<AlphaMemoryId, FanoutNodes>,
     /// Reverse index: alpha memory -> list of negative nodes that subscribe to it.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     alpha_to_negatives: HashMap<AlphaMemoryId, FanoutNodes>,
     /// Reverse index: alpha memory -> list of exists nodes that subscribe to it.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     alpha_to_exists: HashMap<AlphaMemoryId, FanoutNodes>,
 }
 

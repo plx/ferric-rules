@@ -12,6 +12,7 @@ use crate::fact::FactId;
 
 /// Identifier for a node in the Rete network.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NodeId(pub u32);
 
 slotmap::new_key_type! {
@@ -25,6 +26,7 @@ slotmap::new_key_type! {
 /// a reference to the parent token (for join nodes), and the network node that
 /// owns this token.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Token {
     pub facts: SmallVec<[FactId; 4]>,
     pub bindings: BindingSet,
@@ -39,9 +41,18 @@ pub struct Token {
 /// - `parent_to_children`: Maps parent `TokenId` to all its children
 ///
 /// These indices enable efficient cascading deletion when facts are retracted.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TokenStore {
     tokens: SlotMap<TokenId, Token>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
+    )]
     fact_to_tokens: HashMap<FactId, HashSet<TokenId>>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
+    )]
     parent_to_children: HashMap<TokenId, HashSet<TokenId>>,
 }
 

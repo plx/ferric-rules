@@ -29,6 +29,7 @@ use crate::token::TokenId;
 
 /// Unique identifier for an NCC memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NccMemoryId(pub u32);
 
 /// NCC memory tracks the relationship between parent tokens and subnetwork results.
@@ -37,13 +38,17 @@ pub struct NccMemoryId(pub u32);
 /// result tokens exist. When the count is 0, the parent token is "unblocked"
 /// and has a pass-through token propagated downstream. When count > 0, the
 /// parent is "blocked."
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NccMemory {
     pub id: NccMemoryId,
     /// Parent token → count of subnetwork result tokens
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     result_count: HashMap<TokenId, usize>,
     /// Subnetwork result token → NCC parent token it blocks.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     result_owner: HashMap<TokenId, TokenId>,
     /// Parent token → pass-through token (when unblocked, count == 0)
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     unblocked: HashMap<TokenId, TokenId>,
 }
 

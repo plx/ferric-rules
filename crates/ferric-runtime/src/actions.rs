@@ -330,6 +330,7 @@ fn eval_fact_slot_ref_call(
 
 /// A compiled test condition evaluated before RHS actions.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum CompiledTestCondition {
     Expr(crate::evaluator::RuntimeExpr),
     NegatedPatternRuntimeCheck(NegatedPatternRuntimeCheck),
@@ -339,6 +340,7 @@ pub(crate) enum CompiledTestCondition {
 ///
 /// This is used when compile-time lowering to join/alpha tests is not possible.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct NegatedPatternRuntimeCheck {
     pub relation: String,
     pub constraints: Vec<Constraint>,
@@ -350,6 +352,7 @@ pub(crate) struct NegatedPatternRuntimeCheck {
 /// as single-slot bindings. This hint allows action-time evaluation to restore
 /// CLIPS-style trailing multifield capture semantics for RHS expressions.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct MultifieldTailBindingHint {
     pub name: String,
     pub fact_index: usize,
@@ -358,6 +361,7 @@ pub(crate) struct MultifieldTailBindingHint {
 
 /// Compiled rule metadata stored for action execution.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct CompiledRuleInfo {
     /// The rule name.
     #[allow(dead_code)] // May be used in future for debugging/logging
@@ -384,6 +388,7 @@ pub(crate) struct CompiledRuleInfo {
 
 /// Errors that can occur during action execution.
 #[derive(Clone, Debug, thiserror::Error)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ActionError {
     #[error("unknown action: {0}")]
     UnknownAction(String),

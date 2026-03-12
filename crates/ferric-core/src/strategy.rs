@@ -19,6 +19,7 @@
 
 /// Conflict resolution strategies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ConflictResolutionStrategy {
     #[default]
     Depth,

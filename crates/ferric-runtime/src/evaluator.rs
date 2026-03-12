@@ -32,6 +32,7 @@ use crate::tracing_support::ferric_span;
 
 /// Source location for evaluation errors.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SourceSpan {
     pub line: u32,
     pub column: u32,
@@ -54,6 +55,7 @@ fn format_span(span: Option<&SourceSpan>) -> String {
 
 /// Errors during expression evaluation.
 #[derive(Clone, Debug, thiserror::Error)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EvalError {
     #[error("unknown function `{name}` at {}", format_span(.span.as_ref()))]
     UnknownFunction {
@@ -138,6 +140,7 @@ const MAX_LOOP_ITERATIONS: usize = 1_000_000;
 /// This is the normalized expression model consumed by the evaluator.
 /// Both RHS `ActionExpr` and test CE `SExpr` are translated into this form.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RuntimeExpr {
     /// A literal value (already resolved to a runtime Value).
     Literal(Value),

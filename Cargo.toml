@@ -31,11 +31,15 @@ rustyline = "17"
 # C header generation (build-time only)
 cbindgen = "0.29"
 
-# Slot-based storage
-slotmap = "1"
+# Serialization
+serde = { version = "1", features = ["derive", "rc"] }
+bincode = "1"
 
-# Small inline vectors
-smallvec = "1"
+# Slot-based storage (serde feature always on — negligible cost, needed when serde is enabled)
+slotmap = { version = "1", features = ["serde"] }
+
+# Small inline vectors (serde feature always on — negligible cost, needed when serde is enabled)
+smallvec = { version = "1", features = ["serde"] }
 
 # Faster internal hash tables/sets
 rustc-hash = "2"

@@ -63,6 +63,8 @@ pub mod loader;
 pub mod modules;
 pub mod qualified_name;
 pub mod router;
+#[cfg(feature = "serde")]
+pub mod serialization;
 pub(crate) mod templates;
 
 #[cfg(test)]
@@ -91,6 +93,8 @@ pub use functions::{FunctionEnv, GenericRegistry, GlobalStore};
 pub use loader::{LoadError, LoadResult, RuleDef};
 pub use modules::{ModuleId, ModuleRegistry};
 pub use qualified_name::{parse_qualified_name, QualifiedName};
+#[cfg(feature = "serde")]
+pub use serialization::SerializationError;
 
 // Re-export Stage 2 AST types for working with loaded constructs
 pub use ferric_parser::{

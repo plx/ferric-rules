@@ -126,6 +126,8 @@ typedef enum FerricError {
     FERRIC_ERROR_BUFFER_TOO_SMALL = 8,
     // Invalid argument value.
     FERRIC_ERROR_INVALID_ARGUMENT = 9,
+    // Serialization or deserialization error.
+    FERRIC_ERROR_SERIALIZATION_ERROR = 10,
     // Internal/unexpected error.
     FERRIC_ERROR_INTERNAL_ERROR = 99,
 } FerricError;
@@ -216,6 +218,18 @@ typedef struct FerricValue {
     uint32_t external_type_id;
     void *external_pointer;
 } FerricValue;
+
+#if defined(FERRIC_SERDE)
+// Callback type for caller-controlled memory allocation.
+//
+// When non-null, called by `ferric_engine_serialize` with the exact byte
+// count needed. The `context` parameter is passed through unchanged from
+// the serialize call.
+//
+// Must return a pointer to at least `size` writable bytes, or null to
+// signal allocation failure.
+typedef uint8_t *(*FerricAllocFn)(uintptr_t size, void *context);
+#endif
 
 // Create a new engine with default configuration.
 //
@@ -799,6 +813,69 @@ enum FerricError ferric_engine_run_ex(struct FerricEngine *engine,
                                       int64_t limit,
                                       uint64_t *out_fired,
                                       enum FerricHaltReason *out_reason);
+
+#if defined(FERRIC_SERDE)
+// Serialize engine state to bytes.
+//
+// Produces a binary snapshot that can be passed to `ferric_engine_deserialize`
+// to reconstruct an equivalent engine, skipping the parse/compile pipeline.
+//
+// ## Memory allocation
+//
+// - If `alloc_fn` is **non-null**: the callback is called once with the exact
+//   byte count needed. The serialized data is written into the returned
+//   buffer. The caller owns this memory and is responsible for freeing it
+//   (via their own allocator). `alloc_context` is passed through unchanged.
+//
+// - If `alloc_fn` is **null**: Rust allocates the output buffer internally.
+//   The caller must free it with `ferric_bytes_free(out_data, out_len)`.
+//
+// In both cases, `*out_data` and `*out_len` are set on success.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_data` and `out_len` must be valid, non-null pointers.
+// - If `alloc_fn` is non-null, it must return a valid pointer to `size` bytes
+//   (or null to signal failure).
+enum FerricError ferric_engine_serialize(const struct FerricEngine *engine,
+                                         FerricAllocFn alloc_fn,
+                                         void *alloc_context,
+                                         uint8_t **out_data,
+                                         uintptr_t *out_len);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Deserialize an engine from bytes previously produced by
+// `ferric_engine_serialize`.
+//
+// The returned engine handle is ready for use (e.g. `ferric_engine_run`).
+// Its thread affinity is set to the calling thread.
+//
+// # Safety
+//
+// - `data` must point to `len` valid, readable bytes.
+// - `out_engine` must be a valid, non-null pointer.
+// - The returned engine must be freed with `ferric_engine_free`.
+enum FerricError ferric_engine_deserialize(const uint8_t *data,
+                                           uintptr_t len,
+                                           struct FerricEngine **out_engine);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Free a byte buffer that was allocated by `ferric_engine_serialize` when
+// `alloc_fn` was null.
+//
+// Null pointers and zero lengths are safely ignored.
+//
+// # Safety
+//
+// - `data` must be a pointer returned by `ferric_engine_serialize` (with
+//   null `alloc_fn`), or null.
+// - `len` must be the length reported by the corresponding serialize call.
+// - The buffer must not have been previously freed.
+void ferric_bytes_free(uint8_t *data, uintptr_t len);
+#endif
 
 // Retrieve the last global error message as a C string pointer.
 //

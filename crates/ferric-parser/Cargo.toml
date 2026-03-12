@@ -7,8 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
 thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -6,6 +6,7 @@ use ferric_core::{ConflictResolutionStrategy, StringEncoding};
 ///
 /// Includes encoding mode, conflict resolution strategy, and recursion limits.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EngineConfig {
     pub string_encoding: StringEncoding,
     pub strategy: ConflictResolutionStrategy,

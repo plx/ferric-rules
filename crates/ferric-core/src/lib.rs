@@ -31,6 +31,9 @@
 
 mod tracing_support;
 
+#[cfg(feature = "serde")]
+pub mod serde_helpers;
+
 pub mod agenda;
 pub mod alpha;
 pub mod beta;
