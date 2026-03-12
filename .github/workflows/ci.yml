@@ -66,11 +66,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: bindings/go/go.mod
-      - name: Install Go lint tools
-        run: |
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v2.8.0
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - run: just go-lint
+      - run: just build-go-ffi
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.8.0
+          working-directory: bindings/go
 
   python-bindings:
     name: Python Bindings

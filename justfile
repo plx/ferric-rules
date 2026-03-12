@@ -261,25 +261,29 @@ test-go:
 test-go-race:
     cd bindings/go && go test -race -v ./...
 
-# Runs the golang-ci linter suite.
+# Version of golangci-lint to install when not already present.
+golangci_lint_version := "v2.8.0"
+
+# Runs the golang-ci linter suite (auto-installs to ./bin/ if needed).
 run-golang-ci:
     #!/usr/bin/env bash
     set -euo pipefail
 
     if command -v golangci-lint >/dev/null 2>&1; then
-        cd bindings/go
-        golangci-lint run --default all
-        exit 0
+        LINT=golangci-lint
+    elif [[ -x ./bin/golangci-lint ]]; then
+        LINT=./bin/golangci-lint
+    else
+        echo "golangci-lint not found; installing {{golangci_lint_version}} to ./bin/ ..." >&2
+        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b ./bin {{golangci_lint_version}}
+        LINT=./bin/golangci-lint
     fi
 
-    if [[ -x ./bin/golangci-lint ]]; then
-        cd bindings/go
-        ../../bin/golangci-lint run --default all
-        exit 0
-    fi
-
-    echo "missing tool: golangci-lint (install via PATH or ./bin/golangci-lint)" >&2
-    exit 1
+    cd bindings/go
+    # Adjust relative path after cd
+    [[ "$LINT" == ./bin/* ]] && LINT="../../bin/golangci-lint"
+    "$LINT" run
 
 # Run Go lint checks for bindings.
 go-lint: build-go-ffi
