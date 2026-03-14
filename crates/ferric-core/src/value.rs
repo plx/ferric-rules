@@ -18,6 +18,7 @@ use crate::symbol::Symbol;
 ///
 /// Assigned by the embedding application when registering external types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExternalTypeId(pub u32);
 
 /// An opaque pointer for embedding, with a type tag.
@@ -34,6 +35,7 @@ pub struct ExternalAddress {
 ///
 /// Uses `SmallVec` for common small cases (up to 8 values inline).
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Multifield {
     values: SmallVec<[Value; 8]>,
 }
@@ -409,6 +411,98 @@ impl From<AtomKey> for Value {
                     pointer: pointer as *mut c_void,
                 })
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Manual serde impls for Value and AtomKey
+// ---------------------------------------------------------------------------
+//
+// `Value` and `AtomKey` contain `ExternalAddress` / `ExternalAddress`-derived
+// variants that hold raw pointers and cannot be serialized. All other variants
+// are serialized through a surrogate enum that serde can derive for.
+
+#[cfg(feature = "serde")]
+mod serde_impl {
+    use super::{AtomKey, FerricString, Multifield, Symbol, Value};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    // ---- Value ----
+
+    #[derive(Serialize, Deserialize)]
+    enum ValueSurrogate {
+        Symbol(Symbol),
+        String(FerricString),
+        Integer(i64),
+        Float(f64),
+        Multifield(Box<Multifield>),
+        Void,
+    }
+
+    impl Serialize for Value {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            match self {
+                Value::Symbol(s) => ValueSurrogate::Symbol(*s).serialize(serializer),
+                Value::String(s) => ValueSurrogate::String(s.clone()).serialize(serializer),
+                Value::Integer(i) => ValueSurrogate::Integer(*i).serialize(serializer),
+                Value::Float(f) => ValueSurrogate::Float(*f).serialize(serializer),
+                Value::Multifield(m) => ValueSurrogate::Multifield(m.clone()).serialize(serializer),
+                Value::ExternalAddress(_) => Err(serde::ser::Error::custom(
+                    "ExternalAddress cannot be serialized",
+                )),
+                Value::Void => ValueSurrogate::Void.serialize(serializer),
+            }
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Value {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let surrogate = ValueSurrogate::deserialize(deserializer)?;
+            Ok(match surrogate {
+                ValueSurrogate::Symbol(s) => Value::Symbol(s),
+                ValueSurrogate::String(s) => Value::String(s),
+                ValueSurrogate::Integer(i) => Value::Integer(i),
+                ValueSurrogate::Float(f) => Value::Float(f),
+                ValueSurrogate::Multifield(m) => Value::Multifield(m),
+                ValueSurrogate::Void => Value::Void,
+            })
+        }
+    }
+
+    // ---- AtomKey ----
+
+    #[derive(Serialize, Deserialize)]
+    enum AtomKeySurrogate {
+        Symbol(Symbol),
+        String(FerricString),
+        Integer(i64),
+        FloatBits(u64),
+    }
+
+    impl Serialize for AtomKey {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            match self {
+                AtomKey::Symbol(s) => AtomKeySurrogate::Symbol(*s).serialize(serializer),
+                AtomKey::String(s) => AtomKeySurrogate::String(s.clone()).serialize(serializer),
+                AtomKey::Integer(i) => AtomKeySurrogate::Integer(*i).serialize(serializer),
+                AtomKey::FloatBits(b) => AtomKeySurrogate::FloatBits(*b).serialize(serializer),
+                AtomKey::ExternalAddress { .. } => Err(serde::ser::Error::custom(
+                    "ExternalAddress AtomKey cannot be serialized",
+                )),
+            }
+        }
+    }
+
+    impl<'de> Deserialize<'de> for AtomKey {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let surrogate = AtomKeySurrogate::deserialize(deserializer)?;
+            Ok(match surrogate {
+                AtomKeySurrogate::Symbol(s) => AtomKey::Symbol(s),
+                AtomKeySurrogate::String(s) => AtomKey::String(s),
+                AtomKeySurrogate::Integer(i) => AtomKey::Integer(i),
+                AtomKeySurrogate::FloatBits(b) => AtomKey::FloatBits(b),
+            })
         }
     }
 }

@@ -31,6 +31,7 @@ use crate::token::TokenId;
 
 /// Unique identifier for a negative memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NegativeMemoryId(pub u32);
 
 /// Negative memory: tracks blocker relationships for a negative node.
@@ -40,13 +41,23 @@ pub struct NegativeMemoryId(pub u32);
 /// - Reverse: blocking fact → set of parent tokens it blocks
 ///
 /// Also tracks unblocked parent tokens and their pass-through token IDs.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NegativeMemory {
     pub id: NegativeMemoryId,
     /// Blocked parent tokens → set of blocking facts.
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
+    )]
     blocked: HashMap<TokenId, HashSet<FactId>>,
     /// Reverse index: blocking fact → set of parent tokens it blocks.
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
+    )]
     fact_to_blocked: HashMap<FactId, HashSet<TokenId>>,
     /// Unblocked parent tokens → their pass-through token IDs.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     unblocked: HashMap<TokenId, TokenId>,
 }
 

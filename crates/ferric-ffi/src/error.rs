@@ -31,6 +31,8 @@ pub enum FerricError {
     BufferTooSmall = 8,
     /// Invalid argument value.
     InvalidArgument = 9,
+    /// Serialization or deserialization error.
+    SerializationError = 10,
     /// Internal/unexpected error.
     InternalError = 99,
 }

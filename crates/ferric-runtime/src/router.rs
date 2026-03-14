@@ -14,8 +14,13 @@ use rustc_hash::FxHashMap as HashMap;
 /// output is written to process I/O. Tests can inspect captured output
 /// via [`OutputRouter::get_output`].
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct OutputRouter {
     /// Captured output buffers keyed by channel name.
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "ferric_core::serde_helpers::fx_hash_map")
+    )]
     buffers: HashMap<String, String>,
 }
 

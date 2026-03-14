@@ -17,6 +17,7 @@ use crate::value::Value;
 /// newtype prevents accidental confusion with other `u64` values such as
 /// `ActivationSeq`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Timestamp(u64);
 
 impl Timestamp {
@@ -54,6 +55,7 @@ where
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct SymbolMap<T> {
     ascii: Vec<Option<T>>,
     utf8: Vec<Option<T>>,
@@ -156,6 +158,7 @@ slotmap::new_key_type! {
 ///
 /// Example: `(person "Alice" 30)` has relation `person` and two fields.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct OrderedFact {
     pub relation: Symbol,
     pub fields: SmallVec<[Value; 8]>,
@@ -177,6 +180,7 @@ impl AsMut<[Value]> for OrderedFact {
 ///
 /// The template defines the slot names and types; this fact holds the values.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TemplateFact {
     pub template_id: TemplateId,
     pub slots: Box<[Value]>,
@@ -196,6 +200,7 @@ impl AsMut<[Value]> for TemplateFact {
 
 /// A fact: either ordered or template-based.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Fact {
     Ordered(OrderedFact),
     Template(TemplateFact),
@@ -203,6 +208,7 @@ pub enum Fact {
 
 /// A fact entry: the fact itself plus metadata.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactEntry {
     pub fact: Fact,
     pub id: FactId,
@@ -212,8 +218,13 @@ pub struct FactEntry {
 /// Fact base: storage and indexing for all facts in working memory.
 ///
 /// Maintains indices for fast lookup by relation and template.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactBase {
     facts: SlotMap<FactId, FactEntry>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
+    )]
     by_template: HashMap<TemplateId, HashSet<FactId>>,
     by_relation: SymbolMap<HashSet<FactId>>,
     next_timestamp: Timestamp,

@@ -5,6 +5,7 @@ use crate::span::{FileId, Position, Span};
 
 /// A token in the CLIPS lexical grammar.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Token {
     /// `(`
     LeftParen,
@@ -40,6 +41,7 @@ pub enum Token {
 
 /// A token paired with its source location.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SpannedToken {
     /// The token itself.
     pub token: Token,

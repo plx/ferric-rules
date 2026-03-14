@@ -28,6 +28,7 @@ use crate::token::TokenId;
 
 /// Unique identifier for an exists memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExistsMemoryId(pub u32);
 
 /// Exists memory tracks support counts for existential quantification.
@@ -36,13 +37,23 @@ pub struct ExistsMemoryId(pub u32);
 /// provide support. When support transitions from 0→N, a pass-through
 /// token is created. When it transitions from N→0, the pass-through
 /// is retracted.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExistsMemory {
     pub id: ExistsMemoryId,
     /// Parent token → set of supporting fact IDs
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
+    )]
     support: HashMap<TokenId, HashSet<FactId>>,
     /// Parent token → pass-through token (when supported, count > 0)
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     satisfied: HashMap<TokenId, TokenId>,
     /// Reverse index: fact → parent tokens it supports
+    #[cfg_attr(
+        feature = "serde",
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
+    )]
     fact_to_parents: HashMap<FactId, HashSet<TokenId>>,
 }
 

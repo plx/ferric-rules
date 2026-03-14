@@ -8,6 +8,7 @@ use std::str::FromStr;
 ///
 /// Names can be either unqualified (`name`) or qualified (`MODULE::name`).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum QualifiedName {
     /// An unqualified name (e.g., `reading`, `my-func`).
     Unqualified(String),

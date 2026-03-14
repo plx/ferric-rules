@@ -35,5 +35,8 @@ rename_fields = "None"
 rename_variants = "ScreamingSnakeCase"
 prefix_with_name = true
 
+[defines]
+"feature = serde" = "FERRIC_SERDE"
+
 [fn]
 rename_args = "None"

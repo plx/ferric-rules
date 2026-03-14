@@ -80,6 +80,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -382,6 +391,7 @@ dependencies = [
  "criterion",
  "proptest",
  "rustc-hash",
+ "serde",
  "slotmap",
  "smallvec",
  "thiserror",
@@ -406,6 +416,7 @@ name = "ferric-parser"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "serde",
  "thiserror",
 ]
 
@@ -425,11 +436,13 @@ dependencies = [
 name = "ferric-runtime"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "criterion",
  "ferric-core",
  "ferric-parser",
  "proptest",
  "rustc-hash",
+ "serde",
  "slotmap",
  "smallvec",
  "tempfile",
@@ -1110,6 +1123,7 @@ version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038"
 dependencies = [
+ "serde",
  "version_check",
 ]
 
@@ -1118,6 +1132,9 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "strsim"
