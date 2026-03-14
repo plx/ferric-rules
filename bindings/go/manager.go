@@ -50,6 +50,14 @@ func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) error {
 		resp:     resp,
 	}
 
+	// Check for cancellation before enqueueing. Without this explicit
+	// check, a canceled ctx and a ready channel are both selectable and
+	// Go picks pseudo-randomly, allowing a request to be dispatched
+	// after the caller believes it was aborted.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("ferric: request canceled before dispatch: %w", err)
+	}
+
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("ferric: request canceled before dispatch: %w", ctx.Err())
@@ -165,6 +173,9 @@ func buildEvaluateResult(e *Engine, runResult *RunResult) (*EvaluateResult, erro
 // EvaluateNative is a Go-convenience wrapper that works with native
 // Go types instead of wire types.
 func (m *Manager) EvaluateNative(ctx context.Context, req *EvaluateNativeRequest) (*EvaluateNativeResult, error) {
+	if req == nil {
+		return nil, errNilEvaluateRequest
+	}
 	// Convert native request to wire request.
 	wireReq := &EvaluateRequest{
 		Limit: req.Limit,

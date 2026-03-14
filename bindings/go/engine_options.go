@@ -8,6 +8,7 @@ type engineConfig struct {
 	encoding     Encoding
 	maxCallDepth int
 	source       string // if non-empty, load+reset at creation
+	snapshot     []byte // if non-nil, deserialize instead of creating fresh
 }
 
 // WithStrategy sets the conflict resolution strategy.
@@ -28,4 +29,12 @@ func WithMaxCallDepth(n int) EngineOption {
 // WithSource loads CLIPS source and resets the engine at creation time.
 func WithSource(clips string) EngineOption {
 	return func(c *engineConfig) { c.source = clips }
+}
+
+// WithSnapshot creates the engine by deserializing a binary snapshot
+// previously produced by Engine.Serialize. This skips parsing and
+// compilation, providing fast engine instantiation.
+// Mutually exclusive with WithSource.
+func WithSnapshot(data []byte) EngineOption {
+	return func(c *engineConfig) { c.snapshot = data }
 }

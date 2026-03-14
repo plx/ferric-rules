@@ -22,8 +22,9 @@ const (
 	ErrRuntimeError    ErrorCode = C.FERRIC_ERROR_RUNTIME_ERROR
 	ErrIOError         ErrorCode = C.FERRIC_ERROR_IO_ERROR
 	ErrBufferTooSmall  ErrorCode = C.FERRIC_ERROR_BUFFER_TOO_SMALL
-	ErrInvalidArgument ErrorCode = C.FERRIC_ERROR_INVALID_ARGUMENT
-	ErrInternalError   ErrorCode = C.FERRIC_ERROR_INTERNAL_ERROR
+	ErrInvalidArgument    ErrorCode = C.FERRIC_ERROR_INVALID_ARGUMENT
+	ErrSerializationError ErrorCode = C.FERRIC_ERROR_SERIALIZATION_ERROR
+	ErrInternalError      ErrorCode = C.FERRIC_ERROR_INTERNAL_ERROR
 )
 
 // ValueType mirrors the C FerricValueType enum.

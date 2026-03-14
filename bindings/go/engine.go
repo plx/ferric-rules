@@ -33,33 +33,46 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 		opt(&cfg)
 	}
 
-	config, err := makeConfig(&cfg)
-	if err != nil {
-		return nil, err
-	}
-
 	var h ffi.EngineHandle
-	if cfg.source != "" {
-		if cfg.strategy != 0 || cfg.encoding != 0 || cfg.maxCallDepth != 256 {
-			h = ffi.EngineNewWithSourceConfig(cfg.source, config)
-		} else {
-			h = ffi.EngineNewWithSource(cfg.source)
+
+	if cfg.snapshot != nil {
+		// Deserialize from snapshot — skips parse/compile.
+		var rc ffi.ErrorCode
+		h, rc = ffi.EngineDeserialize(cfg.snapshot)
+		if rc != ffi.ErrOK {
+			return nil, errorFromFFI(rc, nil)
 		}
 		if h == nil {
-			msg := ffi.LastErrorGlobal()
-			if msg == "" {
-				msg = "failed to create engine from source"
-			}
-			return nil, &ParseError{FerricError{Message: msg}}
+			return nil, &FerricError{Message: "failed to create engine from snapshot"}
 		}
 	} else {
-		if cfg.strategy != 0 || cfg.encoding != 0 || cfg.maxCallDepth != 256 {
-			h = ffi.EngineNewWithConfig(config)
-		} else {
-			h = ffi.EngineNew()
+		config, err := makeConfig(&cfg)
+		if err != nil {
+			return nil, err
 		}
-		if h == nil {
-			return nil, &FerricError{Message: "failed to create engine"}
+
+		if cfg.source != "" {
+			if cfg.strategy != 0 || cfg.encoding != 0 || cfg.maxCallDepth != 256 {
+				h = ffi.EngineNewWithSourceConfig(cfg.source, config)
+			} else {
+				h = ffi.EngineNewWithSource(cfg.source)
+			}
+			if h == nil {
+				msg := ffi.LastErrorGlobal()
+				if msg == "" {
+					msg = "failed to create engine from source"
+				}
+				return nil, &ParseError{FerricError{Message: msg}}
+			}
+		} else {
+			if cfg.strategy != 0 || cfg.encoding != 0 || cfg.maxCallDepth != 256 {
+				h = ffi.EngineNewWithConfig(config)
+			} else {
+				h = ffi.EngineNew()
+			}
+			if h == nil {
+				return nil, &FerricError{Message: "failed to create engine"}
+			}
 		}
 	}
 
@@ -153,12 +166,14 @@ func (e *Engine) Close() error {
 	if e.closed {
 		return nil
 	}
-	e.closed = true
-	runtime.SetFinalizer(e, nil)
 	rc := ffi.EngineFree(e.handle)
 	if rc != ffi.ErrOK {
+		// Leave closed=false and finalizer intact so the caller
+		// can retry or the finalizer can still clean up.
 		return errorFromFFI(rc, e.handle)
 	}
+	e.closed = true
+	runtime.SetFinalizer(e, nil)
 	return nil
 }
 
@@ -401,6 +416,17 @@ func (e *Engine) Reset() error {
 // Clear removes all rules, facts, templates, etc. from the engine.
 func (e *Engine) Clear() {
 	ffi.EngineClear(e.handle)
+}
+
+// Serialize produces a binary snapshot of the engine's current state.
+// The snapshot can be used with WithSnapshot to create new engines
+// that skip the parse/compile pipeline.
+func (e *Engine) Serialize() ([]byte, error) {
+	data, rc := ffi.EngineSerialize(e.handle)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, e.handle)
+	}
+	return data, nil
 }
 
 // --- Introspection ---

@@ -247,9 +247,9 @@ doc-open:
 
 # ── Go bindings ─────────────────────────────────────────────────────────────
 
-# Build the Rust static library for Go bindings
+# Build the Rust static library for Go bindings (includes serde for serialization)
 build-go-ffi:
-    cargo build -p ferric-ffi --release
+    cargo build -p ferric-ffi --release --features serde
     cp target/release/libferric_ffi.a bindings/go/internal/ffi/lib/
     cp crates/ferric-ffi/ferric.h bindings/go/internal/ffi/lib/
 

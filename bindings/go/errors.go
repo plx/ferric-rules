@@ -38,6 +38,7 @@ var (
 	ErrIO              = errors.New("ferric: I/O error")
 	ErrThreadViolation = errors.New("ferric: thread violation")
 	ErrInvalidArgument = errors.New("ferric: invalid argument")
+	ErrSerialization   = errors.New("ferric: serialization error")
 )
 
 // ---------------------------------------------------------------------------
@@ -94,6 +95,16 @@ func (e *IOError) Is(target error) bool {
 	return target == ErrIO
 }
 
+// SerializationError is returned when engine serialization or deserialization fails.
+type SerializationError struct {
+	FerricError
+}
+
+// Is reports whether target matches ErrSerialization.
+func (e *SerializationError) Is(target error) bool {
+	return target == ErrSerialization
+}
+
 // ---------------------------------------------------------------------------
 // FFI error translation
 // ---------------------------------------------------------------------------
@@ -145,6 +156,12 @@ func errorFromFFI(code ffi.ErrorCode, h ffi.EngineHandle) error {
 			msg = "I/O error"
 		}
 		return &IOError{FerricError{Code: c, Message: msg}}
+
+	case ffi.ErrSerializationError:
+		if msg == "" {
+			msg = "serialization error"
+		}
+		return &SerializationError{FerricError{Code: c, Message: msg}}
 
 	default:
 		if msg == "" {
