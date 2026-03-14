@@ -3,6 +3,7 @@ package ferric
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -53,14 +54,7 @@ func TestSerializeRoundtrip(t *testing.T) {
 
 	// Verify templates survived.
 	tmpls := e2.Templates()
-	found := false
-	for _, name := range tmpls {
-		if name == "sensor" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(tmpls, "sensor") {
 		t.Fatalf("expected 'sensor' template, got: %v", tmpls)
 	}
 

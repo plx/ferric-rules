@@ -15,7 +15,7 @@ func EngineSerialize(h EngineHandle) ([]byte, ErrorCode) {
 	var data *C.uint8_t
 	var length C.uintptr_t
 
-	rc := ErrorCode(C.ferric_engine_serialize(h, nil, nil, &data, &length))
+	rc := ErrorCode(C.ferric_engine_serialize(h, nil, nil, &data, &length)) //nolint:gocritic // dupSubExpr false positive in cgo-generated code
 	if rc != ErrOK {
 		return nil, rc
 	}
@@ -42,7 +42,7 @@ func EngineDeserialize(data []byte) (EngineHandle, ErrorCode) {
 	}
 
 	var engine EngineHandle
-	rc := ErrorCode(C.ferric_engine_deserialize(
+	rc := ErrorCode(C.ferric_engine_deserialize( //nolint:gocritic // dupSubExpr false positive in cgo-generated code
 		(*C.uint8_t)(unsafe.Pointer(&data[0])),
 		C.uintptr_t(len(data)),
 		&engine,
