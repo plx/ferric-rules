@@ -22,6 +22,8 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Config enums
     m.add_class::<config::Strategy>()?;
     m.add_class::<config::Encoding>()?;
+    #[cfg(feature = "serde")]
+    m.add_class::<config::Format>()?;
 
     // Result types
     m.add_class::<result::RunResult>()?;

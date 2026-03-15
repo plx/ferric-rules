@@ -372,6 +372,48 @@ impl PyEngine {
         self.engine.push_input(line);
     }
 
+    // -- Serialization --
+
+    /// Serialize the engine state to bytes in the given format.
+    ///
+    /// # Arguments
+    ///
+    /// * `format` — Serialization format (default: `Format.BINCODE`).
+    ///
+    /// Returns `bytes` containing the serialized engine state.
+    #[cfg(feature = "serde")]
+    #[pyo3(signature = (format=None))]
+    fn serialize<'py>(
+        &self,
+        py: Python<'py>,
+        format: Option<crate::config::Format>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
+        let bytes = self
+            .engine
+            .serialize(fmt)
+            .map_err(|e| crate::error::FerricError::new_err(e.to_string()))?;
+        Ok(pyo3::types::PyBytes::new(py, &bytes))
+    }
+
+    /// Create an engine by deserializing a snapshot.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` — Serialized engine state (bytes).
+    /// * `format` — Serialization format (default: `Format.BINCODE`).
+    /// * `strategy` — Conflict resolution strategy override (unused for snapshots).
+    /// * `encoding` — String encoding mode override (unused for snapshots).
+    #[staticmethod]
+    #[cfg(feature = "serde")]
+    #[pyo3(signature = (data, *, format=None))]
+    fn from_snapshot(data: &[u8], format: Option<crate::config::Format>) -> PyResult<Self> {
+        let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
+        let engine = Engine::deserialize(data, fmt)
+            .map_err(|e| crate::error::FerricError::new_err(e.to_string()))?;
+        Ok(Self { engine })
+    }
+
     // -- Python protocols --
 
     fn __repr__(&self) -> PyResult<String> {

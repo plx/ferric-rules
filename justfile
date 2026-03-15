@@ -151,6 +151,10 @@ bench-engine:
 bench-waltz:
     cargo bench -p ferric --bench waltz_bench
 
+# Run serialization format comparison benchmarks
+bench-serde:
+    cargo bench -p ferric-runtime --features serde --bench serialization_bench
+
 # Run the manners benchmark suite
 bench-manners:
     cargo bench -p ferric --bench manners_bench

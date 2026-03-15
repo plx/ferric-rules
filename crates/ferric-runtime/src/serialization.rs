@@ -1,23 +1,25 @@
 //! Engine serialization and deserialization.
 //!
-//! Provides [`Engine::serialize_to_bytes`] and [`Engine::deserialize_from_bytes`]
-//! for converting a fully-loaded engine to/from a compact binary representation.
-//! This enables workflows where a canonical rule set is loaded and compiled once,
-//! serialized, and then deserialized many times to create fresh ready-to-run
-//! engines — skipping the parse/compile pipeline entirely.
+//! Provides [`Engine::serialize`] and [`Engine::deserialize`] for converting a
+//! fully-loaded engine to/from bytes in one of several formats. This enables
+//! workflows where a canonical rule set is loaded and compiled once, serialized,
+//! and then deserialized many times to create fresh ready-to-run engines —
+//! skipping the parse/compile pipeline entirely.
 //!
-//! ## Wire format
+//! ## Supported formats
 //!
-//! ```text
-//! [4 bytes] Magic number: b"FRSE"
-//! [4 bytes] Format version: u32 = 1  (little-endian)
-//! [rest]    bincode-encoded EngineSnapshot
-//! ```
+//! | Format      | Crate          | Notes                                 |
+//! |-------------|----------------|---------------------------------------|
+//! | Bincode     | `bincode`      | Compact binary, fast (default)        |
+//! | JSON        | `serde_json`   | Human-readable, larger output         |
+//! | CBOR        | `ciborium`     | Concise Binary Object Representation  |
+//! | `MessagePack` | `rmp-serde`    | Compact binary, JSON-like schema      |
+//! | Postcard    | `postcard`     | Compact, `no_std`-friendly binary     |
 //!
 //! ## Limitations
 //!
 //! - `ExternalAddress` values cannot be serialized. If any are present in the
-//!   fact base, [`Engine::serialize_to_bytes`] returns
+//!   fact base, [`Engine::serialize`] returns
 //!   [`SerializationError::ExternalAddressPresent`].
 
 use std::collections::VecDeque;
@@ -34,14 +36,43 @@ use crate::modules::{ModuleId, ModuleRegistry};
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
 
-/// Magic bytes at the start of the serialized format.
-const MAGIC: [u8; 4] = *b"FRSE";
+/// Supported serialization formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SerializationFormat {
+    /// Compact binary format via `bincode`. Fast and small.
+    Bincode,
+    /// JSON via `serde_json`. Human-readable, larger output.
+    /// Note: JSON does not support `NaN` or `Infinity` float values.
+    Json,
+    /// CBOR (Concise Binary Object Representation) via `ciborium`.
+    Cbor,
+    /// `MessagePack` via `rmp-serde`. Compact binary with JSON-like schema.
+    MessagePack,
+    /// Postcard — compact, `no_std`-friendly binary format.
+    Postcard,
+}
 
-/// Current format version.
-const FORMAT_VERSION: u32 = 1;
+impl SerializationFormat {
+    /// Returns a human-readable name for this format.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Bincode => "bincode",
+            Self::Json => "json",
+            Self::Cbor => "cbor",
+            Self::MessagePack => "msgpack",
+            Self::Postcard => "postcard",
+        }
+    }
 
-/// Header size in bytes.
-const HEADER_SIZE: usize = 8;
+    /// All supported formats, in declaration order.
+    pub const ALL: &'static [SerializationFormat] = &[
+        Self::Bincode,
+        Self::Json,
+        Self::Cbor,
+        Self::MessagePack,
+        Self::Postcard,
+    ];
+}
 
 /// Errors from serialization and deserialization.
 #[derive(Debug, thiserror::Error)]
@@ -49,20 +80,11 @@ pub enum SerializationError {
     #[error("engine contains ExternalAddress values which cannot be serialized")]
     ExternalAddressPresent,
 
-    #[error("data too short to contain a valid header")]
-    InvalidHeader,
-
-    #[error("invalid magic number (expected FRSE)")]
-    InvalidMagic,
-
-    #[error("unsupported format version {0} (expected {FORMAT_VERSION})")]
-    UnsupportedVersion(u32),
-
     #[error("serialization failed: {0}")]
-    Encode(#[source] bincode::Error),
+    Encode(String),
 
     #[error("deserialization failed: {0}")]
-    Decode(#[source] bincode::Error),
+    Decode(String),
 }
 
 /// Borrowed snapshot of engine state — used for serialization (avoids cloning).
@@ -172,16 +194,16 @@ fn values_contain_external_address(values: &[Value]) -> bool {
 }
 
 impl Engine {
-    /// Serialize this engine to bytes.
+    /// Serialize this engine to bytes in the given format.
     ///
-    /// The returned bytes include a format header and can be passed to
-    /// [`Engine::deserialize_from_bytes`] to reconstruct an equivalent engine.
+    /// The returned bytes can be passed to [`Engine::deserialize`] (with the
+    /// same format) to reconstruct an equivalent engine.
     ///
     /// # Errors
     ///
-    /// Returns [`SerializationError::ExternalAddressPresent`] if the fact base
+    /// Returns [`SerializationError::ExternalAddressPresent`] if the engine
     /// contains any `ExternalAddress` values (which cannot be serialized).
-    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+    pub fn serialize(&self, format: SerializationFormat) -> Result<Vec<u8>, SerializationError> {
         self.validate_serializable()?;
 
         let snapshot = EngineSnapshotRef {
@@ -211,42 +233,24 @@ impl Engine {
             input_buffer: &self.input_buffer,
         };
 
-        let mut buf = Vec::with_capacity(4096);
-        buf.extend_from_slice(&MAGIC);
-        buf.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-
-        bincode::serialize_into(&mut buf, &snapshot).map_err(SerializationError::Encode)?;
-
-        Ok(buf)
+        encode(&snapshot, format)
     }
 
     /// Deserialize an engine from bytes previously produced by
-    /// [`Engine::serialize_to_bytes`].
+    /// [`Engine::serialize`] with the same format.
     ///
     /// The returned engine is ready for [`Engine::run`]. Its thread affinity
     /// is set to the calling thread.
     ///
     /// # Errors
     ///
-    /// Returns an error if the data is too short, has an invalid magic number,
-    /// uses an unsupported format version, or is otherwise corrupt.
-    pub fn deserialize_from_bytes(data: &[u8]) -> Result<Self, SerializationError> {
-        if data.len() < HEADER_SIZE {
-            return Err(SerializationError::InvalidHeader);
-        }
-
-        if data[..4] != MAGIC {
-            return Err(SerializationError::InvalidMagic);
-        }
-
-        let version = u32::from_le_bytes(data[4..8].try_into().expect("slice is exactly 4 bytes"));
-        if version != FORMAT_VERSION {
-            return Err(SerializationError::UnsupportedVersion(version));
-        }
-
-        let snapshot: EngineSnapshotOwned =
-            bincode::deserialize(&data[HEADER_SIZE..]).map_err(SerializationError::Decode)?;
-
+    /// Returns an error if the data is malformed or does not match the
+    /// expected format.
+    pub fn deserialize(
+        data: &[u8],
+        format: SerializationFormat,
+    ) -> Result<Self, SerializationError> {
+        let snapshot: EngineSnapshotOwned = decode(data, format)?;
         Ok(snapshot.into_engine())
     }
 
@@ -288,30 +292,81 @@ impl Engine {
     }
 }
 
+/// Encode a snapshot to bytes in the given format.
+fn encode<T: serde::Serialize>(
+    value: &T,
+    format: SerializationFormat,
+) -> Result<Vec<u8>, SerializationError> {
+    match format {
+        SerializationFormat::Bincode => {
+            bincode::serialize(value).map_err(|e| SerializationError::Encode(e.to_string()))
+        }
+        SerializationFormat::Json => {
+            serde_json::to_vec(value).map_err(|e| SerializationError::Encode(e.to_string()))
+        }
+        SerializationFormat::Cbor => {
+            let mut buf = Vec::new();
+            ciborium::ser::into_writer(value, &mut buf)
+                .map_err(|e| SerializationError::Encode(e.to_string()))?;
+            Ok(buf)
+        }
+        SerializationFormat::MessagePack => {
+            rmp_serde::to_vec(value).map_err(|e| SerializationError::Encode(e.to_string()))
+        }
+        SerializationFormat::Postcard => {
+            postcard::to_allocvec(value).map_err(|e| SerializationError::Encode(e.to_string()))
+        }
+    }
+}
+
+/// Decode a snapshot from bytes in the given format.
+fn decode<T: serde::de::DeserializeOwned>(
+    data: &[u8],
+    format: SerializationFormat,
+) -> Result<T, SerializationError> {
+    match format {
+        SerializationFormat::Bincode => {
+            bincode::deserialize(data).map_err(|e| SerializationError::Decode(e.to_string()))
+        }
+        SerializationFormat::Json => {
+            serde_json::from_slice(data).map_err(|e| SerializationError::Decode(e.to_string()))
+        }
+        SerializationFormat::Cbor => {
+            ciborium::de::from_reader(data).map_err(|e| SerializationError::Decode(e.to_string()))
+        }
+        SerializationFormat::MessagePack => {
+            rmp_serde::from_slice(data).map_err(|e| SerializationError::Decode(e.to_string()))
+        }
+        SerializationFormat::Postcard => {
+            postcard::from_bytes(data).map_err(|e| SerializationError::Decode(e.to_string()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::EngineConfig;
     use crate::execution::RunLimit;
 
-    #[test]
-    fn roundtrip_empty_engine() {
+    /// Test roundtrip for a given format with an empty engine.
+    fn roundtrip_empty(format: SerializationFormat) {
         let engine = Engine::new(EngineConfig::default());
-        let bytes = engine.serialize_to_bytes().unwrap();
+        let bytes = engine.serialize(format).unwrap();
+        assert!(
+            !bytes.is_empty(),
+            "serialized {format:?} should be non-empty"
+        );
 
-        assert_eq!(&bytes[..4], b"FRSE");
-        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
-
-        let engine2 = Engine::deserialize_from_bytes(&bytes).unwrap();
-        // Both empty engines should have no user-visible facts
+        let engine2 = Engine::deserialize(&bytes, format).unwrap();
         assert_eq!(
             engine.facts().unwrap().count(),
             engine2.facts().unwrap().count()
         );
     }
 
-    #[test]
-    fn roundtrip_with_rules_and_facts() {
+    /// Test roundtrip for a given format with rules and facts.
+    fn roundtrip_with_rules(format: SerializationFormat) {
         let mut engine = Engine::new(EngineConfig::default());
         engine
             .load_str(
@@ -329,10 +384,9 @@ mod tests {
             .unwrap();
         engine.reset().unwrap();
 
-        let bytes = engine.serialize_to_bytes().unwrap();
-        let mut engine2 = Engine::deserialize_from_bytes(&bytes).unwrap();
+        let bytes = engine.serialize(format).unwrap();
+        let mut engine2 = Engine::deserialize(&bytes, format).unwrap();
 
-        // Run both engines and compare output
         let result1 = engine.run(RunLimit::Unlimited).unwrap();
         let result2 = engine2.run(RunLimit::Unlimited).unwrap();
 
@@ -340,81 +394,33 @@ mod tests {
         assert_eq!(result1.rules_fired, 2);
     }
 
-    #[test]
-    fn roundtrip_with_globals_and_functions() {
+    /// Test roundtrip for a given format with globals and functions.
+    fn roundtrip_with_globals(format: SerializationFormat) {
         let mut engine = Engine::new(EngineConfig::default());
         engine
             .load_str(
-                r#"
+                r"
                 (defglobal ?*counter* = 0)
                 (deffunction increment (?x) (+ ?x 1))
                 (defrule count-up
                     (trigger)
                     =>
                     (bind ?*counter* (increment ?*counter*)))
-            "#,
+            ",
             )
             .unwrap();
         engine.reset().unwrap();
 
-        let bytes = engine.serialize_to_bytes().unwrap();
-        let mut engine2 = Engine::deserialize_from_bytes(&bytes).unwrap();
+        let bytes = engine.serialize(format).unwrap();
+        let mut engine2 = Engine::deserialize(&bytes, format).unwrap();
 
-        // Load a trigger fact and run
         engine2.load_str("(assert (trigger))").unwrap();
         let result = engine2.run(RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 1);
     }
 
-    #[test]
-    fn reject_invalid_magic() {
-        let result = Engine::deserialize_from_bytes(b"BADDxxxxxxxx");
-        assert!(matches!(result, Err(SerializationError::InvalidMagic)));
-    }
-
-    #[test]
-    fn reject_unsupported_version() {
-        let mut data = Vec::new();
-        data.extend_from_slice(b"FRSE");
-        data.extend_from_slice(&99u32.to_le_bytes());
-        data.extend_from_slice(b"some data");
-
-        let result = Engine::deserialize_from_bytes(&data);
-        assert!(matches!(
-            result,
-            Err(SerializationError::UnsupportedVersion(99))
-        ));
-    }
-
-    #[test]
-    fn reject_truncated_data() {
-        let result = Engine::deserialize_from_bytes(b"FRS");
-        assert!(matches!(result, Err(SerializationError::InvalidHeader)));
-    }
-
-    #[test]
-    fn reject_corrupt_payload() {
-        let mut data = Vec::new();
-        data.extend_from_slice(b"FRSE");
-        data.extend_from_slice(&1u32.to_le_bytes());
-        data.extend_from_slice(b"not valid bincode data at all");
-
-        let result = Engine::deserialize_from_bytes(&data);
-        assert!(matches!(result, Err(SerializationError::Decode(_))));
-    }
-
-    #[test]
-    fn deserialized_engine_has_current_thread_affinity() {
-        let engine = Engine::new(EngineConfig::default());
-        let bytes = engine.serialize_to_bytes().unwrap();
-        let engine2 = Engine::deserialize_from_bytes(&bytes).unwrap();
-
-        // Should not return WrongThread error
-        assert!(engine2.check_thread_affinity().is_ok());
-    }
-
-    #[test]
-    fn roundtrip_preserves_multiple_modules() {
+    /// Test that an engine with multiple modules roundtrips correctly.
+    fn roundtrip_modules(format: SerializationFormat) {
         let mut engine = Engine::new(EngineConfig::default());
         engine
             .load_str(
@@ -428,10 +434,100 @@ mod tests {
             .unwrap();
         engine.reset().unwrap();
 
-        let bytes = engine.serialize_to_bytes().unwrap();
-        let engine2 = Engine::deserialize_from_bytes(&bytes).unwrap();
-
-        // Verify the deserialized engine has the modules
+        let bytes = engine.serialize(format).unwrap();
+        let engine2 = Engine::deserialize(&bytes, format).unwrap();
         assert!(engine2.check_thread_affinity().is_ok());
+    }
+
+    // ── Per-format tests ─────────────────────────────────────────────────
+
+    macro_rules! format_tests {
+        ($format:ident, $mod_name:ident) => {
+            mod $mod_name {
+                use super::*;
+
+                #[test]
+                fn roundtrip_empty_engine() {
+                    roundtrip_empty(SerializationFormat::$format);
+                }
+
+                #[test]
+                fn roundtrip_with_rules_and_facts() {
+                    roundtrip_with_rules(SerializationFormat::$format);
+                }
+
+                #[test]
+                fn roundtrip_with_globals_and_functions() {
+                    roundtrip_with_globals(SerializationFormat::$format);
+                }
+
+                #[test]
+                fn roundtrip_preserves_multiple_modules() {
+                    roundtrip_modules(SerializationFormat::$format);
+                }
+            }
+        };
+    }
+
+    format_tests!(Bincode, bincode_tests);
+    format_tests!(Json, json_tests);
+    format_tests!(Cbor, cbor_tests);
+    format_tests!(MessagePack, msgpack_tests);
+    format_tests!(Postcard, postcard_tests);
+
+    // ── Cross-format and error tests ─────────────────────────────────────
+
+    #[test]
+    fn reject_wrong_format() {
+        let engine = Engine::new(EngineConfig::default());
+        let bincode_bytes = engine.serialize(SerializationFormat::Bincode).unwrap();
+
+        // Trying to decode bincode data as JSON should fail.
+        let result = Engine::deserialize(&bincode_bytes, SerializationFormat::Json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reject_corrupt_data() {
+        for &format in SerializationFormat::ALL {
+            let result = Engine::deserialize(b"not valid data at all", format);
+            assert!(
+                result.is_err(),
+                "format {format:?} should reject corrupt data"
+            );
+        }
+    }
+
+    #[test]
+    fn reject_empty_data() {
+        for &format in SerializationFormat::ALL {
+            let result = Engine::deserialize(b"", format);
+            assert!(
+                result.is_err(),
+                "format {format:?} should reject empty data"
+            );
+        }
+    }
+
+    #[test]
+    fn deserialized_engine_has_current_thread_affinity() {
+        let engine = Engine::new(EngineConfig::default());
+        let bytes = engine.serialize(SerializationFormat::Bincode).unwrap();
+        let engine2 = Engine::deserialize(&bytes, SerializationFormat::Bincode).unwrap();
+        assert!(engine2.check_thread_affinity().is_ok());
+    }
+
+    #[test]
+    fn format_name() {
+        assert_eq!(SerializationFormat::Bincode.name(), "bincode");
+        assert_eq!(SerializationFormat::Json.name(), "json");
+        assert_eq!(SerializationFormat::Cbor.name(), "cbor");
+        assert_eq!(SerializationFormat::MessagePack.name(), "msgpack");
+        assert_eq!(SerializationFormat::Postcard.name(), "postcard");
+    }
+
+    #[test]
+    fn all_formats_list() {
+        assert_eq!(SerializationFormat::ALL.len(), 5);
     }
 }
