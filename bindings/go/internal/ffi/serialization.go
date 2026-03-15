@@ -42,10 +42,10 @@ func EngineDeserialize(data []byte) (EngineHandle, ErrorCode) {
 	}
 
 	var engine EngineHandle
-	rc := ErrorCode(C.ferric_engine_deserialize( //nolint:gocritic // dupSubExpr false positive in cgo-generated code
+	rc := ErrorCode(C.ferric_engine_deserialize(
 		(*C.uint8_t)(unsafe.Pointer(&data[0])),
 		C.uintptr_t(len(data)),
-		&engine,
+		&engine, //nolint:gocritic // dupSubExpr false positive in cgo-generated code
 	))
 	return engine, rc
 }
