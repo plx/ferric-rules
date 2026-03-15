@@ -93,7 +93,13 @@ def compute_diff(base: dict, head: dict) -> tuple[list, list, list, list, list]:
         b_median = b.get("median_ns")
         h_median = h.get("median_ns")
 
-        if b_median is None or h_median is None:
+        if b_median is None and h_median is not None:
+            added.append((name, suite, None, h_median, None))
+            continue
+        if b_median is not None and h_median is None:
+            removed.append((name, suite, b_median, None, None))
+            continue
+        if b_median is None:
             unchanged.append((name, suite, b_median, h_median, None))
             continue
 
