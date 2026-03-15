@@ -94,7 +94,7 @@ pub use loader::{LoadError, LoadResult, RuleDef};
 pub use modules::{ModuleId, ModuleRegistry};
 pub use qualified_name::{parse_qualified_name, QualifiedName};
 #[cfg(feature = "serde")]
-pub use serialization::SerializationError;
+pub use serialization::{SerializationError, SerializationFormat};
 
 // Re-export Stage 2 AST types for working with loaded constructs
 pub use ferric_parser::{

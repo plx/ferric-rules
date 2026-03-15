@@ -38,7 +38,7 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 	if cfg.snapshot != nil {
 		// Deserialize from snapshot — skips parse/compile.
 		var rc ffi.ErrorCode
-		h, rc = ffi.EngineDeserialize(cfg.snapshot)
+		h, rc = ffi.EngineDeserializeAs(cfg.snapshot, formatToFFI(cfg.snapshotFormat))
 		if rc != ffi.ErrOK {
 			return nil, errorFromFFI(rc, nil)
 		}
@@ -418,11 +418,11 @@ func (e *Engine) Clear() {
 	ffi.EngineClear(e.handle)
 }
 
-// Serialize produces a binary snapshot of the engine's current state.
-// The snapshot can be used with WithSnapshot to create new engines
-// that skip the parse/compile pipeline.
-func (e *Engine) Serialize() ([]byte, error) {
-	data, rc := ffi.EngineSerialize(e.handle)
+// Serialize produces a snapshot of the engine's current state using the
+// specified format. The snapshot can be used with WithSnapshot to create
+// new engines that skip the parse/compile pipeline.
+func (e *Engine) Serialize(format Format) ([]byte, error) {
+	data, rc := ffi.EngineSerializeAs(e.handle, formatToFFI(format))
 	if rc != ffi.ErrOK {
 		return nil, errorFromFFI(rc, e.handle)
 	}
