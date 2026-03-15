@@ -120,14 +120,14 @@ py-test:
 
 # ── Composite checks ────────────────────────────────────────────────────────
 
-# Full preflight: format check, clippy, all tests, cargo check, Python checks
-check: fmt-check clippy test cargo-check py-fmt-check py-lint py-test
+# Full preflight: format check, clippy, all tests, cargo check, Python checks, Go lint
+check: fmt-check clippy test cargo-check py-fmt-check py-lint py-test go-lint
 
 # Same as `check` — alias for the preflight script
 preflight: check
 
-# PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks
-preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test
+# PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks + Go lint
+preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test go-lint
 
 # ── Tracing / profiling ────────────────────────────────────────────────────
 
