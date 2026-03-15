@@ -43,5 +43,50 @@ harness = false
 name = "negation_bench"
 harness = false
 
+[[bench]]
+name = "exists_bench"
+harness = false
+
+[[bench]]
+name = "forall_bench"
+harness = false
+
+[[bench]]
+name = "strategy_bench"
+harness = false
+
+[[bench]]
+name = "alpha_fanout_bench"
+harness = false
+
+[[bench]]
+name = "cascade_bench"
+harness = false
+
+[[bench]]
+name = "evaluator_bench"
+harness = false
+
+[[bench]]
+name = "query_bench"
+harness = false
+
+[[bench]]
+name = "compile_bench"
+harness = false
+
+[[bench]]
+name = "module_bench"
+harness = false
+
+[[bench]]
+name = "serialization_bench"
+harness = false
+required-features = ["serde"]
+
+[[bench]]
+name = "constraint_bench"
+harness = false
+
 [lints]
 workspace = true

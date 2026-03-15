@@ -135,6 +135,45 @@ def test_compute_diff_detects_removed_benchmark():
     assert any(e[0] == "old_bench" for e in removed)
 
 
+def test_compute_diff_null_base_median_classified_as_added():
+    # When both manifests contain the benchmark key but base has None median
+    # (e.g. new benchmark suite not present at the base SHA), it should be
+    # classified as "added", not "unchanged".
+    base = _manifest({"new_bench": {"median_ns": None, "suite": "test"}})
+    head = _manifest({"new_bench": _benchmark(500_000.0)})
+
+    _regressions, _improvements, unchanged, added, _removed = compute_diff(base, head)
+
+    assert any(e[0] == "new_bench" for e in added)
+    assert not any(e[0] == "new_bench" for e in unchanged)
+
+
+def test_compute_diff_null_head_median_classified_as_removed():
+    # When both manifests contain the benchmark key but head has None median
+    # (e.g. benchmark suite removed in head), it should be classified as
+    # "removed", not "unchanged".
+    base = _manifest({"gone_bench": _benchmark(500_000.0)})
+    head = _manifest({"gone_bench": {"median_ns": None, "suite": "test"}})
+
+    _regressions, _improvements, unchanged, _added, removed = compute_diff(base, head)
+
+    assert any(e[0] == "gone_bench" for e in removed)
+    assert not any(e[0] == "gone_bench" for e in unchanged)
+
+
+def test_compute_diff_both_null_medians_is_unchanged():
+    # When both manifests have the key but both have None median, it stays
+    # "unchanged" (neither added nor removed — just unmeasured).
+    base = _manifest({"missing_bench": {"median_ns": None, "suite": "test"}})
+    head = _manifest({"missing_bench": {"median_ns": None, "suite": "test"}})
+
+    _regressions, _improvements, unchanged, added, removed = compute_diff(base, head)
+
+    assert any(e[0] == "missing_bench" for e in unchanged)
+    assert not any(e[0] == "missing_bench" for e in added)
+    assert not any(e[0] == "missing_bench" for e in removed)
+
+
 # ---------------------------------------------------------------------------
 # compute_diff — delta_pct value
 # ---------------------------------------------------------------------------
