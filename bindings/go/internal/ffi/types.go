@@ -1,6 +1,7 @@
 package ffi
 
 /*
+#define FERRIC_SERDE
 #include "lib/ferric.h"
 */
 import "C"
@@ -79,6 +80,18 @@ const (
 	ConflictStrategyBreadth ConflictStrategy = C.FERRIC_CONFLICT_STRATEGY_BREADTH
 	ConflictStrategyLEX     ConflictStrategy = C.FERRIC_CONFLICT_STRATEGY_LEX
 	ConflictStrategyMEA     ConflictStrategy = C.FERRIC_CONFLICT_STRATEGY_MEA
+)
+
+// SerializationFormat mirrors the C FerricSerializationFormat enum.
+type SerializationFormat = C.enum_FerricSerializationFormat
+
+// SerializationFormat values mirror C.FERRIC_SERIALIZATION_FORMAT_*.
+const (
+	FormatBincode    SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_BINCODE
+	FormatJSON       SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_JSON
+	FormatCBOR       SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_CBOR
+	FormatMessagePack SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK
+	FormatPostcard   SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_POSTCARD
 )
 
 // Config mirrors the C FerricConfig struct.

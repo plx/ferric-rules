@@ -8,14 +8,14 @@ package ffi
 import "C"
 import "unsafe"
 
-// EngineSerialize serializes engine state to a byte slice.
+// EngineSerializeAs serializes engine state to a byte slice in the given format.
 // Uses the Rust-allocated path (null alloc_fn), copies to Go memory,
 // then frees the Rust buffer.
-func EngineSerialize(h EngineHandle) ([]byte, ErrorCode) {
+func EngineSerializeAs(h EngineHandle, format SerializationFormat) ([]byte, ErrorCode) {
 	var data *C.uint8_t
 	var length C.uintptr_t
 
-	rc := ErrorCode(C.ferric_engine_serialize(h, nil, nil, &data, &length)) //nolint:gocritic // dupSubExpr false positive in cgo-generated code
+	rc := ErrorCode(C.ferric_engine_serialize_as(h, format, nil, nil, &data, &length)) //nolint:gocritic // dupSubExpr false positive in cgo-generated code
 	if rc != ErrOK {
 		return nil, rc
 	}
@@ -34,17 +34,19 @@ func EngineSerialize(h EngineHandle) ([]byte, ErrorCode) {
 	return goBytes, ErrOK
 }
 
-// EngineDeserialize creates an engine from previously serialized bytes.
+// EngineDeserializeAs creates an engine from previously serialized bytes
+// in the given format.
 // The returned handle is ready for use; its thread affinity is set to the calling thread.
-func EngineDeserialize(data []byte) (EngineHandle, ErrorCode) {
+func EngineDeserializeAs(data []byte, format SerializationFormat) (EngineHandle, ErrorCode) {
 	if len(data) == 0 {
 		return nil, ErrInvalidArgument
 	}
 
 	var engine EngineHandle
-	rc := ErrorCode(C.ferric_engine_deserialize(
+	rc := ErrorCode(C.ferric_engine_deserialize_as(
 		(*C.uint8_t)(unsafe.Pointer(&data[0])),
 		C.uintptr_t(len(data)),
+		format,
 		&engine, //nolint:gocritic // dupSubExpr false positive in cgo-generated code
 	))
 	return engine, rc

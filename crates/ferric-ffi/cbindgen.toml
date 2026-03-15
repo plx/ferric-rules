@@ -26,6 +26,7 @@ include = [
     "FerricHaltReason",
     "FerricValueType",
     "FerricValue",
+    "FerricSerializationFormat",
 ]
 
 [struct]

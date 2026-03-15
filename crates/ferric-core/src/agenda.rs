@@ -115,6 +115,7 @@ pub struct AgendaKey {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Agenda {
     /// Ordered activations: key -> `ActivationId`.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::btree_map"))]
     ordering: BTreeMap<AgendaKey, ActivationId>,
     /// All activations: `ActivationId` -> `Activation`.
     activations: SlotMap<ActivationId, Activation>,
