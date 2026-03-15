@@ -1,0 +1,2 @@
+# Pre-built library artifacts (platform-specific, rebuilt from Rust)
+internal/ffi/lib/libferric_ffi.a

@@ -214,6 +214,10 @@ fn header_contains_engine_lifecycle_functions() {
         header.contains("ferric_engine_reset"),
         "Missing ferric_engine_reset"
     );
+    assert!(
+        header.contains("ferric_engine_free_unchecked"),
+        "Missing ferric_engine_free_unchecked"
+    );
 }
 
 #[test]
@@ -234,6 +238,14 @@ fn header_contains_execution_functions() {
     assert!(
         header.contains("ferric_engine_retract"),
         "Missing ferric_engine_retract"
+    );
+    assert!(
+        header.contains("ferric_engine_assert_template"),
+        "Missing ferric_engine_assert_template"
+    );
+    assert!(
+        header.contains("ferric_engine_get_fact_slot_by_name"),
+        "Missing ferric_engine_get_fact_slot_by_name"
     );
 }
 

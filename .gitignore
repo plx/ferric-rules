@@ -24,5 +24,8 @@ __pycache__/
 .venv/
 *.egg-info/
 
+# Local tool binaries (e.g. golangci-lint)
+bin/
+
 # Compatibility assessment (generated)
 tests/examples/compat-manifest.json

@@ -120,14 +120,14 @@ py-test:
 
 # ── Composite checks ────────────────────────────────────────────────────────
 
-# Full preflight: format check, clippy, all tests, cargo check, Python checks
-check: fmt-check clippy test cargo-check py-fmt-check py-lint py-test
+# Full preflight: format check, clippy, all tests, cargo check, Python checks, Go lint
+check: fmt-check clippy test cargo-check py-fmt-check py-lint py-test go-lint
 
 # Same as `check` — alias for the preflight script
 preflight: check
 
-# PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks
-preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test
+# PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks + Go lint
+preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test go-lint
 
 # ── Tracing / profiling ────────────────────────────────────────────────────
 
@@ -244,6 +244,53 @@ doc:
 # Build and open rustdoc in a browser
 doc-open:
     cargo doc --workspace --no-deps --open
+
+# ── Go bindings ─────────────────────────────────────────────────────────────
+
+# Build the Rust static library for Go bindings (includes serde for serialization)
+build-go-ffi:
+    cargo build -p ferric-ffi --release --features serde
+    cp target/release/libferric_ffi.a bindings/go/internal/ffi/lib/
+    cp crates/ferric-ffi/ferric.h bindings/go/internal/ffi/lib/
+
+# Run Go binding tests
+test-go:
+    cd bindings/go && go test -v ./...
+
+# Run Go binding tests with race detector
+test-go-race:
+    cd bindings/go && go test -race -v ./...
+
+# Version of golangci-lint to install when not already present.
+golangci_lint_version := "v2.8.0"
+
+# Runs the golang-ci linter suite (auto-installs to ./bin/ if needed).
+run-golang-ci:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if command -v golangci-lint >/dev/null 2>&1; then
+        LINT=golangci-lint
+    elif [[ -x ./bin/golangci-lint ]]; then
+        LINT=./bin/golangci-lint
+    else
+        echo "golangci-lint not found; installing {{golangci_lint_version}} to ./bin/ ..." >&2
+        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b ./bin {{golangci_lint_version}}
+        LINT=./bin/golangci-lint
+    fi
+
+    cd bindings/go
+    # Adjust relative path after cd
+    [[ "$LINT" == ./bin/* ]] && LINT="../../bin/golangci-lint"
+    "$LINT" run
+
+# Run Go lint checks for bindings.
+go-lint: build-go-ffi
+    just run-golang-ci
+
+# Full Go build pipeline: build Rust static lib, then run Go tests
+go-full: build-go-ffi test-go-race
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 

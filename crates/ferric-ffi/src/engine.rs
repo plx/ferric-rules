@@ -1862,6 +1862,175 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 }
 
 // ---------------------------------------------------------------------------
+// C API: Template fact assertion
+// ---------------------------------------------------------------------------
+
+/// Assert a template fact with named slots.
+///
+/// Looks up the template by name, resolves slot names to positions,
+/// fills in defaults for unspecified slots, and asserts the fact.
+///
+/// `slot_names` and `slot_values` must each point to `count` elements.
+/// Each `slot_names[i]` is a NUL-terminated C string naming a slot,
+/// and `slot_values[i]` is the corresponding value for that slot.
+///
+/// # Safety
+///
+/// - `engine` must be a valid engine pointer.
+/// - `template_name` must be a valid NUL-terminated string.
+/// - If `count > 0`, `slot_names` must point to `count` valid NUL-terminated string pointers.
+/// - If `count > 0`, `slot_values` must point to `count` valid `FerricValue`s.
+/// - `out_fact_id` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_engine_assert_template(
+    engine: *mut FerricEngine,
+    template_name: *const c_char,
+    slot_names: *const *const c_char,
+    slot_values: *const FerricValue,
+    count: usize,
+    out_fact_id: *mut u64,
+) -> FerricError {
+    use slotmap::Key as _;
+
+    let tmpl_str = match c_str_to_str(template_name, "template_name") {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+
+    if count > 0 {
+        if slot_names.is_null() {
+            set_global_error("slot_names pointer is null with non-zero count".to_string());
+            return FerricError::NullPointer;
+        }
+        if slot_values.is_null() {
+            set_global_error("slot_values pointer is null with non-zero count".to_string());
+            return FerricError::NullPointer;
+        }
+    }
+
+    let handle = match borrow_engine_mut(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+
+    // Convert slot names from C strings.
+    let mut names = Vec::with_capacity(count);
+    for i in 0..count {
+        let name_ptr = *slot_names.add(i);
+        match c_str_to_str(name_ptr, &format!("slot_names[{i}]")) {
+            Ok(s) => names.push(s),
+            Err(code) => return code,
+        }
+    }
+
+    // Convert slot values from FerricValue.
+    let mut values = Vec::with_capacity(count);
+    for i in 0..count {
+        let fv = &*slot_values.add(i);
+        match ferric_to_value(fv, &mut handle.engine) {
+            Ok(v) => values.push(v),
+            Err(msg) => {
+                return set_engine_error_message(
+                    handle,
+                    FerricError::InvalidArgument,
+                    format!("slot_values[{i}]: {msg}"),
+                );
+            }
+        }
+    }
+
+    let name_refs: Vec<&str> = names.clone();
+
+    match handle.engine.assert_template(tmpl_str, &name_refs, values) {
+        Ok(fid) => {
+            if !out_fact_id.is_null() {
+                *out_fact_id = fid.data().as_ffi();
+            }
+            FerricError::Ok
+        }
+        Err(ref err) => set_engine_runtime_error(handle, err),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C API: Template slot access by name
+// ---------------------------------------------------------------------------
+
+/// Get a template fact's slot value by name.
+///
+/// The fact must be a template fact. For ordered facts, returns
+/// `FERRIC_ERROR_INVALID_ARGUMENT`. If the slot name is not found,
+/// returns `FERRIC_ERROR_NOT_FOUND`.
+///
+/// The returned `FerricValue` is written to `*out_value`. The caller owns
+/// any heap-allocated resources and must free them with `ferric_value_free`.
+///
+/// # Safety
+///
+/// - `engine` must be a valid engine pointer.
+/// - `slot_name` must be a valid NUL-terminated string.
+/// - `out_value` must be a valid pointer to a `FerricValue`.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_engine_get_fact_slot_by_name(
+    engine: *const FerricEngine,
+    fact_id: u64,
+    slot_name: *const c_char,
+    out_value: *mut FerricValue,
+) -> FerricError {
+    let name_str = match c_str_to_str(slot_name, "slot_name") {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+
+    if out_value.is_null() {
+        set_global_error("out_value pointer is null".to_string());
+        return FerricError::NullPointer;
+    }
+
+    let handle = match borrow_engine_checked(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+
+    let key_data = slotmap::KeyData::from_ffi(fact_id);
+    let fid = ferric_core::FactId::from(key_data);
+
+    match handle.engine.get_fact_slot_by_name(fid, name_str) {
+        Ok(value) => {
+            *out_value = value_to_ferric(value, &handle.engine);
+            FerricError::Ok
+        }
+        Err(ref err) => set_engine_error_global(err),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C API: Unchecked free (for GC finalizers)
+// ---------------------------------------------------------------------------
+
+/// Free an engine handle without checking thread affinity.
+///
+/// This is intended for use by garbage-collected runtimes (Go, etc.) whose
+/// finalizers run on arbitrary threads. In normal usage, prefer
+/// `ferric_engine_free` which validates thread affinity.
+///
+/// Null pointers are safely ignored.
+///
+/// # Safety
+///
+/// - `engine` must be a pointer returned by `ferric_engine_new` or null.
+/// - The engine must not be in use by another call when freed.
+/// - The caller must guarantee that no other thread is concurrently using this engine.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_engine_free_unchecked(engine: *mut FerricEngine) -> FerricError {
+    if engine.is_null() {
+        return FerricError::Ok;
+    }
+    drop(Box::from_raw(engine));
+    FerricError::Ok
+}
+
+// ---------------------------------------------------------------------------
 // Engine serialization / deserialization
 // ---------------------------------------------------------------------------
 
