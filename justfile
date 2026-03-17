@@ -155,6 +155,18 @@ bench-waltz:
 bench-manners:
     cargo bench -p ferric --bench manners_bench
 
+# Run the join benchmark suite
+bench-join:
+    cargo bench -p ferric --bench join_bench
+
+# Run the churn benchmark suite
+bench-churn:
+    cargo bench -p ferric --bench churn_bench
+
+# Run the negation benchmark suite
+bench-negation:
+    cargo bench -p ferric --bench negation_bench
+
 # Run benchmark threshold evaluation
 bench-thresholds:
     ./scripts/bench-thresholds.sh
