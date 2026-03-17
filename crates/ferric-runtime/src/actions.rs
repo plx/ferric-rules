@@ -110,9 +110,16 @@ impl ActionEvalEnv {
         rule_info: &CompiledRuleInfo,
         expr: &ActionExpr,
         context: &mut ActionExecutionContext<'_>,
+        collected_facts: &[FactId],
     ) -> Result<Value, ActionError> {
         if matches!(expr, ActionExpr::FunctionCall(_)) && action_expr_contains_fact_slot_ref(expr) {
-            return self.eval_expr_with_fact_slot_refs(token, rule_info, expr, context);
+            return self.eval_expr_with_fact_slot_refs(
+                token,
+                rule_info,
+                expr,
+                context,
+                collected_facts,
+            );
         }
         self.eval_expr_base(token, rule_info, expr, context)
     }
@@ -139,15 +146,16 @@ impl ActionEvalEnv {
         rule_info: &CompiledRuleInfo,
         expr: &ActionExpr,
         context: &mut ActionExecutionContext<'_>,
+        collected_facts: &[FactId],
     ) -> Result<Value, ActionError> {
         match expr {
             ActionExpr::FunctionCall(call) if call.name == FACT_SLOT_REF_FN => {
-                eval_fact_slot_ref_call(token, rule_info, call, context)
+                eval_fact_slot_ref_call(collected_facts, rule_info, call, context)
             }
             ActionExpr::FunctionCall(call) => {
                 let mut arg_values = Vec::with_capacity(call.args.len());
                 for arg in &call.args {
-                    let value = self.eval_expr(token, rule_info, arg, context)?;
+                    let value = self.eval_expr(token, rule_info, arg, context, collected_facts)?;
                     arg_values.push(crate::evaluator::RuntimeExpr::Literal(value));
                 }
                 let runtime_expr = crate::evaluator::RuntimeExpr::Call {
@@ -253,7 +261,7 @@ fn action_expr_contains_fact_slot_ref(expr: &ActionExpr) -> bool {
 }
 
 fn eval_fact_slot_ref_call(
-    token: &Token,
+    collected_facts: &[FactId],
     rule_info: &CompiledRuleInfo,
     call: &FunctionCall,
     context: &mut ActionExecutionContext<'_>,
@@ -289,7 +297,7 @@ fn eval_fact_slot_ref_call(
         }
     };
 
-    let fact_id = resolve_fact_address(token, rule_info, var_name)?;
+    let fact_id = resolve_fact_address(collected_facts, rule_info, var_name)?;
     let fact = get_fact_or_error(&context.engine.fact_base, fact_id)?;
     match fact {
         Fact::Template(template_fact) => {
@@ -372,8 +380,8 @@ pub(crate) struct CompiledRuleInfo {
     pub actions: Vec<Action>,
     /// Variable name → `VarId` mapping from compilation.
     pub var_map: VarMap,
-    /// Maps fact-address variable names to their index in token.facts.
-    /// e.g., "f" (for ?f <- pattern) → 0 means token.facts[0] is the fact.
+    /// Maps fact-address variable names to their index in the collected facts list.
+    /// e.g., "f" (for ?f <- pattern) → 0 means `collected_facts[0]` is the fact.
     pub fact_address_vars: HashMap<String, usize>,
     /// Rule salience (stored for informational purposes).
     #[allow(dead_code)] // May be used in future for debugging/logging
@@ -424,6 +432,7 @@ pub(crate) fn execute_actions(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
+    collected_facts: &[FactId],
 ) -> (bool, bool, bool, Vec<ActionError>) {
     ferric_span!(
         debug_span,
@@ -443,7 +452,7 @@ pub(crate) fn execute_actions(
     let _ = context.engine.globals.take_printout_events();
     seed_multifield_tail_bindings(
         &context.engine.fact_base,
-        token,
+        collected_facts,
         &rule_info.multifield_tail_bindings,
         &mut eval_env.runtime_bindings,
     );
@@ -513,6 +522,7 @@ pub(crate) fn execute_actions(
             runtime_call,
             context,
             &mut eval_env,
+            collected_facts,
         ) {
             ferric_event!(
                 warn,
@@ -627,12 +637,12 @@ fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value)
 
 fn seed_multifield_tail_bindings(
     fact_base: &FactBase,
-    token: &Token,
+    collected_facts: &[FactId],
     hints: &[MultifieldTailBindingHint],
     env: &mut RuntimeBindingEnv,
 ) {
     for hint in hints {
-        let Some(&fact_id) = token.facts.get(hint.fact_index) else {
+        let Some(&fact_id) = collected_facts.get(hint.fact_index) else {
             continue;
         };
         let Some(entry) = fact_base.get(fact_id) else {
@@ -876,18 +886,40 @@ fn execute_single_action(
     runtime_call: Option<&crate::evaluator::RuntimeExpr>,
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     match call.name.as_str() {
-        "assert" => execute_assert(token, rule_info, &call.args, context, eval_env),
-        "retract" => execute_retract(
-            &mut context.engine.fact_base,
-            &mut context.engine.rete,
+        "assert" => execute_assert(
             token,
             rule_info,
             &call.args,
+            context,
+            eval_env,
+            collected_facts,
         ),
-        "modify" => execute_modify(token, rule_info, &call.args, context, eval_env),
-        "duplicate" => execute_duplicate(token, rule_info, &call.args, context, eval_env),
+        "retract" => execute_retract(
+            &mut context.engine.fact_base,
+            &mut context.engine.rete,
+            collected_facts,
+            rule_info,
+            &call.args,
+        ),
+        "modify" => execute_modify(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
+        "duplicate" => execute_duplicate(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
         "halt" => {
             context.engine.halt();
             Ok(())
@@ -900,9 +932,30 @@ fn execute_single_action(
             *clear_requested = true;
             Ok(())
         }
-        "printout" => execute_printout(token, rule_info, &call.args, context, eval_env),
-        "println" => execute_println(token, rule_info, &call.args, context, eval_env),
-        "focus" => execute_focus(token, rule_info, &call.args, context, eval_env),
+        "printout" => execute_printout(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
+        "println" => execute_println(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
+        "focus" => execute_focus(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
         "list-focus-stack" => {
             execute_list_focus_stack(&mut context.engine.router, &context.engine.module_registry)
         }
@@ -911,10 +964,38 @@ fn execute_single_action(
             &mut context.engine.router,
             &context.engine.rule_info,
         ),
-        "rules" => execute_rules(token, rule_info, &call.args, context, eval_env),
-        "undefrule" => execute_undefrule(token, rule_info, &call.args, context, eval_env),
-        "ppdefrule" => execute_ppdefrule(token, rule_info, &call.args, context, eval_env),
-        "load" => execute_load(token, rule_info, &call.args, context, eval_env),
+        "rules" => execute_rules(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
+        "undefrule" => execute_undefrule(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
+        "ppdefrule" => execute_ppdefrule(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
+        "load" => execute_load(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
         "run" => {
             // (run) from within a rule RHS is a no-op — the engine is already running.
             // CLIPS allows this but it's unusual. We silently ignore it.
@@ -922,7 +1003,8 @@ fn execute_single_action(
         }
         "bind" => {
             if let [ActionExpr::Variable(name, _), value_expr] = call.args.as_slice() {
-                let value = eval_env.eval_expr(token, rule_info, value_expr, context)?;
+                let value =
+                    eval_env.eval_expr(token, rule_info, value_expr, context, collected_facts)?;
                 insert_runtime_binding(&mut eval_env.runtime_bindings, name, value);
                 Ok(())
             } else {
@@ -931,7 +1013,7 @@ fn execute_single_action(
                     eval_env.eval_runtime_expr(token, rule_info, runtime_expr, context)
                 } else {
                     let action_expr = ActionExpr::FunctionCall(call.clone());
-                    eval_env.eval_expr(token, rule_info, &action_expr, context)
+                    eval_env.eval_expr(token, rule_info, &action_expr, context, collected_facts)
                 };
                 eval_result
                     .map(|_| ())
@@ -1043,7 +1125,13 @@ fn execute_single_action(
                             if let Some(rt) = rt_expr {
                                 let _ = eval_env.eval_runtime_expr(token, rule_info, rt, context);
                             } else {
-                                let _ = eval_env.eval_expr(token, rule_info, action_expr, context);
+                                let _ = eval_env.eval_expr(
+                                    token,
+                                    rule_info,
+                                    action_expr,
+                                    context,
+                                    collected_facts,
+                                );
                             }
                             continue;
                         }
@@ -1057,6 +1145,7 @@ fn execute_single_action(
                         branch_runtime,
                         context,
                         eval_env,
+                        collected_facts,
                     )?;
                     // Propagate early-exit flags.
                     if context.engine.is_halted() || *reset_requested || *clear_requested {
@@ -1115,6 +1204,7 @@ fn execute_single_action(
                         body,
                         context,
                         eval_env,
+                        collected_facts,
                     )?;
                     if context.engine.is_halted() || *reset_requested || *clear_requested {
                         break;
@@ -1199,6 +1289,7 @@ fn execute_single_action(
                         body,
                         context,
                         eval_env,
+                        collected_facts,
                     )?;
                     if context.engine.is_halted() || *reset_requested || *clear_requested {
                         break;
@@ -1270,6 +1361,7 @@ fn execute_single_action(
                         body,
                         context,
                         eval_env,
+                        collected_facts,
                     )?;
                 }
                 Ok(())
@@ -1342,6 +1434,7 @@ fn execute_single_action(
                         body,
                         context,
                         eval_env,
+                        collected_facts,
                     )?;
                     if context.engine.is_halted() || *reset_requested || *clear_requested {
                         break;
@@ -1394,6 +1487,7 @@ fn execute_single_action(
                     body,
                     context,
                     eval_env,
+                    collected_facts,
                 )
             } else if let Some(runtime_expr) = runtime_call {
                 eval_env
@@ -1411,7 +1505,7 @@ fn execute_single_action(
                 eval_env.eval_runtime_expr(token, rule_info, runtime_expr, context)
             } else {
                 let action_expr = ActionExpr::FunctionCall(call.clone());
-                eval_env.eval_expr(token, rule_info, &action_expr, context)
+                eval_env.eval_expr(token, rule_info, &action_expr, context, collected_facts)
             };
             eval_result
                 .map(|_| ())
@@ -1490,6 +1584,7 @@ fn execute_loop_body(
     )],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     use ferric_parser::ActionExpr;
     for (action_expr, rt_expr) in body {
@@ -1560,7 +1655,8 @@ fn execute_loop_body(
                 if let Some(rt) = rt_expr {
                     let _ = eval_env.eval_runtime_expr(token, rule_info, rt, context);
                 } else {
-                    let _ = eval_env.eval_expr(token, rule_info, action_expr, context);
+                    let _ =
+                        eval_env.eval_expr(token, rule_info, action_expr, context, collected_facts);
                 }
                 continue;
             }
@@ -1574,6 +1670,7 @@ fn execute_loop_body(
             branch_runtime,
             context,
             eval_env,
+            collected_facts,
         )?;
         if context.engine.is_halted() || *reset_requested || *clear_requested {
             break;
@@ -1607,6 +1704,7 @@ fn execute_query_action(
     )],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     // Collect matching fact IDs.
     //
@@ -1705,6 +1803,7 @@ fn execute_query_action(
                 body,
                 context,
                 eval_env,
+                collected_facts,
             )?;
             if context.engine.is_halted() || *reset_requested || *clear_requested {
                 break;
@@ -1733,9 +1832,10 @@ fn execute_focus(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     for arg in args {
-        let value = eval_env.eval_expr(token, rule_info, arg, context)?;
+        let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
         match value {
             Value::Symbol(sym) => {
                 if let Some(name) = context.engine.symbol_table.resolve_symbol_str(sym) {
@@ -1808,6 +1908,7 @@ fn execute_rules(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     if args.len() > 1 {
         return Err(ActionError::EvalError(format!(
@@ -1817,7 +1918,7 @@ fn execute_rules(
     }
 
     if let Some(module_arg) = args.first() {
-        let _ = eval_env.eval_expr(token, rule_info, module_arg, context)?;
+        let _ = eval_env.eval_expr(token, rule_info, module_arg, context, collected_facts)?;
     }
 
     let mut names: Vec<&str> = context
@@ -1849,6 +1950,7 @@ fn execute_undefrule(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     if args.is_empty() {
         return Err(ActionError::EvalError(
@@ -1856,8 +1958,15 @@ fn execute_undefrule(
         ));
     }
 
-    let selectors =
-        evaluated_rule_selectors("undefrule", token, rule_info, args, context, eval_env)?;
+    let selectors = evaluated_rule_selectors(
+        "undefrule",
+        token,
+        rule_info,
+        args,
+        context,
+        eval_env,
+        collected_facts,
+    )?;
     let selected = selected_rule_ids(
         &selectors,
         &context.engine.rule_info,
@@ -1886,6 +1995,7 @@ fn execute_ppdefrule(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     if args.len() != 1 {
         return Err(ActionError::EvalError(format!(
@@ -1894,8 +2004,15 @@ fn execute_ppdefrule(
         )));
     }
 
-    let selectors =
-        evaluated_rule_selectors("ppdefrule", token, rule_info, args, context, eval_env)?;
+    let selectors = evaluated_rule_selectors(
+        "ppdefrule",
+        token,
+        rule_info,
+        args,
+        context,
+        eval_env,
+        collected_facts,
+    )?;
     let selected = selected_rule_ids(
         &selectors,
         &context.engine.rule_info,
@@ -1969,6 +2086,7 @@ fn execute_load(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     if args.len() != 1 {
         return Err(ActionError::EvalError(format!(
@@ -1977,7 +2095,7 @@ fn execute_load(
         )));
     }
 
-    let selector = eval_env.eval_expr(token, rule_info, &args[0], context)?;
+    let selector = eval_env.eval_expr(token, rule_info, &args[0], context, collected_facts)?;
     let path_text = match selector {
         Value::String(s) => s.as_str().to_string(),
         Value::Symbol(sym) => context
@@ -2024,10 +2142,11 @@ fn evaluated_rule_selectors(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<Vec<String>, ActionError> {
     let mut selectors = Vec::with_capacity(args.len());
     for arg in args {
-        let value = eval_env.eval_expr(token, rule_info, arg, context)?;
+        let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
         let selector = match value {
             Value::Symbol(symbol) => context
                 .engine
@@ -2159,6 +2278,7 @@ fn execute_printout(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     if args.is_empty() {
         return Err(ActionError::EvalError(
@@ -2183,7 +2303,7 @@ fn execute_printout(
     // Evaluate and format remaining arguments.
     let mut output = String::new();
     for arg in &args[1..] {
-        let value = eval_env.eval_expr(token, rule_info, arg, context)?;
+        let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
         flush_deferred_printout(context);
         format_printout_value(&value, &context.engine.symbol_table, &mut output);
     }
@@ -2204,10 +2324,11 @@ fn execute_println(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     let mut output = String::new();
     for arg in args {
-        let value = eval_env.eval_expr(token, rule_info, arg, context)?;
+        let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
         flush_deferred_printout(context);
         format_printout_value(&value, &context.engine.symbol_table, &mut output);
     }
@@ -2267,6 +2388,7 @@ fn execute_assert(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     // Each argument to assert should be a "function call" representing a fact pattern
     // e.g., (assert (relation val1 val2)) → args = [FunctionCall("relation", [val1, val2])]
@@ -2282,7 +2404,13 @@ fn execute_assert(
 
                 let mut fields = smallvec::SmallVec::new();
                 for field_expr in &fact_pattern.args {
-                    let value = eval_env.eval_expr(token, rule_info, field_expr, context)?;
+                    let value = eval_env.eval_expr(
+                        token,
+                        rule_info,
+                        field_expr,
+                        context,
+                        collected_facts,
+                    )?;
                     match value {
                         // CLIPS splices multifield values into ordered assertions.
                         Value::Multifield(mf) => fields.extend(mf.as_slice().iter().cloned()),
@@ -2306,14 +2434,14 @@ fn execute_assert(
 fn execute_retract(
     fact_base: &mut FactBase,
     rete: &mut ReteNetwork,
-    token: &Token,
+    collected_facts: &[FactId],
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
 ) -> Result<(), ActionError> {
     for arg in args {
         match arg {
             ActionExpr::Variable(var_name, _) => {
-                let fact_id = resolve_fact_address(token, rule_info, var_name)?;
+                let fact_id = resolve_fact_address(collected_facts, rule_info, var_name)?;
                 let fact = get_fact_or_error(fact_base, fact_id)?;
                 rete.retract_fact(fact_id, &fact, fact_base);
                 fact_base.retract(fact_id);
@@ -2331,6 +2459,7 @@ fn execute_modify(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     execute_fact_mutation(
         token,
@@ -2339,6 +2468,7 @@ fn execute_modify(
         FactMutationMode::Modify,
         context,
         eval_env,
+        collected_facts,
     )
 }
 
@@ -2349,6 +2479,7 @@ fn execute_duplicate(
     args: &[ActionExpr],
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     execute_fact_mutation(
         token,
@@ -2357,6 +2488,7 @@ fn execute_duplicate(
         FactMutationMode::Duplicate,
         context,
         eval_env,
+        collected_facts,
     )
 }
 
@@ -2380,8 +2512,9 @@ fn execute_fact_mutation(
     mode: FactMutationMode,
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    let fact_id = resolve_target_fact_id(args, token, rule_info)?;
+    let fact_id = resolve_target_fact_id(args, collected_facts, rule_info)?;
     let original_fact = get_fact_or_error(&context.engine.fact_base, fact_id)?;
 
     match &original_fact {
@@ -2395,6 +2528,7 @@ fn execute_fact_mutation(
                 rule_info,
                 context,
                 eval_env,
+                collected_facts,
             )?;
             if mode.retract_original() {
                 retract_original_fact(
@@ -2432,6 +2566,7 @@ fn execute_fact_mutation(
                 rule_info,
                 context,
                 eval_env,
+                collected_facts,
             )?;
             if mode.retract_original() {
                 retract_original_fact(
@@ -2502,7 +2637,7 @@ fn get_fact_or_error(fact_base: &FactBase, fact_id: FactId) -> Result<Fact, Acti
 
 fn resolve_target_fact_id(
     args: &[ActionExpr],
-    token: &Token,
+    collected_facts: &[FactId],
     rule_info: &CompiledRuleInfo,
 ) -> Result<FactId, ActionError> {
     if args.is_empty() {
@@ -2510,7 +2645,9 @@ fn resolve_target_fact_id(
     }
 
     match &args[0] {
-        ActionExpr::Variable(var_name, _) => resolve_fact_address(token, rule_info, var_name),
+        ActionExpr::Variable(var_name, _) => {
+            resolve_fact_address(collected_facts, rule_info, var_name)
+        }
         _ => Err(ActionError::InvalidRetract),
     }
 }
@@ -2523,6 +2660,7 @@ fn apply_ordered_slot_overrides(
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     // In CLIPS, modify uses (slot-name value) syntax. For ordered facts in Phase 2,
     // we interpret FunctionCall args as positional overrides where the "name" is the index.
@@ -2540,7 +2678,8 @@ fn apply_ordered_slot_overrides(
         }
 
         if let Some(first_arg) = fc.args.first() {
-            fields[index] = eval_env.eval_expr(token, rule_info, first_arg, context)?;
+            fields[index] =
+                eval_env.eval_expr(token, rule_info, first_arg, context, collected_facts)?;
         }
     }
 
@@ -2561,6 +2700,7 @@ fn apply_template_slot_overrides(
     rule_info: &CompiledRuleInfo,
     context: &mut ActionExecutionContext<'_>,
     eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     for slot_override in slot_overrides {
         let ActionExpr::FunctionCall(fc) = slot_override else {
@@ -2586,7 +2726,8 @@ fn apply_template_slot_overrides(
         }
 
         if let Some(first_arg) = fc.args.first() {
-            slots[slot_idx] = eval_env.eval_expr(token, rule_info, first_arg, context)?;
+            slots[slot_idx] =
+                eval_env.eval_expr(token, rule_info, first_arg, context, collected_facts)?;
         }
     }
 
@@ -2595,13 +2736,12 @@ fn apply_template_slot_overrides(
 
 /// Resolve a fact-address variable to a `FactId`.
 fn resolve_fact_address(
-    token: &Token,
+    collected_facts: &[FactId],
     rule_info: &CompiledRuleInfo,
     var_name: &str,
 ) -> Result<FactId, ActionError> {
     if let Some(&fact_index) = rule_info.fact_address_vars.get(var_name) {
-        token
-            .facts
+        collected_facts
             .get(fact_index)
             .copied()
             .ok_or_else(|| ActionError::UnboundVariable(var_name.to_string()))

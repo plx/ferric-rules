@@ -486,12 +486,7 @@ fn bench_token_store_reverse_index_cycle(c: &mut Criterion) {
                 for idx in 0..512 {
                     let parent = if idx % 8 == 0 { None } else { chain_tail };
                     let token = Token {
-                        facts: SmallVec::from_buf([
-                            fact_pool[idx % fact_pool.len()],
-                            fact_pool[(idx * 7) % fact_pool.len()],
-                            fact_pool[(idx * 13) % fact_pool.len()],
-                            fact_pool[(idx * 17) % fact_pool.len()],
-                        ]),
+                        fact: Some(fact_pool[idx % fact_pool.len()]),
                         bindings: BindingSet::new(),
                         parent,
                         owner_node: NodeId((idx % 16) as u32),

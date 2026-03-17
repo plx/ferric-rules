@@ -693,6 +693,8 @@ impl Engine {
             .copied()
             .unwrap_or_else(|| self.module_registry.main_module_id());
 
+        let collected_facts = self.rete.token_store.collect_all_facts(token_id);
+
         let mut focus_requests = Vec::new();
         let (fired, reset_requested, clear_requested, mut errors) = {
             let mut action_context = actions::ActionExecutionContext {
@@ -700,7 +702,7 @@ impl Engine {
                 focus_requests: &mut focus_requests,
                 current_module,
             };
-            actions::execute_actions(&token, info.as_ref(), &mut action_context)
+            actions::execute_actions(&token, info.as_ref(), &mut action_context, &collected_facts)
         };
 
         // Apply focus requests (push in reverse order so first arg is on top)

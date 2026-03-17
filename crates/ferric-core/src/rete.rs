@@ -277,9 +277,6 @@ impl ReteNetwork {
         if parent_id == self.beta.root_id() {
             // For root parent, create a token with just this fact
             if evaluate_join(fact, None, &tests) {
-                let mut facts = SmallVec::new();
-                facts.push(fact_id);
-
                 // Extract bindings from the fact
                 let mut new_bindings = BindingSet::new();
                 for &(slot, var_id) in bindings.iter() {
@@ -289,7 +286,7 @@ impl ReteNetwork {
                 }
 
                 let new_token = Token {
-                    facts,
+                    fact: Some(fact_id),
                     bindings: new_bindings,
                     parent: None,
                     owner_node: join_node_id,
@@ -314,10 +311,6 @@ impl ReteNetwork {
                 };
 
                 if evaluate_join(fact, Some(parent_token), &tests) {
-                    // Create new token extending the parent
-                    let mut new_facts = parent_token.facts.clone();
-                    new_facts.push(fact_id);
-
                     // Clone parent bindings and add new bindings from this fact
                     let mut new_bindings = parent_token.bindings.clone();
                     for &(slot, var_id) in bindings.iter() {
@@ -327,7 +320,7 @@ impl ReteNetwork {
                     }
 
                     let new_token = Token {
-                        facts: new_facts,
+                        fact: Some(fact_id),
                         bindings: new_bindings,
                         parent: Some(parent_token_id),
                         owner_node: join_node_id,
@@ -385,11 +378,10 @@ impl ReteNetwork {
             _ => return,
         };
 
-        // 2. Get parent token data (clone what we need before mutation)
+        // 2. Get parent token data (clone bindings before mutation)
         let Some(parent_token) = self.token_store.get(parent_token_id) else {
             return;
         };
-        let parent_facts = parent_token.facts.clone();
         let parent_bindings = parent_token.bindings.clone();
 
         // 3. Get candidate fact IDs from alpha memory, using indexed lookup when possible
@@ -416,9 +408,6 @@ impl ReteNetwork {
             }
 
             // Tests passed: create child token
-            let mut new_facts = parent_facts.clone();
-            new_facts.push(fact_id);
-
             let mut new_bindings = parent_bindings.clone();
             for &(slot, var_id) in bindings.iter() {
                 if let Some(value) = get_slot_value(fact, slot) {
@@ -427,7 +416,7 @@ impl ReteNetwork {
             }
 
             let new_token = Token {
-                facts: new_facts,
+                fact: Some(fact_id),
                 bindings: new_bindings,
                 parent: Some(parent_token_id),
                 owner_node: join_node_id,
@@ -485,7 +474,6 @@ impl ReteNetwork {
         let Some(parent_token) = self.token_store.get(parent_token_id) else {
             return;
         };
-        let parent_facts = parent_token.facts.clone();
         let parent_bindings = parent_token.bindings.clone();
 
         // Check candidate facts in the alpha memory for matches (indexed when possible)
@@ -514,7 +502,7 @@ impl ReteNetwork {
         if blocking_facts.is_empty() {
             // No matching facts → unblocked. Create pass-through token and propagate.
             let passthrough_token = Token {
-                facts: parent_facts,
+                fact: None,
                 bindings: parent_bindings,
                 parent: Some(parent_token_id),
                 owner_node: neg_node_id,
@@ -658,11 +646,10 @@ impl ReteNetwork {
                         let Some(parent_token) = self.token_store.get(parent_token_id) else {
                             continue;
                         };
-                        let parent_facts = parent_token.facts.clone();
                         let parent_bindings = parent_token.bindings.clone();
 
                         let passthrough_token = Token {
-                            facts: parent_facts,
+                            fact: None,
                             bindings: parent_bindings,
                             parent: Some(parent_token_id),
                             owner_node: neg_node_id,
@@ -795,11 +782,10 @@ impl ReteNetwork {
             let Some(parent_token) = self.token_store.get(parent_token_id) else {
                 return;
             };
-            let parent_facts = parent_token.facts.clone();
             let parent_bindings = parent_token.bindings.clone();
 
             let passthrough_token = Token {
-                facts: parent_facts,
+                fact: None,
                 bindings: parent_bindings,
                 parent: Some(parent_token_id),
                 owner_node: ncc_node_id,
@@ -940,7 +926,6 @@ impl ReteNetwork {
         let Some(parent_token) = self.token_store.get(parent_token_id) else {
             return;
         };
-        let parent_facts = parent_token.facts.clone();
         let parent_bindings = parent_token.bindings.clone();
 
         let Some(ncc_node_id) = self.beta.ncc_node_for_memory(ncc_memory_id) else {
@@ -955,7 +940,7 @@ impl ReteNetwork {
         };
 
         let passthrough_token = Token {
-            facts: parent_facts,
+            fact: None,
             bindings: parent_bindings,
             parent: Some(parent_token_id),
             owner_node: ncc_node_id,
@@ -1012,7 +997,6 @@ impl ReteNetwork {
         let Some(parent_token) = self.token_store.get(parent_token_id) else {
             return;
         };
-        let parent_facts = parent_token.facts.clone();
         let parent_bindings = parent_token.bindings.clone();
 
         // Check candidate facts in the alpha memory for support (indexed when possible)
@@ -1048,7 +1032,7 @@ impl ReteNetwork {
         if !supporting_facts.is_empty() {
             // Has support → satisfied. Create pass-through token and propagate.
             let passthrough_token = Token {
-                facts: parent_facts,
+                fact: None,
                 bindings: parent_bindings,
                 parent: Some(parent_token_id),
                 owner_node: exists_node_id,
@@ -1143,21 +1127,17 @@ impl ReteNetwork {
 
                 if old_count == 0 && new_count > 0 {
                     // Support count went 0→1: create pass-through and propagate
-                    let (parent_facts, parent_bindings, parent_ref) = if root_parent {
-                        (SmallVec::new(), BindingSet::new(), None)
+                    let (parent_bindings, parent_ref) = if root_parent {
+                        (BindingSet::new(), None)
                     } else {
                         let Some(parent_token) = self.token_store.get(parent_token_id) else {
                             continue;
                         };
-                        (
-                            parent_token.facts.clone(),
-                            parent_token.bindings.clone(),
-                            Some(parent_token_id),
-                        )
+                        (parent_token.bindings.clone(), Some(parent_token_id))
                     };
 
                     let passthrough_token = Token {
-                        facts: parent_facts,
+                        fact: None,
                         bindings: parent_bindings,
                         parent: parent_ref,
                         owner_node: exists_node_id,
@@ -1279,14 +1259,14 @@ impl ReteNetwork {
                     if self.disabled_rules.contains(rule) {
                         continue;
                     }
-                    // Create activation
-                    let Some(token) = self.token_store.get(token_id) else {
+                    // Create activation (guard: skip if the token was concurrently removed)
+                    if self.token_store.get(token_id).is_none() {
                         continue;
-                    };
+                    }
 
                     // Build recency vector: timestamps of facts in pattern order
-                    let recency: SmallVec<[Timestamp; 4]> = token
-                        .facts
+                    let all_facts = self.token_store.collect_all_facts(token_id);
+                    let recency: SmallVec<[Timestamp; 4]> = all_facts
                         .iter()
                         .filter_map(|&fid| fact_base.get(fid))
                         .map(|entry| entry.timestamp)

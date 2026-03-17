@@ -22,13 +22,15 @@ slotmap::new_key_type! {
 
 /// A token representing a partial match through the beta network.
 ///
-/// Tokens contain the facts matched so far, variable bindings from the match,
-/// a reference to the parent token (for join nodes), and the network node that
-/// owns this token.
+/// Each token stores only the single fact matched at *this* level of the
+/// network (or `None` for pass-through tokens created by Negative/NCC/Exists
+/// nodes). The complete fact list can be reconstructed by walking the parent
+/// chain via [`TokenStore::collect_all_facts`].
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Token {
-    pub facts: SmallVec<[FactId; 4]>,
+    /// The fact matched at this level, or `None` for pass-through tokens.
+    pub fact: Option<FactId>,
     pub bindings: BindingSet,
     pub parent: Option<TokenId>,
     pub owner_node: NodeId,
@@ -70,29 +72,18 @@ impl TokenStore {
     /// Insert a token into the store.
     ///
     /// Updates both reverse indices (`fact_to_tokens` and `parent_to_children`).
-    /// Deduplicates fact IDs when updating the fact index (same `FactId` may appear
-    /// multiple times in `token.facts`).
     ///
     /// Returns the unique `TokenId` assigned to the token.
     pub fn insert(&mut self, token: Token) -> TokenId {
         let parent = token.parent;
+        let fact = token.fact;
 
         let id = self.tokens.insert(token);
 
-        // Update fact_to_tokens index with deduplication
-        // Use a temporary SmallVec to track already-indexed facts for this token
-        let mut indexed_facts: SmallVec<[FactId; 4]> = SmallVec::new();
-        let token_ref = &self.tokens[id];
-
-        for &fact_id in &token_ref.facts {
-            // Only index if we haven't already indexed this fact for this token
-            if !indexed_facts.contains(&fact_id) {
-                indexed_facts.push(fact_id);
-                let inserted = self.fact_to_tokens.entry(fact_id).or_default().insert(id);
-
-                // Debug assert: no duplicate TokenId in the index
-                debug_assert!(inserted, "duplicate TokenId in fact_to_tokens index");
-            }
+        // Update fact_to_tokens index (single fact per token)
+        if let Some(fact_id) = fact {
+            let inserted = self.fact_to_tokens.entry(fact_id).or_default().insert(id);
+            debug_assert!(inserted, "duplicate TokenId in fact_to_tokens index");
         }
 
         // Update parent_to_children index
@@ -102,8 +93,6 @@ impl TokenStore {
                 .entry(parent_id)
                 .or_default()
                 .insert(id);
-
-            // Debug assert: no duplicate TokenId in the index
             debug_assert!(inserted, "duplicate TokenId in parent_to_children index");
         }
 
@@ -119,17 +108,12 @@ impl TokenStore {
     pub fn remove(&mut self, id: TokenId) -> Option<Token> {
         let token = self.tokens.remove(id)?;
 
-        // Clean up fact_to_tokens index with deduplication
-        let mut cleaned_facts: SmallVec<[FactId; 4]> = SmallVec::new();
-        for &fact_id in &token.facts {
-            // Only clean once per distinct fact
-            if !cleaned_facts.contains(&fact_id) {
-                cleaned_facts.push(fact_id);
-                if let Some(set) = self.fact_to_tokens.get_mut(&fact_id) {
-                    set.remove(&id);
-                    if set.is_empty() {
-                        self.fact_to_tokens.remove(&fact_id);
-                    }
+        // Clean up fact_to_tokens index (single fact per token)
+        if let Some(fact_id) = token.fact {
+            if let Some(set) = self.fact_to_tokens.get_mut(&fact_id) {
+                set.remove(&id);
+                if set.is_empty() {
+                    self.fact_to_tokens.remove(&fact_id);
                 }
             }
         }
@@ -183,6 +167,31 @@ impl TokenStore {
         self.tokens.clear();
         self.fact_to_tokens.clear();
         self.parent_to_children.clear();
+    }
+
+    /// Reconstruct the ordered fact list for a token by walking the parent chain.
+    ///
+    /// Returns facts in pattern order (root first, current last).
+    /// Pass-through tokens (`fact == None`) are skipped.
+    pub fn collect_all_facts(&self, token_id: TokenId) -> SmallVec<[FactId; 4]> {
+        // Walk up to root, collecting ancestors
+        let mut chain = SmallVec::<[TokenId; 8]>::new();
+        let mut current = Some(token_id);
+        while let Some(id) = current {
+            chain.push(id);
+            current = self.tokens.get(id).and_then(|t| t.parent);
+        }
+
+        // Walk back down (reverse), collecting facts
+        let mut facts = SmallVec::new();
+        for &id in chain.iter().rev() {
+            if let Some(token) = self.tokens.get(id) {
+                if let Some(fact_id) = token.fact {
+                    facts.push(fact_id);
+                }
+            }
+        }
+        facts
     }
 
     /// Return an iterator over all tokens that contain the given fact.
@@ -283,26 +292,17 @@ impl TokenStore {
             }
         }
 
-        // 3. For every token, its facts are correctly reflected in fact_to_tokens
+        // 3. For every token with a fact, it is correctly reflected in fact_to_tokens
         for (token_id, token) in &self.tokens {
-            // Build deduplicated set of facts for this token
-            let mut unique_facts: SmallVec<[FactId; 4]> = SmallVec::new();
-            for &fact_id in &token.facts {
-                if !unique_facts.contains(&fact_id) {
-                    unique_facts.push(fact_id);
-                }
-            }
-
-            // Verify each unique fact has this token in its index
-            for &fact_id in &unique_facts {
+            if let Some(fact_id) = token.fact {
                 let indexed_tokens = self.fact_to_tokens.get(&fact_id);
                 assert!(
                     indexed_tokens.is_some(),
-                    "token {token_id:?} contains fact {fact_id:?} but fact_to_tokens has no entry"
+                    "token {token_id:?} has fact {fact_id:?} but fact_to_tokens has no entry"
                 );
                 assert!(
                     indexed_tokens.unwrap().contains(&token_id),
-                    "token {token_id:?} contains fact {fact_id:?} but is not in fact_to_tokens index"
+                    "token {token_id:?} has fact {fact_id:?} but is not in fact_to_tokens index"
                 );
             }
         }
@@ -353,9 +353,9 @@ mod tests {
     use super::*;
 
     // Helper to create a minimal token for testing
-    fn make_token(facts: Vec<FactId>, parent: Option<TokenId>, owner_node: NodeId) -> Token {
+    fn make_token(fact: Option<FactId>, parent: Option<TokenId>, owner_node: NodeId) -> Token {
         Token {
-            facts: SmallVec::from_vec(facts),
+            fact,
             bindings: BindingSet::new(),
             parent,
             owner_node,
@@ -379,7 +379,7 @@ mod tests {
     fn insert_and_get() {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(1);
-        let token = make_token(vec![facts[0]], None, NodeId(0));
+        let token = make_token(Some(facts[0]), None, NodeId(0));
 
         let id = store.insert(token);
 
@@ -391,17 +391,17 @@ mod tests {
     fn insert_updates_fact_to_tokens_index() {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(2);
-        let token = make_token(vec![facts[0], facts[1]], None, NodeId(0));
 
-        let id = store.insert(token);
+        let id0 = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        let id1 = store.insert(make_token(Some(facts[1]), Some(id0), NodeId(1)));
 
         let tokens_for_fact0: Vec<_> = store.tokens_containing(facts[0]).collect();
         assert_eq!(tokens_for_fact0.len(), 1);
-        assert_eq!(tokens_for_fact0[0], id);
+        assert_eq!(tokens_for_fact0[0], id0);
 
         let tokens_for_fact1: Vec<_> = store.tokens_containing(facts[1]).collect();
         assert_eq!(tokens_for_fact1.len(), 1);
-        assert_eq!(tokens_for_fact1[0], id);
+        assert_eq!(tokens_for_fact1[0], id1);
     }
 
     #[test]
@@ -409,10 +409,10 @@ mod tests {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(2);
 
-        let parent_token = make_token(vec![facts[0]], None, NodeId(0));
+        let parent_token = make_token(Some(facts[0]), None, NodeId(0));
         let parent_id = store.insert(parent_token);
 
-        let child_token = make_token(vec![facts[1]], Some(parent_id), NodeId(1));
+        let child_token = make_token(Some(facts[1]), Some(parent_id), NodeId(1));
         let child_id = store.insert(child_token);
 
         let children: Vec<_> = store.children(parent_id).collect();
@@ -421,29 +421,28 @@ mod tests {
     }
 
     #[test]
-    fn insert_dedup_fact_index() {
+    fn insert_passthrough_token_not_indexed() {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(1);
 
-        // Token with the same FactId appearing twice
-        let token = make_token(vec![facts[0], facts[0]], None, NodeId(0));
-        let id = store.insert(token);
+        // Root token with a fact
+        let root = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        // Pass-through token (fact = None)
+        let _pt = store.insert(make_token(None, Some(root), NodeId(1)));
 
-        // Should only appear once in the index
+        // Only the root should be in the fact index
         let tokens_for_fact: Vec<_> = store.tokens_containing(facts[0]).collect();
         assert_eq!(tokens_for_fact.len(), 1);
-        assert_eq!(tokens_for_fact[0], id);
+        assert_eq!(tokens_for_fact[0], root);
 
-        // The index entry should only contain the token once
-        let entry = store.fact_to_tokens.get(&facts[0]).unwrap();
-        assert_eq!(entry.len(), 1);
+        assert_eq!(store.len(), 2);
     }
 
     #[test]
     fn remove_single_token() {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(1);
-        let token = make_token(vec![facts[0]], None, NodeId(0));
+        let token = make_token(Some(facts[0]), None, NodeId(0));
 
         let id = store.insert(token);
         assert_eq!(store.len(), 1);
@@ -458,7 +457,7 @@ mod tests {
     fn remove_cleans_fact_index() {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(1);
-        let token = make_token(vec![facts[0]], None, NodeId(0));
+        let token = make_token(Some(facts[0]), None, NodeId(0));
 
         let id = store.insert(token);
         store.remove(id);
@@ -472,10 +471,10 @@ mod tests {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(2);
 
-        let parent_token = make_token(vec![facts[0]], None, NodeId(0));
+        let parent_token = make_token(Some(facts[0]), None, NodeId(0));
         let parent_id = store.insert(parent_token);
 
-        let child_token = make_token(vec![facts[1]], Some(parent_id), NodeId(1));
+        let child_token = make_token(Some(facts[1]), Some(parent_id), NodeId(1));
         let child_id = store.insert(child_token);
 
         store.remove(child_id);
@@ -488,7 +487,7 @@ mod tests {
     fn remove_prunes_empty_entries() {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(1);
-        let token = make_token(vec![facts[0]], None, NodeId(0));
+        let token = make_token(Some(facts[0]), None, NodeId(0));
 
         let id = store.insert(token);
         assert!(store.fact_to_tokens.contains_key(&facts[0]));
@@ -521,10 +520,10 @@ mod tests {
         //   |
         //   t3
 
-        let t0 = store.insert(make_token(vec![facts[0]], None, NodeId(0)));
-        let t1 = store.insert(make_token(vec![facts[1]], Some(t0), NodeId(1)));
-        let t2 = store.insert(make_token(vec![facts[2]], Some(t0), NodeId(2)));
-        let t3 = store.insert(make_token(vec![facts[3]], Some(t1), NodeId(3)));
+        let t0 = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        let t1 = store.insert(make_token(Some(facts[1]), Some(t0), NodeId(1)));
+        let t2 = store.insert(make_token(Some(facts[2]), Some(t0), NodeId(2)));
+        let t3 = store.insert(make_token(Some(facts[3]), Some(t1), NodeId(3)));
 
         assert_eq!(store.len(), 4);
 
@@ -544,9 +543,9 @@ mod tests {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(3);
 
-        let t0 = store.insert(make_token(vec![facts[0]], None, NodeId(0)));
-        let t1 = store.insert(make_token(vec![facts[1]], Some(t0), NodeId(1)));
-        let t2 = store.insert(make_token(vec![facts[2]], Some(t0), NodeId(2)));
+        let t0 = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        let t1 = store.insert(make_token(Some(facts[1]), Some(t0), NodeId(1)));
+        let t2 = store.insert(make_token(Some(facts[2]), Some(t0), NodeId(2)));
 
         let removed = store.remove_cascade(t0);
 
@@ -563,8 +562,8 @@ mod tests {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(2);
 
-        let t0 = store.insert(make_token(vec![facts[0]], None, NodeId(0)));
-        let t1 = store.insert(make_token(vec![facts[1]], Some(t0), NodeId(1)));
+        let t0 = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        let t1 = store.insert(make_token(Some(facts[1]), Some(t0), NodeId(1)));
 
         let removed = store.remove_cascade(t1);
 
@@ -576,14 +575,15 @@ mod tests {
     #[test]
     fn tokens_containing_returns_correct_set() {
         let mut store = TokenStore::new();
-        let facts = make_fact_ids(3);
+        let facts = make_fact_ids(2);
 
-        let t0 = store.insert(make_token(vec![facts[0], facts[1]], None, NodeId(0)));
-        let t1 = store.insert(make_token(vec![facts[1], facts[2]], None, NodeId(1)));
-        let _t2 = store.insert(make_token(vec![facts[2]], None, NodeId(2)));
+        // Two tokens referencing the same fact
+        let t0 = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        let t1 = store.insert(make_token(Some(facts[0]), None, NodeId(1)));
+        let _t2 = store.insert(make_token(Some(facts[1]), None, NodeId(2)));
 
-        // fact[1] should be in t0 and t1
-        let tokens: Vec<_> = store.tokens_containing(facts[1]).collect();
+        // fact[0] should be in t0 and t1
+        let tokens: Vec<_> = store.tokens_containing(facts[0]).collect();
         assert_eq!(tokens.len(), 2);
         assert!(tokens.contains(&t0));
         assert!(tokens.contains(&t1));
@@ -595,9 +595,9 @@ mod tests {
         let facts = make_fact_ids(3);
 
         // Build: t0 -> t1 -> t2
-        let t0 = store.insert(make_token(vec![facts[0]], None, NodeId(0)));
-        let t1 = store.insert(make_token(vec![facts[1]], Some(t0), NodeId(1)));
-        let _t2 = store.insert(make_token(vec![facts[2]], Some(t1), NodeId(2)));
+        let t0 = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        let t1 = store.insert(make_token(Some(facts[1]), Some(t0), NodeId(1)));
+        let _t2 = store.insert(make_token(Some(facts[2]), Some(t1), NodeId(2)));
 
         // t0's children should only be t1, not t2
         let children: Vec<_> = store.children(t0).collect();
@@ -611,10 +611,10 @@ mod tests {
         let facts = make_fact_ids(4);
 
         // Build: t0 -> t1 -> t2, and separate t3
-        let t0 = store.insert(make_token(vec![facts[0]], None, NodeId(0)));
-        let t1 = store.insert(make_token(vec![facts[1]], Some(t0), NodeId(1)));
-        let t2 = store.insert(make_token(vec![facts[2]], Some(t1), NodeId(2)));
-        let t3 = store.insert(make_token(vec![facts[3]], None, NodeId(3)));
+        let t0 = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        let t1 = store.insert(make_token(Some(facts[1]), Some(t0), NodeId(1)));
+        let t2 = store.insert(make_token(Some(facts[2]), Some(t1), NodeId(2)));
+        let t3 = store.insert(make_token(Some(facts[3]), None, NodeId(3)));
 
         // If t0, t1, and t2 are all affected, only t0 should be a root
         // t3 is independent, so it's also a root
@@ -636,9 +636,9 @@ mod tests {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(3);
 
-        let t0 = store.insert(make_token(vec![facts[0]], None, NodeId(0)));
-        let t1 = store.insert(make_token(vec![facts[1]], None, NodeId(1)));
-        let t2 = store.insert(make_token(vec![facts[2]], None, NodeId(2)));
+        let t0 = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        let t1 = store.insert(make_token(Some(facts[1]), None, NodeId(1)));
+        let t2 = store.insert(make_token(Some(facts[2]), None, NodeId(2)));
 
         let mut affected = HashSet::default();
         affected.insert(t0);
@@ -658,9 +658,9 @@ mod tests {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(3);
 
-        let t0 = store.insert(make_token(vec![facts[0]], None, NodeId(0)));
-        let t1 = store.insert(make_token(vec![facts[1]], Some(t0), NodeId(1)));
-        let _t2 = store.insert(make_token(vec![facts[2]], Some(t1), NodeId(2)));
+        let t0 = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        let t1 = store.insert(make_token(Some(facts[1]), Some(t0), NodeId(1)));
+        let _t2 = store.insert(make_token(Some(facts[2]), Some(t1), NodeId(2)));
 
         // Should not panic
         store.debug_assert_consistency();
@@ -671,11 +671,11 @@ mod tests {
         let mut store = TokenStore::new();
         let facts = make_fact_ids(5);
 
-        let t0 = store.insert(make_token(vec![facts[0]], None, NodeId(0)));
-        let t1 = store.insert(make_token(vec![facts[1]], Some(t0), NodeId(1)));
-        let t2 = store.insert(make_token(vec![facts[2]], Some(t0), NodeId(2)));
-        let _t3 = store.insert(make_token(vec![facts[3]], Some(t1), NodeId(3)));
-        let _t4 = store.insert(make_token(vec![facts[4]], Some(t2), NodeId(4)));
+        let t0 = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
+        let t1 = store.insert(make_token(Some(facts[1]), Some(t0), NodeId(1)));
+        let t2 = store.insert(make_token(Some(facts[2]), Some(t0), NodeId(2)));
+        let _t3 = store.insert(make_token(Some(facts[3]), Some(t1), NodeId(3)));
+        let _t4 = store.insert(make_token(Some(facts[4]), Some(t2), NodeId(4)));
 
         store.debug_assert_consistency();
 
@@ -737,15 +737,15 @@ mod proptests {
         live: HashSet<TokenId>,
         /// `parent_of`[id] = Some(p) means `id` was inserted with parent `p`.
         parent_of: HashMap<TokenId, Option<TokenId>>,
-        /// `facts_of`[id] = the facts vec (may contain duplicates) for that token.
-        facts_of: HashMap<TokenId, Vec<FactId>>,
+        /// `fact_of`[id] = the single fact for that token (None for pass-through).
+        fact_of: HashMap<TokenId, Option<FactId>>,
     }
 
     impl Model {
-        fn insert(&mut self, id: TokenId, parent: Option<TokenId>, facts: Vec<FactId>) {
+        fn insert(&mut self, id: TokenId, parent: Option<TokenId>, fact: Option<FactId>) {
             self.live.insert(id);
             self.parent_of.insert(id, parent);
-            self.facts_of.insert(id, facts);
+            self.fact_of.insert(id, fact);
         }
 
         /// Collect `id` and all its descendants (tokens whose ancestor chain
@@ -770,7 +770,7 @@ mod proptests {
         fn remove(&mut self, id: TokenId) {
             self.live.remove(&id);
             self.parent_of.remove(&id);
-            self.facts_of.remove(&id);
+            self.fact_of.remove(&id);
         }
 
         /// Remove `root` and all descendants from the shadow model.
@@ -809,14 +809,14 @@ mod proptests {
                 Op::InsertRoot { fact_idx } => {
                     let fid = fact_ids[fact_idx % fact_ids.len()];
                     let t = Token {
-                        facts: smallvec::smallvec![fid],
+                        fact: Some(fid),
                         bindings: BindingSet::new(),
                         parent: None,
                         owner_node: NodeId(token_count),
                     };
                     token_count += 1;
                     let id = store.insert(t);
-                    model.insert(id, None, vec![fid]);
+                    model.insert(id, None, Some(fid));
                     live_vec.push(id);
                 }
                 Op::InsertChild {
@@ -827,27 +827,27 @@ mod proptests {
                         // No live tokens to be a parent — treat as root insert.
                         let fid = fact_ids[fact_idx % fact_ids.len()];
                         let t = Token {
-                            facts: smallvec::smallvec![fid],
+                            fact: Some(fid),
                             bindings: BindingSet::new(),
                             parent: None,
                             owner_node: NodeId(token_count),
                         };
                         token_count += 1;
                         let id = store.insert(t);
-                        model.insert(id, None, vec![fid]);
+                        model.insert(id, None, Some(fid));
                         live_vec.push(id);
                     } else {
                         let parent_id = live_vec[parent_idx % live_vec.len()];
                         let fid = fact_ids[fact_idx % fact_ids.len()];
                         let t = Token {
-                            facts: smallvec::smallvec![fid],
+                            fact: Some(fid),
                             bindings: BindingSet::new(),
                             parent: Some(parent_id),
                             owner_node: NodeId(token_count),
                         };
                         token_count += 1;
                         let id = store.insert(t);
-                        model.insert(id, Some(parent_id), vec![fid]);
+                        model.insert(id, Some(parent_id), Some(fid));
                         live_vec.push(id);
                     }
                 }
@@ -903,40 +903,40 @@ mod proptests {
                     Op::InsertRoot { fact_idx } => {
                         let fid = fact_ids[fact_idx % fact_ids.len()];
                         let t = Token {
-                            facts: smallvec::smallvec![fid],
+                            fact: Some(fid),
                             bindings: BindingSet::new(),
                             parent: None,
                             owner_node: NodeId(token_count),
                         };
                         token_count += 1;
                         let id = store.insert(t);
-                        model.insert(id, None, vec![fid]);
+                        model.insert(id, None, Some(fid));
                         live_vec.push(id);
                     }
                     Op::InsertChild { parent_idx, fact_idx } => {
                         let fid = fact_ids[fact_idx % fact_ids.len()];
                         if live_vec.is_empty() {
                             let t = Token {
-                                facts: smallvec::smallvec![fid],
+                                fact: Some(fid),
                                 bindings: BindingSet::new(),
                                 parent: None,
                                 owner_node: NodeId(token_count),
                             };
                             token_count += 1;
                             let id = store.insert(t);
-                            model.insert(id, None, vec![fid]);
+                            model.insert(id, None, Some(fid));
                             live_vec.push(id);
                         } else {
                             let parent_id = live_vec[parent_idx % live_vec.len()];
                             let t = Token {
-                                facts: smallvec::smallvec![fid],
+                                fact: Some(fid),
                                 bindings: BindingSet::new(),
                                 parent: Some(parent_id),
                                 owner_node: NodeId(token_count),
                             };
                             token_count += 1;
                             let id = store.insert(t);
-                            model.insert(id, Some(parent_id), vec![fid]);
+                            model.insert(id, Some(parent_id), Some(fid));
                             live_vec.push(id);
                         }
                     }
@@ -984,7 +984,7 @@ mod proptests {
                         };
                         let fid = fact_ids[fact_idx % fact_ids.len()];
                         let t = Token {
-                            facts: smallvec::smallvec![fid],
+                            fact: Some(fid),
                             bindings: BindingSet::new(),
                             parent,
                             owner_node: NodeId(token_count),
@@ -1139,21 +1139,16 @@ mod proptests {
             store.debug_assert_consistency();
         }
 
-        /// For every live token, each of its unique facts maps back to that token
+        /// For every live token with a fact, that fact maps back to the token
         /// via `tokens_containing()`.  And every entry returned by
-        /// `tokens_containing(f)` actually contains `f` in its `facts` vec.
+        /// `tokens_containing(f)` has `fact == Some(f)`.
         #[test]
         fn fact_to_tokens_bidirectional(ops in scenario_strategy()) {
             let (store, _model) = run_scenario(&ops);
 
-            // Forward: every live token's unique facts index back to it.
+            // Forward: every live token's fact indexes back to it.
             for (token_id, token) in &store.tokens {
-                let mut seen_facts: SmallVec<[FactId; 4]> = SmallVec::new();
-                for &fid in &token.facts {
-                    if seen_facts.contains(&fid) {
-                        continue;
-                    }
-                    seen_facts.push(fid);
+                if let Some(fid) = token.fact {
                     let indexed: Vec<_> = store.tokens_containing(fid).collect();
                     prop_assert!(
                         indexed.contains(&token_id),
@@ -1164,15 +1159,17 @@ mod proptests {
                 }
             }
 
-            // Reverse: every entry returned by tokens_containing(f) has f in its facts.
+            // Reverse: every entry returned by tokens_containing(f) has fact == Some(f).
             for (&fact_id, token_ids) in &store.fact_to_tokens {
                 for &tid in token_ids {
                     let token = store.get(tid).expect("index references non-existent token");
-                    prop_assert!(
-                        token.facts.contains(&fact_id),
-                        "tokens_containing({:?}) includes {:?} but that token doesn't contain the fact",
+                    prop_assert_eq!(
+                        token.fact,
+                        Some(fact_id),
+                        "tokens_containing({:?}) includes {:?} but that token has fact {:?}",
                         fact_id,
-                        tid
+                        tid,
+                        token.fact
                     );
                 }
             }
@@ -1286,10 +1283,9 @@ mod proptests {
             }
         }
 
-        /// A token whose `facts` vec contains the same `FactId` twice still only
-        /// appears once in `fact_to_tokens` for that fact.
+        /// Multiple tokens sharing the same fact each appear once in the index.
         #[test]
-        fn duplicate_fact_dedup_in_index(count in 1..30_usize) {
+        fn shared_fact_index(count in 1..30_usize) {
             let mut fact_pool: SlotMap<FactId, ()> = SlotMap::with_key();
             let fid = fact_pool.insert(());
 
@@ -1297,9 +1293,8 @@ mod proptests {
 
             #[allow(clippy::cast_possible_truncation)]
             for i in 0..count {
-                // Each token references the same FactId twice.
                 let t = Token {
-                    facts: smallvec::smallvec![fid, fid],
+                    fact: Some(fid),
                     bindings: BindingSet::new(),
                     parent: None,
                     owner_node: NodeId(i as u32),
@@ -1307,8 +1302,6 @@ mod proptests {
                 store.insert(t);
             }
 
-            // There should be exactly `count` tokens in the index (one per token,
-            // no duplicates within a token's entry).
             let indexed: Vec<_> = store.tokens_containing(fid).collect();
             prop_assert_eq!(
                 indexed.len(),
@@ -1331,7 +1324,7 @@ mod proptests {
             #[allow(clippy::cast_possible_truncation)]
             for i in 0..count {
                 let id = store.insert(Token {
-                    facts: SmallVec::new(),
+                    fact: None,
                     bindings: BindingSet::new(),
                     parent: None,
                     owner_node: NodeId(i as u32),
@@ -1365,7 +1358,7 @@ mod proptests {
             #[allow(clippy::cast_possible_truncation)]
             for (i, &fact_id) in fact_ids.iter().enumerate().take(depth) {
                 let t = Token {
-                    facts: smallvec::smallvec![fact_id],
+                    fact: Some(fact_id),
                     bindings: BindingSet::new(),
                     parent: parent_id,
                     owner_node: NodeId(i as u32),

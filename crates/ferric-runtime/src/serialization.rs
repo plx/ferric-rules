@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! [4 bytes] Magic number: b"FRSE"
-//! [4 bytes] Format version: u32 = 1  (little-endian)
+//! [4 bytes] Format version: u32 = 2  (little-endian)
 //! [rest]    bincode-encoded EngineSnapshot
 //! ```
 //!
@@ -38,7 +38,7 @@ use crate::templates::RegisteredTemplate;
 const MAGIC: [u8; 4] = *b"FRSE";
 
 /// Current format version.
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 
 /// Header size in bytes.
 const HEADER_SIZE: usize = 8;
