@@ -5779,7 +5779,10 @@ fn builtin_load_save_facts_stub(
     check_arity_exact(name, args, 1, span)?;
     // Evaluate the filename arg to surface any errors (e.g., wrong type).
     let _ = eval_inner(ctx, &args[0])?;
-    // Return FALSE — full I/O requires engine access available only in actions.rs.
+    // Return FALSE — full I/O requires engine access available only in the
+    // action dispatcher (actions.rs).  When called from a deffunction body or
+    // test CE the operation is a no-op; this matches CLIPS behaviour where
+    // these functions are only meaningful as top-level RHS actions.
     Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
 }
 

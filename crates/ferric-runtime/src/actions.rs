@@ -2176,7 +2176,13 @@ fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut 
         }
         Value::String(s) => {
             output.push('"');
-            output.push_str(s.as_str());
+            for ch in s.as_str().chars() {
+                match ch {
+                    '\\' => output.push_str("\\\\"),
+                    '"' => output.push_str("\\\""),
+                    _ => output.push(ch),
+                }
+            }
             output.push('"');
         }
         Value::Multifield(mf) => {
@@ -2356,12 +2362,15 @@ fn execute_load_facts(
     // Wrap the file contents as a temporary deffacts construct so we can
     // reuse the full parsing + interpretation pipeline without duplicating logic.
     let wrapped = format!("(deffacts __ferric_load_facts_scratch__\n{contents}\n)");
+    let deffacts_count_before = context.engine.registered_deffacts.len();
     let load_result = context.engine.load_str(&wrapped);
 
-    // Whether parsing succeeded or not, remove the last registered_deffacts
-    // entry so the loaded facts are NOT re-asserted on reset (load-facts
-    // semantics: assert once into working memory only).
-    context.engine.registered_deffacts.pop();
+    // Only pop if load_str actually registered the scratch deffacts.
+    // If parsing failed before reaching deffacts registration, popping
+    // would remove an unrelated pre-existing entry and corrupt state.
+    if context.engine.registered_deffacts.len() > deffacts_count_before {
+        context.engine.registered_deffacts.pop();
+    }
 
     if load_result.is_err() {
         // Parse or assertion error — facts may have been partially asserted.
