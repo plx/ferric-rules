@@ -106,6 +106,353 @@ BENCHMARKS = [
         "negation_bench",
         "negation_50000/negation_50000_blockers/new/estimates.json",
     ),
+    # exists_bench (6, excluding _run_only)
+    ("exists_10s_5r", "exists_bench", "exists_10s_5r/new/estimates.json"),
+    ("exists_50s_10r", "exists_bench", "exists_50s_10r/new/estimates.json"),
+    ("exists_100s_20r", "exists_bench", "exists_100s_20r/new/estimates.json"),
+    (
+        "exists_200s_50r",
+        "exists_bench",
+        "exists_200s_50r/exists_200s_50r/new/estimates.json",
+    ),
+    (
+        "exists_500s_100r",
+        "exists_bench",
+        "exists_500s_100r/exists_500s_100r/new/estimates.json",
+    ),
+    (
+        "exists_1000s_50r",
+        "exists_bench",
+        "exists_1000s_50r/exists_1000s_50r/new/estimates.json",
+    ),
+    # forall_bench (7, excluding _run_only)
+    ("forall_20_tasks", "forall_bench", "forall_20_tasks/new/estimates.json"),
+    ("forall_50_tasks", "forall_bench", "forall_50_tasks/new/estimates.json"),
+    ("forall_100_tasks", "forall_bench", "forall_100_tasks/new/estimates.json"),
+    (
+        "forall_200_tasks",
+        "forall_bench",
+        "forall_200/forall_200_tasks/new/estimates.json",
+    ),
+    (
+        "forall_500_tasks",
+        "forall_bench",
+        "forall_500/forall_500_tasks/new/estimates.json",
+    ),
+    (
+        "forall_1000_tasks",
+        "forall_bench",
+        "forall_1000/forall_1000_tasks/new/estimates.json",
+    ),
+    (
+        "forall_2000_tasks",
+        "forall_bench",
+        "forall_2000/forall_2000_tasks/new/estimates.json",
+    ),
+    # strategy_bench (8)
+    (
+        "strategy_activations200_depth",
+        "strategy_bench",
+        "strategy_activations200/depth/new/estimates.json",
+    ),
+    (
+        "strategy_activations200_breadth",
+        "strategy_bench",
+        "strategy_activations200/breadth/new/estimates.json",
+    ),
+    (
+        "strategy_activations200_lex",
+        "strategy_bench",
+        "strategy_activations200/lex/new/estimates.json",
+    ),
+    (
+        "strategy_activations200_mea",
+        "strategy_bench",
+        "strategy_activations200/mea/new/estimates.json",
+    ),
+    (
+        "strategy_churn1000_depth",
+        "strategy_bench",
+        "strategy_churn1000/depth/new/estimates.json",
+    ),
+    (
+        "strategy_churn1000_breadth",
+        "strategy_bench",
+        "strategy_churn1000/breadth/new/estimates.json",
+    ),
+    (
+        "strategy_churn1000_lex",
+        "strategy_bench",
+        "strategy_churn1000/lex/new/estimates.json",
+    ),
+    (
+        "strategy_churn1000_mea",
+        "strategy_bench",
+        "strategy_churn1000/mea/new/estimates.json",
+    ),
+    # alpha_fanout_bench (5, excluding _run_only)
+    (
+        "alpha_fanout_10r_100f",
+        "alpha_fanout_bench",
+        "alpha_fanout_10r_100f/new/estimates.json",
+    ),
+    (
+        "alpha_fanout_50r_500f",
+        "alpha_fanout_bench",
+        "alpha_fanout_50r_500f/new/estimates.json",
+    ),
+    (
+        "alpha_fanout_100r_1000f",
+        "alpha_fanout_bench",
+        "alpha_fanout_100r_1000f/alpha_fanout_100r_1000f/new/estimates.json",
+    ),
+    (
+        "alpha_fanout_200r_2000f",
+        "alpha_fanout_bench",
+        "alpha_fanout_200r_2000f/alpha_fanout_200r_2000f/new/estimates.json",
+    ),
+    (
+        "alpha_fanout_500r_5000f",
+        "alpha_fanout_bench",
+        "alpha_fanout_500r_5000f/alpha_fanout_500r_5000f/new/estimates.json",
+    ),
+    # cascade_bench (5, excluding _run_only)
+    ("cascade_d3_100k", "cascade_bench", "cascade_d3_100k/new/estimates.json"),
+    (
+        "cascade_d5_100k",
+        "cascade_bench",
+        "cascade_d5_100k/cascade_d5_100k/new/estimates.json",
+    ),
+    (
+        "cascade_d7_50k",
+        "cascade_bench",
+        "cascade_d7_50k/cascade_d7_50k/new/estimates.json",
+    ),
+    (
+        "cascade_d10_30k",
+        "cascade_bench",
+        "cascade_d10_30k/cascade_d10_30k/new/estimates.json",
+    ),
+    (
+        "cascade_d15_20k",
+        "cascade_bench",
+        "cascade_d15_20k/cascade_d15_20k/new/estimates.json",
+    ),
+    # evaluator_bench (13)
+    (
+        "eval_arith_100",
+        "evaluator_bench",
+        "eval_arithmetic/eval_arith_100/new/estimates.json",
+    ),
+    (
+        "eval_arith_500",
+        "evaluator_bench",
+        "eval_arithmetic/eval_arith_500/new/estimates.json",
+    ),
+    (
+        "eval_arith_1000",
+        "evaluator_bench",
+        "eval_arithmetic/eval_arith_1000/new/estimates.json",
+    ),
+    (
+        "eval_arith_5000",
+        "evaluator_bench",
+        "eval_arithmetic/eval_arith_5000/new/estimates.json",
+    ),
+    (
+        "eval_defun_100",
+        "evaluator_bench",
+        "eval_deffunction/eval_defun_100/new/estimates.json",
+    ),
+    (
+        "eval_defun_1000",
+        "evaluator_bench",
+        "eval_deffunction/eval_defun_1000/new/estimates.json",
+    ),
+    (
+        "eval_defun_10000",
+        "evaluator_bench",
+        "eval_deffunction/eval_defun_10000/new/estimates.json",
+    ),
+    (
+        "eval_loop_1000",
+        "evaluator_bench",
+        "eval_loop/eval_loop_1000/new/estimates.json",
+    ),
+    (
+        "eval_loop_10000",
+        "evaluator_bench",
+        "eval_loop/eval_loop_10000/new/estimates.json",
+    ),
+    (
+        "eval_loop_100000",
+        "evaluator_bench",
+        "eval_loop/eval_loop_100000/new/estimates.json",
+    ),
+    (
+        "eval_string_100",
+        "evaluator_bench",
+        "eval_string/eval_string_100/new/estimates.json",
+    ),
+    (
+        "eval_string_500",
+        "evaluator_bench",
+        "eval_string/eval_string_500/new/estimates.json",
+    ),
+    (
+        "eval_string_1000",
+        "evaluator_bench",
+        "eval_string/eval_string_1000/new/estimates.json",
+    ),
+    # query_bench (4, excluding _run_only)
+    ("query_100i_10c", "query_bench", "query_100i_10c/new/estimates.json"),
+    (
+        "query_500i_20c",
+        "query_bench",
+        "query_500i_20c/query_500i_20c/new/estimates.json",
+    ),
+    (
+        "query_1000i_50c",
+        "query_bench",
+        "query_1000i_50c/query_1000i_50c/new/estimates.json",
+    ),
+    (
+        "query_5000i_100c",
+        "query_bench",
+        "query_5000i_100c/query_5000i_100c/new/estimates.json",
+    ),
+    # compile_bench (5)
+    ("compile_10r_5t", "compile_bench", "compile_10r_5t/new/estimates.json"),
+    ("compile_50r_10t", "compile_bench", "compile_50r_10t/new/estimates.json"),
+    (
+        "compile_100r_20t",
+        "compile_bench",
+        "compile_100r_20t/compile_100r_20t/new/estimates.json",
+    ),
+    (
+        "compile_200r_30t",
+        "compile_bench",
+        "compile_200r_30t/compile_200r_30t/new/estimates.json",
+    ),
+    (
+        "compile_500r_50t",
+        "compile_bench",
+        "compile_500r_50t/compile_500r_50t/new/estimates.json",
+    ),
+    # module_bench (4, excluding _run_only)
+    ("module_3m_100i", "module_bench", "module_3m_100i/new/estimates.json"),
+    (
+        "module_5m_100i",
+        "module_bench",
+        "module_5m_100i/module_5m_100i/new/estimates.json",
+    ),
+    (
+        "module_10m_50i",
+        "module_bench",
+        "module_10m_50i/module_10m_50i/new/estimates.json",
+    ),
+    (
+        "module_20m_20i",
+        "module_bench",
+        "module_20m_20i/module_20m_20i/new/estimates.json",
+    ),
+    # serialization_bench (9, requires serde feature)
+    (
+        "serde_small_serialize",
+        "serialization_bench",
+        "serde_small/serialize/new/estimates.json",
+    ),
+    (
+        "serde_small_deserialize",
+        "serialization_bench",
+        "serde_small/deserialize/new/estimates.json",
+    ),
+    (
+        "serde_small_compile_baseline",
+        "serialization_bench",
+        "serde_small/compile_baseline/new/estimates.json",
+    ),
+    (
+        "serde_medium_serialize",
+        "serialization_bench",
+        "serde_medium/serialize/new/estimates.json",
+    ),
+    (
+        "serde_medium_deserialize",
+        "serialization_bench",
+        "serde_medium/deserialize/new/estimates.json",
+    ),
+    (
+        "serde_medium_compile_baseline",
+        "serialization_bench",
+        "serde_medium/compile_baseline/new/estimates.json",
+    ),
+    (
+        "serde_large_serialize",
+        "serialization_bench",
+        "serde_large/serialize/new/estimates.json",
+    ),
+    (
+        "serde_large_deserialize",
+        "serialization_bench",
+        "serde_large/deserialize/new/estimates.json",
+    ),
+    (
+        "serde_large_compile_baseline",
+        "serialization_bench",
+        "serde_large/compile_baseline/new/estimates.json",
+    ),
+    # constraint_bench (10)
+    (
+        "constraint_disj_4",
+        "constraint_bench",
+        "constraint_disjunction/constraint_disj_4/new/estimates.json",
+    ),
+    (
+        "constraint_disj_8",
+        "constraint_bench",
+        "constraint_disjunction/constraint_disj_8/new/estimates.json",
+    ),
+    (
+        "constraint_disj_16",
+        "constraint_bench",
+        "constraint_disjunction/constraint_disj_16/new/estimates.json",
+    ),
+    (
+        "constraint_disj_32",
+        "constraint_bench",
+        "constraint_disjunction/constraint_disj_32/new/estimates.json",
+    ),
+    (
+        "constraint_pred_100",
+        "constraint_bench",
+        "constraint_predicate/constraint_pred_100/new/estimates.json",
+    ),
+    (
+        "constraint_pred_500",
+        "constraint_bench",
+        "constraint_predicate/constraint_pred_500/new/estimates.json",
+    ),
+    (
+        "constraint_pred_1000",
+        "constraint_bench",
+        "constraint_predicate/constraint_pred_1000/new/estimates.json",
+    ),
+    (
+        "constraint_neg_100",
+        "constraint_bench",
+        "constraint_negation/constraint_neg_100/new/estimates.json",
+    ),
+    (
+        "constraint_neg_500",
+        "constraint_bench",
+        "constraint_negation/constraint_neg_500/new/estimates.json",
+    ),
+    (
+        "constraint_neg_1000",
+        "constraint_bench",
+        "constraint_negation/constraint_neg_1000/new/estimates.json",
+    ),
 ]
 
 SUITES = [
@@ -115,6 +462,17 @@ SUITES = [
     ("join_bench", "wide$"),
     ("churn_bench", "facts$"),
     ("negation_bench", "blockers$"),
+    ("exists_bench", r"[0-9]+r$"),
+    ("forall_bench", "tasks$"),
+    ("strategy_bench", None),
+    ("alpha_fanout_bench", r"[0-9]+f$"),
+    ("cascade_bench", r"[0-9]+k$"),
+    ("evaluator_bench", None),
+    ("query_bench", r"[0-9]+c$"),
+    ("compile_bench", None),
+    ("module_bench", r"[0-9]+i$"),
+    ("serialization_bench", None, ["serde"]),
+    ("constraint_bench", None),
 ]
 
 CLIPS_WORKLOADS = {
@@ -184,13 +542,19 @@ def run_benchmarks(sample_size: int, warm_up_time: int, measurement_time: int) -
     ]
 
     root = repo_root()
-    for suite, filter_regex in SUITES:
+    for entry in SUITES:
+        suite, filter_regex = entry[0], entry[1]
+        features = entry[2] if len(entry) > 2 else None
+
         bench_source = root / "crates" / "ferric" / "benches" / f"{suite}.rs"
         if not bench_source.exists():
             print(f"==> Skipping {suite} (not present at current checkout)", flush=True)
             continue
 
-        cmd = ["cargo", "bench", "-p", "ferric", "--bench", suite, "--"]
+        cmd = ["cargo", "bench", "-p", "ferric"]
+        if features:
+            cmd.extend(["--features", ",".join(features)])
+        cmd.extend(["--bench", suite, "--"])
         cmd.extend(base_flags)
         if filter_regex:
             cmd.append(filter_regex)
