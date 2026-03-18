@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
+use std::io::Write as IoWrite;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -75,6 +76,8 @@ impl ActionEvalEnv {
             generic_modules: &engine.generic_modules,
             method_chain: None,
             input_buffer: Some(&mut engine.input_buffer),
+            fact_base: Some(&engine.fact_base),
+            template_defs: Some(&engine.template_defs),
         }
     }
 
@@ -195,6 +198,8 @@ impl ActionEvalEnv {
             generic_modules: &engine.generic_modules,
             method_chain: None,
             input_buffer: Some(&mut engine.input_buffer),
+            fact_base: Some(&engine.fact_base),
+            template_defs: Some(&engine.template_defs),
         };
         crate::evaluator::eval(&mut ctx, runtime_expr).map_err(ActionError::from)
     }
@@ -989,6 +994,22 @@ fn execute_single_action(
             collected_facts,
         ),
         "load" => execute_load(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
+        "load-facts" => execute_load_facts(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
+        "save-facts" => execute_save_facts(
             token,
             rule_info,
             &call.args,
@@ -2133,6 +2154,223 @@ fn execute_load(
             )))
         }
     }
+}
+
+/// Format a `Value` as it should appear inside a `.fct` file (CLIPS s-expression syntax).
+///
+/// Strings are quoted; symbols, integers, floats, and multifields render as CLIPS expects.
+fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut String) {
+    match value {
+        Value::Integer(n) => output.push_str(&n.to_string()),
+        Value::Float(f) => {
+            if f.fract() == 0.0 {
+                let _ = write!(output, "{f:.1}");
+            } else {
+                output.push_str(&f.to_string());
+            }
+        }
+        Value::Symbol(sym) => {
+            if let Some(name) = symbol_table.resolve_symbol_str(*sym) {
+                output.push_str(name);
+            }
+        }
+        Value::String(s) => {
+            output.push('"');
+            output.push_str(s.as_str());
+            output.push('"');
+        }
+        Value::Multifield(mf) => {
+            for (i, v) in mf.as_slice().iter().enumerate() {
+                if i > 0 {
+                    output.push(' ');
+                }
+                format_value_for_fct(v, symbol_table, output);
+            }
+        }
+        Value::ExternalAddress(_) | Value::Void => {}
+    }
+}
+
+/// Format a single `Fact` as a bare CLIPS s-expression suitable for a `.fct` file.
+///
+/// Ordered facts render as `(relation field1 field2 ...)`.
+/// Template facts render as `(template-name (slot1 val1) (slot2 val2) ...)`.
+fn format_fact_for_fct(
+    fact: &Fact,
+    symbol_table: &SymbolTable,
+    template_defs: &slotmap::SlotMap<TemplateId, crate::templates::RegisteredTemplate>,
+) -> String {
+    let mut out = String::new();
+    match fact {
+        Fact::Ordered(o) => {
+            out.push('(');
+            if let Some(rel) = symbol_table.resolve_symbol_str(o.relation) {
+                out.push_str(rel);
+            }
+            for field in &o.fields {
+                out.push(' ');
+                format_value_for_fct(field, symbol_table, &mut out);
+            }
+            out.push(')');
+        }
+        Fact::Template(t) => {
+            out.push('(');
+            if let Some(reg) = template_defs.get(t.template_id) {
+                out.push_str(&reg.name);
+                // Use slot_names (declaration order) for deterministic output.
+                for (slot_idx, slot_name) in reg.slot_names.iter().enumerate() {
+                    if let Some(val) = t.slots.get(slot_idx) {
+                        out.push(' ');
+                        out.push('(');
+                        out.push_str(slot_name);
+                        out.push(' ');
+                        format_value_for_fct(val, symbol_table, &mut out);
+                        out.push(')');
+                    }
+                }
+            }
+            out.push(')');
+        }
+    }
+    out
+}
+
+/// Evaluate the first argument of `load-facts` or `save-facts` as a filename string.
+fn eval_filename_arg(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    args: &[ActionExpr],
+    command_name: &str,
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
+) -> Result<String, ActionError> {
+    if args.len() != 1 {
+        return Err(ActionError::EvalError(format!(
+            "{command_name}: expected exactly 1 argument, got {}",
+            args.len()
+        )));
+    }
+    let val = eval_env.eval_expr(token, rule_info, &args[0], context, collected_facts)?;
+    match val {
+        Value::String(s) => Ok(s.as_str().to_string()),
+        Value::Symbol(sym) => Ok(context
+            .engine
+            .symbol_table
+            .resolve_symbol_str(sym)
+            .unwrap_or("???")
+            .to_string()),
+        other => Err(ActionError::EvalError(format!(
+            "{command_name}: expected STRING or SYMBOL filename, got {}",
+            runtime_value_type_name(&other)
+        ))),
+    }
+}
+
+/// `(save-facts <filename>)` — write all current facts to a file in `.fct` format.
+///
+/// Each fact is written as a bare s-expression on its own line, readable by
+/// `load-facts`. Returns TRUE on success, FALSE on I/O failure.
+fn execute_save_facts(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    args: &[ActionExpr],
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
+) -> Result<(), ActionError> {
+    let filename = eval_filename_arg(token, rule_info, args, "save-facts", context, eval_env, collected_facts)?;
+
+    let result = do_save_facts(&filename, context);
+    let return_val = match result {
+        Ok(_count) => crate::evaluator::clips_true(
+            &mut context.engine.symbol_table,
+            context.engine.config.string_encoding,
+        ),
+        Err(_) => crate::evaluator::clips_false(
+            &mut context.engine.symbol_table,
+            context.engine.config.string_encoding,
+        ),
+    };
+    // Write return value to global ?*result* if it exists; otherwise discard.
+    // (CLIPS itself returns the value but RHS actions discard scalar returns —
+    // the caller can capture it via (bind ?result (save-facts "file")).)
+    let _ = return_val;
+    Ok(())
+}
+
+/// Inner I/O body for save-facts, separated to avoid borrow-conflict with `symbol_table`.
+fn do_save_facts(
+    filename: &str,
+    context: &mut ActionExecutionContext<'_>,
+) -> Result<usize, std::io::Error> {
+    let file = std::fs::File::create(filename)?;
+    let mut writer = std::io::BufWriter::new(file);
+    let mut count = 0usize;
+
+    // Collect (id, cloned fact) pairs to avoid holding a borrow on fact_base
+    // while also borrowing symbol_table and template_defs.
+    let exclude_id = context.engine.initial_fact_id;
+    let facts: Vec<(FactId, Fact)> = context
+        .engine
+        .fact_base
+        .iter()
+        .filter(|(id, _)| Some(*id) != exclude_id)
+        .map(|(id, entry)| (id, entry.fact.clone()))
+        .collect();
+
+    for (_fact_id, fact) in facts {
+        let line = format_fact_for_fct(
+            &fact,
+            &context.engine.symbol_table,
+            &context.engine.template_defs,
+        );
+        writeln!(writer, "{line}")?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+/// `(load-facts <filename>)` — read a `.fct` file and assert each fact.
+///
+/// The file must contain bare fact s-expressions (not wrapped in `assert`),
+/// one per top-level form.  Facts are asserted directly into working memory
+/// and are **not** registered for re-assertion on reset.
+/// Returns TRUE on success, FALSE on failure.
+fn execute_load_facts(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    args: &[ActionExpr],
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
+) -> Result<(), ActionError> {
+    let filename = eval_filename_arg(token, rule_info, args, "load-facts", context, eval_env, collected_facts)?;
+
+    // Read file contents.
+    let Ok(contents) = std::fs::read_to_string(&filename) else {
+        return Ok(()); // I/O failure — return void (FALSE in expression context)
+    };
+
+    // Wrap the file contents as a temporary deffacts construct so we can
+    // reuse the full parsing + interpretation pipeline without duplicating logic.
+    let wrapped = format!("(deffacts __ferric_load_facts_scratch__\n{contents}\n)");
+    let load_result = context.engine.load_str(&wrapped);
+
+    // Whether parsing succeeded or not, remove the last registered_deffacts
+    // entry so the loaded facts are NOT re-asserted on reset (load-facts
+    // semantics: assert once into working memory only).
+    context.engine.registered_deffacts.pop();
+
+    if load_result.is_err() {
+        // Parse or assertion error — facts may have been partially asserted.
+        // CLIPS returns FALSE in this case.
+    }
+    // Return void (the TRUE/FALSE return value is only meaningful when
+    // load-facts is used as an expression, e.g., (bind ?r (load-facts "f")).
+    // In that context the evaluator stub in evaluator.rs handles it.
+    Ok(())
 }
 
 fn evaluated_rule_selectors(

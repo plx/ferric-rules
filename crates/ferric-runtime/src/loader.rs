@@ -1079,6 +1079,8 @@ impl Engine {
                     generic_modules: &self.generic_modules,
                     method_chain: None,
                     input_buffer: None,
+                    fact_base: None,
+                    template_defs: None,
                 };
                 crate::evaluator::eval(&mut ctx, &runtime_expr)
                     .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
@@ -1146,6 +1148,8 @@ impl Engine {
                         generic_modules: &self.generic_modules,
                         method_chain: None,
                         input_buffer: None,
+                        fact_base: None,
+                        template_defs: None,
                     };
                     crate::evaluator::eval(&mut ctx, &runtime_expr)
                 };

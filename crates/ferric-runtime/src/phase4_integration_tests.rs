@@ -3038,3 +3038,177 @@ fn load_rule_with_find_fact_in_bind() {
 ",
     );
 }
+
+// ===========================================================================
+// load-facts / save-facts
+// ===========================================================================
+
+/// `save-facts` writes ordered facts to a file, verified via file contents.
+#[test]
+fn save_facts_writes_bare_fact_forms_to_file() {
+    let temp = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = temp.path().to_string_lossy().replace('\\', "\\\\");
+
+    let src = format!(
+        r#"
+(deffacts startup
+    (planet Earth)
+    (planet Mars))
+(defrule do-save
+    (initial-fact)
+    =>
+    (save-facts "{path}"))
+"#
+    );
+    let mut engine = new_utf8_engine();
+    load_ok(&mut engine, &src);
+    run_to_completion(&mut engine);
+
+    let contents = std::fs::read_to_string(temp.path()).expect("read fct file");
+    assert!(
+        contents.contains("(planet Earth)"),
+        "expected (planet Earth) in:\n{contents}"
+    );
+    assert!(
+        contents.contains("(planet Mars)"),
+        "expected (planet Mars) in:\n{contents}"
+    );
+}
+
+/// `load-facts` with a real temp file containing bare fact forms.
+#[test]
+fn load_facts_asserts_facts_from_fct_file() {
+    use std::io::Write as _;
+
+    let mut temp = tempfile::NamedTempFile::new().expect("tempfile");
+    writeln!(temp, "(animal cat)").unwrap();
+    writeln!(temp, "(animal dog)").unwrap();
+    writeln!(temp, "(count 42)").unwrap();
+    let path = temp.path().to_string_lossy().replace('\\', "\\\\");
+
+    let src = format!(
+        r#"
+(defrule do-load
+    (initial-fact)
+    =>
+    (load-facts "{path}"))
+"#
+    );
+    let mut engine = new_utf8_engine();
+    load_ok(&mut engine, &src);
+    run_to_completion(&mut engine);
+
+    // Count non-initial-fact ordered facts.
+    let visible_count = engine
+        .facts()
+        .unwrap()
+        .filter(|(_, f)| {
+            matches!(f, ferric_core::Fact::Ordered(o) if
+                engine.resolve_symbol(o.relation) != Some("initial-fact"))
+        })
+        .count();
+    assert_eq!(
+        visible_count, 3,
+        "expected 3 loaded facts, got {visible_count}"
+    );
+}
+
+/// `load-facts` loaded facts are NOT re-asserted on reset.
+#[test]
+fn load_facts_does_not_register_for_reset() {
+    use crate::Engine;
+    use std::io::Write as _;
+
+    let mut temp = tempfile::NamedTempFile::new().expect("tempfile");
+    writeln!(temp, "(ephemeral thing)").unwrap();
+    let path = temp.path().to_string_lossy().replace('\\', "\\\\");
+
+    let src = format!(
+        r#"
+(defrule do-load
+    (initial-fact)
+    =>
+    (load-facts "{path}"))
+"#
+    );
+    let mut engine = new_utf8_engine();
+    load_ok(&mut engine, &src);
+    run_to_completion(&mut engine);
+
+    // After first run, ephemeral should be present.
+    let has_ephemeral = |e: &Engine| {
+        e.facts().unwrap().any(|(_, f)| {
+            matches!(f, ferric_core::Fact::Ordered(o) if
+                e.resolve_symbol(o.relation) == Some("ephemeral"))
+        })
+    };
+    assert!(
+        has_ephemeral(&engine),
+        "ephemeral should be present after first run"
+    );
+
+    // Snapshot the registered_deffacts count before reset.
+    let registered_count_snapshot = engine.registered_deffacts.len();
+
+    // Reset and run again: the rule fires again (via initial-fact), re-loading the facts.
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+
+    // registered_deffacts count should be the same — load-facts must not register.
+    assert_eq!(
+        engine.registered_deffacts.len(),
+        registered_count_snapshot,
+        "load-facts must not add to registered_deffacts"
+    );
+}
+
+/// `save-facts` then `load-facts` roundtrip preserves ordered facts.
+#[test]
+fn save_and_load_facts_roundtrip() {
+    let save_temp = tempfile::NamedTempFile::new().expect("tempfile");
+    let save_path = save_temp.path().to_string_lossy().replace('\\', "\\\\");
+
+    let src = format!(
+        r#"
+(deffacts startup
+    (color red)
+    (color green)
+    (data 1 2 3))
+(defrule do-save-then-reload
+    (initial-fact)
+    =>
+    (save-facts "{save_path}"))
+"#
+    );
+    // First engine: populate and save.
+    let mut engine1 = new_utf8_engine();
+    load_ok(&mut engine1, &src);
+    run_to_completion(&mut engine1);
+
+    // Second engine: load the saved facts.
+    let load_src = format!(
+        r#"
+(defrule do-load
+    (initial-fact)
+    =>
+    (load-facts "{save_path}"))
+"#
+    );
+    let mut engine2 = new_utf8_engine();
+    load_ok(&mut engine2, &load_src);
+    run_to_completion(&mut engine2);
+
+    let visible_count = engine2
+        .facts()
+        .unwrap()
+        .filter(|(_, f)| {
+            matches!(f, ferric_core::Fact::Ordered(o) if
+                engine2.resolve_symbol(o.relation) != Some("initial-fact"))
+        })
+        .count();
+    // color red, color green, data 1 2 3 = 3 facts (initial-fact excluded)
+    assert_eq!(
+        visible_count, 3,
+        "expected 3 facts after roundtrip, got {visible_count}"
+    );
+}
