@@ -530,4 +530,34 @@ mod tests {
     fn all_formats_list() {
         assert_eq!(SerializationFormat::ALL.len(), 5);
     }
+
+    /// Regression: asserting a template fact (via `load_str`) into a
+    /// deserialized engine must propagate through the Rete network.
+    #[test]
+    fn assert_template_after_deserialize_fires_rule() {
+        let source = r#"
+(deftemplate sensor (slot id (type INTEGER)) (slot value (type FLOAT)))
+(defrule alert
+    (sensor (id ?id) (value ?v&:(> ?v 100.0)))
+    =>
+    (printout t "ALERT " ?id crlf))
+"#;
+        for &format in SerializationFormat::ALL {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(source).unwrap();
+            engine.reset().unwrap();
+
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+
+            restored
+                .load_str("(assert (sensor (id 7) (value 200.0)))")
+                .unwrap();
+            let result = restored.run(RunLimit::Unlimited).unwrap();
+            assert_eq!(
+                result.rules_fired, 1,
+                "format {format:?}: expected 1 rule to fire"
+            );
+        }
+    }
 }

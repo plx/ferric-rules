@@ -156,6 +156,21 @@ typedef enum FerricHaltReason {
     FERRIC_HALT_REASON_HALT_REQUESTED = 2,
 } FerricHaltReason;
 
+// C-facing string-encoding configuration for `FerricConfig`.
+typedef enum FerricStringEncoding {
+    FERRIC_STRING_ENCODING_ASCII = 0,
+    FERRIC_STRING_ENCODING_UTF8 = 1,
+    FERRIC_STRING_ENCODING_ASCII_SYMBOLS_UTF8_STRINGS = 2,
+} FerricStringEncoding;
+
+// C-facing conflict-resolution strategy for `FerricConfig`.
+typedef enum FerricConflictStrategy {
+    FERRIC_CONFLICT_STRATEGY_DEPTH = 0,
+    FERRIC_CONFLICT_STRATEGY_BREADTH = 1,
+    FERRIC_CONFLICT_STRATEGY_LEX = 2,
+    FERRIC_CONFLICT_STRATEGY_MEA = 3,
+} FerricConflictStrategy;
+
 #if defined(FERRIC_SERDE)
 // Serialization format selector for `ferric_engine_serialize_as` and
 // `ferric_engine_deserialize_as`.
@@ -172,21 +187,6 @@ typedef enum FerricSerializationFormat {
     FERRIC_SERIALIZATION_FORMAT_POSTCARD = 4,
 } FerricSerializationFormat;
 #endif
-
-// C-facing string-encoding configuration for `FerricConfig`.
-typedef enum FerricStringEncoding {
-    FERRIC_STRING_ENCODING_ASCII = 0,
-    FERRIC_STRING_ENCODING_UTF8 = 1,
-    FERRIC_STRING_ENCODING_ASCII_SYMBOLS_UTF8_STRINGS = 2,
-} FerricStringEncoding;
-
-// C-facing conflict-resolution strategy for `FerricConfig`.
-typedef enum FerricConflictStrategy {
-    FERRIC_CONFLICT_STRATEGY_DEPTH = 0,
-    FERRIC_CONFLICT_STRATEGY_BREADTH = 1,
-    FERRIC_CONFLICT_STRATEGY_LEX = 2,
-    FERRIC_CONFLICT_STRATEGY_MEA = 3,
-} FerricConflictStrategy;
 
 // Opaque engine handle exposed to C.
 //
@@ -891,9 +891,9 @@ enum FerricError ferric_engine_free_unchecked(struct FerricEngine *engine);
 #if defined(FERRIC_SERDE)
 // Serialize engine state to bytes in the specified format.
 //
-// `format` is a uint32_t corresponding to FerricSerializationFormat discriminants
-// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = MessagePack, 4 = Postcard).
-// Returns FERRIC_ERROR_INVALID_ARGUMENT for out-of-range values.
+// `format` is a `u32` corresponding to `FerricSerializationFormat` discriminants
+// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = `MessagePack`, 4 = Postcard).
+// Returns `FERRIC_ERROR_INVALID_ARGUMENT` for out-of-range values.
 //
 // See `ferric_engine_serialize_bincode` for memory allocation details.
 //
@@ -914,9 +914,9 @@ enum FerricError ferric_engine_serialize_as(const struct FerricEngine *engine,
 #if defined(FERRIC_SERDE)
 // Deserialize an engine from bytes in the specified format.
 //
-// `format` is a uint32_t corresponding to FerricSerializationFormat discriminants
-// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = MessagePack, 4 = Postcard).
-// Returns FERRIC_ERROR_INVALID_ARGUMENT for out-of-range values.
+// `format` is a `u32` corresponding to `FerricSerializationFormat` discriminants
+// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = `MessagePack`, 4 = Postcard).
+// Returns `FERRIC_ERROR_INVALID_ARGUMENT` for out-of-range values.
 //
 // See `ferric_engine_deserialize_bincode` for details.
 //

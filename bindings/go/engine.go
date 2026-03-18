@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 
 	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
@@ -94,9 +95,9 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 // given file path. The format must match the one used during serialization.
 // Additional options (e.g., WithMaxCallDepth) are applied after restoration.
 func NewEngineFromFile(path string, format Format, opts ...EngineOption) (*Engine, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- caller-controlled path
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ferric: reading snapshot file: %w", err)
 	}
 	combined := append([]EngineOption{WithSnapshot(data, format)}, opts...)
 	return NewEngine(combined...)
@@ -457,7 +458,10 @@ func (e *Engine) SerializeToFile(path string, format Format) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	if err = os.WriteFile(filepath.Clean(path), data, 0600); err != nil { // #nosec G306
+		return fmt.Errorf("ferric: writing snapshot file: %w", err)
+	}
+	return nil
 }
 
 // --- Introspection ---

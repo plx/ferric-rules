@@ -1216,7 +1216,18 @@ impl Engine {
             LoadError::InvalidAssert("fact relation must be a symbol".to_string())
         })?;
 
-        // Remaining elements are field values
+        // Check if this is a known template — if so, parse slot syntax.
+        let current_module = self.module_registry.current_module();
+        if let Ok(template_id) = self.resolve_template_reference(relation, current_module) {
+            return self.process_assert_template_fact(
+                template_id,
+                relation,
+                &fact_list[1..],
+                result,
+            );
+        }
+
+        // Ordered fact: remaining elements are field values.
         let mut fields = Vec::new();
         for field_expr in &fact_list[1..] {
             match self.atom_to_value(field_expr, result) {
@@ -1234,6 +1245,72 @@ impl Engine {
 
         self.assert_ordered(relation, fields)
             .map_err(LoadError::Engine)
+    }
+
+    /// Process a template fact within an assert form.
+    ///
+    /// Each remaining element should be a list of the form `(slot-name value)`.
+    fn process_assert_template_fact(
+        &mut self,
+        template_id: ferric_core::TemplateId,
+        template_name: &str,
+        slot_exprs: &[SExpr],
+        result: &mut LoadResult,
+    ) -> Result<FactId, LoadError> {
+        let registered = self
+            .template_defs
+            .get(template_id)
+            .cloned()
+            .ok_or_else(|| {
+                LoadError::Compile(format!("template `{template_name}` not found in registry"))
+            })?;
+
+        // Start with defaults.
+        let mut slots: Vec<Value> = registered.defaults.clone();
+
+        for slot_expr in slot_exprs {
+            let slot_list = slot_expr.as_list().ok_or_else(|| {
+                LoadError::InvalidAssert(format!(
+                    "expected slot list in template fact `{template_name}`"
+                ))
+            })?;
+            if slot_list.is_empty() {
+                continue;
+            }
+            let slot_name = slot_list[0].as_symbol().ok_or_else(|| {
+                LoadError::InvalidAssert(format!(
+                    "expected slot name symbol in template `{template_name}`"
+                ))
+            })?;
+            let slot_idx = registered.slot_index(slot_name).ok_or_else(|| {
+                LoadError::Compile(format!(
+                    "unknown slot `{slot_name}` in template `{template_name}`"
+                ))
+            })?;
+
+            if slot_list.len() > 1 {
+                if let Some(value) = self.atom_to_value(&slot_list[1], result) {
+                    slots[slot_idx] = value;
+                }
+            }
+            // If slot_list.len() == 1, the slot keeps its default (empty multislot).
+        }
+
+        // Assert as a proper template fact.
+        let fact_id = self
+            .fact_base
+            .assert_template(template_id, slots.into_boxed_slice());
+
+        // Propagate through rete.
+        let fact = self
+            .fact_base
+            .get(fact_id)
+            .expect("just-asserted fact must exist")
+            .fact
+            .clone();
+        self.rete.assert_fact(fact_id, &fact, &self.fact_base);
+
+        Ok(fact_id)
     }
 
     /// Convert an S-expression atom to a Value.
