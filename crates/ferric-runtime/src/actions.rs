@@ -2285,7 +2285,15 @@ fn execute_save_facts(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    let filename = eval_filename_arg(token, rule_info, args, "save-facts", context, eval_env, collected_facts)?;
+    let filename = eval_filename_arg(
+        token,
+        rule_info,
+        args,
+        "save-facts",
+        context,
+        eval_env,
+        collected_facts,
+    )?;
 
     let result = do_save_facts(&filename, context);
     let return_val = match result {
@@ -2352,7 +2360,15 @@ fn execute_load_facts(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    let filename = eval_filename_arg(token, rule_info, args, "load-facts", context, eval_env, collected_facts)?;
+    let filename = eval_filename_arg(
+        token,
+        rule_info,
+        args,
+        "load-facts",
+        context,
+        eval_env,
+        collected_facts,
+    )?;
 
     // Read file contents.
     let Ok(contents) = std::fs::read_to_string(&filename) else {
