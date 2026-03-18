@@ -2054,6 +2054,19 @@ pub enum FerricSerializationFormat {
 
 #[cfg(feature = "serde")]
 impl FerricSerializationFormat {
+    /// Try to convert a raw C integer to a valid format variant.
+    /// Returns `None` for out-of-range discriminants.
+    fn from_raw(raw: u32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Bincode),
+            1 => Some(Self::Json),
+            2 => Some(Self::Cbor),
+            3 => Some(Self::MessagePack),
+            4 => Some(Self::Postcard),
+            _ => None,
+        }
+    }
+
     fn to_runtime(self) -> ferric_runtime::SerializationFormat {
         match self {
             Self::Bincode => ferric_runtime::SerializationFormat::Bincode,
@@ -2171,6 +2184,10 @@ unsafe fn deserialize_engine_impl(
 
 /// Serialize engine state to bytes in the specified format.
 ///
+/// `format` is a `u32` corresponding to `FerricSerializationFormat` discriminants
+/// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = `MessagePack`, 4 = Postcard).
+/// Returns `FERRIC_ERROR_INVALID_ARGUMENT` for out-of-range values.
+///
 /// See `ferric_engine_serialize_bincode` for memory allocation details.
 ///
 /// # Safety
@@ -2183,15 +2200,19 @@ unsafe fn deserialize_engine_impl(
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_serialize_as(
     engine: *const FerricEngine,
-    format: FerricSerializationFormat,
+    format: u32,
     alloc_fn: FerricAllocFn,
     alloc_context: *mut std::ffi::c_void,
     out_data: *mut *mut u8,
     out_len: *mut usize,
 ) -> FerricError {
+    let Some(fmt) = FerricSerializationFormat::from_raw(format) else {
+        set_global_error(format!("invalid serialization format: {format}"));
+        return FerricError::InvalidArgument;
+    };
     serialize_engine_impl(
         engine,
-        format.to_runtime(),
+        fmt.to_runtime(),
         alloc_fn,
         alloc_context,
         out_data,
@@ -2200,6 +2221,10 @@ pub unsafe extern "C" fn ferric_engine_serialize_as(
 }
 
 /// Deserialize an engine from bytes in the specified format.
+///
+/// `format` is a `u32` corresponding to `FerricSerializationFormat` discriminants
+/// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = `MessagePack`, 4 = Postcard).
+/// Returns `FERRIC_ERROR_INVALID_ARGUMENT` for out-of-range values.
 ///
 /// See `ferric_engine_deserialize_bincode` for details.
 ///
@@ -2213,10 +2238,14 @@ pub unsafe extern "C" fn ferric_engine_serialize_as(
 pub unsafe extern "C" fn ferric_engine_deserialize_as(
     data: *const u8,
     len: usize,
-    format: FerricSerializationFormat,
+    format: u32,
     out_engine: *mut *mut FerricEngine,
 ) -> FerricError {
-    deserialize_engine_impl(data, len, format.to_runtime(), out_engine)
+    let Some(fmt) = FerricSerializationFormat::from_raw(format) else {
+        set_global_error(format!("invalid serialization format: {format}"));
+        return FerricError::InvalidArgument;
+    };
+    deserialize_engine_impl(data, len, fmt.to_runtime(), out_engine)
 }
 
 // ── Per-format convenience functions ─────────────────────────────────────

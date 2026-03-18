@@ -3,6 +3,8 @@ package ferric
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -238,5 +240,80 @@ func TestCrossFormatRejection(t *testing.T) {
 	_, err = NewEngine(WithSnapshot(snap, FormatJSON))
 	if err == nil {
 		t.Fatal("expected error when deserializing bincode as JSON")
+	}
+}
+
+func TestSerializeToFileRoundtrip(t *testing.T) {
+	for _, tc := range allFormats() {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `
+				(deftemplate sensor (slot id (type INTEGER)) (slot value (type FLOAT)))
+				(defrule alert
+					(sensor (id ?id) (value ?v&:(> ?v 100.0)))
+					=>
+					(printout t "ALERT " ?id crlf))
+				(defglobal ?*threshold* = 42)
+			`
+			e, err := NewEngine(WithSource(src))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mustClose(t, e)
+
+			path := filepath.Join(t.TempDir(), "snapshot.bin")
+			if err := e.SerializeToFile(path, tc.format); err != nil {
+				t.Fatalf("SerializeToFile failed: %v", err)
+			}
+
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("snapshot file not found: %v", err)
+			}
+			if info.Size() == 0 {
+				t.Fatal("snapshot file is empty")
+			}
+
+			e2, err := NewEngineFromFile(path, tc.format)
+			if err != nil {
+				t.Fatalf("NewEngineFromFile failed: %v", err)
+			}
+			defer mustClose(t, e2)
+
+			rules := e2.Rules()
+			if len(rules) != 1 {
+				t.Fatalf("expected 1 rule, got %d", len(rules))
+			}
+			if rules[0].Name != "alert" {
+				t.Fatalf("expected rule 'alert', got %q", rules[0].Name)
+			}
+
+			val, err := e2.GetGlobal("threshold")
+			if err != nil {
+				t.Fatalf("GetGlobal failed: %v", err)
+			}
+			if val != int64(42) {
+				t.Fatalf("expected 42, got %v", val)
+			}
+		})
+	}
+}
+
+func TestNewEngineFromFileNonexistent(t *testing.T) {
+	_, err := NewEngineFromFile("/nonexistent/path/snap.bin", FormatBincode)
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+func TestSerializeToFileUnwritable(t *testing.T) {
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	err = e.SerializeToFile("/nonexistent/dir/snap.bin", FormatBincode)
+	if err == nil {
+		t.Fatal("expected error for unwritable path")
 	}
 }

@@ -891,6 +891,10 @@ enum FerricError ferric_engine_free_unchecked(struct FerricEngine *engine);
 #if defined(FERRIC_SERDE)
 // Serialize engine state to bytes in the specified format.
 //
+// `format` is a uint32_t corresponding to FerricSerializationFormat discriminants
+// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = MessagePack, 4 = Postcard).
+// Returns FERRIC_ERROR_INVALID_ARGUMENT for out-of-range values.
+//
 // See `ferric_engine_serialize_bincode` for memory allocation details.
 //
 // # Safety
@@ -900,7 +904,7 @@ enum FerricError ferric_engine_free_unchecked(struct FerricEngine *engine);
 // - If `alloc_fn` is non-null, it must return a valid pointer to `size` bytes
 //   (or null to signal failure).
 enum FerricError ferric_engine_serialize_as(const struct FerricEngine *engine,
-                                            enum FerricSerializationFormat format,
+                                            uint32_t format,
                                             FerricAllocFn alloc_fn,
                                             void *alloc_context,
                                             uint8_t **out_data,
@@ -909,6 +913,10 @@ enum FerricError ferric_engine_serialize_as(const struct FerricEngine *engine,
 
 #if defined(FERRIC_SERDE)
 // Deserialize an engine from bytes in the specified format.
+//
+// `format` is a uint32_t corresponding to FerricSerializationFormat discriminants
+// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = MessagePack, 4 = Postcard).
+// Returns FERRIC_ERROR_INVALID_ARGUMENT for out-of-range values.
 //
 // See `ferric_engine_deserialize_bincode` for details.
 //
@@ -919,7 +927,7 @@ enum FerricError ferric_engine_serialize_as(const struct FerricEngine *engine,
 // - The returned engine must be freed with `ferric_engine_free`.
 enum FerricError ferric_engine_deserialize_as(const uint8_t *data,
                                               uintptr_t len,
-                                              enum FerricSerializationFormat format,
+                                              uint32_t format,
                                               struct FerricEngine **out_engine);
 #endif
 

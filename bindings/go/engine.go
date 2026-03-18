@@ -3,6 +3,7 @@ package ferric
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime"
 
 	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
@@ -37,8 +38,12 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 
 	if cfg.snapshot != nil {
 		// Deserialize from snapshot — skips parse/compile.
+		ffiFormat, err := formatToFFI(cfg.snapshotFormat)
+		if err != nil {
+			return nil, err
+		}
 		var rc ffi.ErrorCode
-		h, rc = ffi.EngineDeserializeAs(cfg.snapshot, formatToFFI(cfg.snapshotFormat))
+		h, rc = ffi.EngineDeserializeAs(cfg.snapshot, ffiFormat)
 		if rc != ffi.ErrOK {
 			return nil, errorFromFFI(rc, nil)
 		}
@@ -83,6 +88,18 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 		}
 	})
 	return e, nil
+}
+
+// NewEngineFromFile creates a new engine by deserializing a snapshot from the
+// given file path. The format must match the one used during serialization.
+// Additional options (e.g., WithMaxCallDepth) are applied after restoration.
+func NewEngineFromFile(path string, format Format, opts ...EngineOption) (*Engine, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	combined := append([]EngineOption{WithSnapshot(data, format)}, opts...)
+	return NewEngine(combined...)
 }
 
 func makeConfig(cfg *engineConfig) (*ffi.Config, error) {
@@ -422,11 +439,25 @@ func (e *Engine) Clear() {
 // specified format. The snapshot can be used with WithSnapshot to create
 // new engines that skip the parse/compile pipeline.
 func (e *Engine) Serialize(format Format) ([]byte, error) {
-	data, rc := ffi.EngineSerializeAs(e.handle, formatToFFI(format))
+	ffiFormat, err := formatToFFI(format)
+	if err != nil {
+		return nil, err
+	}
+	data, rc := ffi.EngineSerializeAs(e.handle, ffiFormat)
 	if rc != ffi.ErrOK {
 		return nil, errorFromFFI(rc, e.handle)
 	}
 	return data, nil
+}
+
+// SerializeToFile writes a serialized snapshot of the engine to the given
+// file path using the specified format.
+func (e *Engine) SerializeToFile(path string, format Format) error {
+	data, err := e.Serialize(format)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 // --- Introspection ---

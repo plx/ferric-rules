@@ -1,6 +1,10 @@
 package ferric
 
-import "github.com/prb/ferric-rules/bindings/go/internal/ffi"
+import (
+	"fmt"
+
+	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
+)
 
 // EngineOption configures an Engine.
 type EngineOption func(*engineConfig)
@@ -46,19 +50,19 @@ func WithSnapshot(data []byte, format Format) EngineOption {
 }
 
 // formatToFFI converts a public Format to the FFI-level format enum.
-func formatToFFI(f Format) ffi.SerializationFormat {
+func formatToFFI(f Format) (ffi.SerializationFormat, error) {
 	switch f {
 	case FormatBincode:
-		return ffi.FormatBincode
+		return ffi.FormatBincode, nil
 	case FormatJSON:
-		return ffi.FormatJSON
+		return ffi.FormatJSON, nil
 	case FormatCBOR:
-		return ffi.FormatCBOR
+		return ffi.FormatCBOR, nil
 	case FormatMessagePack:
-		return ffi.FormatMessagePack
+		return ffi.FormatMessagePack, nil
 	case FormatPostcard:
-		return ffi.FormatPostcard
+		return ffi.FormatPostcard, nil
 	default:
-		return ffi.FormatBincode
+		return 0, fmt.Errorf("%w: unsupported serialization format %d", ErrInvalidArgument, f)
 	}
 }

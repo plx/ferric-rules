@@ -1,6 +1,6 @@
 //! Python Engine wrapper.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -410,6 +410,43 @@ impl PyEngine {
     fn from_snapshot(data: &[u8], format: Option<crate::config::Format>) -> PyResult<Self> {
         let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
         let engine = Engine::deserialize(data, fmt)
+            .map_err(|e| crate::error::FerricError::new_err(e.to_string()))?;
+        Ok(Self { engine })
+    }
+
+    /// Save a serialized engine snapshot to a file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` — File path (str or os.PathLike).
+    /// * `format` — Serialization format (default: `Format.BINCODE`).
+    #[cfg(feature = "serde")]
+    #[pyo3(signature = (path, *, format=None))]
+    fn save_snapshot(&self, path: PathBuf, format: Option<crate::config::Format>) -> PyResult<()> {
+        let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
+        let bytes = self
+            .engine
+            .serialize(fmt)
+            .map_err(|e| crate::error::FerricError::new_err(e.to_string()))?;
+        std::fs::write(&path, &bytes)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Create an engine by deserializing a snapshot from a file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` — File path (str or os.PathLike).
+    /// * `format` — Serialization format (default: `Format.BINCODE`).
+    #[staticmethod]
+    #[cfg(feature = "serde")]
+    #[pyo3(signature = (path, *, format=None))]
+    fn from_snapshot_file(path: PathBuf, format: Option<crate::config::Format>) -> PyResult<Self> {
+        let data = std::fs::read(&path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
+        let engine = Engine::deserialize(&data, fmt)
             .map_err(|e| crate::error::FerricError::new_err(e.to_string()))?;
         Ok(Self { engine })
     }
