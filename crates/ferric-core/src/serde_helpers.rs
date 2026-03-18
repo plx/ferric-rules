@@ -202,6 +202,39 @@ pub mod fx_hash_map_of_fx_hash_map_of_fx_hash_set {
     }
 }
 
+/// Serialize/deserialize `BTreeMap<K, V>` as `Vec<(K, V)>`.
+///
+/// `BTreeMap` has native serde support, but its default serialization uses
+/// the key as a JSON object key — which only works when `K` serializes to a
+/// string. This helper sidesteps that limitation by converting to a list of
+/// pairs, allowing arbitrary key types with all formats including JSON.
+pub mod btree_map {
+    use serde::de::Deserializer;
+    use serde::ser::Serializer;
+    use serde::{Deserialize, Serialize};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<K, V, S>(map: &BTreeMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        K: Serialize,
+        V: Serialize,
+        S: Serializer,
+    {
+        let entries: Vec<(&K, &V)> = map.iter().collect();
+        entries.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, K, V, D>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+    where
+        K: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        let entries: Vec<(K, V)> = Vec::deserialize(deserializer)?;
+        Ok(entries.into_iter().collect())
+    }
+}
+
 /// Serialize/deserialize `std::collections::HashSet<T>` as `Vec<T>`.
 ///
 /// std `HashSet` has native serde support, but this helper is provided

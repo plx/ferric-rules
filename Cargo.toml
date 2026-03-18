@@ -34,6 +34,10 @@ cbindgen = "0.29"
 # Serialization
 serde = { version = "1", features = ["derive", "rc"] }
 bincode = "1"
+serde_json = "1"
+ciborium = "0.2"
+rmp-serde = "1"
+postcard = { version = "1", features = ["alloc"] }
 
 # Slot-based storage (serde feature always on — negligible cost, needed when serde is enabled)
 slotmap = { version = "1", features = ["serde"] }

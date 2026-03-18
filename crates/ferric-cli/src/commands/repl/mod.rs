@@ -42,7 +42,30 @@ use self::session::ReplSession;
 const PROMPT: &str = "CLIPS> ";
 
 /// Execute the `repl` subcommand.
-pub fn execute(load_files: &[PathBuf]) -> i32 {
+///
+/// `snapshot` is an optional `(path, format)` pair. When provided, the engine
+/// is restored from the snapshot file instead of starting fresh.
+pub fn execute(
+    load_files: &[PathBuf],
+    #[cfg(feature = "serde")] snapshot: Option<(
+        PathBuf,
+        ferric_runtime::serialization::SerializationFormat,
+    )>,
+    #[cfg(not(feature = "serde"))] _snapshot: Option<std::convert::Infallible>,
+) -> i32 {
+    #[cfg(feature = "serde")]
+    let mut session = if let Some((path, format)) = snapshot {
+        match ReplSession::from_snapshot(&path, format) {
+            Ok(s) => s,
+            Err(err) => {
+                eprintln!("ferric repl: error loading snapshot: {err}");
+                return 1;
+            }
+        }
+    } else {
+        ReplSession::new()
+    };
+    #[cfg(not(feature = "serde"))]
     let mut session = ReplSession::new();
 
     println!("Ferric REPL v{}", env!("CARGO_PKG_VERSION"));

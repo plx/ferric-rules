@@ -26,6 +26,22 @@ const (
 	EncodingASCIISymbolsUTF8Strings
 )
 
+// Format selects the serialization format for Engine.SerializeAs / WithSnapshotAs.
+type Format int
+
+const (
+	// FormatBincode uses compact binary encoding (default, fast and small).
+	FormatBincode Format = iota
+	// FormatJSON uses human-readable JSON encoding.
+	FormatJSON
+	// FormatCBOR uses CBOR (Concise Binary Object Representation).
+	FormatCBOR
+	// FormatMessagePack uses MessagePack encoding.
+	FormatMessagePack
+	// FormatPostcard uses Postcard encoding (compact, no_std-friendly).
+	FormatPostcard
+)
+
 // HaltReason describes why engine execution stopped.
 type HaltReason int
 

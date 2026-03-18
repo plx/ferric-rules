@@ -171,6 +171,23 @@ typedef enum FerricConflictStrategy {
     FERRIC_CONFLICT_STRATEGY_MEA = 3,
 } FerricConflictStrategy;
 
+#if defined(FERRIC_SERDE)
+// Serialization format selector for `ferric_engine_serialize_as` and
+// `ferric_engine_deserialize_as`.
+typedef enum FerricSerializationFormat {
+    // Compact binary (bincode). Fast and small.
+    FERRIC_SERIALIZATION_FORMAT_BINCODE = 0,
+    // JSON (human-readable, larger output).
+    FERRIC_SERIALIZATION_FORMAT_JSON = 1,
+    // CBOR (Concise Binary Object Representation).
+    FERRIC_SERIALIZATION_FORMAT_CBOR = 2,
+    // `MessagePack` (compact binary, JSON-like schema).
+    FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK = 3,
+    // Postcard (compact, `no_std`-friendly binary).
+    FERRIC_SERIALIZATION_FORMAT_POSTCARD = 4,
+} FerricSerializationFormat;
+#endif
+
 // Opaque engine handle exposed to C.
 //
 // Contains the Rust [`Engine`] plus per-engine error state.
@@ -222,7 +239,7 @@ typedef struct FerricValue {
 #if defined(FERRIC_SERDE)
 // Callback type for caller-controlled memory allocation.
 //
-// When non-null, called by `ferric_engine_serialize` with the exact byte
+// When non-null, called by serialization functions with the exact byte
 // count needed. The `context` parameter is passed through unchanged from
 // the serialize call.
 //
@@ -872,10 +889,50 @@ enum FerricError ferric_engine_get_fact_slot_by_name(const struct FerricEngine *
 enum FerricError ferric_engine_free_unchecked(struct FerricEngine *engine);
 
 #if defined(FERRIC_SERDE)
-// Serialize engine state to bytes.
+// Serialize engine state to bytes in the specified format.
 //
-// Produces a binary snapshot that can be passed to `ferric_engine_deserialize`
-// to reconstruct an equivalent engine, skipping the parse/compile pipeline.
+// `format` is a `u32` corresponding to `FerricSerializationFormat` discriminants
+// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = `MessagePack`, 4 = Postcard).
+// Returns `FERRIC_ERROR_INVALID_ARGUMENT` for out-of-range values.
+//
+// See `ferric_engine_serialize_bincode` for memory allocation details.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_data` and `out_len` must be valid, non-null pointers.
+// - If `alloc_fn` is non-null, it must return a valid pointer to `size` bytes
+//   (or null to signal failure).
+enum FerricError ferric_engine_serialize_as(const struct FerricEngine *engine,
+                                            uint32_t format,
+                                            FerricAllocFn alloc_fn,
+                                            void *alloc_context,
+                                            uint8_t **out_data,
+                                            uintptr_t *out_len);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Deserialize an engine from bytes in the specified format.
+//
+// `format` is a `u32` corresponding to `FerricSerializationFormat` discriminants
+// (0 = Bincode, 1 = JSON, 2 = CBOR, 3 = `MessagePack`, 4 = Postcard).
+// Returns `FERRIC_ERROR_INVALID_ARGUMENT` for out-of-range values.
+//
+// See `ferric_engine_deserialize_bincode` for details.
+//
+// # Safety
+//
+// - `data` must point to `len` valid, readable bytes.
+// - `out_engine` must be a valid, non-null pointer.
+// - The returned engine must be freed with `ferric_engine_free`.
+enum FerricError ferric_engine_deserialize_as(const uint8_t *data,
+                                              uintptr_t len,
+                                              uint32_t format,
+                                              struct FerricEngine **out_engine);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Serialize engine state to bincode.
 //
 // ## Memory allocation
 //
@@ -895,16 +952,15 @@ enum FerricError ferric_engine_free_unchecked(struct FerricEngine *engine);
 // - `out_data` and `out_len` must be valid, non-null pointers.
 // - If `alloc_fn` is non-null, it must return a valid pointer to `size` bytes
 //   (or null to signal failure).
-enum FerricError ferric_engine_serialize(const struct FerricEngine *engine,
-                                         FerricAllocFn alloc_fn,
-                                         void *alloc_context,
-                                         uint8_t **out_data,
-                                         uintptr_t *out_len);
+enum FerricError ferric_engine_serialize_bincode(const struct FerricEngine *engine,
+                                                 FerricAllocFn alloc_fn,
+                                                 void *alloc_context,
+                                                 uint8_t **out_data,
+                                                 uintptr_t *out_len);
 #endif
 
 #if defined(FERRIC_SERDE)
-// Deserialize an engine from bytes previously produced by
-// `ferric_engine_serialize`.
+// Deserialize an engine from bincode bytes.
 //
 // The returned engine handle is ready for use (e.g. `ferric_engine_run`).
 // Its thread affinity is set to the calling thread.
@@ -914,20 +970,124 @@ enum FerricError ferric_engine_serialize(const struct FerricEngine *engine,
 // - `data` must point to `len` valid, readable bytes.
 // - `out_engine` must be a valid, non-null pointer.
 // - The returned engine must be freed with `ferric_engine_free`.
-enum FerricError ferric_engine_deserialize(const uint8_t *data,
-                                           uintptr_t len,
-                                           struct FerricEngine **out_engine);
+enum FerricError ferric_engine_deserialize_bincode(const uint8_t *data,
+                                                   uintptr_t len,
+                                                   struct FerricEngine **out_engine);
 #endif
 
 #if defined(FERRIC_SERDE)
-// Free a byte buffer that was allocated by `ferric_engine_serialize` when
+// Serialize engine state to JSON.
+//
+// See `ferric_engine_serialize_bincode` for memory allocation details.
+//
+// # Safety
+//
+// Same safety requirements as `ferric_engine_serialize_bincode`.
+enum FerricError ferric_engine_serialize_json(const struct FerricEngine *engine,
+                                              FerricAllocFn alloc_fn,
+                                              void *alloc_context,
+                                              uint8_t **out_data,
+                                              uintptr_t *out_len);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Deserialize an engine from JSON bytes.
+//
+// # Safety
+//
+// Same safety requirements as `ferric_engine_deserialize_bincode`.
+enum FerricError ferric_engine_deserialize_json(const uint8_t *data,
+                                                uintptr_t len,
+                                                struct FerricEngine **out_engine);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Serialize engine state to CBOR.
+//
+// See `ferric_engine_serialize_bincode` for memory allocation details.
+//
+// # Safety
+//
+// Same safety requirements as `ferric_engine_serialize_bincode`.
+enum FerricError ferric_engine_serialize_cbor(const struct FerricEngine *engine,
+                                              FerricAllocFn alloc_fn,
+                                              void *alloc_context,
+                                              uint8_t **out_data,
+                                              uintptr_t *out_len);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Deserialize an engine from CBOR bytes.
+//
+// # Safety
+//
+// Same safety requirements as `ferric_engine_deserialize_bincode`.
+enum FerricError ferric_engine_deserialize_cbor(const uint8_t *data,
+                                                uintptr_t len,
+                                                struct FerricEngine **out_engine);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Serialize engine state to `MessagePack`.
+//
+// See `ferric_engine_serialize_bincode` for memory allocation details.
+//
+// # Safety
+//
+// Same safety requirements as `ferric_engine_serialize_bincode`.
+enum FerricError ferric_engine_serialize_msgpack(const struct FerricEngine *engine,
+                                                 FerricAllocFn alloc_fn,
+                                                 void *alloc_context,
+                                                 uint8_t **out_data,
+                                                 uintptr_t *out_len);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Deserialize an engine from `MessagePack` bytes.
+//
+// # Safety
+//
+// Same safety requirements as `ferric_engine_deserialize_bincode`.
+enum FerricError ferric_engine_deserialize_msgpack(const uint8_t *data,
+                                                   uintptr_t len,
+                                                   struct FerricEngine **out_engine);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Serialize engine state to Postcard.
+//
+// See `ferric_engine_serialize_bincode` for memory allocation details.
+//
+// # Safety
+//
+// Same safety requirements as `ferric_engine_serialize_bincode`.
+enum FerricError ferric_engine_serialize_postcard(const struct FerricEngine *engine,
+                                                  FerricAllocFn alloc_fn,
+                                                  void *alloc_context,
+                                                  uint8_t **out_data,
+                                                  uintptr_t *out_len);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Deserialize an engine from Postcard bytes.
+//
+// # Safety
+//
+// Same safety requirements as `ferric_engine_deserialize_bincode`.
+enum FerricError ferric_engine_deserialize_postcard(const uint8_t *data,
+                                                    uintptr_t len,
+                                                    struct FerricEngine **out_engine);
+#endif
+
+#if defined(FERRIC_SERDE)
+// Free a byte buffer that was allocated by a serialize function when
 // `alloc_fn` was null.
 //
 // Null pointers and zero lengths are safely ignored.
 //
 // # Safety
 //
-// - `data` must be a pointer returned by `ferric_engine_serialize` (with
+// - `data` must be a pointer returned by a serialize function (with
 //   null `alloc_fn`), or null.
 // - `len` must be the length reported by the corresponding serialize call.
 // - The buffer must not have been previously freed.

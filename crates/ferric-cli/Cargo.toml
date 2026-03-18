@@ -25,6 +25,7 @@ tracing-chrome = { workspace = true, optional = true }
 [features]
 tracing = ["trace-chrome"]
 trace-chrome = ["dep:tracing", "dep:tracing-chrome", "dep:tracing-subscriber", "ferric-runtime/tracing"]
+serde = ["ferric-runtime/serde"]
 
 [dev-dependencies]
 proptest = { workspace = true }

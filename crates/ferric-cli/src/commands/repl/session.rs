@@ -32,6 +32,24 @@ impl ReplSession {
         }
     }
 
+    /// Create a session by restoring an engine from a serialized snapshot file.
+    #[cfg(feature = "serde")]
+    pub fn from_snapshot(
+        path: &std::path::Path,
+        format: ferric_runtime::serialization::SerializationFormat,
+    ) -> Result<Self, String> {
+        let data =
+            std::fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        let engine = Engine::deserialize(&data, format)
+            .map_err(|e| format!("deserialization failed: {e}"))?;
+        Ok(Self {
+            engine,
+            watch_facts: false,
+            watch_rules: false,
+            loaded_files: Vec::new(),
+        })
+    }
+
     /// Load files at startup. Errors are printed but do not abort the session.
     pub fn preload_files(&mut self, files: &[PathBuf]) {
         for path in files {

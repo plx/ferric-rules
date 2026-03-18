@@ -3,13 +3,14 @@
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
+use ferric::runtime::serialization::SerializationFormat;
 use ferric::runtime::{Engine, EngineConfig, RunLimit};
 
 /// Engine serialization/deserialization benchmark.
 ///
-/// Measures `serialize_to_bytes()` and `deserialize_from_bytes()` round-trip
-/// latency at varying engine sizes. Also benchmarks compilation as a baseline
-/// to validate that deserialization is faster than full compilation.
+/// Measures `serialize()`/`deserialize()` round-trip latency at varying engine
+/// sizes. Also benchmarks compilation as a baseline to validate that
+/// deserialization is faster than full compilation.
 fn generate_serde_source(n_templates: usize, n_rules: usize, n_facts: usize) -> String {
     let mut source = String::new();
 
@@ -58,22 +59,23 @@ fn generate_serde_source(n_templates: usize, n_rules: usize, n_facts: usize) -> 
 
 fn bench_serde_small(c: &mut Criterion) {
     let source = generate_serde_source(5, 10, 50);
+    let format = SerializationFormat::Bincode;
 
     // Prepare engine state
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     engine.reset().unwrap();
     engine.run(RunLimit::Unlimited).unwrap();
-    let bytes = engine.serialize_to_bytes().unwrap();
+    let bytes = engine.serialize(format).unwrap();
 
     let mut group = c.benchmark_group("serde_small");
 
     group.bench_function("serialize", |b| {
-        b.iter(|| engine.serialize_to_bytes().unwrap());
+        b.iter(|| engine.serialize(format).unwrap());
     });
 
     group.bench_function("deserialize", |b| {
-        b.iter(|| Engine::deserialize_from_bytes(&bytes).unwrap());
+        b.iter(|| Engine::deserialize(&bytes, format).unwrap());
     });
 
     let source_clone = source.clone();
@@ -90,22 +92,23 @@ fn bench_serde_small(c: &mut Criterion) {
 
 fn bench_serde_medium(c: &mut Criterion) {
     let source = generate_serde_source(20, 100, 500);
+    let format = SerializationFormat::Bincode;
 
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     engine.reset().unwrap();
     engine.run(RunLimit::Unlimited).unwrap();
-    let bytes = engine.serialize_to_bytes().unwrap();
+    let bytes = engine.serialize(format).unwrap();
 
     let mut group = c.benchmark_group("serde_medium");
     group.sample_size(10);
 
     group.bench_function("serialize", |b| {
-        b.iter(|| engine.serialize_to_bytes().unwrap());
+        b.iter(|| engine.serialize(format).unwrap());
     });
 
     group.bench_function("deserialize", |b| {
-        b.iter(|| Engine::deserialize_from_bytes(&bytes).unwrap());
+        b.iter(|| Engine::deserialize(&bytes, format).unwrap());
     });
 
     let source_clone = source.clone();
@@ -122,22 +125,23 @@ fn bench_serde_medium(c: &mut Criterion) {
 
 fn bench_serde_large(c: &mut Criterion) {
     let source = generate_serde_source(50, 500, 2000);
+    let format = SerializationFormat::Bincode;
 
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     engine.reset().unwrap();
     engine.run(RunLimit::Unlimited).unwrap();
-    let bytes = engine.serialize_to_bytes().unwrap();
+    let bytes = engine.serialize(format).unwrap();
 
     let mut group = c.benchmark_group("serde_large");
     group.sample_size(10);
 
     group.bench_function("serialize", |b| {
-        b.iter(|| engine.serialize_to_bytes().unwrap());
+        b.iter(|| engine.serialize(format).unwrap());
     });
 
     group.bench_function("deserialize", |b| {
-        b.iter(|| Engine::deserialize_from_bytes(&bytes).unwrap());
+        b.iter(|| Engine::deserialize(&bytes, format).unwrap());
     });
 
     let source_clone = source.clone();
