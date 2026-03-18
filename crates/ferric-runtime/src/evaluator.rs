@@ -299,6 +299,11 @@ pub struct EvalContext<'a> {
     pub method_chain: Option<MethodChain>,
     /// Input buffer for `read`/`readline`. `None` when no input source is connected.
     pub input_buffer: Option<&'a mut VecDeque<String>>,
+    /// Optional read-only access to the fact base for introspection builtins.
+    pub fact_base: Option<&'a ferric_core::FactBase>,
+    /// Optional read-only access to template definitions for introspection builtins.
+    pub(crate) template_defs:
+        Option<&'a slotmap::SlotMap<ferric_core::TemplateId, crate::templates::RegisteredTemplate>>,
 }
 
 fn module_label(ctx: &EvalContext<'_>, module_id: crate::modules::ModuleId) -> String {
@@ -752,6 +757,8 @@ fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Ev
                     generic_modules: ctx.generic_modules,
                     method_chain: ctx.method_chain.clone(),
                     input_buffer: ctx.input_buffer.as_deref_mut(),
+                    fact_base: ctx.fact_base,
+                    template_defs: ctx.template_defs,
                 };
 
                 for (action_expr, rt_expr) in body {
@@ -853,6 +860,8 @@ fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Ev
                     generic_modules: ctx.generic_modules,
                     method_chain: ctx.method_chain.clone(),
                     input_buffer: ctx.input_buffer.as_deref_mut(),
+                    fact_base: ctx.fact_base,
+                    template_defs: ctx.template_defs,
                 };
 
                 for (action_expr, rt_expr) in body {
@@ -1117,6 +1126,8 @@ fn execute_callable_body(
         generic_modules: ctx.generic_modules,
         method_chain,
         input_buffer: ctx.input_buffer.as_deref_mut(),
+        fact_base: ctx.fact_base,
+        template_defs: ctx.template_defs,
     };
 
     let mut result = Value::Void;
@@ -2085,11 +2096,27 @@ fn as_numeric(v: &Value, function: &str, span: Option<&SourceSpan>) -> Result<Nu
     }
 }
 
+/// Extract a numeric value from a `Value` as `f64`, or return a type error.
+#[allow(clippy::cast_precision_loss)]
+fn as_float(v: &Value, function: &str, span: Option<&SourceSpan>) -> Result<f64, EvalError> {
+    match v {
+        Value::Integer(i) => Ok(*i as f64),
+        Value::Float(f) => Ok(*f),
+        _ => Err(EvalError::TypeError {
+            function: function.to_string(),
+            expected: "INTEGER or FLOAT".to_string(),
+            actual: value_type_name(v).to_string(),
+            span: span.cloned(),
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Built-in function dispatch
 // ---------------------------------------------------------------------------
 
 /// Returns true if `name` is a supported evaluator builtin callable.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn is_builtin_callable(name: &str) -> bool {
     matches!(
         name,
@@ -2158,10 +2185,58 @@ pub(crate) fn is_builtin_callable(name: &str) -> bool {
             | "ppdefrule"
             | "rules"
             | "bind"
+            | "sqrt"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "atan2"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "asinh"
+            | "acosh"
+            | "atanh"
+            | "exp"
+            | "log"
+            | "log10"
+            | "**"
+            | "pi"
+            | "round"
+            | "ceiling"
+            | "floor"
+            | "deg-rad"
+            | "rad-deg"
+            | "deg-grad"
+            | "grad-deg"
+            | "str-index"
+            | "upcase"
+            | "lowcase"
+            | "str-compare"
+            | "string-to-field"
+            | "explode$"
+            | "str-explode"
+            | "insert$"
+            | "delete$"
+            | "replace$"
+            | "first$"
+            | "rest$"
+            | "sort"
+            | "funcall"
+            | "fact-existp"
+            | "fact-index"
+            | "fact-relation"
+            | "fact-slot-value"
+            | "fact-slot-names"
+            | "load-facts"
+            | "save-facts"
     )
 }
 
 /// Dispatch a built-in function call.
+#[allow(clippy::too_many_lines)]
 fn dispatch_builtin(
     ctx: &mut EvalContext<'_>,
     name: &str,
@@ -2180,6 +2255,34 @@ fn dispatch_builtin(
         "abs" => builtin_abs(ctx, args, span_ref),
         "min" => builtin_min(ctx, args, span_ref),
         "max" => builtin_max(ctx, args, span_ref),
+
+        // Transcendental math
+        "sqrt" => builtin_sqrt(ctx, args, span_ref),
+        "sin" => builtin_sin(ctx, args, span_ref),
+        "cos" => builtin_cos(ctx, args, span_ref),
+        "tan" => builtin_tan(ctx, args, span_ref),
+        "asin" => builtin_asin(ctx, args, span_ref),
+        "acos" => builtin_acos(ctx, args, span_ref),
+        "atan" => builtin_atan(ctx, args, span_ref),
+        "atan2" => builtin_atan2(ctx, args, span_ref),
+        "sinh" => builtin_sinh(ctx, args, span_ref),
+        "cosh" => builtin_cosh(ctx, args, span_ref),
+        "tanh" => builtin_tanh(ctx, args, span_ref),
+        "asinh" => builtin_asinh(ctx, args, span_ref),
+        "acosh" => builtin_acosh(ctx, args, span_ref),
+        "atanh" => builtin_atanh(ctx, args, span_ref),
+        "exp" => builtin_exp(ctx, args, span_ref),
+        "log" => builtin_log(ctx, args, span_ref),
+        "log10" => builtin_log10(ctx, args, span_ref),
+        "**" => builtin_pow(ctx, args, span_ref),
+        "pi" => builtin_pi(ctx, args, span_ref),
+        "round" => builtin_round(ctx, args, span_ref),
+        "ceiling" => builtin_ceiling(ctx, args, span_ref),
+        "floor" => builtin_floor(ctx, args, span_ref),
+        "deg-rad" => builtin_deg_rad(ctx, args, span_ref),
+        "rad-deg" => builtin_rad_deg(ctx, args, span_ref),
+        "deg-grad" => builtin_deg_grad(ctx, args, span_ref),
+        "grad-deg" => builtin_grad_deg(ctx, args, span_ref),
 
         // Comparison
         ">" => builtin_cmp_gt(ctx, args, span_ref),
@@ -2223,6 +2326,12 @@ fn dispatch_builtin(
         "unwatch" => builtin_unwatch(ctx, args, span_ref),
         "str-length" => builtin_str_length(ctx, args, span_ref),
         "sub-string" => builtin_sub_string(ctx, args, span_ref),
+        "str-index" => builtin_str_index(ctx, args, span_ref),
+        "upcase" => builtin_upcase(ctx, args, span_ref),
+        "lowcase" => builtin_lowcase(ctx, args, span_ref),
+        "str-compare" => builtin_str_compare(ctx, args, span_ref),
+        "string-to-field" => builtin_string_to_field(ctx, args, span_ref),
+        "explode$" | "str-explode" => builtin_explode_mf(ctx, args, span_ref),
 
         // Multifield
         "create$" => builtin_create_mf(ctx, args, span_ref),
@@ -2235,6 +2344,12 @@ fn dispatch_builtin(
         "nth$" => builtin_nth_mf(ctx, args, span_ref),
         "member$" => builtin_member_mf(ctx, args, span_ref),
         "subsetp" => builtin_subsetp(ctx, args, span_ref),
+        "insert$" => builtin_insert_mf(ctx, args, span_ref),
+        "delete$" => builtin_delete_mf(ctx, args, span_ref),
+        "replace$" => builtin_replace_mf(ctx, args, span_ref),
+        "first$" => builtin_first_mf(ctx, args, span_ref),
+        "rest$" => builtin_rest_mf(ctx, args, span_ref),
+        "sort" => builtin_sort(ctx, args, span_ref),
 
         // I/O and environment
         "printout" => builtin_printout(ctx, args, span_ref),
@@ -2251,6 +2366,21 @@ fn dispatch_builtin(
         // Agenda/focus query
         "get-focus" => builtin_get_focus(ctx, args, span_ref),
         "get-focus-stack" => builtin_get_focus_stack(ctx, args, span_ref),
+
+        // Dynamic dispatch
+        "funcall" => builtin_funcall(ctx, args, span_ref),
+
+        // Fact introspection
+        "fact-existp" => builtin_fact_existp(ctx, args, span_ref),
+        "fact-index" => builtin_fact_index(ctx, args, span_ref),
+        "fact-relation" => builtin_fact_relation(ctx, args, span_ref),
+        "fact-slot-value" => builtin_fact_slot_value(ctx, args, span_ref),
+        "fact-slot-names" => builtin_fact_slot_names(ctx, args, span_ref),
+
+        // Fact I/O — require engine access; return FALSE when called from pure
+        // expression context (the real implementation lives in actions.rs).
+        "load-facts" => builtin_load_save_facts_stub(ctx, args, "load-facts", span_ref),
+        "save-facts" => builtin_load_save_facts_stub(ctx, args, "save-facts", span_ref),
 
         // Special forms
         "bind" => dispatch_bind(ctx, args, span_ref),
@@ -2710,6 +2840,300 @@ fn builtin_max(
     } else {
         Ok(Value::Integer(max_int))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Transcendental math built-ins
+// ---------------------------------------------------------------------------
+
+fn builtin_sqrt(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("sqrt", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "sqrt", span)?;
+    Ok(Value::Float(f.sqrt()))
+}
+
+fn builtin_sin(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("sin", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "sin", span)?;
+    Ok(Value::Float(f.sin()))
+}
+
+fn builtin_cos(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("cos", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "cos", span)?;
+    Ok(Value::Float(f.cos()))
+}
+
+fn builtin_tan(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("tan", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "tan", span)?;
+    Ok(Value::Float(f.tan()))
+}
+
+fn builtin_asin(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("asin", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "asin", span)?;
+    Ok(Value::Float(f.asin()))
+}
+
+fn builtin_acos(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("acos", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "acos", span)?;
+    Ok(Value::Float(f.acos()))
+}
+
+fn builtin_atan(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("atan", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "atan", span)?;
+    Ok(Value::Float(f.atan()))
+}
+
+fn builtin_atan2(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("atan2", args, 2, span)?;
+    let values = eval_args(ctx, args)?;
+    let y = as_float(&values[0], "atan2", span)?;
+    let x = as_float(&values[1], "atan2", span)?;
+    Ok(Value::Float(y.atan2(x)))
+}
+
+fn builtin_sinh(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("sinh", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "sinh", span)?;
+    Ok(Value::Float(f.sinh()))
+}
+
+fn builtin_cosh(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("cosh", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "cosh", span)?;
+    Ok(Value::Float(f.cosh()))
+}
+
+fn builtin_tanh(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("tanh", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "tanh", span)?;
+    Ok(Value::Float(f.tanh()))
+}
+
+fn builtin_asinh(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("asinh", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "asinh", span)?;
+    Ok(Value::Float(f.asinh()))
+}
+
+fn builtin_acosh(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("acosh", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "acosh", span)?;
+    Ok(Value::Float(f.acosh()))
+}
+
+fn builtin_atanh(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("atanh", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "atanh", span)?;
+    Ok(Value::Float(f.atanh()))
+}
+
+fn builtin_exp(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("exp", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "exp", span)?;
+    Ok(Value::Float(f.exp()))
+}
+
+fn builtin_log(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("log", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "log", span)?;
+    Ok(Value::Float(f.ln()))
+}
+
+fn builtin_log10(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("log10", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "log10", span)?;
+    Ok(Value::Float(f.log10()))
+}
+
+fn builtin_pow(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("**", args, 2, span)?;
+    let values = eval_args(ctx, args)?;
+    let base = as_float(&values[0], "**", span)?;
+    let exp = as_float(&values[1], "**", span)?;
+    Ok(Value::Float(base.powf(exp)))
+}
+
+fn builtin_pi(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("pi", args, 0, span)?;
+    let _ = ctx;
+    Ok(Value::Float(std::f64::consts::PI))
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn builtin_round(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("round", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "round", span)?;
+    Ok(Value::Integer(f.round() as i64))
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn builtin_ceiling(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("ceiling", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "ceiling", span)?;
+    Ok(Value::Integer(f.ceil() as i64))
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn builtin_floor(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("floor", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "floor", span)?;
+    Ok(Value::Integer(f.floor() as i64))
+}
+
+fn builtin_deg_rad(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("deg-rad", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "deg-rad", span)?;
+    Ok(Value::Float(f * std::f64::consts::PI / 180.0))
+}
+
+fn builtin_rad_deg(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("rad-deg", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "rad-deg", span)?;
+    Ok(Value::Float(f * 180.0 / std::f64::consts::PI))
+}
+
+fn builtin_deg_grad(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("deg-grad", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "deg-grad", span)?;
+    Ok(Value::Float(f * 10.0 / 9.0))
+}
+
+fn builtin_grad_deg(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("grad-deg", args, 1, span)?;
+    let values = eval_args(ctx, args)?;
+    let f = as_float(&values[0], "grad-deg", span)?;
+    Ok(Value::Float(f * 9.0 / 10.0))
 }
 
 // ---------------------------------------------------------------------------
@@ -3423,6 +3847,252 @@ fn builtin_sub_string(
 }
 
 // ---------------------------------------------------------------------------
+// String search/transform built-ins
+// ---------------------------------------------------------------------------
+
+/// Extract the string content from a STRING or SYMBOL value.
+fn as_lexeme_str(
+    v: &Value,
+    symbol_table: &SymbolTable,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<String, EvalError> {
+    match v {
+        Value::String(s) => Ok(s.as_str().to_string()),
+        Value::Symbol(s) => Ok(symbol_table
+            .resolve_symbol_str(*s)
+            .unwrap_or("???")
+            .to_string()),
+        _ => Err(EvalError::TypeError {
+            function: function.to_string(),
+            expected: "STRING or SYMBOL".to_string(),
+            actual: generic_value_type_name(v).to_string(),
+            span: span.cloned(),
+        }),
+    }
+}
+
+/// `str-index` — find substring, return 1-based position or FALSE.
+fn builtin_str_index(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("str-index", args, 2, span)?;
+    let values = eval_args(ctx, args)?;
+    let find = as_lexeme_str(&values[0], ctx.symbol_table, "str-index", span)?;
+    let search = as_lexeme_str(&values[1], ctx.symbol_table, "str-index", span)?;
+    match search.find(find.as_str()) {
+        Some(byte_pos) => {
+            // Convert byte offset to 1-based character position.
+            let char_pos = search[..byte_pos].chars().count() + 1;
+            #[allow(clippy::cast_possible_wrap)]
+            Ok(Value::Integer(char_pos as i64))
+        }
+        None => Ok(clips_bool(
+            false,
+            ctx.symbol_table,
+            ctx.config.string_encoding,
+        )),
+    }
+}
+
+/// `upcase` — convert STRING or SYMBOL to uppercase, preserving type.
+fn builtin_upcase(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("upcase", args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    match &val {
+        Value::String(s) => {
+            let upper = s.as_str().to_uppercase();
+            let fs = FerricString::new(&upper, ctx.config.string_encoding).map_err(|e| {
+                EvalError::TypeError {
+                    function: "upcase".to_string(),
+                    expected: "encodable string".to_string(),
+                    actual: format!("{e}"),
+                    span: span.cloned(),
+                }
+            })?;
+            Ok(Value::String(fs))
+        }
+        Value::Symbol(_s) => {
+            let upper = as_lexeme_str(&val, ctx.symbol_table, "upcase", span)?.to_uppercase();
+            let sym = ctx
+                .symbol_table
+                .intern_symbol(&upper, ctx.config.string_encoding)
+                .map_err(|e| EvalError::TypeError {
+                    function: "upcase".to_string(),
+                    expected: "encodable symbol".to_string(),
+                    actual: format!("{e}"),
+                    span: span.cloned(),
+                })?;
+            Ok(Value::Symbol(sym))
+        }
+        _ => Err(EvalError::TypeError {
+            function: "upcase".to_string(),
+            expected: "STRING or SYMBOL".to_string(),
+            actual: generic_value_type_name(&val).to_string(),
+            span: span.cloned(),
+        }),
+    }
+}
+
+/// `lowcase` — convert STRING or SYMBOL to lowercase, preserving type.
+fn builtin_lowcase(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("lowcase", args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    match &val {
+        Value::String(s) => {
+            let lower = s.as_str().to_lowercase();
+            let fs = FerricString::new(&lower, ctx.config.string_encoding).map_err(|e| {
+                EvalError::TypeError {
+                    function: "lowcase".to_string(),
+                    expected: "encodable string".to_string(),
+                    actual: format!("{e}"),
+                    span: span.cloned(),
+                }
+            })?;
+            Ok(Value::String(fs))
+        }
+        Value::Symbol(_s) => {
+            let lower = as_lexeme_str(&val, ctx.symbol_table, "lowcase", span)?.to_lowercase();
+            let sym = ctx
+                .symbol_table
+                .intern_symbol(&lower, ctx.config.string_encoding)
+                .map_err(|e| EvalError::TypeError {
+                    function: "lowcase".to_string(),
+                    expected: "encodable symbol".to_string(),
+                    actual: format!("{e}"),
+                    span: span.cloned(),
+                })?;
+            Ok(Value::Symbol(sym))
+        }
+        _ => Err(EvalError::TypeError {
+            function: "lowcase".to_string(),
+            expected: "STRING or SYMBOL".to_string(),
+            actual: generic_value_type_name(&val).to_string(),
+            span: span.cloned(),
+        }),
+    }
+}
+
+/// `str-compare` — lexicographic comparison, returns -1, 0, or 1.
+fn builtin_str_compare(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("str-compare", args, 2, span)?;
+    let values = eval_args(ctx, args)?;
+    let a = as_lexeme_str(&values[0], ctx.symbol_table, "str-compare", span)?;
+    let b = as_lexeme_str(&values[1], ctx.symbol_table, "str-compare", span)?;
+    let result = match a.cmp(&b) {
+        std::cmp::Ordering::Less => -1i64,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    };
+    Ok(Value::Integer(result))
+}
+
+/// `string-to-field` — parse string as a typed value (integer, float, or symbol).
+fn builtin_string_to_field(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("string-to-field", args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    let Value::String(s) = &val else {
+        return Err(EvalError::TypeError {
+            function: "string-to-field".to_string(),
+            expected: "STRING".to_string(),
+            actual: generic_value_type_name(&val).to_string(),
+            span: span.cloned(),
+        });
+    };
+    parse_string_as_value(
+        s.as_str(),
+        ctx.symbol_table,
+        ctx.config.string_encoding,
+        "string-to-field",
+        span,
+    )
+}
+
+/// Parse a string token as integer, float, or symbol.
+fn parse_string_as_value(
+    s: &str,
+    symbol_table: &mut SymbolTable,
+    encoding: StringEncoding,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        let sym = symbol_table
+            .intern_symbol("", encoding)
+            .map_err(|e| EvalError::TypeError {
+                function: function.to_string(),
+                expected: "encodable symbol".to_string(),
+                actual: format!("{e}"),
+                span: span.cloned(),
+            })?;
+        return Ok(Value::Symbol(sym));
+    }
+    if let Ok(n) = trimmed.parse::<i64>() {
+        return Ok(Value::Integer(n));
+    }
+    if let Ok(f) = trimmed.parse::<f64>() {
+        return Ok(Value::Float(f));
+    }
+    let sym = symbol_table
+        .intern_symbol(trimmed, encoding)
+        .map_err(|e| EvalError::TypeError {
+            function: function.to_string(),
+            expected: "encodable symbol".to_string(),
+            actual: format!("{e}"),
+            span: span.cloned(),
+        })?;
+    Ok(Value::Symbol(sym))
+}
+
+/// `explode$` / `str-explode` — split string by whitespace into multifield.
+fn builtin_explode_mf(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("explode$", args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    let Value::String(s) = &val else {
+        return Err(EvalError::TypeError {
+            function: "explode$".to_string(),
+            expected: "STRING".to_string(),
+            actual: generic_value_type_name(&val).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let mut result = ferric_core::value::Multifield::new();
+    for word in s.as_str().split_whitespace() {
+        result.push(parse_string_as_value(
+            word,
+            ctx.symbol_table,
+            ctx.config.string_encoding,
+            "explode$",
+            span,
+        )?);
+    }
+    Ok(Value::Multifield(Box::new(result)))
+}
+
+// ---------------------------------------------------------------------------
 // Multifield built-ins
 // ---------------------------------------------------------------------------
 
@@ -3774,6 +4444,383 @@ fn builtin_subsetp(
         ctx.symbol_table,
         ctx.config.string_encoding,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Multifield modification built-ins
+// ---------------------------------------------------------------------------
+
+/// `insert$` — insert values at a position in a multifield.
+///
+/// `(insert$ <multifield> <integer-index> <value>+)` — 1-based index.
+/// Index 1 = before first element. Index > length = append.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn builtin_insert_mf(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_min("insert$", args, 3, span)?;
+    let values = eval_args(ctx, args)?;
+    let Value::Multifield(mf) = &values[0] else {
+        return Err(EvalError::TypeError {
+            function: "insert$".to_string(),
+            expected: "MULTIFIELD".to_string(),
+            actual: generic_value_type_name(&values[0]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let Value::Integer(index) = &values[1] else {
+        return Err(EvalError::TypeError {
+            function: "insert$".to_string(),
+            expected: "INTEGER (index)".to_string(),
+            actual: generic_value_type_name(&values[1]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    // Convert 1-based to 0-based, clamping to valid range.
+    let insert_pos = ((*index).max(1) - 1) as usize;
+    let insert_pos = insert_pos.min(mf.len());
+    // Collect values to insert, splicing multifields.
+    let mut to_insert = Vec::new();
+    for v in &values[2..] {
+        match v {
+            Value::Multifield(inner) => to_insert.extend(inner.iter().cloned()),
+            _ => to_insert.push(v.clone()),
+        }
+    }
+    // Build result by splicing insert_pos prefix, new values, then suffix.
+    let mut result = ferric_core::value::Multifield::new();
+    for v in mf[..insert_pos].iter().cloned() {
+        result.push(v);
+    }
+    for v in to_insert {
+        result.push(v);
+    }
+    for v in mf[insert_pos..].iter().cloned() {
+        result.push(v);
+    }
+    Ok(Value::Multifield(Box::new(result)))
+}
+
+/// `delete$` — remove a range from a multifield.
+///
+/// `(delete$ <multifield> <begin> <end>)` — 1-based inclusive indices.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn builtin_delete_mf(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("delete$", args, 3, span)?;
+    let values = eval_args(ctx, args)?;
+    let Value::Multifield(mf) = &values[0] else {
+        return Err(EvalError::TypeError {
+            function: "delete$".to_string(),
+            expected: "MULTIFIELD".to_string(),
+            actual: generic_value_type_name(&values[0]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let Value::Integer(begin) = &values[1] else {
+        return Err(EvalError::TypeError {
+            function: "delete$".to_string(),
+            expected: "INTEGER (begin)".to_string(),
+            actual: generic_value_type_name(&values[1]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let Value::Integer(end) = &values[2] else {
+        return Err(EvalError::TypeError {
+            function: "delete$".to_string(),
+            expected: "INTEGER (end)".to_string(),
+            actual: generic_value_type_name(&values[2]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let begin_0 = ((*begin).max(1) - 1) as usize;
+    let end_0 = (*end).max(0) as usize;
+    let mut result = ferric_core::value::Multifield::new();
+    let end_clamped = end_0.min(mf.len());
+    if begin_0 < mf.len() && end_0 >= 1 && begin_0 < end_clamped {
+        for v in mf[..begin_0].iter().cloned() {
+            result.push(v);
+        }
+        for v in mf[end_clamped..].iter().cloned() {
+            result.push(v);
+        }
+    } else {
+        for v in mf.iter().cloned() {
+            result.push(v);
+        }
+    }
+    Ok(Value::Multifield(Box::new(result)))
+}
+
+/// `replace$` — replace a range in a multifield with new values.
+///
+/// `(replace$ <multifield> <begin> <end> <value>+)` — 1-based inclusive.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn builtin_replace_mf(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_min("replace$", args, 4, span)?;
+    let values = eval_args(ctx, args)?;
+    let Value::Multifield(mf) = &values[0] else {
+        return Err(EvalError::TypeError {
+            function: "replace$".to_string(),
+            expected: "MULTIFIELD".to_string(),
+            actual: generic_value_type_name(&values[0]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let Value::Integer(begin) = &values[1] else {
+        return Err(EvalError::TypeError {
+            function: "replace$".to_string(),
+            expected: "INTEGER (begin)".to_string(),
+            actual: generic_value_type_name(&values[1]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let Value::Integer(end) = &values[2] else {
+        return Err(EvalError::TypeError {
+            function: "replace$".to_string(),
+            expected: "INTEGER (end)".to_string(),
+            actual: generic_value_type_name(&values[2]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let begin_0 = ((*begin).max(1) - 1) as usize;
+    let end_0 = (*end).max(0) as usize;
+    // Collect replacement values, splicing multifields.
+    let mut replacements = Vec::new();
+    for v in &values[3..] {
+        match v {
+            Value::Multifield(inner) => replacements.extend(inner.iter().cloned()),
+            _ => replacements.push(v.clone()),
+        }
+    }
+    let end_clamped = end_0.min(mf.len());
+    let mut result = ferric_core::value::Multifield::new();
+    if begin_0 <= end_clamped {
+        for v in mf[..begin_0].iter().cloned() {
+            result.push(v);
+        }
+        for v in replacements {
+            result.push(v);
+        }
+        for v in mf[end_clamped..].iter().cloned() {
+            result.push(v);
+        }
+    } else {
+        for v in mf.iter().cloned() {
+            result.push(v);
+        }
+    }
+    Ok(Value::Multifield(Box::new(result)))
+}
+
+/// `first$` — return first element as a single-element multifield.
+fn builtin_first_mf(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("first$", args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    let Value::Multifield(mf) = &val else {
+        return Err(EvalError::TypeError {
+            function: "first$".to_string(),
+            expected: "MULTIFIELD".to_string(),
+            actual: generic_value_type_name(&val).to_string(),
+            span: span.cloned(),
+        });
+    };
+    match mf.first() {
+        Some(v) => Ok(Value::Multifield(Box::new(
+            std::iter::once(v.clone()).collect(),
+        ))),
+        None => Ok(Value::Multifield(
+            Box::<ferric_core::value::Multifield>::default(),
+        )),
+    }
+}
+
+/// `rest$` — return all but first element as a multifield.
+fn builtin_rest_mf(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("rest$", args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    let Value::Multifield(mf) = &val else {
+        return Err(EvalError::TypeError {
+            function: "rest$".to_string(),
+            expected: "MULTIFIELD".to_string(),
+            actual: generic_value_type_name(&val).to_string(),
+            span: span.cloned(),
+        });
+    };
+    if mf.len() <= 1 {
+        Ok(Value::Multifield(
+            Box::<ferric_core::value::Multifield>::default(),
+        ))
+    } else {
+        Ok(Value::Multifield(Box::new(
+            mf[1..].iter().cloned().collect(),
+        )))
+    }
+}
+
+/// CLIPS-compatible value comparison for sort.
+#[allow(clippy::cast_precision_loss)]
+fn clips_compare_values(a: &Value, b: &Value, symbol_table: &SymbolTable) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    // Type ordering: Integer/Float < String < Symbol < other
+    fn type_rank(v: &Value) -> u8 {
+        match v {
+            Value::Integer(_) | Value::Float(_) => 0,
+            Value::String(_) => 1,
+            Value::Symbol(_) => 2,
+            _ => 3,
+        }
+    }
+    let ra = type_rank(a);
+    let rb = type_rank(b);
+    if ra != rb {
+        return ra.cmp(&rb);
+    }
+    match (a, b) {
+        (Value::Integer(a), Value::Integer(b)) => a.cmp(b),
+        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+        (Value::Integer(a), Value::Float(b)) => {
+            (*a as f64).partial_cmp(b).unwrap_or(Ordering::Equal)
+        }
+        (Value::Float(a), Value::Integer(b)) => {
+            a.partial_cmp(&(*b as f64)).unwrap_or(Ordering::Equal)
+        }
+        (Value::String(a), Value::String(b)) => a.as_str().cmp(b.as_str()),
+        (Value::Symbol(a), Value::Symbol(b)) => {
+            let a_str = symbol_table.resolve_symbol_str(*a).unwrap_or("");
+            let b_str = symbol_table.resolve_symbol_str(*b).unwrap_or("");
+            a_str.cmp(b_str)
+        }
+        _ => Ordering::Equal,
+    }
+}
+
+/// `sort` — sort a multifield using a comparison function.
+///
+/// `(sort <comparator> <multifield>)` — comparator is typically `>` or `<`.
+fn builtin_sort(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("sort", args, 2, span)?;
+    let values = eval_args(ctx, args)?;
+    let cmp_name = as_lexeme_str(&values[0], ctx.symbol_table, "sort", span)?;
+    let Value::Multifield(mf) = &values[1] else {
+        return Err(EvalError::TypeError {
+            function: "sort".to_string(),
+            expected: "MULTIFIELD".to_string(),
+            actual: generic_value_type_name(&values[1]).to_string(),
+            span: span.cloned(),
+        });
+    };
+    let mut sorted = mf.clone();
+    sorted.sort_by(|a, b| clips_compare_values(a, b, ctx.symbol_table));
+    if cmp_name == ">" {
+        sorted.reverse();
+    }
+    Ok(Value::Multifield(sorted))
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic dispatch built-ins
+// ---------------------------------------------------------------------------
+
+/// `funcall` — call a function by name at runtime.
+///
+/// `(funcall <name> <args>...)` — evaluates the first argument to get a
+/// function name (symbol or string), then dispatches with remaining args.
+fn builtin_funcall(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_min("funcall", args, 1, span)?;
+    let name_val = eval_inner(ctx, &args[0])?;
+    let fn_name = match &name_val {
+        Value::Symbol(sym) => ctx
+            .symbol_table
+            .resolve_symbol_str(*sym)
+            .unwrap_or("")
+            .to_string(),
+        Value::String(s) => s.as_str().to_string(),
+        _ => {
+            return Err(EvalError::TypeError {
+                function: "funcall".to_string(),
+                expected: "SYMBOL or STRING (function name)".to_string(),
+                actual: generic_value_type_name(&name_val).to_string(),
+                span: span.cloned(),
+            })
+        }
+    };
+    // Evaluate remaining arguments.
+    let remaining_args = &args[1..];
+    let span_owned = span.cloned();
+
+    // Try dispatching as a builtin first.
+    if is_builtin_callable(&fn_name) {
+        return dispatch_builtin(ctx, &fn_name, remaining_args, span_owned);
+    }
+
+    // Try user-defined function (deffunction) with module resolution.
+    let function_modules = sorted_dedup_modules(ctx.functions.modules_for_name(&fn_name));
+    if let Some(target_module) = resolve_unqualified_callable_module(
+        ctx,
+        &fn_name,
+        "deffunction",
+        &function_modules,
+        ctx.functions.contains(ctx.current_module, &fn_name),
+        AmbiguityMessages {
+            expected: "unambiguous deffunction resolution",
+            actual: "multiple visible deffunctions; use MODULE::name",
+        },
+        span_owned.clone(),
+    )? {
+        if let Some(func) = ctx.functions.get(target_module, &fn_name).cloned() {
+            return dispatch_user_function(ctx, &func, target_module, remaining_args, span_owned);
+        }
+    }
+
+    // Try generic function with module resolution.
+    let generic_modules = sorted_dedup_modules(ctx.generics.modules_for_name(&fn_name));
+    if let Some(target_module) = resolve_unqualified_callable_module(
+        ctx,
+        &fn_name,
+        "defgeneric",
+        &generic_modules,
+        ctx.generics.contains(ctx.current_module, &fn_name),
+        AmbiguityMessages {
+            expected: "unambiguous defgeneric resolution",
+            actual: "multiple visible defgenerics; use MODULE::name",
+        },
+        span_owned.clone(),
+    )? {
+        if let Some(generic) = ctx.generics.get(target_module, &fn_name).cloned() {
+            return dispatch_generic(ctx, &generic, target_module, remaining_args, span_owned);
+        }
+    }
+
+    Err(EvalError::UnknownFunction {
+        name: fn_name,
+        span: span_owned,
+    })
 }
 
 // ===========================================================================
@@ -4436,6 +5483,310 @@ fn builtin_get_focus_stack(
 }
 
 // ===========================================================================
+// Fact introspection builtins
+// ===========================================================================
+
+/// Convert a user-supplied integer fact index to a `FactId`.
+///
+/// Fact addresses in ferric are stored as integers in bindings via
+/// `fact_id.data().as_ffi() as i64`. This reverses the conversion.
+fn integer_to_fact_id(n: i64) -> ferric_core::FactId {
+    #[allow(clippy::cast_sign_loss)] // user-supplied; out-of-range just yields a miss
+    let ffi = n as u64;
+    ferric_core::FactId::from(slotmap::KeyData::from_ffi(ffi))
+}
+
+/// `(fact-existp <integer>)` — returns TRUE if a fact with the given index exists.
+fn builtin_fact_existp(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("fact-existp", args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    let Value::Integer(idx) = val else {
+        return Err(EvalError::TypeError {
+            function: "fact-existp".into(),
+            expected: "INTEGER (fact-address)".into(),
+            actual: generic_value_type_name(&val).into(),
+            span: span.cloned(),
+        });
+    };
+    let Some(fb) = ctx.fact_base else {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    };
+    let fact_id = integer_to_fact_id(idx);
+    let exists = fb.get(fact_id).is_some();
+    Ok(clips_bool(
+        exists,
+        ctx.symbol_table,
+        ctx.config.string_encoding,
+    ))
+}
+
+/// `(fact-index <integer>)` — returns the fact index (identity on integers).
+///
+/// In CLIPS, fact addresses are integers, so this function simply validates
+/// that the argument is an integer and returns it unchanged.
+fn builtin_fact_index(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("fact-index", args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    match val {
+        Value::Integer(n) => Ok(Value::Integer(n)),
+        _ => Err(EvalError::TypeError {
+            function: "fact-index".into(),
+            expected: "INTEGER (fact-address)".into(),
+            actual: generic_value_type_name(&val).into(),
+            span: span.cloned(),
+        }),
+    }
+}
+
+/// `(fact-relation <integer>)` — returns the relation name of a fact as a SYMBOL.
+///
+/// For ordered facts this is the relation symbol; for template facts it is the
+/// template name. Returns `FALSE` if the fact does not exist or no fact base is
+/// available.
+fn builtin_fact_relation(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("fact-relation", args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    let Value::Integer(idx) = val else {
+        return Err(EvalError::TypeError {
+            function: "fact-relation".into(),
+            expected: "INTEGER (fact-address)".into(),
+            actual: generic_value_type_name(&val).into(),
+            span: span.cloned(),
+        });
+    };
+    let Some(fb) = ctx.fact_base else {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    };
+    let fact_id = integer_to_fact_id(idx);
+    let Some(entry) = fb.get(fact_id) else {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    };
+    let relation_name: String = match &entry.fact {
+        ferric_core::Fact::Ordered(of) => ctx
+            .symbol_table
+            .resolve_symbol_str(of.relation)
+            .unwrap_or("???")
+            .to_string(),
+        ferric_core::Fact::Template(tf) => {
+            // Look up the template name from template_defs.
+            ctx.template_defs
+                .and_then(|td| td.get(tf.template_id))
+                .map_or_else(
+                    || format!("<template:{:?}>", tf.template_id),
+                    |reg| reg.name.clone(),
+                )
+        }
+    };
+    let sym = ctx
+        .symbol_table
+        .intern_symbol(&relation_name, ctx.config.string_encoding)
+        .map_err(|_| EvalError::TypeError {
+            function: "fact-relation".into(),
+            expected: "valid symbol".into(),
+            actual: format!("encoding error for {relation_name:?}"),
+            span: span.cloned(),
+        })?;
+    Ok(Value::Symbol(sym))
+}
+
+/// `(fact-slot-value <integer> <slot-name>)` — returns the value of a named slot.
+///
+/// For template facts, returns the value at the named slot position.
+/// For ordered facts, the only valid slot name is `"implied"`, which returns
+/// a multifield of all field values.
+/// Returns `FALSE` if the fact does not exist.
+fn builtin_fact_slot_value(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("fact-slot-value", args, 2, span)?;
+    let values = eval_args(ctx, args)?;
+    let Value::Integer(idx) = &values[0] else {
+        return Err(EvalError::TypeError {
+            function: "fact-slot-value".into(),
+            expected: "INTEGER (fact-address)".into(),
+            actual: generic_value_type_name(&values[0]).into(),
+            span: span.cloned(),
+        });
+    };
+    let slot_name = as_lexeme_str(&values[1], ctx.symbol_table, "fact-slot-value", span)?;
+    let Some(fb) = ctx.fact_base else {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    };
+    let fact_id = integer_to_fact_id(*idx);
+    let Some(entry) = fb.get(fact_id) else {
+        return Err(EvalError::TypeError {
+            function: "fact-slot-value".into(),
+            expected: "valid fact index".into(),
+            actual: format!("fact {idx} does not exist"),
+            span: span.cloned(),
+        });
+    };
+    match &entry.fact {
+        ferric_core::Fact::Template(tf) => {
+            // Resolve slot name to a positional index via template_defs.
+            let Some(td) = ctx.template_defs else {
+                return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            };
+            let Some(reg) = td.get(tf.template_id) else {
+                return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            };
+            let Some(&pos) = reg.slot_index.get(&slot_name) else {
+                return Err(EvalError::TypeError {
+                    function: "fact-slot-value".into(),
+                    expected: format!("valid slot name in template `{}`", reg.name),
+                    actual: format!("unknown slot `{slot_name}`"),
+                    span: span.cloned(),
+                });
+            };
+            Ok(tf.slots.get(pos).cloned().unwrap_or(Value::Void))
+        }
+        ferric_core::Fact::Ordered(of) => {
+            // For ordered facts the only valid slot name is "implied".
+            if slot_name == "implied" {
+                let mf: ferric_core::value::Multifield = of.fields.iter().cloned().collect();
+                Ok(Value::Multifield(Box::new(mf)))
+            } else {
+                Err(EvalError::TypeError {
+                    function: "fact-slot-value".into(),
+                    expected: r#""implied" (only valid slot for ordered facts)"#.into(),
+                    actual: format!("`{slot_name}`"),
+                    span: span.cloned(),
+                })
+            }
+        }
+    }
+}
+
+/// `(fact-slot-names <integer>)` — returns slot names of a fact as a multifield of SYMBOLs.
+///
+/// For template facts, returns slot names in declaration order (requires `template_defs`).
+/// For ordered facts, returns a single-element multifield `(implied)`.
+/// Returns `FALSE` if the fact does not exist.
+fn builtin_fact_slot_names(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("fact-slot-names", args, 1, span)?;
+    let val = eval_inner(ctx, &args[0])?;
+    let Value::Integer(idx) = val else {
+        return Err(EvalError::TypeError {
+            function: "fact-slot-names".into(),
+            expected: "INTEGER (fact-address)".into(),
+            actual: generic_value_type_name(&val).into(),
+            span: span.cloned(),
+        });
+    };
+    let Some(fb) = ctx.fact_base else {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    };
+    let fact_id = integer_to_fact_id(idx);
+    let Some(entry) = fb.get(fact_id) else {
+        return Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+    };
+    match &entry.fact {
+        ferric_core::Fact::Template(tf) => {
+            let mut result = ferric_core::value::Multifield::new();
+            // Use template_defs for ordered slot names when available.
+            if let Some(td) = ctx.template_defs {
+                if let Some(reg) = td.get(tf.template_id) {
+                    for slot_name in &reg.slot_names {
+                        let sym = ctx
+                            .symbol_table
+                            .intern_symbol(slot_name, ctx.config.string_encoding)
+                            .map_err(|_| EvalError::TypeError {
+                                function: "fact-slot-names".into(),
+                                expected: "valid slot name".into(),
+                                actual: format!("encoding error for {slot_name:?}"),
+                                span: span.cloned(),
+                            })?;
+                        result.push(Value::Symbol(sym));
+                    }
+                    return Ok(Value::Multifield(Box::new(result)));
+                }
+            }
+            // Fallback when template_defs is unavailable: use slot_index keys
+            // (order is unspecified but at least complete).
+            for (slot_name, _) in ctx
+                .template_defs
+                .and_then(|td| td.get(tf.template_id))
+                .map(|reg| reg.slot_index.iter())
+                .into_iter()
+                .flatten()
+            {
+                let sym = ctx
+                    .symbol_table
+                    .intern_symbol(slot_name, ctx.config.string_encoding)
+                    .map_err(|_| EvalError::TypeError {
+                        function: "fact-slot-names".into(),
+                        expected: "valid slot name".into(),
+                        actual: format!("encoding error for {slot_name:?}"),
+                        span: span.cloned(),
+                    })?;
+                result.push(Value::Symbol(sym));
+            }
+            Ok(Value::Multifield(Box::new(result)))
+        }
+        ferric_core::Fact::Ordered(_) => {
+            // Ordered facts have a single implicit slot named "implied".
+            let sym = ctx
+                .symbol_table
+                .intern_symbol("implied", ctx.config.string_encoding)
+                .map_err(|_| EvalError::TypeError {
+                    function: "fact-slot-names".into(),
+                    expected: "valid symbol".into(),
+                    actual: "encoding error for \"implied\"".into(),
+                    span: span.cloned(),
+                })?;
+            let mut result = ferric_core::value::Multifield::new();
+            result.push(Value::Symbol(sym));
+            Ok(Value::Multifield(Box::new(result)))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fact I/O stubs (load-facts / save-facts)
+// ---------------------------------------------------------------------------
+
+/// Stub for `load-facts` and `save-facts` when called from a pure expression
+/// context (no engine access).
+///
+/// The real implementations live in `actions.rs` and are dispatched before
+/// the evaluator is reached.  When these functions appear in an expression
+/// context (e.g., inside a `deffunction` body or a `test` CE), we evaluate
+/// the filename argument for side-effect hygiene and return FALSE.
+fn builtin_load_save_facts_stub(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    name: &'static str,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact(name, args, 1, span)?;
+    // Evaluate the filename arg to surface any errors (e.g., wrong type).
+    let _ = eval_inner(ctx, &args[0])?;
+    // Return FALSE — full I/O requires engine access available only in the
+    // action dispatcher (actions.rs).  When called from a deffunction body or
+    // test CE the operation is a no-op; this matches CLIPS behaviour where
+    // these functions are only meaningful as top-level RHS actions.
+    Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
@@ -4501,6 +5852,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         eval(&mut ctx, expr)
     }
@@ -4589,6 +5942,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(
             &mut ctx,
@@ -4632,6 +5987,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
 
         match eval(&mut ctx, &runtime).unwrap_err() {
@@ -4680,6 +6037,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
 
         match eval(&mut ctx, &runtime).unwrap_err() {
@@ -4713,6 +6072,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(
             &mut ctx,
@@ -4749,6 +6110,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call(
             "bind",
@@ -4788,6 +6151,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("bind", vec![int(5), int(10)]);
         let result = eval(&mut ctx, &expr);
@@ -4852,6 +6217,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("double", vec![int(5)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -4894,6 +6261,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("add", vec![int(3), int(7)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -4920,6 +6289,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         // double expects 1 arg, passing 2
         let expr = call("double", vec![int(1), int(2)]);
@@ -4957,6 +6328,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("first", vec![int(10), int(20), int(30)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5000,6 +6373,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("inf", vec![int(1)]);
         let result = eval(&mut ctx, &expr);
@@ -5054,6 +6429,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let recursive_expr = call("inf", vec![int(1)]);
         let first_result = eval(&mut ctx, &recursive_expr);
@@ -5108,6 +6485,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &call("inc", vec![int(5)])).unwrap();
         assert!(result.structural_eq(&Value::Integer(6)));
@@ -5158,6 +6537,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &call("quadruple", vec![int(3)])).unwrap();
         assert!(result.structural_eq(&Value::Integer(12)));
@@ -5334,6 +6715,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call(">", vec![int(5), int(3)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5359,6 +6742,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("<", vec![int(5), int(3)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5384,6 +6769,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("=", vec![int(3), int(3)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5409,6 +6796,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("!=", vec![int(3), int(4)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5434,6 +6823,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call(">=", vec![int(5), int(5)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5459,6 +6850,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("<=", vec![int(3), int(5)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5488,6 +6881,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("eq", vec![int(42), int(42)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5513,6 +6908,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("neq", vec![int(1), float(1.0)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5544,6 +6941,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call(
             "and",
@@ -5577,6 +6976,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call(
             "and",
@@ -5610,6 +7011,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call(
             "or",
@@ -5642,6 +7045,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("not", vec![RuntimeExpr::Literal(false_sym)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5668,6 +7073,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("not", vec![RuntimeExpr::Literal(true_sym)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5723,6 +7130,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("integerp", vec![int(42)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5748,6 +7157,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("integerp", vec![float(3.125)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5773,6 +7184,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("floatp", vec![float(3.125)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5798,6 +7211,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("numberp", vec![int(42)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5823,6 +7238,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("numberp", vec![float(1.0)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5849,6 +7266,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("symbolp", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5875,6 +7294,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("stringp", vec![RuntimeExpr::Literal(Value::String(fs))]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5905,6 +7326,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("lexemep", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5931,6 +7354,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("lexemep", vec![RuntimeExpr::Literal(Value::String(fs))]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5956,6 +7381,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("lexemep", vec![int(42)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -5993,6 +7420,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call(
             "multifieldp",
@@ -6021,6 +7450,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("multifieldp", vec![int(0)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -6056,6 +7487,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("evenp", vec![int(4)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -6081,6 +7514,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("evenp", vec![int(0)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -6106,6 +7541,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("evenp", vec![int(7)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -6147,6 +7584,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("oddp", vec![int(7)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -6172,6 +7611,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("oddp", vec![int(0)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -6197,6 +7638,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("oddp", vec![int(4)]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -6257,6 +7700,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("integer", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
         let result = eval(&mut ctx, &expr);
@@ -6305,6 +7750,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("float", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
         let result = eval(&mut ctx, &expr);
@@ -6358,6 +7805,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("+", vec![int(1), RuntimeExpr::Literal(Value::Symbol(sym))]);
         let result = eval(&mut ctx, &expr);
@@ -6751,6 +8200,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("sym-cat", vec![str_lit("foo"), str_lit("bar")]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -6782,6 +8233,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let expr = call("sym-cat", vec![]);
         let result = eval(&mut ctx, &expr).unwrap();
@@ -6813,6 +8266,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
 
         let first = eval(&mut ctx, &call("gensym", vec![])).unwrap();
@@ -6856,6 +8311,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
 
         let set_result = eval(&mut ctx, &call("setgen", vec![int(10)])).unwrap();
@@ -6944,6 +8401,8 @@ mod tests {
                 generic_modules: &em,
                 method_chain: None,
                 input_buffer: None,
+                fact_base: None,
+                template_defs: None,
             };
             let expr = call(
                 "printout",
@@ -6996,6 +8455,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &call("load", vec![str_lit("x.clp")])).unwrap();
         assert!(is_false_symbol(&result, ctx.symbol_table));
@@ -7524,6 +8985,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(is_false_symbol(&result, ctx.symbol_table));
@@ -7550,6 +9013,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(is_false_symbol(&result, ctx.symbol_table));
@@ -7597,6 +9062,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(is_false_symbol(&result, ctx.symbol_table));
@@ -7629,6 +9096,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(is_true_symbol(&result, ctx.symbol_table));
@@ -7657,6 +9126,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(is_true_symbol(&result, ctx.symbol_table));
@@ -7689,6 +9160,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(is_true_symbol(&result, ctx.symbol_table));
@@ -7717,6 +9190,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(is_true_symbol(&result, ctx.symbol_table));
@@ -7749,6 +9224,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(is_false_symbol(&result, ctx.symbol_table));
@@ -7777,6 +9254,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(is_false_symbol(&result, ctx.symbol_table));
@@ -7828,6 +9307,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(is_true_symbol(&result, ctx.symbol_table));
@@ -7868,6 +9349,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::String(s) = result else {
@@ -8087,6 +9570,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(matches!(result, Value::Integer(42)));
@@ -8114,6 +9599,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         assert!(matches!(result, Value::Float(f) if (f - 2.5).abs() < 1e-10));
@@ -8141,6 +9628,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::Symbol(sym) = result else {
@@ -8171,6 +9660,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::Symbol(sym) = result else {
@@ -8202,6 +9693,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::String(s) = result else {
@@ -8236,6 +9729,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::String(s) = result else {
@@ -8266,6 +9761,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         let Value::Symbol(sym) = result else {
@@ -8297,6 +9794,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
+            fact_base: None,
+            template_defs: None,
         };
         let first = eval(&mut ctx, &expr).unwrap();
         let second = eval(&mut ctx, &expr).unwrap();
@@ -8360,6 +9859,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         match result {
@@ -8402,6 +9903,8 @@ mod tests {
             generic_modules: &em,
             method_chain: None,
             input_buffer: None,
+            fact_base: None,
+            template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
         match result {

@@ -218,6 +218,34 @@ See `phase5-pass-notes.md` for detailed notes on each Phase 5 pass.
 - Fix: use `if let Some(x) = option { ... } else { ... }`
 - Total test count: 1200 after pass 012
 
+## load-facts / save-facts Implementation Pattern
+
+### Architecture decision
+- Both actions registered as stubs in `evaluator.rs` (`is_builtin_callable` + `dispatch_builtin`) returning FALSE — handles pure expression context
+- Real implementations dispatch from `execute_single_action` in `actions.rs` before the evaluator is reached
+- `load-facts` wraps file contents as `(deffacts __ferric_load_facts_scratch__ <contents>)`, calls `engine.load_str()`, then pops `registered_deffacts` to prevent re-assert on reset
+- `save-facts` collects fact IDs first (to avoid borrow conflicts), then formats each as bare s-expression using `FactBase::iter()` and `format_fact_for_fct()`
+
+### Key patterns
+- `FactBase::iter()` returns `(FactId, &FactEntry)` — use `.fact.clone()` to get owned fact
+- Template facts use `slot_names` (Vec, declaration order) not `slot_index` (HashMap, non-deterministic) for output ordering
+- `IoWrite` trait needed for `BufWriter::writeln!`: add `use std::io::Write as IoWrite;`
+- Tests use `tempfile::NamedTempFile` + `path.to_string_lossy().replace('\\', "\\\\")` for cross-platform path injection into CLIPS strings
+
+## EvalContext Field Addition Pattern
+
+See `evalcontext-pattern.md` for details on adding optional fields to `EvalContext`.
+Short summary: use a Python script to batch-insert `None` fields after `input_buffer:` lines.
+
+## Fact Introspection Builtins
+
+- `FactBase::get(id: FactId)` takes `FactId`, NOT `u64`
+- FactId ↔ integer: `FactId::from(KeyData::from_ffi(n as u64))` and `fact_id.data().as_ffi() as i64`
+- `TemplateFact.slots` is positional `Box<[Value]>`; `RegisteredTemplate.slot_index: HashMap<String, usize>` maps names to positions
+- `Engine.template_defs` is `slotmap::SlotMap<TemplateId, RegisteredTemplate>` (NOT a `TemplateDefs` type)
+- `EvalContext.template_defs` must be `pub(crate)` (not `pub`) because `RegisteredTemplate` is `pub(crate)`
+- `actions.rs` has TWO `EvalContext` construction sites (line 62 and line 176) — both need updating
+
 ## Phase 6 Benchmarks
 
 ### Constraint Limitations (for benchmark CLIPS source)

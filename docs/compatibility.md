@@ -167,6 +167,17 @@ chosen conflict resolution strategy:
 | `run` | No-op when called from RHS (documented behavior) |
 | `reset` | Deferred: sets a flag checked after action execution |
 | `clear` | Deferred: sets a flag checked after action execution |
+| `if`/`then`/`else` | Conditional action execution |
+| `while` | Conditional loop with `do` keyword |
+| `loop-for-count` | Indexed loop with optional variable binding |
+| `progn$` / `foreach` | Multifield iteration with element and index binding |
+| `switch`/`case`/`default` | Multi-branch dispatch |
+| `do-for-fact` | Iterate first matching fact |
+| `do-for-all-facts` | Iterate all matching facts |
+| `delayed-do-for-all-facts` | Deferred all-facts iteration |
+| `any-factp` | Boolean fact existence check |
+| `find-fact` | Find first matching fact |
+| `find-all-facts` | Find all matching facts |
 
 **Example -- modify and retract:**
 
@@ -539,6 +550,22 @@ identically to their CLIPS counterparts for the supported argument types.
 | `abs` | Absolute value | `(abs -5)` => `5` |
 | `min` | Minimum | `(min 3 7)` => `3` |
 | `max` | Maximum | `(max 3 7)` => `7` |
+| `**` | Power | `(** 2 10)` => `1024.0` |
+| `sqrt` | Square root | `(sqrt 16)` => `4.0` |
+| `round` | Round to nearest integer | `(round 3.7)` => `4` |
+| `ceiling` | Round up to integer | `(ceiling 3.1)` => `4` |
+| `floor` | Round down to integer | `(floor 3.9)` => `3` |
+| `pi` | Pi constant | `(pi)` => `3.14159...` |
+| `exp` | e^x | `(exp 1)` => `2.718...` |
+| `log` | Natural logarithm | `(log 2.718)` => `~1.0` |
+| `log10` | Base-10 logarithm | `(log10 100)` => `2.0` |
+| `sin`, `cos`, `tan` | Trigonometric | `(sin 0)` => `0.0` |
+| `asin`, `acos`, `atan` | Inverse trigonometric | `(acos 1)` => `0.0` |
+| `atan2` | Two-argument arctangent | `(atan2 1 1)` => `0.785...` |
+| `sinh`, `cosh`, `tanh` | Hyperbolic | `(cosh 0)` => `1.0` |
+| `asinh`, `acosh`, `atanh` | Inverse hyperbolic | `(asinh 0)` => `0.0` |
+| `deg-rad`, `rad-deg` | Angle conversion | `(deg-rad 180)` => `3.14159...` |
+| `deg-grad`, `grad-deg` | Degree/gradian conversion | `(deg-grad 90)` => `100.0` |
 
 ### Type Conversion
 
@@ -587,6 +614,13 @@ identically to their CLIPS counterparts for the supported argument types.
 | `sym-cat` | Concatenate to symbol | `(sym-cat a b)` => `ab` |
 | `str-length` | String length in bytes | `(str-length "hello")` => `5` |
 | `sub-string` | Extract substring (1-indexed) | `(sub-string 1 3 "hello")` => `"hel"` |
+| `str-index` | Find substring position (1-indexed), FALSE if not found | `(str-index "lo" "hello")` => `4` |
+| `upcase` | Convert to uppercase (preserves type) | `(upcase "hello")` => `"HELLO"` |
+| `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
+| `str-compare` | Lexicographic comparison (-1, 0, or 1) | `(str-compare "a" "b")` => `-1` |
+| `string-to-field` | Parse string as typed value | `(string-to-field "42")` => `42` |
+| `explode$` | Split string by whitespace into multifield | `(explode$ "a b c")` => `(a b c)` |
+| `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
 
 ### Multifield Functions
 
@@ -597,6 +631,22 @@ identically to their CLIPS counterparts for the supported argument types.
 | `nth$` | Get nth element (1-indexed) | `(nth$ 2 (create$ a b c))` => `b` |
 | `member$` | Find element position | `(member$ b (create$ a b c))` => `2` |
 | `subsetp` | Subset test | `(subsetp (create$ a) (create$ a b))` => `TRUE` |
+| `insert$` | Insert values at position | `(insert$ (create$ a c) 2 b)` => `(a b c)` |
+| `delete$` | Remove range (1-indexed, inclusive) | `(delete$ (create$ a b c) 2 2)` => `(a c)` |
+| `replace$` | Replace range with values | `(replace$ (create$ a b c) 2 2 x)` => `(a x c)` |
+| `first$` | First element as multifield | `(first$ (create$ a b c))` => `(a)` |
+| `rest$` | All but first as multifield | `(rest$ (create$ a b c))` => `(b c)` |
+| `sort` | Sort multifield | `(sort < (create$ 3 1 2))` => `(1 2 3)` |
+
+### Fact Introspection Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `fact-existp` | Check if fact index is live | `(fact-existp 1)` => `TRUE` |
+| `fact-index` | Extract integer index from fact address | `(fact-index 1)` => `1` |
+| `fact-relation` | Get relation name as symbol | `(fact-relation 1)` => `person` |
+| `fact-slot-value` | Get named slot value | `(fact-slot-value 1 name)` => `"Alice"` |
+| `fact-slot-names` | Get slot names as multifield | `(fact-slot-names 1)` => `(name age)` |
 
 ### I/O Functions
 
@@ -606,6 +656,8 @@ identically to their CLIPS counterparts for the supported argument types.
 | `format` | Printf-style formatting (returns string; does not write to router) |
 | `read` | Read a single value from input |
 | `readline` | Read a line from input |
+| `load-facts` | Load facts from a `.fct` file into working memory |
+| `save-facts` | Save all facts to a `.fct` file |
 
 **format note:** In Ferric, `format` is an evaluator-only function that
 returns a formatted string. It does not write directly to a router. Use
@@ -633,7 +685,7 @@ The following features are explicitly out of scope.
 | `Complexity` strategy | Deferred | Until fully specified |
 | `Random` strategy | Deferred | Until fully specified |
 | Replay-identical ordering | Not guaranteed | Total order within a run, but not reproducible across runs |
-| `if`/`then`/`else` expressions | Not yet implemented | Use conditional rule patterns instead |
+| Truth maintenance (`logical` CE) | Not planned | Performance/serialization costs outweigh benefits |
 | Triple-nested negation | Not supported | Decompose into multiple rules |
 | `(exists (not ...))` | Not supported | Use separate rules |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
