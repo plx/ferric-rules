@@ -45,7 +45,7 @@ func goToFFIValue(v any) (ffi.Value, error) {
 		for i, elem := range val {
 			ev, err := goToFFIValue(elem)
 			if err != nil {
-				for j := 0; j < i; j++ {
+				for j := range i {
 					ffi.ValueFree(&elements[j])
 				}
 				return ffi.Value{}, err
