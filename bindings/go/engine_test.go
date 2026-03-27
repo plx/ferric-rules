@@ -1001,11 +1001,11 @@ func TestAssertFactFreesValuesOnError(t *testing.T) {
 	defer mustClose(t, e)
 	mustNoError(t, e.Reset())
 
-	// Pass a value that goToFFIValue cannot convert ([]any multifield).
+	// Pass a value that goToFFIValue cannot convert (struct{}).
 	// Earlier symbol/string values should still be freed.
-	_, err = e.AssertFact("data", Symbol("leaky"), "also-leaky", []any{1, 2})
+	_, err = e.AssertFact("data", Symbol("leaky"), "also-leaky", struct{}{})
 	if err == nil {
-		t.Fatal("expected error for unsupported multifield")
+		t.Fatal("expected error for unsupported type")
 	}
 }
 
@@ -1023,10 +1023,183 @@ func TestAssertTemplateFreesValuesOnError(t *testing.T) {
 	// Pass a value that goToFFIValue cannot convert.
 	_, err = e.AssertTemplate("item", map[string]any{
 		"name": "leaky-string",
-		"tags": []any{1, 2},
+		"tags": struct{}{},
 	})
 	if err == nil {
-		t.Fatal("expected error for unsupported multifield")
+		t.Fatal("expected error for unsupported type")
+	}
+}
+
+func TestAssertOrderedFactWithMultifield(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	// Assert an ordered fact with a multifield field.
+	id, err := e.AssertFact("data", Symbol("tag"), []any{int64(1), int64(2), int64(3)})
+	if err != nil {
+		t.Fatalf("expected multifield assertion to succeed: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("expected non-zero fact ID")
+	}
+
+	// Read back and verify.
+	f, err := e.GetFact(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != FactOrdered {
+		t.Fatalf("expected ordered fact, got %v", f.Type)
+	}
+	if f.Relation != "data" {
+		t.Fatalf("expected relation 'data', got %q", f.Relation)
+	}
+	if len(f.Fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(f.Fields))
+	}
+	// Field 0: symbol "tag"
+	if sym, ok := f.Fields[0].(Symbol); !ok || sym != "tag" {
+		t.Fatalf("expected Symbol(tag), got %v (%T)", f.Fields[0], f.Fields[0])
+	}
+	// Field 1: multifield [1, 2, 3]
+	mf, ok := f.Fields[1].([]any)
+	if !ok {
+		t.Fatalf("expected []any for multifield, got %T", f.Fields[1])
+	}
+	if len(mf) != 3 {
+		t.Fatalf("expected 3 multifield elements, got %d", len(mf))
+	}
+	for i, want := range []int64{1, 2, 3} {
+		got, ok := mf[i].(int64)
+		if !ok || got != want {
+			t.Fatalf("multifield[%d]: expected %d, got %v (%T)", i, want, mf[i], mf[i])
+		}
+	}
+}
+
+func TestAssertTemplateFactWithMultifield(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(deftemplate item
+			(slot name (type STRING))
+			(multislot tags))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	id, err := e.AssertTemplate("item", map[string]any{
+		"name": "widget",
+		"tags": []any{"red", "large"},
+	})
+	if err != nil {
+		t.Fatalf("expected multifield template assertion to succeed: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("expected non-zero fact ID")
+	}
+
+	// Read back and verify.
+	f, err := e.GetFact(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != FactTemplate {
+		t.Fatalf("expected template fact, got %v", f.Type)
+	}
+	if f.TemplateName != "item" {
+		t.Fatalf("expected template 'item', got %q", f.TemplateName)
+	}
+
+	name, ok := f.Slots["name"]
+	if !ok {
+		t.Fatal("expected 'name' slot")
+	}
+	if name != "widget" {
+		t.Fatalf("expected name='widget', got %v", name)
+	}
+
+	tags, ok := f.Slots["tags"]
+	if !ok {
+		t.Fatal("expected 'tags' slot")
+	}
+	mf, ok := tags.([]any)
+	if !ok {
+		t.Fatalf("expected []any for tags, got %T", tags)
+	}
+	if len(mf) != 2 {
+		t.Fatalf("expected 2 tags, got %d", len(mf))
+	}
+	if mf[0] != "red" {
+		t.Fatalf("expected tag[0]='red', got %v", mf[0])
+	}
+	if mf[1] != "large" {
+		t.Fatalf("expected tag[1]='large', got %v", mf[1])
+	}
+}
+
+func TestAssertMultifieldEmptySlice(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(deftemplate item
+			(slot name (type STRING))
+			(multislot tags))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	// Assert with empty multifield.
+	id, err := e.AssertTemplate("item", map[string]any{
+		"name": "empty",
+		"tags": []any{},
+	})
+	if err != nil {
+		t.Fatalf("expected empty multifield assertion to succeed: %v", err)
+	}
+
+	f, err := e.GetFact(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tags, ok := f.Slots["tags"]
+	if !ok {
+		t.Fatal("expected 'tags' slot")
+	}
+	mf, ok := tags.([]any)
+	if !ok {
+		t.Fatalf("expected []any for tags, got %T", tags)
+	}
+	if len(mf) != 0 {
+		t.Fatalf("expected 0 tags, got %d", len(mf))
+	}
+}
+
+func TestAssertMultifieldConversionErrorFreesPartial(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	// A multifield with an unsupported element should fail and free
+	// the already-converted elements without leaking.
+	_, err = e.AssertFact("data", []any{int64(1), "ok", struct{}{}})
+	if err == nil {
+		t.Fatal("expected error for unsupported type inside multifield")
 	}
 }
 

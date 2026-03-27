@@ -8,8 +8,7 @@ import (
 )
 
 var (
-	errMultifieldAssertionUnsupported = errors.New("ferric: multifield conversion not yet supported for assertion")
-	errUnsupportedGoTypeForFFI        = errors.New("ferric: unsupported Go type for FFI conversion")
+	errUnsupportedGoTypeForFFI = errors.New("ferric: unsupported Go type for FFI conversion")
 )
 
 // Symbol is a distinct type representing a CLIPS symbol value.
@@ -42,7 +41,18 @@ func goToFFIValue(v any) (ffi.Value, error) {
 	case nil:
 		return ffi.ValueVoid(), nil
 	case []any:
-		return ffi.Value{}, errMultifieldAssertionUnsupported
+		elements := make([]ffi.Value, len(val))
+		for i, elem := range val {
+			ev, err := goToFFIValue(elem)
+			if err != nil {
+				for j := 0; j < i; j++ {
+					ffi.ValueFree(&elements[j])
+				}
+				return ffi.Value{}, err
+			}
+			elements[i] = ev
+		}
+		return ffi.ValueMultifield(elements), nil
 	default:
 		return ffi.Value{}, fmt.Errorf("%w: %T", errUnsupportedGoTypeForFFI, v)
 	}
@@ -68,7 +78,9 @@ func ffiValueToGo(v *ffi.Value) any {
 		for i := range n {
 			elem := ffi.ValueGetMultifieldElement(v, i)
 			result[i] = ffiValueToGo(&elem)
-			ffi.ValueFree(&elem)
+			// Do NOT free elem here — it is a shallow copy of the parent's
+			// array element and shares owned resources (string_ptr, etc.).
+			// The parent's ValueFree handles recursive cleanup.
 		}
 		return result
 	case ffi.ValueTypeExternalAddress:
