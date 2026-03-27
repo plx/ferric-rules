@@ -1,6 +1,7 @@
 //! Python Engine wrapper.
 
 use std::path::{Path, PathBuf};
+use std::thread::ThreadId;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -12,7 +13,9 @@ use ferric_runtime::Engine;
 use slotmap::{Key, KeyData};
 
 use crate::config::{Encoding, Strategy};
-use crate::error::{engine_error_to_pyerr, init_error_to_pyerr, load_errors_to_pyerr};
+use crate::error::{
+    engine_error_to_pyerr, init_error_to_pyerr, load_errors_to_pyerr, FerricRuntimeError,
+};
 use crate::fact::{fact_to_python, Fact};
 use crate::result::{FiredRule, RunResult};
 use crate::value::{python_to_value, value_to_python};
@@ -32,9 +35,32 @@ fn make_config(strategy: Option<Strategy>, encoding: Option<Encoding>) -> Engine
 /// The Ferric rules engine.
 ///
 /// Thread-affine: must be used only from the thread that created it.
-#[pyclass(name = "Engine", unsendable)]
+/// Cross-thread access raises `FerricRuntimeError` (not a panic).
+#[pyclass(name = "Engine")]
 pub struct PyEngine {
     engine: Engine,
+    creator_thread: ThreadId,
+}
+
+// SAFETY: We enforce thread affinity ourselves via `check_thread()` at every
+// Python entry point, converting violations into `FerricRuntimeError` instead
+// of the `PanicException` that PyO3's `unsendable` would produce.  The inner
+// `Engine` is never actually accessed from a foreign thread.
+unsafe impl Send for PyEngine {}
+unsafe impl Sync for PyEngine {}
+
+impl PyEngine {
+    /// Check that the caller is on the thread that created this engine.
+    fn check_thread(&self) -> PyResult<()> {
+        let current = std::thread::current().id();
+        if current != self.creator_thread {
+            return Err(FerricRuntimeError::new_err(format!(
+                "engine called from wrong thread (created on {:?}, called from {:?})",
+                self.creator_thread, current,
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -51,6 +77,7 @@ impl PyEngine {
         let config = make_config(strategy, encoding);
         Self {
             engine: Engine::new(config),
+            creator_thread: std::thread::current().id(),
         }
     }
 
@@ -64,7 +91,10 @@ impl PyEngine {
     ) -> PyResult<Self> {
         let config = make_config(strategy, encoding);
         let engine = Engine::with_rules_config(source, config).map_err(init_error_to_pyerr)?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            creator_thread: std::thread::current().id(),
+        })
     }
 
     // -- Context manager --
@@ -79,21 +109,24 @@ impl PyEngine {
         _exc_type: Option<&Bound<'_, PyAny>>,
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
-    ) -> bool {
+    ) -> PyResult<bool> {
+        self.check_thread()?;
         self.engine.clear();
-        false // don't suppress exceptions
+        Ok(false) // don't suppress exceptions
     }
 
     // -- Loading --
 
     /// Load CLIPS source into the engine.
     fn load(&mut self, source: &str) -> PyResult<()> {
+        self.check_thread()?;
         self.engine.load_str(source).map_err(load_errors_to_pyerr)?;
         Ok(())
     }
 
     /// Load CLIPS source from a file path.
     fn load_file(&mut self, path: &str) -> PyResult<()> {
+        self.check_thread()?;
         self.engine
             .load_file(Path::new(path))
             .map_err(load_errors_to_pyerr)?;
@@ -104,6 +137,7 @@ impl PyEngine {
 
     /// Assert a fact from a CLIPS syntax string like `"(color red)"`.
     fn assert_string(&mut self, source: &str) -> PyResult<u64> {
+        self.check_thread()?;
         let wrapped = format!("(assert {source})");
         let result = self
             .engine
@@ -131,6 +165,7 @@ impl PyEngine {
         relation: &str,
         args: &Bound<'_, PyTuple>,
     ) -> PyResult<u64> {
+        self.check_thread()?;
         let mut values = Vec::with_capacity(args.len());
         for item in args.iter() {
             values.push(python_to_value(&item, &mut self.engine)?);
@@ -161,6 +196,7 @@ impl PyEngine {
         template_name: &str,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<u64> {
+        self.check_thread()?;
         let (names, values) = match kwargs {
             Some(dict) => {
                 let mut names = Vec::with_capacity(dict.len());
@@ -185,12 +221,14 @@ impl PyEngine {
 
     /// Retract a fact by its ID.
     fn retract(&mut self, fact_id: u64) -> PyResult<()> {
+        self.check_thread()?;
         let fid = FactId::from(KeyData::from_ffi(fact_id));
         self.engine.retract(fid).map_err(engine_error_to_pyerr)
     }
 
     /// Get a fact by its ID, or `None` if it does not exist.
     fn get_fact(&self, py: Python<'_>, fact_id: u64) -> PyResult<Option<Fact>> {
+        self.check_thread()?;
         let fid = FactId::from(KeyData::from_ffi(fact_id));
         let fact = self.engine.get_fact(fid).map_err(engine_error_to_pyerr)?;
         match fact {
@@ -201,6 +239,7 @@ impl PyEngine {
 
     /// Return all facts currently in working memory.
     fn facts(&self, py: Python<'_>) -> PyResult<Vec<Fact>> {
+        self.check_thread()?;
         let iter = self.engine.facts().map_err(engine_error_to_pyerr)?;
         let mut result = Vec::new();
         for (fid, fact) in iter {
@@ -211,6 +250,7 @@ impl PyEngine {
 
     /// Find facts by relation name.
     fn find_facts(&self, py: Python<'_>, relation: &str) -> PyResult<Vec<Fact>> {
+        self.check_thread()?;
         let facts = self
             .engine
             .find_facts(relation)
@@ -231,6 +271,7 @@ impl PyEngine {
     /// * `limit` — Maximum number of rule firings (default: unlimited).
     #[pyo3(signature = (*, limit=None))]
     fn run(&mut self, limit: Option<usize>) -> PyResult<RunResult> {
+        self.check_thread()?;
         let run_limit = match limit {
             Some(n) => RunLimit::Count(n),
             None => RunLimit::Unlimited,
@@ -241,6 +282,7 @@ impl PyEngine {
 
     /// Fire a single rule activation. Returns `FiredRule` or `None`.
     fn step(&mut self) -> PyResult<Option<FiredRule>> {
+        self.check_thread()?;
         let result = self.engine.step().map_err(engine_error_to_pyerr)?;
         Ok(result.map(|fr| {
             let name = self
@@ -253,18 +295,23 @@ impl PyEngine {
     }
 
     /// Request the engine to halt.
-    fn halt(&mut self) {
+    fn halt(&mut self) -> PyResult<()> {
+        self.check_thread()?;
         self.engine.halt();
+        Ok(())
     }
 
     /// Reset the engine: clear facts and re-assert deffacts.
     fn reset(&mut self) -> PyResult<()> {
+        self.check_thread()?;
         self.engine.reset().map_err(engine_error_to_pyerr)
     }
 
     /// Clear the engine: remove all rules, facts, templates, etc.
-    fn clear(&mut self) {
+    fn clear(&mut self) -> PyResult<()> {
+        self.check_thread()?;
         self.engine.clear();
+        Ok(())
     }
 
     // -- Properties --
@@ -272,58 +319,68 @@ impl PyEngine {
     /// Number of user-visible facts.
     #[getter]
     fn fact_count(&self) -> PyResult<usize> {
+        self.check_thread()?;
         let count = self.engine.facts().map_err(engine_error_to_pyerr)?.count();
         Ok(count)
     }
 
     /// Whether the engine is currently halted.
     #[getter]
-    fn is_halted(&self) -> bool {
-        self.engine.is_halted()
+    fn is_halted(&self) -> PyResult<bool> {
+        self.check_thread()?;
+        Ok(self.engine.is_halted())
     }
 
     /// Number of pending activations on the agenda.
     #[getter]
-    fn agenda_size(&self) -> usize {
-        self.engine.agenda_len()
+    fn agenda_size(&self) -> PyResult<usize> {
+        self.check_thread()?;
+        Ok(self.engine.agenda_len())
     }
 
     /// Name of the current module.
     #[getter]
-    fn current_module(&self) -> &str {
-        self.engine.current_module()
+    fn current_module(&self) -> PyResult<String> {
+        self.check_thread()?;
+        Ok(self.engine.current_module().to_owned())
     }
 
     /// Top of the focus stack, or `None`.
     #[getter]
-    fn focus(&self) -> Option<&str> {
-        self.engine.get_focus()
+    fn focus(&self) -> PyResult<Option<String>> {
+        self.check_thread()?;
+        Ok(self.engine.get_focus().map(str::to_owned))
     }
 
     /// Full focus stack as a list of module names (bottom to top).
     #[getter]
-    fn focus_stack(&self) -> Vec<String> {
-        self.engine
+    fn focus_stack(&self) -> PyResult<Vec<String>> {
+        self.check_thread()?;
+        Ok(self
+            .engine
             .get_focus_stack()
             .into_iter()
             .map(String::from)
-            .collect()
+            .collect())
     }
 
     /// Non-fatal action diagnostics from the most recent run/step.
     #[getter]
-    fn diagnostics(&self) -> Vec<String> {
-        self.engine
+    fn diagnostics(&self) -> PyResult<Vec<String>> {
+        self.check_thread()?;
+        Ok(self
+            .engine
             .action_diagnostics()
             .iter()
             .map(ToString::to_string)
-            .collect()
+            .collect())
     }
 
     // -- Introspection --
 
     /// Return a list of `(name, salience)` tuples for all rules.
     fn rules(&self, py: Python<'_>) -> PyResult<PyObject> {
+        self.check_thread()?;
         let rules = self.engine.rules();
         let list = PyList::empty(py);
         for (name, salience) in rules {
@@ -340,36 +397,45 @@ impl PyEngine {
     }
 
     /// Return a list of template names.
-    fn templates(&self) -> Vec<String> {
-        self.engine
+    fn templates(&self) -> PyResult<Vec<String>> {
+        self.check_thread()?;
+        Ok(self
+            .engine
             .templates()
             .into_iter()
             .map(String::from)
-            .collect()
+            .collect())
     }
 
     /// Get the value of a global variable, or `None`.
-    fn get_global(&self, py: Python<'_>, name: &str) -> Option<PyObject> {
-        self.engine
+    fn get_global(&self, py: Python<'_>, name: &str) -> PyResult<Option<PyObject>> {
+        self.check_thread()?;
+        Ok(self
+            .engine
             .get_global(name)
-            .map(|v| value_to_python(py, v, &self.engine))
+            .map(|v| value_to_python(py, v, &self.engine)))
     }
 
     // -- I/O --
 
     /// Get captured output for a channel (e.g. "stdout").
-    fn get_output(&self, channel: &str) -> Option<String> {
-        self.engine.get_output(channel).map(String::from)
+    fn get_output(&self, channel: &str) -> PyResult<Option<String>> {
+        self.check_thread()?;
+        Ok(self.engine.get_output(channel).map(String::from))
     }
 
     /// Clear captured output for a channel.
-    fn clear_output(&mut self, channel: &str) {
+    fn clear_output(&mut self, channel: &str) -> PyResult<()> {
+        self.check_thread()?;
         self.engine.clear_output_channel(channel);
+        Ok(())
     }
 
     /// Push a line of input for `read`/`readline`.
-    fn push_input(&mut self, line: &str) {
+    fn push_input(&mut self, line: &str) -> PyResult<()> {
+        self.check_thread()?;
         self.engine.push_input(line);
+        Ok(())
     }
 
     // -- Serialization --
@@ -388,6 +454,7 @@ impl PyEngine {
         py: Python<'py>,
         format: Option<crate::config::Format>,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        self.check_thread()?;
         let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
         let bytes = self
             .engine
@@ -411,7 +478,10 @@ impl PyEngine {
         let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
         let engine = Engine::deserialize(data, fmt)
             .map_err(|e| crate::error::FerricError::new_err(e.to_string()))?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            creator_thread: std::thread::current().id(),
+        })
     }
 
     /// Save a serialized engine snapshot to a file.
@@ -423,6 +493,7 @@ impl PyEngine {
     #[cfg(feature = "serde")]
     #[pyo3(signature = (path, *, format=None))]
     fn save_snapshot(&self, path: PathBuf, format: Option<crate::config::Format>) -> PyResult<()> {
+        self.check_thread()?;
         let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
         let bytes = self
             .engine
@@ -448,12 +519,16 @@ impl PyEngine {
         let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
         let engine = Engine::deserialize(&data, fmt)
             .map_err(|e| crate::error::FerricError::new_err(e.to_string()))?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            creator_thread: std::thread::current().id(),
+        })
     }
 
     // -- Python protocols --
 
     fn __repr__(&self) -> PyResult<String> {
+        self.check_thread()?;
         let fact_count = self.engine.facts().map_err(engine_error_to_pyerr)?.count();
         let rule_count = self.engine.rules().len();
         let halted = self.engine.is_halted();
@@ -463,11 +538,13 @@ impl PyEngine {
     }
 
     fn __len__(&self) -> PyResult<usize> {
+        self.check_thread()?;
         let count = self.engine.facts().map_err(engine_error_to_pyerr)?.count();
         Ok(count)
     }
 
     fn __contains__(&self, fact_id: u64) -> PyResult<bool> {
+        self.check_thread()?;
         let fid = FactId::from(KeyData::from_ffi(fact_id));
         let fact = self.engine.get_fact(fid).map_err(engine_error_to_pyerr)?;
         Ok(fact.is_some())
