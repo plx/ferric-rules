@@ -5,6 +5,8 @@ import (
 	"errors"
 	"runtime"
 	"testing"
+
+	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
 )
 
 func init() {
@@ -743,6 +745,34 @@ func TestErrorAs(t *testing.T) {
 	var pe *ParseError
 	if !errors.As(err, &pe) {
 		t.Fatalf("expected ParseError, got %T: %v", err, err)
+	}
+}
+
+func TestErrorFromFFIThreadViolation(t *testing.T) {
+	err := errorFromFFI(ffi.ErrThreadViolation, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrThreadViolation) {
+		t.Fatalf("expected ErrThreadViolation, got: %v", err)
+	}
+	var tve *ThreadViolationError
+	if !errors.As(err, &tve) {
+		t.Fatalf("expected ThreadViolationError, got %T: %v", err, err)
+	}
+}
+
+func TestErrorFromFFIInvalidArgument(t *testing.T) {
+	err := errorFromFFI(ffi.ErrInvalidArgument, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got: %v", err)
+	}
+	var iae *InvalidArgumentError
+	if !errors.As(err, &iae) {
+		t.Fatalf("expected InvalidArgumentError, got %T: %v", err, err)
 	}
 }
 

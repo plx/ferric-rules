@@ -105,9 +105,44 @@ func (e *SerializationError) Is(target error) bool {
 	return target == ErrSerialization
 }
 
+// ThreadViolationError is returned when an engine is accessed from a thread
+// other than the one that created it.
+type ThreadViolationError struct {
+	FerricError
+}
+
+// Is reports whether target matches ErrThreadViolation.
+func (e *ThreadViolationError) Is(target error) bool {
+	return target == ErrThreadViolation
+}
+
+// InvalidArgumentError is returned when an argument to an API call is invalid.
+type InvalidArgumentError struct {
+	FerricError
+}
+
+// Is reports whether target matches ErrInvalidArgument.
+func (e *InvalidArgumentError) Is(target error) bool {
+	return target == ErrInvalidArgument
+}
+
 // ---------------------------------------------------------------------------
 // FFI error translation
 // ---------------------------------------------------------------------------
+
+// ffiMsg returns the FFI error message, falling back to fallback if empty.
+func ffiMsg(h ffi.EngineHandle, fallback string) string {
+	var msg string
+	if h != nil {
+		msg = ffi.EngineLastError(h)
+	} else {
+		msg = ffi.LastErrorGlobal()
+	}
+	if msg == "" {
+		return fallback
+	}
+	return msg
+}
 
 // errorFromFFI translates an FFI error code into the appropriate Go error.
 // If h is non-nil the per-engine error message is used; otherwise the global
@@ -116,57 +151,25 @@ func errorFromFFI(code ffi.ErrorCode, h ffi.EngineHandle) error {
 	if code == ffi.ErrOK {
 		return nil
 	}
-
-	var msg string
-	if h != nil {
-		msg = ffi.EngineLastError(h)
-	} else {
-		msg = ffi.LastErrorGlobal()
-	}
-
 	c := int(code)
-
 	switch code {
 	case ffi.ErrParseError:
-		if msg == "" {
-			msg = "parse error"
-		}
-		return &ParseError{FerricError{Code: c, Message: msg}}
-
+		return &ParseError{FerricError{Code: c, Message: ffiMsg(h, "parse error")}}
 	case ffi.ErrCompileError:
-		if msg == "" {
-			msg = "compile error"
-		}
-		return &CompileError{FerricError{Code: c, Message: msg}}
-
+		return &CompileError{FerricError{Code: c, Message: ffiMsg(h, "compile error")}}
 	case ffi.ErrRuntimeError:
-		if msg == "" {
-			msg = "runtime error"
-		}
-		return &RuntimeError{FerricError{Code: c, Message: msg}}
-
+		return &RuntimeError{FerricError{Code: c, Message: ffiMsg(h, "runtime error")}}
 	case ffi.ErrNotFound:
-		if msg == "" {
-			msg = "not found"
-		}
-		return &NotFoundError{FerricError{Code: c, Message: msg}}
-
+		return &NotFoundError{FerricError{Code: c, Message: ffiMsg(h, "not found")}}
 	case ffi.ErrIOError:
-		if msg == "" {
-			msg = "I/O error"
-		}
-		return &IOError{FerricError{Code: c, Message: msg}}
-
+		return &IOError{FerricError{Code: c, Message: ffiMsg(h, "I/O error")}}
 	case ffi.ErrSerializationError:
-		if msg == "" {
-			msg = "serialization error"
-		}
-		return &SerializationError{FerricError{Code: c, Message: msg}}
-
+		return &SerializationError{FerricError{Code: c, Message: ffiMsg(h, "serialization error")}}
+	case ffi.ErrThreadViolation:
+		return &ThreadViolationError{FerricError{Code: c, Message: ffiMsg(h, "thread violation")}}
+	case ffi.ErrInvalidArgument:
+		return &InvalidArgumentError{FerricError{Code: c, Message: ffiMsg(h, "invalid argument")}}
 	default:
-		if msg == "" {
-			msg = fmt.Sprintf("error code %d", c)
-		}
-		return &FerricError{Code: c, Message: msg}
+		return &FerricError{Code: c, Message: ffiMsg(h, fmt.Sprintf("error code %d", c))}
 	}
 }
