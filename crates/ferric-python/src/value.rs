@@ -12,7 +12,7 @@ use ferric_runtime::{Engine, Multifield, Value};
 ///
 /// Wraps a Python string and converts to `Value::Symbol` on the Rust side.
 /// Plain Python `str` also maps to Symbol by default.
-#[pyclass(name = "Symbol")]
+#[pyclass(name = "Symbol", module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct Symbol {
     #[pyo3(get)]
@@ -55,7 +55,7 @@ impl Symbol {
 ///
 /// Without this wrapper, Python `str` maps to `Value::Symbol`.
 /// Use `String("text")` to create a CLIPS string literal.
-#[pyclass(name = "String")]
+#[pyclass(name = "String", module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct ClipsString {
     #[pyo3(get)]

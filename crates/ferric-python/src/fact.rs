@@ -12,7 +12,7 @@ use slotmap::Key;
 use crate::value::value_to_python;
 
 /// Fact type discriminator.
-#[pyclass(eq, eq_int)]
+#[pyclass(eq, eq_int, module = "ferric")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FactType {
     #[pyo3(name = "ORDERED")]
@@ -24,7 +24,7 @@ pub enum FactType {
 /// A snapshot of a fact from the engine.
 ///
 /// This is a value copy — it does not hold a reference to the engine.
-#[pyclass]
+#[pyclass(module = "ferric")]
 pub struct Fact {
     /// Fact ID (as u64 from slotmap `KeyData::as_ffi()`).
     #[pyo3(get)]

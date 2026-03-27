@@ -3,7 +3,7 @@
 use pyo3::prelude::*;
 
 /// Conflict resolution strategy.
-#[pyclass(eq, eq_int)]
+#[pyclass(eq, eq_int, module = "ferric")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Strategy {
     /// Depth-first (CLIPS default).
@@ -21,7 +21,7 @@ pub enum Strategy {
 }
 
 /// String encoding mode.
-#[pyclass(eq, eq_int)]
+#[pyclass(eq, eq_int, module = "ferric")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
     /// ASCII-only encoding.
@@ -58,7 +58,7 @@ impl From<Encoding> for ferric_core::StringEncoding {
 
 /// Serialization format for engine snapshots.
 #[cfg(feature = "serde")]
-#[pyclass(eq, eq_int)]
+#[pyclass(eq, eq_int, module = "ferric")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     /// Compact binary (bincode). Fast and small.

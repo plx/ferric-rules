@@ -40,7 +40,7 @@ fn make_config(strategy: Option<Strategy>, encoding: Option<Encoding>) -> Engine
 ///
 /// Thread-affine: must be used only from the thread that created it.
 /// Cross-thread access raises `FerricRuntimeError` (not a panic).
-#[pyclass(name = "Engine")]
+#[pyclass(name = "Engine", module = "ferric")]
 pub struct PyEngine {
     engine: Engine,
     creator_thread: ThreadId,
