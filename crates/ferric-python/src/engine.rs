@@ -135,9 +135,7 @@ impl PyEngine {
     /// Load CLIPS source from a file path (str or os.PathLike).
     fn load_file(&mut self, path: PathBuf) -> PyResult<()> {
         self.check_thread()?;
-        self.engine
-            .load_file(&path)
-            .map_err(load_errors_to_pyerr)?;
+        self.engine.load_file(&path).map_err(load_errors_to_pyerr)?;
         Ok(())
     }
 
@@ -252,7 +250,13 @@ impl PyEngine {
         let fid = FactId::from(KeyData::from_ffi(fact_id));
         let fact = self.engine.get_fact(fid).map_err(engine_error_to_pyerr)?;
         match fact {
-            Some(f) => Ok(Some(fact_to_python(py, fid, f, &self.engine, self.engine_id)?)),
+            Some(f) => Ok(Some(fact_to_python(
+                py,
+                fid,
+                f,
+                &self.engine,
+                self.engine_id,
+            )?)),
             None => Ok(None),
         }
     }
