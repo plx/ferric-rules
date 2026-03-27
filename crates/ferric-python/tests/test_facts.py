@@ -6,20 +6,32 @@ import ferric
 
 class TestAssertString:
     def test_assert_ordered_fact(self, engine):
-        fid = engine.assert_string("(color red)")
-        assert isinstance(fid, int)
-        assert fid > 0
+        ids = engine.assert_string("(color red)")
+        assert isinstance(ids, list)
+        assert len(ids) == 1
+        assert isinstance(ids[0], int)
+        assert ids[0] > 0
 
-    def test_assert_multiple(self, engine):
-        fid1 = engine.assert_string("(color red)")
-        fid2 = engine.assert_string("(color blue)")
-        assert fid1 != fid2
+    def test_assert_multiple_in_one_call(self, engine):
+        ids = engine.assert_string("(color red) (color blue)")
+        assert len(ids) == 2
+        assert ids[0] != ids[1]
+
+    def test_assert_separate_calls(self, engine):
+        ids1 = engine.assert_string("(color red)")
+        ids2 = engine.assert_string("(color blue)")
+        assert ids1[0] != ids2[0]
 
     def test_assert_string_with_number(self, engine):
-        fid = engine.assert_string("(count 42)")
-        fact = engine.get_fact(fid)
+        ids = engine.assert_string("(count 42)")
+        fact = engine.get_fact(ids[0])
         assert fact is not None
         assert fact.relation == "count"
+
+    def test_assert_string_empty_raises(self, engine):
+        """Malformed or empty input that produces no facts should error."""
+        with pytest.raises(ferric.FerricError):
+            engine.assert_string("")
 
 
 class TestAssertFact:

@@ -135,21 +135,33 @@ impl PyEngine {
 
     // -- Fact operations --
 
-    /// Assert a fact from a CLIPS syntax string like `"(color red)"`.
-    fn assert_string(&mut self, source: &str) -> PyResult<u64> {
+    /// Assert one or more facts from CLIPS syntax, e.g. `"(color red)"`.
+    ///
+    /// Returns a list of fact IDs for all asserted facts.
+    ///
+    /// # Example
+    ///
+    /// ```python
+    /// ids = engine.assert_string("(color red) (color blue)")
+    /// assert len(ids) == 2
+    /// ```
+    fn assert_string(&mut self, source: &str) -> PyResult<Vec<u64>> {
         self.check_thread()?;
         let wrapped = format!("(assert {source})");
         let result = self
             .engine
             .load_str(&wrapped)
             .map_err(load_errors_to_pyerr)?;
-        if let Some(fid) = result.asserted_facts.first() {
-            Ok(fid.data().as_ffi())
-        } else {
-            Err(crate::error::FerricError::new_err(
-                "assert_string did not produce a fact",
-            ))
+        if result.asserted_facts.is_empty() {
+            return Err(crate::error::FerricError::new_err(
+                "assert_string did not produce any facts",
+            ));
         }
+        Ok(result
+            .asserted_facts
+            .iter()
+            .map(|fid| fid.data().as_ffi())
+            .collect())
     }
 
     /// Assert a structured ordered fact.
