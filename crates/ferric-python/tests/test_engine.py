@@ -1,5 +1,8 @@
 """Tests for Engine lifecycle: create, from_source, context manager, reset, clear."""
 
+import pathlib
+import tempfile
+
 import ferric
 
 
@@ -64,6 +67,24 @@ class TestContextManager:
         except ValueError:
             pass
         assert engine.fact_count == 0
+
+
+class TestLoadFile:
+    def test_load_file_str_path(self):
+        with tempfile.NamedTemporaryFile(suffix=".clp", mode="w", delete=False) as f:
+            f.write("(defrule r1 (go) => (assert (done)))")
+            path = f.name
+        engine = ferric.Engine()
+        engine.load_file(path)
+        assert len(engine.rules()) == 1
+
+    def test_load_file_pathlib_path(self):
+        with tempfile.NamedTemporaryFile(suffix=".clp", mode="w", delete=False) as f:
+            f.write("(defrule r2 (start) => (assert (end)))")
+            path = pathlib.Path(f.name)
+        engine = ferric.Engine()
+        engine.load_file(path)
+        assert len(engine.rules()) == 1
 
 
 class TestResetClear:

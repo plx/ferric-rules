@@ -1,6 +1,6 @@
 //! Python Engine wrapper.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::ThreadId;
 
@@ -132,11 +132,11 @@ impl PyEngine {
         Ok(())
     }
 
-    /// Load CLIPS source from a file path.
-    fn load_file(&mut self, path: &str) -> PyResult<()> {
+    /// Load CLIPS source from a file path (str or os.PathLike).
+    fn load_file(&mut self, path: PathBuf) -> PyResult<()> {
         self.check_thread()?;
         self.engine
-            .load_file(Path::new(path))
+            .load_file(&path)
             .map_err(load_errors_to_pyerr)?;
         Ok(())
     }
