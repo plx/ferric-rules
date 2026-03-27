@@ -114,20 +114,24 @@ py-lint:
 py-lint-fix:
     cd tools/ferric-tools && uv run ruff check --fix src/ tests/
 
-# Run Python tests
+# Run Python tests (tools)
 py-test:
     cd tools/ferric-tools && uv run pytest
+
+# Build and test Python bindings
+py-bindings-test:
+    cd crates/ferric-python && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv run maturin develop --quiet && .venv/bin/python -m pytest tests/
 
 # ── Composite checks ────────────────────────────────────────────────────────
 
 # Full preflight: format check, clippy, all tests, cargo check, Python checks, Go lint
-check: fmt-check clippy test cargo-check py-fmt-check py-lint py-test go-lint
+check: fmt-check clippy test cargo-check py-fmt-check py-lint py-test py-bindings-test go-lint
 
 # Same as `check` — alias for the preflight script
 preflight: check
 
 # PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks + Go lint
-preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test go-lint
+preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test py-bindings-test go-lint
 
 # ── Tracing / profiling ────────────────────────────────────────────────────
 
