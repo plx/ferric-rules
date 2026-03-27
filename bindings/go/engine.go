@@ -654,12 +654,15 @@ func (e *Engine) buildFact(factID uint64) (*Fact, error) {
 
 		// Build slot map by querying template slot names.
 		slotCount, rc := ffi.EngineTemplateSlotCount(e.handle, name)
-		if rc == ffi.ErrOK && slotCount > 0 {
+		if rc != ffi.ErrOK {
+			return nil, fmt.Errorf("ferric: failed to get slot count for template %q: %w", name, errorFromFFI(rc, e.handle))
+		}
+		if slotCount > 0 {
 			fact.Slots = make(map[string]any, slotCount)
 			for i := range slotCount {
 				slotName, rc := ffi.EngineTemplateSlotName(e.handle, name, i)
 				if rc != ffi.ErrOK {
-					break
+					return nil, fmt.Errorf("ferric: failed to get slot name %d for template %q: %w", i, name, errorFromFFI(rc, e.handle))
 				}
 				if i < fieldCount {
 					fact.Slots[slotName] = fields[i]
@@ -669,9 +672,10 @@ func (e *Engine) buildFact(factID uint64) (*Fact, error) {
 	} else {
 		fact.Type = FactOrdered
 		rel, rc := ffi.EngineGetFactRelation(e.handle, factID)
-		if rc == ffi.ErrOK {
-			fact.Relation = rel
+		if rc != ffi.ErrOK {
+			return nil, fmt.Errorf("ferric: failed to get relation for fact %d: %w", factID, errorFromFFI(rc, e.handle))
 		}
+		fact.Relation = rel
 	}
 
 	return fact, nil

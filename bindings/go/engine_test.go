@@ -1089,6 +1089,164 @@ func TestRuleFiresOnTemplateFact(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Strict fact-building coverage (GOB-006)
+// ---------------------------------------------------------------------------
+
+func TestBuildFactOrderedAlwaysHasRelation(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	mustAssertFact(t, e, "color", Symbol("red"))
+	mustAssertFact(t, e, "shape", Symbol("circle"))
+
+	facts, err := e.Facts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range facts {
+		if f.Type != FactOrdered {
+			t.Fatalf("expected ordered fact, got type %d", f.Type)
+		}
+		if f.Relation == "" {
+			t.Fatalf("fact %d has empty Relation", f.ID)
+		}
+	}
+}
+
+func TestBuildFactTemplateAlwaysHasSlots(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(deftemplate sensor
+			(slot id (type INTEGER))
+			(slot name (type STRING))
+			(slot value (type FLOAT)))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	mustAssertTemplate(t, e, "sensor", map[string]any{
+		"id":    int64(1),
+		"name":  "temp-1",
+		"value": 98.6,
+	})
+	mustAssertTemplate(t, e, "sensor", map[string]any{
+		"id":    int64(2),
+		"name":  "temp-2",
+		"value": 72.0,
+	})
+
+	facts, err := e.Facts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range facts {
+		if f.Type != FactTemplate {
+			t.Fatalf("expected template fact, got type %d", f.Type)
+		}
+		if f.TemplateName != "sensor" {
+			t.Fatalf("expected template name 'sensor', got %q", f.TemplateName)
+		}
+		if f.Slots == nil {
+			t.Fatalf("fact %d has nil Slots", f.ID)
+		}
+		if len(f.Slots) != 3 {
+			t.Fatalf("fact %d: expected 3 slots, got %d", f.ID, len(f.Slots))
+		}
+		for _, key := range []string{"id", "name", "value"} {
+			if _, ok := f.Slots[key]; !ok {
+				t.Fatalf("fact %d: missing slot %q", f.ID, key)
+			}
+		}
+	}
+}
+
+func TestBuildFactFindFactsCompleteness(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	mustAssertFact(t, e, "color", Symbol("red"))
+	mustAssertFact(t, e, "color", Symbol("blue"))
+
+	facts, err := e.FindFacts("color")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 2 {
+		t.Fatalf("expected 2 facts, got %d", len(facts))
+	}
+	for _, f := range facts {
+		if f.Relation == "" {
+			t.Fatalf("FindFacts returned fact %d with empty Relation", f.ID)
+		}
+		if f.Type != FactOrdered {
+			t.Fatalf("expected ordered fact, got type %d", f.Type)
+		}
+	}
+}
+
+func TestBuildFactGetFactCompleteness(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(deftemplate item (slot name (type STRING)) (slot count (type INTEGER)))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	// Verify ordered fact via GetFact.
+	orderedID := mustAssertFact(t, e, "tag", Symbol("important"))
+	f, err := e.GetFact(orderedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Relation == "" {
+		t.Fatal("GetFact returned ordered fact with empty Relation")
+	}
+
+	// Verify template fact via GetFact.
+	templateID := mustAssertTemplate(t, e, "item", map[string]any{
+		"name":  "widget",
+		"count": int64(5),
+	})
+	f, err = e.GetFact(templateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.TemplateName == "" {
+		t.Fatal("GetFact returned template fact with empty TemplateName")
+	}
+	if f.Slots == nil {
+		t.Fatal("GetFact returned template fact with nil Slots")
+	}
+	if len(f.Slots) != 2 {
+		t.Fatalf("expected 2 slots, got %d", len(f.Slots))
+	}
+	if f.Slots["name"] != "widget" {
+		t.Fatalf("expected slot name 'widget', got %v", f.Slots["name"])
+	}
+	if f.Slots["count"] != int64(5) {
+		t.Fatalf("expected slot count 5, got %v", f.Slots["count"])
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Wrong-thread coverage (GOB-003)
 // ---------------------------------------------------------------------------
 
