@@ -842,6 +842,117 @@ func TestValueConversionRoundtrip(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Value cleanup stress tests (#47 / GOB-002)
+// ---------------------------------------------------------------------------
+
+func TestAssertFactFreesValues(t *testing.T) {
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	const iterations = 1000
+	for i := range iterations {
+		id, err := e.AssertFact("data",
+			Symbol("sym-value"),
+			"string-value",
+			int64(i),
+			3.14,
+			true,
+		)
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		if id == 0 {
+			t.Fatalf("iteration %d: expected non-zero fact ID", i)
+		}
+	}
+
+	count, err := e.FactCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != iterations {
+		t.Fatalf("expected %d facts, got %d", iterations, count)
+	}
+}
+
+func TestAssertTemplateFreesValues(t *testing.T) {
+	e, err := NewEngine(WithSource(`
+		(deftemplate sensor
+			(slot id (type INTEGER))
+			(slot name (type STRING))
+			(slot status (type SYMBOL))
+			(slot value (type FLOAT)))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	const iterations = 1000
+	for i := range iterations {
+		id, err := e.AssertTemplate("sensor", map[string]any{
+			"id":     int64(i),
+			"name":   "sensor-name",
+			"status": Symbol("active"),
+			"value":  float64(i) * 0.1,
+		})
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		if id == 0 {
+			t.Fatalf("iteration %d: expected non-zero fact ID", i)
+		}
+	}
+
+	count, err := e.FactCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != iterations {
+		t.Fatalf("expected %d facts, got %d", iterations, count)
+	}
+}
+
+func TestAssertFactFreesValuesOnError(t *testing.T) {
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	// Pass a value that goToFFIValue cannot convert ([]any multifield).
+	// Earlier symbol/string values should still be freed.
+	_, err = e.AssertFact("data", Symbol("leaky"), "also-leaky", []any{1, 2})
+	if err == nil {
+		t.Fatal("expected error for unsupported multifield")
+	}
+}
+
+func TestAssertTemplateFreesValuesOnError(t *testing.T) {
+	e, err := NewEngine(WithSource(`
+		(deftemplate item (slot name (type STRING)) (slot tags))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	// Pass a value that goToFFIValue cannot convert.
+	_, err = e.AssertTemplate("item", map[string]any{
+		"name": "leaky-string",
+		"tags": []any{1, 2},
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported multifield")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Rule-fires-on-template-fact integration test
 // ---------------------------------------------------------------------------
 

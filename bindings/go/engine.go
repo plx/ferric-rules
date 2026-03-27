@@ -221,6 +221,11 @@ func (e *Engine) AssertString(source string) (uint64, error) {
 // AssertFact asserts an ordered fact with the given relation and fields.
 func (e *Engine) AssertFact(relation string, fields ...any) (uint64, error) {
 	vals := make([]ffi.Value, len(fields))
+	defer func() {
+		for i := range vals {
+			ffi.ValueFree(&vals[i])
+		}
+	}()
 	for i, f := range fields {
 		v, err := goToFFIValue(f)
 		if err != nil {
@@ -240,6 +245,11 @@ func (e *Engine) AssertFact(relation string, fields ...any) (uint64, error) {
 func (e *Engine) AssertTemplate(templateName string, slots map[string]any) (uint64, error) {
 	names := make([]string, 0, len(slots))
 	vals := make([]ffi.Value, 0, len(slots))
+	defer func() {
+		for i := range vals {
+			ffi.ValueFree(&vals[i])
+		}
+	}()
 	for k, v := range slots {
 		fv, err := goToFFIValue(v)
 		if err != nil {
