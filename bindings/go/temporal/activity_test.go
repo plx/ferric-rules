@@ -3,9 +3,14 @@ package temporal
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"testing"
 
 	ferric "github.com/prb/ferric-rules/bindings/go"
+
+	"github.com/nexus-rpc/sdk-go/nexus"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/workflow"
 )
 
 func TestNewRulesActivity(t *testing.T) {
@@ -187,6 +192,96 @@ func TestWireResultJSONRoundtrip(t *testing.T) {
 	}
 	if tf.Template.Slots["age"].Integer != 30 {
 		t.Fatalf("expected age 30, got %d", tf.Template.Slots["age"].Integer)
+	}
+}
+
+// spyWorker implements worker.Worker and captures RegisterActivityWithOptions calls.
+type spyWorker struct {
+	activities []registeredActivity
+}
+
+type registeredActivity struct {
+	fn   any
+	opts activity.RegisterOptions
+}
+
+func (s *spyWorker) RegisterActivity(any)                                        {}
+func (s *spyWorker) RegisterActivityWithOptions(a any, opts activity.RegisterOptions) {
+	s.activities = append(s.activities, registeredActivity{fn: a, opts: opts})
+}
+func (s *spyWorker) RegisterDynamicActivity(any, activity.DynamicRegisterOptions) {}
+func (s *spyWorker) RegisterWorkflow(any)                                         {}
+func (s *spyWorker) RegisterWorkflowWithOptions(any, workflow.RegisterOptions)    {}
+func (s *spyWorker) RegisterDynamicWorkflow(any, workflow.DynamicRegisterOptions)  {}
+func (s *spyWorker) RegisterNexusService(*nexus.Service)                                  {}
+func (s *spyWorker) Start() error                                                         { return nil }
+func (s *spyWorker) Run(<-chan any) error                                                  { return nil }
+func (s *spyWorker) Stop()                                                                {}
+
+func TestRegisterSingleSpec(t *testing.T) {
+	ra, err := NewRulesActivity(
+		[]ferric.EngineSpec{
+			{Name: "risk", Options: []ferric.EngineOption{
+				ferric.WithSource(`(defrule r => (assert (ok)))`),
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, ra)
+
+	spy := &spyWorker{}
+	ra.Register(spy)
+
+	if len(spy.activities) != 1 {
+		t.Fatalf("expected 1 registered activity, got %d", len(spy.activities))
+	}
+	if spy.activities[0].opts.Name != "ferric.Evaluate.risk" {
+		t.Fatalf("expected activity name %q, got %q", "ferric.Evaluate.risk", spy.activities[0].opts.Name)
+	}
+	if spy.activities[0].fn == nil {
+		t.Fatal("registered activity function must not be nil")
+	}
+}
+
+func TestRegisterMultipleSpecs(t *testing.T) {
+	ra, err := NewRulesActivity(
+		[]ferric.EngineSpec{
+			{Name: "risk", Options: []ferric.EngineOption{ferric.WithSource(`(defrule r => (assert (ok)))`)}},
+			{Name: "pricing", Options: []ferric.EngineOption{ferric.WithSource(`(defrule p => (assert (priced)))`)}},
+			{Name: "kyc", Options: []ferric.EngineOption{ferric.WithSource(`(defrule k => (assert (checked)))`)}},
+		},
+		ferric.Threads(2),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, ra)
+
+	spy := &spyWorker{}
+	ra.Register(spy)
+
+	if len(spy.activities) != 3 {
+		t.Fatalf("expected 3 registered activities, got %d", len(spy.activities))
+	}
+
+	// Collect and sort names (map iteration order is non-deterministic).
+	names := make([]string, len(spy.activities))
+	for i, a := range spy.activities {
+		names[i] = a.opts.Name
+	}
+	sort.Strings(names)
+
+	expected := []string{
+		"ferric.Evaluate.kyc",
+		"ferric.Evaluate.pricing",
+		"ferric.Evaluate.risk",
+	}
+	for i, want := range expected {
+		if names[i] != want {
+			t.Fatalf("activity[%d]: expected %q, got %q", i, want, names[i])
+		}
 	}
 }
 
