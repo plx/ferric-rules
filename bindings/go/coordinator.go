@@ -85,13 +85,17 @@ func (c *Coordinator) pickWorker(hint RouteHint) *worker {
 	return c.workers[idx]
 }
 
-// Close shuts down all worker goroutines and frees all engines.
-// Blocks until all in-flight requests complete.
+// Close shuts down the coordinator. It stops accepting new requests, drains
+// all previously-accepted work so that every in-flight request completes with
+// its real result, and then frees all engines. Blocks until every accepted
+// request has been processed and all worker goroutines have exited.
 func (c *Coordinator) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	// Signal callers that no new work will be accepted.
 	close(c.done)
+	// Tell workers to drain remaining requests and exit.
 	for _, w := range c.workers {
 		if w != nil {
 			close(w.stop)
@@ -145,20 +149,38 @@ func newWorker(specs map[string][]EngineOption) *worker {
 		for {
 			select {
 			case <-w.stop:
+				w.drain()
 				return
 			case req := <-w.requests:
-				engine, err := w.getOrCreateEngine(req.specName)
-				if err != nil {
-					req.resp <- err
-					continue
-				}
-				req.resp <- req.fn(engine)
+				w.handle(req)
 			}
 		}
 	}()
 
 	<-ready
 	return w
+}
+
+func (w *worker) handle(req workerRequest) {
+	engine, err := w.getOrCreateEngine(req.specName)
+	if err != nil {
+		req.resp <- err
+		return
+	}
+	req.resp <- req.fn(engine)
+}
+
+// drain processes all buffered requests remaining in the channel so that
+// accepted work always completes with its real result during shutdown.
+func (w *worker) drain() {
+	for {
+		select {
+		case req := <-w.requests:
+			w.handle(req)
+		default:
+			return
+		}
+	}
 }
 
 func (w *worker) getOrCreateEngine(specName string) (*Engine, error) {

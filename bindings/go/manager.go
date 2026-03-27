@@ -66,11 +66,13 @@ func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) error {
 	case w.requests <- req:
 	}
 
+	// The worker guarantees it will drain all buffered requests before
+	// exiting, so an accepted request always gets a real response.
+	// We intentionally do NOT select on m.coord.done here: doing so
+	// would race with resp and could discard the real result.
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("ferric: request canceled while waiting for worker: %w", ctx.Err())
-	case <-m.coord.done:
-		return errCoordinatorClosed
 	case err := <-resp:
 		return err
 	}

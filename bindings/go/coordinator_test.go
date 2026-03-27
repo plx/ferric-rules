@@ -2,8 +2,12 @@ package ferric
 
 import (
 	"context"
+	"errors"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestCoordinatorBasic(t *testing.T) {
@@ -402,5 +406,156 @@ func TestCoordinatorPolicyExactBoundaryIndex(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Close-drain tests (#46 / GOB-001)
+// ---------------------------------------------------------------------------
+
+// TestCoordinatorCloseDrainsAcceptedWork verifies that requests already
+// accepted (buffered in the worker channel) complete with their real result
+// when Close is called, rather than returning errCoordinatorClosed.
+func TestCoordinatorCloseDrainsAcceptedWork(t *testing.T) {
+	coord, err := NewCoordinator(
+		[]EngineSpec{{Name: "test", Options: []EngineOption{WithSource(`(defrule r =>)`)}}},
+		Threads(1),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mgr, _ := coord.Manager("test")
+
+	// Block the single worker so subsequent requests queue in the buffer.
+	workerBusy := make(chan struct{})
+	proceed := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		err := mgr.Do(context.Background(), func(_ *Engine) error {
+			close(workerBusy)
+			<-proceed
+			return nil
+		})
+		if err != nil {
+			t.Errorf("blocking request: %v", err)
+		}
+	})
+
+	// Wait until the worker is occupied.
+	<-workerBusy
+
+	// Enqueue several requests that will be buffered.
+	const n = 5
+	results := make([]chan error, n)
+	for i := range n {
+		ch := make(chan error, 1)
+		results[i] = ch
+		wg.Go(func() {
+			ch <- mgr.Do(context.Background(), func(e *Engine) error {
+				return e.Reset()
+			})
+		})
+	}
+
+	// Let the goroutines enqueue their requests into the buffered channel.
+	runtime.Gosched()
+	time.Sleep(50 * time.Millisecond)
+
+	// Release the blocking request and shut down the coordinator.
+	close(proceed)
+	mustNoError(t, coord.Close())
+	wg.Wait()
+
+	// Every accepted request must have completed with its real result.
+	for i, ch := range results {
+		if err := <-ch; errors.Is(err, errCoordinatorClosed) {
+			t.Errorf("request %d: got errCoordinatorClosed for accepted request", i)
+		}
+	}
+}
+
+// TestCoordinatorCloseDrainMultiThread is the same invariant as above but
+// with multiple worker threads, ensuring drain works per-worker.
+func TestCoordinatorCloseDrainMultiThread(t *testing.T) {
+	coord, err := NewCoordinator(
+		[]EngineSpec{{Name: "test", Options: []EngineOption{WithSource(`(defrule r =>)`)}}},
+		Threads(4),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mgr, _ := coord.Manager("test")
+
+	// Block all 4 workers.
+	const workers = 4
+	allBusy := make(chan struct{})
+	proceed := make(chan struct{})
+
+	var busyCount atomic.Int32
+	var wg sync.WaitGroup
+
+	for range workers {
+		wg.Go(func() {
+			_ = mgr.Do(context.Background(), func(_ *Engine) error {
+				if busyCount.Add(1) == workers {
+					close(allBusy)
+				}
+				<-proceed
+				return nil
+			})
+		})
+	}
+
+	<-allBusy
+
+	// Now queue work that will be buffered behind the blocked requests.
+	const extra = 8
+	results := make([]chan error, extra)
+	for i := range extra {
+		ch := make(chan error, 1)
+		results[i] = ch
+		wg.Go(func() {
+			ch <- mgr.Do(context.Background(), func(e *Engine) error {
+				return e.Reset()
+			})
+		})
+	}
+
+	runtime.Gosched()
+	time.Sleep(50 * time.Millisecond)
+
+	close(proceed)
+	mustNoError(t, coord.Close())
+	wg.Wait()
+
+	for i, ch := range results {
+		if err := <-ch; errors.Is(err, errCoordinatorClosed) {
+			t.Errorf("request %d: got errCoordinatorClosed for accepted request", i)
+		}
+	}
+}
+
+// TestCoordinatorCloseNoAcceptAfterDone verifies that requests submitted
+// after Close returns are correctly rejected with errCoordinatorClosed.
+func TestCoordinatorCloseNoAcceptAfterDone(t *testing.T) {
+	coord, err := NewCoordinator(
+		[]EngineSpec{{Name: "test", Options: []EngineOption{WithSource(`(defrule r =>)`)}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mgr, _ := coord.Manager("test")
+	mustNoError(t, coord.Close())
+
+	err = mgr.Do(context.Background(), func(_ *Engine) error {
+		t.Fatal("callback should not execute after close")
+		return nil
+	})
+	if !errors.Is(err, errCoordinatorClosed) {
+		t.Fatalf("expected errCoordinatorClosed, got %v", err)
 	}
 }
