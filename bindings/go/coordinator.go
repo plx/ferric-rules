@@ -18,6 +18,8 @@ type RouteHint struct {
 }
 
 // DispatchPolicy picks a worker index for a request.
+// The returned index is normalized to [0, numWorkers) via modular arithmetic,
+// so out-of-range or negative values are safe (they wrap deterministically).
 type DispatchPolicy interface {
 	PickWorker(hint RouteHint, numWorkers int, counter uint64) int
 }
@@ -76,7 +78,10 @@ func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator
 
 func (c *Coordinator) pickWorker(hint RouteHint) *worker {
 	rr := c.next.Add(1) - 1
-	idx := c.policy.PickWorker(hint, len(c.workers), rr)
+	n := len(c.workers)
+	idx := c.policy.PickWorker(hint, n, rr)
+	// Normalize: map any int (including negative) into [0, n).
+	idx = ((idx % n) + n) % n
 	return c.workers[idx]
 }
 

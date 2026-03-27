@@ -293,3 +293,114 @@ func TestCoordinatorInvalidThreadCount(t *testing.T) {
 		t.Fatal("expected error for 0 threads")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DispatchPolicy bounds-check regression tests (#50 / GOB-005)
+// ---------------------------------------------------------------------------
+
+// fixedIndexPolicy always returns the same index, regardless of inputs.
+type fixedIndexPolicy struct{ index int }
+
+func (p fixedIndexPolicy) PickWorker(_ RouteHint, _ int, _ uint64) int {
+	return p.index
+}
+
+func TestCoordinatorPolicyNegativeIndex(t *testing.T) {
+	coord, err := NewCoordinator(
+		[]EngineSpec{{Name: "test", Options: []EngineOption{WithSource(`(defrule r =>)`)}}},
+		Threads(3),
+		WithDispatchPolicy(fixedIndexPolicy{index: -1}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, coord)
+
+	mgr, err := coord.Manager("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Must not panic; -1 should wrap to worker 2 (i.e. (-1 % 3 + 3) % 3 == 2).
+	err = mgr.Do(context.Background(), func(e *Engine) error {
+		return e.Reset()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCoordinatorPolicyOutOfRangeIndex(t *testing.T) {
+	coord, err := NewCoordinator(
+		[]EngineSpec{{Name: "test", Options: []EngineOption{WithSource(`(defrule r =>)`)}}},
+		Threads(3),
+		WithDispatchPolicy(fixedIndexPolicy{index: 100}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, coord)
+
+	mgr, err := coord.Manager("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Must not panic; 100 should wrap to worker 1 (i.e. 100 % 3 == 1).
+	err = mgr.Do(context.Background(), func(e *Engine) error {
+		return e.Reset()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCoordinatorPolicyLargeNegativeIndex(t *testing.T) {
+	coord, err := NewCoordinator(
+		[]EngineSpec{{Name: "test", Options: []EngineOption{WithSource(`(defrule r =>)`)}}},
+		Threads(4),
+		WithDispatchPolicy(fixedIndexPolicy{index: -1000}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, coord)
+
+	mgr, err := coord.Manager("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// -1000 % 4 == 0 in Go, so (0 + 4) % 4 == 0.
+	err = mgr.Do(context.Background(), func(e *Engine) error {
+		return e.Reset()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCoordinatorPolicyExactBoundaryIndex(t *testing.T) {
+	coord, err := NewCoordinator(
+		[]EngineSpec{{Name: "test", Options: []EngineOption{WithSource(`(defrule r =>)`)}}},
+		Threads(3),
+		WithDispatchPolicy(fixedIndexPolicy{index: 3}), // exactly == numWorkers
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, coord)
+
+	mgr, err := coord.Manager("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 3 % 3 == 0 — wraps to first worker.
+	err = mgr.Do(context.Background(), func(e *Engine) error {
+		return e.Reset()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
