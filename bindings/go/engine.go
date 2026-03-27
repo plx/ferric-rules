@@ -617,6 +617,116 @@ func (e *Engine) ClearDiagnostics() {
 	ffi.EngineClearActionDiagnostics(e.handle)
 }
 
+// ---------------------------------------------------------------------------
+// Error-aware introspection variants
+// ---------------------------------------------------------------------------
+
+// RulesE returns information about all registered rules, or an error.
+func (e *Engine) RulesE() ([]RuleInfo, error) {
+	count, rc := ffi.EngineRuleCount(e.handle)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, e.handle)
+	}
+	rules := make([]RuleInfo, 0, count)
+	for i := range count {
+		name, salience, rc := ffi.EngineRuleInfo(e.handle, i)
+		if rc != ffi.ErrOK {
+			return nil, errorFromFFI(rc, e.handle)
+		}
+		rules = append(rules, RuleInfo{Name: name, Salience: int(salience)})
+	}
+	return rules, nil
+}
+
+// TemplatesE returns the names of all registered templates, or an error.
+func (e *Engine) TemplatesE() ([]string, error) {
+	count, rc := ffi.EngineTemplateCount(e.handle)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, e.handle)
+	}
+	names := make([]string, 0, count)
+	for i := range count {
+		name, rc := ffi.EngineTemplateName(e.handle, i)
+		if rc != ffi.ErrOK {
+			return nil, errorFromFFI(rc, e.handle)
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// DiagnosticsE returns all action diagnostic messages, or an error.
+func (e *Engine) DiagnosticsE() ([]string, error) {
+	count, rc := ffi.EngineActionDiagnosticCount(e.handle)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, e.handle)
+	}
+	diags := make([]string, 0, count)
+	for i := range count {
+		msg, rc := ffi.EngineActionDiagnosticCopy(e.handle, i)
+		if rc != ffi.ErrOK {
+			return nil, errorFromFFI(rc, e.handle)
+		}
+		diags = append(diags, msg)
+	}
+	return diags, nil
+}
+
+// CurrentModuleE returns the name of the current module, or an error.
+func (e *Engine) CurrentModuleE() (string, error) {
+	name, rc := ffi.EngineCurrentModule(e.handle)
+	if rc != ffi.ErrOK {
+		return "", errorFromFFI(rc, e.handle)
+	}
+	return name, nil
+}
+
+// FocusE returns the module at the top of the focus stack, or an error.
+// Returns ("", false, nil) when the result cannot be distinguished from
+// an empty stack without an error; callers should check the bool first.
+func (e *Engine) FocusE() (string, bool, error) {
+	name, rc := ffi.EngineGetFocus(e.handle)
+	if rc != ffi.ErrOK {
+		return "", false, errorFromFFI(rc, e.handle)
+	}
+	return name, true, nil
+}
+
+// FocusStackE returns the focus stack entries from bottom to top, or an error.
+func (e *Engine) FocusStackE() ([]string, error) {
+	depth, rc := ffi.EngineFocusStackDepth(e.handle)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, e.handle)
+	}
+	stack := make([]string, 0, depth)
+	for i := range depth {
+		name, rc := ffi.EngineFocusStackEntry(e.handle, i)
+		if rc != ffi.ErrOK {
+			return nil, errorFromFFI(rc, e.handle)
+		}
+		stack = append(stack, name)
+	}
+	return stack, nil
+}
+
+// AgendaSizeE returns the number of activations on the agenda, or an error.
+func (e *Engine) AgendaSizeE() (int, error) {
+	count, rc := ffi.EngineAgendaCount(e.handle)
+	if rc != ffi.ErrOK {
+		return 0, errorFromFFI(rc, e.handle)
+	}
+	return clampUintptrToInt(count), nil
+}
+
+// IsHaltedE returns whether the engine is halted, or an error.
+func (e *Engine) IsHaltedE() (bool, error) {
+	halted, rc := ffi.EngineIsHalted(e.handle)
+	if rc != ffi.ErrOK {
+		return false, errorFromFFI(rc, e.handle)
+	}
+	return halted, nil
+}
+
 // --- Internal: fact building ---
 
 func (e *Engine) buildFact(factID uint64) (*Fact, error) {
