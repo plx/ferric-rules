@@ -1,15 +1,12 @@
 package ferric
 
 import (
-	"runtime"
 	"testing"
 )
 
-func init() {
-	runtime.LockOSThread()
-}
-
 func TestFactIter(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate person (slot name))
 	`))
@@ -35,6 +32,8 @@ func TestFactIter(t *testing.T) {
 }
 
 func TestFactIterEarlyBreak(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +58,8 @@ func TestFactIterEarlyBreak(t *testing.T) {
 }
 
 func TestRuleIter(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 (declare (salience 10)) => (assert (a)))
 		(defrule r2 => (assert (b)))
@@ -78,6 +79,8 @@ func TestRuleIter(t *testing.T) {
 }
 
 func TestTemplateIter(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate sensor (slot id) (slot value))
 		(deftemplate alarm (slot level))

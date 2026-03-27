@@ -9,15 +9,13 @@ import (
 	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
 )
 
-func init() {
-	runtime.LockOSThread()
-}
-
 // ---------------------------------------------------------------------------
 // Engine lifecycle
 // ---------------------------------------------------------------------------
 
 func TestNewEngineDefault(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -26,6 +24,8 @@ func TestNewEngineDefault(t *testing.T) {
 }
 
 func TestNewEngineWithSource(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`(defrule r => (printout t "ok" crlf))`))
 	if err != nil {
 		t.Fatal(err)
@@ -34,6 +34,8 @@ func TestNewEngineWithSource(t *testing.T) {
 }
 
 func TestNewEngineWithConfig(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(
 		WithStrategy(StrategyBreadth),
 		WithEncoding(EncodingUTF8),
@@ -46,6 +48,8 @@ func TestNewEngineWithConfig(t *testing.T) {
 }
 
 func TestNewEngineWithSourceAndConfig(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(
 		WithSource(`(defrule r => (assert (done)))`),
 		WithStrategy(StrategyDepth),
@@ -57,6 +61,8 @@ func TestNewEngineWithSourceAndConfig(t *testing.T) {
 }
 
 func TestNewEngineInvalidSource(t *testing.T) {
+	lockThread(t)
+
 	_, err := NewEngine(WithSource(`(defrule bad`))
 	if err == nil {
 		t.Fatal("expected error for invalid source")
@@ -67,6 +73,8 @@ func TestNewEngineInvalidSource(t *testing.T) {
 }
 
 func TestEngineDoubleClose(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +93,8 @@ func TestEngineDoubleClose(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLoad(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +119,8 @@ func TestLoad(t *testing.T) {
 }
 
 func TestLoadInvalid(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -126,6 +138,8 @@ func TestLoadInvalid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAssertStringAndFacts(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -157,6 +171,8 @@ func TestAssertStringAndFacts(t *testing.T) {
 }
 
 func TestAssertFact(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -182,6 +198,8 @@ func TestAssertFact(t *testing.T) {
 }
 
 func TestRetract(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -209,6 +227,8 @@ func TestRetract(t *testing.T) {
 }
 
 func TestFindFacts(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -238,6 +258,8 @@ func TestFindFacts(t *testing.T) {
 }
 
 func TestGetFact(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -274,6 +296,8 @@ func TestGetFact(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAssertTemplate(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate person
 			(slot name (type STRING))
@@ -311,6 +335,8 @@ func TestAssertTemplate(t *testing.T) {
 }
 
 func TestAssertTemplateDefaults(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate person
 			(slot name (type STRING))
@@ -342,6 +368,8 @@ func TestAssertTemplateDefaults(t *testing.T) {
 }
 
 func TestAssertTemplateNotFound(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -363,6 +391,8 @@ func TestAssertTemplateNotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRunAndOutput(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule hello => (printout t "Hello!" crlf))
 	`))
@@ -392,6 +422,8 @@ func TestRunAndOutput(t *testing.T) {
 }
 
 func TestRunWithLimit(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 => (assert (a)))
 		(defrule r2 (a) => (assert (b)))
@@ -415,6 +447,8 @@ func TestRunWithLimit(t *testing.T) {
 }
 
 func TestRunWithLimitSmall(t *testing.T) {
+	lockThread(t)
+
 	// Small limit uses the direct FFI call path.
 	e, err := NewEngine(WithSource(`
 		(defrule r1 => (assert (a)))
@@ -435,6 +469,8 @@ func TestRunWithLimitSmall(t *testing.T) {
 }
 
 func TestRunContextCancel(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 => (assert (a)))
 		(defrule r2 (a) => (assert (b)))
@@ -456,6 +492,8 @@ func TestRunContextCancel(t *testing.T) {
 }
 
 func TestStep(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 => (assert (done)))
 	`))
@@ -483,6 +521,8 @@ func TestStep(t *testing.T) {
 }
 
 func TestHalt(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`(defrule r => (assert (x)))`))
 	if err != nil {
 		t.Fatal(err)
@@ -496,6 +536,8 @@ func TestHalt(t *testing.T) {
 }
 
 func TestReset(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r => (assert (done)))
 	`))
@@ -534,6 +576,8 @@ func TestReset(t *testing.T) {
 }
 
 func TestClear(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`(defrule r => (assert (done)))`))
 	if err != nil {
 		t.Fatal(err)
@@ -558,6 +602,8 @@ func TestClear(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRules(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 (declare (salience 10)) => (assert (a)))
 		(defrule r2 => (assert (b)))
@@ -585,6 +631,8 @@ func TestRules(t *testing.T) {
 }
 
 func TestTemplates(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate sensor (slot id) (slot value))
 		(deftemplate alarm (slot level))
@@ -609,6 +657,8 @@ func TestTemplates(t *testing.T) {
 }
 
 func TestGetGlobal(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`(defglobal ?*threshold* = 42)`))
 	if err != nil {
 		t.Fatal(err)
@@ -625,6 +675,8 @@ func TestGetGlobal(t *testing.T) {
 }
 
 func TestCurrentModule(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -638,6 +690,8 @@ func TestCurrentModule(t *testing.T) {
 }
 
 func TestAgendaSize(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 => (assert (a)))
 		(defrule r2 => (assert (b)))
@@ -658,6 +712,8 @@ func TestAgendaSize(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOutput(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r => (printout t "line1" crlf "line2" crlf))
 	`))
@@ -684,6 +740,8 @@ func TestOutput(t *testing.T) {
 }
 
 func TestPushInput(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -699,6 +757,8 @@ func TestPushInput(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDiagnostics(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -719,6 +779,8 @@ func TestDiagnostics(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestErrorIs(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -737,6 +799,8 @@ func TestErrorIs(t *testing.T) {
 }
 
 func TestErrorAs(t *testing.T) {
+	lockThread(t)
+
 	_, err := NewEngine(WithSource(`(defrule bad`))
 	if err == nil {
 		t.Fatal("expected error")
@@ -749,6 +813,8 @@ func TestErrorAs(t *testing.T) {
 }
 
 func TestErrorFromFFIThreadViolation(t *testing.T) {
+	lockThread(t)
+
 	err := errorFromFFI(ffi.ErrThreadViolation, nil)
 	if err == nil {
 		t.Fatal("expected error")
@@ -763,6 +829,8 @@ func TestErrorFromFFIThreadViolation(t *testing.T) {
 }
 
 func TestErrorFromFFIInvalidArgument(t *testing.T) {
+	lockThread(t)
+
 	err := errorFromFFI(ffi.ErrInvalidArgument, nil)
 	if err == nil {
 		t.Fatal("expected error")
@@ -781,6 +849,8 @@ func TestErrorFromFFIInvalidArgument(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValueConversionRoundtrip(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defglobal ?*int-val* = 42)
 		(defglobal ?*float-val* = 3.14)
@@ -846,6 +916,8 @@ func TestValueConversionRoundtrip(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAssertFactFreesValues(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -880,6 +952,8 @@ func TestAssertFactFreesValues(t *testing.T) {
 }
 
 func TestAssertTemplateFreesValues(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate sensor
 			(slot id (type INTEGER))
@@ -918,6 +992,8 @@ func TestAssertTemplateFreesValues(t *testing.T) {
 }
 
 func TestAssertFactFreesValuesOnError(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -934,6 +1010,8 @@ func TestAssertFactFreesValuesOnError(t *testing.T) {
 }
 
 func TestAssertTemplateFreesValuesOnError(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate item (slot name (type STRING)) (slot tags))
 	`))
@@ -957,6 +1035,8 @@ func TestAssertTemplateFreesValuesOnError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRuleFiresOnTemplateFact(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate sensor
 			(slot id (type INTEGER))
@@ -1005,5 +1085,93 @@ func TestRuleFiresOnTemplateFact(t *testing.T) {
 	}
 	if output != "ALERT: sensor 1 at 150.5\n" {
 		t.Fatalf("unexpected output: %q", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Wrong-thread coverage (GOB-003)
+// ---------------------------------------------------------------------------
+
+func TestEngineWrongThread(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	mustAssertFact(t, e, "color", Symbol("red"))
+
+	// Call FactCount from a different OS thread.
+	errc := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		_, err := e.FactCount()
+		errc <- err
+	}()
+
+	err = <-errc
+	if err == nil {
+		t.Fatal("expected thread violation error from wrong thread")
+	}
+	if !errors.Is(err, ErrThreadViolation) {
+		t.Fatalf("expected ErrThreadViolation, got: %v", err)
+	}
+	var tve *ThreadViolationError
+	if !errors.As(err, &tve) {
+		t.Fatalf("expected ThreadViolationError, got %T: %v", err, err)
+	}
+}
+
+func TestEngineWrongThreadMultipleOps(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(defrule r => (assert (done)))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	// Verify several operations all return ErrThreadViolation from a wrong thread.
+	type opResult struct {
+		name string
+		err  error
+	}
+	results := make(chan opResult, 10)
+
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
+		_, err := e.Run(context.Background())
+		results <- opResult{"Run", err}
+
+		err = e.Reset()
+		results <- opResult{"Reset", err}
+
+		err = e.Load(`(defrule r2 => (assert (x)))`)
+		results <- opResult{"Load", err}
+
+		_, err = e.AssertFact("x", Symbol("y"))
+		results <- opResult{"AssertFact", err}
+
+		_, err = e.AssertString("(assert (z))")
+		results <- opResult{"AssertString", err}
+
+		close(results)
+	}()
+
+	for r := range results {
+		if r.err == nil {
+			t.Fatalf("%s: expected thread violation error", r.name)
+		}
+		if !errors.Is(r.err, ErrThreadViolation) {
+			t.Fatalf("%s: expected ErrThreadViolation, got: %v", r.name, r.err)
+		}
 	}
 }
