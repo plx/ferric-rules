@@ -29,6 +29,9 @@ pub struct Fact {
     /// Fact ID (as u64 from slotmap `KeyData::as_ffi()`).
     #[pyo3(get)]
     pub id: u64,
+    /// Engine instance ID (used for cross-engine equality/hash).
+    #[pyo3(get)]
+    pub engine_id: u64,
     /// Whether this is an ordered or template fact.
     #[pyo3(get)]
     pub fact_type: FactType,
@@ -77,11 +80,12 @@ impl Fact {
     }
 
     fn __eq__(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.engine_id == other.engine_id && self.id == other.id
     }
 
     fn __hash__(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
+        self.engine_id.hash(&mut hasher);
         self.id.hash(&mut hasher);
         hasher.finish()
     }
@@ -93,6 +97,7 @@ pub fn fact_to_python(
     fact_id: FactId,
     fact: &CoreFact,
     engine: &Engine,
+    engine_id: u64,
 ) -> PyResult<Fact> {
     let id = fact_id.data().as_ffi();
 
@@ -111,6 +116,7 @@ pub fn fact_to_python(
 
             Ok(Fact {
                 id,
+                engine_id,
                 fact_type: FactType::Ordered,
                 relation: Some(relation),
                 template_name: None,
@@ -145,6 +151,7 @@ pub fn fact_to_python(
 
             Ok(Fact {
                 id,
+                engine_id,
                 fact_type: FactType::Template,
                 relation: None,
                 template_name: Some(tmpl_name),

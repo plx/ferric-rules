@@ -1,7 +1,11 @@
 //! Python Engine wrapper.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::ThreadId;
+
+/// Global counter for assigning unique engine IDs.
+static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -40,6 +44,8 @@ fn make_config(strategy: Option<Strategy>, encoding: Option<Encoding>) -> Engine
 pub struct PyEngine {
     engine: Engine,
     creator_thread: ThreadId,
+    /// Unique identifier for this engine instance (used in Fact identity).
+    engine_id: u64,
 }
 
 // SAFETY: We enforce thread affinity ourselves via `check_thread()` at every
@@ -78,6 +84,7 @@ impl PyEngine {
         Self {
             engine: Engine::new(config),
             creator_thread: std::thread::current().id(),
+            engine_id: NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -94,6 +101,7 @@ impl PyEngine {
         Ok(Self {
             engine,
             creator_thread: std::thread::current().id(),
+            engine_id: NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed),
         })
     }
 
@@ -244,7 +252,7 @@ impl PyEngine {
         let fid = FactId::from(KeyData::from_ffi(fact_id));
         let fact = self.engine.get_fact(fid).map_err(engine_error_to_pyerr)?;
         match fact {
-            Some(f) => Ok(Some(fact_to_python(py, fid, f, &self.engine)?)),
+            Some(f) => Ok(Some(fact_to_python(py, fid, f, &self.engine, self.engine_id)?)),
             None => Ok(None),
         }
     }
@@ -255,7 +263,7 @@ impl PyEngine {
         let iter = self.engine.facts().map_err(engine_error_to_pyerr)?;
         let mut result = Vec::new();
         for (fid, fact) in iter {
-            result.push(fact_to_python(py, fid, fact, &self.engine)?);
+            result.push(fact_to_python(py, fid, fact, &self.engine, self.engine_id)?);
         }
         Ok(result)
     }
@@ -269,7 +277,7 @@ impl PyEngine {
             .map_err(engine_error_to_pyerr)?;
         let mut result = Vec::new();
         for (fid, fact) in facts {
-            result.push(fact_to_python(py, fid, fact, &self.engine)?);
+            result.push(fact_to_python(py, fid, fact, &self.engine, self.engine_id)?);
         }
         Ok(result)
     }
@@ -493,6 +501,7 @@ impl PyEngine {
         Ok(Self {
             engine,
             creator_thread: std::thread::current().id(),
+            engine_id: NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed),
         })
     }
 
@@ -534,6 +543,7 @@ impl PyEngine {
         Ok(Self {
             engine,
             creator_thread: std::thread::current().id(),
+            engine_id: NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed),
         })
     }
 
