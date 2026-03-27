@@ -95,47 +95,38 @@ impl ClipsString {
 }
 
 /// Convert a Rust `Value` to a Python object.
-pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyObject {
+///
+/// # Errors
+///
+/// Returns a `PyErr` if the Python object cannot be created.
+pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult<PyObject> {
     match val {
-        Value::Integer(i) => i
-            .into_pyobject(py)
-            .expect("int conversion")
-            .into_any()
-            .unbind(),
-        Value::Float(f) => f
-            .into_pyobject(py)
-            .expect("float conversion")
-            .into_any()
-            .unbind(),
+        Value::Integer(i) => Ok(i.into_pyobject(py)?.into_any().unbind()),
+        Value::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
         Value::Symbol(sym) => {
             let s = engine.resolve_symbol(*sym).unwrap_or("<unknown>");
-            Symbol {
+            Ok(Symbol {
                 value: s.to_owned(),
             }
-            .into_pyobject(py)
-            .expect("Symbol conversion")
+            .into_pyobject(py)?
             .into_any()
-            .unbind()
+            .unbind())
         }
-        Value::String(s) => ClipsString {
+        Value::String(s) => Ok(ClipsString {
             value: s.as_str().to_owned(),
         }
-        .into_pyobject(py)
-        .expect("String conversion")
+        .into_pyobject(py)?
         .into_any()
-        .unbind(),
+        .unbind()),
         Value::Multifield(mf) => {
-            let items: Vec<PyObject> = mf
+            let items: PyResult<Vec<PyObject>> = mf
                 .as_slice()
                 .iter()
                 .map(|v| value_to_python(py, v, engine))
                 .collect();
-            PyList::new(py, items)
-                .expect("list conversion")
-                .into_any()
-                .unbind()
+            Ok(PyList::new(py, items?)?.into_any().unbind())
         }
-        Value::Void | Value::ExternalAddress(_) => py.None(),
+        Value::Void | Value::ExternalAddress(_) => Ok(py.None()),
     }
 }
 

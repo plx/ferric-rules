@@ -111,7 +111,7 @@ pub fn fact_to_python(
                 .fields
                 .iter()
                 .map(|v| value_to_python(py, v, engine))
-                .collect();
+                .collect::<PyResult<_>>()?;
             let fields_list = pyo3::types::PyList::new(py, fields)?.into_any().unbind();
 
             Ok(Fact {
@@ -133,7 +133,7 @@ pub fn fact_to_python(
                 .slots
                 .iter()
                 .map(|v| value_to_python(py, v, engine))
-                .collect();
+                .collect::<PyResult<_>>()?;
             let fields_list = pyo3::types::PyList::new(py, &fields)?.into_any().unbind();
 
             // Build slots dict if we can resolve slot names (by ID to avoid

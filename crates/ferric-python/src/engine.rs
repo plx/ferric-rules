@@ -438,7 +438,7 @@ impl PyEngine {
             .engine
             .get_fact_slot_by_name(fid, slot_name)
             .map_err(engine_error_to_pyerr)?;
-        Ok(value_to_python(py, val, &self.engine))
+        value_to_python(py, val, &self.engine)
     }
 
     // -- Introspection --
@@ -475,10 +475,10 @@ impl PyEngine {
     /// Get the value of a global variable, or `None`.
     fn get_global(&self, py: Python<'_>, name: &str) -> PyResult<Option<PyObject>> {
         self.check_thread()?;
-        Ok(self
-            .engine
+        self.engine
             .get_global(name)
-            .map(|v| value_to_python(py, v, &self.engine)))
+            .map(|v| value_to_python(py, v, &self.engine))
+            .transpose()
     }
 
     // -- I/O --
