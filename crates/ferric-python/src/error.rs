@@ -79,22 +79,28 @@ pub fn engine_error_to_pyerr(err: EngineError) -> PyErr {
 }
 
 /// Convert a `Vec<LoadError>` into a single Python exception.
+///
+/// All error messages are joined into the exception message so no
+/// diagnostics are lost.  The exception *type* is determined by the
+/// first parse or compile error encountered (parse takes precedence).
 pub fn load_errors_to_pyerr(errors: Vec<LoadError>) -> PyErr {
-    // Check if any error is a parse error vs compile error
-    for err in &errors {
-        match err {
-            LoadError::Parse(_) => return FerricParseError::new_err(err.to_string()),
-            LoadError::Compile(_) => return FerricCompileError::new_err(err.to_string()),
-            _ => {}
-        }
-    }
-    // Default: join all messages under FerricError
     let msg = errors
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()
-        .join("; ");
-    FerricError::new_err(msg)
+        .join("\n");
+
+    // Classify by scanning for parse errors first, then compile errors.
+    let has_parse = errors.iter().any(|e| matches!(e, LoadError::Parse(_)));
+    let has_compile = errors.iter().any(|e| matches!(e, LoadError::Compile(_)));
+
+    if has_parse {
+        FerricParseError::new_err(msg)
+    } else if has_compile {
+        FerricCompileError::new_err(msg)
+    } else {
+        FerricError::new_err(msg)
+    }
 }
 
 /// Convert an `InitError` into a Python exception.
