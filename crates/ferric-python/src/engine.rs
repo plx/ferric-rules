@@ -396,6 +396,51 @@ impl PyEngine {
             .collect())
     }
 
+    /// Set focus to exactly one module, replacing the previous focus stack.
+    fn set_focus(&mut self, module_name: &str) -> PyResult<()> {
+        self.check_thread()?;
+        self.engine
+            .set_focus(module_name)
+            .map_err(engine_error_to_pyerr)
+    }
+
+    /// Push a module onto the focus stack.
+    fn push_focus(&mut self, module_name: &str) -> PyResult<()> {
+        self.check_thread()?;
+        self.engine
+            .push_focus(module_name)
+            .map_err(engine_error_to_pyerr)
+    }
+
+    /// Return a list of registered module names.
+    fn modules(&self) -> PyResult<Vec<String>> {
+        self.check_thread()?;
+        Ok(self
+            .engine
+            .modules()
+            .into_iter()
+            .map(String::from)
+            .collect())
+    }
+
+    /// Clear accumulated action diagnostics.
+    fn clear_diagnostics(&mut self) -> PyResult<()> {
+        self.check_thread()?;
+        self.engine.clear_action_diagnostics();
+        Ok(())
+    }
+
+    /// Get the value of a template fact slot by name.
+    fn get_fact_slot(&self, py: Python<'_>, fact_id: u64, slot_name: &str) -> PyResult<PyObject> {
+        self.check_thread()?;
+        let fid = FactId::from(KeyData::from_ffi(fact_id));
+        let val = self
+            .engine
+            .get_fact_slot_by_name(fid, slot_name)
+            .map_err(engine_error_to_pyerr)?;
+        Ok(value_to_python(py, val, &self.engine))
+    }
+
     // -- Introspection --
 
     /// Return a list of `(name, salience)` tuples for all rules.
