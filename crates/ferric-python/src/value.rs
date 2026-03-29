@@ -1,8 +1,5 @@
 //! Value conversion between Rust and Python.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyString, PyTuple};
 
@@ -44,10 +41,8 @@ impl Symbol {
         false
     }
 
-    fn __hash__(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.value.hash(&mut hasher);
-        hasher.finish()
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        PyString::new(py, &self.value).hash()
     }
 }
 
@@ -87,10 +82,8 @@ impl ClipsString {
         false
     }
 
-    fn __hash__(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.value.hash(&mut hasher);
-        hasher.finish()
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        PyString::new(py, &self.value).hash()
     }
 }
 

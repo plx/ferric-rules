@@ -193,3 +193,30 @@ class TestListConversion:
         fact = engine.get_fact(fid)
         assert isinstance(fact.fields[0], list)
         assert fact.fields[0] == [1, 2]
+
+
+class TestHashContract:
+    """hash(a) == hash(b) whenever a == b (Python invariant)."""
+
+    def test_symbol_hash_equals_str_hash(self):
+        sym = ferric.Symbol("hello")
+        assert sym == "hello"
+        assert hash(sym) == hash("hello")
+
+    def test_string_hash_equals_str_hash(self):
+        s = ferric.String("hello")
+        assert s == "hello"
+        assert hash(s) == hash("hello")
+
+    def test_symbol_in_dict(self):
+        d = {}
+        d[ferric.Symbol("key")] = "value"
+        assert d["key"] == "value"
+
+    def test_string_in_set(self):
+        s = {ferric.String("a"), "a"}
+        assert len(s) == 1
+
+    def test_symbol_and_string_distinct_in_set(self):
+        s = {ferric.Symbol("x"), ferric.String("x")}
+        assert len(s) == 2
