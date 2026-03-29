@@ -3,6 +3,8 @@ package ferric
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -574,6 +576,53 @@ func TestPinnedEngine_ConcurrentRunAndAssert(t *testing.T) {
 
 	wg.Wait()
 	// No thread violation panics = success.
+}
+
+// ---------------------------------------------------------------------------
+// Close-race stress test
+// ---------------------------------------------------------------------------
+
+// TestPinnedEngine_CloseStress exercises the close-during-active-work race
+// window across many iterations. The two-phase shutdown guarantees that
+// every accepted request completes with its real result.
+func TestPinnedEngine_CloseStress(t *testing.T) {
+	t.Parallel()
+	for iter := range 50 {
+		t.Run(fmt.Sprintf("iter_%d", iter), func(t *testing.T) {
+			t.Parallel()
+
+			p, err := NewPinnedEngine()
+			require.NoError(t, err)
+
+			const n = 30
+			results := make(chan error, n)
+
+			var wg sync.WaitGroup
+			for range n {
+				wg.Go(func() {
+					results <- p.Do(context.Background(), func(e *Engine) error {
+						return e.Reset()
+					})
+				})
+			}
+
+			// Close while requests are in flight.
+			go func() {
+				runtime.Gosched()
+				_ = p.Close()
+			}()
+
+			wg.Wait()
+			close(results)
+
+			for err := range results {
+				if err == nil || errors.Is(err, errPinnedEngineClosed) {
+					continue
+				}
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

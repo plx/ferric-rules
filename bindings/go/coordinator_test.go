@@ -566,12 +566,12 @@ func TestCoordinatorCloseNoAcceptAfterDone(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestCoordinatorCloseStress exercises the close-during-active-work race
-// window across many iterations. Each request uses a bounded context to
-// prevent hangs if a request is enqueued after the worker's drain completes
-// (a narrow race window inherent to the select-based dispatch).
+// window across many iterations. The two-phase shutdown guarantees that
+// every accepted request completes with its real result, so no timeout
+// safety net is needed and context.DeadlineExceeded is not acceptable.
 func TestCoordinatorCloseStress(t *testing.T) {
 	t.Parallel()
-	for iter := range 20 {
+	for iter := range 50 {
 		t.Run(fmt.Sprintf("iter_%d", iter), func(t *testing.T) {
 			t.Parallel()
 
@@ -591,9 +591,7 @@ func TestCoordinatorCloseStress(t *testing.T) {
 			var wg sync.WaitGroup
 			for range n {
 				wg.Go(func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					results <- mgr.Do(ctx, func(e *Engine) error {
+					results <- mgr.Do(context.Background(), func(e *Engine) error {
 						return e.Reset()
 					})
 				})
@@ -609,16 +607,7 @@ func TestCoordinatorCloseStress(t *testing.T) {
 			close(results)
 
 			for err := range results {
-				if err == nil {
-					continue
-				}
-				// Acceptable outcomes:
-				// - errCoordinatorClosed: request never enqueued (rejected at select)
-				// - context.DeadlineExceeded: request orphaned after drain (narrow race)
-				// - context.Canceled: context cleaned up
-				if errors.Is(err, errCoordinatorClosed) ||
-					errors.Is(err, context.DeadlineExceeded) ||
-					errors.Is(err, context.Canceled) {
+				if err == nil || errors.Is(err, errCoordinatorClosed) {
 					continue
 				}
 				t.Errorf("unexpected error: %v", err)

@@ -37,6 +37,37 @@ func (c *Coordinator) Manager(specName string) (*Manager, error) {
 	return &Manager{coord: c, specName: specName}, nil
 }
 
+// tryEnqueue attempts to place req into a worker's request channel.
+// It holds a read lock on closeGuard so that Close (which takes a write
+// lock) blocks until all in-progress enqueue attempts resolve. This
+// eliminates the race where a request is enqueued after the worker's
+// drain has completed.
+func (m *Manager) tryEnqueue(ctx context.Context, w *worker, req workerRequest) error {
+	m.coord.closeGuard.RLock()
+	defer m.coord.closeGuard.RUnlock()
+
+	if m.coord.closed.Load() {
+		return errCoordinatorClosed
+	}
+
+	// Check for cancellation before enqueueing. Without this explicit
+	// check, a canceled ctx and a ready channel are both selectable and
+	// Go picks pseudo-randomly, allowing a request to be dispatched
+	// after the caller believes it was aborted.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("ferric: request canceled before dispatch: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("ferric: request canceled before dispatch: %w", ctx.Err())
+	case <-m.coord.done:
+		return errCoordinatorClosed
+	case w.requests <- req:
+		return nil
+	}
+}
+
 // Do dispatches a function to an engine of this Manager's type.
 // The function runs on a thread-locked worker goroutine. The Engine
 // must not be retained beyond the closure's return.
@@ -44,9 +75,6 @@ func (c *Coordinator) Manager(specName string) (*Manager, error) {
 func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) (retErr error) {
 	if ctx == nil {
 		return errNilContext
-	}
-	if m.coord.closed.Load() {
-		return errCoordinatorClosed
 	}
 
 	o := m.coord.obs
@@ -78,20 +106,8 @@ func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) (retErr error)
 		enqueuedAt: time.Now(),
 	}
 
-	// Check for cancellation before enqueueing. Without this explicit
-	// check, a canceled ctx and a ready channel are both selectable and
-	// Go picks pseudo-randomly, allowing a request to be dispatched
-	// after the caller believes it was aborted.
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("ferric: request canceled before dispatch: %w", err)
-	}
-
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("ferric: request canceled before dispatch: %w", ctx.Err())
-	case <-m.coord.done:
-		return errCoordinatorClosed
-	case w.requests <- req:
+	if err := m.tryEnqueue(ctx, w, req); err != nil {
+		return err
 	}
 
 	// The worker guarantees it will drain all buffered requests before

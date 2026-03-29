@@ -20,11 +20,12 @@ var errPinnedEngineClosed = errors.New("ferric: pinned engine is closed")
 //
 // PinnedEngine implements io.Closer. Always defer Close() after creation.
 type PinnedEngine struct {
-	requests  chan pinnedRequest
-	stop      chan struct{}
-	done      chan struct{}
-	closeOnce sync.Once
-	closed    atomic.Bool
+	requests   chan pinnedRequest
+	stop       chan struct{}
+	done       chan struct{}
+	closeOnce  sync.Once
+	closed     atomic.Bool
+	closeGuard sync.RWMutex // protects enqueue windows during shutdown
 }
 
 type pinnedRequest struct {
@@ -89,17 +90,51 @@ func (p *PinnedEngine) drain(eng *Engine) {
 }
 
 // Close shuts down the PinnedEngine. It stops accepting new requests,
-// drains all previously-accepted work, closes the underlying engine,
-// and blocks until the worker goroutine exits.
+// waits for all in-progress enqueue attempts to resolve, drains all
+// previously-accepted work, closes the underlying engine, and blocks
+// until the worker goroutine exits.
 //
 // Close is idempotent and safe to call from any goroutine.
 func (p *PinnedEngine) Close() error {
 	p.closeOnce.Do(func() {
 		p.closed.Store(true)
+		// Wait for all in-progress enqueue attempts to resolve,
+		// then signal worker to stop while holding the write lock.
+		// The write lock blocks until every RLock holder (tryEnqueue) exits.
+		// After this acquires, no goroutine can write to p.requests.
+		p.closeGuard.Lock()
 		close(p.stop)
+		p.closeGuard.Unlock()
 	})
 	<-p.done
 	return nil
+}
+
+// tryEnqueue attempts to place req into the worker's request channel.
+// It holds a read lock on closeGuard so that Close (which takes a write
+// lock) blocks until all in-progress enqueue attempts resolve. This
+// eliminates the race where a request is enqueued after the worker's
+// drain has completed.
+func (p *PinnedEngine) tryEnqueue(ctx context.Context, req pinnedRequest) error {
+	p.closeGuard.RLock()
+	defer p.closeGuard.RUnlock()
+
+	if p.closed.Load() {
+		return errPinnedEngineClosed
+	}
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("ferric: request canceled before dispatch: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("ferric: request canceled before dispatch: %w", ctx.Err())
+	case <-p.done:
+		return errPinnedEngineClosed
+	case p.requests <- req:
+		return nil
+	}
 }
 
 // Do dispatches an arbitrary function to the pinned engine's worker thread.
@@ -112,24 +147,12 @@ func (p *PinnedEngine) Do(ctx context.Context, fn func(*Engine) error) error {
 	if ctx == nil {
 		return errNilContext
 	}
-	if p.closed.Load() {
-		return errPinnedEngineClosed
-	}
 
 	resp := make(chan error, 1)
 	req := pinnedRequest{fn: fn, resp: resp}
 
-	// Check for pre-canceled context before enqueuing.
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("ferric: request canceled before dispatch: %w", err)
-	}
-
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("ferric: request canceled before dispatch: %w", ctx.Err())
-	case <-p.done:
-		return errPinnedEngineClosed
-	case p.requests <- req:
+	if err := p.tryEnqueue(ctx, req); err != nil {
+		return err
 	}
 
 	select {

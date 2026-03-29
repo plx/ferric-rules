@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -42,13 +43,14 @@ func (roundRobinPolicy) PickWorker(_ RouteHint, numWorkers int, counter uint64) 
 // Coordinator manages a pool of OS threads and a fixed set of engine types.
 // Engines are lazily instantiated per-thread on first use.
 type Coordinator struct {
-	specs   map[string][]EngineOption
-	workers []*worker
-	next    atomic.Uint64
-	policy  DispatchPolicy
-	done    chan struct{}
-	closed  atomic.Bool
-	obs     *obs
+	specs      map[string][]EngineOption
+	workers    []*worker
+	next       atomic.Uint64
+	policy     DispatchPolicy
+	done       chan struct{}
+	closed     atomic.Bool
+	obs        *obs
+	closeGuard sync.RWMutex // protects enqueue windows during shutdown
 }
 
 // NewCoordinator creates a Coordinator with the given engine specs and
@@ -100,9 +102,13 @@ func (c *Coordinator) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	// Signal callers that no new work will be accepted.
+	// Phase 1: Signal callers that no new work will be accepted.
 	close(c.done)
-	// Tell workers to drain remaining requests and exit.
+	// Phase 2: Wait for all in-progress enqueue attempts to resolve,
+	// then drain and stop workers while holding the write lock.
+	// The write lock blocks until every RLock holder (tryEnqueue) exits.
+	// After this returns, no goroutine can write to any worker channel.
+	c.closeGuard.Lock()
 	for _, w := range c.workers {
 		if w != nil {
 			close(w.stop)
@@ -113,6 +119,7 @@ func (c *Coordinator) Close() error {
 			<-w.done
 		}
 	}
+	c.closeGuard.Unlock()
 	return nil
 }
 
