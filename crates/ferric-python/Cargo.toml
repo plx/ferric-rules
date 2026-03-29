@@ -19,6 +19,7 @@ tracing = { workspace = true, optional = true }
 [features]
 default = ["serde"]
 serde = ["ferric-runtime/serde"]
+testing = []
 tracing = ["dep:tracing", "ferric-runtime/tracing"]
 
 [build-dependencies]

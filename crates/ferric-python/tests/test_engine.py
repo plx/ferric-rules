@@ -3,6 +3,7 @@
 import pathlib
 import tempfile
 
+import pytest
 import ferric
 
 
@@ -49,16 +50,16 @@ class TestFromSource:
 
 
 class TestContextManager:
-    def test_context_manager_clears_on_exit(self):
+    def test_context_manager_closes_on_exit(self):
         with ferric.Engine.from_source(
             '(deffacts startup (color red))'
         ) as engine:
             assert engine.fact_count >= 1
-        # After exit, engine is cleared
-        assert engine.fact_count == 0
-        assert len(engine.rules()) == 0
+        # After exit, engine is closed
+        with pytest.raises(ferric.FerricRuntimeError, match="closed"):
+            engine.fact_count
 
-    def test_context_manager_clears_on_exception(self):
+    def test_context_manager_closes_on_exception(self):
         try:
             with ferric.Engine.from_source(
                 '(deffacts startup (color red))'
@@ -66,7 +67,8 @@ class TestContextManager:
                 raise ValueError("test error")
         except ValueError:
             pass
-        assert engine.fact_count == 0
+        with pytest.raises(ferric.FerricRuntimeError, match="closed"):
+            engine.fact_count
 
 
 class TestLoadFile:

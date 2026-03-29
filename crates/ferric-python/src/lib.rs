@@ -37,5 +37,9 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Exception hierarchy
     error::register_exceptions(m)?;
 
+    // Testing instrumentation
+    #[cfg(feature = "testing")]
+    m.add_function(wrap_pyfunction!(engine::engine_instance_count, m)?)?;
+
     Ok(())
 }
