@@ -4,6 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -35,19 +40,42 @@ func (c *Coordinator) Manager(specName string) (*Manager, error) {
 // Do dispatches a function to an engine of this Manager's type.
 // The function runs on a thread-locked worker goroutine. The Engine
 // must not be retained beyond the closure's return.
-func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) error {
+//nolint:nonamedreturns // named return needed for deferred observability recording.
+func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) (retErr error) {
 	if ctx == nil {
 		return errNilContext
 	}
 	if m.coord.closed.Load() {
 		return errCoordinatorClosed
 	}
+
+	o := m.coord.obs
+	specAttr := attribute.String("ferric.spec", m.specName)
+	ctx, span := o.tracer.Start(ctx, "ferric.dispatch", trace.WithAttributes(specAttr))
+	start := time.Now()
+
+	defer func() {
+		dur := sinceSeconds(start)
+		o.dispatchDuration.Record(ctx, dur, metric.WithAttributes(specAttr))
+		o.dispatchTotal.Add(ctx, 1, metric.WithAttributes(specAttr))
+		if retErr != nil {
+			o.dispatchErrors.Add(ctx, 1, metric.WithAttributes(specAttr))
+			o.recordError(span, retErr)
+			if o.logger != nil {
+				o.logger.WarnContext(ctx, "dispatch failed",
+					"spec", m.specName, "duration_s", dur, "error", retErr)
+			}
+		}
+		span.End()
+	}()
+
 	w := m.coord.pickWorker(RouteHint{SpecName: m.specName})
 	resp := make(chan error, 1)
 	req := workerRequest{
-		specName: m.specName,
-		fn:       fn,
-		resp:     resp,
+		specName:   m.specName,
+		fn:         fn,
+		resp:       resp,
+		enqueuedAt: time.Now(),
 	}
 
 	// Check for cancellation before enqueueing. Without this explicit
@@ -86,6 +114,11 @@ func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*Evaluate
 		return nil, errNilEvaluateRequest
 	}
 
+	o := m.coord.obs
+	specAttr := attribute.String("ferric.spec", m.specName)
+	ctx, span := o.tracer.Start(ctx, "ferric.evaluate", trace.WithAttributes(specAttr))
+	defer span.End()
+
 	var result *EvaluateResult
 	err := m.Do(ctx, func(e *Engine) error {
 		if err := e.Reset(); err != nil {
@@ -96,14 +129,32 @@ func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*Evaluate
 			return err
 		}
 
+		runStart := time.Now()
 		runResult, err := runEvaluate(ctx, e, req.Limit)
 		if err != nil {
 			return err
+		}
+		o.runDuration.Record(ctx, sinceSeconds(runStart), metric.WithAttributes(specAttr))
+
+		span.SetAttributes(
+			attribute.Int("ferric.rules_fired", runResult.RulesFired),
+			attribute.String("ferric.halt_reason", runResult.HaltReason.String()),
+		)
+
+		if o.logger != nil {
+			o.logger.DebugContext(ctx, "evaluate completed",
+				"spec", m.specName,
+				"rules_fired", runResult.RulesFired,
+				"halt_reason", runResult.HaltReason.String())
 		}
 
 		result, err = buildEvaluateResult(e, runResult)
 		return err
 	})
+
+	if err != nil {
+		o.recordError(span, err)
+	}
 	return result, err
 }
 

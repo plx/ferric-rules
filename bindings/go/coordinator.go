@@ -1,10 +1,15 @@
 package ferric
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
 	"sync/atomic"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 var (
@@ -43,6 +48,7 @@ type Coordinator struct {
 	policy  DispatchPolicy
 	done    chan struct{}
 	closed  atomic.Bool
+	obs     *obs
 }
 
 // NewCoordinator creates a Coordinator with the given engine specs and
@@ -63,6 +69,7 @@ func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator
 		specs:  make(map[string][]EngineOption, len(specs)),
 		policy: cfg.policy,
 		done:   make(chan struct{}),
+		obs:    newObs(&cfg),
 	}
 	for _, s := range specs {
 		c.specs[s.Name] = s.Options
@@ -70,7 +77,7 @@ func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator
 
 	c.workers = make([]*worker, cfg.threads)
 	for i := range c.workers {
-		w := newWorker(c.specs)
+		w := newWorker(c.specs, c.obs)
 		c.workers[i] = w
 	}
 	return c, nil
@@ -114,9 +121,10 @@ func (c *Coordinator) Close() error {
 // ---------------------------------------------------------------------------
 
 type workerRequest struct {
-	specName string
-	fn       func(*Engine) error
-	resp     chan error
+	specName   string
+	fn         func(*Engine) error
+	resp       chan error
+	enqueuedAt time.Time
 }
 
 type worker struct {
@@ -125,15 +133,17 @@ type worker struct {
 	requests chan workerRequest
 	stop     chan struct{}
 	done     chan struct{}
+	obs      *obs
 }
 
-func newWorker(specs map[string][]EngineOption) *worker {
+func newWorker(specs map[string][]EngineOption, o *obs) *worker {
 	w := &worker{
 		specs:    specs,
 		engines:  make(map[string]*Engine),
 		requests: make(chan workerRequest, 16),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
+		obs:      o,
 	}
 
 	ready := make(chan struct{})
@@ -162,6 +172,11 @@ func newWorker(specs map[string][]EngineOption) *worker {
 }
 
 func (w *worker) handle(req workerRequest) {
+	if !req.enqueuedAt.IsZero() {
+		specAttr := attribute.String("ferric.spec", req.specName)
+		w.obs.waitDuration.Record(context.Background(), sinceSeconds(req.enqueuedAt),
+			metric.WithAttributes(specAttr))
+	}
 	engine, err := w.getOrCreateEngine(req.specName)
 	if err != nil {
 		req.resp <- err
@@ -191,10 +206,27 @@ func (w *worker) getOrCreateEngine(specName string) (*Engine, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w %q", errUnknownEngineSpec, specName)
 	}
+
+	specAttr := attribute.String("ferric.spec", specName)
+	start := time.Now()
 	eng, err := NewEngine(opts...)
+	dur := sinceSeconds(start)
+
 	if err != nil {
+		if w.obs.logger != nil {
+			w.obs.logger.Error("engine cold start failed",
+				"spec", specName, "duration_s", dur, "error", err)
+		}
 		return nil, fmt.Errorf("ferric: creating engine %q: %w", specName, err)
 	}
+
+	w.obs.coldStartDuration.Record(context.Background(), dur,
+		metric.WithAttributes(specAttr))
+	if w.obs.logger != nil {
+		w.obs.logger.Info("engine cold start",
+			"spec", specName, "duration_s", dur)
+	}
+
 	w.engines[specName] = eng
 	return eng, nil
 }
