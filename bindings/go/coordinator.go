@@ -1,10 +1,16 @@
 package ferric
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 var (
@@ -18,6 +24,8 @@ type RouteHint struct {
 }
 
 // DispatchPolicy picks a worker index for a request.
+// The returned index is normalized to [0, numWorkers) via modular arithmetic,
+// so out-of-range or negative values are safe (they wrap deterministically).
 type DispatchPolicy interface {
 	PickWorker(hint RouteHint, numWorkers int, counter uint64) int
 }
@@ -35,12 +43,14 @@ func (roundRobinPolicy) PickWorker(_ RouteHint, numWorkers int, counter uint64) 
 // Coordinator manages a pool of OS threads and a fixed set of engine types.
 // Engines are lazily instantiated per-thread on first use.
 type Coordinator struct {
-	specs   map[string][]EngineOption
-	workers []*worker
-	next    atomic.Uint64
-	policy  DispatchPolicy
-	done    chan struct{}
-	closed  atomic.Bool
+	specs      map[string][]EngineOption
+	workers    []*worker
+	next       atomic.Uint64
+	policy     DispatchPolicy
+	done       chan struct{}
+	closed     atomic.Bool
+	obs        *obs
+	closeGuard sync.RWMutex // protects enqueue windows during shutdown
 }
 
 // NewCoordinator creates a Coordinator with the given engine specs and
@@ -61,6 +71,7 @@ func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator
 		specs:  make(map[string][]EngineOption, len(specs)),
 		policy: cfg.policy,
 		done:   make(chan struct{}),
+		obs:    newObs(&cfg),
 	}
 	for _, s := range specs {
 		c.specs[s.Name] = s.Options
@@ -68,7 +79,7 @@ func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator
 
 	c.workers = make([]*worker, cfg.threads)
 	for i := range c.workers {
-		w := newWorker(c.specs)
+		w := newWorker(c.specs, c.obs)
 		c.workers[i] = w
 	}
 	return c, nil
@@ -76,17 +87,28 @@ func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator
 
 func (c *Coordinator) pickWorker(hint RouteHint) *worker {
 	rr := c.next.Add(1) - 1
-	idx := c.policy.PickWorker(hint, len(c.workers), rr)
+	n := len(c.workers)
+	idx := c.policy.PickWorker(hint, n, rr)
+	// Normalize: map any int (including negative) into [0, n).
+	idx = ((idx % n) + n) % n
 	return c.workers[idx]
 }
 
-// Close shuts down all worker goroutines and frees all engines.
-// Blocks until all in-flight requests complete.
+// Close shuts down the coordinator. It stops accepting new requests, drains
+// all previously-accepted work so that every in-flight request completes with
+// its real result, and then frees all engines. Blocks until every accepted
+// request has been processed and all worker goroutines have exited.
 func (c *Coordinator) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	// Phase 1: Signal callers that no new work will be accepted.
 	close(c.done)
+	// Phase 2: Wait for all in-progress enqueue attempts to resolve,
+	// then drain and stop workers while holding the write lock.
+	// The write lock blocks until every RLock holder (tryEnqueue) exits.
+	// After this returns, no goroutine can write to any worker channel.
+	c.closeGuard.Lock()
 	for _, w := range c.workers {
 		if w != nil {
 			close(w.stop)
@@ -97,6 +119,7 @@ func (c *Coordinator) Close() error {
 			<-w.done
 		}
 	}
+	c.closeGuard.Unlock()
 	return nil
 }
 
@@ -105,9 +128,10 @@ func (c *Coordinator) Close() error {
 // ---------------------------------------------------------------------------
 
 type workerRequest struct {
-	specName string
-	fn       func(*Engine) error
-	resp     chan error
+	specName   string
+	fn         func(*Engine) error
+	resp       chan error
+	enqueuedAt time.Time
 }
 
 type worker struct {
@@ -116,15 +140,17 @@ type worker struct {
 	requests chan workerRequest
 	stop     chan struct{}
 	done     chan struct{}
+	obs      *obs
 }
 
-func newWorker(specs map[string][]EngineOption) *worker {
+func newWorker(specs map[string][]EngineOption, o *obs) *worker {
 	w := &worker{
 		specs:    specs,
 		engines:  make(map[string]*Engine),
 		requests: make(chan workerRequest, 16),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
+		obs:      o,
 	}
 
 	ready := make(chan struct{})
@@ -140,20 +166,43 @@ func newWorker(specs map[string][]EngineOption) *worker {
 		for {
 			select {
 			case <-w.stop:
+				w.drain()
 				return
 			case req := <-w.requests:
-				engine, err := w.getOrCreateEngine(req.specName)
-				if err != nil {
-					req.resp <- err
-					continue
-				}
-				req.resp <- req.fn(engine)
+				w.handle(req)
 			}
 		}
 	}()
 
 	<-ready
 	return w
+}
+
+func (w *worker) handle(req workerRequest) {
+	if !req.enqueuedAt.IsZero() {
+		specAttr := attribute.String("ferric.spec", req.specName)
+		w.obs.waitDuration.Record(context.Background(), sinceSeconds(req.enqueuedAt),
+			metric.WithAttributes(specAttr))
+	}
+	engine, err := w.getOrCreateEngine(req.specName)
+	if err != nil {
+		req.resp <- err
+		return
+	}
+	req.resp <- req.fn(engine)
+}
+
+// drain processes all buffered requests remaining in the channel so that
+// accepted work always completes with its real result during shutdown.
+func (w *worker) drain() {
+	for {
+		select {
+		case req := <-w.requests:
+			w.handle(req)
+		default:
+			return
+		}
+	}
 }
 
 func (w *worker) getOrCreateEngine(specName string) (*Engine, error) {
@@ -164,10 +213,27 @@ func (w *worker) getOrCreateEngine(specName string) (*Engine, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w %q", errUnknownEngineSpec, specName)
 	}
+
+	specAttr := attribute.String("ferric.spec", specName)
+	start := time.Now()
 	eng, err := NewEngine(opts...)
+	dur := sinceSeconds(start)
+
 	if err != nil {
+		if w.obs.logger != nil {
+			w.obs.logger.Error("engine cold start failed",
+				"spec", specName, "duration_s", dur, "error", err)
+		}
 		return nil, fmt.Errorf("ferric: creating engine %q: %w", specName, err)
 	}
+
+	w.obs.coldStartDuration.Record(context.Background(), dur,
+		metric.WithAttributes(specAttr))
+	if w.obs.logger != nil {
+		w.obs.logger.Info("engine cold start",
+			"spec", specName, "duration_s", dur)
+	}
+
 	w.engines[specName] = eng
 	return eng, nil
 }

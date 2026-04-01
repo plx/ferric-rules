@@ -72,6 +72,21 @@ jobs:
           version: v2.8.0
           working-directory: bindings/go
 
+  go-test-stress:
+    name: Go Stress Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bindings/go/go.mod
+      - run: just build-go-ffi
+      - run: just test-go-stress 10
+
   python-bindings:
     name: Python Bindings
     runs-on: ubuntu-latest

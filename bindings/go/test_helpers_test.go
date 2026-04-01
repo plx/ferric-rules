@@ -2,11 +2,20 @@ package ferric
 
 import (
 	"context"
+	"runtime"
 	"testing"
 )
 
 type testCloser interface {
 	Close() error
+}
+
+// lockThread pins the current goroutine to its OS thread for the
+// duration of the test, ensuring engine thread-affinity is satisfied.
+func lockThread(t *testing.T) {
+	t.Helper()
+	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
 }
 
 func mustNoError(t *testing.T, err error) {

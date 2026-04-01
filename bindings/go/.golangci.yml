@@ -28,6 +28,14 @@ linters:
     - perfsprint
     - wsl_v5
 
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
+  exclusions:
+    rules:
+      # Example tests are documentation; readability trumps lint strictness.
+      - path: example_test\.go
+        linters:
+          - wrapcheck
+          - errcheck
+      - path: example_test\.go
+        linters:
+          - gocritic
+        text: exitAfterDefer

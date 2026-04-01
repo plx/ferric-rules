@@ -5,13 +5,17 @@ import (
 	"testing"
 )
 
-func init() {
-	// Lock the main test goroutine to an OS thread since
-	// all engine operations must happen on the creating thread.
+// lockThread pins the current goroutine to its OS thread for the
+// duration of the test, ensuring engine thread-affinity is satisfied.
+func lockThread(t *testing.T) {
+	t.Helper()
 	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
 }
 
 func TestEngineLifecycle(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNew()
 	if h == nil {
 		t.Fatal("EngineNew returned nil")
@@ -24,6 +28,8 @@ func TestEngineLifecycle(t *testing.T) {
 }
 
 func TestEngineNewWithSource(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNewWithSource(`(defrule hello => (printout t "Hello from Go!" crlf))`)
 	if h == nil {
 		t.Fatal("EngineNewWithSource returned nil")
@@ -55,6 +61,8 @@ func TestEngineNewWithSource(t *testing.T) {
 }
 
 func TestLoadAndRun(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNew()
 	if h == nil {
 		t.Fatal("EngineNew returned nil")
@@ -111,6 +119,8 @@ func TestLoadAndRun(t *testing.T) {
 
 //nolint:funlen // integration test intentionally exercises end-to-end fact APIs in one flow.
 func TestFactOperations(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNew()
 	if h == nil {
 		t.Fatal("EngineNew returned nil")
@@ -216,6 +226,8 @@ func TestFactOperations(t *testing.T) {
 
 //nolint:funlen // integration test intentionally covers full template-slot lifecycle in one flow.
 func TestTemplateFactSlotByName(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNew()
 	if h == nil {
 		t.Fatal("EngineNew returned nil")
@@ -291,6 +303,8 @@ func TestTemplateFactSlotByName(t *testing.T) {
 }
 
 func TestEngineStep(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNewWithSource(`
 		(defrule r1 => (assert (step1 done)))
 		(defrule r2 (step1 done) => (assert (step2 done)))
@@ -330,6 +344,8 @@ func TestEngineStep(t *testing.T) {
 
 //nolint:funlen // integration test intentionally validates multiple introspection surfaces together.
 func TestIntrospection(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNewWithSource(`
 		(deftemplate sensor
 			(slot id (type INTEGER))
@@ -419,6 +435,8 @@ func TestIntrospection(t *testing.T) {
 }
 
 func TestGlobalVariable(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNew()
 	if h == nil {
 		t.Fatal("EngineNew returned nil")
@@ -448,6 +466,8 @@ func TestGlobalVariable(t *testing.T) {
 }
 
 func TestHalt(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNewWithSource(`
 		(defrule loop
 			=>
@@ -470,6 +490,8 @@ func TestHalt(t *testing.T) {
 }
 
 func TestAgendaCount(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNewWithSource(`
 		(defrule r1 => (assert (done)))
 		(defrule r2 => (assert (also-done)))
@@ -489,6 +511,8 @@ func TestAgendaCount(t *testing.T) {
 }
 
 func TestFreeUncheckedFromDifferentThread(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNew()
 	if h == nil {
 		t.Fatal("EngineNew returned nil")
@@ -496,6 +520,8 @@ func TestFreeUncheckedFromDifferentThread(t *testing.T) {
 
 	done := make(chan ErrorCode, 1)
 	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
 		done <- EngineFreeUnchecked(h)
 	}()
 
@@ -506,6 +532,8 @@ func TestFreeUncheckedFromDifferentThread(t *testing.T) {
 }
 
 func TestErrorRetrieval(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNew()
 	if h == nil {
 		t.Fatal("EngineNew returned nil")
@@ -527,6 +555,8 @@ func TestErrorRetrieval(t *testing.T) {
 }
 
 func TestAssertOrdered(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNew()
 	if h == nil {
 		t.Fatal("EngineNew returned nil")
@@ -556,6 +586,8 @@ func TestAssertOrdered(t *testing.T) {
 }
 
 func TestEngineClear(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNew()
 	if h == nil {
 		t.Fatal("EngineNew returned nil")
@@ -583,6 +615,8 @@ func TestEngineClear(t *testing.T) {
 }
 
 func TestPushInput(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNew()
 	if h == nil {
 		t.Fatal("EngineNew returned nil")
@@ -597,6 +631,8 @@ func TestPushInput(t *testing.T) {
 }
 
 func TestEngineNewWithConfig(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNewWithConfigHelper(StringEncodingUTF8, ConflictStrategyDepth, 256)
 	if h == nil {
 		t.Fatal("EngineNewWithConfig returned nil")
@@ -605,6 +641,8 @@ func TestEngineNewWithConfig(t *testing.T) {
 }
 
 func TestFocusStack(t *testing.T) {
+	lockThread(t)
+
 	h := EngineNewWithSource(`
 		(defmodule A)
 		(defmodule B)
@@ -631,5 +669,82 @@ func TestFocusStack(t *testing.T) {
 	// May return NotFound if focus stack is empty; that's OK
 	if rc != ErrOK && rc != ErrNotFound {
 		t.Fatalf("EngineGetFocus returned unexpected %d", rc)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Wrong-thread coverage (GOB-003)
+// ---------------------------------------------------------------------------
+
+func TestEngineFreeFromWrongThread(t *testing.T) {
+	lockThread(t)
+
+	h := EngineNew()
+	if h == nil {
+		t.Fatal("EngineNew returned nil")
+	}
+
+	// Thread-checked free from a different OS thread should fail.
+	done := make(chan ErrorCode, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		done <- EngineFree(h)
+	}()
+
+	rc := <-done
+	if rc != ErrThreadViolation {
+		t.Fatalf("expected ErrThreadViolation from wrong-thread EngineFree, got %d", rc)
+	}
+
+	// Clean up from the creating thread.
+	rc = EngineFree(h)
+	if rc != ErrOK {
+		t.Fatalf("EngineFree from creating thread returned %d", rc)
+	}
+}
+
+func TestEngineRunFromWrongThread(t *testing.T) {
+	lockThread(t)
+
+	h := EngineNewWithSource(`(defrule r => (assert (done)))`)
+	if h == nil {
+		t.Fatal("EngineNewWithSource returned nil")
+	}
+	defer EngineFree(h)
+
+	done := make(chan ErrorCode, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		_, rc := EngineRun(h, -1)
+		done <- rc
+	}()
+
+	rc := <-done
+	if rc != ErrThreadViolation {
+		t.Fatalf("expected ErrThreadViolation from wrong-thread EngineRun, got %d", rc)
+	}
+}
+
+func TestEngineResetFromWrongThread(t *testing.T) {
+	lockThread(t)
+
+	h := EngineNew()
+	if h == nil {
+		t.Fatal("EngineNew returned nil")
+	}
+	defer EngineFree(h)
+
+	done := make(chan ErrorCode, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		done <- EngineReset(h)
+	}()
+
+	rc := <-done
+	if rc != ErrThreadViolation {
+		t.Fatalf("expected ErrThreadViolation from wrong-thread EngineReset, got %d", rc)
 	}
 }

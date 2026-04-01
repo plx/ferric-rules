@@ -1,8 +1,12 @@
 # ferric-rules justfile
 # Run `just --list` to see all available recipes.
+set quiet
 
 # Pin PyO3 to a uv-managed Python 3.12 so builds work regardless of system Python.
 export PYO3_PYTHON := `uv python find 3.12 2>/dev/null || echo python3`
+
+default:
+    @just --list
 
 # ── Workspace-wide builds ────────────────────────────────────────────────────
 
@@ -285,6 +289,10 @@ test-go:
 test-go-race:
     cd bindings/go && go test -race -v ./...
 
+# Run Go binding tests repeatedly to detect affinity-sensitive flakes (default: 10 iterations)
+test-go-stress count="10":
+    cd bindings/go && go test -race -count={{count}} -v ./...
+
 # Version of golangci-lint to install when not already present.
 golangci_lint_version := "v2.8.0"
 
@@ -315,6 +323,16 @@ go-lint: build-go-ffi
 
 # Full Go build pipeline: build Rust static lib, then run Go tests
 go-full: build-go-ffi test-go-race
+
+# ── Issue tracking ────────────────────────────────────────────────────────────
+
+# Find the next unblocked issue matching comma-separated labels (e.g. `just find-next-matching-issue golang-binding,remediation`)
+find-next-matching-issue labels:
+    ./scripts/find-next-matching-issue.sh {{labels}}
+
+# List open GitHub issues matching comma-separated labels as a markdown table (e.g. `just list-open-issues golang-binding,remediation`)
+list-open-issues labels:
+    ./scripts/list-open-issues.sh {{labels}}
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 

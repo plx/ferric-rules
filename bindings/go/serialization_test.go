@@ -32,6 +32,7 @@ func allFormats() []struct {
 func TestSerializeRoundtrip(t *testing.T) {
 	for _, tc := range allFormats() {
 		t.Run(tc.name, func(t *testing.T) {
+			lockThread(t)
 			src := `
 				(deftemplate sensor (slot id (type INTEGER)) (slot value (type FLOAT)))
 				(defrule alert
@@ -88,6 +89,7 @@ func TestSerializeRoundtrip(t *testing.T) {
 func TestSnapshotEngineCanRun(t *testing.T) {
 	for _, tc := range allFormats() {
 		t.Run(tc.name, func(t *testing.T) {
+			lockThread(t)
 			src := `
 				(deftemplate sensor (slot id (type INTEGER)) (slot value (type FLOAT)))
 				(defrule alert
@@ -139,6 +141,7 @@ func TestSnapshotEngineCanRun(t *testing.T) {
 }
 
 func TestSnapshotMultipleInstances(t *testing.T) {
+	lockThread(t)
 	src := `
 		(defrule count => (assert (counted)))
 	`
@@ -178,6 +181,7 @@ func TestSnapshotMultipleInstances(t *testing.T) {
 func TestDeserializeInvalidData(t *testing.T) {
 	for _, tc := range allFormats() {
 		t.Run(tc.name, func(t *testing.T) {
+			lockThread(t)
 			_, err := NewEngine(WithSnapshot([]byte("not valid snapshot data"), tc.format))
 			if err == nil {
 				t.Fatal("expected error for invalid snapshot")
@@ -192,6 +196,7 @@ func TestDeserializeInvalidData(t *testing.T) {
 func TestSerializeEmptyEngine(t *testing.T) {
 	for _, tc := range allFormats() {
 		t.Run(tc.name, func(t *testing.T) {
+			lockThread(t)
 			e, err := NewEngine()
 			if err != nil {
 				t.Fatal(err)
@@ -225,6 +230,7 @@ func TestSerializeEmptyEngine(t *testing.T) {
 }
 
 func TestCrossFormatRejection(t *testing.T) {
+	lockThread(t)
 	// Serialize as bincode, try to deserialize as JSON — should fail.
 	e, err := NewEngine()
 	if err != nil {
@@ -246,6 +252,7 @@ func TestCrossFormatRejection(t *testing.T) {
 func TestSerializeToFileRoundtrip(t *testing.T) {
 	for _, tc := range allFormats() {
 		t.Run(tc.name, func(t *testing.T) {
+			lockThread(t)
 			src := `
 				(deftemplate sensor (slot id (type INTEGER)) (slot value (type FLOAT)))
 				(defrule alert
@@ -306,6 +313,7 @@ func TestNewEngineFromFileNonexistent(t *testing.T) {
 }
 
 func TestSerializeToFileUnwritable(t *testing.T) {
+	lockThread(t)
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)

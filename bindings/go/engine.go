@@ -221,6 +221,11 @@ func (e *Engine) AssertString(source string) (uint64, error) {
 // AssertFact asserts an ordered fact with the given relation and fields.
 func (e *Engine) AssertFact(relation string, fields ...any) (uint64, error) {
 	vals := make([]ffi.Value, len(fields))
+	defer func() {
+		for i := range vals {
+			ffi.ValueFree(&vals[i])
+		}
+	}()
 	for i, f := range fields {
 		v, err := goToFFIValue(f)
 		if err != nil {
@@ -240,6 +245,11 @@ func (e *Engine) AssertFact(relation string, fields ...any) (uint64, error) {
 func (e *Engine) AssertTemplate(templateName string, slots map[string]any) (uint64, error) {
 	names := make([]string, 0, len(slots))
 	vals := make([]ffi.Value, 0, len(slots))
+	defer func() {
+		for i := range vals {
+			ffi.ValueFree(&vals[i])
+		}
+	}()
 	for k, v := range slots {
 		fv, err := goToFFIValue(v)
 		if err != nil {
@@ -607,6 +617,116 @@ func (e *Engine) ClearDiagnostics() {
 	ffi.EngineClearActionDiagnostics(e.handle)
 }
 
+// ---------------------------------------------------------------------------
+// Error-aware introspection variants
+// ---------------------------------------------------------------------------
+
+// RulesE returns information about all registered rules, or an error.
+func (e *Engine) RulesE() ([]RuleInfo, error) {
+	count, rc := ffi.EngineRuleCount(e.handle)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, e.handle)
+	}
+	rules := make([]RuleInfo, 0, count)
+	for i := range count {
+		name, salience, rc := ffi.EngineRuleInfo(e.handle, i)
+		if rc != ffi.ErrOK {
+			return nil, errorFromFFI(rc, e.handle)
+		}
+		rules = append(rules, RuleInfo{Name: name, Salience: int(salience)})
+	}
+	return rules, nil
+}
+
+// TemplatesE returns the names of all registered templates, or an error.
+func (e *Engine) TemplatesE() ([]string, error) {
+	count, rc := ffi.EngineTemplateCount(e.handle)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, e.handle)
+	}
+	names := make([]string, 0, count)
+	for i := range count {
+		name, rc := ffi.EngineTemplateName(e.handle, i)
+		if rc != ffi.ErrOK {
+			return nil, errorFromFFI(rc, e.handle)
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// DiagnosticsE returns all action diagnostic messages, or an error.
+func (e *Engine) DiagnosticsE() ([]string, error) {
+	count, rc := ffi.EngineActionDiagnosticCount(e.handle)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, e.handle)
+	}
+	diags := make([]string, 0, count)
+	for i := range count {
+		msg, rc := ffi.EngineActionDiagnosticCopy(e.handle, i)
+		if rc != ffi.ErrOK {
+			return nil, errorFromFFI(rc, e.handle)
+		}
+		diags = append(diags, msg)
+	}
+	return diags, nil
+}
+
+// CurrentModuleE returns the name of the current module, or an error.
+func (e *Engine) CurrentModuleE() (string, error) {
+	name, rc := ffi.EngineCurrentModule(e.handle)
+	if rc != ffi.ErrOK {
+		return "", errorFromFFI(rc, e.handle)
+	}
+	return name, nil
+}
+
+// FocusE returns the module at the top of the focus stack, or an error.
+// Returns ("", false, nil) when the result cannot be distinguished from
+// an empty stack without an error; callers should check the bool first.
+func (e *Engine) FocusE() (string, bool, error) {
+	name, rc := ffi.EngineGetFocus(e.handle)
+	if rc != ffi.ErrOK {
+		return "", false, errorFromFFI(rc, e.handle)
+	}
+	return name, true, nil
+}
+
+// FocusStackE returns the focus stack entries from bottom to top, or an error.
+func (e *Engine) FocusStackE() ([]string, error) {
+	depth, rc := ffi.EngineFocusStackDepth(e.handle)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, e.handle)
+	}
+	stack := make([]string, 0, depth)
+	for i := range depth {
+		name, rc := ffi.EngineFocusStackEntry(e.handle, i)
+		if rc != ffi.ErrOK {
+			return nil, errorFromFFI(rc, e.handle)
+		}
+		stack = append(stack, name)
+	}
+	return stack, nil
+}
+
+// AgendaSizeE returns the number of activations on the agenda, or an error.
+func (e *Engine) AgendaSizeE() (int, error) {
+	count, rc := ffi.EngineAgendaCount(e.handle)
+	if rc != ffi.ErrOK {
+		return 0, errorFromFFI(rc, e.handle)
+	}
+	return clampUintptrToInt(count), nil
+}
+
+// IsHaltedE returns whether the engine is halted, or an error.
+func (e *Engine) IsHaltedE() (bool, error) {
+	halted, rc := ffi.EngineIsHalted(e.handle)
+	if rc != ffi.ErrOK {
+		return false, errorFromFFI(rc, e.handle)
+	}
+	return halted, nil
+}
+
 // --- Internal: fact building ---
 
 func (e *Engine) buildFact(factID uint64) (*Fact, error) {
@@ -644,12 +764,15 @@ func (e *Engine) buildFact(factID uint64) (*Fact, error) {
 
 		// Build slot map by querying template slot names.
 		slotCount, rc := ffi.EngineTemplateSlotCount(e.handle, name)
-		if rc == ffi.ErrOK && slotCount > 0 {
+		if rc != ffi.ErrOK {
+			return nil, fmt.Errorf("ferric: failed to get slot count for template %q: %w", name, errorFromFFI(rc, e.handle))
+		}
+		if slotCount > 0 {
 			fact.Slots = make(map[string]any, slotCount)
 			for i := range slotCount {
 				slotName, rc := ffi.EngineTemplateSlotName(e.handle, name, i)
 				if rc != ffi.ErrOK {
-					break
+					return nil, fmt.Errorf("ferric: failed to get slot name %d for template %q: %w", i, name, errorFromFFI(rc, e.handle))
 				}
 				if i < fieldCount {
 					fact.Slots[slotName] = fields[i]
@@ -659,9 +782,10 @@ func (e *Engine) buildFact(factID uint64) (*Fact, error) {
 	} else {
 		fact.Type = FactOrdered
 		rel, rc := ffi.EngineGetFactRelation(e.handle, factID)
-		if rc == ffi.ErrOK {
-			fact.Relation = rel
+		if rc != ffi.ErrOK {
+			return nil, fmt.Errorf("ferric: failed to get relation for fact %d: %w", factID, errorFromFFI(rc, e.handle))
 		}
+		fact.Relation = rel
 	}
 
 	return fact, nil

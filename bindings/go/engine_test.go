@@ -5,17 +5,17 @@ import (
 	"errors"
 	"runtime"
 	"testing"
-)
 
-func init() {
-	runtime.LockOSThread()
-}
+	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
+)
 
 // ---------------------------------------------------------------------------
 // Engine lifecycle
 // ---------------------------------------------------------------------------
 
 func TestNewEngineDefault(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -24,6 +24,8 @@ func TestNewEngineDefault(t *testing.T) {
 }
 
 func TestNewEngineWithSource(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`(defrule r => (printout t "ok" crlf))`))
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +34,8 @@ func TestNewEngineWithSource(t *testing.T) {
 }
 
 func TestNewEngineWithConfig(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(
 		WithStrategy(StrategyBreadth),
 		WithEncoding(EncodingUTF8),
@@ -44,6 +48,8 @@ func TestNewEngineWithConfig(t *testing.T) {
 }
 
 func TestNewEngineWithSourceAndConfig(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(
 		WithSource(`(defrule r => (assert (done)))`),
 		WithStrategy(StrategyDepth),
@@ -55,6 +61,8 @@ func TestNewEngineWithSourceAndConfig(t *testing.T) {
 }
 
 func TestNewEngineInvalidSource(t *testing.T) {
+	lockThread(t)
+
 	_, err := NewEngine(WithSource(`(defrule bad`))
 	if err == nil {
 		t.Fatal("expected error for invalid source")
@@ -65,6 +73,8 @@ func TestNewEngineInvalidSource(t *testing.T) {
 }
 
 func TestEngineDoubleClose(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -83,6 +93,8 @@ func TestEngineDoubleClose(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLoad(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +119,8 @@ func TestLoad(t *testing.T) {
 }
 
 func TestLoadInvalid(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -124,6 +138,8 @@ func TestLoadInvalid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAssertStringAndFacts(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +171,8 @@ func TestAssertStringAndFacts(t *testing.T) {
 }
 
 func TestAssertFact(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -180,6 +198,8 @@ func TestAssertFact(t *testing.T) {
 }
 
 func TestRetract(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -207,6 +227,8 @@ func TestRetract(t *testing.T) {
 }
 
 func TestFindFacts(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -236,6 +258,8 @@ func TestFindFacts(t *testing.T) {
 }
 
 func TestGetFact(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -272,6 +296,8 @@ func TestGetFact(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAssertTemplate(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate person
 			(slot name (type STRING))
@@ -309,6 +335,8 @@ func TestAssertTemplate(t *testing.T) {
 }
 
 func TestAssertTemplateDefaults(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate person
 			(slot name (type STRING))
@@ -340,6 +368,8 @@ func TestAssertTemplateDefaults(t *testing.T) {
 }
 
 func TestAssertTemplateNotFound(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -361,6 +391,8 @@ func TestAssertTemplateNotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRunAndOutput(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule hello => (printout t "Hello!" crlf))
 	`))
@@ -390,6 +422,8 @@ func TestRunAndOutput(t *testing.T) {
 }
 
 func TestRunWithLimit(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 => (assert (a)))
 		(defrule r2 (a) => (assert (b)))
@@ -413,6 +447,8 @@ func TestRunWithLimit(t *testing.T) {
 }
 
 func TestRunWithLimitSmall(t *testing.T) {
+	lockThread(t)
+
 	// Small limit uses the direct FFI call path.
 	e, err := NewEngine(WithSource(`
 		(defrule r1 => (assert (a)))
@@ -433,6 +469,8 @@ func TestRunWithLimitSmall(t *testing.T) {
 }
 
 func TestRunContextCancel(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 => (assert (a)))
 		(defrule r2 (a) => (assert (b)))
@@ -454,6 +492,8 @@ func TestRunContextCancel(t *testing.T) {
 }
 
 func TestStep(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 => (assert (done)))
 	`))
@@ -481,6 +521,8 @@ func TestStep(t *testing.T) {
 }
 
 func TestHalt(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`(defrule r => (assert (x)))`))
 	if err != nil {
 		t.Fatal(err)
@@ -494,6 +536,8 @@ func TestHalt(t *testing.T) {
 }
 
 func TestReset(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r => (assert (done)))
 	`))
@@ -532,6 +576,8 @@ func TestReset(t *testing.T) {
 }
 
 func TestClear(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`(defrule r => (assert (done)))`))
 	if err != nil {
 		t.Fatal(err)
@@ -556,6 +602,8 @@ func TestClear(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRules(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 (declare (salience 10)) => (assert (a)))
 		(defrule r2 => (assert (b)))
@@ -583,6 +631,8 @@ func TestRules(t *testing.T) {
 }
 
 func TestTemplates(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate sensor (slot id) (slot value))
 		(deftemplate alarm (slot level))
@@ -607,6 +657,8 @@ func TestTemplates(t *testing.T) {
 }
 
 func TestGetGlobal(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`(defglobal ?*threshold* = 42)`))
 	if err != nil {
 		t.Fatal(err)
@@ -623,6 +675,8 @@ func TestGetGlobal(t *testing.T) {
 }
 
 func TestCurrentModule(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -636,6 +690,8 @@ func TestCurrentModule(t *testing.T) {
 }
 
 func TestAgendaSize(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r1 => (assert (a)))
 		(defrule r2 => (assert (b)))
@@ -656,6 +712,8 @@ func TestAgendaSize(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOutput(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defrule r => (printout t "line1" crlf "line2" crlf))
 	`))
@@ -682,6 +740,8 @@ func TestOutput(t *testing.T) {
 }
 
 func TestPushInput(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -697,6 +757,8 @@ func TestPushInput(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDiagnostics(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -717,6 +779,8 @@ func TestDiagnostics(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestErrorIs(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine()
 	if err != nil {
 		t.Fatal(err)
@@ -735,6 +799,8 @@ func TestErrorIs(t *testing.T) {
 }
 
 func TestErrorAs(t *testing.T) {
+	lockThread(t)
+
 	_, err := NewEngine(WithSource(`(defrule bad`))
 	if err == nil {
 		t.Fatal("expected error")
@@ -746,11 +812,45 @@ func TestErrorAs(t *testing.T) {
 	}
 }
 
+func TestErrorFromFFIThreadViolation(t *testing.T) {
+	lockThread(t)
+
+	err := errorFromFFI(ffi.ErrThreadViolation, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrThreadViolation) {
+		t.Fatalf("expected ErrThreadViolation, got: %v", err)
+	}
+	var tve *ThreadViolationError
+	if !errors.As(err, &tve) {
+		t.Fatalf("expected ThreadViolationError, got %T: %v", err, err)
+	}
+}
+
+func TestErrorFromFFIInvalidArgument(t *testing.T) {
+	lockThread(t)
+
+	err := errorFromFFI(ffi.ErrInvalidArgument, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument, got: %v", err)
+	}
+	var iae *InvalidArgumentError
+	if !errors.As(err, &iae) {
+		t.Fatalf("expected InvalidArgumentError, got %T: %v", err, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Value types
 // ---------------------------------------------------------------------------
 
 func TestValueConversionRoundtrip(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(defglobal ?*int-val* = 42)
 		(defglobal ?*float-val* = 3.14)
@@ -812,10 +912,304 @@ func TestValueConversionRoundtrip(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Value cleanup stress tests (#47 / GOB-002)
+// ---------------------------------------------------------------------------
+
+func TestAssertFactFreesValues(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	const iterations = 1000
+	for i := range iterations {
+		id, err := e.AssertFact("data",
+			Symbol("sym-value"),
+			"string-value",
+			int64(i),
+			3.14,
+			true,
+		)
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		if id == 0 {
+			t.Fatalf("iteration %d: expected non-zero fact ID", i)
+		}
+	}
+
+	count, err := e.FactCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != iterations {
+		t.Fatalf("expected %d facts, got %d", iterations, count)
+	}
+}
+
+func TestAssertTemplateFreesValues(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(deftemplate sensor
+			(slot id (type INTEGER))
+			(slot name (type STRING))
+			(slot status (type SYMBOL))
+			(slot value (type FLOAT)))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	const iterations = 1000
+	for i := range iterations {
+		id, err := e.AssertTemplate("sensor", map[string]any{
+			"id":     int64(i),
+			"name":   "sensor-name",
+			"status": Symbol("active"),
+			"value":  float64(i) * 0.1,
+		})
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		if id == 0 {
+			t.Fatalf("iteration %d: expected non-zero fact ID", i)
+		}
+	}
+
+	count, err := e.FactCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != iterations {
+		t.Fatalf("expected %d facts, got %d", iterations, count)
+	}
+}
+
+func TestAssertFactFreesValuesOnError(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	// Pass a value that goToFFIValue cannot convert (struct{}).
+	// Earlier symbol/string values should still be freed.
+	_, err = e.AssertFact("data", Symbol("leaky"), "also-leaky", struct{}{})
+	if err == nil {
+		t.Fatal("expected error for unsupported type")
+	}
+}
+
+func TestAssertTemplateFreesValuesOnError(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(deftemplate item (slot name (type STRING)) (slot tags))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	// Pass a value that goToFFIValue cannot convert.
+	_, err = e.AssertTemplate("item", map[string]any{
+		"name": "leaky-string",
+		"tags": struct{}{},
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported type")
+	}
+}
+
+func TestAssertOrderedFactWithMultifield(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	// Assert an ordered fact with a multifield field.
+	id, err := e.AssertFact("data", Symbol("tag"), []any{int64(1), int64(2), int64(3)})
+	if err != nil {
+		t.Fatalf("expected multifield assertion to succeed: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("expected non-zero fact ID")
+	}
+
+	// Read back and verify.
+	f, err := e.GetFact(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != FactOrdered {
+		t.Fatalf("expected ordered fact, got %v", f.Type)
+	}
+	if f.Relation != "data" {
+		t.Fatalf("expected relation 'data', got %q", f.Relation)
+	}
+	if len(f.Fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(f.Fields))
+	}
+	// Field 0: symbol "tag"
+	if sym, ok := f.Fields[0].(Symbol); !ok || sym != "tag" {
+		t.Fatalf("expected Symbol(tag), got %v (%T)", f.Fields[0], f.Fields[0])
+	}
+	// Field 1: multifield [1, 2, 3]
+	mf, ok := f.Fields[1].([]any)
+	if !ok {
+		t.Fatalf("expected []any for multifield, got %T", f.Fields[1])
+	}
+	if len(mf) != 3 {
+		t.Fatalf("expected 3 multifield elements, got %d", len(mf))
+	}
+	for i, want := range []int64{1, 2, 3} {
+		got, ok := mf[i].(int64)
+		if !ok || got != want {
+			t.Fatalf("multifield[%d]: expected %d, got %v (%T)", i, want, mf[i], mf[i])
+		}
+	}
+}
+
+func TestAssertTemplateFactWithMultifield(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(deftemplate item
+			(slot name (type STRING))
+			(multislot tags))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	id, err := e.AssertTemplate("item", map[string]any{
+		"name": "widget",
+		"tags": []any{"red", "large"},
+	})
+	if err != nil {
+		t.Fatalf("expected multifield template assertion to succeed: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("expected non-zero fact ID")
+	}
+
+	// Read back and verify.
+	f, err := e.GetFact(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != FactTemplate {
+		t.Fatalf("expected template fact, got %v", f.Type)
+	}
+	if f.TemplateName != "item" {
+		t.Fatalf("expected template 'item', got %q", f.TemplateName)
+	}
+
+	name, ok := f.Slots["name"]
+	if !ok {
+		t.Fatal("expected 'name' slot")
+	}
+	if name != "widget" {
+		t.Fatalf("expected name='widget', got %v", name)
+	}
+
+	tags, ok := f.Slots["tags"]
+	if !ok {
+		t.Fatal("expected 'tags' slot")
+	}
+	mf, ok := tags.([]any)
+	if !ok {
+		t.Fatalf("expected []any for tags, got %T", tags)
+	}
+	if len(mf) != 2 {
+		t.Fatalf("expected 2 tags, got %d", len(mf))
+	}
+	if mf[0] != "red" {
+		t.Fatalf("expected tag[0]='red', got %v", mf[0])
+	}
+	if mf[1] != "large" {
+		t.Fatalf("expected tag[1]='large', got %v", mf[1])
+	}
+}
+
+func TestAssertMultifieldEmptySlice(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(deftemplate item
+			(slot name (type STRING))
+			(multislot tags))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	// Assert with empty multifield.
+	id, err := e.AssertTemplate("item", map[string]any{
+		"name": "empty",
+		"tags": []any{},
+	})
+	if err != nil {
+		t.Fatalf("expected empty multifield assertion to succeed: %v", err)
+	}
+
+	f, err := e.GetFact(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tags, ok := f.Slots["tags"]
+	if !ok {
+		t.Fatal("expected 'tags' slot")
+	}
+	mf, ok := tags.([]any)
+	if !ok {
+		t.Fatalf("expected []any for tags, got %T", tags)
+	}
+	if len(mf) != 0 {
+		t.Fatalf("expected 0 tags, got %d", len(mf))
+	}
+}
+
+func TestAssertMultifieldConversionErrorFreesPartial(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	// A multifield with an unsupported element should fail and free
+	// the already-converted elements without leaking.
+	_, err = e.AssertFact("data", []any{int64(1), "ok", struct{}{}})
+	if err == nil {
+		t.Fatal("expected error for unsupported type inside multifield")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Rule-fires-on-template-fact integration test
 // ---------------------------------------------------------------------------
 
 func TestRuleFiresOnTemplateFact(t *testing.T) {
+	lockThread(t)
+
 	e, err := NewEngine(WithSource(`
 		(deftemplate sensor
 			(slot id (type INTEGER))
@@ -864,5 +1258,251 @@ func TestRuleFiresOnTemplateFact(t *testing.T) {
 	}
 	if output != "ALERT: sensor 1 at 150.5\n" {
 		t.Fatalf("unexpected output: %q", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Strict fact-building coverage (GOB-006)
+// ---------------------------------------------------------------------------
+
+func TestBuildFactOrderedAlwaysHasRelation(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	mustAssertFact(t, e, "color", Symbol("red"))
+	mustAssertFact(t, e, "shape", Symbol("circle"))
+
+	facts, err := e.Facts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range facts {
+		if f.Type != FactOrdered {
+			t.Fatalf("expected ordered fact, got type %d", f.Type)
+		}
+		if f.Relation == "" {
+			t.Fatalf("fact %d has empty Relation", f.ID)
+		}
+	}
+}
+
+func TestBuildFactTemplateAlwaysHasSlots(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(deftemplate sensor
+			(slot id (type INTEGER))
+			(slot name (type STRING))
+			(slot value (type FLOAT)))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	mustAssertTemplate(t, e, "sensor", map[string]any{
+		"id":    int64(1),
+		"name":  "temp-1",
+		"value": 98.6,
+	})
+	mustAssertTemplate(t, e, "sensor", map[string]any{
+		"id":    int64(2),
+		"name":  "temp-2",
+		"value": 72.0,
+	})
+
+	facts, err := e.Facts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range facts {
+		if f.Type != FactTemplate {
+			t.Fatalf("expected template fact, got type %d", f.Type)
+		}
+		if f.TemplateName != "sensor" {
+			t.Fatalf("expected template name 'sensor', got %q", f.TemplateName)
+		}
+		if f.Slots == nil {
+			t.Fatalf("fact %d has nil Slots", f.ID)
+		}
+		if len(f.Slots) != 3 {
+			t.Fatalf("fact %d: expected 3 slots, got %d", f.ID, len(f.Slots))
+		}
+		for _, key := range []string{"id", "name", "value"} {
+			if _, ok := f.Slots[key]; !ok {
+				t.Fatalf("fact %d: missing slot %q", f.ID, key)
+			}
+		}
+	}
+}
+
+func TestBuildFactFindFactsCompleteness(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	mustAssertFact(t, e, "color", Symbol("red"))
+	mustAssertFact(t, e, "color", Symbol("blue"))
+
+	facts, err := e.FindFacts("color")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 2 {
+		t.Fatalf("expected 2 facts, got %d", len(facts))
+	}
+	for _, f := range facts {
+		if f.Relation == "" {
+			t.Fatalf("FindFacts returned fact %d with empty Relation", f.ID)
+		}
+		if f.Type != FactOrdered {
+			t.Fatalf("expected ordered fact, got type %d", f.Type)
+		}
+	}
+}
+
+func TestBuildFactGetFactCompleteness(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(deftemplate item (slot name (type STRING)) (slot count (type INTEGER)))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	// Verify ordered fact via GetFact.
+	orderedID := mustAssertFact(t, e, "tag", Symbol("important"))
+	f, err := e.GetFact(orderedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Relation == "" {
+		t.Fatal("GetFact returned ordered fact with empty Relation")
+	}
+
+	// Verify template fact via GetFact.
+	templateID := mustAssertTemplate(t, e, "item", map[string]any{
+		"name":  "widget",
+		"count": int64(5),
+	})
+	f, err = e.GetFact(templateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.TemplateName == "" {
+		t.Fatal("GetFact returned template fact with empty TemplateName")
+	}
+	if f.Slots == nil {
+		t.Fatal("GetFact returned template fact with nil Slots")
+	}
+	if len(f.Slots) != 2 {
+		t.Fatalf("expected 2 slots, got %d", len(f.Slots))
+	}
+	if f.Slots["name"] != "widget" {
+		t.Fatalf("expected slot name 'widget', got %v", f.Slots["name"])
+	}
+	if f.Slots["count"] != int64(5) {
+		t.Fatalf("expected slot count 5, got %v", f.Slots["count"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Wrong-thread coverage (GOB-003)
+// ---------------------------------------------------------------------------
+
+func TestEngineWrongThread(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+	mustNoError(t, e.Reset())
+
+	mustAssertFact(t, e, "color", Symbol("red"))
+
+	// Call FactCount from a different OS thread.
+	errc := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		_, err := e.FactCount()
+		errc <- err
+	}()
+
+	err = <-errc
+	if err == nil {
+		t.Fatal("expected thread violation error from wrong thread")
+	}
+	if !errors.Is(err, ErrThreadViolation) {
+		t.Fatalf("expected ErrThreadViolation, got: %v", err)
+	}
+	var tve *ThreadViolationError
+	if !errors.As(err, &tve) {
+		t.Fatalf("expected ThreadViolationError, got %T: %v", err, err)
+	}
+}
+
+func TestEngineWrongThreadMultipleOps(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(defrule r => (assert (done)))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	// Verify several operations all return ErrThreadViolation from a wrong thread.
+	type opResult struct {
+		name string
+		err  error
+	}
+	results := make(chan opResult, 10)
+
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
+		_, err := e.Run(context.Background())
+		results <- opResult{"Run", err}
+
+		err = e.Reset()
+		results <- opResult{"Reset", err}
+
+		err = e.Load(`(defrule r2 => (assert (x)))`)
+		results <- opResult{"Load", err}
+
+		_, err = e.AssertFact("x", Symbol("y"))
+		results <- opResult{"AssertFact", err}
+
+		_, err = e.AssertString("(assert (z))")
+		results <- opResult{"AssertString", err}
+
+		close(results)
+	}()
+
+	for r := range results {
+		if r.err == nil {
+			t.Fatalf("%s: expected thread violation error", r.name)
+		}
+		if !errors.Is(r.err, ErrThreadViolation) {
+			t.Fatalf("%s: expected ErrThreadViolation, got: %v", r.name, r.err)
+		}
 	}
 }
