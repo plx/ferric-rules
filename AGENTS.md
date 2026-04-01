@@ -20,3 +20,7 @@ When claiming performance improvements:
 - Run `cargo bench` **before and after** the change, on the same machine, in the same profile.
 - Quote the actual Criterion median values from the output, not theoretical estimates.
 - Note the machine/environment if relevant (CI numbers may differ from local Apple Silicon results).
+
+### Scaling regression checks
+
+`just scaling-check` runs five `#[ignore]` integration tests that assert asymptotic scaling behavior of core operations (join propagation, engine run, retraction cascade, churn lifecycle, alpha fanout). Each test measures at two input sizes (4x apart) and asserts the time ratio stays within bounds consistent with the expected complexity class. This catches full complexity-class regressions (e.g. O(N) → O(N²)) without relying on absolute timing thresholds.

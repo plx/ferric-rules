@@ -179,6 +179,10 @@ bench-thresholds:
 bench-compare *args:
     ./scripts/bench-compare.sh {{args}}
 
+# Run scaling regression checks (catches accidentally-quadratic behavior)
+scaling-check:
+    cargo test -p ferric --test scaling_tests --release -- --ignored --nocapture
+
 # ── Compatibility assessment ─────────────────────────────────────────────────
 
 # Scan test files and produce a compatibility manifest
