@@ -181,7 +181,7 @@ bench-compare *args:
 
 # Run scaling regression checks (catches accidentally-quadratic behavior)
 scaling-check:
-    cargo test -p ferric --test scaling_tests --release -- --ignored --nocapture
+    cargo test -p ferric --test scaling_tests --release -- --ignored --nocapture --test-threads=1
 
 # ── Compatibility assessment ─────────────────────────────────────────────────
 
