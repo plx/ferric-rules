@@ -12,7 +12,7 @@ use slotmap::Key;
 use crate::value::value_to_python;
 
 /// Fact type discriminator.
-#[pyclass(eq, eq_int)]
+#[pyclass(eq, eq_int, module = "ferric")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FactType {
     #[pyo3(name = "ORDERED")]
@@ -24,11 +24,14 @@ pub enum FactType {
 /// A snapshot of a fact from the engine.
 ///
 /// This is a value copy — it does not hold a reference to the engine.
-#[pyclass]
+#[pyclass(module = "ferric")]
 pub struct Fact {
     /// Fact ID (as u64 from slotmap `KeyData::as_ffi()`).
     #[pyo3(get)]
     pub id: u64,
+    /// Engine instance ID (used for cross-engine equality/hash).
+    #[pyo3(get)]
+    pub engine_id: u64,
     /// Whether this is an ordered or template fact.
     #[pyo3(get)]
     pub fact_type: FactType,
@@ -77,11 +80,12 @@ impl Fact {
     }
 
     fn __eq__(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.engine_id == other.engine_id && self.id == other.id
     }
 
     fn __hash__(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
+        self.engine_id.hash(&mut hasher);
         self.id.hash(&mut hasher);
         hasher.finish()
     }
@@ -93,6 +97,7 @@ pub fn fact_to_python(
     fact_id: FactId,
     fact: &CoreFact,
     engine: &Engine,
+    engine_id: u64,
 ) -> PyResult<Fact> {
     let id = fact_id.data().as_ffi();
 
@@ -106,11 +111,12 @@ pub fn fact_to_python(
                 .fields
                 .iter()
                 .map(|v| value_to_python(py, v, engine))
-                .collect();
+                .collect::<PyResult<_>>()?;
             let fields_list = pyo3::types::PyList::new(py, fields)?.into_any().unbind();
 
             Ok(Fact {
                 id,
+                engine_id,
                 fact_type: FactType::Ordered,
                 relation: Some(relation),
                 template_name: None,
@@ -127,7 +133,7 @@ pub fn fact_to_python(
                 .slots
                 .iter()
                 .map(|v| value_to_python(py, v, engine))
-                .collect();
+                .collect::<PyResult<_>>()?;
             let fields_list = pyo3::types::PyList::new(py, &fields)?.into_any().unbind();
 
             // Build slots dict if we can resolve slot names (by ID to avoid
@@ -145,6 +151,7 @@ pub fn fact_to_python(
 
             Ok(Fact {
                 id,
+                engine_id,
                 fact_type: FactType::Template,
                 relation: None,
                 template_name: Some(tmpl_name),

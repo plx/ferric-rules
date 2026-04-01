@@ -5,44 +5,121 @@ use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 use ferric_runtime::{Engine, Multifield, Value};
 
+/// A CLIPS symbol value.
+///
+/// Wraps a Python string and converts to `Value::Symbol` on the Rust side.
+/// Plain Python `str` also maps to Symbol by default.
+#[pyclass(name = "Symbol", module = "ferric")]
+#[derive(Clone, Debug)]
+pub struct Symbol {
+    #[pyo3(get)]
+    pub value: String,
+}
+
+#[pymethods]
+impl Symbol {
+    #[new]
+    fn new(value: String) -> Self {
+        Self { value }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Symbol({:?})", self.value)
+    }
+
+    fn __str__(&self) -> &str {
+        &self.value
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        if let Ok(sym) = other.downcast::<Symbol>() {
+            return self.value == sym.borrow().value;
+        }
+        if let Ok(s) = other.extract::<String>() {
+            return self.value == s;
+        }
+        false
+    }
+
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        PyString::new(py, &self.value).hash()
+    }
+}
+
+/// A CLIPS string value (distinct from a symbol).
+///
+/// Without this wrapper, Python `str` maps to `Value::Symbol`.
+/// Use `String("text")` to create a CLIPS string literal.
+#[pyclass(name = "String", module = "ferric")]
+#[derive(Clone, Debug)]
+pub struct ClipsString {
+    #[pyo3(get)]
+    pub value: String,
+}
+
+#[pymethods]
+impl ClipsString {
+    #[new]
+    fn new(value: String) -> Self {
+        Self { value }
+    }
+
+    fn __repr__(&self) -> std::string::String {
+        format!("String({:?})", self.value)
+    }
+
+    fn __str__(&self) -> &str {
+        &self.value
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        if let Ok(cs) = other.downcast::<ClipsString>() {
+            return self.value == cs.borrow().value;
+        }
+        if let Ok(s) = other.extract::<String>() {
+            return self.value == s;
+        }
+        false
+    }
+
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        PyString::new(py, &self.value).hash()
+    }
+}
+
 /// Convert a Rust `Value` to a Python object.
-pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyObject {
+///
+/// # Errors
+///
+/// Returns a `PyErr` if the Python object cannot be created.
+pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult<PyObject> {
     match val {
-        Value::Integer(i) => i
-            .into_pyobject(py)
-            .expect("int conversion")
-            .into_any()
-            .unbind(),
-        Value::Float(f) => f
-            .into_pyobject(py)
-            .expect("float conversion")
-            .into_any()
-            .unbind(),
+        Value::Integer(i) => Ok(i.into_pyobject(py)?.into_any().unbind()),
+        Value::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
         Value::Symbol(sym) => {
             let s = engine.resolve_symbol(*sym).unwrap_or("<unknown>");
-            s.into_pyobject(py)
-                .expect("str conversion")
-                .into_any()
-                .unbind()
-        }
-        Value::String(s) => s
-            .as_str()
-            .into_pyobject(py)
-            .expect("str conversion")
+            Ok(Symbol {
+                value: s.to_owned(),
+            }
+            .into_pyobject(py)?
             .into_any()
-            .unbind(),
+            .unbind())
+        }
+        Value::String(s) => Ok(ClipsString {
+            value: s.as_str().to_owned(),
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind()),
         Value::Multifield(mf) => {
-            let items: Vec<PyObject> = mf
+            let items: PyResult<Vec<PyObject>> = mf
                 .as_slice()
                 .iter()
                 .map(|v| value_to_python(py, v, engine))
                 .collect();
-            PyList::new(py, items)
-                .expect("list conversion")
-                .into_any()
-                .unbind()
+            Ok(PyList::new(py, items?)?.into_any().unbind())
         }
-        Value::Void | Value::ExternalAddress(_) => py.None(),
+        Value::Void | Value::ExternalAddress(_) => Ok(py.None()),
     }
 }
 
@@ -52,6 +129,23 @@ pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyObject
 ///
 /// Returns a `PyErr` if the Python object cannot be converted.
 pub fn python_to_value(obj: &Bound<'_, PyAny>, engine: &mut Engine) -> PyResult<Value> {
+    // Check marker types first: Symbol and ClipsString
+    if let Ok(cs) = obj.downcast::<ClipsString>() {
+        let val = cs.borrow().value.clone();
+        let fs = engine
+            .create_string(&val)
+            .map_err(crate::error::engine_error_to_pyerr)?;
+        return Ok(Value::String(fs));
+    }
+
+    if let Ok(sym) = obj.downcast::<Symbol>() {
+        let val = sym.borrow().value.clone();
+        let sid = engine
+            .intern_symbol(&val)
+            .map_err(crate::error::engine_error_to_pyerr)?;
+        return Ok(Value::Symbol(sid));
+    }
+
     // Check bool before int (bool is a subclass of int in Python)
     if let Ok(b) = obj.downcast::<PyBool>() {
         let sym_name = if b.is_true() { "TRUE" } else { "FALSE" };
@@ -71,6 +165,7 @@ pub fn python_to_value(obj: &Bound<'_, PyAny>, engine: &mut Engine) -> PyResult<
         return Ok(Value::Float(val));
     }
 
+    // Plain Python str defaults to Symbol (backward-compatible).
     if let Ok(s) = obj.downcast::<PyString>() {
         let val: String = s.extract()?;
         let sym = engine

@@ -1,5 +1,9 @@
 """Tests for Engine lifecycle: create, from_source, context manager, reset, clear."""
 
+import pathlib
+import tempfile
+
+import pytest
 import ferric
 
 
@@ -46,16 +50,16 @@ class TestFromSource:
 
 
 class TestContextManager:
-    def test_context_manager_clears_on_exit(self):
+    def test_context_manager_closes_on_exit(self):
         with ferric.Engine.from_source(
             '(deffacts startup (color red))'
         ) as engine:
             assert engine.fact_count >= 1
-        # After exit, engine is cleared
-        assert engine.fact_count == 0
-        assert len(engine.rules()) == 0
+        # After exit, engine is closed
+        with pytest.raises(ferric.FerricRuntimeError, match="closed"):
+            engine.fact_count
 
-    def test_context_manager_clears_on_exception(self):
+    def test_context_manager_closes_on_exception(self):
         try:
             with ferric.Engine.from_source(
                 '(deffacts startup (color red))'
@@ -63,7 +67,26 @@ class TestContextManager:
                 raise ValueError("test error")
         except ValueError:
             pass
-        assert engine.fact_count == 0
+        with pytest.raises(ferric.FerricRuntimeError, match="closed"):
+            engine.fact_count
+
+
+class TestLoadFile:
+    def test_load_file_str_path(self):
+        with tempfile.NamedTemporaryFile(suffix=".clp", mode="w", delete=False) as f:
+            f.write("(defrule r1 (go) => (assert (done)))")
+            path = f.name
+        engine = ferric.Engine()
+        engine.load_file(path)
+        assert len(engine.rules()) == 1
+
+    def test_load_file_pathlib_path(self):
+        with tempfile.NamedTemporaryFile(suffix=".clp", mode="w", delete=False) as f:
+            f.write("(defrule r2 (start) => (assert (end)))")
+            path = pathlib.Path(f.name)
+        engine = ferric.Engine()
+        engine.load_file(path)
+        assert len(engine.rules()) == 1
 
 
 class TestResetClear:

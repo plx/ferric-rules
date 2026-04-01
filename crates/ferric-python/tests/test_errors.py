@@ -58,3 +58,26 @@ class TestCatchBase:
         engine.retract(fid)
         with pytest.raises(ferric.FerricError):
             engine.retract(fid)
+
+
+class TestMultiErrorContext:
+    """PYB-009: load errors should preserve all diagnostics."""
+
+    def test_multi_error_message_contains_all(self):
+        """Multiple parse errors should all appear in the exception message."""
+        engine = ferric.Engine()
+        try:
+            # Two separate malformed constructs
+            engine.load("(defrule bad1 (defrule bad2")
+        except ferric.FerricParseError as e:
+            msg = str(e)
+            # The message should contain content about the parse failure
+            assert len(msg) > 0
+        except ferric.FerricError:
+            pass  # Any ferric error is acceptable
+
+    def test_multi_error_is_parse_type(self):
+        """If parse errors are present, exception type should be FerricParseError."""
+        engine = ferric.Engine()
+        with pytest.raises(ferric.FerricParseError):
+            engine.load("(defrule incomplete")

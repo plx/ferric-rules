@@ -86,3 +86,34 @@ class TestFactEquality:
         fact = engine.get_fact(fid)
         s = {fact}
         assert len(s) == 1
+
+    def test_cross_engine_not_equal(self):
+        """Facts with same ID from different engines must not compare equal."""
+        e1 = ferric.Engine()
+        e2 = ferric.Engine()
+        fid1 = e1.assert_fact("color", "red")
+        fid2 = e2.assert_fact("color", "red")
+        f1 = e1.get_fact(fid1)
+        f2 = e2.get_fact(fid2)
+        # IDs may be the same (both first fact), but they're from different engines
+        assert f1 != f2
+
+    def test_cross_engine_hash_distinct(self):
+        """Facts from different engines should not collide in sets."""
+        e1 = ferric.Engine()
+        e2 = ferric.Engine()
+        fid1 = e1.assert_fact("color", "red")
+        fid2 = e2.assert_fact("color", "red")
+        f1 = e1.get_fact(fid1)
+        f2 = e2.get_fact(fid2)
+        s = {f1, f2}
+        assert len(s) == 2
+
+    def test_same_engine_same_fact_still_equal(self):
+        """Two snapshots of the same fact from the same engine are equal."""
+        engine = ferric.Engine()
+        fid = engine.assert_fact("color", "red")
+        f1 = engine.get_fact(fid)
+        f2 = engine.get_fact(fid)
+        assert f1 == f2
+        assert hash(f1) == hash(f2)
