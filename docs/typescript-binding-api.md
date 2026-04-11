@@ -1,5 +1,13 @@
 # TypeScript Binding API for Ferric
 
+> [!WARNING]
+> This document is a legacy design draft and is **not** the normative implementation target.
+> Use the revised specification suite instead:
+> - [TypeScript Binding Architecture (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-architecture.md)
+> - [TypeScript Binding Normative Contract (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-normative-contract.md)
+> - [TypeScript Binding Conformance Matrix](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-conformance-matrix.md)
+> - [TypeScript Binding Test Specification (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-test-spec.md)
+
 ## Purpose
 
 Define a TypeScript-native API for ferric-rules that:
