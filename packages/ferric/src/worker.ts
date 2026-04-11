@@ -119,7 +119,12 @@ function batchedRun(
 ): { rulesFired: number; haltReason: number } {
   if (!engine) throw new Error("Engine is not initialized");
 
-  const unlimited = limit === undefined || limit === null || limit <= 0;
+  // N-01: undefined/null = unlimited, 0 = zero firings, positive = max firings.
+  if (limit === 0) {
+    return { rulesFired: 0, haltReason: 1 /* LimitReached */ };
+  }
+
+  const unlimited = limit === undefined || limit === null;
   let remaining = unlimited ? Infinity : limit;
   let totalFired = 0;
 

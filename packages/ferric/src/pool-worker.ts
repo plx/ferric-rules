@@ -112,12 +112,21 @@ function getEngine(specName: string): NativeEngine {
 // Batched run with cooperative cancellation
 // ---------------------------------------------------------------------------
 
+/**
+ * Batched run for proxy.run() — follows N-01 semantics:
+ * undefined/null = unlimited, 0 = zero firings, positive = max.
+ */
 function batchedRun(
   engine: NativeEngine,
   limit: number | undefined | null,
   abortBuffer: Int32Array | null,
 ): { rulesFired: number; haltReason: number } {
-  const unlimited = limit === undefined || limit === null || limit <= 0;
+  // N-01: 0 = zero firings.
+  if (limit === 0) {
+    return { rulesFired: 0, haltReason: 1 /* LimitReached */ };
+  }
+
+  const unlimited = limit === undefined || limit === null;
   let remaining = unlimited ? Infinity : limit;
   let totalFired = 0;
 
@@ -170,7 +179,9 @@ function handleEvaluate(
   }
 
   // Run with cooperative cancellation.
-  const runResult = batchedRun(engine, request.limit, abortBuffer);
+  // N-02: evaluate limit=0 or omitted means unlimited.
+  const evalLimit = (request.limit === 0 || request.limit === undefined) ? undefined : request.limit;
+  const runResult = batchedRun(engine, evalLimit, abortBuffer);
 
   // Collect all facts.
   const facts = engine.facts() as EvaluateResult["facts"];
