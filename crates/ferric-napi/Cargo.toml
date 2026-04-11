@@ -1,0 +1,40 @@
+[package]
+name = "ferric-napi"
+version.workspace = true
+edition.workspace = true
+# napi-build 2.3.x requires cargo:: build script syntax (Rust 1.77+)
+rust-version = "1.77"
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ferric-core = { workspace = true }
+ferric-runtime = { workspace = true }
+napi = { version = "2", default-features = false, features = ["napi8"] }
+napi-derive = "2"
+slotmap = { workspace = true }
+
+[features]
+default = ["serde"]
+serde = ["ferric-runtime/serde"]
+
+[build-dependencies]
+napi-build = "2"
+
+[lints.rust]
+# napi-rs proc macros generate unsafe code in expanded output
+unsafe_code = "allow"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# napi-rs conventions differ from normal Rust naming
+new_without_default = "allow"
+used_underscore_binding = "allow"
+needless_pass_by_value = "allow"

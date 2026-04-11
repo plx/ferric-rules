@@ -246,6 +246,13 @@ Short summary: use a Python script to batch-insert `None` fields after `input_bu
 - `EvalContext.template_defs` must be `pub(crate)` (not `pub`) because `RegisteredTemplate` is `pub(crate)`
 - `actions.rs` has TWO `EvalContext` construction sites (line 62 and line 176) — both need updating
 
+## napi-rs Bindings (ferric-napi)
+
+See `napi-rs-patterns.md` for napi-rs v2 API patterns (type conversions, Array, BigInt, ClassInstance).
+
+- `napi-build 2.3.x` uses `cargo::` syntax → needs `rust-version = "1.77"` override in ferric-napi Cargo.toml
+- ferric-python Python 3.14 incompatibility is pre-existing; workspace check with `--exclude ferric-python` is clean
+
 ## Phase 6 Benchmarks
 
 ### Constraint Limitations (for benchmark CLIPS source)

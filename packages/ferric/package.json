@@ -1,0 +1,26 @@
+{
+  "name": "@ferric-rules/node",
+  "version": "0.1.0",
+  "description": "TypeScript bindings for the Ferric rules engine",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/",
+    "native/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "lint": "tsc --noEmit",
+    "test": "node --test dist/__tests__/*.test.js",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  },
+  "license": "MIT OR Apache-2.0"
+}
