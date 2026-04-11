@@ -136,6 +136,17 @@ function wrapEngineWithErrorConversion(RawEngine: NativeEngineConstructor): Nati
   // Instance handler: wrap method calls and getter accesses.
   const instanceHandler: ProxyHandler<NativeEngine> = {
     get(target, prop, receiver) {
+      // A-005: Support Symbol.dispose, delegating to close().
+      if (prop === Symbol.dispose) {
+        return function () {
+          try {
+            target.close();
+          } catch (err) {
+            throw convertNativeError(err);
+          }
+        };
+      }
+
       const value = Reflect.get(target, prop, receiver);
       if (typeof value === "function") {
         return function (this: unknown, ...args: unknown[]) {
