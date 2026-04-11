@@ -4,15 +4,13 @@
  *
  * These tests are validated by the TypeScript compiler (tsc --noEmit).
  * They also run at runtime as a basic smoke check.
- *
- * NOTE: Tests for A-001, A-002, A-003 (concrete exports, ClipsValue union)
- * are deferred to STEP-02 because the current API surface incorrectly
- * exports Engine/FerricSymbol as potentially undefined.
  */
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 
 import {
+  Engine,
+  FerricSymbol,
   EngineHandle,
   EnginePool,
   Strategy,
@@ -42,6 +40,33 @@ import type {
   EvaluateRequest,
   EvaluateResult,
 } from "../../helpers/ferric";
+
+// ---------------------------------------------------------------------------
+// A-001: Engine is a concrete class
+// ---------------------------------------------------------------------------
+test("A-001 Engine is a concrete class export", () => {
+  assert.strictEqual(typeof Engine, "function");
+  const e = new Engine();
+  assert.ok(e);
+  e.close();
+});
+
+// ---------------------------------------------------------------------------
+// A-002: FerricSymbol is a concrete class
+// ---------------------------------------------------------------------------
+test("A-002 FerricSymbol is a concrete class export", () => {
+  assert.strictEqual(typeof FerricSymbol, "function");
+  const s = new FerricSymbol("test");
+  assert.strictEqual(s.value, "test");
+});
+
+// ---------------------------------------------------------------------------
+// A-003: ClipsValue includes FerricSymbol
+// ---------------------------------------------------------------------------
+test("A-003 ClipsValue includes FerricSymbol", () => {
+  const v: ClipsValue = new FerricSymbol("x");
+  assert.ok(v);
+});
 
 // ---------------------------------------------------------------------------
 // A-004: Public enums are regular TS enums
@@ -93,9 +118,24 @@ test("G-003 error classes are importable and constructible", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Engine API method signatures compile
+// ---------------------------------------------------------------------------
+test("A-001 Engine API method signatures compile", () => {
+  const e = new Engine();
+  assert.strictEqual(typeof e.load, "function");
+  assert.strictEqual(typeof e.run, "function");
+  assert.strictEqual(typeof e.assertString, "function");
+  assert.strictEqual(typeof e.assertFact, "function");
+  assert.strictEqual(typeof e.assertTemplate, "function");
+  assert.strictEqual(typeof e.reset, "function");
+  assert.strictEqual(typeof e.close, "function");
+  e.close();
+});
+
+// ---------------------------------------------------------------------------
 // EngineHandle API signatures compile
 // ---------------------------------------------------------------------------
-test("G-003 EngineHandle API signatures compile", () => {
+test("A-001 EngineHandle API signatures compile", () => {
   assert.strictEqual(typeof EngineHandle, "function");
   assert.strictEqual(typeof EngineHandle.create, "function");
 });
@@ -103,13 +143,13 @@ test("G-003 EngineHandle API signatures compile", () => {
 // ---------------------------------------------------------------------------
 // EnginePool API signatures compile
 // ---------------------------------------------------------------------------
-test("G-003 EnginePool API signatures compile", () => {
+test("A-001 EnginePool API signatures compile", () => {
   assert.strictEqual(typeof EnginePool, "function");
   assert.strictEqual(typeof EnginePool.create, "function");
 });
 
 // ---------------------------------------------------------------------------
-// Type-only compilation checks (these just need to compile, not run)
+// Type-only compilation checks
 // ---------------------------------------------------------------------------
 test("G-003 type compilation: EngineOptions and related types are usable", () => {
   const opts: EngineOptions = { strategy: Strategy.Depth };
@@ -117,7 +157,6 @@ test("G-003 type compilation: EngineOptions and related types are usable", () =>
   const spec: EngineSpec = { name: "test" };
   const req: EvaluateRequest = { facts: [] };
 
-  // Just verify the types compile — runtime values don't matter
   assert.ok(opts !== undefined);
   assert.ok(handleOpts !== undefined);
   assert.ok(spec !== undefined);

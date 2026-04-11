@@ -111,20 +111,13 @@ function loadNativeModule(): Record<string, unknown> {
     }
   }
 
-  // Both paths failed. Return an empty stub so that pure type-checking
-  // and import of type-only exports don't crash. Runtime calls will fail
-  // naturally when Engine/FerricSymbol are undefined.
-  const errMsg =
+  // Both paths failed. Throw immediately — the package cannot function
+  // without the native addon and must not expose undefined class values.
+  throw new Error(
     `[ferric] Could not load native addon. ` +
     `Tried: ${attempts.join(", ")}. ` +
-    `Last error: ${String(lastError)}`;
-
-  if (process.env["NODE_ENV"] !== "test") {
-    // Emit a warning rather than throwing, so that type-only imports work.
-    process.emitWarning(errMsg, "FerricNativeLoadWarning");
-  }
-
-  return {};
+    `Last error: ${String(lastError)}`
+  );
 }
 
 const nativeModule = loadNativeModule();
@@ -135,7 +128,7 @@ const nativeModule = loadNativeModule();
  * This is the synchronous, thread-affine engine. All methods execute on
  * the calling thread. Use EngineHandle for async worker-backed access.
  */
-export const Engine = nativeModule["Engine"] as NativeEngineConstructor | undefined;
+export const Engine = nativeModule["Engine"] as NativeEngineConstructor;
 
 /**
  * The native FerricSymbol class exported by the napi-rs addon.
@@ -143,6 +136,4 @@ export const Engine = nativeModule["Engine"] as NativeEngineConstructor | undefi
  * Construct explicit CLIPS symbols with `new FerricSymbol("foo")`.
  * Plain strings are mapped to CLIPS *strings* (quoted), not symbols.
  */
-export const FerricSymbol = nativeModule["FerricSymbol"] as NativeFerricSymbolConstructor | undefined;
-
-export default nativeModule;
+export const FerricSymbol = nativeModule["FerricSymbol"] as NativeFerricSymbolConstructor;

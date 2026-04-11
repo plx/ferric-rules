@@ -22,6 +22,19 @@ export interface WireSymbolObject {
 }
 
 /**
+ * Structural interface matching native FerricSymbol instances.
+ *
+ * This allows `ClipsValue` to accept FerricSymbol objects in type-checked
+ * code without importing the native module (which may not be available
+ * during pure type-checking).
+ */
+export interface FerricSymbolInstance {
+  readonly value: string;
+  toString(): string;
+  valueOf(): string;
+}
+
+/**
  * Union of all value types that can appear in CLIPS facts and expressions.
  *
  * Conversion rules (JS → CLIPS):
@@ -43,6 +56,7 @@ export interface WireSymbolObject {
  *   CLIPS void      → null
  */
 export type ClipsValue =
+  | FerricSymbolInstance
   | WireSymbolObject
   | string
   | number
