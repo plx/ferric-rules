@@ -26,7 +26,8 @@
 import { Worker } from "node:worker_threads";
 import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, PoolWorkerInit } from "./wire";
-import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX } from "./wire";
+import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX, toWire, fromWire } from "./wire";
+import { FerricSymbol } from "./native";
 import type {
   ClipsValue,
   RunResult,
@@ -202,7 +203,7 @@ export class EnginePool {
       if (resp.error) {
         entry.reject(reconstructError(resp.error));
       } else {
-        entry.resolve(resp.result);
+        entry.resolve(fromWire(resp.result, FerricSymbol));
       }
     });
 
@@ -274,9 +275,9 @@ export class EnginePool {
       load: (source) => send("load", [source]) as Promise<void>,
       assertString: (source) => send("assertString", [source]) as Promise<number[]>,
       assertFact: (relation, ...fields) =>
-        send("assertFact", [relation, ...fields]) as Promise<number>,
+        send("assertFact", [relation, ...fields.map(toWire)]) as Promise<number>,
       assertTemplate: (templateName, slots) =>
-        send("assertTemplate", [templateName, slots]) as Promise<number>,
+        send("assertTemplate", [templateName, toWire(slots)]) as Promise<number>,
       retract: (factId) => send("retract", [factId]) as Promise<void>,
       getFact: (factId) => send("getFact", [factId]) as Promise<Fact | null>,
       facts: () => send("facts", []) as Promise<Fact[]>,
@@ -326,10 +327,21 @@ export class EnginePool {
     const abortFlag = new Int32Array(sab);
 
     const id = slot.nextId++;
+    // Convert FerricSymbol instances in the request to wire format.
+    const wireRequest = {
+      ...request,
+      facts: request.facts?.map((f) => {
+        if (f.kind === "ordered") {
+          return { ...f, fields: f.fields.map(toWire) };
+        }
+        return { ...f, slots: toWire(f.slots) };
+      }),
+    };
+
     const req: WorkerRequest = {
       id,
       method: "__evaluate",
-      args: [specName, request, sab],
+      args: [specName, wireRequest, sab],
     };
 
     const promise = new Promise<EvaluateResult>((resolve, reject) => {

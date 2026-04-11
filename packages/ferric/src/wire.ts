@@ -191,13 +191,45 @@ export function toWire(val: unknown): unknown {
 /**
  * Convert a wire-format value back into its canonical form.
  *
- * Currently a pass-through: WireSymbol tagged objects remain as tagged objects.
- * Callers that need native FerricSymbol instances should reconstruct them using
- * the native constructor and `isWireSymbol()`.
+ * Reconstructs WireSymbol tagged objects back into native FerricSymbol
+ * instances so that callers of EngineHandle/EnginePool see proper
+ * FerricSymbol values, not raw tagged objects.
  *
- * This is intentionally minimal. The consuming layer (EngineHandle, EnginePool)
- * can apply further reconstruction if needed.
+ * The FerricSymbol constructor is passed in to avoid a circular import
+ * with native.ts (which may not be loadable at type-check time).
  */
-export function fromWire(val: unknown): unknown {
+export function fromWire(
+  val: unknown,
+  FerricSymbolCtor?: new (value: string) => unknown,
+): unknown {
+  if (val === null || val === undefined) return val;
+
+  if (
+    typeof val === "string" ||
+    typeof val === "number" ||
+    typeof val === "boolean" ||
+    typeof val === "bigint"
+  ) {
+    return val;
+  }
+
+  if (Array.isArray(val)) {
+    return val.map((v) => fromWire(v, FerricSymbolCtor));
+  }
+
+  if (typeof val === "object") {
+    // Reconstruct WireSymbol back to native FerricSymbol.
+    if (isWireSymbol(val) && FerricSymbolCtor) {
+      return new FerricSymbolCtor(val.value);
+    }
+
+    // Recursively convert plain objects (e.g. Fact, slots).
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(val)) {
+      result[k] = fromWire(v, FerricSymbolCtor);
+    }
+    return result;
+  }
+
   return val;
 }

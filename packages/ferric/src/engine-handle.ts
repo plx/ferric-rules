@@ -23,7 +23,8 @@
 import { Worker } from "node:worker_threads";
 import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, WorkerInit } from "./wire";
-import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX } from "./wire";
+import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX, toWire, fromWire } from "./wire";
+import { FerricSymbol } from "./native";
 import type {
   ClipsValue,
   RunResult,
@@ -101,7 +102,7 @@ export class EngineHandle {
       if (resp.error) {
         entry.reject(reconstructError(resp.error));
       } else {
-        entry.resolve(resp.result);
+        entry.resolve(fromWire(resp.result, FerricSymbol));
       }
     });
 
@@ -224,7 +225,7 @@ export class EngineHandle {
    * @returns The fact ID.
    */
   async assertFact(relation: string, ...fields: ClipsValue[]): Promise<number> {
-    return this.call("assertFact", [relation, ...fields]) as Promise<number>;
+    return this.call("assertFact", [relation, ...fields.map(toWire)]) as Promise<number>;
   }
 
   /**
@@ -235,7 +236,7 @@ export class EngineHandle {
     templateName: string,
     slots: Record<string, ClipsValue>,
   ): Promise<number> {
-    return this.call("assertTemplate", [templateName, slots]) as Promise<number>;
+    return this.call("assertTemplate", [templateName, toWire(slots)]) as Promise<number>;
   }
 
   /** Retract a fact by ID. */
