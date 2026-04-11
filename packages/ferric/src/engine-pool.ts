@@ -488,10 +488,13 @@ export class EnginePool {
   // ---------------------------------------------------------------------------
 
   /**
-   * Shut down all worker threads.
+   * Gracefully shut down all worker threads.
    *
-   * In-flight requests will reject. Pending promises are rejected with a
-   * "pool closed" error.
+   * - New requests are rejected immediately after close() is called.
+   * - Queued (not yet dispatched) requests are rejected with "EnginePool closed".
+   * - Already-dispatched in-flight requests are allowed to settle.
+   * - Workers are terminated after all in-flight requests complete.
+   * - Idempotent — safe to call multiple times.
    */
   async close(): Promise<void> {
     if (this.closed) return;
@@ -501,11 +504,30 @@ export class EnginePool {
 
     await Promise.all(
       this.slots.map(async (slot) => {
-        // Drain pending promises.
-        const snapshot = [...slot.pending.values()];
-        slot.pending.clear();
-        for (const entry of snapshot) {
-          entry.reject(closeErr);
+        // Reject all queued (not yet dispatched) requests.
+        for (const queued of slot.queue) {
+          if (queued.onAbort && queued.signal) {
+            queued.signal.removeEventListener("abort", queued.onAbort);
+          }
+          queued.entry.reject(closeErr);
+        }
+        slot.queue.length = 0;
+
+        // Wait for in-flight requests to settle.
+        if (slot.pending.size > 0) {
+          await new Promise<void>((resolve) => {
+            const check = () => {
+              if (slot.pending.size === 0) {
+                resolve();
+              }
+            };
+            // The existing message handler will resolve/reject pending entries.
+            // We listen for each settlement.
+            const originalOnMessage = slot.worker.listeners("message");
+            slot.worker.on("message", check);
+            // Also check immediately in case all are already settled.
+            check();
+          });
         }
 
         await slot.worker.terminate();
