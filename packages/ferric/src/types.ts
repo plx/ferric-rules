@@ -313,3 +313,26 @@ export const ERROR_REGISTRY: Readonly<Record<string, new (message: string) => Fe
   FerricEncodingError,
   FerricSerializationError,
 } as unknown as Readonly<Record<string, new (message: string) => FerricError>>;
+
+/**
+ * Convert a native napi-rs error into the correct FerricError subclass.
+ *
+ * napi-rs errors embed the class name as a prefix in the message:
+ * "FerricParseError: parse error: ...". This function extracts the
+ * class name, constructs the correct subclass, and returns it.
+ */
+export function convertNativeError(err: unknown): Error {
+  if (!(err instanceof Error)) return new Error(String(err));
+
+  const match = err.message.match(/^(Ferric\w+Error):\s*/);
+  if (match) {
+    const name = match[1];
+    const cleanMessage = err.message.slice(match[0].length);
+    const Ctor = ERROR_REGISTRY[name];
+    if (Ctor) {
+      return new Ctor(cleanMessage);
+    }
+  }
+
+  return err;
+}

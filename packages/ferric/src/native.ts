@@ -15,6 +15,7 @@
  */
 
 import { resolve } from "node:path";
+import { convertNativeError } from "./types";
 
 // ---------------------------------------------------------------------------
 // Native class type declarations
@@ -122,13 +123,75 @@ function loadNativeModule(): Record<string, unknown> {
 
 const nativeModule = loadNativeModule();
 
+// ---------------------------------------------------------------------------
+// Error-converting proxy for the native Engine
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps a native Engine class so that all method calls, property accesses,
+ * and static factory methods convert napi-rs errors into the correct
+ * FerricError subclass. Uses a Proxy on instances to intercept calls.
+ */
+function wrapEngineWithErrorConversion(RawEngine: NativeEngineConstructor): NativeEngineConstructor {
+  // Instance handler: wrap method calls and getter accesses.
+  const instanceHandler: ProxyHandler<NativeEngine> = {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value === "function") {
+        return function (this: unknown, ...args: unknown[]) {
+          try {
+            return value.apply(target, args);
+          } catch (err) {
+            throw convertNativeError(err);
+          }
+        };
+      }
+      return value;
+    },
+  };
+
+  // Wrap static factory methods.
+  const staticHandler: ProxyHandler<NativeEngineConstructor> = {
+    construct(target, args) {
+      try {
+        const instance = Reflect.construct(target, args);
+        return new Proxy(instance, instanceHandler);
+      } catch (err) {
+        throw convertNativeError(err);
+      }
+    },
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value === "function" && typeof prop === "string" &&
+          ["fromSource", "fromSnapshot", "fromSnapshotFile"].includes(prop)) {
+        return function (...args: unknown[]) {
+          try {
+            const instance = (value as Function).apply(target, args);
+            return new Proxy(instance, instanceHandler);
+          } catch (err) {
+            throw convertNativeError(err);
+          }
+        };
+      }
+      return value;
+    },
+  };
+
+  return new Proxy(RawEngine, staticHandler);
+}
+
 /**
  * The native Engine class exported by the napi-rs addon.
  *
  * This is the synchronous, thread-affine engine. All methods execute on
  * the calling thread. Use EngineHandle for async worker-backed access.
+ *
+ * All methods are wrapped with error conversion — napi-rs errors are
+ * converted to the correct FerricError subclass.
  */
-export const Engine = nativeModule["Engine"] as NativeEngineConstructor;
+export const Engine = wrapEngineWithErrorConversion(
+  nativeModule["Engine"] as NativeEngineConstructor
+);
 
 /**
  * The native FerricSymbol class exported by the napi-rs addon.

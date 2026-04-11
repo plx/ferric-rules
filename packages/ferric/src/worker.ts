@@ -20,7 +20,7 @@
 import { parentPort } from "node:worker_threads";
 import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, WorkerInit } from "./wire";
-import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, isWireSymbol } from "./wire";
+import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, isWireSymbol, extractFerricError } from "./wire";
 import type { NativeEngine } from "./native";
 
 if (!parentPort) {
@@ -321,14 +321,12 @@ parentPort.on("message", (msg: WorkerRequest) => {
     parentPort!.postMessage(resp);
   } catch (err: unknown) {
     const e = err instanceof Error ? err : new Error(String(err));
-    const resp: WorkerResponse = {
-      id,
-      error: {
-        name: e.name,
-        message: e.message,
-        code: (e as { code?: string }).code ?? "FERRIC_ERROR",
-      },
-    };
+    const errorPayload = extractFerricError(
+      e.name,
+      e.message,
+      (e as { code?: string }).code,
+    );
+    const resp: WorkerResponse = { id, error: errorPayload };
     parentPort!.postMessage(resp);
   }
 });

@@ -104,6 +104,58 @@ export const ABORT_BUFFER_SIZE = 1;
 export const RUN_BATCH_SIZE = 100;
 
 // ---------------------------------------------------------------------------
+// Error name/code extraction from napi-rs error messages
+// ---------------------------------------------------------------------------
+
+/**
+ * Known Ferric error class names and their stable error codes.
+ * Used to extract the error class from napi-rs error messages which
+ * embed the class name as a prefix: "FerricXxxError: actual message".
+ */
+export const FERRIC_ERROR_CODES: Readonly<Record<string, string>> = {
+  FerricError: "FERRIC_ERROR",
+  FerricParseError: "FERRIC_PARSE_ERROR",
+  FerricCompileError: "FERRIC_COMPILE_ERROR",
+  FerricRuntimeError: "FERRIC_RUNTIME_ERROR",
+  FerricFactNotFoundError: "FERRIC_FACT_NOT_FOUND",
+  FerricTemplateNotFoundError: "FERRIC_TEMPLATE_NOT_FOUND",
+  FerricSlotNotFoundError: "FERRIC_SLOT_NOT_FOUND",
+  FerricModuleNotFoundError: "FERRIC_MODULE_NOT_FOUND",
+  FerricEncodingError: "FERRIC_ENCODING_ERROR",
+  FerricSerializationError: "FERRIC_SERIALIZATION_ERROR",
+};
+
+/**
+ * Extract the Ferric error class name and clean message from a napi-rs
+ * error message. The Rust error.rs module prefixes messages with the
+ * class name, e.g. "FerricParseError: parse error: ...".
+ */
+export function extractFerricError(
+  errorName: string,
+  errorMessage: string,
+  errorCode?: string,
+): { name: string; message: string; code: string } {
+  // Try to extract the class name from the message prefix.
+  const match = errorMessage.match(/^(Ferric\w+Error):\s*/);
+  if (match) {
+    const name = match[1];
+    const cleanMessage = errorMessage.slice(match[0].length);
+    return {
+      name,
+      message: cleanMessage,
+      code: FERRIC_ERROR_CODES[name] ?? "FERRIC_ERROR",
+    };
+  }
+
+  // No Ferric prefix — use the original error name.
+  return {
+    name: errorName,
+    message: errorMessage,
+    code: errorCode ?? "FERRIC_ERROR",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Tagged FerricSymbol wire form
 // ---------------------------------------------------------------------------
 
