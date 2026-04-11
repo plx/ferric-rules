@@ -130,6 +130,9 @@ jobs:
           npm install
           npm run build
           npm run lint
+      - name: Run TypeScript binding tests
+        working-directory: packages/ferric
+        run: npm test
 
   python-tools:
     name: Python Tools
