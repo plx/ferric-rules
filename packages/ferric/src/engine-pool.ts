@@ -83,10 +83,24 @@ interface PendingEntry {
   reject: (error: Error) => void;
 }
 
+/** A request waiting to be dispatched to a worker. */
+interface QueuedRequest {
+  req: WorkerRequest;
+  entry: PendingEntry;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+  /** Extra message transfer list (e.g. SharedArrayBuffer). */
+  transferList?: ArrayBuffer[];
+}
+
 interface WorkerSlot {
   worker: Worker;
   nextId: number;
   pending: Map<number, PendingEntry>;
+  /** Number of requests currently being processed by the worker. */
+  inflight: number;
+  /** Requests waiting for the worker to become available. */
+  queue: QueuedRequest[];
 }
 
 // ---------------------------------------------------------------------------
@@ -193,18 +207,24 @@ export class EnginePool {
       worker,
       nextId: 0,
       pending: new Map(),
+      inflight: 0,
+      queue: [],
     };
 
     worker.on("message", (resp: WorkerResponse) => {
       const entry = slot.pending.get(resp.id);
       if (!entry) return;
       slot.pending.delete(resp.id);
+      slot.inflight--;
 
       if (resp.error) {
         entry.reject(reconstructError(resp.error));
       } else {
         entry.resolve(fromWire(resp.result, FerricSymbol));
       }
+
+      // Dispatch the next queued request, if any.
+      EnginePool.drainQueue(slot);
     });
 
     worker.on("error", (err: Error) => {
@@ -238,6 +258,7 @@ export class EnginePool {
         reject,
       });
     });
+    slot.inflight++;
     slot.worker.postMessage(req);
     return promise;
   }
@@ -249,18 +270,66 @@ export class EnginePool {
     return slot;
   }
 
-  /** Send a request to a specific slot and return a promise for the result. */
-  private sendToSlot(slot: WorkerSlot, method: string, args: unknown[]): Promise<unknown> {
+  /** Dispatch queued requests for a slot until it's busy or queue is empty. */
+  private static drainQueue(slot: WorkerSlot): void {
+    while (slot.queue.length > 0 && slot.inflight === 0) {
+      const queued = slot.queue.shift()!;
+
+      // If the request was aborted while queued, reject it immediately.
+      if (queued.signal?.aborted) {
+        if (queued.onAbort) {
+          queued.signal.removeEventListener("abort", queued.onAbort);
+        }
+        queued.entry.reject(
+          new DOMException("The operation was aborted", "AbortError")
+        );
+        continue;
+      }
+
+      // Dispatch the request.
+      slot.pending.set(queued.req.id, queued.entry);
+      slot.inflight++;
+      slot.worker.postMessage(queued.req);
+    }
+  }
+
+  /** Send a request to a specific slot, queueing if busy. */
+  private sendToSlot(
+    slot: WorkerSlot,
+    method: string,
+    args: unknown[],
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     if (this.closed) {
       return Promise.reject(new Error("EnginePool has been closed"));
     }
     const id = slot.nextId++;
     const req: WorkerRequest = { id, method, args };
-    const promise = new Promise<unknown>((resolve, reject) => {
-      slot.pending.set(id, { resolve, reject });
+
+    return new Promise<unknown>((resolve, reject) => {
+      const entry: PendingEntry = { resolve, reject };
+
+      if (slot.inflight === 0) {
+        // Dispatch immediately.
+        slot.pending.set(id, entry);
+        slot.inflight++;
+        slot.worker.postMessage(req);
+      } else {
+        // Queue and set up abort listener for queued cancellation.
+        const queued: QueuedRequest = { req, entry, signal };
+        if (signal) {
+          queued.onAbort = () => {
+            const idx = slot.queue.indexOf(queued);
+            if (idx !== -1) {
+              slot.queue.splice(idx, 1);
+              reject(new DOMException("The operation was aborted", "AbortError"));
+            }
+          };
+          signal.addEventListener("abort", queued.onAbort, { once: true });
+        }
+        slot.queue.push(queued);
+      }
     });
-    slot.worker.postMessage(req);
-    return promise;
   }
 
   // ---------------------------------------------------------------------------
@@ -326,7 +395,6 @@ export class EnginePool {
     const sab = new SharedArrayBuffer(ABORT_BUFFER_SIZE * Int32Array.BYTES_PER_ELEMENT);
     const abortFlag = new Int32Array(sab);
 
-    const id = slot.nextId++;
     // Convert FerricSymbol instances in the request to wire format.
     const wireRequest = {
       ...request,
@@ -338,29 +406,21 @@ export class EnginePool {
       }),
     };
 
-    const req: WorkerRequest = {
-      id,
-      method: "__evaluate",
-      args: [specName, wireRequest, sab],
-    };
-
-    const promise = new Promise<EvaluateResult>((resolve, reject) => {
-      slot.pending.set(id, {
-        resolve: (val) => resolve(val as EvaluateResult),
-        reject,
-      });
-    });
-
+    // Set up in-flight abort: sets SharedArrayBuffer flag for cooperative halt.
     let onAbort: (() => void) | undefined;
     if (signal) {
       onAbort = () => { Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1); };
       signal.addEventListener("abort", onAbort, { once: true });
     }
 
-    slot.worker.postMessage(req);
-
     try {
-      return await promise;
+      const result = await this.sendToSlot(
+        slot,
+        "__evaluate",
+        [specName, wireRequest, sab],
+        signal,
+      );
+      return result as EvaluateResult;
     } finally {
       if (signal && onAbort) {
         signal.removeEventListener("abort", onAbort);
@@ -400,10 +460,26 @@ export class EnginePool {
     const slot = this.pickSlot();
     const proxy = this.makeProxy(specName, slot);
 
-    // If the signal aborts during fn execution, we can only signal intent —
-    // in-flight proxy calls will still complete normally (the proxy has no
-    // knowledge of the signal). For run() calls issued through the proxy,
-    // callers should pass { signal } directly if they want cancellation.
+    // E-006: If the signal aborts during fn execution, reject with AbortError.
+    if (signal) {
+      return new Promise<T>((resolve, reject) => {
+        const onAbort = () => {
+          reject(new DOMException("The operation was aborted", "AbortError"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        fn(proxy).then(
+          (val) => {
+            signal.removeEventListener("abort", onAbort);
+            resolve(val);
+          },
+          (err) => {
+            signal.removeEventListener("abort", onAbort);
+            reject(err);
+          },
+        );
+      });
+    }
+
     return fn(proxy);
   }
 
