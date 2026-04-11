@@ -275,6 +275,13 @@ export function fromWire(
       return new FerricSymbolCtor(val.value);
     }
 
+    // Skip non-plain objects like Buffer, ArrayBuffer, etc.
+    // These should pass through unchanged.
+    const proto = Object.getPrototypeOf(val);
+    if (proto !== Object.prototype && proto !== null) {
+      return val;
+    }
+
     // Recursively convert plain objects (e.g. Fact, slots).
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(val)) {

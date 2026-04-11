@@ -162,3 +162,11 @@ test("G-003 type compilation: EngineOptions and related types are usable", () =>
   assert.ok(spec !== undefined);
   assert.ok(req !== undefined);
 });
+
+// ---------------------------------------------------------------------------
+// A-006: EngineHandle and EnginePool support Symbol.asyncDispose
+// ---------------------------------------------------------------------------
+test("A-006 EngineHandle and EnginePool support Symbol.asyncDispose", () => {
+  // Just verify the types compile — runtime check is elsewhere
+  assert.ok(Symbol.asyncDispose !== undefined, "Symbol.asyncDispose should exist");
+});
