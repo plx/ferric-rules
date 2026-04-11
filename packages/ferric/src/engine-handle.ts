@@ -139,6 +139,13 @@ export class EngineHandle {
    * If `options.snapshot` is provided, the engine is restored from the snapshot.
    */
   static async create(options?: EngineHandleOptions): Promise<EngineHandle> {
+    // D-003: source and snapshot are mutually exclusive.
+    if (options?.source !== undefined && options?.snapshot !== undefined) {
+      throw new TypeError(
+        "EngineHandle.create: 'source' and 'snapshot' are mutually exclusive"
+      );
+    }
+
     const workerPath = resolve(__dirname, "worker.js");
     const worker = new Worker(workerPath);
     const handle = new EngineHandle(worker);
