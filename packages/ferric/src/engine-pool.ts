@@ -336,9 +336,43 @@ export class EnginePool {
   // EngineProxy builder
   // ---------------------------------------------------------------------------
 
-  private makeProxy(specName: string, slot: WorkerSlot): EngineProxy {
+  private makeProxy(
+    specName: string,
+    slot: WorkerSlot,
+    signal?: AbortSignal,
+  ): EngineProxy {
     const send = (method: string, args: unknown[]): Promise<unknown> =>
-      this.sendToSlot(slot, method, [specName, ...args]);
+      this.sendToSlot(slot, method, [specName, ...args], signal);
+
+    const runWithAbort = async (options?: { limit?: number }): Promise<RunResult> => {
+      // Allocate a per-call abort buffer for cooperative cancellation; the
+      // worker polls this between batches of RUN_BATCH_SIZE firings.
+      const sab = new SharedArrayBuffer(
+        ABORT_BUFFER_SIZE * Int32Array.BYTES_PER_ELEMENT,
+      );
+      const abortFlag = new Int32Array(sab);
+
+      let onAbort: (() => void) | undefined;
+      if (signal) {
+        if (signal.aborted) {
+          Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1);
+        } else {
+          onAbort = () => { Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1); };
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
+      }
+
+      try {
+        return (await send("__batched_run", [
+          options?.limit ?? null,
+          sab,
+        ])) as RunResult;
+      } finally {
+        if (signal && onAbort) {
+          signal.removeEventListener("abort", onAbort);
+        }
+      }
+    };
 
     return {
       load: (source) => send("load", [source]) as Promise<void>,
@@ -351,8 +385,7 @@ export class EnginePool {
       getFact: (factId) => send("getFact", [factId]) as Promise<Fact | null>,
       facts: () => send("facts", []) as Promise<Fact[]>,
       findFacts: (relation) => send("findFacts", [relation]) as Promise<Fact[]>,
-      run: (options) =>
-        send("__batched_run", [options?.limit ?? null, null]) as Promise<RunResult>,
+      run: runWithAbort,
       step: () => send("step", []) as Promise<FiredRule | null>,
       halt: () => send("halt", []) as Promise<void>,
       reset: () => send("reset", []) as Promise<void>,
@@ -458,7 +491,7 @@ export class EnginePool {
     }
 
     const slot = this.pickSlot();
-    const proxy = this.makeProxy(specName, slot);
+    const proxy = this.makeProxy(specName, slot, signal);
 
     // E-006: If the signal aborts during fn execution, reject with AbortError.
     if (signal) {

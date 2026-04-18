@@ -123,6 +123,46 @@ test("E-006 do() abort during callback rejects with AbortError", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// E-006: do() abort propagates to worker's batched_run (cooperative halt)
+// ---------------------------------------------------------------------------
+test("E-006 do() abort halts worker run so slot frees quickly", async () => {
+  const pool = await EnginePool.create(
+    [{ name: "test", source: LONG_RUNNING }],
+    { threads: 1 },
+  );
+  try {
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 20);
+
+    const longRun = pool.do("test", async (proxy) => {
+      await proxy.reset();
+      await proxy.assertFact("counter", 0);
+      await proxy.run({ limit: 10_000_000 });
+    }, { signal: ac.signal });
+
+    await assert.rejects(longRun, (err: any) => err.name === "AbortError");
+
+    // If the worker kept running the orphaned 10M-firing loop, this
+    // follow-up call would sit in the queue for a very long time. With
+    // cooperative abort wired through proxy.run(), the worker halts
+    // promptly and the slot becomes available.
+    const started = Date.now();
+    const followUp = pool.do("test", async (proxy) => {
+      await proxy.reset();
+      return "ok";
+    });
+    const result = await Promise.race([
+      followUp,
+      delay(2000).then(() => "timeout"),
+    ]);
+    const elapsed = Date.now() - started;
+    assert.strictEqual(result, "ok", `follow-up did not complete in time (elapsed=${elapsed}ms)`);
+  } finally {
+    await pool.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // E-005: In-execution abort uses cooperative halt
 // ---------------------------------------------------------------------------
 test("E-005 evaluate in-execution abort uses cooperative halt", async () => {
