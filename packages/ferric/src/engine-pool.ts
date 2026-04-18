@@ -546,19 +546,18 @@ export class EnginePool {
         }
         slot.queue.length = 0;
 
-        // Wait for in-flight requests to settle.
+        // Wait for in-flight requests to settle. The existing message
+        // handler installed in createSlot() clears slot.pending as
+        // responses arrive; we piggyback on each message to re-check.
         if (slot.pending.size > 0) {
           await new Promise<void>((resolve) => {
             const check = () => {
               if (slot.pending.size === 0) {
+                slot.worker.off("message", check);
                 resolve();
               }
             };
-            // The existing message handler will resolve/reject pending entries.
-            // We listen for each settlement.
-            const originalOnMessage = slot.worker.listeners("message");
             slot.worker.on("message", check);
-            // Also check immediately in case all are already settled.
             check();
           });
         }
