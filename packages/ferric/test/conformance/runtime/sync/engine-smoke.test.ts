@@ -21,6 +21,24 @@ function loadFixture(name: string): string {
 // ---------------------------------------------------------------------------
 // B-001: FerricSymbol works in sync Engine
 // ---------------------------------------------------------------------------
+test("fact id with fractional part is rejected", () => {
+  const e = new Engine();
+  e.reset();
+  assert.throws(
+    () => e.retract(1.5),
+    /fact id must be a finite non-negative integer/,
+  );
+  assert.throws(
+    () => e.getFact(Number.NaN),
+    /fact id must be a finite non-negative integer/,
+  );
+  assert.throws(
+    () => e.retract(-1),
+    /fact id must be a finite non-negative integer/,
+  );
+  e.close();
+});
+
 test("B-001 FerricSymbol input works in sync assertFact", () => {
   const e = new Engine();
   e.load("(defrule sym-test (color ?c) =>)");

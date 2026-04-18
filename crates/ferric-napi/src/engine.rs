@@ -70,10 +70,23 @@ impl Engine {
     }
 }
 
-/// Convert a fact ID (as f64 from JS) back to a [`FactId`].
-fn fact_id_from_f64(id: f64) -> FactId {
+/// Convert a fact ID (as f64 from JS) back to a [`FactId`], rejecting
+/// non-integer or out-of-range values up front so that typos like `1.5`
+/// don't silently truncate into a different fact.
+///
+/// JS numbers are only precise up to 2^53 - 1; slotmap fact IDs fit well
+/// within that, so we only accept values in [0, 2^53] with no fractional
+/// part.
+fn fact_id_from_f64(id: f64) -> Result<FactId> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_992.0; // 2^53
+    if !id.is_finite() || id.fract() != 0.0 || !(0.0..=MAX_SAFE_INTEGER).contains(&id) {
+        return Err(napi::Error::new(
+            napi::Status::InvalidArg,
+            format!("fact id must be a finite non-negative integer, got {id}"),
+        ));
+    }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    FactId::from(KeyData::from_ffi(id as u64))
+    Ok(FactId::from(KeyData::from_ffi(id as u64)))
 }
 
 #[napi]
@@ -214,16 +227,16 @@ impl Engine {
     /// Retract a fact by its ID.
     #[napi]
     pub fn retract(&mut self, fact_id: f64) -> Result<()> {
+        let fid = fact_id_from_f64(fact_id)?;
         let engine = self.engine_mut()?;
-        let fid = fact_id_from_f64(fact_id);
         engine.retract(fid).map_err(engine_error_to_napi)
     }
 
     /// Get a fact by its ID, or `null` if it does not exist.
     #[napi]
     pub fn get_fact(&self, env: Env, fact_id: f64) -> Result<JsUnknown> {
+        let fid = fact_id_from_f64(fact_id)?;
         let engine = self.engine()?;
-        let fid = fact_id_from_f64(fact_id);
         let fact = engine.get_fact(fid).map_err(engine_error_to_napi)?;
         match fact {
             Some(f) => {
@@ -266,8 +279,8 @@ impl Engine {
     /// Get the value of a template fact slot by name.
     #[napi]
     pub fn get_fact_slot(&self, env: Env, fact_id: f64, slot_name: String) -> Result<JsUnknown> {
+        let fid = fact_id_from_f64(fact_id)?;
         let engine = self.engine()?;
-        let fid = fact_id_from_f64(fact_id);
         let val = engine
             .get_fact_slot_by_name(fid, &slot_name)
             .map_err(engine_error_to_napi)?;
