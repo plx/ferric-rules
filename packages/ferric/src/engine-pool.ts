@@ -236,8 +236,15 @@ export class EnginePool {
     });
 
     worker.on("exit", (code: number) => {
-      if (code !== 0 && slot.pending.size > 0) {
-        const err = new Error(`Pool worker exited unexpectedly with code ${code}`);
+      // Any pending request when a pool worker exits — even with code 0 —
+      // will never be answered. Without this rejection those promises
+      // would hang forever.
+      if (slot.pending.size > 0) {
+        const err = new Error(
+          code === 0
+            ? "Pool worker exited before responding to pending request"
+            : `Pool worker exited unexpectedly with code ${code}`,
+        );
         const snapshot = [...slot.pending.values()];
         slot.pending.clear();
         for (const entry of snapshot) {

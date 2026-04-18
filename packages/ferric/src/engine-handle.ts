@@ -115,8 +115,15 @@ export class EngineHandle {
     });
 
     worker.on("exit", (code: number) => {
-      if (code !== 0 && this.pending.size > 0) {
-        const err = new Error(`Worker exited unexpectedly with code ${code}`);
+      // Any pending request when the worker exits — even with code 0 —
+      // will never be answered. Without this rejection those promises
+      // would hang forever.
+      if (this.pending.size > 0) {
+        const err = new Error(
+          code === 0
+            ? "Worker exited before responding to pending request"
+            : `Worker exited unexpectedly with code ${code}`,
+        );
         const snapshot = [...this.pending.values()];
         this.pending.clear();
         for (const entry of snapshot) {
