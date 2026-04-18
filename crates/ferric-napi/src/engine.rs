@@ -283,14 +283,10 @@ impl Engine {
     /// Returns a `RunResult` describing how many rules fired and why
     /// execution stopped.
     #[napi]
-    pub fn run(&mut self, limit: Option<f64>) -> Result<RunResult> {
+    pub fn run(&mut self, limit: Option<u32>) -> Result<RunResult> {
         let engine = self.engine_mut()?;
         let run_limit = match limit {
-            Some(n) => {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let count = n as usize;
-                RunLimit::Count(count)
-            }
+            Some(n) => RunLimit::Count(n as usize),
             None => RunLimit::Unlimited,
         };
         let result = engine.run(run_limit).map_err(engine_error_to_napi)?;
