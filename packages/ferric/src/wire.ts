@@ -241,6 +241,40 @@ export function toWire(val: unknown): unknown {
 }
 
 /**
+ * Recursively reconstruct wire-format FerricSymbol tagged objects back into
+ * live class instances using the supplied constructor.
+ *
+ * Used inside worker threads to rehydrate the native napi `FerricSymbol`
+ * class before passing values into the engine (the engine only accepts the
+ * real class, not the wire tagged object).
+ *
+ * Compared with {@link fromWire}, this helper always rehydrates symbols and
+ * does not short-circuit on non-plain objects — callers guarantee the value
+ * came through structured clone, so all objects are plain.
+ */
+export function fromWireToNative(
+  val: unknown,
+  FerricSymbolCtor: new (value: string) => unknown,
+): unknown {
+  if (val === null || val === undefined) return val;
+  if (typeof val !== "object") return val;
+
+  if (isWireSymbol(val)) {
+    return new FerricSymbolCtor(val.value);
+  }
+
+  if (Array.isArray(val)) {
+    return val.map((v) => fromWireToNative(v, FerricSymbolCtor));
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(val)) {
+    result[k] = fromWireToNative(v, FerricSymbolCtor);
+  }
+  return result;
+}
+
+/**
  * Convert a wire-format value back into its canonical form.
  *
  * Reconstructs WireSymbol tagged objects back into native FerricSymbol

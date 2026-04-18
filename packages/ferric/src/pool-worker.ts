@@ -23,7 +23,7 @@
 import { parentPort } from "node:worker_threads";
 import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, PoolWorkerInit } from "./wire";
-import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, isWireSymbol, extractFerricError } from "./wire";
+import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, fromWireToNative, extractFerricError } from "./wire";
 import type { NativeEngine } from "./native";
 import type { EvaluateRequest, EvaluateResult } from "./types";
 
@@ -54,27 +54,8 @@ const NativeEngineClass = native["Engine"] as any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const NativeFerricSymbol = native["FerricSymbol"] as any;
 
-/**
- * Recursively convert wire symbols in args back to native FerricSymbol.
- */
-function fromWireToNative(val: unknown): unknown {
-  if (val === null || val === undefined) return val;
-  if (typeof val !== "object") return val;
-
-  if (isWireSymbol(val)) {
-    return new NativeFerricSymbol(val.value);
-  }
-
-  if (Array.isArray(val)) {
-    return val.map(fromWireToNative);
-  }
-
-  const result: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(val)) {
-    result[k] = fromWireToNative(v);
-  }
-  return result;
-}
+/** Shim the shared helper with this worker's native FerricSymbol constructor. */
+const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol);
 
 // ---------------------------------------------------------------------------
 // Spec registry and engine cache
@@ -172,9 +153,9 @@ function handleEvaluate(
   // Assert requested facts (converting wire symbols to native).
   for (const fact of request.facts ?? []) {
     if (fact.kind === "ordered") {
-      engine.assertFact(fact.relation, ...fact.fields.map(fromWireToNative));
+      engine.assertFact(fact.relation, ...fact.fields.map(wireToNative));
     } else {
-      engine.assertTemplate(fact.templateName, fromWireToNative(fact.slots) as Record<string, unknown>);
+      engine.assertTemplate(fact.templateName, wireToNative(fact.slots) as Record<string, unknown>);
     }
   }
 
@@ -219,10 +200,10 @@ function handleMethod(specName: string, method: string, args: unknown[]): unknow
       return engine.assertString(args[0] as string);
     case "assertFact": {
       const [relation, ...fields] = args as [string, ...unknown[]];
-      return engine.assertFact(relation, ...fields.map(fromWireToNative));
+      return engine.assertFact(relation, ...fields.map(wireToNative));
     }
     case "assertTemplate":
-      return engine.assertTemplate(args[0] as string, fromWireToNative(args[1]) as Record<string, unknown>);
+      return engine.assertTemplate(args[0] as string, wireToNative(args[1]) as Record<string, unknown>);
     case "retract":
       engine.retract(args[0] as number);
       return undefined;
