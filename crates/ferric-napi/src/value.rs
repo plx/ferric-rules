@@ -109,7 +109,13 @@ pub fn js_to_value(env: &Env, val: JsUnknown, engine: &mut Engine) -> Result<Val
         ValueType::BigInt => {
             // SAFETY: We just confirmed the type is BigInt via get_type().
             let js_bigint: JsBigInt = unsafe { val.cast() };
-            let (value, _lossless) = js_bigint.get_i64()?;
+            let (value, lossless) = js_bigint.get_i64()?;
+            if !lossless {
+                return Err(Error::new(
+                    Status::InvalidArg,
+                    "BigInt value is outside the signed 64-bit integer range",
+                ));
+            }
             Ok(Value::Integer(value))
         }
 

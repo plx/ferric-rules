@@ -62,6 +62,22 @@ test("B-007 bigint input is accepted", () => {
   e.close();
 });
 
+test("B-007 bigint outside i64 range is rejected", () => {
+  const e = new Engine();
+  e.reset();
+  // 2n ** 63n is the first positive value that overflows signed 64-bit.
+  assert.throws(
+    () => e.assertFact("big", 2n ** 63n),
+    /BigInt value is outside the signed 64-bit integer range/,
+  );
+  // -(2n ** 63n) - 1n is the first negative value that overflows signed 64-bit.
+  assert.throws(
+    () => e.assertFact("big", -(2n ** 63n) - 1n),
+    /BigInt value is outside the signed 64-bit integer range/,
+  );
+  e.close();
+});
+
 // ---------------------------------------------------------------------------
 // B-006: boolean maps to CLIPS symbols TRUE/FALSE
 // ---------------------------------------------------------------------------
