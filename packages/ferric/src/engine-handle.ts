@@ -55,9 +55,9 @@ interface PendingEntry {
 function reconstructError(payload: WorkerResponse["error"]): Error {
   if (!payload) return new Error("Unknown worker error");
 
-  const Ctor = ERROR_REGISTRY[payload.name];
-  if (Ctor) {
-    return new Ctor(payload.message);
+  const make = ERROR_REGISTRY[payload.name];
+  if (make) {
+    return make(payload.message);
   }
 
   if (payload.name === "AbortError") {

@@ -297,22 +297,33 @@ export class FerricSerializationError extends FerricError {
 }
 
 /**
- * Map from error name strings (as returned by the worker) to error
- * constructors, so that EngineHandle and EnginePool can reconstruct
- * the correct error subclass from a WorkerResponse.error payload.
+ * Factory for a FerricError subclass from a worker error payload's message.
+ *
+ * Most entries are the subclass constructors themselves (which take a single
+ * message argument), but the base `FerricError` needs a factory because its
+ * constructor also takes a code parameter. Consumers should treat every
+ * entry uniformly as a factory and invoke it as a plain call — not with
+ * `new`.
  */
-export const ERROR_REGISTRY: Readonly<Record<string, new (message: string) => FerricError>> = {
-  FerricError: (msg: string) => new FerricError(msg, "FERRIC_ERROR"),
-  FerricParseError,
-  FerricCompileError,
-  FerricRuntimeError,
-  FerricFactNotFoundError,
-  FerricTemplateNotFoundError,
-  FerricSlotNotFoundError,
-  FerricModuleNotFoundError,
-  FerricEncodingError,
-  FerricSerializationError,
-} as unknown as Readonly<Record<string, new (message: string) => FerricError>>;
+type FerricErrorFactory = (message: string) => FerricError;
+
+/**
+ * Map from error name strings (as returned by the worker) to factories
+ * that produce the correct FerricError subclass from a WorkerResponse.error
+ * payload.
+ */
+export const ERROR_REGISTRY: Readonly<Record<string, FerricErrorFactory>> = {
+  FerricError: (msg) => new FerricError(msg, "FERRIC_ERROR"),
+  FerricParseError: (msg) => new FerricParseError(msg),
+  FerricCompileError: (msg) => new FerricCompileError(msg),
+  FerricRuntimeError: (msg) => new FerricRuntimeError(msg),
+  FerricFactNotFoundError: (msg) => new FerricFactNotFoundError(msg),
+  FerricTemplateNotFoundError: (msg) => new FerricTemplateNotFoundError(msg),
+  FerricSlotNotFoundError: (msg) => new FerricSlotNotFoundError(msg),
+  FerricModuleNotFoundError: (msg) => new FerricModuleNotFoundError(msg),
+  FerricEncodingError: (msg) => new FerricEncodingError(msg),
+  FerricSerializationError: (msg) => new FerricSerializationError(msg),
+};
 
 /**
  * Convert a native napi-rs error into the correct FerricError subclass.
@@ -328,9 +339,9 @@ export function convertNativeError(err: unknown): Error {
   if (match) {
     const name = match[1];
     const cleanMessage = err.message.slice(match[0].length);
-    const Ctor = ERROR_REGISTRY[name];
-    if (Ctor) {
-      return new Ctor(cleanMessage);
+    const make = ERROR_REGISTRY[name];
+    if (make) {
+      return make(cleanMessage);
     }
   }
 
