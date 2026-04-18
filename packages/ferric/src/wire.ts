@@ -162,6 +162,15 @@ export function extractFerricError(
 /**
  * Wire representation of a FerricSymbol.
  * Used when serializing values across postMessage (structured clone).
+ *
+ * NOTE: This `{ __type: "FerricSymbol", value: string }` shape is the
+ * postMessage wire form used only between the main thread and worker
+ * threads. It is DISTINCT from the native-call marshal form
+ * `{ __ferric_symbol: true, value: string }` defined by
+ * `crates/ferric-napi/index.js::marshalValue` and consumed by the Rust
+ * side in `crates/ferric-napi/src/value.rs`. The two formats never mix:
+ * workers always convert wire symbols back into native FerricSymbol
+ * instances (see `fromWireToNative`) before invoking the engine.
  */
 export interface WireSymbol {
   __type: "FerricSymbol";

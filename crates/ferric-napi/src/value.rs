@@ -142,8 +142,17 @@ pub fn js_to_value(env: &Env, val: JsUnknown, engine: &mut Engine) -> Result<Val
             }
 
             // Check for a tagged FerricSymbol marker object.  The JS
-            // loader converts native FerricSymbol instances to plain
-            // objects: { __ferric_symbol: true, value: "name" }.
+            // loader (`crates/ferric-napi/index.js::marshalValue`) converts
+            // native FerricSymbol instances to plain objects of the form
+            // `{ __ferric_symbol: true, value: "name" }` before the args
+            // reach Rust, because napi-rs class instances lose their native
+            // pointer when passed through `Vec<JsUnknown>` extraction.
+            //
+            // This is a *different* tagged format from the postMessage wire
+            // form `{ __type: "FerricSymbol", value: string }` used between
+            // the main thread and worker threads — see
+            // `packages/ferric/src/wire.ts::WireSymbol`. The wire form never
+            // reaches Rust directly.
             if obj.has_named_property("__ferric_symbol")? {
                 let value_prop: JsString = obj.get_named_property("value")?;
                 let sym_name = value_prop.into_utf8()?.as_str()?.to_owned();

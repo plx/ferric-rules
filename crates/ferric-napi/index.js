@@ -56,6 +56,13 @@ if (!nativeBinding) {
 // napi-rs class instances (FerricSymbol) lose their native pointer when
 // passed through Vec<JsUnknown> extraction.  Convert them to tagged plain
 // objects that the Rust code can recognise via a simple property check.
+//
+// NOTE: This `{ __ferric_symbol: true, value: string }` shape is the
+// native-call marshal form — it only exists on the native-call boundary
+// and is consumed by `crates/ferric-napi/src/value.rs`. It is DISTINCT
+// from the postMessage wire form `{ __type: "FerricSymbol", value: string }`
+// defined in `packages/ferric/src/wire.ts::WireSymbol`, which is used
+// between the main thread and worker threads. Do not mix the two.
 
 const FerricSymbolClass = nativeBinding.FerricSymbol;
 
