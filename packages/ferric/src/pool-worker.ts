@@ -295,17 +295,6 @@ parentPort.on("message", (msg: WorkerRequest) => {
       return;
     }
 
-    // Close: shut down all engines.
-    if (method === "__close") {
-      for (const [, engine] of engines) {
-        try { engine.close(); } catch { /* ignore */ }
-      }
-      engines.clear();
-      specs.clear();
-      parentPort!.postMessage({ id, result: undefined } satisfies WorkerResponse);
-      return;
-    }
-
     // Evaluate: one-shot stateless call.
     if (method === "__evaluate") {
       const specName = args[0] as string;
