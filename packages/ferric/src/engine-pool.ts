@@ -193,14 +193,27 @@ export class EnginePool {
     const initPromises: Promise<void>[] = [];
     const slots: WorkerSlot[] = [];
 
-    for (let i = 0; i < threadCount; i++) {
-      const slot = EnginePool.createSlot(new Worker(workerPath));
-      slots.push(slot);
-      initPromises.push(EnginePool.initSlot(slot, init));
-    }
+    try {
+      for (let i = 0; i < threadCount; i++) {
+        const slot = EnginePool.createSlot(new Worker(workerPath));
+        slots.push(slot);
+        initPromises.push(EnginePool.initSlot(slot, init));
+      }
 
-    await Promise.all(initPromises);
-    return new EnginePool(slots);
+      await Promise.all(initPromises);
+      return new EnginePool(slots);
+    } catch (error) {
+      await Promise.all(
+        slots.map(async (slot) => {
+          try {
+            await slot.worker.terminate();
+          } catch {
+            // Ignore best-effort cleanup failures while unwinding create().
+          }
+        }),
+      );
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------------------
