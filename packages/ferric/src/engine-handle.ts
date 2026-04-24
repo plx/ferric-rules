@@ -24,6 +24,7 @@ import { Worker } from "node:worker_threads";
 import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, WorkerInit } from "./wire";
 import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX, toWire, fromWire } from "./wire";
+import { normalizeRunLimit } from "./limit-validation";
 import { FerricSymbol } from "./native";
 import type {
   ClipsValue,
@@ -62,6 +63,10 @@ function reconstructError(payload: WorkerResponse["error"]): Error {
 
   if (payload.name === "AbortError") {
     return new DOMException(payload.message, "AbortError");
+  }
+
+  if (payload.name === "TypeError") {
+    return new TypeError(payload.message);
   }
 
   const err = new FerricError(payload.message, payload.code);
@@ -294,6 +299,10 @@ export class EngineHandle {
     }
 
     const signal = options?.signal;
+    const limit = normalizeRunLimit(
+      (options as { limit?: unknown } | undefined)?.limit,
+      "EngineHandle.run",
+    );
 
     if (signal?.aborted) {
       throw new DOMException("The operation was aborted", "AbortError");
@@ -307,7 +316,7 @@ export class EngineHandle {
     const req: WorkerRequest = {
       id,
       method: "__run_batched",
-      args: [options?.limit ?? null, sab],
+      args: [limit ?? null, sab],
     };
 
     const promise = new Promise<RunResult>((resolve, reject) => {

@@ -28,6 +28,7 @@ import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, PoolWorkerInit } from "./wire";
 import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX, toWire, fromWire } from "./wire";
 import { FerricSymbol } from "./native";
+import { normalizeEvaluateLimit, normalizeRunLimit } from "./limit-validation";
 import type {
   ClipsValue,
   RunResult,
@@ -117,6 +118,10 @@ function reconstructError(payload: WorkerResponse["error"]): Error {
 
   if (payload.name === "AbortError") {
     return new DOMException(payload.message, "AbortError");
+  }
+
+  if (payload.name === "TypeError") {
+    return new TypeError(payload.message);
   }
 
   const err = new FerricError(payload.message, payload.code);
@@ -352,6 +357,11 @@ export class EnginePool {
       this.sendToSlot(slot, method, [specName, ...args], signal);
 
     const runWithAbort = async (options?: { limit?: number }): Promise<RunResult> => {
+      const limit = normalizeRunLimit(
+        (options as { limit?: unknown } | undefined)?.limit,
+        "EngineProxy.run",
+      );
+
       // Allocate a per-call abort buffer for cooperative cancellation; the
       // worker polls this between batches of RUN_BATCH_SIZE firings.
       const sab = new SharedArrayBuffer(
@@ -371,7 +381,7 @@ export class EnginePool {
 
       try {
         return (await send("__batched_run", [
-          options?.limit ?? null,
+          limit ?? null,
           sab,
         ])) as RunResult;
       } finally {
@@ -425,6 +435,10 @@ export class EnginePool {
     if (this.closed) throw new Error("EnginePool has been closed");
 
     const signal = options?.signal;
+    const limit = normalizeEvaluateLimit(
+      (request as { limit?: unknown }).limit,
+      "EnginePool.evaluate",
+    );
     if (signal?.aborted) {
       throw new DOMException("The operation was aborted", "AbortError");
     }
@@ -438,6 +452,7 @@ export class EnginePool {
     // Convert FerricSymbol instances in the request to wire format.
     const wireRequest = {
       ...request,
+      limit,
       facts: request.facts?.map((f) => {
         if (f.kind === "ordered") {
           return { ...f, fields: f.fields.map(toWire) };

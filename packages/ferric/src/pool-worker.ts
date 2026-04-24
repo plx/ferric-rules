@@ -26,6 +26,7 @@ import type { WorkerRequest, WorkerResponse, PoolWorkerInit } from "./wire";
 import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, fromWireToNative, extractFerricError } from "./wire";
 import type { NativeEngine } from "./native";
 import type { EvaluateRequest, EvaluateResult } from "./types";
+import { normalizeEvaluateLimit, normalizeRunLimit } from "./limit-validation";
 
 if (!parentPort) {
   throw new Error("pool-worker.ts must be run as a Worker thread");
@@ -102,13 +103,15 @@ function batchedRun(
   limit: number | undefined | null,
   abortBuffer: Int32Array | null,
 ): { rulesFired: number; haltReason: number } {
+  const normalizedLimit = normalizeRunLimit(limit, "EngineProxy.run");
+
   // N-01: 0 = zero firings.
-  if (limit === 0) {
+  if (normalizedLimit === 0) {
     return { rulesFired: 0, haltReason: 1 /* LimitReached */ };
   }
 
-  const unlimited = limit === undefined || limit === null;
-  let remaining = unlimited ? Infinity : limit;
+  const unlimited = normalizedLimit === undefined || normalizedLimit === null;
+  let remaining = unlimited ? Infinity : normalizedLimit;
   let totalFired = 0;
 
   while (remaining > 0) {
@@ -161,7 +164,7 @@ function handleEvaluate(
 
   // Run with cooperative cancellation.
   // N-02: evaluate limit=0 or omitted means unlimited.
-  const evalLimit = (request.limit === 0 || request.limit === undefined) ? undefined : request.limit;
+  const evalLimit = normalizeEvaluateLimit(request.limit, "EnginePool.evaluate");
   const runResult = batchedRun(engine, evalLimit, abortBuffer);
 
   // Collect all facts.

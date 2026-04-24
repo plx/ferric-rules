@@ -22,6 +22,7 @@ import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, WorkerInit } from "./wire";
 import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, fromWireToNative, extractFerricError } from "./wire";
 import type { NativeEngine } from "./native";
+import { normalizeRunLimit } from "./limit-validation";
 
 if (!parentPort) {
   throw new Error("worker.ts must be run as a Worker thread");
@@ -97,14 +98,15 @@ function batchedRun(
   abortBuffer: Int32Array | null,
 ): { rulesFired: number; haltReason: number } {
   if (!engine) throw new Error("Engine is not initialized");
+  const normalizedLimit = normalizeRunLimit(limit, "EngineHandle.run");
 
   // N-01: undefined/null = unlimited, 0 = zero firings, positive = max firings.
-  if (limit === 0) {
+  if (normalizedLimit === 0) {
     return { rulesFired: 0, haltReason: 1 /* LimitReached */ };
   }
 
-  const unlimited = limit === undefined || limit === null;
-  let remaining = unlimited ? Infinity : limit;
+  const unlimited = normalizedLimit === undefined || normalizedLimit === null;
+  let remaining = unlimited ? Infinity : normalizedLimit;
   let totalFired = 0;
 
   while (remaining > 0) {

@@ -62,3 +62,20 @@ test("D-006 EngineHandle.run({limit:3}) fires at most 3 rules", async () => {
     await handle.close();
   }
 });
+
+test("D-006 EngineHandle.run rejects invalid limits", async () => {
+  const handle = await EngineHandle.create({ source: LOOP_RULE });
+  try {
+    await handle.reset();
+    await handle.assertString("(counter 0)");
+
+    for (const limit of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await assert.rejects(
+        () => handle.run({ limit }),
+        (err: unknown) => err instanceof TypeError && /limit/.test(err.message),
+      );
+    }
+  } finally {
+    await handle.close();
+  }
+});
