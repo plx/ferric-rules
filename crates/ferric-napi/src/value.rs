@@ -95,11 +95,10 @@ pub fn js_to_value(env: &Env, val: JsUnknown, engine: &mut Engine) -> Result<Val
             let js_num: JsNumber = val.try_into()?;
             let n: f64 = js_num.get_double()?;
             // If the number is a whole value within i64 range, treat as Integer.
-            // i64::MIN/MAX cast to f64 loses precision but the comparison is
-            // conservative — values outside the representable f64 range of i64
-            // are treated as floats, which is the correct behavior.
+            // i64::MAX rounds up to 2^63 as f64, so the upper bound must stay
+            // strict to avoid saturating 2^63 into i64::MAX.
             #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-            if n.fract() == 0.0 && n >= (i64::MIN as f64) && n <= (i64::MAX as f64) {
+            if n.fract() == 0.0 && n >= (i64::MIN as f64) && n < (i64::MAX as f64) {
                 Ok(Value::Integer(n as i64))
             } else {
                 Ok(Value::Float(n))

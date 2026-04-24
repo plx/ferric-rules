@@ -75,10 +75,10 @@ impl Engine {
 /// don't silently truncate into a different fact.
 ///
 /// JS numbers are only precise up to 2^53 - 1; slotmap fact IDs fit well
-/// within that, so we only accept values in [0, 2^53] with no fractional
+/// within that, so we only accept values in [0, 2^53 - 1] with no fractional
 /// part.
 fn fact_id_from_f64(id: f64) -> Result<FactId> {
-    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_992.0; // 2^53
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0; // 2^53 - 1
     if !id.is_finite() || id.fract() != 0.0 || !(0.0..=MAX_SAFE_INTEGER).contains(&id) {
         return Err(napi::Error::new(
             napi::Status::InvalidArg,

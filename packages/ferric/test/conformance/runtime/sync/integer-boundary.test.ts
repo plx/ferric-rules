@@ -39,6 +39,16 @@ test("B-007 max safe integer returns as number", () => {
   e.close();
 });
 
+test("B-007 fact ids above Number.MAX_SAFE_INTEGER are rejected", () => {
+  const e = new Engine();
+  e.reset();
+  assert.throws(
+    () => e.getFact(2 ** 53),
+    /fact id must be a finite non-negative integer/,
+  );
+  e.close();
+});
+
 test("B-007 negative safe integer returns as number", () => {
   const e = new Engine();
   e.reset();
@@ -75,6 +85,17 @@ test("B-007 bigint outside i64 range is rejected", () => {
     () => e.assertFact("big", -(2n ** 63n) - 1n),
     /BigInt value is outside the signed 64-bit integer range/,
   );
+  e.close();
+});
+
+test("B-007 whole numbers at 2^63 stay floats instead of saturating", () => {
+  const e = new Engine();
+  e.reset();
+  e.assertFact("big", 2 ** 63);
+  const [fact] = e.findFacts("big") as any[];
+  assert.ok(fact, "big fact should exist");
+  assert.strictEqual(typeof fact.fields[0], "number");
+  assert.strictEqual(fact.fields[0], 2 ** 63);
   e.close();
 });
 
