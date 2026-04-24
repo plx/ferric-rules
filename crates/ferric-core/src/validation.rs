@@ -151,7 +151,7 @@ impl fmt::Display for PatternViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NestingTooDeep { depth, max } => {
-                write!(f, "nesting depth {depth} exceeds maximum of {max}",)
+                write!(f, "nesting depth {depth} exceeds maximum of {max}")
             }
             Self::ForallConditionNotSinglePattern => {
                 write!(f, "forall condition must be a single fact pattern")

@@ -330,7 +330,7 @@ impl Engine {
         let mut slots = def.defaults.clone().into_boxed_slice();
 
         // Overwrite specified slots.
-        for (name, value) in slot_names.iter().zip(slot_values.into_iter()) {
+        for (name, value) in slot_names.iter().zip(slot_values) {
             let idx = def
                 .slot_index(name)
                 .ok_or_else(|| EngineError::SlotNotFound {
