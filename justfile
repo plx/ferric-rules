@@ -129,13 +129,13 @@ py-bindings-test:
 # ── Composite checks ────────────────────────────────────────────────────────
 
 # Full preflight: format check, clippy, all tests, cargo check, Python checks, Go lint
-check: fmt-check clippy test cargo-check py-fmt-check py-lint py-test py-bindings-test go-lint
+check: fmt-check clippy test cargo-check py-fmt-check py-lint py-test py-bindings-test go-lint ts-lint
 
 # Same as `check` — alias for the preflight script
 preflight: check
 
 # PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks + Go lint
-preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test py-bindings-test go-lint
+preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test py-bindings-test go-lint ts-lint
 
 # ── Tracing / profiling ────────────────────────────────────────────────────
 
@@ -324,6 +324,37 @@ go-lint: build-go-ffi
 # Full Go build pipeline: build Rust static lib, then run Go tests
 go-full: build-go-ffi test-go-race
 
+# ── Node.js bindings ───────────────────────────────────────────────────────
+
+# Build the napi-rs native addon for Node.js bindings
+build-napi:
+    cd crates/ferric-napi && npm run build
+
+# Install TypeScript package dependencies
+ts-install:
+    cd packages/ferric && npm install
+
+# Build the TypeScript package
+ts-build: ts-install
+    cd packages/ferric && npm run build
+
+# Lint TypeScript (type-check only)
+ts-lint: ts-install
+    cd packages/ferric && npm run lint
+
+# Run Node.js binding tests
+test-napi: build-napi ts-build
+    cd packages/ferric && npm test
+
+# Full Node.js build pipeline: build native addon, then build and test TS
+napi-full: build-napi ts-build test-napi
+
+# ── Cleanup ──────────────────────────────────────────────────────────────────
+
+# Remove build artifacts
+clean:
+    cargo clean
+
 # ── Issue tracking ────────────────────────────────────────────────────────────
 
 # Find the next unblocked issue matching comma-separated labels (e.g. `just find-next-matching-issue golang-binding,remediation`)
@@ -333,9 +364,3 @@ find-next-matching-issue labels:
 # List open GitHub issues matching comma-separated labels as a markdown table (e.g. `just list-open-issues golang-binding,remediation`)
 list-open-issues labels:
     ./scripts/list-open-issues.sh {{labels}}
-
-# ── Cleanup ──────────────────────────────────────────────────────────────────
-
-# Remove build artifacts
-clean:
-    cargo clean

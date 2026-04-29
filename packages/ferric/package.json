@@ -1,0 +1,31 @@
+{
+  "name": "@ferric-rules/node",
+  "version": "0.1.0",
+  "description": "TypeScript bindings for the Ferric rules engine",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/",
+    "native/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "lint": "tsc --noEmit",
+    "test:types": "tsc --noEmit -p tsconfig.typetest.json",
+    "test:runtime:sync": "tsx --test test/conformance/runtime/sync/**/*.test.ts",
+    "test:runtime:worker": "tsx --test test/conformance/runtime/worker/**/*.test.ts",
+    "test:runtime:pool": "tsx --test test/conformance/runtime/pool/**/*.test.ts",
+    "test:package": "tsx --test test/conformance/package/**/*.test.ts",
+    "test": "npm run test:types && npm run test:runtime:sync && npm run test:runtime:worker && npm run test:runtime:pool && npm run test:package",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.5.0"
+  },
+  "license": "MIT OR Apache-2.0"
+}

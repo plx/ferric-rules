@@ -1266,17 +1266,13 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
     let mut seen = [false; 6];
     for t in restrictions {
         match t.as_str() {
-            "INTEGER" => {
-                if !seen[0] {
-                    seen[0] = true;
-                    count += 1;
-                }
+            "INTEGER" if !seen[0] => {
+                seen[0] = true;
+                count += 1;
             }
-            "FLOAT" => {
-                if !seen[1] {
-                    seen[1] = true;
-                    count += 1;
-                }
+            "FLOAT" if !seen[1] => {
+                seen[1] = true;
+                count += 1;
             }
             "NUMBER" => {
                 if !seen[0] {
@@ -1288,17 +1284,13 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
                     count += 1;
                 }
             }
-            "SYMBOL" => {
-                if !seen[2] {
-                    seen[2] = true;
-                    count += 1;
-                }
+            "SYMBOL" if !seen[2] => {
+                seen[2] = true;
+                count += 1;
             }
-            "STRING" => {
-                if !seen[3] {
-                    seen[3] = true;
-                    count += 1;
-                }
+            "STRING" if !seen[3] => {
+                seen[3] = true;
+                count += 1;
             }
             "LEXEME" => {
                 if !seen[2] {
@@ -1310,17 +1302,13 @@ fn restriction_concrete_type_count(restrictions: &[String]) -> usize {
                     count += 1;
                 }
             }
-            "MULTIFIELD" => {
-                if !seen[4] {
-                    seen[4] = true;
-                    count += 1;
-                }
+            "MULTIFIELD" if !seen[4] => {
+                seen[4] = true;
+                count += 1;
             }
-            "EXTERNAL-ADDRESS" => {
-                if !seen[5] {
-                    seen[5] = true;
-                    count += 1;
-                }
+            "EXTERNAL-ADDRESS" if !seen[5] => {
+                seen[5] = true;
+                count += 1;
             }
             _ => {}
         }

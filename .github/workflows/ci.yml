@@ -106,6 +106,34 @@ jobs:
           uv sync
           uv run pytest tests/ -v
 
+  node-bindings:
+    name: Node.js Bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli
+      - name: Build native addon
+        working-directory: crates/ferric-napi
+        run: |
+          npm install
+          napi build --release
+      - name: Build and lint TypeScript
+        working-directory: packages/ferric
+        run: |
+          npm install
+          npm run build
+          npm run lint
+      - name: Run TypeScript binding tests
+        working-directory: packages/ferric
+        run: npm test
+
   python-tools:
     name: Python Tools
     runs-on: ubuntu-latest

@@ -5,6 +5,7 @@ members = [
     "crates/ferric-cli",
     "crates/ferric-core",
     "crates/ferric-ffi",
+    "crates/ferric-napi",
     "crates/ferric-parser",
     "crates/ferric-runtime",
     "crates/ferric-python",
@@ -51,6 +52,11 @@ rustc-hash = "2"
 # PyO3 Python bindings
 pyo3 = { version = "0.23", features = ["extension-module"] }
 pyo3-build-config = "0.23"
+
+# napi-rs Node.js bindings
+napi = { version = "2", default-features = false, features = ["napi8"] }
+napi-derive = "2"
+napi-build = "2"
 
 # Property-based testing
 proptest = "1"
