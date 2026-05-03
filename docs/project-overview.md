@@ -68,7 +68,7 @@ Engine, loader, execution loop, evaluator, modules, I/O.
 - `modules.rs` — module registry, focus stack, cross-module visibility.
 - `router.rs` — `OutputRouter`, per-channel output capture, `read`/`readline`
   input buffers.
-- `config.rs` — `RunLimit`, engine configuration.
+- `config.rs` — `EngineConfig` and encoding/strategy/call-depth settings.
 - `qualified_name.rs` — runtime-side module-qualified resolution.
 - `serialization.rs` (feature `serde`) — `EngineSnapshotRef`/`Owned`,
   bincode/JSON/CBOR/MessagePack/Postcard payloads, ExternalAddress
