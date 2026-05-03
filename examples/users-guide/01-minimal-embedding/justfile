@@ -1,0 +1,14 @@
+set quiet
+
+pkg := "users-guide-01-minimal-embedding"
+
+default:
+    @just --list
+
+# Build the example
+build-example:
+    cargo build -p {{pkg}}
+
+# Build and run the example
+check-example:
+    cargo run -p {{pkg}} --quiet

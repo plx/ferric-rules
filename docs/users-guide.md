@@ -55,18 +55,23 @@ ferric = { version = "0.1", features = ["serde"] }
 
 ## 2. A minimal embedding
 
+_Runnable example: [`examples/users-guide/01-minimal-embedding/`](../examples/users-guide/01-minimal-embedding/)._
+
 Here is the smallest useful program: one rule, one fact, one printout.
 
+<!-- example: 01-minimal-embedding/src/main.rs -->
 ```rust
 use ferric::runtime::{Engine, RunLimit};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut engine = Engine::with_rules(r#"
+    let mut engine = Engine::with_rules(
+        r#"
         (defrule greet
             (user ?name)
             =>
             (printout t "Hello, " ?name "!" crlf))
-    "#)?;
+    "#,
+    )?;
 
     engine.assert_ordered_symbol("user", "Alice")?;
     engine.run(RunLimit::Unlimited)?;
@@ -97,6 +102,8 @@ A few things are worth noticing:
 
 ## 3. Ordered facts vs. template facts
 
+_Runnable example: [`examples/users-guide/02-ordered-vs-template/`](../examples/users-guide/02-ordered-vs-template/)._
+
 CLIPS has two kinds of facts. Ferric supports both.
 
 **Ordered facts** are positional. They are the right choice for transient
@@ -113,21 +120,18 @@ makes the meaning obvious:
 couple of fields, when fields have defaults, or when you expect to `modify`
 them later:
 
+<!-- example: 02-ordered-vs-template/rules/people.clp -->
 ```clips
 (deftemplate person
     (slot name)
     (slot age (default 0))
     (multislot hobbies))
-
-(assert (person (name Alice) (age 30) (hobbies chess hiking)))
 ```
 
 From Rust, template facts can be built by name:
 
+<!-- example: 02-ordered-vs-template/src/main.rs -->
 ```rust
-use ferric::core::Value;
-use ferric::runtime::Engine;
-
 fn assert_person(engine: &mut Engine, name: &str, age: i64) -> anyhow::Result<()> {
     let name_sym = engine.symbol_value(name)?;
     engine.assert_template(
@@ -143,9 +147,15 @@ Unspecified slots pick up their declared defaults (or an empty multifield
 for `multislot`). The `person` template above will assert with
 `(age 0)` if you leave `age` out.
 
+> **Heads up:** the CLIPS literal form `(assert (person (name Alice) (age 30)))`
+> is currently rejected by ferric's RHS evaluator (it parses the slot specs as
+> function calls). Build template facts from Rust via `assert_template`, or use
+> ordered facts in `(assert ...)` actions.
+
 Partial patterns let rules match on just the slots they care about, which
 is usually what you want:
 
+<!-- example: 02-ordered-vs-template/rules/people.clp -->
 ```clips
 (defrule adult
     (person (name ?n) (age ?a))
@@ -158,6 +168,8 @@ is usually what you want:
 
 ## 4. Priority and mutual exclusion: salience + guard facts
 
+_Runnable example: [`examples/users-guide/03-salience-and-guards/`](../examples/users-guide/03-salience-and-guards/)._
+
 Salience is the primary knob for rule priority. Higher salience wins, and
 within a salience tier the active conflict-resolution strategy decides
 (Depth by default — most recent activations fire first).
@@ -167,6 +179,7 @@ candidate actions, you want exactly one, and the rules that "win" assert a
 guard fact that disqualifies the others. The mobile-engagement ruleset in
 the README is a worked example of this pattern. A small version:
 
+<!-- example: 03-salience-and-guards/rules/alerts.clp -->
 ```clips
 (defrule alarm-on-fire
     (declare (salience 100))
@@ -187,24 +200,23 @@ the README is a worked example of this pattern. A small version:
 
 (defrule monitor
     (declare (salience 10))
+    (initial-fact)
     (not (decision-made))
     =>
     (assert (alert none))
     (assert (decision-made)))
 ```
 
+The `(initial-fact)` anchor in `monitor` is load-bearing: a rule whose only
+positive condition is a `(not ...)` needs an explicit anchor to fire under
+ferric. `(initial-fact)` is asserted automatically on every `(reset)`.
+
 From the host side you assert your sensor readings, run, and inspect
 working memory for the `(alert ...)` fact:
 
+<!-- example: 03-salience-and-guards/src/main.rs -->
 ```rust
-use ferric::core::Value;
-use ferric::runtime::{Engine, RunLimit};
-
-fn classify(
-    engine: &mut Engine,
-    smoke: &str,
-    temperature: f64,
-) -> anyhow::Result<Option<String>> {
+fn classify(engine: &mut Engine, smoke: &str, temperature: f64) -> anyhow::Result<Option<String>> {
     engine.reset()?;
 
     let smoke_kind = engine.symbol_value("smoke")?;
@@ -233,20 +245,27 @@ Two points about this shape:
 
 - `engine.reset()` is the usual "clean slate" between decisions. It retracts
   user facts, re-asserts `(initial-fact)` and any `deffacts` groups, and
-  restores globals to their declared values.
-- `find_facts("alert")` is a read-only lookup by relation name. It does not
-  intern the symbol, so a missing relation just returns an empty vector.
+  restores globals to their declared values. It also clears captured output
+  and action diagnostics.
+- `find_facts("alert")` is a read-only lookup by *ordered-fact* relation
+  name. It does not intern the symbol, so a missing relation just returns
+  an empty vector. (Template facts aren't returned by `find_facts`; iterate
+  `engine.facts()` and filter by `template_name_by_id` for those.)
 
 ---
 
 ## 5. Negation, existentials, and the pattern menagerie
 
+_Runnable example: [`examples/users-guide/04-pattern-menagerie/`](../examples/users-guide/04-pattern-menagerie/)._
+
 Ferric supports the CLIPS pattern connectives you are likely to need:
 `not`, `exists`, `forall`, NCC (negated conjunction via `(not (and ...))`),
 and constraint connectives (`&`, `|`, `~`) inside patterns. A compact tour:
 
+<!-- example: 04-pattern-menagerie/rules/menagerie.clp -->
 ```clips
 (deftemplate task (slot id) (slot done (default FALSE)))
+(deftemplate ticket (slot severity) (slot status))
 
 ;; not — fires when nothing matches
 (defrule report-no-tasks
@@ -269,11 +288,11 @@ and constraint connectives (`&`, `|`, `~`) inside patterns. A compact tour:
     (printout t "everything done" crlf))
 
 ;; NCC — negate a conjunction
-(defrule no-overdue-critical
-    (now ?t)
-    (not (and (task (id ?i)) (deadline ?i ?d) (test (< ?d ?t))))
+(defrule no-pending-deadline
+    (now)
+    (not (and (task (id ?i)) (deadline ?i)))
     =>
-    (printout t "no overdue critical items" crlf))
+    (printout t "no pending deadlines" crlf))
 
 ;; constraint connectives inside a pattern
 (defrule escalate
@@ -291,15 +310,22 @@ A few rules of thumb:
   and nested `forall` are rejected by the compiler. The typical workaround
   is a helper rule that asserts an intermediate "flag" fact
   (see [`migration.md`](migration.md) §3).
+- A `(test ...)` clause inside an NCC currently requires every NCC child to
+  be a test; mixing positive patterns with `test` inside `(not (and ...))`
+  is rejected. If you need an inequality test inside an NCC, derive a
+  helper fact that captures the predicate and reference it instead.
 
 ---
 
 ## 6. RHS actions: modify, retract, duplicate, bind
 
+_Runnable example: [`examples/users-guide/05-rhs-actions/`](../examples/users-guide/05-rhs-actions/)._
+
 Rule right-hand sides can assert, retract, modify, and duplicate facts, and
 `bind` local variables or globals. Fact-address variables (`?f <- (pattern)`)
 capture a fact's identity so you can hand it to `retract` or `modify`:
 
+<!-- example: 05-rhs-actions/rules/counter.clp -->
 ```clips
 (deftemplate counter (slot value (default 0)))
 
@@ -316,15 +342,19 @@ fact by address. `duplicate` creates a copy with slot overrides.
 
 For control flow inside the RHS, ferric supports the action-level forms:
 `if/then/else`, `while/do`, `loop-for-count`, `progn$`/`foreach`, and
-`switch/case/default`. Function bodies themselves are pure expressions — if
-you want side effects (printing, asserting), keep them in the rule's RHS.
+`switch/case/default`. User-function and method bodies are evaluator
+expressions, not full RHS action sequences: use rule RHS code for fact
+mutation and focus control.
 
 ---
 
 ## 7. User functions and generics
 
+_Runnable example: [`examples/users-guide/06-functions-and-generics/`](../examples/users-guide/06-functions-and-generics/)._
+
 `deffunction` lets you factor a computation out of your rules:
 
+<!-- example: 06-functions-and-generics/rules/temp.clp -->
 ```clips
 (deffunction celsius-to-fahrenheit (?c)
     (+ (* ?c 1.8) 32))
@@ -339,6 +369,7 @@ you want side effects (printing, asserting), keep them in the rule's RHS.
 most-specific-wins rule. Methods can call `(call-next-method)` to chain to
 the less-specific method:
 
+<!-- example: 06-functions-and-generics/rules/describe.clp -->
 ```clips
 (defgeneric describe)
 
@@ -355,13 +386,14 @@ the less-specific method:
 ```
 
 `(describe 7)` chains through the INTEGER method into NUMBER and yields
-`"int/number(7)"`; `(describe 3.14)` skips straight to NUMBER and yields
-`"number(3.14)"`.
+`"int/number(7)"`; `(describe 2.5)` skips straight to NUMBER and yields
+`"number(2.5)"`.
 
-Both `deffunction` and `defmethod` bodies are **pure expressions** — no
-`assert`/`retract`/`printout` inside. If your CLIPS code relies on side
-effects in functions, keep the computation in the function and move the
-effect to the calling rule.
+`deffunction` and `defmethod` bodies are evaluator expressions, not full
+RHS action lists. They can call expression functions such as `str-cat`,
+`format`, and `printout`, but fact mutation and agenda/focus control
+(`assert`, `retract`, `modify`, `duplicate`, `focus`, `reset`, `clear`,
+`run`) belong in the calling rule's RHS.
 
 Accepted parameter types in `defmethod`: `INTEGER`, `FLOAT`, `NUMBER`,
 `SYMBOL`, `STRING`, `LEXEME`, `MULTIFIELD`, or unrestricted `((?x))`.
@@ -370,10 +402,13 @@ Accepted parameter types in `defmethod`: `INTEGER`, `FLOAT`, `NUMBER`,
 
 ## 8. Globals
 
+_Runnable example: [`examples/users-guide/07-globals/`](../examples/users-guide/07-globals/)._
+
 `defglobal` declares named mutable state. Globals have `?*name*` syntax and
 must be updated with `(bind ?*name* ...)` (bind never *creates* globals; it
 only updates them).
 
+<!-- example: 07-globals/rules/sessions.clp -->
 ```clips
 (defglobal ?*session-count* = 0)
 
@@ -384,96 +419,99 @@ only updates them).
     (printout t "session " ?*session-count* crlf))
 ```
 
-From the host side:
+From the host side, look up globals by their bare name — without the
+surrounding `*`s — even though the CLIPS-side syntax includes them:
 
+<!-- example: 07-globals/src/main.rs -->
 ```rust
-use ferric::core::Value;
-
-if let Some(Value::Integer(n)) = engine.get_global("*session-count*") {
+if let Some(Value::Integer(n)) = engine.get_global("session-count") {
     println!("engine has counted {n} sessions");
+    assert_eq!(*n, 3);
+} else {
+    panic!("expected session-count to be an Integer");
 }
 ```
 
-Note the leading/trailing `*` — globals are named `*session-count*` in
-lookups. Globals reset to their declared initial values on `(reset)`.
+Globals reset to their declared initial values on `(reset)`.
 
 ---
 
 ## 9. Modules and focus stacks
+
+_Runnable example: [`examples/users-guide/08-modules-and-focus/`](../examples/users-guide/08-modules-and-focus/)._
 
 Non-trivial rule sets benefit from being split into modules with explicit
 focus control. Modules declare what they export; other modules import what
 they need; facts remain global but only rules in the currently focused
 module are eligible to fire.
 
+A simple example: two modules look at the same `(reading ...)` template,
+but each one has its own rule. The host pre-asserts the reading, then the
+focus stack decides which module's rules fire and in what order.
+
+<!-- example: 08-modules-and-focus/rules/pipeline.clp -->
 ```clips
-;;; -- SENSORS: ingest raw readings, publish derived facts
-(defmodule SENSORS
-    (export deftemplate reading)
-    (export deftemplate derived))
+(defmodule SENSORS (export deftemplate reading))
 
-(deftemplate SENSORS::reading (slot kind) (slot value))
-(deftemplate SENSORS::derived (slot kind) (slot value))
+(deftemplate reading (slot kind) (slot value))
 
-(defrule SENSORS::to-celsius
-    (reading (kind fahrenheit) (value ?f))
+(defrule SENSORS::observe
+    (reading (kind ?k) (value ?v))
     =>
-    (assert (derived (kind celsius) (value (/ (- ?f 32) 1.8)))))
+    (printout t "SENSORS observed " ?k "=" ?v crlf))
 
-;;; -- ALERTS: consume derived facts, decide
-(defmodule ALERTS
-    (import SENSORS deftemplate ?ALL))
+(defmodule ALERTS (import SENSORS deftemplate ?ALL))
 
-(defrule ALERTS::overheat
-    (derived (kind celsius) (value ?c))
-    (test (> ?c 40))
+(defrule ALERTS::warn
+    (reading (kind ?k) (value ?v))
+    (test (> ?v 100))
     =>
-    (assert (alert overheat ?c)))
-
-;;; -- MAIN: coordinate
-(defrule MAIN::go
-    (begin)
-    =>
-    (focus ALERTS)
-    (focus SENSORS))
+    (printout t "ALERTS: high " ?k " (" ?v ")" crlf))
 ```
 
-The `focus` action pushes modules onto a LIFO stack. In the example above,
-`MAIN::go` pushes `ALERTS` first and `SENSORS` second, so `SENSORS` fires
-first (top of stack), then `ALERTS` once `SENSORS` drains, then finally
-`MAIN` resumes. You can also push focus from Rust:
+The `focus` action pushes modules onto a LIFO stack. You can also push from
+Rust before calling `run`:
 
+<!-- example: 08-modules-and-focus/src/main.rs -->
 ```rust
-engine.push_focus("SENSORS")?;   // top of stack
-engine.push_focus("ALERTS")?;    // now top; runs first
+engine.push_focus("ALERTS")?;
+engine.push_focus("SENSORS")?;
 engine.run(RunLimit::Unlimited)?;
-
-println!("finished in module {:?}", engine.get_focus());
 ```
+
+`SENSORS` is on top (pushed last), so its agenda drains first; then the
+stack pops to `ALERTS` and that module's rules become eligible.
+
+> **Heads up:** pre-asserted facts work well with focus stacks. Chained
+> cross-module phases are more limited: facts asserted or modified while one
+> focused module is running do not reliably create activations for a later
+> focused module. For those pipelines, return to Rust between phases or keep
+> the chain in one module and order phases with salience. See §15.
 
 Focus-based decomposition is the recommended way to enforce phases in a
-reasoning process — sensor fusion first, then business rules, then alert
+reasoning process when each phase consumes facts the host has already
+assembled — sensor fusion first, then business rules, then alert
 generation, for example.
 
 ---
 
 ## 10. Driving the engine from Rust
 
+_Runnable example: [`examples/users-guide/09-driving-from-rust/`](../examples/users-guide/09-driving-from-rust/)._
+
 A typical request-handler shape looks like this:
 
 ```rust
-use ferric::core::Value;
-use ferric::runtime::{Engine, RunLimit};
-
 pub struct Classifier {
     engine: Engine,
 }
+```
 
-impl Classifier {
-    pub fn new(rules: &str) -> anyhow::Result<Self> {
-        Ok(Self { engine: Engine::with_rules(rules)? })
-    }
+The constructor compiles the rules once; `classify` reuses the engine
+across requests, resetting between each one:
 
+<!-- example: 09-driving-from-rust/src/main.rs -->
+```rust
     pub fn classify(&mut self, req: &Request) -> anyhow::Result<Decision> {
         // Start from a clean slate: reset reapplies deffacts + initial-fact.
         self.engine.reset()?;
@@ -482,35 +520,32 @@ impl Classifier {
         // `assert_ordered` both borrow the engine mutably, so bind first.
         let tier = self.engine.symbol_value(&req.tier)?;
         self.engine.assert_ordered("user-tier", tier)?;
-        self.engine.assert_ordered("session-count", req.session_count)?;
+        self.engine
+            .assert_ordered("session-count", req.session_count)?;
         if req.has_crashed {
             self.engine.assert_ordered_symbol("has-crashed", "yes")?;
         }
 
         // Bounded run — production handlers should always cap iterations.
-        let result = self.engine.run(RunLimit::Count(1_000))?;
+        let _result = self.engine.run(RunLimit::Count(1_000))?;
 
         // Pick up the decision either from a fact or a printout channel.
         let decision = self.read_decision()?;
 
         // Surface non-fatal rule warnings if you want to log them.
         for diag in self.engine.action_diagnostics() {
-            tracing::warn!(?diag, "action diagnostic");
+            eprintln!("rule warning: {diag:?}");
         }
         self.engine.clear_action_diagnostics();
         self.engine.clear_output_channel("t");
 
         Ok(decision)
     }
-
-    fn read_decision(&self) -> anyhow::Result<Decision> {
-        for (_, fact) in self.engine.find_facts("decision")? {
-            // ... pull the slot/field you care about ...
-        }
-        Ok(Decision::default())
-    }
-}
 ```
+
+`read_decision` walks `find_facts("decision")` and converts the matched
+`(decision ?d)` ordered fact into a `Decision` enum — see the example for
+the full pattern.
 
 A few useful patterns:
 
@@ -533,6 +568,8 @@ A few useful patterns:
 
 ## 11. Input and output channels
 
+_Runnable example: [`examples/users-guide/10-io-channels/`](../examples/users-guide/10-io-channels/)._
+
 `printout t "..."` writes to a channel called `t`. Ferric captures channel
 output in an in-memory buffer; read it back with `get_output(name)` and
 clear it with `clear_output_channel(name)`. You can write to any channel
@@ -543,43 +580,48 @@ is often cleaner.
 For *input*, `(read)` and `(readline)` consume from an engine-managed
 input buffer. Push lines from Rust before the run:
 
+<!-- example: 10-io-channels/src/main.rs -->
 ```rust
-engine.push_input("42");
 engine.push_input("hello world");
+engine.assert_ordered("prompt-line", vec![])?;
 engine.run(RunLimit::Unlimited)?;
 ```
 
 `format` works as an evaluator-only function in ferric: it returns a
 string. To actually print it, pipe it through `printout`:
 
+<!-- example: 10-io-channels/rules/io.clp -->
 ```clips
-(printout t (format nil "n=%d" 42) crlf)
+(defrule echo-line
+    (prompt-line)
+    =>
+    (printout t (format nil "n=%d" 42) crlf)
+    (bind ?line (readline))
+    (printout t "got: " ?line crlf))
 ```
 
 ---
 
 ## 12. Configuration
 
+_Runnable example: [`examples/users-guide/11-configuration/`](../examples/users-guide/11-configuration/)._
+
 `EngineConfig` controls string encoding, conflict resolution strategy,
 and the user-function recursion limit. The factory helpers cover the
 common cases:
 
+<!-- example: 11-configuration/src/main.rs -->
 ```rust
-use ferric::core::ConflictResolutionStrategy;
-use ferric::runtime::{Engine, EngineConfig};
-
 // UTF-8 symbols and strings, Depth strategy, 64-frame recursion limit.
-let engine = Engine::new(EngineConfig::default());
+let _engine = Engine::new(EngineConfig::default());
 
 // CLIPS-strict ASCII mode with LEX strategy.
-let engine = Engine::new(
-    EngineConfig::ascii().with_strategy(ConflictResolutionStrategy::Lex),
-);
+let _engine = Engine::new(EngineConfig::ascii().with_strategy(ConflictResolutionStrategy::Lex));
 
 // Increase recursion depth for deeply recursive deffunctions.
 let mut cfg = EngineConfig::utf8();
 cfg.max_call_depth = 256;
-let engine = Engine::new(cfg);
+let _engine = Engine::new(cfg);
 ```
 
 Available strategies: `Depth` (default), `Breadth`, `Lex`, `Mea`.
@@ -594,6 +636,8 @@ configuration and rule loading happen in one call.
 
 ## 13. Error handling
 
+_Runnable example: [`examples/users-guide/12-error-handling/`](../examples/users-guide/12-error-handling/)._
+
 Two categories of things can go wrong:
 
 **Fatal errors** return `Err` from the fallible engine methods.
@@ -602,25 +646,30 @@ Two categories of things can go wrong:
 runtime problems (template not found, encoding violations, thread-affinity
 violations, recursion-limit exceeded).
 
-**Non-fatal action diagnostics** are warnings collected during rule
-execution — for example, an unresolved module reference in a `focus`
-action. They don't halt the run; they accumulate in the engine and you
-can inspect them after `run` returns:
+**Non-fatal action diagnostics** are warnings from the most recent `run` or
+`step` — for example, an unresolved module reference in a `focus` action.
+They do not halt execution:
 
+<!-- example: 12-error-handling/src/main.rs -->
 ```rust
-let result = engine.run(RunLimit::Unlimited)?;
-for diag in engine.action_diagnostics() {
-    tracing::warn!("rule warning: {diag}");
-}
-engine.clear_action_diagnostics();
+    let _ = engine.run(RunLimit::Unlimited)?;
+
+    let diags = engine.action_diagnostics();
+    println!("action diagnostics after run: {}", diags.len());
+    for diag in diags {
+        println!("  - {diag:?}");
+    }
 ```
 
-Clear diagnostics between runs if you want them scoped per decision — they
-are **not** cleared by `reset()`.
+`run`, `step`, `reset`, and `clear` clear earlier diagnostics before doing
+new work. Inspect diagnostics before the next engine call if you need to
+log them.
 
 ---
 
 ## 14. Snapshots and warm starts
+
+_Runnable example: [`examples/users-guide/13-snapshots/`](../examples/users-guide/13-snapshots/)._
 
 With the `serde` feature enabled, you can freeze an engine to bytes and
 thaw it later. This is useful for:
@@ -631,106 +680,81 @@ thaw it later. This is useful for:
 - **Hot handoff.** Move an engine across processes or tasks that don't
   share memory.
 
+<!-- example: 13-snapshots/src/main.rs -->
 ```rust
-use ferric::runtime::{Engine, SerializationFormat};
+    // Offline: compile once, save a baseline snapshot.
+    let engine = Engine::with_rules(rules)?;
+    let bytes = engine.serialize(SerializationFormat::Bincode)?;
+    println!("snapshot size: {} bytes", bytes.len());
 
-// Offline: compile once, save a baseline snapshot.
-let engine = Engine::with_rules(include_str!("rules.clp"))?;
-let bytes = engine.serialize(SerializationFormat::Bincode)?;
-std::fs::write("rules.snapshot", &bytes)?;
-
-// Online: fast path — no parsing, no compilation.
-let bytes = std::fs::read("rules.snapshot")?;
-let engine = Engine::deserialize(&bytes, SerializationFormat::Bincode)?;
+    // Online: fast path — no parsing, no compilation.
+    let mut engine = Engine::deserialize(&bytes, SerializationFormat::Bincode)?;
+    engine.assert_ordered("reading", 7_i64)?;
+    engine.run(RunLimit::Unlimited)?;
 ```
 
 Available formats: `Bincode` (default, compact), `Json` (human-readable),
-`Cbor`, `MessagePack`, `Postcard`. The on-disk payload is prefixed with
-an 8-byte header (`FRSE` + little-endian version) so a stale snapshot is
-rejected cleanly instead of silently misinterpreted.
+`Cbor`, `MessagePack`, `Postcard`. Pass the same format to `deserialize`
+that you used for `serialize`; cross-format reads fail through the selected
+decoder. Snapshot bytes are ferric's internal serde representation, not a
+stable long-term storage format, so recreate them after upgrading ferric.
 
-`ExternalAddress` values in working memory are rejected at serialize time
-— they reference host pointers that can't meaningfully round-trip.
+`ExternalAddress` values in facts, registered globals, or `deffacts` are
+rejected at serialize time because they reference host pointers that cannot
+meaningfully round-trip.
 
 ---
 
-## 15. A larger worked example: phased sensor pipeline
+## 15. A larger worked example: phased reading pipeline
 
-Pulling the pieces together. A sketch of a small diagnosis pipeline that
-uses templates, modules, focus, functions, and globals:
+_Runnable example: [`examples/users-guide/14-pipeline/`](../examples/users-guide/14-pipeline/)._
 
+Pulling the pieces together. A small diagnosis pipeline that uses
+templates, salience-ordered phases, a deffunction helper, and a global as
+a tuning knob:
+
+<!-- example: 14-pipeline/rules/pipeline.clp -->
 ```clips
-;;; ============================================================
-;;; globals
-;;; ============================================================
 (defglobal ?*scale* = 1.0)
 
-;;; ============================================================
-;;; TEMPLATES module — shared shapes
-;;; ============================================================
-(defmodule TEMPLATES
-    (export deftemplate reading)
-    (export deftemplate diagnosis))
-
-(deftemplate TEMPLATES::reading
+(deftemplate reading
     (slot id)
     (slot kind)
     (slot value))
 
-(deftemplate TEMPLATES::diagnosis
-    (slot id)
-    (slot level (default info))
-    (slot message))
-
-;;; ============================================================
-;;; NORMALIZE module — unit conversion
-;;; ============================================================
-(defmodule NORMALIZE (import TEMPLATES deftemplate ?ALL))
-
+;;; Phase 1 — normalize: rewrite Fahrenheit readings to Celsius.
 (deffunction f-to-c (?f) (/ (- ?f 32.0) 1.8))
 
-(defrule NORMALIZE::scale
+(defrule normalize
+    (declare (salience 100))
     ?r <- (reading (kind fahrenheit) (value ?v))
     =>
     (modify ?r (kind celsius) (value (* ?*scale* (f-to-c ?v)))))
 
-;;; ============================================================
-;;; DIAGNOSE module — the actual rules
-;;; ============================================================
-(defmodule DIAGNOSE (import TEMPLATES deftemplate ?ALL))
+;;; Phase 2 — diagnose: classify each Celsius reading.
+;;; Diagnoses come out as ordered facts: (diagnosis <id> <level> "<message>").
 
-(defrule DIAGNOSE::overheat
+(defrule overheat
+    (declare (salience 50))
     (reading (id ?i) (kind celsius) (value ?c))
     (test (> ?c 40))
     =>
-    (assert (diagnosis (id ?i) (level alert) (message "overheat"))))
+    (assert (diagnosis ?i alert "overheat")))
 
-(defrule DIAGNOSE::nominal
+(defrule nominal
+    (declare (salience 50))
     (reading (id ?i) (kind celsius) (value ?c))
     (test (<= ?c 40))
-    (not (diagnosis (id ?i)))
     =>
-    (assert (diagnosis (id ?i) (level info) (message "nominal"))))
-
-;;; ============================================================
-;;; MAIN — coordinate the passes
-;;; ============================================================
-(defrule MAIN::go
-    (begin)
-    =>
-    (focus DIAGNOSE)
-    (focus NORMALIZE))
+    (assert (diagnosis ?i info "nominal")))
 ```
 
 Driving it from Rust:
 
+<!-- example: 14-pipeline/src/main.rs -->
 ```rust
-use ferric::core::{Fact, Value};
-use ferric::runtime::{Engine, RunLimit};
-
 fn run(engine: &mut Engine, inputs: &[(i64, &str, f64)]) -> anyhow::Result<()> {
     engine.reset()?;
-    engine.assert_ordered("begin", vec![])?;
 
     for (id, kind, value) in inputs {
         let kind_sym = engine.symbol_value(kind)?;
@@ -742,28 +766,27 @@ fn run(engine: &mut Engine, inputs: &[(i64, &str, f64)]) -> anyhow::Result<()> {
     }
 
     let result = engine.run(RunLimit::Count(10_000))?;
-    tracing::info!(fired = result.rules_fired, "pipeline complete");
-
-    for (_, fact) in engine.find_facts("diagnosis")? {
-        if let Fact::Template(_) = fact {
-            // extract slots via get_fact_slot_by_name, etc.
-        }
-    }
-    Ok(())
-}
+    println!("pipeline complete: {} rules fired", result.rules_fired);
 ```
 
 What's on display here:
 
-- `NORMALIZE` fires before `DIAGNOSE` because of the focus-stack order
-  (`MAIN::go` pushes DIAGNOSE first, then NORMALIZE; NORMALIZE ends up on
-  top and runs first).
-- `f-to-c` is a `deffunction` — a pure expression used from a rule's RHS.
+- The `normalize` rule fires before `overheat`/`nominal` because of its
+  higher salience. Once every Fahrenheit reading is rewritten to Celsius,
+  the next salience tier classifies them.
+- `f-to-c` is a `deffunction` called from a rule's RHS.
 - `?*scale*` is a global that normalization uses as a tuning knob. Set
   it from CLIPS via `(bind ?*scale* 1.05)` or inspect it from Rust via
-  `engine.get_global("*scale*")`.
-- Templates live in a single module and are imported where needed, so
-  facts are shareable but rule ownership is clear.
+  `engine.get_global("scale")`.
+- Diagnoses come out as **ordered** facts (`(diagnosis 1 alert "overheat")`)
+  so they can be inspected with `find_facts("diagnosis")` from Rust.
+  Asserting template facts with named slots from a rule's RHS isn't
+  currently supported by ferric's evaluator — see §3 for the limitation.
+
+An earlier version of this example split normalization and diagnosis across
+modules. That shape currently misses the second phase because `NORMALIZE`
+modifies the facts that `DIAGNOSE` should consume. Keeping the chain in one
+module and using salience for phase order is the reliable pattern today.
 
 ---
 
@@ -783,8 +806,8 @@ A non-exhaustive list worth internalizing:
   encode precedence with salience or focus if order matters.
 - **Prefer `find_facts` and `facts()` to `printout` for machine output.**
   Printouts are strings; facts have types.
-- **`reset()` does not clear captured output or action diagnostics.**
-  Clear those explicitly at the boundaries of a decision.
+- **`run`, `step`, and `reset` clear action diagnostics.** Inspect them
+  before the next engine call.
 - **Templates are module-scoped.** Export them from the module that owns
   the shape; import them from modules that need them.
 - **Symbols are interned per-engine.** Use `engine.symbol_value("foo")`

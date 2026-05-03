@@ -161,6 +161,18 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: cargo test -p ferric --test clips_compat
 
+  users-guide-examples:
+    name: Users Guide Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: just check-examples
+      - run: just check-examples-sync
+
   bench-smoke:
     name: Bench Smoke
     runs-on: ubuntu-latest

@@ -1,0 +1,15 @@
+[package]
+name = "users-guide-09-driving-from-rust"
+description = "Users-guide example: a Classifier that drives an engine per request."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ferric = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

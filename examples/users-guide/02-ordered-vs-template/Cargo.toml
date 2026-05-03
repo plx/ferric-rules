@@ -1,0 +1,15 @@
+[package]
+name = "users-guide-02-ordered-vs-template"
+description = "Users-guide example: ordered facts vs. template facts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ferric = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
