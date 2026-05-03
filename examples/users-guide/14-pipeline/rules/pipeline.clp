@@ -2,8 +2,8 @@
 ;;; A worked example pulling together the moving parts: templates
 ;;; for the input shape, a deffunction helper, a defglobal tuning
 ;;; knob, and salience-ordered rule phases (normalize → diagnose).
-;;; Single-module to keep within ferric's current limits on
-;;; cross-module rule chaining.
+;;; The phases stay in one module because normalize modifies facts that
+;;; diagnose consumes.
 ;;; ============================================================
 
 (defglobal ?*scale* = 1.0)

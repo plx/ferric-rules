@@ -20,10 +20,7 @@ What it shows:
 - Diagnoses come out as ordered facts so the host can read them via
   `find_facts("diagnosis")`.
 
-> **Note:** the original prose for this section described an architecture
-> where `NORMALIZE` and `DIAGNOSE` were separate modules and `MAIN::go`
-> pushed them onto the focus stack. ferric does not currently re-evaluate
-> a module's agenda for facts created by rules in another module, so the
-> focus-stack version of the example would not chain. Salience-ordered
-> phases inside a single module produce the same end result and work
-> reliably today.
+> **Note:** an earlier version split `NORMALIZE` and `DIAGNOSE` into separate
+> modules. That shape currently misses the second phase because `NORMALIZE`
+> modifies the facts that `DIAGNOSE` should consume. Salience-ordered phases
+> inside one module produce the same result and work reliably today.

@@ -7,17 +7,16 @@
 //! Each fenced code block in the guide may be tagged with an HTML comment
 //! immediately preceding it:
 //!
-//! ```text
+//! ````text
 //! <!-- example: 01-minimal-embedding/src/main.rs -->
 //! ```rust
 //! fn main() { /* ... */ }
 //! ```
-//! ```
+//! ````
 //!
 //! The marker is interpreted as a path relative to `examples/users-guide/`.
-//! The block's content is normalized (lines trimmed of trailing whitespace,
-//! leading common indentation removed, blank lines preserved) and then we
-//! verify the same normalized form appears as a substring in the named file.
+//! The block's content is normalized by trimming each line and dropping blank
+//! lines; the same normalized form must appear as a substring in the named file.
 //!
 //! Untagged blocks are ignored, so explanatory snippets without a backing
 //! example don't break the build.

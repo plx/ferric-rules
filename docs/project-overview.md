@@ -70,9 +70,9 @@ Engine, loader, execution loop, evaluator, modules, I/O.
   input buffers.
 - `config.rs` — `RunLimit`, engine configuration.
 - `qualified_name.rs` — runtime-side module-qualified resolution.
-- `serialization.rs` (feature `serde`) — `EngineSnapshotRef`/`Owned`, 8-byte
-  header (`FRSE` + LE u32), bincode payload, ExternalAddress pre-flight
-  rejection.
+- `serialization.rs` (feature `serde`) — `EngineSnapshotRef`/`Owned`,
+  bincode/JSON/CBOR/MessagePack/Postcard payloads, ExternalAddress
+  pre-flight rejection.
 - `integration_tests.rs`, `phase{2,3,4}_integration_tests.rs` — in-crate
   integration test modules.
 - `test_helpers.rs`, `tracing_support.rs`.
