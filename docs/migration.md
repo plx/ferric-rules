@@ -111,17 +111,17 @@ This matches CLIPS semantics, but is a common source of bugs when migrating.
 Use `=` for numeric comparisons and `eq` when you need exact type+value matching
 (e.g., comparing symbols or strings).
 
-## Step 6: Move Side Effects Out of Functions
+## Step 6: Move Fact Mutation Out of Functions
 
-In Ferric, `deffunction` and `defmethod` bodies are **pure expressions**. They
-cannot execute side-effect actions like `assert`, `retract`, or `printout`
-directly. If your CLIPS code uses side effects inside functions, move them to
+In Ferric, `deffunction` and `defmethod` bodies are evaluator expressions, not
+full RHS action lists. They can call expression functions such as `str-cat`,
+`format`, and `printout`, but fact mutation and agenda/focus control belong in
 the calling rule's RHS:
 
 ```clp
-;; CLIPS (side effect inside deffunction)
-(deffunction log-and-double (?x)
-    (printout t "doubling " ?x crlf)
+;; CLIPS (fact mutation inside deffunction)
+(deffunction record-and-double (?x)
+    (assert (saw ?x))
     (* ?x 2))
 
 ;; Ferric: split into expression + RHS action
@@ -130,7 +130,7 @@ the calling rule's RHS:
 (defrule compute
     (value ?x)
     =>
-    (printout t "doubling " ?x crlf)
+    (assert (saw ?x))
     (printout t (double ?x) crlf))
 ```
 
@@ -179,10 +179,10 @@ contract.
 | `=` vs `eq` | `=` is numeric (coerces types); `eq` is value+type sensitive |
 | `format` writes nowhere | `format` returns a string; use `(printout t (format nil ...) crlf)` |
 | `sub-string` byte indices | Byte-based, not codepoint-based; identical for ASCII |
-| Pure function bodies | `deffunction`/`defmethod` bodies cannot call `assert`, `retract`, `printout` |
+| Function bodies are evaluator expressions | Put fact mutation and agenda/focus control in rule RHS code |
 | `run` from RHS is a no-op | `(run)` inside a rule action does nothing |
 | `reset`/`clear` are deferred | Flag is set and checked after the current action sequence completes |
-| No `if`/`then`/`else` | Use separate rules with `(test ...)` CEs instead |
+| LHS guards belong in patterns/tests | Use RHS `if/then/else` for action control; use `(test ...)` CEs for match-time guards |
 | Activation order | Total order within a run, but not reproducible across runs |
 
 ---
@@ -194,10 +194,10 @@ contract.
 | `defrule` | Supported |
 | `deftemplate` | Supported |
 | `deffacts` | Supported |
-| `deffunction` | Supported (pure expressions only) |
+| `deffunction` | Supported (evaluator expressions; no fact mutation/control actions) |
 | `defglobal` | Supported |
 | `defmodule` | Supported |
-| `defgeneric` / `defmethod` | Supported (pure expressions only) |
+| `defgeneric` / `defmethod` | Supported (evaluator expressions; no fact mutation/control actions) |
 | `assert` / `retract` / `modify` / `duplicate` | Supported |
 | `printout` / `format` / `read` / `readline` | Supported (format is expression-only) |
 | `not` / `exists` / `forall` / `test` | Supported (single-level nesting) |

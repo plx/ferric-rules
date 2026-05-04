@@ -1,0 +1,12 @@
+set quiet
+
+pkg := "users-guide-08-modules-and-focus"
+
+default:
+    @just --list
+
+build-example:
+    cargo build -p {{pkg}}
+
+check-example:
+    cargo run -p {{pkg}} --quiet

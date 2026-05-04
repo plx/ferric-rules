@@ -1,0 +1,12 @@
+set quiet
+
+pkg := "users-guide-03-salience-and-guards"
+
+default:
+    @just --list
+
+build-example:
+    cargo build -p {{pkg}}
+
+check-example:
+    cargo run -p {{pkg}} --quiet

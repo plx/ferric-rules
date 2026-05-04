@@ -6,7 +6,7 @@ benches, and a large compatibility test corpus.
 
 This document is a **detailed table of contents**: it points at what exists and
 what it contains, not how to use it. Per-area reference docs belong under
-`docs/` and `documents/`.
+`docs/`.
 
 ---
 
@@ -68,11 +68,11 @@ Engine, loader, execution loop, evaluator, modules, I/O.
 - `modules.rs` — module registry, focus stack, cross-module visibility.
 - `router.rs` — `OutputRouter`, per-channel output capture, `read`/`readline`
   input buffers.
-- `config.rs` — `RunLimit`, engine configuration.
+- `config.rs` — `EngineConfig` and encoding/strategy/call-depth settings.
 - `qualified_name.rs` — runtime-side module-qualified resolution.
-- `serialization.rs` (feature `serde`) — `EngineSnapshotRef`/`Owned`, 8-byte
-  header (`FRSE` + LE u32), bincode payload, ExternalAddress pre-flight
-  rejection.
+- `serialization.rs` (feature `serde`) — `EngineSnapshotRef`/`Owned`,
+  bincode/JSON/CBOR/MessagePack/Postcard payloads, ExternalAddress
+  pre-flight rejection.
 - `integration_tests.rs`, `phase{2,3,4}_integration_tests.rs` — in-crate
   integration test modules.
 - `test_helpers.rs`, `tracing_support.rs`.
@@ -155,7 +155,7 @@ tests). Single `main.rs`.
   tests, stress/race targets (`test-go-stress`).
 - `CI_POLICY.md` — binding CI rules.
 
-Planned bindings (not present): C++, Swift (see `documents/ProspectiveSwiftWrapperAPI.md`).
+Planned bindings (not present): C++, Swift.
 
 ---
 
@@ -229,6 +229,8 @@ thresholds). Scaling regression: `just scaling-check` runs facade-crate
 
 ### `docs/` (user/reader facing)
 
+- `users-guide.md` — embedding-focused walkthrough from "hello world" to
+  multi-module pipelines.
 - `compatibility.md` — CLIPS compatibility matrix, by Basic Programming Guide
   section.
 - `migration.md` — CLIPS → ferric migration guide.
@@ -237,32 +239,11 @@ thresholds). Scaling regression: `just scaling-check` runs facade-crate
 - `phase6-baseline.md` — historic baseline snapshot.
 - `project-overview.md` — **this file**.
 
-### `documents/` (design/plans, developer-facing)
-
-- `FerricImplementationPlan.md` — master plan.
-- `CFFIExpansionPlan.md`, `PythonBindingsPlan.md`, `ProspectiveSwiftWrapperAPI.md`
-  — binding design.
-- `DataStructureConsiderations.md`, `ReleaseProfileOptimization.md` —
-  architectural notes.
-- `plans/phases/001`–`007/` — per-phase `Plan.md`, `Progress.txt`,
-  `Notes.md`, `passes/`, `Remediation.md`.
-- `plans/future/` — e.g. `2026-03-09-evaluator-recursion-hardening-plan.md`,
-  `2026-03-09-tracing-validation-and-coverage-plan.md`.
-- `compatibility/` — per-ticket compatibility worklog (DONE-001..215,
-  BLOCKED-211/214/216, `SESSION-MEMO.md`).
-- `reference/CLIPSContainerHarness.md`.
-- `future/` — `Batch-Mode-Prerequisites.md`, `CSP-Rules-Integration-Test.md`.
-
 ### Repo-root docs
 
 - `README.md` — user intro + engagement-rule walkthrough.
 - `AGENTS.md` / `CLAUDE.md` — agent guidelines (`CLAUDE.md` aliases
   `AGENTS.md`).
-- `COMPATIBILITY_ROADMAP.md` — active compatibility roadmap.
-- `SESSION-WORK-MEMO.md` — rolling session notes.
-- `GO_BINDINGS_DUE_DILIGENCE.md`, `PYTHON_BINDING_REMEDIATION_REPORT.md`,
-  `PYB-001_DROP_THREAD_AFFINITY_FOLLOWUP.md`,
-  `PROPERTY_TEST_COVERAGE_PLAN.md` — focused audits.
 
 ---
 

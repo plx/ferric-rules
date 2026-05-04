@@ -9,6 +9,8 @@ members = [
     "crates/ferric-parser",
     "crates/ferric-runtime",
     "crates/ferric-python",
+    "examples/users-guide/*",
+    "tools/users-guide-sync",
 ]
 resolver = "2"
 
@@ -22,6 +24,7 @@ repository = "https://github.com/prb/ferric-rules"
 [workspace.dependencies]
 # Error handling
 thiserror = "2"
+anyhow = "1"
 
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }

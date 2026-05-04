@@ -1,0 +1,15 @@
+[package]
+name = "users-guide-13-snapshots"
+description = "Users-guide example: snapshot a configured engine and thaw it later."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ferric = { workspace = true, features = ["serde"] }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "users-guide-03-salience-and-guards"
+description = "Users-guide example: salience + guard facts for priority ordering."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ferric = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

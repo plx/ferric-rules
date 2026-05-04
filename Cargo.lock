@@ -1585,6 +1585,124 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
 
 [[package]]
+name = "users-guide-01-minimal-embedding"
+version = "0.1.0"
+dependencies = [
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-02-ordered-vs-template"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-03-salience-and-guards"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-04-pattern-menagerie"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-05-rhs-actions"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-06-functions-and-generics"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-07-globals"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-08-modules-and-focus"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-09-driving-from-rust"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-10-io-channels"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-11-configuration"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-12-error-handling"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-13-snapshots"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-14-pipeline"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ferric",
+]
+
+[[package]]
+name = "users-guide-sync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

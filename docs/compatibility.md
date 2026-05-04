@@ -391,9 +391,9 @@ Ferric supports user-defined functions via `deffunction`.
 ### Evaluation
 
 Function bodies are expression sequences. The value of the last expression is
-the return value. Functions are pure expressions -- they cannot execute
-side-effect actions like `assert`, `retract`, or `printout` directly. Use
-functions to compute values and perform side effects in the calling rule's RHS.
+the return value. Bodies are evaluator expressions, not full RHS action lists:
+expression functions such as `str-cat`, `format`, and `printout` are available,
+but fact mutation and agenda/focus control belong in the calling rule's RHS.
 
 ### Module Scoping
 
@@ -480,9 +480,8 @@ is a compile error with a diagnostic message.
 
 ### Method Bodies
 
-Method bodies are pure expressions (same as deffunction bodies). They cannot
-execute side-effect actions directly. Use the calling rule's RHS for
-`printout`, `assert`, etc.
+Method bodies use the same evaluator expression model as deffunction bodies.
+Use the calling rule's RHS for fact mutation and agenda/focus control.
 
 ---
 

@@ -129,13 +129,45 @@ py-bindings-test:
 # ── Composite checks ────────────────────────────────────────────────────────
 
 # Full preflight: format check, clippy, all tests, cargo check, Python checks, Go lint
-check: fmt-check clippy test cargo-check py-fmt-check py-lint py-test py-bindings-test go-lint ts-lint
+check: fmt-check clippy test cargo-check check-examples py-fmt-check py-lint py-test py-bindings-test go-lint ts-lint
 
 # Same as `check` — alias for the preflight script
 preflight: check
 
 # PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks + Go lint
-preflight-pr: fmt clippy test cargo-check py-fmt py-lint-fix py-test py-bindings-test go-lint ts-lint
+preflight-pr: fmt clippy test cargo-check check-examples py-fmt py-lint-fix py-test py-bindings-test go-lint ts-lint
+
+# ── User-guide examples ─────────────────────────────────────────────────────
+
+# Build every example under examples/users-guide/.
+build-examples:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for dir in examples/users-guide/*/; do
+        [[ -f "$dir/Cargo.toml" ]] || continue
+        pkg=$(awk -F '"' '/^name *=/ { print $2; exit }' "$dir/Cargo.toml")
+        cargo build -p "$pkg"
+    done
+
+# Build and run every example under examples/users-guide/.
+check-examples:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for dir in examples/users-guide/*/; do
+        [[ -f "$dir/Cargo.toml" ]] || continue
+        pkg=$(awk -F '"' '/^name *=/ { print $2; exit }' "$dir/Cargo.toml")
+        printf "running %s ... " "$pkg"
+        if cargo run --quiet -p "$pkg" >/dev/null; then
+            echo OK
+        else
+            echo FAIL
+            exit 1
+        fi
+    done
+
+# Verify the inlined snippets in docs/users-guide.md match the example projects.
+check-examples-sync:
+    cargo run --quiet -p users-guide-sync -- check
 
 # ── Tracing / profiling ────────────────────────────────────────────────────
 

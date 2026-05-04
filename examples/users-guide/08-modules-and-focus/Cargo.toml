@@ -1,0 +1,15 @@
+[package]
+name = "users-guide-08-modules-and-focus"
+description = "Users-guide example: modules and the focus stack."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ferric = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
