@@ -173,6 +173,19 @@ jobs:
       - run: just check-examples
       - run: just check-examples-sync
 
+  license-notices:
+    name: License Notices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install cargo-about
+        run: cargo install --locked cargo-about --version 0.9.0 --features cli --force
+      - run: just license-notices-check
+
   bench-smoke:
     name: Bench Smoke
     runs-on: ubuntu-latest
