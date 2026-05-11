@@ -20,14 +20,14 @@ EOF
 
 ensure_cargo_about() {
     if ! cargo about --version >/dev/null 2>&1; then
-        echo "cargo-about is required. Install it with: cargo install --locked cargo-about --version ${CARGO_ABOUT_VERSION}" >&2
+        echo "cargo-about is required. Install it with: cargo install --locked cargo-about --version ${CARGO_ABOUT_VERSION} --features cli" >&2
         exit 1
     fi
 
     actual_version="$(cargo about --version | awk '{print $2}')"
     if [[ "${actual_version}" != "${CARGO_ABOUT_VERSION}" ]]; then
         echo "cargo-about ${CARGO_ABOUT_VERSION} is required; found ${actual_version}." >&2
-        echo "Install it with: cargo install --locked cargo-about --version ${CARGO_ABOUT_VERSION} --force" >&2
+        echo "Install it with: cargo install --locked cargo-about --version ${CARGO_ABOUT_VERSION} --features cli --force" >&2
         exit 1
     fi
 }

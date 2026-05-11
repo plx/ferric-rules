@@ -183,7 +183,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install cargo-about
-        run: cargo install --locked cargo-about --version 0.9.0 --force
+        run: cargo install --locked cargo-about --version 0.9.0 --features cli --force
       - run: just license-notices-check
 
   bench-smoke:
