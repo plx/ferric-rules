@@ -30,11 +30,22 @@ struct PinnedInner {
     tx: Mutex<Option<SyncSender<Request>>>,
     /// Worker join handle. `None` after `close()` joins it.
     worker: Mutex<Option<JoinHandle<()>>>,
-    /// Cancellation flag shared with the worker's `run_with_cancel` calls.
-    /// `PinnedEngine::halt` flips this from `false` to `true`.
-    cancel: Arc<AtomicBool>,
+    /// Cancellation state shared with worker-side `run_with_cancel` calls.
+    cancel: Arc<CancelState>,
     /// Fast-path "is closed" without touching the sender mutex.
     closed: AtomicBool,
+}
+
+/// Coordinates `halt()` with the worker's currently active or next-dispatched
+/// run request.
+struct CancelState {
+    active_run: Mutex<Option<Arc<AtomicBool>>>,
+    pending_halt: AtomicBool,
+}
+
+struct ActiveRunGuard<'a> {
+    state: &'a CancelState,
+    token: Arc<AtomicBool>,
 }
 
 impl PinnedEngine {
@@ -46,7 +57,7 @@ impl PinnedEngine {
         let resolved = ResolvedOptions::from_user(options);
         let (tx, rx) = sync_channel::<Request>(resolved.queue_capacity);
         let (init_tx, init_rx) = sync_channel::<Result<(), PinnedError>>(1);
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(CancelState::new());
 
         let thread_name = resolved.thread_name.clone();
         let worker_opts = resolved.clone();
@@ -93,13 +104,10 @@ impl PinnedEngine {
         self.inner.closed.load(Ordering::Acquire)
     }
 
-    /// Request that the in-flight (or next-dispatched) `run` exit at the next
+    /// Request that the in-flight, or next-dispatched, `run` exit at the next
     /// cancel-chunk boundary.
-    ///
-    /// Sets the shared cancellation flag. The flag persists until cleared by
-    /// the next [`Self::run`] invocation; calls between runs accumulate.
     pub fn halt(&self) {
-        self.inner.cancel.store(true, Ordering::Release);
+        self.inner.cancel.halt();
     }
 
     /// Submit a closure to run on the worker thread with mutable engine access.
@@ -144,13 +152,11 @@ impl PinnedEngine {
     /// rule-side `(halt)` is invoked, or [`Self::halt`] is called from another
     /// thread.
     pub fn run(&self, limit: RunLimit) -> Result<RunResult, PinnedError> {
-        // Clear the cancel flag synchronously so a stale halt from a previous
-        // run does not preempt this one. Halts requested AFTER this point still
-        // take effect through `run_with_cancel`'s per-chunk check.
-        let cancel = self.inner.cancel.clone();
-        cancel.store(false, Ordering::Release);
+        let cancel_state = self.inner.cancel.clone();
+        let cancel_token = Arc::new(AtomicBool::new(false));
         self.with_engine(move |engine| {
-            worker::run_with_cancel(engine, limit, &cancel).map_err(PinnedError::from)
+            let _guard = cancel_state.activate(cancel_token.clone());
+            worker::run_with_cancel(engine, limit, &cancel_token).map_err(PinnedError::from)
         })
     }
 
@@ -189,11 +195,12 @@ impl PinnedEngine {
     where
         F: FnOnce(Result<RunResult, PinnedError>) + Send + 'static,
     {
-        let cancel = self.inner.cancel.clone();
-        cancel.store(false, Ordering::Release);
+        let cancel_state = self.inner.cancel.clone();
+        let cancel_token = Arc::new(AtomicBool::new(false));
         self.submit(move |engine| {
-            let result =
-                crate::worker::run_with_cancel(engine, limit, &cancel).map_err(PinnedError::from);
+            let _guard = cancel_state.activate(cancel_token.clone());
+            let result = crate::worker::run_with_cancel(engine, limit, &cancel_token)
+                .map_err(PinnedError::from);
             completion(result);
         })
     }
@@ -220,6 +227,55 @@ impl PinnedEngine {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(PinnedError::QueueFull),
             Err(TrySendError::Disconnected(_)) => Err(PinnedError::DispatchFailed),
+        }
+    }
+}
+
+impl CancelState {
+    fn new() -> Self {
+        Self {
+            active_run: Mutex::new(None),
+            pending_halt: AtomicBool::new(false),
+        }
+    }
+
+    fn halt(&self) {
+        let active = self
+            .active_run
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(token) = active.as_ref() {
+            token.store(true, Ordering::Release);
+        } else {
+            self.pending_halt.store(true, Ordering::Release);
+        }
+    }
+
+    fn activate(&self, token: Arc<AtomicBool>) -> ActiveRunGuard<'_> {
+        let mut active = self
+            .active_run
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.pending_halt.swap(false, Ordering::AcqRel) {
+            token.store(true, Ordering::Release);
+        }
+        *active = Some(token.clone());
+        ActiveRunGuard { state: self, token }
+    }
+}
+
+impl Drop for ActiveRunGuard<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .state
+            .active_run
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .as_ref()
+            .is_some_and(|token| Arc::ptr_eq(token, &self.token))
+        {
+            *active = None;
         }
     }
 }

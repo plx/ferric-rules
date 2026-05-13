@@ -1,6 +1,6 @@
 //! `halt` interrupts an in-flight `run` within a bounded number of firings.
 
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -43,42 +43,66 @@ fn halt_before_run_takes_effect_immediately() {
     engine.load_str(CYCLING_RULES).unwrap();
     engine.reset().unwrap();
 
-    // Halt before run. PinnedEngine::run clears the cancel flag before
-    // dispatching, so this halt is NOT honored by the next run (it's a no-op).
-    // Verify the next run still completes some firings rather than exiting at 0.
+    // Halt before run applies to the next-dispatched run.
     engine.halt();
 
     let result = engine.run(RunLimit::Count(5)).unwrap();
-    assert!(
-        matches!(
-            result.halt_reason,
-            HaltReason::LimitReached | HaltReason::AgendaEmpty
-        ),
-        "pre-run halt should be cleared; got {:?}",
-        result.halt_reason
-    );
-    assert_eq!(result.rules_fired, 5);
+    assert_eq!(result.halt_reason, HaltReason::HaltRequested);
+    assert_eq!(result.rules_fired, 0);
 }
 
 #[test]
 fn halt_after_submit_but_before_dispatch_is_honored() {
-    // This tests the narrower window where halt() is called AFTER the run
-    // closure is enqueued but BEFORE the worker picks it up. In practice this
-    // is the same as "halt during run" for a busy worker — we just demonstrate
-    // that a halt issued from outside the worker thread eventually surfaces.
     let engine = Arc::new(PinnedEngine::new(PinnedEngineOptions::default()).unwrap());
     engine.load_str(CYCLING_RULES).unwrap();
     engine.reset().unwrap();
 
-    let halt_engine = engine.clone();
-    let h = thread::spawn(move || {
-        halt_engine.halt();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let blocker_engine = engine.clone();
+    let blocker = thread::spawn(move || {
+        blocker_engine
+            .with_engine(move |_engine| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
     });
-    h.join().unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
 
-    // Now run — halt set, but PinnedEngine::run clears it. So this run will
-    // complete normally up to the limit. This documents (not enforces) the
-    // semantic that "halt clears at run() entry."
-    let result = engine.run(RunLimit::Count(3)).unwrap();
-    assert_eq!(result.rules_fired, 3);
+    let (first_tx, first_rx) = mpsc::channel();
+    engine
+        .run_async(RunLimit::Count(10), move |result| {
+            first_tx.send(result).unwrap();
+        })
+        .unwrap();
+
+    // This halt happens after the first run is accepted but before the worker
+    // dispatches it.
+    engine.halt();
+
+    let (second_tx, second_rx) = mpsc::channel();
+    engine
+        .run_async(RunLimit::Count(1), move |result| {
+            second_tx.send(result).unwrap();
+        })
+        .unwrap();
+
+    release_tx.send(()).unwrap();
+    blocker.join().unwrap();
+
+    let first = first_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.halt_reason, HaltReason::HaltRequested);
+    assert_eq!(first.rules_fired, 0);
+
+    let second = second_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.halt_reason, HaltReason::LimitReached);
+    assert_eq!(second.rules_fired, 1);
 }
