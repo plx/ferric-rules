@@ -73,7 +73,8 @@
  * - Async entry points (ferric_pinned_engine_run_async,
  *   _load_string_async) return immediately on successful
  *   submission and later invoke the supplied
- *   FerricPinnedCompletionFn with an owned FerricPinnedResult.
+ *   FerricPinnedCompletionFn with an owned FerricPinnedResult
+ *   carrying the echoed request_id.
  *
  * The async completion callback runs ON THE WORKER THREAD.
  * It must be transport-only: resume a continuation, signal an
@@ -329,7 +330,9 @@ typedef struct FerricPinnedEngineOptions {
 } FerricPinnedEngineOptions;
 
 // C completion-callback type. The result handle is non-NULL and owned by
-// the caller; the caller must release it with [`ferric_pinned_result_free`].
+// the caller; the caller can read its echoed request ID with
+// [`ferric_pinned_result_request_id`] and must release it with
+// [`ferric_pinned_result_free`].
 //
 // **Threading contract**: the callback runs on the Rust pinned worker
 // thread. It must be transport-only — resume a continuation, signal an
@@ -1346,7 +1349,8 @@ enum FerricError ferric_pinned_engine_serialize_as(struct FerricPinnedEngine *en
 //
 // `request_id` identifies the pending request for
 // [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
-// pending async requests for this engine.
+// pending async requests for this engine, and is echoed on the completion
+// result handle.
 //
 // # Safety
 //
@@ -1364,7 +1368,8 @@ enum FerricError ferric_pinned_engine_run_async(struct FerricPinnedEngine *engin
 //
 // `request_id` identifies the pending request for
 // [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
-// pending async requests for this engine.
+// pending async requests for this engine, and is echoed on the completion
+// result handle.
 //
 // # Safety
 //
@@ -1384,6 +1389,13 @@ enum FerricError ferric_pinned_engine_load_string_async(struct FerricPinnedEngin
 //
 // - `result` must be a valid handle returned via a completion callback.
 enum FerricError ferric_pinned_result_code(const struct FerricPinnedResult *result);
+
+// Read the result's echoed async request ID. Returns `0` for NULL.
+//
+// # Safety
+//
+// - `result` must be a valid handle returned via a completion callback.
+uint64_t ferric_pinned_result_request_id(const struct FerricPinnedResult *result);
 
 // Read a Run-typed result (`rules_fired` and halt reason).
 //

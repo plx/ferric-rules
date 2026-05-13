@@ -76,7 +76,8 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * - Async entry points (ferric_pinned_engine_run_async,
  *   _load_string_async) return immediately on successful
  *   submission and later invoke the supplied
- *   FerricPinnedCompletionFn with an owned FerricPinnedResult.
+ *   FerricPinnedCompletionFn with an owned FerricPinnedResult
+ *   carrying the echoed request_id.
  *
  * The async completion callback runs ON THE WORKER THREAD.
  * It must be transport-only: resume a continuation, signal an

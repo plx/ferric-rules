@@ -107,6 +107,7 @@ pub struct FerricPinnedEngine {
 /// [`ferric_pinned_result_free`].
 pub struct FerricPinnedResult {
     code: FerricError,
+    request_id: u64,
     payload: PinnedResultPayload,
     message: Option<CString>,
 }
@@ -124,7 +125,9 @@ enum PinnedResultPayload {
 // ---------------------------------------------------------------------------
 
 /// C completion-callback type. The result handle is non-NULL and owned by
-/// the caller; the caller must release it with [`ferric_pinned_result_free`].
+/// the caller; the caller can read its echoed request ID with
+/// [`ferric_pinned_result_request_id`] and must release it with
+/// [`ferric_pinned_result_free`].
 ///
 /// **Threading contract**: the callback runs on the Rust pinned worker
 /// thread. It must be transport-only — resume a continuation, signal an
@@ -583,7 +586,8 @@ pub unsafe extern "C" fn ferric_pinned_engine_serialize_as(
 ///
 /// `request_id` identifies the pending request for
 /// [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
-/// pending async requests for this engine.
+/// pending async requests for this engine, and is echoed on the completion
+/// result handle.
 ///
 /// # Safety
 ///
@@ -618,7 +622,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_run_async(
         .pinned
         .run_async_cancelable(run_limit, pre_dispatch, move |result| {
             unregister_async_request(&registry, request_id);
-            let pinned_result = build_run_result(&result);
+            let pinned_result = build_run_result(request_id, &result);
             let code = pinned_result.code;
             callback.fire(code, Box::new(pinned_result));
         });
@@ -636,7 +640,8 @@ pub unsafe extern "C" fn ferric_pinned_engine_run_async(
 ///
 /// `request_id` identifies the pending request for
 /// [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
-/// pending async requests for this engine.
+/// pending async requests for this engine, and is echoed on the completion
+/// result handle.
 ///
 /// # Safety
 ///
@@ -683,6 +688,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_load_string_async(
                     code,
                     Box::new(FerricPinnedResult {
                         code,
+                        request_id,
                         payload: PinnedResultPayload::Empty,
                         message: message.and_then(|m| CString::new(m).ok()),
                     }),
@@ -698,10 +704,14 @@ pub unsafe extern "C" fn ferric_pinned_engine_load_string_async(
     }
 }
 
-fn build_run_result(result: &Result<RunResult, PinnedError>) -> FerricPinnedResult {
+fn build_run_result(
+    request_id: u64,
+    result: &Result<RunResult, PinnedError>,
+) -> FerricPinnedResult {
     match result {
         Ok(r) => FerricPinnedResult {
             code: FerricError::Ok,
+            request_id,
             payload: PinnedResultPayload::Run {
                 fired: r.rules_fired as u64,
                 reason: FerricHaltReason::from(match r.halt_reason {
@@ -714,6 +724,7 @@ fn build_run_result(result: &Result<RunResult, PinnedError>) -> FerricPinnedResu
         },
         Err(e) => FerricPinnedResult {
             code: map_pinned_error(e),
+            request_id,
             payload: PinnedResultPayload::Empty,
             message: CString::new(e.to_string()).ok(),
         },
@@ -737,6 +748,20 @@ pub unsafe extern "C" fn ferric_pinned_result_code(
         return FerricError::NullPointer;
     }
     (*result).code
+}
+
+/// Read the result's echoed async request ID. Returns `0` for NULL.
+///
+/// # Safety
+///
+/// - `result` must be a valid handle returned via a completion callback.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_pinned_result_request_id(result: *const FerricPinnedResult) -> u64 {
+    if result.is_null() {
+        set_global_error("result pointer is null".to_string());
+        return 0;
+    }
+    (*result).request_id
 }
 
 /// Read a Run-typed result (`rules_fired` and halt reason).

@@ -14,8 +14,8 @@ use crate::pinned::{
     ferric_pinned_engine_load_string, ferric_pinned_engine_load_string_async,
     ferric_pinned_engine_new, ferric_pinned_engine_reset, ferric_pinned_engine_run,
     ferric_pinned_engine_run_async, ferric_pinned_result_code, ferric_pinned_result_error_message,
-    ferric_pinned_result_free, ferric_pinned_result_get_run, FerricPinnedAutoreleasePolicy,
-    FerricPinnedEngineOptions, FerricPinnedResult,
+    ferric_pinned_result_free, ferric_pinned_result_get_run, ferric_pinned_result_request_id,
+    FerricPinnedAutoreleasePolicy, FerricPinnedEngineOptions, FerricPinnedResult,
 };
 use crate::types::{FerricConfig, FerricHaltReason};
 
@@ -267,6 +267,7 @@ fn run_async_invokes_completion_with_result_handle() {
         assert!(!result.is_null());
 
         assert_eq!(ferric_pinned_result_code(result), FerricError::Ok);
+        assert_eq!(ferric_pinned_result_request_id(result), 42);
         let mut fired = 0;
         let mut reason = FerricHaltReason::AgendaEmpty;
         assert_eq!(
@@ -309,6 +310,7 @@ fn run_async_halt_delivers_halt_requested_in_callback() {
             .wait_one(Duration::from_secs(5))
             .expect("completion never fired");
         assert_eq!(code, FerricError::Ok);
+        assert_eq!(ferric_pinned_result_request_id(result), 7);
         let mut fired = 0;
         let mut reason = FerricHaltReason::AgendaEmpty;
         assert_eq!(
@@ -363,6 +365,7 @@ fn cancel_request_before_dispatch_delivers_pinned_canceled() {
             assert!(!result.is_null());
             match code {
                 FerricError::Ok => {
+                    assert_eq!(ferric_pinned_result_request_id(result), 101);
                     let mut fired = 0;
                     let mut reason = FerricHaltReason::AgendaEmpty;
                     assert_eq!(
@@ -373,6 +376,7 @@ fn cancel_request_before_dispatch_delivers_pinned_canceled() {
                     saw_halted_run = true;
                 }
                 FerricError::PinnedCanceled => {
+                    assert_eq!(ferric_pinned_result_request_id(result), 202);
                     assert_eq!(
                         ferric_pinned_result_code(result),
                         FerricError::PinnedCanceled
@@ -425,6 +429,7 @@ fn load_string_async_invokes_completion() {
             .expect("completion never fired");
         assert_eq!(code, FerricError::Ok);
         assert_eq!(ferric_pinned_result_code(result), FerricError::Ok);
+        assert_eq!(ferric_pinned_result_request_id(result), 99);
         ferric_pinned_result_free(result);
         ferric_pinned_engine_free(engine);
     }
