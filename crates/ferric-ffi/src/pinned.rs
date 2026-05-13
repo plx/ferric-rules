@@ -19,10 +19,10 @@
 //! transport-only — it must not perform long work or call back into
 //! the same pinned engine.
 
-use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
+use std::sync::{Mutex, MutexGuard};
 
 use ferric_pinned::{
     AutoreleasePolicy, HaltReason, PinnedEngine, PinnedEngineOptions, PinnedError, RunLimit,
@@ -97,8 +97,8 @@ pub struct FerricPinnedEngineOptions {
 /// the FFI handle is the unique owner of its worker thread.
 pub struct FerricPinnedEngine {
     pinned: PinnedEngine,
-    error_state: RefCell<EngineErrorState>,
-    error_cstring: RefCell<Option<CString>>,
+    error_state: Mutex<EngineErrorState>,
+    error_cstring: Mutex<Option<CString>>,
 }
 
 /// Opaque handle to an async-operation result. Caller must free with
@@ -180,10 +180,16 @@ unsafe fn c_str_to_string(ptr: *const c_char, label: &str) -> Result<String, Fer
         })
 }
 
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn record_pinned_error(handle: &FerricPinnedEngine, err: &PinnedError) -> FerricError {
     let code = map_pinned_error(err);
     let message = err.to_string();
-    handle.error_state.borrow_mut().set(message.clone());
+    lock_unpoisoned(&handle.error_state).set(message.clone());
     set_global_error(message);
     code
 }
@@ -255,8 +261,8 @@ pub unsafe extern "C" fn ferric_pinned_engine_new(
     match PinnedEngine::new(pinned_opts) {
         Ok(pinned) => Box::into_raw(Box::new(FerricPinnedEngine {
             pinned,
-            error_state: RefCell::new(EngineErrorState::new()),
-            error_cstring: RefCell::new(None),
+            error_state: Mutex::new(EngineErrorState::new()),
+            error_cstring: Mutex::new(None),
         })),
         Err(err) => {
             set_global_error(err.to_string());
@@ -341,10 +347,13 @@ pub unsafe extern "C" fn ferric_pinned_engine_last_error(
     let Ok(handle) = validate_engine_ptr(engine) else {
         return ptr::null();
     };
-    match handle.error_state.borrow().message() {
+    let message = lock_unpoisoned(&handle.error_state)
+        .message()
+        .map(str::to_owned);
+    match message {
         Some(msg) => {
             let cstring = CString::new(msg).unwrap_or_default();
-            let mut slot = handle.error_cstring.borrow_mut();
+            let mut slot = lock_unpoisoned(&handle.error_cstring);
             *slot = Some(cstring);
             slot.as_ref().map_or(ptr::null(), |cs| cs.as_ptr())
         }

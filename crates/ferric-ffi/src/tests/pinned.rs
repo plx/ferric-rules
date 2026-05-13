@@ -4,7 +4,7 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::ptr;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Barrier, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::error::FerricError;
@@ -132,6 +132,42 @@ fn ops_after_close_return_pinned_closed() {
         // last_error_message should report the closed error.
         let msg_ptr = ferric_pinned_engine_last_error(engine);
         assert!(!msg_ptr.is_null());
+
+        ferric_pinned_engine_free(engine);
+    }
+}
+
+#[test]
+fn closed_error_state_is_safe_under_concurrent_access() {
+    unsafe {
+        let engine = ferric_pinned_engine_new(&default_options());
+        assert_eq!(ferric_pinned_engine_close(engine), FerricError::Ok);
+
+        let engine_addr = engine as usize;
+        let thread_count = 12_usize;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let handles: Vec<_> = (0..thread_count)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let engine = engine_addr as *mut crate::pinned::FerricPinnedEngine;
+                    barrier.wait();
+                    for _ in 0..100 {
+                        let mut fired = 0;
+                        let mut reason = FerricHaltReason::AgendaEmpty;
+                        assert_eq!(
+                            ferric_pinned_engine_run(engine, -1, &mut fired, &mut reason),
+                            FerricError::PinnedClosed
+                        );
+                        let _ = ferric_pinned_engine_last_error(engine);
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
 
         ferric_pinned_engine_free(engine);
     }
