@@ -9,13 +9,13 @@ use std::time::Duration;
 
 use crate::error::FerricError;
 use crate::pinned::{
-    ferric_pinned_engine_close, ferric_pinned_engine_free, ferric_pinned_engine_halt,
-    ferric_pinned_engine_is_closed, ferric_pinned_engine_last_error,
+    ferric_pinned_engine_cancel_request, ferric_pinned_engine_close, ferric_pinned_engine_free,
+    ferric_pinned_engine_halt, ferric_pinned_engine_is_closed, ferric_pinned_engine_last_error,
     ferric_pinned_engine_load_string, ferric_pinned_engine_load_string_async,
     ferric_pinned_engine_new, ferric_pinned_engine_reset, ferric_pinned_engine_run,
-    ferric_pinned_engine_run_async, ferric_pinned_result_code, ferric_pinned_result_free,
-    ferric_pinned_result_get_run, FerricPinnedAutoreleasePolicy, FerricPinnedEngineOptions,
-    FerricPinnedResult,
+    ferric_pinned_engine_run_async, ferric_pinned_result_code, ferric_pinned_result_error_message,
+    ferric_pinned_result_free, ferric_pinned_result_get_run, FerricPinnedAutoreleasePolicy,
+    FerricPinnedEngineOptions, FerricPinnedResult,
 };
 use crate::types::{FerricConfig, FerricHaltReason};
 
@@ -318,6 +318,87 @@ fn run_async_halt_delivers_halt_requested_in_callback() {
         assert_eq!(reason as u32, FerricHaltReason::HaltRequested as u32);
         assert!(fired > 0);
         ferric_pinned_result_free(result);
+        ferric_pinned_engine_free(engine);
+    }
+}
+
+#[test]
+fn cancel_request_before_dispatch_delivers_pinned_canceled() {
+    unsafe {
+        let engine = ferric_pinned_engine_new(&default_options());
+        let source = CString::new(
+            r"(defrule cycle ?f <- (counter ?n) => (retract ?f) (assert (counter (+ ?n 1))))
+              (deffacts initial (counter 0))",
+        )
+        .unwrap();
+        assert_eq!(
+            ferric_pinned_engine_load_string(engine, source.as_ptr()),
+            FerricError::Ok
+        );
+        assert_eq!(ferric_pinned_engine_reset(engine), FerricError::Ok);
+
+        let inbox = CompletionInbox::new();
+        let ctx_ptr = Arc::as_ptr(&inbox).cast::<c_void>().cast_mut();
+
+        assert_eq!(
+            ferric_pinned_engine_run_async(engine, -1, 101, ctx_ptr, Some(record_completion)),
+            FerricError::Ok
+        );
+        assert_eq!(
+            ferric_pinned_engine_run_async(engine, 1, 202, ctx_ptr, Some(record_completion)),
+            FerricError::Ok
+        );
+        assert_eq!(
+            ferric_pinned_engine_cancel_request(engine, 202),
+            FerricError::Ok
+        );
+        assert_eq!(ferric_pinned_engine_halt(engine), FerricError::Ok);
+
+        let mut saw_halted_run = false;
+        let mut saw_canceled_run = false;
+        for _ in 0..2 {
+            let (code, result) = inbox
+                .wait_one(Duration::from_secs(5))
+                .expect("completion never fired");
+            assert!(!result.is_null());
+            match code {
+                FerricError::Ok => {
+                    let mut fired = 0;
+                    let mut reason = FerricHaltReason::AgendaEmpty;
+                    assert_eq!(
+                        ferric_pinned_result_get_run(result, &mut fired, &mut reason),
+                        FerricError::Ok
+                    );
+                    assert_eq!(reason as u32, FerricHaltReason::HaltRequested as u32);
+                    saw_halted_run = true;
+                }
+                FerricError::PinnedCanceled => {
+                    assert_eq!(
+                        ferric_pinned_result_code(result),
+                        FerricError::PinnedCanceled
+                    );
+                    assert!(!ferric_pinned_result_error_message(result).is_null());
+                    saw_canceled_run = true;
+                }
+                other => panic!("unexpected completion code: {other:?}"),
+            }
+            ferric_pinned_result_free(result);
+        }
+
+        assert!(saw_halted_run);
+        assert!(saw_canceled_run);
+        ferric_pinned_engine_free(engine);
+    }
+}
+
+#[test]
+fn cancel_unknown_request_id_returns_not_found() {
+    unsafe {
+        let engine = ferric_pinned_engine_new(&default_options());
+        assert_eq!(
+            ferric_pinned_engine_cancel_request(engine, 404),
+            FerricError::NotFound
+        );
         ferric_pinned_engine_free(engine);
     }
 }

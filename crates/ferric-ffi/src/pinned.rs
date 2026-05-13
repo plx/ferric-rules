@@ -19,14 +19,15 @@
 //! transport-only — it must not perform long work or call back into
 //! the same pinned engine.
 
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use ferric_pinned::{
-    AutoreleasePolicy, HaltReason, PinnedEngine, PinnedEngineOptions, PinnedError, RunLimit,
-    RunResult,
+    AutoreleasePolicy, HaltReason, PinnedEngine, PinnedEngineOptions, PinnedError,
+    PreDispatchCancelToken, RunLimit, RunResult,
 };
 
 use crate::error::{map_pinned_error, set_global_error, EngineErrorState, FerricError};
@@ -99,6 +100,7 @@ pub struct FerricPinnedEngine {
     pinned: PinnedEngine,
     error_state: Mutex<EngineErrorState>,
     error_cstring: Mutex<Option<CString>>,
+    async_requests: Arc<Mutex<HashMap<u64, Arc<PreDispatchCancelToken>>>>,
 }
 
 /// Opaque handle to an async-operation result. Caller must free with
@@ -186,6 +188,29 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn register_async_request(
+    handle: &FerricPinnedEngine,
+    request_id: u64,
+) -> Result<Arc<PreDispatchCancelToken>, FerricError> {
+    let mut requests = lock_unpoisoned(&handle.async_requests);
+    if requests.contains_key(&request_id) {
+        set_global_error(format!(
+            "pinned async request_id {request_id} is already pending"
+        ));
+        return Err(FerricError::InvalidArgument);
+    }
+    let token = Arc::new(PreDispatchCancelToken::new());
+    requests.insert(request_id, token.clone());
+    Ok(token)
+}
+
+fn unregister_async_request(
+    registry: &Arc<Mutex<HashMap<u64, Arc<PreDispatchCancelToken>>>>,
+    request_id: u64,
+) {
+    lock_unpoisoned(registry).remove(&request_id);
+}
+
 fn record_pinned_error(handle: &FerricPinnedEngine, err: &PinnedError) -> FerricError {
     let code = map_pinned_error(err);
     let message = err.to_string();
@@ -263,6 +288,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_new(
             pinned,
             error_state: Mutex::new(EngineErrorState::new()),
             error_cstring: Mutex::new(None),
+            async_requests: Arc::new(Mutex::new(HashMap::new())),
         })),
         Err(err) => {
             set_global_error(err.to_string());
@@ -333,6 +359,43 @@ pub unsafe extern "C" fn ferric_pinned_engine_halt(engine: *mut FerricPinnedEngi
     };
     handle.pinned.halt();
     FerricError::Ok
+}
+
+/// Cancel an accepted async request before the worker starts executing it.
+///
+/// Returns [`FerricError::Ok`] if the request is still pending and will
+/// complete with [`FerricError::PinnedCanceled`]. Returns
+/// [`FerricError::NotFound`] if the request is unknown or has already started.
+///
+/// # Safety
+///
+/// - `engine` must be a valid handle.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_pinned_engine_cancel_request(
+    engine: *mut FerricPinnedEngine,
+    request_id: u64,
+) -> FerricError {
+    let Ok(handle) = validate_engine_ptr(engine) else {
+        return FerricError::NullPointer;
+    };
+    let token = {
+        let requests = lock_unpoisoned(&handle.async_requests);
+        requests.get(&request_id).cloned()
+    };
+    let Some(token) = token else {
+        set_global_error(format!(
+            "pinned async request_id {request_id} is not pending"
+        ));
+        return FerricError::NotFound;
+    };
+    if token.cancel_before_start() {
+        FerricError::Ok
+    } else {
+        set_global_error(format!(
+            "pinned async request_id {request_id} has already started"
+        ));
+        FerricError::NotFound
+    }
 }
 
 /// Retrieve the last per-engine error message as a C string.
@@ -518,8 +581,9 @@ pub unsafe extern "C" fn ferric_pinned_engine_serialize_as(
 /// submission. `completion` fires on the worker thread when the operation
 /// completes (or fails).
 ///
-/// `request_id` is opaque echo data — the FFI does not consume it; the
-/// caller may use it to correlate completions if they wish.
+/// `request_id` identifies the pending request for
+/// [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
+/// pending async requests for this engine.
 ///
 /// # Safety
 ///
@@ -531,7 +595,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_serialize_as(
 pub unsafe extern "C" fn ferric_pinned_engine_run_async(
     engine: *mut FerricPinnedEngine,
     limit: i64,
-    _request_id: u64,
+    request_id: u64,
     context: *mut c_void,
     completion: FerricPinnedCompletionFn,
 ) -> FerricError {
@@ -542,22 +606,37 @@ pub unsafe extern "C" fn ferric_pinned_engine_run_async(
         set_global_error("completion callback is null".to_string());
         return FerricError::InvalidArgument;
     };
+    let pre_dispatch = match register_async_request(handle, request_id) {
+        Ok(token) => token,
+        Err(code) => return code,
+    };
+    let registry = handle.async_requests.clone();
     let callback = CompletionCallback { context, func };
     let run_limit = run_limit_from_i64(limit);
 
-    let submission = handle.pinned.run_async(run_limit, move |result| {
-        let pinned_result = build_run_result(&result);
-        let code = pinned_result.code;
-        callback.fire(code, Box::new(pinned_result));
-    });
+    let submission = handle
+        .pinned
+        .run_async_cancelable(run_limit, pre_dispatch, move |result| {
+            unregister_async_request(&registry, request_id);
+            let pinned_result = build_run_result(&result);
+            let code = pinned_result.code;
+            callback.fire(code, Box::new(pinned_result));
+        });
 
     match submission {
         Ok(()) => FerricError::Ok,
-        Err(e) => record_pinned_error(handle, &e),
+        Err(e) => {
+            unregister_async_request(&handle.async_requests, request_id);
+            record_pinned_error(handle, &e)
+        }
     }
 }
 
 /// Submit `load_str` asynchronously.
+///
+/// `request_id` identifies the pending request for
+/// [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
+/// pending async requests for this engine.
 ///
 /// # Safety
 ///
@@ -569,7 +648,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_run_async(
 pub unsafe extern "C" fn ferric_pinned_engine_load_string_async(
     engine: *mut FerricPinnedEngine,
     source: *const c_char,
-    _request_id: u64,
+    request_id: u64,
     context: *mut c_void,
     completion: FerricPinnedCompletionFn,
 ) -> FerricError {
@@ -584,26 +663,38 @@ pub unsafe extern "C" fn ferric_pinned_engine_load_string_async(
         set_global_error("completion callback is null".to_string());
         return FerricError::InvalidArgument;
     };
+    let pre_dispatch = match register_async_request(handle, request_id) {
+        Ok(token) => token,
+        Err(code) => return code,
+    };
+    let registry = handle.async_requests.clone();
     let callback = CompletionCallback { context, func };
 
-    let submission = handle.pinned.load_str_async(source_owned, move |result| {
-        let (code, message) = match result {
-            Ok(_) => (FerricError::Ok, None),
-            Err(ref e) => (map_pinned_error(e), Some(e.to_string())),
-        };
-        callback.fire(
-            code,
-            Box::new(FerricPinnedResult {
-                code,
-                payload: PinnedResultPayload::Empty,
-                message: message.and_then(|m| CString::new(m).ok()),
-            }),
-        );
-    });
+    let submission =
+        handle
+            .pinned
+            .load_str_async_cancelable(source_owned, pre_dispatch, move |result| {
+                unregister_async_request(&registry, request_id);
+                let (code, message) = match result {
+                    Ok(_) => (FerricError::Ok, None),
+                    Err(ref e) => (map_pinned_error(e), Some(e.to_string())),
+                };
+                callback.fire(
+                    code,
+                    Box::new(FerricPinnedResult {
+                        code,
+                        payload: PinnedResultPayload::Empty,
+                        message: message.and_then(|m| CString::new(m).ok()),
+                    }),
+                );
+            });
 
     match submission {
         Ok(()) => FerricError::Ok,
-        Err(e) => record_pinned_error(handle, &e),
+        Err(e) => {
+            unregister_async_request(&handle.async_requests, request_id);
+            record_pinned_error(handle, &e)
+        }
     }
 }
 

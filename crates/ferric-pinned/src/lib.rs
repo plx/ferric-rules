@@ -29,7 +29,7 @@ pub(crate) mod request;
 pub(crate) mod worker;
 
 pub use autorelease::AutoreleasePolicy;
-pub use engine::PinnedEngine;
+pub use engine::{PinnedEngine, PreDispatchCancelToken};
 pub use error::PinnedError;
 pub use options::PinnedEngineOptions;
 

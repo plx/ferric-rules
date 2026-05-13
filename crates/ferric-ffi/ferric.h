@@ -1265,6 +1265,18 @@ bool ferric_pinned_engine_is_closed(const struct FerricPinnedEngine *engine);
 // - `engine` must be a valid handle.
 enum FerricError ferric_pinned_engine_halt(struct FerricPinnedEngine *engine);
 
+// Cancel an accepted async request before the worker starts executing it.
+//
+// Returns [`FerricError::Ok`] if the request is still pending and will
+// complete with [`FerricError::PinnedCanceled`]. Returns
+// [`FerricError::NotFound`] if the request is unknown or has already started.
+//
+// # Safety
+//
+// - `engine` must be a valid handle.
+enum FerricError ferric_pinned_engine_cancel_request(struct FerricPinnedEngine *engine,
+                                                     uint64_t request_id);
+
 // Retrieve the last per-engine error message as a C string.
 //
 // # Safety
@@ -1332,8 +1344,9 @@ enum FerricError ferric_pinned_engine_serialize_as(struct FerricPinnedEngine *en
 // submission. `completion` fires on the worker thread when the operation
 // completes (or fails).
 //
-// `request_id` is opaque echo data — the FFI does not consume it; the
-// caller may use it to correlate completions if they wish.
+// `request_id` identifies the pending request for
+// [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
+// pending async requests for this engine.
 //
 // # Safety
 //
@@ -1343,11 +1356,15 @@ enum FerricError ferric_pinned_engine_serialize_as(struct FerricPinnedEngine *en
 //   is safe to access from the worker thread.
 enum FerricError ferric_pinned_engine_run_async(struct FerricPinnedEngine *engine,
                                                 int64_t limit,
-                                                uint64_t _request_id,
+                                                uint64_t request_id,
                                                 void *context,
                                                 FerricPinnedCompletionFn completion);
 
 // Submit `load_str` asynchronously.
+//
+// `request_id` identifies the pending request for
+// [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
+// pending async requests for this engine.
 //
 // # Safety
 //
@@ -1357,7 +1374,7 @@ enum FerricError ferric_pinned_engine_run_async(struct FerricPinnedEngine *engin
 // - `completion` must be a callable function pointer.
 enum FerricError ferric_pinned_engine_load_string_async(struct FerricPinnedEngine *engine,
                                                         const char *source,
-                                                        uint64_t _request_id,
+                                                        uint64_t request_id,
                                                         void *context,
                                                         FerricPinnedCompletionFn completion);
 

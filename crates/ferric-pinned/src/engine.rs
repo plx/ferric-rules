@@ -1,6 +1,6 @@
 //! The public [`PinnedEngine`] handle.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -46,6 +46,16 @@ struct CancelState {
 struct ActiveRunGuard<'a> {
     state: &'a CancelState,
     token: Arc<AtomicBool>,
+}
+
+const REQUEST_PENDING: u8 = 0;
+const REQUEST_STARTED: u8 = 1;
+const REQUEST_CANCELED: u8 = 2;
+
+/// Token used to cancel an accepted async request before the worker starts it.
+#[derive(Debug)]
+pub struct PreDispatchCancelToken {
+    state: AtomicU8,
 }
 
 impl PinnedEngine {
@@ -195,9 +205,26 @@ impl PinnedEngine {
     where
         F: FnOnce(Result<RunResult, PinnedError>) + Send + 'static,
     {
+        self.run_async_cancelable(limit, Arc::new(PreDispatchCancelToken::new()), completion)
+    }
+
+    /// Async variant of [`Self::run`] with pre-dispatch cancellation support.
+    pub fn run_async_cancelable<F>(
+        &self,
+        limit: RunLimit,
+        pre_dispatch: Arc<PreDispatchCancelToken>,
+        completion: F,
+    ) -> Result<(), PinnedError>
+    where
+        F: FnOnce(Result<RunResult, PinnedError>) + Send + 'static,
+    {
         let cancel_state = self.inner.cancel.clone();
         let cancel_token = Arc::new(AtomicBool::new(false));
         self.submit(move |engine| {
+            if let Err(err) = pre_dispatch.begin() {
+                completion(Err(err));
+                return;
+            }
             let _guard = cancel_state.activate(cancel_token.clone());
             let result = crate::worker::run_with_cancel(engine, limit, &cancel_token)
                 .map_err(PinnedError::from);
@@ -210,7 +237,24 @@ impl PinnedEngine {
     where
         F: FnOnce(Result<ferric_runtime::LoadResult, PinnedError>) + Send + 'static,
     {
+        self.load_str_async_cancelable(source, Arc::new(PreDispatchCancelToken::new()), completion)
+    }
+
+    /// Async variant of [`Self::load_str`] with pre-dispatch cancellation support.
+    pub fn load_str_async_cancelable<F>(
+        &self,
+        source: String,
+        pre_dispatch: Arc<PreDispatchCancelToken>,
+        completion: F,
+    ) -> Result<(), PinnedError>
+    where
+        F: FnOnce(Result<ferric_runtime::LoadResult, PinnedError>) + Send + 'static,
+    {
         self.submit(move |engine| {
+            if let Err(err) = pre_dispatch.begin() {
+                completion(Err(err));
+                return;
+            }
             let result = engine.load_str(&source).map_err(PinnedError::from);
             completion(result);
         })
@@ -227,6 +271,62 @@ impl PinnedEngine {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(PinnedError::QueueFull),
             Err(TrySendError::Disconnected(_)) => Err(PinnedError::DispatchFailed),
+        }
+    }
+}
+
+impl Default for PreDispatchCancelToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PreDispatchCancelToken {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(REQUEST_PENDING),
+        }
+    }
+
+    /// Attempt to cancel before the worker starts this request.
+    ///
+    /// Returns `true` if this call either performed the cancellation or the
+    /// request had already been canceled while still pending. Returns `false`
+    /// once the worker has started the request.
+    pub fn cancel_before_start(&self) -> bool {
+        loop {
+            match self.state.load(Ordering::Acquire) {
+                REQUEST_PENDING => {
+                    if self
+                        .state
+                        .compare_exchange(
+                            REQUEST_PENDING,
+                            REQUEST_CANCELED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        return true;
+                    }
+                }
+                REQUEST_CANCELED => return true,
+                _ => return false,
+            }
+        }
+    }
+
+    fn begin(&self) -> Result<(), PinnedError> {
+        match self.state.compare_exchange(
+            REQUEST_PENDING,
+            REQUEST_STARTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(()),
+            Err(REQUEST_CANCELED) => Err(PinnedError::Canceled),
+            Err(_) => Err(PinnedError::DispatchFailed),
         }
     }
 }

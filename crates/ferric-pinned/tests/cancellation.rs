@@ -4,7 +4,9 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ferric_pinned::{HaltReason, PinnedEngine, PinnedEngineOptions, RunLimit};
+use ferric_pinned::{
+    HaltReason, PinnedEngine, PinnedEngineOptions, PinnedError, PreDispatchCancelToken, RunLimit,
+};
 
 const CYCLING_RULES: &str = r"
 (defrule cycle ?f <- (counter ?n) => (retract ?f) (assert (counter (+ ?n 1))))
@@ -105,4 +107,44 @@ fn halt_after_submit_but_before_dispatch_is_honored() {
         .unwrap();
     assert_eq!(second.halt_reason, HaltReason::LimitReached);
     assert_eq!(second.rules_fired, 1);
+}
+
+#[test]
+fn pre_dispatch_cancel_reports_canceled_without_running_request() {
+    let engine = Arc::new(PinnedEngine::new(PinnedEngineOptions::default()).unwrap());
+    engine.load_str(CYCLING_RULES).unwrap();
+    engine.reset().unwrap();
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let blocker_engine = engine.clone();
+    let blocker = thread::spawn(move || {
+        blocker_engine
+            .with_engine(move |_engine| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
+    });
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    let token = Arc::new(PreDispatchCancelToken::new());
+    let (result_tx, result_rx) = mpsc::channel();
+    engine
+        .run_async_cancelable(RunLimit::Count(10), token.clone(), move |result| {
+            result_tx.send(result).unwrap();
+        })
+        .unwrap();
+
+    assert!(token.cancel_before_start());
+
+    release_tx.send(()).unwrap();
+    blocker.join().unwrap();
+
+    let err = result_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(err, PinnedError::Canceled));
 }

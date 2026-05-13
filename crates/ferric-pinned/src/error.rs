@@ -18,8 +18,7 @@ use ferric_runtime::SerializationError;
 pub enum PinnedError {
     /// Handle has been closed and no longer accepts requests.
     Closed,
-    /// Request was canceled before completion. (Reserved; v1 only emits this
-    /// for pre-dispatch cancellation if a future revision adds it.)
+    /// Request was canceled before the worker started executing it.
     Canceled,
     /// Bounded request queue is at capacity.
     QueueFull,
