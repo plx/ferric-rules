@@ -59,6 +59,35 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *    FERRIC_NULL_TERMINATED annotations when compiled with
  *    Clang -fbounds-safety. Define FERRIC_NO_BOUNDS_ANNOTATIONS
  *    before including this header to suppress.
+ *
+ * ============================================================
+ * PINNED EXECUTION (ferric_pinned_*)
+ * ============================================================
+ *
+ * FerricPinnedEngine owns a dedicated Rust worker thread plus
+ * one engine. The handle is safe to use from any thread; calls
+ * are serialized through a bounded FIFO queue on the worker.
+ *
+ * - Sync entry points (ferric_pinned_engine_load_string, _reset,
+ *   _run, _serialize_as) block the caller until the worker
+ *   completes the operation, then write outputs into caller-
+ *   provided pointers.
+ *
+ * - Async entry points (ferric_pinned_engine_run_async,
+ *   _load_string_async) return immediately on successful
+ *   submission and later invoke the supplied
+ *   FerricPinnedCompletionFn with an owned FerricPinnedResult.
+ *
+ * The async completion callback runs ON THE WORKER THREAD.
+ * It must be transport-only: resume a continuation, signal an
+ * event, post to an actor / event loop. It must NOT call back
+ * into the same FerricPinnedEngine synchronously, perform long
+ * work, or block. The owned FerricPinnedResult outlives the
+ * callback; the caller is responsible for ferric_pinned_result_free.
+ *
+ * Halt: ferric_pinned_engine_halt() flips a shared cancel flag
+ * that the in-flight run() checks between bounded chunks of
+ * rule firings (cooperative cancellation, not hard preemption).
  */";
 
 /// Bounds-safety annotation macros injected after the standard includes.
