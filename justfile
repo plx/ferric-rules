@@ -129,13 +129,13 @@ py-bindings-test:
 # ── Composite checks ────────────────────────────────────────────────────────
 
 # Full preflight: format check, clippy, all tests, cargo check, Python checks, Go lint
-check: fmt-check clippy test cargo-check check-examples py-fmt-check py-lint py-test py-bindings-test go-lint ts-lint
+check: fmt-check clippy test cargo-check check-examples py-fmt-check py-lint py-test py-bindings-test go-lint ts-lint license-notices-check
 
 # Same as `check` — alias for the preflight script
 preflight: check
 
 # PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks + Go lint
-preflight-pr: fmt clippy test cargo-check check-examples py-fmt py-lint-fix py-test py-bindings-test go-lint ts-lint
+preflight-pr: fmt clippy test cargo-check check-examples py-fmt py-lint-fix py-test py-bindings-test go-lint ts-lint license-notices
 
 # ── User-guide examples ─────────────────────────────────────────────────────
 
@@ -304,6 +304,16 @@ doc:
 # Build and open rustdoc in a browser
 doc-open:
     cargo doc --workspace --no-deps --open
+
+# ── Licensing ────────────────────────────────────────────────────────────────
+
+# Regenerate Rust third-party license notices from the locked Cargo graph
+license-notices:
+    ./scripts/license-notices.sh generate
+
+# Check that Rust third-party license notices are current
+license-notices-check:
+    ./scripts/license-notices.sh check
 
 # ── Go bindings ─────────────────────────────────────────────────────────────
 
