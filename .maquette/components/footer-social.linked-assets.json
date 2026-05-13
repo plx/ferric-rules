@@ -1,0 +1,15 @@
+{
+  "projectRoot": "/Users/prb/conductor/workspaces/ferric-rules/montpelier",
+  "targets": [
+    ".maquette/components/footer-social.replica.html"
+  ],
+  "checkedFiles": [
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/footer-social.replica.html",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/brand/tokens.css",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/css/core-actions.components.css",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/css/navigation-layout.components.css",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/css/footer-social.components.css"
+  ],
+  "missingFiles": [],
+  "pass": true
+}

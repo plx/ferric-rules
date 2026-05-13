@@ -1,0 +1,13 @@
+{
+  "projectRoot": "/Users/prb/conductor/workspaces/ferric-rules/montpelier",
+  "targets": [
+    ".maquette/components/core-actions.replica.html"
+  ],
+  "checkedFiles": [
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/core-actions.replica.html",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/brand/tokens.css",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/css/core-actions.components.css"
+  ],
+  "missingFiles": [],
+  "pass": true
+}

@@ -1,0 +1,655 @@
+{
+  "meta": {
+    "system_name": "ferric-rules Components",
+    "version": "1.0.0",
+    "based_on_design_system_version": "1.0.0",
+    "status": "approved",
+    "notes": "Reusable component library for the ferric-rules landing-page concept. Built from focused CSS-contract posters for actions, navigation, landing composites, and rich footer/social coverage."
+  },
+  "tech": {
+    "html_strategy": "Static semantic HTML with reusable classes, slots, ARIA hooks, and usage examples suitable for later Astro/Starlight integration.",
+    "css_strategy": "Token-driven CSS linked from `.maquette/brand/tokens.css`; final `css/components.css` imports reviewed batch CSS.",
+    "js_strategy": "Minimal progressive enhancement for icon-button selected state and responsive navigation; footer/social modules are static."
+  },
+  "assets": {
+    "tokens_css_path": ".maquette/brand/tokens.css",
+    "sheet_inventory_path": ".maquette/components/sheet-inventory.md",
+    "sheet_implementation_log_path": ".maquette/components/sheet-implementation-log.md",
+    "sheet_implementation_batches": [
+      {
+        "category": "core-primitives",
+        "sheet_path": ".maquette/components/component-sheet-core-actions-css-contract-v1.png",
+        "contract_path": ".maquette/components/contracts/core-actions.contract.css",
+        "replica_artifact_paths": [
+          ".maquette/components/core-actions.replica.html"
+        ],
+        "component_artifact_paths": [
+          ".maquette/components/css/core-actions.components.css",
+          ".maquette/components/js/core-actions.components.js"
+        ],
+        "catalog_snapshot_path": ".maquette/components/core-actions.component-catalog.json",
+        "review_path": ".maquette/components/core-actions.review.md",
+        "review_artifact_paths": [
+          ".maquette/components/core-actions.linked-assets.json",
+          ".maquette/components/core-actions.responsive-audit.json"
+        ],
+        "screenshot_paths": [
+          ".maquette/components/core-actions-responsive/responsive-390.png",
+          ".maquette/components/core-actions-responsive/responsive-768.png",
+          ".maquette/components/core-actions-responsive/responsive-1024.png",
+          ".maquette/components/core-actions-responsive/responsive-1280.png",
+          ".maquette/components/core-actions-responsive/responsive-1440.png"
+        ],
+        "review_mode": "screenshot",
+        "completed_before_next_sheet": true,
+        "rubric_scores": {
+          "coverage": 5,
+          "visual_match": 4,
+          "anatomy_match": 5,
+          "responsive_match": 5,
+          "implementation_quality": 5
+        },
+        "corrections_made": [
+          "Normalized generated poster token names to approved tokens.css variables.",
+          "Added mobile wrapping rules and inverse-surface ghost-button contrast."
+        ],
+        "simplifications": [
+          "The CSS-contract poster is not treated as a visual component sheet."
+        ],
+        "deferred_items": [],
+        "status": "implemented"
+      },
+      {
+        "category": "navigation-layout",
+        "sheet_path": ".maquette/components/component-sheet-navigation-layout-css-contract-v1.png",
+        "contract_path": ".maquette/components/contracts/navigation-layout.contract.css",
+        "replica_artifact_paths": [
+          ".maquette/components/navigation-layout.replica.html"
+        ],
+        "component_artifact_paths": [
+          ".maquette/components/css/navigation-layout.components.css",
+          ".maquette/components/js/navigation-layout.components.js"
+        ],
+        "catalog_snapshot_path": ".maquette/components/navigation-layout.component-catalog.json",
+        "review_path": ".maquette/components/navigation-layout.review.md",
+        "review_artifact_paths": [
+          ".maquette/components/navigation-layout.linked-assets.json",
+          ".maquette/components/navigation-layout.responsive-audit.json"
+        ],
+        "screenshot_paths": [
+          ".maquette/components/navigation-layout-responsive/responsive-390.png",
+          ".maquette/components/navigation-layout-responsive/responsive-768.png",
+          ".maquette/components/navigation-layout-responsive/responsive-1024.png",
+          ".maquette/components/navigation-layout-responsive/responsive-1280.png",
+          ".maquette/components/navigation-layout-responsive/responsive-1440.png",
+          ".maquette/components/navigation-layout-responsive/responsive-nav-open-390.png",
+          ".maquette/components/navigation-layout-responsive/responsive-nav-open-768.png",
+          ".maquette/components/navigation-layout-responsive/responsive-nav-open-1024.png"
+        ],
+        "review_mode": "screenshot",
+        "completed_before_next_sheet": true,
+        "rubric_scores": {
+          "coverage": 5,
+          "visual_match": 4,
+          "anatomy_match": 5,
+          "responsive_match": 5,
+          "implementation_quality": 5
+        },
+        "corrections_made": [
+          "Implemented mobile/tablet menu toggle with aria-expanded and data-open state.",
+          "Added scrim and independently scrollable panel behavior."
+        ],
+        "simplifications": [
+          "Navigation mark is a placeholder until final SVG logo is applied."
+        ],
+        "deferred_items": [],
+        "status": "implemented"
+      },
+      {
+        "category": "cards-composites",
+        "sheet_path": ".maquette/components/component-sheet-landing-composites-css-contract-v1.png",
+        "contract_path": ".maquette/components/contracts/landing-composites.contract.css",
+        "replica_artifact_paths": [
+          ".maquette/components/landing-composites.replica.html"
+        ],
+        "component_artifact_paths": [
+          ".maquette/components/css/landing-composites.components.css",
+          ".maquette/components/js/landing-composites.components.js"
+        ],
+        "catalog_snapshot_path": ".maquette/components/landing-composites.component-catalog.json",
+        "review_path": ".maquette/components/landing-composites.review.md",
+        "review_artifact_paths": [
+          ".maquette/components/landing-composites.linked-assets.json",
+          ".maquette/components/landing-composites.responsive-audit.json"
+        ],
+        "screenshot_paths": [
+          ".maquette/components/landing-composites-responsive/responsive-390.png",
+          ".maquette/components/landing-composites-responsive/responsive-768.png",
+          ".maquette/components/landing-composites-responsive/responsive-1024.png",
+          ".maquette/components/landing-composites-responsive/responsive-1280.png",
+          ".maquette/components/landing-composites-responsive/responsive-1440.png"
+        ],
+        "review_mode": "screenshot",
+        "completed_before_next_sheet": true,
+        "rubric_scores": {
+          "coverage": 5,
+          "visual_match": 4,
+          "anatomy_match": 5,
+          "responsive_match": 5,
+          "implementation_quality": 4
+        },
+        "corrections_made": [
+          "Removed browser-default link underlines from documentation cards.",
+          "Documented code-panel internal horizontal scrolling as intentional for narrow viewports."
+        ],
+        "simplifications": [
+          "Generic nav audit is allowed to fail for this isolated batch because navigation has its own passing batch."
+        ],
+        "deferred_items": [
+          "Hero-specific layout and final page composition are page-phase work."
+        ],
+        "status": "implemented"
+      },
+      {
+        "category": "focused-follow-up",
+        "sheet_path": ".maquette/components/component-sheet-footer-social-css-contract-v1.png",
+        "contract_path": ".maquette/components/contracts/footer-social.contract.css",
+        "replica_artifact_paths": [
+          ".maquette/components/footer-social.replica.html"
+        ],
+        "component_artifact_paths": [
+          ".maquette/components/css/footer-social.components.css",
+          ".maquette/components/js/footer-social.components.js"
+        ],
+        "catalog_snapshot_path": ".maquette/components/footer-social.component-catalog.json",
+        "review_path": ".maquette/components/footer-social.review.md",
+        "review_artifact_paths": [
+          ".maquette/components/footer-social.linked-assets.json",
+          ".maquette/components/footer-social.responsive-audit.json"
+        ],
+        "screenshot_paths": [
+          ".maquette/components/footer-social-responsive/responsive-390.png",
+          ".maquette/components/footer-social-responsive/responsive-768.png",
+          ".maquette/components/footer-social-responsive/responsive-1024.png",
+          ".maquette/components/footer-social-responsive/responsive-1280.png",
+          ".maquette/components/footer-social-responsive/responsive-1440.png"
+        ],
+        "review_mode": "screenshot",
+        "completed_before_next_sheet": true,
+        "rubric_scores": {
+          "coverage": 5,
+          "visual_match": 4,
+          "anatomy_match": 5,
+          "responsive_match": 5,
+          "implementation_quality": 5
+        },
+        "corrections_made": [
+          "Added a reusable sr-only helper for the newsletter label.",
+          "Preserved 44px minimum link and social hit areas on mobile and desktop."
+        ],
+        "simplifications": [
+          "The CSS-contract poster is not treated as a visual component sheet."
+        ],
+        "deferred_items": [],
+        "status": "implemented"
+      }
+    ],
+    "replica_gallery_html_path": ".maquette/components/replica-gallery.html",
+    "component_reference_html_path": ".maquette/components/replica-gallery.html",
+    "component_sheet_path": ".maquette/components/component-sheet-core-actions-css-contract-v1.png",
+    "component_sheet_paths": [
+      ".maquette/components/component-sheet-core-actions-css-contract-v1.png",
+      ".maquette/components/component-sheet-navigation-layout-css-contract-v1.png",
+      ".maquette/components/component-sheet-landing-composites-css-contract-v1.png",
+      ".maquette/components/component-sheet-footer-social-css-contract-v1.png"
+    ],
+    "component_contract_paths": [
+      ".maquette/components/contracts/core-actions.contract.css",
+      ".maquette/components/contracts/navigation-layout.contract.css",
+      ".maquette/components/contracts/landing-composites.contract.css",
+      ".maquette/components/contracts/footer-social.contract.css"
+    ],
+    "gallery_screenshot_paths": [
+      ".maquette/components/replica-gallery-responsive/responsive-390.png",
+      ".maquette/components/replica-gallery-responsive/responsive-768.png",
+      ".maquette/components/replica-gallery-responsive/responsive-1024.png",
+      ".maquette/components/replica-gallery-responsive/responsive-1280.png",
+      ".maquette/components/replica-gallery-responsive/responsive-1440.png"
+    ],
+    "nav_open_screenshot_paths": [
+      ".maquette/components/replica-gallery-responsive/responsive-nav-open-390.png",
+      ".maquette/components/replica-gallery-responsive/responsive-nav-open-768.png",
+      ".maquette/components/replica-gallery-responsive/responsive-nav-open-1024.png"
+    ],
+    "gallery_review_artifact_paths": [
+      ".maquette/components/replica-gallery.linked-assets.json",
+      ".maquette/components/replica-gallery.responsive-audit.json",
+      ".maquette/components/replica-gallery.check.json",
+      ".maquette/components/page-consumption-smoke.json",
+      ".maquette/components/validate-artifacts.json"
+    ],
+    "replica_fidelity_review": {
+      "reference_sheet_paths": [
+        ".maquette/components/component-sheet-core-actions-css-contract-v1.png",
+        ".maquette/components/component-sheet-navigation-layout-css-contract-v1.png",
+        ".maquette/components/component-sheet-landing-composites-css-contract-v1.png",
+        ".maquette/components/component-sheet-footer-social-css-contract-v1.png"
+      ],
+      "gallery_screenshot_paths": [
+        ".maquette/components/replica-gallery-responsive/responsive-390.png",
+        ".maquette/components/replica-gallery-responsive/responsive-1440.png"
+      ],
+      "gallery_review_artifact_paths": [
+        ".maquette/components/replica-gallery.linked-assets.json",
+        ".maquette/components/replica-gallery.responsive-audit.json",
+        ".maquette/components/replica-gallery.check.json"
+      ],
+      "review_mode": "screenshot",
+      "rubric_scores": {
+        "coverage": 5,
+        "visual_match": 4,
+        "anatomy_match": 5,
+        "responsive_match": 5,
+        "implementation_quality": 5
+      },
+      "coverage_summary": "Merged gallery covers actions, icon buttons, badges, responsive navigation, feature cards, documentation cards, code panel, compact footer, rich footer, newsletter form, and social icon links.",
+      "failed_categories": [],
+      "corrections_made": [
+        "Batch-level corrections carried into final components.css and components.js.",
+        "Inverse-header ghost action contrast was corrected in navigation-layout.components.css."
+      ],
+      "simplifications": [
+        "Final gallery still demonstrates the navigation placeholder mark; page implementations can substitute the approved vector logo."
+      ],
+      "status": "matches"
+    },
+    "reusable_component_review": {
+      "status": "ready",
+      "api_summary": "Component APIs, slots, states, JS hooks, accessibility notes, and usage examples are ready for the page phase.",
+      "ready_for_pages": true,
+      "usage_examples_path": ".maquette/components/replica-gallery.html",
+      "gaps": []
+    },
+    "review_notes_path": ".maquette/components/approved.md"
+  },
+  "components": [
+    {
+      "name": "button",
+      "source_required_component": "button",
+      "files": [
+        ".maquette/components/css/components.css",
+        ".maquette/components/replica-gallery.html"
+      ],
+      "selectors": [
+        ".btn",
+        ".btn--primary",
+        ".btn--secondary",
+        ".btn--ghost",
+        ".btn--danger",
+        ".btn--sm",
+        ".btn--md",
+        ".btn--lg",
+        ".btn__icon"
+      ],
+      "implemented_variants": [
+        "primary",
+        "secondary",
+        "ghost",
+        "danger",
+        "loading",
+        "disabled"
+      ],
+      "implemented_sizes": [
+        "sm",
+        "md",
+        "lg"
+      ],
+      "implemented_states": [
+        "default",
+        "hover",
+        "focus-visible",
+        "active",
+        "disabled",
+        "loading"
+      ],
+      "api": {
+        "slots": [
+          "label",
+          "leading icon",
+          "trailing icon"
+        ],
+        "required_attributes": [
+          "type for button elements"
+        ],
+        "js_behavior": "None required for base button behavior.",
+        "usage_examples": [
+          "<button class=\"btn btn--primary\" type=\"button\">Get Started</button>"
+        ]
+      },
+      "status": "approved"
+    },
+    {
+      "name": "responsive-navigation",
+      "source_required_component": "navigation",
+      "files": [
+        ".maquette/components/css/components.css",
+        ".maquette/components/js/components.js",
+        ".maquette/components/replica-gallery.html"
+      ],
+      "selectors": [
+        ".site-header",
+        ".site-nav",
+        ".site-nav__brand",
+        ".site-nav__mark",
+        ".site-nav__links",
+        ".site-nav__link",
+        ".site-nav__toggle",
+        ".site-nav__panel",
+        ".site-nav__panel-link",
+        ".site-nav__drawer-scrim",
+        ".skip-link"
+      ],
+      "implemented_variants": [
+        "desktop-inline",
+        "tablet-collapsed",
+        "mobile-collapsed",
+        "mobile-expanded",
+        "active",
+        "focus-visible"
+      ],
+      "implemented_sizes": [
+        "standard",
+        "compact"
+      ],
+      "implemented_states": [
+        "default",
+        "hover",
+        "focus-visible",
+        "active",
+        "open"
+      ],
+      "api": {
+        "slots": [
+          "brand",
+          "mark",
+          "primary links",
+          "actions",
+          "toggle",
+          "panel links"
+        ],
+        "required_attributes": [
+          "aria-label on nav",
+          "aria-controls and aria-expanded on toggle",
+          "id on panel",
+          "aria-current for current page"
+        ],
+        "js_behavior": "Toggle updates aria-expanded and panel/scrim data-open; Escape closes and returns focus.",
+        "usage_examples": [
+          "<button class=\"site-nav__toggle\" aria-controls=\"nav-panel\" aria-expanded=\"false\" data-nav-toggle>...</button>"
+        ]
+      },
+      "status": "approved"
+    },
+    {
+      "name": "feature-card",
+      "source_required_component": "card",
+      "files": [
+        ".maquette/components/css/components.css",
+        ".maquette/components/replica-gallery.html"
+      ],
+      "selectors": [
+        ".feature-card",
+        ".feature-card__eyebrow",
+        ".feature-card__title",
+        ".feature-card__body"
+      ],
+      "implemented_variants": [
+        "default"
+      ],
+      "implemented_sizes": [
+        "responsive"
+      ],
+      "implemented_states": [
+        "default"
+      ],
+      "layout_behavior": {
+        "equal_height_grid": "Cards use height: 100% inside a grid.",
+        "body_layout": "Column flex layout with body flexing to fill available height.",
+        "action_row_alignment": "No action row in current feature-card variant.",
+        "responsive_notes": "Cards stack to one column below 860px."
+      },
+      "api": {
+        "slots": [
+          "eyebrow",
+          "title",
+          "body"
+        ],
+        "required_attributes": [],
+        "js_behavior": "None.",
+        "usage_examples": [
+          "<article class=\"feature-card\"><div class=\"feature-card__eyebrow\">Compatibility</div><h2 class=\"feature-card__title\">Mostly CLIPS-compatible semantics</h2><p class=\"feature-card__body\">...</p></article>"
+        ]
+      },
+      "status": "approved"
+    },
+    {
+      "name": "doc-card",
+      "source_required_component": "card",
+      "files": [
+        ".maquette/components/css/components.css",
+        ".maquette/components/replica-gallery.html"
+      ],
+      "selectors": [
+        ".doc-card",
+        ".doc-card__title",
+        ".doc-card__body",
+        ".doc-card__meta"
+      ],
+      "implemented_variants": [
+        "default",
+        "link"
+      ],
+      "implemented_sizes": [
+        "responsive"
+      ],
+      "implemented_states": [
+        "default",
+        "hover",
+        "focus-visible"
+      ],
+      "layout_behavior": {
+        "equal_height_grid": "Doc cards share grid row height where possible.",
+        "body_layout": "Column flex layout with meta pinned to bottom.",
+        "action_row_alignment": "Meta row is bottom-pinned with margin-top: auto.",
+        "responsive_notes": "Cards stack to one column below 860px."
+      },
+      "api": {
+        "slots": [
+          "title",
+          "body",
+          "meta"
+        ],
+        "required_attributes": [],
+        "js_behavior": "None.",
+        "usage_examples": [
+          "<a class=\"doc-card\" href=\"#\"><h2 class=\"doc-card__title\">User's Guide</h2><p class=\"doc-card__body\">...</p><div class=\"doc-card__meta\"><span>Guide</span></div></a>"
+        ]
+      },
+      "status": "approved"
+    },
+    {
+      "name": "code-panel",
+      "source_required_component": "card",
+      "files": [
+        ".maquette/components/css/components.css",
+        ".maquette/components/replica-gallery.html"
+      ],
+      "selectors": [
+        ".code-panel",
+        ".code-panel__header",
+        ".code-panel__dot",
+        ".code-panel__body",
+        ".code-panel code"
+      ],
+      "implemented_variants": [
+        "inverse"
+      ],
+      "implemented_sizes": [
+        "responsive"
+      ],
+      "implemented_states": [
+        "default"
+      ],
+      "layout_behavior": {
+        "equal_height_grid": "Not applicable.",
+        "body_layout": "Header plus internally scrollable code body.",
+        "action_row_alignment": "Not applicable.",
+        "responsive_notes": "Long code lines scroll inside .code-panel__body on narrow screens; document-level overflow remains 0px."
+      },
+      "api": {
+        "slots": [
+          "header label",
+          "code body"
+        ],
+        "required_attributes": [],
+        "js_behavior": "None.",
+        "usage_examples": [
+          "<div class=\"code-panel\"><div class=\"code-panel__header\"><span class=\"code-panel__dot\"></span><span>Rust embedding example</span></div><pre class=\"code-panel__body\"><code>...</code></pre></div>"
+        ]
+      },
+      "status": "approved"
+    },
+    {
+      "name": "footer-module",
+      "source_required_component": "navigation",
+      "files": [
+        ".maquette/components/css/components.css",
+        ".maquette/components/replica-gallery.html"
+      ],
+      "selectors": [
+        ".site-footer",
+        ".site-footer__brand",
+        ".site-footer__links",
+        ".site-footer__link",
+        ".site-footer__meta"
+      ],
+      "implemented_variants": [
+        "compact"
+      ],
+      "implemented_sizes": [
+        "responsive"
+      ],
+      "implemented_states": [
+        "default",
+        "hover",
+        "focus-visible"
+      ],
+      "layout_behavior": {
+        "equal_height_grid": "Not applicable.",
+        "body_layout": "Auto-fit grid with wrapping link row.",
+        "action_row_alignment": "Meta aligns right on desktop and left on narrow screens.",
+        "responsive_notes": "Footer columns wrap without horizontal overflow."
+      },
+      "api": {
+        "slots": [
+          "brand",
+          "links",
+          "meta"
+        ],
+        "required_attributes": [
+          "aria-label when footer links are wrapped in nav"
+        ],
+        "js_behavior": "None.",
+        "usage_examples": [
+          "<footer class=\"site-footer\"><div class=\"site-footer__brand\">ferric-rules</div><nav class=\"site-footer__links\" aria-label=\"Footer navigation\">...</nav><div class=\"site-footer__meta\">MIT or Apache-2.0</div></footer>"
+        ]
+      },
+      "status": "approved"
+    },
+    {
+      "name": "rich-footer",
+      "source_required_component": "navigation",
+      "files": [
+        ".maquette/components/css/components.css",
+        ".maquette/components/replica-gallery.html"
+      ],
+      "selectors": [
+        ".footer-rich",
+        ".footer-rich__inner",
+        ".footer-rich__main",
+        ".footer-rich__brand",
+        ".footer-rich__brand-row",
+        ".footer-rich__summary",
+        ".footer-rich__columns",
+        ".footer-rich__column",
+        ".footer-rich__heading",
+        ".footer-rich__link",
+        ".footer-rich__newsletter",
+        ".footer-rich__input",
+        ".footer-rich__social",
+        ".footer-rich__social-link",
+        ".footer-rich__bottom",
+        ".footer-rich__meta"
+      ],
+      "implemented_variants": [
+        "rich",
+        "inverse",
+        "newsletter",
+        "social"
+      ],
+      "implemented_sizes": [
+        "desktop-multicolumn",
+        "tablet-stacked",
+        "mobile-stacked"
+      ],
+      "implemented_states": [
+        "default",
+        "hover",
+        "focus-visible",
+        "active"
+      ],
+      "layout_behavior": {
+        "equal_height_grid": "Not applicable.",
+        "body_layout": "Desktop uses brand, link-column, and newsletter columns; tablet/mobile stack into a single flow.",
+        "action_row_alignment": "Newsletter submit wraps below the input on narrow screens.",
+        "responsive_notes": "Social links and text links preserve 44px minimum hit areas and wrap without document-level overflow."
+      },
+      "api": {
+        "slots": [
+          "brand mark",
+          "brand summary",
+          "social links",
+          "link columns",
+          "newsletter label/input/button",
+          "legal/meta rows"
+        ],
+        "required_attributes": [
+          "aria-label on social links",
+          "label associated with newsletter input",
+          "aria-label when footer links are wrapped in nav"
+        ],
+        "js_behavior": "None.",
+        "usage_examples": [
+          "<footer class=\"footer-rich\"><div class=\"footer-rich__inner\">...</div></footer>"
+        ]
+      },
+      "accessibility_notes": [
+        "Social controls use inline SVG icons with aria-label on each link.",
+        "Newsletter input has a visually-hidden label through .sr-only.",
+        "Text links and icon links meet the 44px tap-target target."
+      ],
+      "visual_review": {
+        "reference_image_paths": [
+          ".maquette/components/component-sheet-footer-social-css-contract-v1.png"
+        ],
+        "latest_screenshot_path": ".maquette/components/footer-social-responsive/responsive-1440.png",
+        "similarity_notes": "Rendered footer follows the approved inverse industrial palette, compact link-column rhythm, newsletter row, and social-icon control contract.",
+        "qa_notes": [
+          "Linked assets pass.",
+          "Responsive audit reports 0px document overflow at 390, 768, 1024, 1280, and 1440px."
+        ]
+      },
+      "status": "approved"
+    }
+  ]
+}

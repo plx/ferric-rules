@@ -1,0 +1,18 @@
+{
+  "projectRoot": "/Users/prb/conductor/workspaces/ferric-rules/montpelier",
+  "targets": [
+    ".maquette/pages/landing/page.html"
+  ],
+  "checkedFiles": [
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/pages/landing/page.html",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/brand/tokens.css",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/css/components.css",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/pages/landing/page.css",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/css/core-actions.components.css",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/css/navigation-layout.components.css",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/css/landing-composites.components.css",
+    "/Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/css/footer-social.components.css"
+  ],
+  "missingFiles": [],
+  "pass": true
+}

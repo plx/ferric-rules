@@ -1,0 +1,449 @@
+{
+  "target": "../.maquette/components/navigation-layout.replica.html",
+  "targetUrl": "file:///Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/navigation-layout.replica.html",
+  "startedAt": "2026-05-12T14:07:01.403Z",
+  "finishedAt": "2026-05-12T14:07:05.136Z",
+  "allowDocumentOverflow": false,
+  "allowNavFailures": false,
+  "results": [
+    {
+      "viewport": {
+        "width": 390,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/navigation-layout-responsive/responsive-390.png",
+      "windowInnerWidth": 390,
+      "documentElementScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "documentOverflowPx": 0,
+      "wideComponents": [],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 1,
+          "visibleNavControlCount": 2,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.navigation-reference > header.site-header > nav.site-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "false",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": {
+          "compactExpected": true,
+          "navRootCount": 1,
+          "visibleNavControlCount": 2,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.navigation-reference > header.site-header > nav.site-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "true",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "toggleCheck": {
+          "selector": "body.navigation-reference > header.site-header > nav.site-nav > button.site-nav__toggle",
+          "ariaControls": "nav-panel",
+          "targetExists": true,
+          "beforeAriaExpanded": "false",
+          "afterAriaExpanded": "true",
+          "ariaExpandedChanged": true
+        },
+        "drawerScrollability": {
+          "targetExists": true,
+          "drawerVisible": true,
+          "clientHeight": 452,
+          "scrollHeight": 452,
+          "viewportHeight": 1400,
+          "overflowY": "auto",
+          "overscrollBehaviorY": "contain",
+          "hasInternalOverflow": false,
+          "contentExceedsViewport": false,
+          "bodyScrollLocked": false,
+          "overscrollContained": true,
+          "closeControlReachable": true,
+          "visibleDrawerLinkCount": 6,
+          "unreachableLinkCount": 0,
+          "scrollableWhenNeeded": true,
+          "bodyLockDoesNotBlockDrawer": true,
+          "passDrawerScrollability": true
+        },
+        "openScreenshotPath": "../.maquette/components/navigation-layout-responsive/responsive-nav-open-390.png",
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 768,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/navigation-layout-responsive/responsive-768.png",
+      "windowInnerWidth": 768,
+      "documentElementScrollWidth": 768,
+      "bodyScrollWidth": 768,
+      "documentOverflowPx": 0,
+      "wideComponents": [],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 1,
+          "visibleNavControlCount": 2,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.navigation-reference > header.site-header > nav.site-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "false",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": {
+          "compactExpected": true,
+          "navRootCount": 1,
+          "visibleNavControlCount": 2,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.navigation-reference > header.site-header > nav.site-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "true",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "toggleCheck": {
+          "selector": "body.navigation-reference > header.site-header > nav.site-nav > button.site-nav__toggle",
+          "ariaControls": "nav-panel",
+          "targetExists": true,
+          "beforeAriaExpanded": "false",
+          "afterAriaExpanded": "true",
+          "ariaExpandedChanged": true
+        },
+        "drawerScrollability": {
+          "targetExists": true,
+          "drawerVisible": true,
+          "clientHeight": 452,
+          "scrollHeight": 452,
+          "viewportHeight": 1400,
+          "overflowY": "auto",
+          "overscrollBehaviorY": "contain",
+          "hasInternalOverflow": false,
+          "contentExceedsViewport": false,
+          "bodyScrollLocked": false,
+          "overscrollContained": true,
+          "closeControlReachable": true,
+          "visibleDrawerLinkCount": 6,
+          "unreachableLinkCount": 0,
+          "scrollableWhenNeeded": true,
+          "bodyLockDoesNotBlockDrawer": true,
+          "passDrawerScrollability": true
+        },
+        "openScreenshotPath": "../.maquette/components/navigation-layout-responsive/responsive-nav-open-768.png",
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/navigation-layout-responsive/responsive-1024.png",
+      "windowInnerWidth": 1024,
+      "documentElementScrollWidth": 1024,
+      "bodyScrollWidth": 1024,
+      "documentOverflowPx": 0,
+      "wideComponents": [],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 1,
+          "visibleNavControlCount": 2,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.navigation-reference > header.site-header > nav.site-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "false",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": {
+          "compactExpected": true,
+          "navRootCount": 1,
+          "visibleNavControlCount": 2,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.navigation-reference > header.site-header > nav.site-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "true",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "toggleCheck": {
+          "selector": "body.navigation-reference > header.site-header > nav.site-nav > button.site-nav__toggle",
+          "ariaControls": "nav-panel",
+          "targetExists": true,
+          "beforeAriaExpanded": "false",
+          "afterAriaExpanded": "true",
+          "ariaExpandedChanged": true
+        },
+        "drawerScrollability": {
+          "targetExists": true,
+          "drawerVisible": true,
+          "clientHeight": 452,
+          "scrollHeight": 452,
+          "viewportHeight": 1400,
+          "overflowY": "auto",
+          "overscrollBehaviorY": "contain",
+          "hasInternalOverflow": false,
+          "contentExceedsViewport": false,
+          "bodyScrollLocked": false,
+          "overscrollContained": true,
+          "closeControlReachable": true,
+          "visibleDrawerLinkCount": 6,
+          "unreachableLinkCount": 0,
+          "scrollableWhenNeeded": true,
+          "bodyLockDoesNotBlockDrawer": true,
+          "passDrawerScrollability": true
+        },
+        "openScreenshotPath": "../.maquette/components/navigation-layout-responsive/responsive-nav-open-1024.png",
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/navigation-layout-responsive/responsive-1280.png",
+      "windowInnerWidth": 1280,
+      "documentElementScrollWidth": 1280,
+      "bodyScrollWidth": 1280,
+      "documentOverflowPx": 0,
+      "wideComponents": [],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": false,
+        "before": {
+          "compactExpected": false,
+          "navRootCount": 1,
+          "visibleNavControlCount": 8,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [
+            {
+              "selector": "body.navigation-reference > header.site-header > nav.site-nav > div.site-nav__actions:nth-of-type(2) > a.btn.btn--ghost.btn--sm:nth-of-type(1)",
+              "tag": "a",
+              "text": "GitHub",
+              "left": 1114.94,
+              "right": 1188.3,
+              "width": 73.36,
+              "height": 34,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.navigation-reference > header.site-header > nav.site-nav > div.site-nav__actions:nth-of-type(2) > a.btn.btn--primary.btn--sm:nth-of-type(2)",
+              "tag": "a",
+              "text": "Start",
+              "left": 1196.3,
+              "right": 1256,
+              "width": 59.7,
+              "height": 34,
+              "clipped": false,
+              "smallTapTarget": true
+            }
+          ],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/navigation-layout-responsive/responsive-1440.png",
+      "windowInnerWidth": 1440,
+      "documentElementScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "documentOverflowPx": 0,
+      "wideComponents": [],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": false,
+        "before": {
+          "compactExpected": false,
+          "navRootCount": 1,
+          "visibleNavControlCount": 8,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [
+            {
+              "selector": "body.navigation-reference > header.site-header > nav.site-nav > div.site-nav__actions:nth-of-type(2) > a.btn.btn--ghost.btn--sm:nth-of-type(1)",
+              "tag": "a",
+              "text": "GitHub",
+              "left": 1218.94,
+              "right": 1292.3,
+              "width": 73.36,
+              "height": 34,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.navigation-reference > header.site-header > nav.site-nav > div.site-nav__actions:nth-of-type(2) > a.btn.btn--primary.btn--sm:nth-of-type(2)",
+              "tag": "a",
+              "text": "Start",
+              "left": 1300.3,
+              "right": 1360,
+              "width": 59.7,
+              "height": 34,
+              "clipped": false,
+              "smallTapTarget": true
+            }
+          ],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    }
+  ],
+  "pass": true
+}

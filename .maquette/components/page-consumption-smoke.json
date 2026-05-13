@@ -1,0 +1,20 @@
+{
+  "projectRoot": "/Users/prb/conductor/workspaces/ferric-rules/montpelier/documentation",
+  "catalogPath": "/Users/prb/conductor/workspaces/ferric-rules/montpelier/documentation/.maquette/components/component-catalog.json",
+  "outputPath": "/Users/prb/conductor/workspaces/ferric-rules/montpelier/documentation/.maquette/components/page-consumption-smoke.html",
+  "cssPath": "/Users/prb/conductor/workspaces/ferric-rules/montpelier/documentation/.maquette/components/css/components.css",
+  "jsPath": "/Users/prb/conductor/workspaces/ferric-rules/montpelier/documentation/.maquette/components/js/components.js",
+  "cssHref": "css/components.css",
+  "jsSrc": "js/components.js",
+  "readyForPages": true,
+  "cssExists": true,
+  "jsExists": true,
+  "consoleMessages": [],
+  "cssLinked": true,
+  "jsLinked": true,
+  "replicaReferences": 0,
+  "renderedSectionCount": 7,
+  "bodyTextLength": 244,
+  "documentOverflowPx": 0,
+  "pass": true
+}

@@ -1,0 +1,211 @@
+{
+  "target": "../.maquette/components/core-actions.replica.html",
+  "targetUrl": "file:///Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/core-actions.replica.html",
+  "startedAt": "2026-05-12T13:46:25.900Z",
+  "finishedAt": "2026-05-12T13:46:29.278Z",
+  "allowDocumentOverflow": false,
+  "allowNavFailures": false,
+  "results": [
+    {
+      "viewport": {
+        "width": 390,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/core-actions-responsive/responsive-390.png",
+      "windowInnerWidth": 390,
+      "documentElementScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "documentOverflowPx": 0,
+      "wideComponents": [],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 0,
+          "visibleNavControlCount": 0,
+          "hasPrimaryNav": false,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 768,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/core-actions-responsive/responsive-768.png",
+      "windowInnerWidth": 768,
+      "documentElementScrollWidth": 768,
+      "bodyScrollWidth": 768,
+      "documentOverflowPx": 0,
+      "wideComponents": [],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 0,
+          "visibleNavControlCount": 0,
+          "hasPrimaryNav": false,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/core-actions-responsive/responsive-1024.png",
+      "windowInnerWidth": 1024,
+      "documentElementScrollWidth": 1024,
+      "bodyScrollWidth": 1024,
+      "documentOverflowPx": 0,
+      "wideComponents": [],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 0,
+          "visibleNavControlCount": 0,
+          "hasPrimaryNav": false,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/core-actions-responsive/responsive-1280.png",
+      "windowInnerWidth": 1280,
+      "documentElementScrollWidth": 1280,
+      "bodyScrollWidth": 1280,
+      "documentOverflowPx": 0,
+      "wideComponents": [],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": false,
+        "before": {
+          "compactExpected": false,
+          "navRootCount": 0,
+          "visibleNavControlCount": 0,
+          "hasPrimaryNav": false,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/core-actions-responsive/responsive-1440.png",
+      "windowInnerWidth": 1440,
+      "documentElementScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "documentOverflowPx": 0,
+      "wideComponents": [],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": false,
+        "before": {
+          "compactExpected": false,
+          "navRootCount": 0,
+          "visibleNavControlCount": 0,
+          "hasPrimaryNav": false,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    }
+  ],
+  "pass": true
+}

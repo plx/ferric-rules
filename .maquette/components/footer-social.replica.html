@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ferric-rules Rich Footer Component Reference</title>
+  <link rel="stylesheet" href="../brand/tokens.css">
+  <link rel="stylesheet" href="css/core-actions.components.css">
+  <link rel="stylesheet" href="css/navigation-layout.components.css">
+  <link rel="stylesheet" href="css/footer-social.components.css">
+</head>
+<body class="navigation-reference">
+  <main class="navigation-reference__main">
+    <section class="navigation-reference__panel">
+      <h1 class="navigation-reference__title">Rich Footer</h1>
+      <p class="navigation-reference__copy">Brand summary, link columns, newsletter input, social icon controls, and a compact legal/meta strip matching the approved landing concept.</p>
+    </section>
+  </main>
+
+  <footer class="footer-rich">
+    <div class="footer-rich__inner">
+      <div class="footer-rich__main">
+        <div class="footer-rich__brand">
+          <div class="footer-rich__brand-row">
+            <span class="site-nav__mark" aria-hidden="true"></span>
+            <span>ferric-rules</span>
+          </div>
+          <p class="footer-rich__summary">CLIPS-style rules, modern Rust embedding. Built for isolated engine instances, compatibility, and deterministic execution.</p>
+          <div class="footer-rich__social" aria-label="Social links">
+            <a class="footer-rich__social-link" href="#" aria-label="GitHub">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2a10 10 0 0 0-3 19c.5.1.7-.2.7-.5v-2c-2.8.6-3.4-1.2-3.4-1.2-.5-1.1-1.1-1.4-1.1-1.4-.9-.6.1-.6.1-.6 1 0 1.6 1.1 1.6 1.1.9 1.5 2.4 1.1 3 .8.1-.7.4-1.1.7-1.3-2.2-.3-4.6-1.1-4.6-5A3.9 3.9 0 0 1 7 7.1c-.1-.3-.5-1.3.1-2.7 0 0 .9-.3 2.9 1.1a9.8 9.8 0 0 1 5.2 0c2-1.4 2.9-1.1 2.9-1.1.6 1.4.2 2.4.1 2.7a3.9 3.9 0 0 1 1 2.7c0 3.9-2.4 4.7-4.6 5 .4.3.7 1 .7 2v3.7c0 .3.2.6.7.5A10 10 0 0 0 12 2Z"/></svg>
+            </a>
+            <a class="footer-rich__social-link" href="#" aria-label="Discussions">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>
+            </a>
+            <a class="footer-rich__social-link" href="#" aria-label="Email">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 4h16v16H4z"/><path d="m4 7 8 6 8-6"/></svg>
+            </a>
+          </div>
+        </div>
+
+        <div class="footer-rich__columns">
+          <div class="footer-rich__column">
+            <h2 class="footer-rich__heading">Docs</h2>
+            <a class="footer-rich__link" href="#">Getting started</a>
+            <a class="footer-rich__link" href="#">CLIPS compatibility</a>
+            <a class="footer-rich__link" href="#">Migration</a>
+            <a class="footer-rich__link" href="#">Performance</a>
+          </div>
+          <div class="footer-rich__column">
+            <h2 class="footer-rich__heading">Project</h2>
+            <a class="footer-rich__link" href="#">GitHub</a>
+            <a class="footer-rich__link" href="#">Issues</a>
+            <a class="footer-rich__link" href="#">Benchmarks</a>
+            <a class="footer-rich__link" href="#">Roadmap</a>
+          </div>
+          <div class="footer-rich__column">
+            <h2 class="footer-rich__heading">Meta</h2>
+            <a class="footer-rich__link" href="#">Changelog</a>
+            <a class="footer-rich__link" href="#">Version policy</a>
+            <a class="footer-rich__link" href="#">License</a>
+            <a class="footer-rich__link" href="#">Security</a>
+          </div>
+        </div>
+
+        <div class="footer-rich__column">
+          <h2 class="footer-rich__heading">Stay informed</h2>
+          <p class="footer-rich__summary">Release notes, compatibility changes, and benchmark updates.</p>
+          <form class="footer-rich__newsletter">
+            <label class="sr-only" for="footer-email">Email</label>
+            <input class="footer-rich__input" id="footer-email" type="email" placeholder="you@example.com">
+            <button class="btn btn--primary btn--sm" type="submit">Subscribe</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="footer-rich__bottom">
+        <div class="footer-rich__meta">
+          <span>© ferric-rules contributors</span>
+          <span>MIT or Apache-2.0</span>
+        </div>
+        <div class="footer-rich__meta">
+          <span>Built with Rust</span>
+          <span>Prototype</span>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

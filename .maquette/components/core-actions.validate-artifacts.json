@@ -1,0 +1,21 @@
+{
+  "projectRoot": "/Users/prb/conductor/workspaces/ferric-rules/montpelier/documentation",
+  "schemaRoot": "/Users/prb/.codex/plugins/cache/ixel/maquette/0.3.5/shared",
+  "results": [
+    {
+      "name": "design-system",
+      "schemaPath": "/Users/prb/.codex/plugins/cache/ixel/maquette/0.3.5/shared/design-system.schema.json",
+      "dataPath": "/Users/prb/conductor/workspaces/ferric-rules/montpelier/documentation/.maquette/brand/design-system.json",
+      "pass": true,
+      "errors": []
+    },
+    {
+      "name": "component-catalog",
+      "schemaPath": "/Users/prb/.codex/plugins/cache/ixel/maquette/0.3.5/shared/component-catalog.schema.json",
+      "dataPath": "/Users/prb/conductor/workspaces/ferric-rules/montpelier/documentation/.maquette/components/component-catalog.json",
+      "pass": true,
+      "errors": []
+    }
+  ],
+  "pass": true
+}

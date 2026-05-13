@@ -1,0 +1,602 @@
+{
+  "target": "../.maquette/components/landing-composites.replica.html",
+  "targetUrl": "file:///Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/landing-composites.replica.html",
+  "startedAt": "2026-05-12T14:24:59.307Z",
+  "finishedAt": "2026-05-12T14:25:02.238Z",
+  "allowDocumentOverflow": false,
+  "allowNavFailures": true,
+  "results": [
+    {
+      "viewport": {
+        "width": 390,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/landing-composites-responsive/responsive-390.png",
+      "windowInnerWidth": 390,
+      "documentElementScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "documentOverflowPx": 0,
+      "wideComponents": [
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 356,
+          "scrollWidth": 595,
+          "rectWidth": 356,
+          "hasInternalHorizontalScroll": true
+        },
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 563,
+          "scrollWidth": 563,
+          "rectWidth": 562.53,
+          "hasInternalHorizontalScroll": false
+        }
+      ],
+      "overflowOffenders": [
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body > code",
+          "tag": "code",
+          "className": "",
+          "left": 33,
+          "right": 595.53,
+          "width": 562.53,
+          "overflow": 205.53,
+          "acceptedInternalScroll": true,
+          "acceptedClosedOffscreenDrawer": false,
+          "offscreenDrawerSelector": ""
+        }
+      ],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body > code",
+          "tag": "code",
+          "className": "",
+          "left": 33,
+          "right": 595.53,
+          "width": 562.53,
+          "overflow": 205.53,
+          "acceptedInternalScroll": true,
+          "acceptedClosedOffscreenDrawer": false,
+          "offscreenDrawerSelector": ""
+        }
+      ],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 1,
+          "visibleNavControlCount": 5,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(1)",
+              "tag": "a",
+              "text": "Guide",
+              "left": 16,
+              "right": 53.94,
+              "width": 37.94,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(2)",
+              "tag": "a",
+              "text": "Compatibility",
+              "left": 77.94,
+              "right": 163.03,
+              "width": 85.09,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(3)",
+              "tag": "a",
+              "text": "Migration",
+              "left": 187.03,
+              "right": 247.95,
+              "width": 60.92,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(4)",
+              "tag": "a",
+              "text": "Performance",
+              "left": 271.95,
+              "right": 355.14,
+              "width": 83.19,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(5)",
+              "tag": "a",
+              "text": "GitHub",
+              "left": 16,
+              "right": 61.27,
+              "width": 45.27,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            }
+          ],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": false,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": false
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": false
+    },
+    {
+      "viewport": {
+        "width": 768,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/landing-composites-responsive/responsive-768.png",
+      "windowInnerWidth": 768,
+      "documentElementScrollWidth": 768,
+      "bodyScrollWidth": 768,
+      "documentOverflowPx": 0,
+      "wideComponents": [
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 718,
+          "scrollWidth": 718,
+          "rectWidth": 718,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 686,
+          "scrollWidth": 686,
+          "rectWidth": 686,
+          "hasInternalHorizontalScroll": false
+        }
+      ],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 1,
+          "visibleNavControlCount": 5,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(1)",
+              "tag": "a",
+              "text": "Guide",
+              "left": 392,
+              "right": 429.94,
+              "width": 37.94,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(2)",
+              "tag": "a",
+              "text": "Compatibility",
+              "left": 453.94,
+              "right": 539.03,
+              "width": 85.09,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(3)",
+              "tag": "a",
+              "text": "Migration",
+              "left": 563.03,
+              "right": 623.95,
+              "width": 60.92,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(4)",
+              "tag": "a",
+              "text": "Performance",
+              "left": 647.95,
+              "right": 731.14,
+              "width": 83.19,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(5)",
+              "tag": "a",
+              "text": "GitHub",
+              "left": 392,
+              "right": 437.27,
+              "width": 45.27,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            }
+          ],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": false,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": false
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": false
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/landing-composites-responsive/responsive-1024.png",
+      "windowInnerWidth": 1024,
+      "documentElementScrollWidth": 1024,
+      "bodyScrollWidth": 1024,
+      "documentOverflowPx": 0,
+      "wideComponents": [
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 974,
+          "scrollWidth": 974,
+          "rectWidth": 974,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 942,
+          "scrollWidth": 942,
+          "rectWidth": 942,
+          "hasInternalHorizontalScroll": false
+        }
+      ],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 1,
+          "visibleNavControlCount": 5,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(1)",
+              "tag": "a",
+              "text": "Guide",
+              "left": 357.33,
+              "right": 395.27,
+              "width": 37.94,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(2)",
+              "tag": "a",
+              "text": "Compatibility",
+              "left": 419.27,
+              "right": 504.36,
+              "width": 85.09,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(3)",
+              "tag": "a",
+              "text": "Migration",
+              "left": 528.36,
+              "right": 589.28,
+              "width": 60.92,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(4)",
+              "tag": "a",
+              "text": "Performance",
+              "left": 357.33,
+              "right": 440.52,
+              "width": 83.19,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(5)",
+              "tag": "a",
+              "text": "GitHub",
+              "left": 464.52,
+              "right": 509.78,
+              "width": 45.27,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            }
+          ],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": false,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": false
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": false
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/landing-composites-responsive/responsive-1280.png",
+      "windowInnerWidth": 1280,
+      "documentElementScrollWidth": 1280,
+      "bodyScrollWidth": 1280,
+      "documentOverflowPx": 0,
+      "wideComponents": [
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 1118,
+          "scrollWidth": 1118,
+          "rectWidth": 1118,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 1086,
+          "scrollWidth": 1086,
+          "rectWidth": 1086,
+          "hasInternalHorizontalScroll": false
+        }
+      ],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": false,
+        "before": {
+          "compactExpected": false,
+          "navRootCount": 1,
+          "visibleNavControlCount": 5,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(1)",
+              "tag": "a",
+              "text": "Guide",
+              "left": 442.66,
+              "right": 480.59,
+              "width": 37.94,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(2)",
+              "tag": "a",
+              "text": "Compatibility",
+              "left": 504.59,
+              "right": 589.69,
+              "width": 85.09,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(3)",
+              "tag": "a",
+              "text": "Migration",
+              "left": 613.69,
+              "right": 674.61,
+              "width": 60.92,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(4)",
+              "tag": "a",
+              "text": "Performance",
+              "left": 698.61,
+              "right": 781.8,
+              "width": 83.19,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(5)",
+              "tag": "a",
+              "text": "GitHub",
+              "left": 442.66,
+              "right": 487.92,
+              "width": 45.27,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            }
+          ],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/components/landing-composites-responsive/responsive-1440.png",
+      "windowInnerWidth": 1440,
+      "documentElementScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "documentOverflowPx": 0,
+      "wideComponents": [
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 1118,
+          "scrollWidth": 1118,
+          "rectWidth": 1118,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "body.landing-composites-reference > main.landing-composites-reference__main > div.landing-composites-reference__wide:nth-of-type(2) > div.code-panel > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 1086,
+          "scrollWidth": 1086,
+          "rectWidth": 1086,
+          "hasInternalHorizontalScroll": false
+        }
+      ],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": false,
+        "before": {
+          "compactExpected": false,
+          "navRootCount": 1,
+          "visibleNavControlCount": 5,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(1)",
+              "tag": "a",
+              "text": "Guide",
+              "left": 496,
+              "right": 533.94,
+              "width": 37.94,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(2)",
+              "tag": "a",
+              "text": "Compatibility",
+              "left": 557.94,
+              "right": 643.03,
+              "width": 85.09,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(3)",
+              "tag": "a",
+              "text": "Migration",
+              "left": 667.03,
+              "right": 727.95,
+              "width": 60.92,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(4)",
+              "tag": "a",
+              "text": "Performance",
+              "left": 751.95,
+              "right": 835.14,
+              "width": 83.19,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-composites-reference > footer.site-footer > nav.site-footer__links > a.site-footer__link:nth-of-type(5)",
+              "tag": "a",
+              "text": "GitHub",
+              "left": 859.14,
+              "right": 904.41,
+              "width": 45.27,
+              "height": 17.5,
+              "clipped": false,
+              "smallTapTarget": true
+            }
+          ],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    }
+  ],
+  "pass": true
+}

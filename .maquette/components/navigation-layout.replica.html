@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ferric-rules Navigation Component Reference</title>
+  <link rel="stylesheet" href="../brand/tokens.css">
+  <link rel="stylesheet" href="css/core-actions.components.css">
+  <link rel="stylesheet" href="css/navigation-layout.components.css">
+</head>
+<body class="navigation-reference">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a class="site-nav__brand" href="#">
+        <span class="site-nav__mark" aria-hidden="true"></span>
+        <span>ferric-rules</span>
+      </a>
+      <div class="site-nav__links">
+        <a class="site-nav__link" href="#" aria-current="page">Guide</a>
+        <a class="site-nav__link" href="#">Compatibility</a>
+        <a class="site-nav__link" href="#">Migration</a>
+        <a class="site-nav__link" href="#">Performance</a>
+        <a class="site-nav__link" href="#">Bindings</a>
+      </div>
+      <div class="site-nav__actions">
+        <a class="btn btn--ghost btn--sm" href="#">GitHub</a>
+        <a class="btn btn--primary btn--sm" href="#">Start</a>
+      </div>
+      <button class="site-nav__toggle" type="button" aria-label="Open navigation" aria-controls="nav-panel" aria-expanded="false" data-nav-toggle>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
+      </button>
+    </nav>
+    <div class="site-nav__drawer-scrim" data-nav-scrim data-open="false"></div>
+    <div class="site-nav__panel" id="nav-panel" data-open="false">
+      <a class="site-nav__panel-link" href="#" aria-current="page">Guide</a>
+      <a class="site-nav__panel-link" href="#">Compatibility</a>
+      <a class="site-nav__panel-link" href="#">Migration</a>
+      <a class="site-nav__panel-link" href="#">Performance</a>
+      <a class="site-nav__panel-link" href="#">Bindings</a>
+      <a class="site-nav__panel-link" href="#">GitHub</a>
+    </div>
+  </header>
+
+  <main class="navigation-reference__main" id="main">
+    <section class="navigation-reference__panel">
+      <h1 class="navigation-reference__title">Responsive Navigation Contract</h1>
+      <p class="navigation-reference__copy">Desktop uses inline links and actions. Tablet and mobile collapse into an accessible menu toggle with `aria-controls`, `aria-expanded`, stacked panel links, visible focus rings, and no document-level horizontal scrolling.</p>
+      <div class="component-demo__row">
+        <span class="badge badge--accent">desktop inline</span>
+        <span class="badge badge--success">mobile drawer</span>
+        <span class="badge badge--neutral">44px targets</span>
+      </div>
+    </section>
+  </main>
+
+  <script src="js/core-actions.components.js"></script>
+  <script src="js/navigation-layout.components.js"></script>
+</body>
+</html>

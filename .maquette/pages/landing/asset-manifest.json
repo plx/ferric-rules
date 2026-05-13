@@ -1,0 +1,119 @@
+{
+  "page": "landing",
+  "status": "reviewed",
+  "assets": [
+    {
+      "id": "concept",
+      "kind": "concept-screenshot",
+      "status": "generated",
+      "required_by": "page concept approval and implementation reference",
+      "path": ".maquette/pages/landing/concept.png",
+      "source": "image_gen",
+      "notes": "Inspected and approved before implementation."
+    },
+    {
+      "id": "ferric-rules-mark",
+      "kind": "logo",
+      "status": "reused-existing",
+      "required_by": "header and footer brand",
+      "path": ".maquette/logo/ferric-rules-mark-v1.svg",
+      "source": "existing-project",
+      "alt_text": "ferric-rules",
+      "notes": "Project-local draft SVG mark derived from the approved logo direction."
+    },
+    {
+      "id": "hero-drafting-visual",
+      "kind": "hero-image",
+      "status": "not-generated-with-reason",
+      "required_by": "hero",
+      "source": "code-generated",
+      "notes": "Implemented as page-local SVG/CSS drafting, girder, and Rete geometry to preserve crisp scaling without an extra raster."
+    },
+    {
+      "id": "page-primary",
+      "kind": "page-screenshot",
+      "status": "generated",
+      "required_by": "page review",
+      "path": ".maquette/pages/landing/page.png",
+      "source": "code-generated",
+      "notes": "Primary desktop page screenshot copied from the 1440px responsive capture."
+    },
+    {
+      "id": "page-390",
+      "kind": "page-screenshot",
+      "status": "generated",
+      "required_by": "responsive QA",
+      "path": ".maquette/pages/landing/page-responsive/responsive-390.png",
+      "source": "code-generated",
+      "notes": "Captured by Maquette responsive audit."
+    },
+    {
+      "id": "page-768",
+      "kind": "page-screenshot",
+      "status": "generated",
+      "required_by": "responsive QA",
+      "path": ".maquette/pages/landing/page-responsive/responsive-768.png",
+      "source": "code-generated",
+      "notes": "Captured by Maquette responsive audit."
+    },
+    {
+      "id": "page-1024",
+      "kind": "page-screenshot",
+      "status": "generated",
+      "required_by": "responsive QA",
+      "path": ".maquette/pages/landing/page-responsive/responsive-1024.png",
+      "source": "code-generated",
+      "notes": "Captured by Maquette responsive audit."
+    },
+    {
+      "id": "page-1280",
+      "kind": "page-screenshot",
+      "status": "generated",
+      "required_by": "responsive QA",
+      "path": ".maquette/pages/landing/page-responsive/responsive-1280.png",
+      "source": "code-generated",
+      "notes": "Captured by Maquette responsive audit."
+    },
+    {
+      "id": "page-1440",
+      "kind": "page-screenshot",
+      "status": "generated",
+      "required_by": "responsive QA",
+      "path": ".maquette/pages/landing/page-responsive/responsive-1440.png",
+      "source": "code-generated",
+      "notes": "Captured by Maquette responsive audit."
+    },
+    {
+      "id": "page-nav-open-390",
+      "kind": "page-screenshot",
+      "status": "generated",
+      "required_by": "mobile navigation QA",
+      "path": ".maquette/pages/landing/page-responsive/responsive-nav-open-390.png",
+      "source": "code-generated",
+      "notes": "Captured by Maquette responsive audit after toggling navigation."
+    },
+    {
+      "id": "page-nav-open-768",
+      "kind": "page-screenshot",
+      "status": "generated",
+      "required_by": "tablet navigation QA",
+      "path": ".maquette/pages/landing/page-responsive/responsive-nav-open-768.png",
+      "source": "code-generated",
+      "notes": "Captured by Maquette responsive audit after toggling navigation."
+    },
+    {
+      "id": "page-nav-open-1024",
+      "kind": "page-screenshot",
+      "status": "generated",
+      "required_by": "tablet navigation QA",
+      "path": ".maquette/pages/landing/page-responsive/responsive-nav-open-1024.png",
+      "source": "code-generated",
+      "notes": "Captured by Maquette responsive audit after toggling navigation."
+    }
+  ],
+  "review": {
+    "all_referenced_assets_exist": true,
+    "missing_assets": [],
+    "notes": "Every asset referenced by the implemented page and review exists locally. Hero drafting media is code-generated SVG/CSS rather than a raster asset."
+  }
+}

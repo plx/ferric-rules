@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ferric-rules Landing Composite Component Reference</title>
+  <link rel="stylesheet" href="../brand/tokens.css">
+  <link rel="stylesheet" href="css/core-actions.components.css">
+  <link rel="stylesheet" href="css/landing-composites.components.css">
+</head>
+<body class="landing-composites-reference">
+  <main class="landing-composites-reference__main">
+    <header class="landing-composites-reference__header">
+      <h1 class="landing-composites-reference__title">Landing Composites</h1>
+      <p class="landing-composites-reference__copy">Cards, code panels, and footer modules for a restrained documentation-first landing page.</p>
+    </header>
+
+    <div class="landing-composites-reference__grid">
+      <article class="feature-card">
+        <div class="feature-card__eyebrow">Compatibility</div>
+        <h2 class="feature-card__title">Mostly CLIPS-compatible semantics</h2>
+        <p class="feature-card__body">Keep practical rule-authoring patterns: ordered facts, templates, salience, negation, modules, focus stacks, and Rete joins.</p>
+      </article>
+      <article class="feature-card">
+        <div class="feature-card__eyebrow">Embedding</div>
+        <h2 class="feature-card__title">Independent engine instances</h2>
+        <p class="feature-card__body">Run multiple isolated decision contexts without global C runtime state or thread-unsafe singleton assumptions.</p>
+      </article>
+      <article class="feature-card">
+        <div class="feature-card__eyebrow">Rigor</div>
+        <h2 class="feature-card__title">Validation and benchmark policy</h2>
+        <p class="feature-card__body">Compatibility tests, scaling checks, Criterion benchmark policy, and clear documentation keep behavior reviewable.</p>
+      </article>
+    </div>
+
+    <div class="landing-composites-reference__wide">
+      <div class="code-panel">
+        <div class="code-panel__header">
+          <span class="code-panel__dot" aria-hidden="true"></span>
+          <span>Rust embedding example</span>
+        </div>
+        <pre class="code-panel__body"><code>use ferric::runtime::{Engine, RunLimit};
+
+let mut engine = Engine::with_rules(r#"
+  (defrule show-paywall
+    (user-tier free)
+    (accessed-premium-feature)
+    =>
+    (assert (show paywall)))
+"#)?;
+
+engine.assert_ordered_symbol("user-tier", "free")?;
+engine.assert_ordered_symbol("accessed-premium-feature", "yes")?;
+engine.run(RunLimit::Count(100))?;</code></pre>
+      </div>
+    </div>
+
+    <div class="landing-composites-reference__docs">
+      <a class="doc-card" href="#">
+        <h2 class="doc-card__title">User's Guide</h2>
+        <p class="doc-card__body">Embed the engine, assert facts, run rules, and read results with practical Rust examples.</p>
+        <div class="doc-card__meta"><span>Guide</span><span>Long-form</span></div>
+      </a>
+      <a class="doc-card" href="#">
+        <h2 class="doc-card__title">Compatibility Matrix</h2>
+        <p class="doc-card__body">Supported CLIPS constructs, behavioral notes, and deliberate exclusions.</p>
+        <div class="doc-card__meta"><span>Reference</span><span>CLIPS</span></div>
+      </a>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__brand">ferric-rules</div>
+    <nav class="site-footer__links" aria-label="Footer navigation">
+      <a class="site-footer__link" href="#">Guide</a>
+      <a class="site-footer__link" href="#">Compatibility</a>
+      <a class="site-footer__link" href="#">Migration</a>
+      <a class="site-footer__link" href="#">Performance</a>
+      <a class="site-footer__link" href="#">GitHub</a>
+    </nav>
+    <div class="site-footer__meta">MIT or Apache-2.0</div>
+  </footer>
+  <script src="js/landing-composites.components.js"></script>
+</body>
+</html>

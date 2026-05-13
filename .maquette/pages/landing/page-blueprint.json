@@ -1,0 +1,271 @@
+{
+  "meta": {
+    "page_name": "landing",
+    "page_type": "documentation-forward landing page",
+    "version": "1.0.0",
+    "status": "reviewed",
+    "based_on_component_catalog_version": "1.0.0",
+    "notes": "Blueprint derived from the approved ferric-rules landing concept and the approved reusable component catalog."
+  },
+  "references": [
+    {
+      "kind": "brand-board",
+      "path": ".maquette/brand/brand-board-v1.png",
+      "notes": "Approved industrial drafting brand board."
+    },
+    {
+      "kind": "component-sheet",
+      "path": ".maquette/components/component-sheet-core-actions-css-contract-v1.png",
+      "notes": "Core actions and badges."
+    },
+    {
+      "kind": "component-sheet",
+      "path": ".maquette/components/component-sheet-navigation-layout-css-contract-v1.png",
+      "notes": "Responsive navigation."
+    },
+    {
+      "kind": "component-sheet",
+      "path": ".maquette/components/component-sheet-landing-composites-css-contract-v1.png",
+      "notes": "Feature cards, doc cards, code panel, compact footer."
+    },
+    {
+      "kind": "component-sheet",
+      "path": ".maquette/components/component-sheet-footer-social-css-contract-v1.png",
+      "notes": "Rich footer and social/newsletter module."
+    },
+    {
+      "kind": "page-layout-contract",
+      "path": ".maquette/pages/landing/page-layout-contract.md"
+    },
+    {
+      "kind": "page-concept",
+      "path": ".maquette/pages/landing/concept.png"
+    }
+  ],
+  "viewports": [
+    {
+      "name": "desktop",
+      "width": 1440,
+      "height": 1400
+    },
+    {
+      "name": "tablet",
+      "width": 1024,
+      "height": 1366
+    },
+    {
+      "name": "mobile",
+      "width": 390,
+      "height": 1200
+    }
+  ],
+  "sections": [
+    {
+      "id": "nav",
+      "purpose": "Provide sticky brand, primary links, and responsive navigation.",
+      "order": 1,
+      "layout": {
+        "content_width": "max",
+        "columns": 12,
+        "alignment": "horizontal desktop, drawer mobile",
+        "notes": "Uses approved responsive navigation component."
+      },
+      "uses_components": [
+        {
+          "name": "responsive-navigation",
+          "variant": "desktop-inline/mobile-drawer"
+        },
+        {
+          "name": "button",
+          "variant": "primary and ghost"
+        }
+      ],
+      "introduces_new_composite": false,
+      "notes": "Approved SVG logo replaces the concept placeholder mark."
+    },
+    {
+      "id": "hero",
+      "purpose": "Introduce ferric-rules, CLIPS compatibility, Rust embedding, and the industrial drafting visual idea.",
+      "order": 2,
+      "layout": {
+        "content_width": "max",
+        "columns": 12,
+        "alignment": "left copy with right visual",
+        "notes": "Two-column desktop, stacked mobile; next section visible below fold."
+      },
+      "uses_components": [
+        {
+          "name": "button",
+          "variant": "primary and ghost"
+        },
+        {
+          "name": "badge",
+          "variant": "accent and neutral"
+        }
+      ],
+      "introduces_new_composite": true,
+      "notes": "Hero drafting visual is a page-specific SVG/CSS composite."
+    },
+    {
+      "id": "why",
+      "purpose": "Summarize compatibility, embedding, and rigor.",
+      "order": 3,
+      "layout": {
+        "content_width": "max",
+        "columns": 3,
+        "alignment": "equal-height card grid",
+        "notes": "Cards collapse to one column on mobile."
+      },
+      "uses_components": [
+        {
+          "name": "feature-card",
+          "variant": "default"
+        }
+      ],
+      "introduces_new_composite": false
+    },
+    {
+      "id": "syntax",
+      "purpose": "Show familiar CLIPS syntax with Rust embedding.",
+      "order": 4,
+      "layout": {
+        "content_width": "max",
+        "columns": 12,
+        "alignment": "side copy plus wide code panel",
+        "notes": "Code panel may scroll internally for long source lines on mobile."
+      },
+      "uses_components": [
+        {
+          "name": "code-panel",
+          "variant": "inverse"
+        },
+        {
+          "name": "badge",
+          "variant": "neutral"
+        }
+      ],
+      "introduces_new_composite": false
+    },
+    {
+      "id": "docs",
+      "purpose": "Point readers into documentation and reference areas.",
+      "order": 5,
+      "layout": {
+        "content_width": "max",
+        "columns": 3,
+        "alignment": "documentation card grid",
+        "notes": "Six cards, 3 columns desktop, 2 tablet, 1 mobile."
+      },
+      "uses_components": [
+        {
+          "name": "doc-card",
+          "variant": "link"
+        }
+      ],
+      "introduces_new_composite": false
+    },
+    {
+      "id": "status",
+      "purpose": "State project maturity, validation posture, and known exclusions.",
+      "order": 6,
+      "layout": {
+        "content_width": "max",
+        "columns": 12,
+        "alignment": "status rows plus side callout",
+        "notes": "Page-specific compact status grid."
+      },
+      "uses_components": [
+        {
+          "name": "badge",
+          "variant": "success, warning, accent"
+        },
+        {
+          "name": "button",
+          "variant": "ghost"
+        }
+      ],
+      "introduces_new_composite": true,
+      "notes": "Status grid is page-specific content; no reusable component gap."
+    },
+    {
+      "id": "footer",
+      "purpose": "Provide terminal brand summary, documentation links, project links, social links, newsletter, and legal metadata.",
+      "order": 7,
+      "layout": {
+        "content_width": "max",
+        "columns": 12,
+        "alignment": "rich footer multicolumn desktop, stacked mobile",
+        "notes": "Uses approved rich-footer component."
+      },
+      "uses_components": [
+        {
+          "name": "rich-footer",
+          "variant": "rich inverse newsletter social"
+        },
+        {
+          "name": "button",
+          "variant": "primary"
+        }
+      ],
+      "introduces_new_composite": false
+    }
+  ],
+  "new_composites": [
+    {
+      "name": "hero-drafting-visual",
+      "purpose": "Render crisp architectural drafting, girder, and Rete network imagery without a raster dependency.",
+      "notes": "Page-specific SVG/CSS visual, not a reusable component library addition."
+    },
+    {
+      "name": "status-grid",
+      "purpose": "Compact factual project status and known exclusions section.",
+      "notes": "Page-specific editorial layout using badges and text."
+    }
+  ],
+  "acceptance_criteria": [
+    "Uses approved brand tokens, component CSS, and project-local logo SVG.",
+    "Implements every visible concept region or documents a concrete reason for a different implementation.",
+    "Responsive navigation works at desktop, tablet, and mobile widths with open-state screenshots.",
+    "Hero visual preserves drafting, girder, protractor, and abstract Rete motifs without blank media bands.",
+    "Documentation cards and feature cards keep shared anatomy and stable action/meta alignment.",
+    "Rich footer includes brand summary, link columns, newsletter, social icons, and legal/version metadata.",
+    "No document-level horizontal overflow at 390, 768, 1024, 1280, or 1440px.",
+    "Long code lines may scroll internally on 390px only if documented.",
+    "Page blueprint and asset manifest validate against Maquette schemas."
+  ],
+  "quality_review": {
+    "font_rationale": "Uses the approved Inter/system sans stack and IBM Plex Mono/SFMono fallback; no novelty industrial font or Impact substitute.",
+    "concept_region_inventory": "All concept regions are inventoried before coding in concept-region-inventory.md.",
+    "page_layout_contract": "Section order, density, responsive nav, media behavior, and footer structure are recorded in page-layout-contract.md.",
+    "asset_manifest": "Concept and logo assets are listed before coding; screenshots update after QA capture.",
+    "component_sheet_gallery_fidelity": "Page consumes approved component CSS/JS and cataloged APIs rather than copying the reference gallery layout.",
+    "repeated_card_alignment": "Feature and documentation cards use shared grid anatomy and bottom-pinned terminal rows.",
+    "footer_fidelity": "Rich footer is required and covered by the footer/social component batch.",
+    "mobile_drawer_scrollability": "Responsive nav drawer behavior is inherited from the tested navigation component and will be revalidated on the page.",
+    "social_icon_strategy": "Social links use recognizable inline SVG icons with accessible labels.",
+    "notes": "Final review records screenshot evidence and any accepted internal scroll exception."
+  },
+  "assets": {
+    "concept_path": ".maquette/pages/landing/concept.png",
+    "html_path": ".maquette/pages/landing/page.html",
+    "css_path": ".maquette/pages/landing/page.css",
+    "js_path": ".maquette/pages/landing/page.js",
+    "screenshot_paths": [
+      ".maquette/pages/landing/page.png",
+      ".maquette/pages/landing/page-responsive/responsive-390.png",
+      ".maquette/pages/landing/page-responsive/responsive-768.png",
+      ".maquette/pages/landing/page-responsive/responsive-1024.png",
+      ".maquette/pages/landing/page-responsive/responsive-1280.png",
+      ".maquette/pages/landing/page-responsive/responsive-1440.png"
+    ],
+    "nav_open_screenshot_paths": [
+      ".maquette/pages/landing/page-responsive/responsive-nav-open-390.png",
+      ".maquette/pages/landing/page-responsive/responsive-nav-open-768.png",
+      ".maquette/pages/landing/page-responsive/responsive-nav-open-1024.png"
+    ],
+    "concept_region_inventory_path": ".maquette/pages/landing/concept-region-inventory.md",
+    "page_layout_contract_path": ".maquette/pages/landing/page-layout-contract.md",
+    "asset_manifest_path": ".maquette/pages/landing/asset-manifest.json",
+    "review_notes_path": ".maquette/pages/landing/review.md"
+  }
+}

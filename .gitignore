@@ -32,6 +32,11 @@ crates/ferric-napi/*.node
 crates/ferric-napi/node_modules/
 
 # Node.js / TypeScript build artifacts
+documentation/node_modules/
+documentation/.maquette
+site/dist/
+site/.astro/
+site/node_modules/
 packages/ferric/dist/
 packages/ferric/node_modules/
 
