@@ -29,6 +29,6 @@ Known scope decisions:
 
 ## Repository
 
-Source code lives at [github.com/prb/ferric-rules](https://github.com/prb/ferric-rules).
+Source code lives at [github.com/plx/ferric-rules](https://github.com/plx/ferric-rules).
 
 The crate version in this workspace is `0.1.0`, and the project is dual licensed under `MIT OR Apache-2.0`.

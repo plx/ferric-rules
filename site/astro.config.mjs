@@ -19,11 +19,11 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/prb/ferric-rules',
+          href: 'https://github.com/plx/ferric-rules',
         },
       ],
       editLink: {
-        baseUrl: 'https://github.com/prb/ferric-rules/edit/main/site/',
+        baseUrl: 'https://github.com/plx/ferric-rules/edit/main/site/',
       },
       sidebar: [
         {
