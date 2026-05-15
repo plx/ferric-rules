@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread::{self, JoinHandle, ThreadId};
 
 use ferric_runtime::{Engine, LoadResult, RunLimit, RunResult};
 
@@ -28,8 +28,12 @@ pub struct PinnedEngine {
 struct PinnedInner {
     /// Wrapped sender. `None` ⇒ closed; subsequent `try_send` returns `Closed`.
     tx: Mutex<Option<SyncSender<Request>>>,
-    /// Worker join handle. `None` after `close()` joins it.
+    /// Worker join handle. `None` after `close()` joins (or detaches) it.
     worker: Mutex<Option<JoinHandle<()>>>,
+    /// Identity of the worker thread. Used by `do_close` to detect a
+    /// re-entrant close from inside a worker-side callback and skip the
+    /// self-join (which would deadlock).
+    worker_thread_id: ThreadId,
     /// Cancellation state shared with worker-side `run_with_cancel` calls.
     cancel: Arc<CancelState>,
     /// Fast-path "is closed" without touching the sender mutex.
@@ -92,9 +96,11 @@ impl PinnedEngine {
             }
         }
 
+        let worker_thread_id = worker.thread().id();
         let inner = PinnedInner {
             tx: Mutex::new(Some(tx)),
             worker: Mutex::new(Some(worker)),
+            worker_thread_id,
             cancel,
             closed: AtomicBool::new(false),
         };
@@ -400,7 +406,15 @@ impl PinnedInner {
             guard.take()
         };
         if let Some(h) = handle {
-            h.join().map_err(|_| PinnedError::DispatchFailed)?;
+            // Re-entrant close from a worker-owned callback: joining
+            // ourselves would deadlock. Detach instead — the worker will
+            // observe the dropped sender after the current callback
+            // returns and exit on its own.
+            if thread::current().id() == self.worker_thread_id {
+                drop(h);
+            } else {
+                h.join().map_err(|_| PinnedError::DispatchFailed)?;
+            }
         }
         Ok(())
     }

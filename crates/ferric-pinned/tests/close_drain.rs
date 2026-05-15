@@ -1,6 +1,7 @@
 //! Close drains accepted requests before joining the worker.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
@@ -81,4 +82,32 @@ fn requests_submitted_after_close_return_closed() {
 
     let err = engine.with_engine(|_| Ok(())).unwrap_err();
     assert!(matches!(err, PinnedError::Closed));
+}
+
+/// Calling `close()` from inside a worker-side callback must not self-join
+/// (which would deadlock the worker). The detached worker still exits
+/// cleanly once the callback returns and observes the dropped sender.
+#[test]
+fn reentrant_close_from_worker_callback_does_not_deadlock() {
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let worker = thread::spawn(move || {
+        let engine = PinnedEngine::new(PinnedEngineOptions::default()).unwrap();
+        let inner = engine.clone();
+        engine
+            .with_engine(move |_engine| {
+                inner.close().expect("re-entrant close should succeed");
+                Ok(())
+            })
+            .expect("with_engine should complete");
+
+        assert!(engine.is_closed());
+        let err = engine.with_engine(|_| Ok(())).unwrap_err();
+        assert!(matches!(err, PinnedError::Closed));
+        done_tx.send(()).unwrap();
+    });
+
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("re-entrant close deadlocked");
+    worker.join().unwrap();
 }
