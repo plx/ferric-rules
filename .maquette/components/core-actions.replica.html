@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ferric-rules Core Actions Component Reference</title>
+  <link rel="stylesheet" href="../brand/tokens.css">
+  <link rel="stylesheet" href="css/core-actions.components.css">
+</head>
+<body class="component-reference">
+  <main class="component-reference__wrap">
+    <header class="component-reference__header">
+      <div class="component-reference__eyebrow">Core actions CSS contract</div>
+      <h1 class="component-reference__title">Buttons, Icon Buttons, Badges</h1>
+      <p class="component-reference__intro">Reusable action primitives for the industrial drafting system. This reference implements the approved brand tokens and the inspected core-actions CSS-contract poster.</p>
+    </header>
+
+    <div class="component-reference__grid">
+      <section class="component-demo component-demo--wide" aria-labelledby="button-variants">
+        <h2 class="component-demo__title" id="button-variants">Button Variants</h2>
+        <p class="component-demo__note">Primary rust accent, graphite secondary, quiet ghost, and danger feedback.</p>
+        <div class="component-demo__row">
+          <button class="btn btn--primary" type="button">
+            <span class="btn__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+            </span>
+            Get Started
+          </button>
+          <button class="btn btn--secondary" type="button">Read Guide</button>
+          <button class="btn btn--ghost" type="button">Compatibility</button>
+          <button class="btn btn--danger" type="button">Delete Rule</button>
+          <button class="btn btn--primary is-loading" type="button">Loading</button>
+          <button class="btn btn--secondary" type="button" disabled>Disabled</button>
+        </div>
+      </section>
+
+      <section class="component-demo" aria-labelledby="button-sizes">
+        <h2 class="component-demo__title" id="button-sizes">Button Sizes</h2>
+        <div class="component-demo__row">
+          <button class="btn btn--sm btn--secondary" type="button">Small</button>
+          <button class="btn btn--md btn--primary" type="button">Medium</button>
+          <button class="btn btn--lg btn--ghost" type="button">Large</button>
+        </div>
+      </section>
+
+      <section class="component-demo component-demo--inverse" aria-labelledby="inverse-actions">
+        <h2 class="component-demo__title" id="inverse-actions">Inverse Surface</h2>
+        <p class="component-demo__note">Ghost and active treatments remain legible on graphite surfaces.</p>
+        <div class="component-demo__row">
+          <button class="btn btn--primary" type="button">Run Engine</button>
+          <button class="btn btn--ghost" type="button">View Output</button>
+        </div>
+      </section>
+
+      <section class="component-demo" aria-labelledby="icon-buttons">
+        <h2 class="component-demo__title" id="icon-buttons">Icon Buttons</h2>
+        <div class="component-demo__row">
+          <button class="icon-btn" type="button" aria-label="Copy example">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+          <button class="icon-btn is-selected" type="button" aria-label="Pin section" aria-pressed="true" data-toggle-selected>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m14 4 6 6"/><path d="M9 9 4 14l6 6 5-5"/><path d="m14 4-5 5 6 6 5-5"/></svg>
+          </button>
+          <button class="icon-btn" type="button" aria-label="Open settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3h.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.6.9h.1a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
+          </button>
+          <button class="icon-btn" type="button" aria-label="Unavailable action" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </div>
+      </section>
+
+      <section class="component-demo" aria-labelledby="badges">
+        <h2 class="component-demo__title" id="badges">Badges</h2>
+        <div class="component-demo__row">
+          <span class="badge badge--neutral">Prototype</span>
+          <span class="badge badge--accent">Rete</span>
+          <span class="badge badge--success">Supported</span>
+          <span class="badge badge--warning">Partial</span>
+          <span class="badge badge--danger">Unsupported</span>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="js/core-actions.components.js"></script>
+</body>
+</html>

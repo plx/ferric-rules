@@ -1,0 +1,153 @@
+{
+  "target": "../.maquette/components/replica-gallery.html",
+  "targetUrl": "file:///Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/components/replica-gallery.html",
+  "minContrast": 4.5,
+  "allowMissingContrast": true,
+  "requiredSelectors": [
+    {
+      "selector": ".btn",
+      "alternatives": [
+        ".btn"
+      ],
+      "matchedSelector": ".btn",
+      "found": true
+    },
+    {
+      "selector": ".site-nav",
+      "alternatives": [
+        ".site-nav"
+      ],
+      "matchedSelector": ".site-nav",
+      "found": true
+    },
+    {
+      "selector": ".site-nav__toggle",
+      "alternatives": [
+        ".site-nav__toggle"
+      ],
+      "matchedSelector": ".site-nav__toggle",
+      "found": true
+    },
+    {
+      "selector": ".feature-card",
+      "alternatives": [
+        ".feature-card"
+      ],
+      "matchedSelector": ".feature-card",
+      "found": true
+    },
+    {
+      "selector": ".doc-card",
+      "alternatives": [
+        ".doc-card"
+      ],
+      "matchedSelector": ".doc-card",
+      "found": true
+    },
+    {
+      "selector": ".code-panel",
+      "alternatives": [
+        ".code-panel"
+      ],
+      "matchedSelector": ".code-panel",
+      "found": true
+    },
+    {
+      "selector": ".site-footer",
+      "alternatives": [
+        ".site-footer"
+      ],
+      "matchedSelector": ".site-footer",
+      "found": true
+    },
+    {
+      "selector": ".footer-rich",
+      "alternatives": [
+        ".footer-rich"
+      ],
+      "matchedSelector": ".footer-rich",
+      "found": true
+    },
+    {
+      "selector": ".footer-rich__social-link",
+      "alternatives": [
+        ".footer-rich__social-link"
+      ],
+      "matchedSelector": ".footer-rich__social-link",
+      "found": true
+    }
+  ],
+  "recommendedSelectors": [
+    {
+      "selector": ".icon-btn",
+      "found": true
+    },
+    {
+      "selector": ".site-nav",
+      "found": true
+    },
+    {
+      "selector": ".data-table",
+      "found": false
+    },
+    {
+      "selector": ".service-card",
+      "found": false
+    },
+    {
+      "selector": ".pricing-card",
+      "found": false
+    },
+    {
+      "selector": ".newsletter",
+      "found": false
+    },
+    {
+      "selector": ".footer-module",
+      "found": false
+    }
+  ],
+  "contrastSamples": {
+    "lightActive": {
+      "selector": ".site-nav:not(.nav--dark) .site-nav__link.is-active",
+      "found": false,
+      "ratio": null,
+      "pass": true
+    },
+    "darkActive": {
+      "selector": ".site-nav.nav--dark .site-nav__link.is-active",
+      "found": false,
+      "ratio": null,
+      "pass": true
+    },
+    "darkDefault": {
+      "selector": ".site-nav.nav--dark .site-nav__link:not(.is-active)",
+      "found": false,
+      "ratio": null,
+      "pass": true
+    },
+    "iconSelected": {
+      "selector": ".icon-btn.is-selected",
+      "found": true,
+      "text": "rgb(250, 250, 248)",
+      "background": "rgb(183, 65, 14)",
+      "renderedBackground": "rgb(183, 65, 14)",
+      "ratio": 5.32,
+      "pass": true
+    }
+  },
+  "apiSmoke": {
+    "reusableFilesLinked": true,
+    "stylesheetHrefs": [
+      "../brand/tokens.css",
+      "css/components.css"
+    ],
+    "scriptSrcs": [
+      "js/components.js"
+    ],
+    "navToggle": true,
+    "navApiReady": true,
+    "componentClasses": true
+  },
+  "pass": true
+}

@@ -1,0 +1,664 @@
+{
+  "meta": {
+    "system_name": "ferric-rules Industrial Drafting System",
+    "platform": "web",
+    "version": "1.0.0",
+    "status": "approved",
+    "source_mode": "greenfield",
+    "created_at": "2026-05-12T05:57:41-07:00",
+    "last_updated_at": "2026-05-12T05:57:41-07:00",
+    "notes": "Derived from approved brand board v1. The board establishes an industrial drafting visual system for documentation-forward web UI; it does not define the logo."
+  },
+  "brief": {
+    "product_summary": "A mostly CLIPS-compatible forward-chaining rules engine in Rust, built for easy embedding as independent engine instances in modern applications.",
+    "audience": "Rust developers, teams migrating practical CLIPS rule sets, SDK and binding authors, and engineers reading long-form implementation documentation.",
+    "tone": [
+      "industrial",
+      "precise",
+      "durable",
+      "restrained",
+      "technical",
+      "architectural",
+      "non-fatiguing"
+    ],
+    "keywords": [
+      "steel",
+      "ferric oxide",
+      "architectural drafting",
+      "Rete network",
+      "embedded runtime",
+      "CLIPS compatibility",
+      "Rust"
+    ],
+    "constraints": [
+      "Keep rust tones as accents rather than dominant page color.",
+      "Use fine drafting lines only as low-contrast support texture behind content.",
+      "Avoid gritty decay, mascots, humanoid figures, and generic SaaS gloss.",
+      "Keep documentation pages quiet enough for repeated reading.",
+      "Do not treat the brand-board image as a logo source."
+    ],
+    "accessibility": {
+      "contrast_target": "AA",
+      "reduced_motion_support": true,
+      "focus_visibility": "high-contrast",
+      "min_hit_target_px": 44,
+      "notes": "Rust/ferric accents must not be used for long body copy. Focus indicators should combine color, outline, and shape."
+    }
+  },
+  "references": [
+    {
+      "kind": "brand-board",
+      "path": ".maquette/brand/brand-board-v1.png",
+      "role": "primary",
+      "notes": "Approved 1:1 visual-system board with steel graphite neutrals, ferric oxide accents, drafting lines, structural girders, and abstract Rete network geometry."
+    }
+  ],
+  "tokens": {
+    "color": {
+      "palette": {
+        "brand": {
+          "100": "#FCDEC7",
+          "200": "#FAC9B0",
+          "400": "#E07A39",
+          "500": "#D1531A",
+          "600": "#B7410E",
+          "800": "#5B1F12"
+        },
+        "neutral": {
+          "50": "#FAFAF8",
+          "100": "#F6F7F9",
+          "200": "#E8EBEE",
+          "300": "#D1D5DB",
+          "500": "#6B7280",
+          "700": "#2B3138",
+          "800": "#1C1F24",
+          "900": "#0F1115"
+        },
+        "accent": {
+          "100": "#E4F0FF",
+          "200": "#BBD8F7",
+          "300": "#8FC0ED",
+          "500": "#2563EB",
+          "700": "#1D4ED8"
+        },
+        "success": {
+          "100": "#DDF7E8",
+          "300": "#84DE80",
+          "500": "#15803D",
+          "700": "#14532D"
+        },
+        "warning": {
+          "100": "#FFF3C4",
+          "300": "#FCD34D",
+          "500": "#B45309",
+          "700": "#78350F"
+        },
+        "danger": {
+          "100": "#FFE4E6",
+          "300": "#F87171",
+          "500": "#EF4444",
+          "700": "#991B1B"
+        },
+        "info": {
+          "100": "#E0F2FE",
+          "300": "#60A5FA",
+          "500": "#2563EB",
+          "700": "#1E3A8A"
+        }
+      },
+      "semantic": {
+        "background": {
+          "page": "#FAFAF8",
+          "surface": "#FFFFFF",
+          "surface_muted": "#F1F3F5",
+          "surface_elevated": "#F6F7F9",
+          "inverse": "#0F1115",
+          "inverse_muted": "#161A1F"
+        },
+        "text": {
+          "primary": "#0F1115",
+          "secondary": "#475569",
+          "muted": "#6B7280",
+          "inverse": "#FAFAF8",
+          "accent": "#B7410E",
+          "code": "#1C1F24"
+        },
+        "border": {
+          "subtle": "#E1E5EA",
+          "default": "#D1D5DB",
+          "strong": "#9CA3AF",
+          "inverse": "#2B3138"
+        },
+        "action": {
+          "primary": "#D1531A",
+          "primary_hover": "#B7410E",
+          "primary_active": "#8C2F12",
+          "secondary": "#2B3138",
+          "secondary_hover": "#1C1F24",
+          "ghost_hover": "#F1F3F5"
+        },
+        "feedback": {
+          "success": "#15803D",
+          "warning": "#B45309",
+          "danger": "#EF4444",
+          "info": "#2563EB",
+          "neutral": "#6B7280"
+        },
+        "state_overlay": {
+          "hover": "rgba(209, 83, 26, 0.08)",
+          "active": "rgba(209, 83, 26, 0.14)",
+          "selected": "rgba(209, 83, 26, 0.12)",
+          "disabled": "rgba(107, 114, 128, 0.18)",
+          "scrim": "rgba(15, 17, 21, 0.56)"
+        },
+        "focus_ring": {
+          "default": "#E07A39",
+          "inverse": "#FAC9B0"
+        }
+      }
+    },
+    "typography": {
+      "families": {
+        "body": "\"Inter\", system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+        "heading": "\"Inter\", system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+        "mono": "\"IBM Plex Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, monospace"
+      },
+      "weights": {
+        "regular": 400,
+        "medium": 500,
+        "semibold": 600,
+        "bold": 700
+      },
+      "scale": {
+        "caption": {
+          "font_size": "12px",
+          "line_height": "16px",
+          "letter_spacing": "0",
+          "font_weight": 400
+        },
+        "small": {
+          "font_size": "14px",
+          "line_height": "20px",
+          "letter_spacing": "0",
+          "font_weight": 400
+        },
+        "body": {
+          "font_size": "16px",
+          "line_height": "24px",
+          "letter_spacing": "0",
+          "font_weight": 400
+        },
+        "label": {
+          "font_size": "14px",
+          "line_height": "20px",
+          "letter_spacing": "0",
+          "font_weight": 600
+        },
+        "h4": {
+          "font_size": "18px",
+          "line_height": "28px",
+          "letter_spacing": "0",
+          "font_weight": 600
+        },
+        "h3": {
+          "font_size": "24px",
+          "line_height": "32px",
+          "letter_spacing": "0",
+          "font_weight": 600
+        },
+        "h2": {
+          "font_size": "32px",
+          "line_height": "40px",
+          "letter_spacing": "0",
+          "font_weight": 600
+        },
+        "h1": {
+          "font_size": "48px",
+          "line_height": "56px",
+          "letter_spacing": "0",
+          "font_weight": 700
+        },
+        "code": {
+          "font_size": "14px",
+          "line_height": "22px",
+          "letter_spacing": "0",
+          "font_weight": 400
+        }
+      },
+      "usage": {
+        "body": "Use Inter or a system UI fallback for page copy, guides, labels, navigation, and short-form documentation.",
+        "label": "Use semibold Inter with exact casing for labels, tabs, badges, and compact state indicators.",
+        "code": "Use IBM Plex Mono or a standard monospace fallback for CLIPS snippets, Rust snippets, tokens, tables, and technical data.",
+        "h1": "Use measured, technical display headings with weight 700 and no negative tracking.",
+        "h2": "Use section headings that feel architectural and calm, not oversized marketing display.",
+        "h3": "Use for card groups, documentation sections, and feature summaries.",
+        "h4": "Use for compact panels and component headings."
+      },
+      "font_strategy": {
+        "heading_personality": "Precise, utilitarian, engineered, with enough weight for industrial authority but no condensed novelty treatment.",
+        "body_personality": "Quiet documentation UI text optimized for long reading sessions.",
+        "preferred_heading_fonts": "Inter, IBM Plex Sans, Source Sans 3, or equivalent modern grotesk.",
+        "preferred_body_fonts": "Inter, system UI, Source Sans 3, or equivalent documentation-friendly sans.",
+        "css_fallback_stacks": "Sans: \"Inter\", system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif. Mono: \"IBM Plex Mono\", \"SFMono-Regular\", Menlo, Monaco, Consolas, monospace. Optional long-form serif: \"Source Serif 4\", Georgia, serif.",
+        "fallback_rationale": "The approved board names Inter for UI, IBM Plex Mono for code, and Source Serif 4/Georgia as an optional long-form documentation voice. These are practical open-source or system-safe choices.",
+        "avoid_fonts": "Avoid Impact, novelty stencil fonts, overly condensed industrial display faces, and distressed type."
+      }
+    },
+    "space": {
+      "base": "8px",
+      "scale": {
+        "0": "0px",
+        "1": "4px",
+        "2": "8px",
+        "3": "12px",
+        "4": "16px",
+        "5": "24px",
+        "6": "32px",
+        "7": "40px",
+        "8": "48px",
+        "10": "64px",
+        "12": "80px",
+        "16": "96px"
+      }
+    },
+    "radius": {
+      "none": "0px",
+      "xs": "2px",
+      "sm": "4px",
+      "md": "6px",
+      "lg": "8px",
+      "xl": "12px",
+      "2xl": "16px",
+      "3xl": "24px"
+    },
+    "border": {
+      "width": {
+        "hairline": "1px",
+        "default": "1px",
+        "strong": "2px"
+      },
+      "style": "solid",
+      "focus_ring": {
+        "width": "2px",
+        "offset": "2px",
+        "radius_strategy": "Follow component radius with a precise drafting-line outline."
+      }
+    },
+    "shadow": {
+      "none": "none",
+      "1": "0 1px 2px rgba(15, 17, 21, 0.06)",
+      "2": "0 2px 6px rgba(15, 17, 21, 0.08)",
+      "3": "0 4px 16px rgba(15, 17, 21, 0.12)",
+      "4": "0 8px 24px rgba(15, 17, 21, 0.16)"
+    },
+    "motion": {
+      "duration": {
+        "fast": "120ms",
+        "base": "180ms",
+        "slow": "240ms"
+      },
+      "easing": {
+        "standard": "cubic-bezier(0.2, 0, 0, 1)",
+        "emphasized": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "linear": "linear"
+      },
+      "reduced_motion": {
+        "enabled": true,
+        "strategy": "Disable ambient motion and keep only immediate state changes."
+      }
+    },
+    "layout": {
+      "content_width": {
+        "narrow": "720px",
+        "readable": "880px",
+        "wide": "1120px",
+        "max": "1280px"
+      },
+      "grid": {
+        "columns": 12,
+        "gutter": "24px",
+        "margin_inline": "24px"
+      },
+      "breakpoints": {
+        "sm": "390px",
+        "md": "768px",
+        "lg": "1024px",
+        "xl": "1280px",
+        "2xl": "1440px"
+      }
+    },
+    "opacity": {
+      "disabled": 0.48,
+      "muted": 0.72,
+      "drafting_line": 0.18,
+      "overlay": 0.56
+    }
+  },
+  "components_required": [
+    {
+      "name": "button",
+      "category": "form",
+      "priority": "core",
+      "must_implement": true,
+      "variants": [
+        "primary",
+        "secondary",
+        "ghost",
+        "danger"
+      ],
+      "sizes": [
+        "sm",
+        "md",
+        "lg"
+      ],
+      "states": [
+        "default",
+        "hover",
+        "focus-visible",
+        "active",
+        "disabled",
+        "loading"
+      ],
+      "anatomy": [
+        "label",
+        "optional leading icon",
+        "optional trailing icon"
+      ],
+      "recipe": {
+        "height": {
+          "sm": "32px",
+          "md": "40px",
+          "lg": "48px"
+        },
+        "padding_inline": {
+          "sm": "12px",
+          "md": "16px",
+          "lg": "20px"
+        },
+        "radius": "6px",
+        "border_width": "1px",
+        "shadow": "none",
+        "transition": "background-color 180ms cubic-bezier(0.2, 0, 0, 1), border-color 180ms cubic-bezier(0.2, 0, 0, 1), color 180ms cubic-bezier(0.2, 0, 0, 1)",
+        "background": {
+          "primary": "#D1531A",
+          "secondary": "#2B3138",
+          "ghost": "transparent",
+          "danger": "#EF4444"
+        },
+        "text": {
+          "primary": "#FFFFFF",
+          "secondary": "#FAFAF8",
+          "ghost": "#1C1F24",
+          "danger": "#FFFFFF"
+        },
+        "border": {
+          "primary": "#D1531A",
+          "secondary": "#2B3138",
+          "ghost": "#D1D5DB",
+          "danger": "#EF4444"
+        },
+        "notes": "Button language should feel precise and utilitarian; avoid pill-like radii."
+      }
+    },
+    {
+      "name": "input",
+      "category": "form",
+      "priority": "core",
+      "must_implement": true,
+      "variants": [
+        "text",
+        "textarea",
+        "select"
+      ],
+      "sizes": [
+        "md",
+        "lg"
+      ],
+      "states": [
+        "default",
+        "hover",
+        "focus-visible",
+        "disabled",
+        "error",
+        "readonly"
+      ],
+      "anatomy": [
+        "label",
+        "control",
+        "helper text",
+        "error text"
+      ],
+      "recipe": {
+        "height": {
+          "md": "40px",
+          "lg": "48px"
+        },
+        "padding_inline": {
+          "md": "12px",
+          "lg": "16px"
+        },
+        "radius": "4px",
+        "border_width": "1px",
+        "shadow": "none",
+        "transition": "border-color 180ms cubic-bezier(0.2, 0, 0, 1), box-shadow 180ms cubic-bezier(0.2, 0, 0, 1)",
+        "background": {
+          "default": "#FFFFFF",
+          "muted": "#F6F7F9",
+          "disabled": "#F1F3F5"
+        },
+        "text": {
+          "default": "#0F1115",
+          "placeholder": "#6B7280",
+          "disabled": "#6B7280"
+        },
+        "border": {
+          "default": "#D1D5DB",
+          "hover": "#9CA3AF",
+          "focus": "#E07A39",
+          "error": "#EF4444"
+        },
+        "notes": "Use crisp rectangular drafting-line controls with clear focus outlines."
+      }
+    },
+    {
+      "name": "navigation",
+      "category": "navigation",
+      "priority": "core",
+      "must_implement": true,
+      "variants": [
+        "desktop-inline",
+        "tablet-collapsed",
+        "mobile-collapsed",
+        "mobile-expanded"
+      ],
+      "sizes": [
+        "compact",
+        "standard"
+      ],
+      "states": [
+        "default",
+        "hover",
+        "focus-visible",
+        "active",
+        "open"
+      ],
+      "anatomy": [
+        "brand area",
+        "primary links",
+        "utility action",
+        "menu toggle",
+        "drawer or stacked panel"
+      ],
+      "recipe": {
+        "height": {
+          "compact": "56px",
+          "standard": "64px"
+        },
+        "padding_inline": {
+          "compact": "16px",
+          "standard": "24px"
+        },
+        "radius": "0px",
+        "border_width": "1px",
+        "shadow": "none",
+        "transition": "background-color 180ms cubic-bezier(0.2, 0, 0, 1), color 180ms cubic-bezier(0.2, 0, 0, 1)",
+        "background": {
+          "default": "rgba(250, 250, 248, 0.92)",
+          "inverse": "#0F1115",
+          "open": "#FFFFFF"
+        },
+        "text": {
+          "default": "#1C1F24",
+          "muted": "#6B7280",
+          "active": "#B7410E",
+          "inverse": "#FAFAF8"
+        },
+        "border": {
+          "default": "#E1E5EA",
+          "active": "#D1531A",
+          "inverse": "#2B3138"
+        },
+        "notes": "Navigation must support accessible collapsed tablet and mobile states; no horizontal page scrolling."
+      }
+    },
+    {
+      "name": "card",
+      "category": "layout",
+      "priority": "core",
+      "must_implement": true,
+      "variants": [
+        "plain",
+        "elevated",
+        "code",
+        "documentation"
+      ],
+      "sizes": [
+        "sm",
+        "md",
+        "lg"
+      ],
+      "states": [
+        "default",
+        "hover",
+        "focus-visible",
+        "selected"
+      ],
+      "anatomy": [
+        "header",
+        "body",
+        "footer",
+        "optional accent rule"
+      ],
+      "recipe": {
+        "height": {
+          "auto": "auto",
+          "feature": "minmax(220px, auto)"
+        },
+        "padding_inline": {
+          "sm": "16px",
+          "md": "24px",
+          "lg": "32px"
+        },
+        "radius": "8px",
+        "border_width": "1px",
+        "shadow": "0 1px 2px rgba(15, 17, 21, 0.06)",
+        "transition": "border-color 180ms cubic-bezier(0.2, 0, 0, 1), box-shadow 180ms cubic-bezier(0.2, 0, 0, 1)",
+        "background": {
+          "default": "#FFFFFF",
+          "muted": "#F6F7F9",
+          "inverse": "#161A1F",
+          "code": "#0F1115"
+        },
+        "text": {
+          "default": "#0F1115",
+          "muted": "#475569",
+          "inverse": "#FAFAF8",
+          "code": "#F6F7F9"
+        },
+        "border": {
+          "default": "#E1E5EA",
+          "hover": "#D1D5DB",
+          "accent": "#D1531A",
+          "inverse": "#2B3138"
+        },
+        "notes": "Cards should feel like measured documentation panels, not floating marketing tiles."
+      }
+    },
+    {
+      "name": "table",
+      "category": "data-display",
+      "priority": "recommended",
+      "must_implement": true,
+      "variants": [
+        "compatibility",
+        "benchmark",
+        "definition"
+      ],
+      "sizes": [
+        "compact",
+        "standard"
+      ],
+      "states": [
+        "default",
+        "hover",
+        "selected"
+      ],
+      "anatomy": [
+        "caption",
+        "header row",
+        "body rows",
+        "status cells"
+      ],
+      "recipe": {
+        "height": {
+          "row_compact": "36px",
+          "row_standard": "44px"
+        },
+        "padding_inline": {
+          "compact": "12px",
+          "standard": "16px"
+        },
+        "radius": "6px",
+        "border_width": "1px",
+        "shadow": "none",
+        "transition": "background-color 120ms cubic-bezier(0.2, 0, 0, 1)",
+        "background": {
+          "default": "#FFFFFF",
+          "header": "#F1F3F5",
+          "hover": "#F6F7F9"
+        },
+        "text": {
+          "default": "#0F1115",
+          "muted": "#475569",
+          "status": "#B7410E"
+        },
+        "border": {
+          "default": "#E1E5EA",
+          "strong": "#D1D5DB"
+        },
+        "notes": "Tables are important for compatibility and benchmark documentation; keep them dense but readable."
+      }
+    }
+  ],
+  "board": {
+    "must_show": [
+      "steel graphite and zinc palette with ferric oxide accent",
+      "Inter UI typography, IBM Plex Mono code typography, optional Source Serif long-form typography",
+      "8px spacing rhythm and compact radius scale",
+      "hairline borders, quiet surfaces, and restrained elevation",
+      "clear hover, focus, active, selected, disabled, and error state principles",
+      "low-contrast architectural drafting lines and abstract Rete network motif"
+    ],
+    "spec_panel_sections": [
+      "color palette and semantic roles",
+      "typography",
+      "spacing rhythm",
+      "radius scale",
+      "borders, elevation, and surfaces",
+      "interaction states",
+      "core design tokens",
+      "accessibility"
+    ],
+    "notes": "The approved board is documentation-forward and deliberately restrained. It should inform logo exploration and landing-page visuals, but the board itself is not a logo artifact."
+  }
+}

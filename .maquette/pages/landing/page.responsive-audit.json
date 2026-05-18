@@ -1,0 +1,680 @@
+{
+  "target": "../.maquette/pages/landing/page.html",
+  "targetUrl": "file:///Users/prb/conductor/workspaces/ferric-rules/montpelier/.maquette/pages/landing/page.html",
+  "startedAt": "2026-05-13T11:58:06.542Z",
+  "finishedAt": "2026-05-13T11:58:10.735Z",
+  "allowDocumentOverflow": false,
+  "allowNavFailures": false,
+  "results": [
+    {
+      "viewport": {
+        "width": 390,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/pages/landing/page-responsive/responsive-390.png",
+      "windowInnerWidth": 390,
+      "documentElementScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "documentOverflowPx": 0,
+      "wideComponents": [
+        {
+          "selector": "main#main > section.hero.section-band:nth-of-type(1) > div.section-shell.hero__grid > div.hero__copy:nth-of-type(1) > div.install-command:nth-of-type(5) > code",
+          "tag": "code",
+          "clientWidth": 156,
+          "scrollWidth": 156,
+          "rectWidth": 155.78,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(1) > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "rectWidth": 356,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(1) > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 324,
+          "scrollWidth": 324,
+          "rectWidth": 324,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 356,
+          "scrollWidth": 404,
+          "rectWidth": 356,
+          "hasInternalHorizontalScroll": true
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 372,
+          "scrollWidth": 372,
+          "rectWidth": 372.14,
+          "hasInternalHorizontalScroll": false
+        }
+      ],
+      "overflowOffenders": [
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body > code",
+          "tag": "code",
+          "className": "",
+          "left": 33,
+          "right": 405.14,
+          "width": 372.14,
+          "overflow": 15.14,
+          "acceptedInternalScroll": true,
+          "acceptedClosedOffscreenDrawer": false,
+          "offscreenDrawerSelector": ""
+        }
+      ],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body > code",
+          "tag": "code",
+          "className": "",
+          "left": 33,
+          "right": 405.14,
+          "width": 372.14,
+          "overflow": 15.14,
+          "acceptedInternalScroll": true,
+          "acceptedClosedOffscreenDrawer": false,
+          "offscreenDrawerSelector": ""
+        }
+      ],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 2,
+          "visibleNavControlCount": 14,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.landing-page > header.site-header > nav.site-nav.landing-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "false",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": {
+          "compactExpected": true,
+          "navRootCount": 2,
+          "visibleNavControlCount": 14,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.landing-page > header.site-header > nav.site-nav.landing-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "true",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "toggleCheck": {
+          "selector": "body.landing-page > header.site-header > nav.site-nav.landing-nav > button.site-nav__toggle",
+          "ariaControls": "nav-panel",
+          "targetExists": true,
+          "beforeAriaExpanded": "false",
+          "afterAriaExpanded": "true",
+          "ariaExpandedChanged": true
+        },
+        "drawerScrollability": {
+          "targetExists": true,
+          "drawerVisible": true,
+          "clientHeight": 332,
+          "scrollHeight": 332,
+          "viewportHeight": 1400,
+          "overflowY": "auto",
+          "overscrollBehaviorY": "contain",
+          "hasInternalOverflow": false,
+          "contentExceedsViewport": false,
+          "bodyScrollLocked": false,
+          "overscrollContained": true,
+          "closeControlReachable": true,
+          "visibleDrawerLinkCount": 6,
+          "unreachableLinkCount": 0,
+          "scrollableWhenNeeded": true,
+          "bodyLockDoesNotBlockDrawer": true,
+          "passDrawerScrollability": true
+        },
+        "openScreenshotPath": "../.maquette/pages/landing/page-responsive/responsive-nav-open-390.png",
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 768,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/pages/landing/page-responsive/responsive-768.png",
+      "windowInnerWidth": 768,
+      "documentElementScrollWidth": 768,
+      "bodyScrollWidth": 768,
+      "documentOverflowPx": 0,
+      "wideComponents": [
+        {
+          "selector": "main#main > section.hero.section-band:nth-of-type(1) > div.section-shell.hero__grid > div.hero__copy:nth-of-type(1) > div.install-command:nth-of-type(5) > code",
+          "tag": "code",
+          "clientWidth": 156,
+          "scrollWidth": 156,
+          "rectWidth": 155.78,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(1) > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 718,
+          "scrollWidth": 718,
+          "rectWidth": 718,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(1) > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 686,
+          "scrollWidth": 686,
+          "rectWidth": 686,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 718,
+          "scrollWidth": 718,
+          "rectWidth": 718,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 686,
+          "scrollWidth": 686,
+          "rectWidth": 686,
+          "hasInternalHorizontalScroll": false
+        }
+      ],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 2,
+          "visibleNavControlCount": 14,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.landing-page > header.site-header > nav.site-nav.landing-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "false",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": {
+          "compactExpected": true,
+          "navRootCount": 2,
+          "visibleNavControlCount": 14,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.landing-page > header.site-header > nav.site-nav.landing-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "true",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "toggleCheck": {
+          "selector": "body.landing-page > header.site-header > nav.site-nav.landing-nav > button.site-nav__toggle",
+          "ariaControls": "nav-panel",
+          "targetExists": true,
+          "beforeAriaExpanded": "false",
+          "afterAriaExpanded": "true",
+          "ariaExpandedChanged": true
+        },
+        "drawerScrollability": {
+          "targetExists": true,
+          "drawerVisible": true,
+          "clientHeight": 332,
+          "scrollHeight": 332,
+          "viewportHeight": 1400,
+          "overflowY": "auto",
+          "overscrollBehaviorY": "contain",
+          "hasInternalOverflow": false,
+          "contentExceedsViewport": false,
+          "bodyScrollLocked": false,
+          "overscrollContained": true,
+          "closeControlReachable": true,
+          "visibleDrawerLinkCount": 6,
+          "unreachableLinkCount": 0,
+          "scrollableWhenNeeded": true,
+          "bodyLockDoesNotBlockDrawer": true,
+          "passDrawerScrollability": true
+        },
+        "openScreenshotPath": "../.maquette/pages/landing/page-responsive/responsive-nav-open-768.png",
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/pages/landing/page-responsive/responsive-1024.png",
+      "windowInnerWidth": 1024,
+      "documentElementScrollWidth": 1024,
+      "bodyScrollWidth": 1024,
+      "documentOverflowPx": 0,
+      "wideComponents": [
+        {
+          "selector": "main#main > section.hero.section-band:nth-of-type(1) > div.section-shell.hero__grid > div.hero__copy:nth-of-type(1) > div.install-command:nth-of-type(5) > code",
+          "tag": "code",
+          "clientWidth": 156,
+          "scrollWidth": 156,
+          "rectWidth": 155.78,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(1) > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 478,
+          "scrollWidth": 478,
+          "rectWidth": 478,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(1) > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 446,
+          "scrollWidth": 446,
+          "rectWidth": 446,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 478,
+          "scrollWidth": 478,
+          "rectWidth": 478,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 446,
+          "scrollWidth": 446,
+          "rectWidth": 446,
+          "hasInternalHorizontalScroll": false
+        }
+      ],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": true,
+        "before": {
+          "compactExpected": true,
+          "navRootCount": 2,
+          "visibleNavControlCount": 14,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.landing-page > header.site-header > nav.site-nav.landing-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "false",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": {
+          "compactExpected": true,
+          "navRootCount": 2,
+          "visibleNavControlCount": 14,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 1,
+          "toggleCandidates": [
+            {
+              "index": 0,
+              "selector": "[data-maquette-audit-nav-toggle=\"0\"]",
+              "cssPath": "body.landing-page > header.site-header > nav.site-nav.landing-nav > button.site-nav__toggle",
+              "ariaControls": "nav-panel",
+              "ariaExpanded": "true",
+              "accessibleLabel": "Open navigation",
+              "targetExists": true,
+              "width": 44,
+              "height": 44,
+              "smallTapTarget": false
+            }
+          ],
+          "clippedControls": [],
+          "smallTapTargets": [],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "toggleCheck": {
+          "selector": "body.landing-page > header.site-header > nav.site-nav.landing-nav > button.site-nav__toggle",
+          "ariaControls": "nav-panel",
+          "targetExists": true,
+          "beforeAriaExpanded": "false",
+          "afterAriaExpanded": "true",
+          "ariaExpandedChanged": true
+        },
+        "drawerScrollability": {
+          "targetExists": true,
+          "drawerVisible": true,
+          "clientHeight": 332,
+          "scrollHeight": 332,
+          "viewportHeight": 1400,
+          "overflowY": "auto",
+          "overscrollBehaviorY": "contain",
+          "hasInternalOverflow": false,
+          "contentExceedsViewport": false,
+          "bodyScrollLocked": false,
+          "overscrollContained": true,
+          "closeControlReachable": true,
+          "visibleDrawerLinkCount": 6,
+          "unreachableLinkCount": 0,
+          "scrollableWhenNeeded": true,
+          "bodyLockDoesNotBlockDrawer": true,
+          "passDrawerScrollability": true
+        },
+        "openScreenshotPath": "../.maquette/pages/landing/page-responsive/responsive-nav-open-1024.png",
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/pages/landing/page-responsive/responsive-1280.png",
+      "windowInnerWidth": 1280,
+      "documentElementScrollWidth": 1280,
+      "bodyScrollWidth": 1280,
+      "documentOverflowPx": 0,
+      "wideComponents": [
+        {
+          "selector": "main#main > section.hero.section-band:nth-of-type(1) > div.section-shell.hero__grid > div.hero__copy:nth-of-type(1) > div.install-command:nth-of-type(5) > code",
+          "tag": "code",
+          "clientWidth": 156,
+          "scrollWidth": 156,
+          "rectWidth": 155.78,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(1) > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 413,
+          "scrollWidth": 413,
+          "rectWidth": 412.53,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(1) > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 381,
+          "scrollWidth": 381,
+          "rectWidth": 380.53,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 413,
+          "scrollWidth": 413,
+          "rectWidth": 412.55,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 381,
+          "scrollWidth": 381,
+          "rectWidth": 380.55,
+          "hasInternalHorizontalScroll": false
+        }
+      ],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": false,
+        "before": {
+          "compactExpected": false,
+          "navRootCount": 2,
+          "visibleNavControlCount": 20,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [
+            {
+              "selector": "body.landing-page > header.site-header > nav.site-nav.landing-nav > div.site-nav__actions:nth-of-type(2) > a.btn.btn--ghost.btn--sm:nth-of-type(1)",
+              "tag": "a",
+              "text": "Star on GitHub",
+              "left": 977.38,
+              "right": 1125.86,
+              "width": 148.48,
+              "height": 32,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-page > header.site-header > nav.site-nav.landing-nav > div.site-nav__actions:nth-of-type(2) > a.btn.btn--primary.btn--sm:nth-of-type(2)",
+              "tag": "a",
+              "text": "Read the docs",
+              "left": 1133.86,
+              "right": 1256,
+              "width": 122.14,
+              "height": 32,
+              "clipped": false,
+              "smallTapTarget": true
+            }
+          ],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 1400
+      },
+      "screenshotPath": "../.maquette/pages/landing/page-responsive/responsive-1440.png",
+      "windowInnerWidth": 1440,
+      "documentElementScrollWidth": 1440,
+      "bodyScrollWidth": 1440,
+      "documentOverflowPx": 0,
+      "wideComponents": [
+        {
+          "selector": "main#main > section.hero.section-band:nth-of-type(1) > div.section-shell.hero__grid > div.hero__copy:nth-of-type(1) > div.install-command:nth-of-type(5) > code",
+          "tag": "code",
+          "clientWidth": 156,
+          "scrollWidth": 156,
+          "rectWidth": 155.78,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(1) > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 429,
+          "scrollWidth": 429,
+          "rectWidth": 429.44,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(1) > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 397,
+          "scrollWidth": 397,
+          "rectWidth": 397.44,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body",
+          "tag": "pre",
+          "clientWidth": 429,
+          "scrollWidth": 429,
+          "rectWidth": 429.44,
+          "hasInternalHorizontalScroll": false
+        },
+        {
+          "selector": "section#syntax > div.section-shell.syntax-grid > div.code-compare:nth-of-type(2) > div.code-panel:nth-of-type(2) > pre.code-panel__body > code",
+          "tag": "code",
+          "clientWidth": 397,
+          "scrollWidth": 397,
+          "rectWidth": 397.44,
+          "hasInternalHorizontalScroll": false
+        }
+      ],
+      "overflowOffenders": [],
+      "trueOverflowOffenders": [],
+      "acceptedInternalScrollOffenders": [],
+      "acceptedClosedOffscreenDrawerOffenders": [],
+      "responsiveNavigation": {
+        "compactExpected": false,
+        "before": {
+          "compactExpected": false,
+          "navRootCount": 2,
+          "visibleNavControlCount": 20,
+          "hasPrimaryNav": true,
+          "toggleCandidateCount": 0,
+          "toggleCandidates": [],
+          "clippedControls": [],
+          "smallTapTargets": [
+            {
+              "selector": "body.landing-page > header.site-header > nav.site-nav.landing-nav > div.site-nav__actions:nth-of-type(2) > a.btn.btn--ghost.btn--sm:nth-of-type(1)",
+              "tag": "a",
+              "text": "Star on GitHub",
+              "left": 1137.38,
+              "right": 1285.86,
+              "width": 148.48,
+              "height": 32,
+              "clipped": false,
+              "smallTapTarget": true
+            },
+            {
+              "selector": "body.landing-page > header.site-header > nav.site-nav.landing-nav > div.site-nav__actions:nth-of-type(2) > a.btn.btn--primary.btn--sm:nth-of-type(2)",
+              "tag": "a",
+              "text": "Read the docs",
+              "left": 1293.86,
+              "right": 1416,
+              "width": 122.14,
+              "height": 32,
+              "clipped": false,
+              "smallTapTarget": true
+            }
+          ],
+          "documentOverflowPx": 0,
+          "passNoClippedControls": true,
+          "passTapTargets": true,
+          "passDocumentOverflow": true
+        },
+        "afterOpen": null,
+        "toggleCheck": null,
+        "drawerScrollability": null,
+        "openScreenshotPath": null,
+        "passResponsiveNavigation": true
+      },
+      "passDocumentOverflow": true,
+      "passResponsiveNavigation": true
+    }
+  ],
+  "pass": true
+}

@@ -1,0 +1,1 @@
+/* Rich footer is static in this concept. */

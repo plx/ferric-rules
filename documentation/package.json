@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "name": "ferric-rules-documentation-qa",
+  "version": "0.0.0",
+  "description": "Local documentation and Maquette QA tooling for ferric-rules.",
+  "devDependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "playwright": "^1.60.0"
+  }
+}

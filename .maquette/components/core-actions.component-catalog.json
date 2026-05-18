@@ -1,0 +1,311 @@
+{
+  "meta": {
+    "system_name": "ferric-rules Components",
+    "version": "0.1.0-core-actions",
+    "based_on_design_system_version": "1.0.0",
+    "status": "draft",
+    "notes": "Batch snapshot for the core-actions CSS-contract poster."
+  },
+  "tech": {
+    "html_strategy": "Static semantic HTML component reference with reusable classes and slots.",
+    "css_strategy": "Token-driven CSS linked from brand tokens plus batch component CSS.",
+    "js_strategy": "Minimal progressive enhancement for selected icon-button state."
+  },
+  "assets": {
+    "tokens_css_path": ".maquette/brand/tokens.css",
+    "sheet_inventory_path": ".maquette/components/sheet-inventory.md",
+    "sheet_implementation_log_path": ".maquette/components/sheet-implementation-log.md",
+    "sheet_implementation_batches": [
+      {
+        "category": "core-primitives",
+        "sheet_path": ".maquette/components/component-sheet-core-actions-css-contract-v1.png",
+        "contract_path": ".maquette/components/contracts/core-actions.contract.css",
+        "replica_artifact_paths": [
+          ".maquette/components/core-actions.replica.html"
+        ],
+        "component_artifact_paths": [
+          ".maquette/components/css/core-actions.components.css",
+          ".maquette/components/js/core-actions.components.js"
+        ],
+        "catalog_snapshot_path": ".maquette/components/core-actions.component-catalog.json",
+        "review_path": ".maquette/components/core-actions.review.md",
+        "review_artifact_paths": [
+          ".maquette/components/core-actions.linked-assets.json",
+          ".maquette/components/core-actions.responsive-audit.json"
+        ],
+        "screenshot_paths": [
+          ".maquette/components/core-actions-responsive/responsive-390.png",
+          ".maquette/components/core-actions-responsive/responsive-768.png",
+          ".maquette/components/core-actions-responsive/responsive-1024.png",
+          ".maquette/components/core-actions-responsive/responsive-1280.png",
+          ".maquette/components/core-actions-responsive/responsive-1440.png"
+        ],
+        "review_mode": "screenshot",
+        "completed_before_next_sheet": true,
+        "rubric_scores": {
+          "coverage": 5,
+          "visual_match": 4,
+          "anatomy_match": 5,
+          "responsive_match": 5,
+          "implementation_quality": 5
+        },
+        "corrections_made": [
+          "Normalized generated poster token names to approved tokens.css variables.",
+          "Added mobile wrapping rules so button rows do not overflow at 390px.",
+          "Added inverse-surface ghost-button contrast behavior."
+        ],
+        "simplifications": [
+          "The poster's visual text is a contract, not a pixel target; the browser reference follows the approved brand system."
+        ],
+        "deferred_items": [
+          "Forms, alerts, tabs, navigation, cards, code blocks, and footer modules are deferred to later focused batches."
+        ],
+        "status": "implemented"
+      }
+    ],
+    "replica_gallery_html_path": ".maquette/components/core-actions.replica.html",
+    "component_reference_html_path": ".maquette/components/core-actions.replica.html",
+    "component_sheet_path": ".maquette/components/component-sheet-core-actions-css-contract-v1.png",
+    "component_sheet_paths": [
+      ".maquette/components/component-sheet-core-actions-css-contract-v1.png"
+    ],
+    "component_contract_paths": [
+      ".maquette/components/contracts/core-actions.contract.css"
+    ],
+    "gallery_screenshot_paths": [
+      ".maquette/components/core-actions-responsive/responsive-390.png",
+      ".maquette/components/core-actions-responsive/responsive-768.png",
+      ".maquette/components/core-actions-responsive/responsive-1024.png",
+      ".maquette/components/core-actions-responsive/responsive-1280.png",
+      ".maquette/components/core-actions-responsive/responsive-1440.png"
+    ],
+    "gallery_review_artifact_paths": [
+      ".maquette/components/core-actions.linked-assets.json",
+      ".maquette/components/core-actions.responsive-audit.json"
+    ],
+    "replica_fidelity_review": {
+      "reference_sheet_paths": [
+        ".maquette/components/component-sheet-core-actions-css-contract-v1.png"
+      ],
+      "gallery_screenshot_paths": [
+        ".maquette/components/core-actions-responsive/responsive-390.png",
+        ".maquette/components/core-actions-responsive/responsive-1440.png"
+      ],
+      "gallery_review_artifact_paths": [
+        ".maquette/components/core-actions.linked-assets.json",
+        ".maquette/components/core-actions.responsive-audit.json"
+      ],
+      "review_mode": "screenshot",
+      "rubric_scores": {
+        "coverage": 5,
+        "visual_match": 4,
+        "anatomy_match": 5,
+        "responsive_match": 5,
+        "implementation_quality": 5
+      },
+      "coverage_summary": "Implemented all allowlisted core action selectors: buttons, icon buttons, and badges with key variants and states.",
+      "failed_categories": [],
+      "corrections_made": [
+        "Token normalization and responsive wrapping."
+      ],
+      "simplifications": [
+        "Reference layout is purpose-built for component review and does not attempt to recreate the black CSS poster visually."
+      ],
+      "status": "matches"
+    },
+    "reusable_component_review": {
+      "status": "needs-fix",
+      "api_summary": "Button, icon-button, and badge APIs are reusable. Additional required navigation, card, code, and footer coverage is still needed before page implementation.",
+      "ready_for_pages": false,
+      "usage_examples_path": ".maquette/components/core-actions.replica.html",
+      "gaps": [
+        "Responsive navigation primitives not yet implemented.",
+        "Landing-page card/composite and footer modules not yet implemented.",
+        "Code/documentation display components not yet implemented."
+      ]
+    },
+    "review_notes_path": ".maquette/components/core-actions.review.md"
+  },
+  "components": [
+    {
+      "name": "button",
+      "source_required_component": "button",
+      "files": [
+        ".maquette/components/css/core-actions.components.css",
+        ".maquette/components/core-actions.replica.html"
+      ],
+      "selectors": [
+        ".btn",
+        ".btn--primary",
+        ".btn--secondary",
+        ".btn--ghost",
+        ".btn--danger",
+        ".btn--sm",
+        ".btn--md",
+        ".btn--lg",
+        ".btn__icon"
+      ],
+      "implemented_variants": [
+        "primary",
+        "secondary",
+        "ghost",
+        "danger",
+        "loading",
+        "disabled"
+      ],
+      "implemented_sizes": [
+        "sm",
+        "md",
+        "lg"
+      ],
+      "implemented_states": [
+        "default",
+        "hover",
+        "focus-visible",
+        "active",
+        "disabled",
+        "loading"
+      ],
+      "api": {
+        "slots": [
+          "label",
+          "leading icon",
+          "trailing icon"
+        ],
+        "required_attributes": [
+          "type for button elements"
+        ],
+        "js_behavior": "None required for base button behavior.",
+        "usage_examples": [
+          "<button class=\"btn btn--primary\" type=\"button\">Get Started</button>",
+          "<a class=\"btn btn--ghost\" href=\"/compatibility/\">Compatibility</a>"
+        ]
+      },
+      "accessibility_notes": [
+        "Focus-visible outline uses high-contrast ferric ring.",
+        "Disabled buttons use disabled attribute or .is-disabled class and suppress pointer events."
+      ],
+      "visual_review": {
+        "reference_image_paths": [
+          ".maquette/components/component-sheet-core-actions-css-contract-v1.png"
+        ],
+        "latest_screenshot_path": ".maquette/components/core-actions-responsive/responsive-1440.png",
+        "similarity_notes": "Implements poster contract with approved brand tokens rather than raw generated token names.",
+        "qa_notes": [
+          "No document overflow at 390, 768, 1024, 1280, or 1440px."
+        ]
+      },
+      "status": "reviewed"
+    },
+    {
+      "name": "icon-button",
+      "source_required_component": "button",
+      "files": [
+        ".maquette/components/css/core-actions.components.css",
+        ".maquette/components/js/core-actions.components.js",
+        ".maquette/components/core-actions.replica.html"
+      ],
+      "selectors": [
+        ".icon-btn",
+        ".icon-btn.is-selected"
+      ],
+      "implemented_variants": [
+        "default",
+        "selected",
+        "disabled"
+      ],
+      "implemented_sizes": [
+        "md"
+      ],
+      "implemented_states": [
+        "default",
+        "hover",
+        "focus-visible",
+        "active",
+        "selected",
+        "disabled"
+      ],
+      "api": {
+        "slots": [
+          "icon"
+        ],
+        "required_attributes": [
+          "aria-label for icon-only buttons",
+          "aria-pressed when used as a toggle"
+        ],
+        "js_behavior": "Optional [data-toggle-selected] toggles .is-selected and aria-pressed.",
+        "usage_examples": [
+          "<button class=\"icon-btn\" type=\"button\" aria-label=\"Copy example\">...</button>"
+        ]
+      },
+      "accessibility_notes": [
+        "Icon-only controls require accessible names.",
+        "Selected state remains visually distinct through fill, border, and icon color."
+      ],
+      "visual_review": {
+        "reference_image_paths": [
+          ".maquette/components/component-sheet-core-actions-css-contract-v1.png"
+        ],
+        "latest_screenshot_path": ".maquette/components/core-actions-responsive/responsive-1440.png",
+        "similarity_notes": "Icon-button dimensions, selected state, and disabled state follow the inspected poster contract.",
+        "qa_notes": [
+          "Icons render visibly in default, selected, and disabled states."
+        ]
+      },
+      "status": "reviewed"
+    },
+    {
+      "name": "badge",
+      "source_required_component": "badge",
+      "files": [
+        ".maquette/components/css/core-actions.components.css",
+        ".maquette/components/core-actions.replica.html"
+      ],
+      "selectors": [
+        ".badge",
+        ".badge--neutral",
+        ".badge--accent",
+        ".badge--success",
+        ".badge--warning",
+        ".badge--danger"
+      ],
+      "implemented_variants": [
+        "neutral",
+        "accent",
+        "success",
+        "warning",
+        "danger"
+      ],
+      "implemented_sizes": [
+        "sm"
+      ],
+      "implemented_states": [
+        "default"
+      ],
+      "api": {
+        "slots": [
+          "label"
+        ],
+        "required_attributes": [],
+        "js_behavior": "None.",
+        "usage_examples": [
+          "<span class=\"badge badge--success\">Supported</span>"
+        ]
+      },
+      "accessibility_notes": [
+        "Do not rely on color alone for status meaning; pair badges with text labels."
+      ],
+      "visual_review": {
+        "reference_image_paths": [
+          ".maquette/components/component-sheet-core-actions-css-contract-v1.png"
+        ],
+        "latest_screenshot_path": ".maquette/components/core-actions-responsive/responsive-1440.png",
+        "similarity_notes": "Badge colors and borders map to approved semantic feedback tokens.",
+        "qa_notes": [
+          "Badge labels wrap to a new line as a group on mobile without internal text overlap."
+        ]
+      },
+      "status": "reviewed"
+    }
+  ]
+}

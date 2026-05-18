@@ -1,0 +1,253 @@
+{
+  "meta": {
+    "system_name": "ferric-rules Components",
+    "version": "0.3.0-landing-composites",
+    "based_on_design_system_version": "1.0.0",
+    "status": "draft",
+    "notes": "Batch snapshot for landing card, code panel, and footer composites."
+  },
+  "tech": {
+    "html_strategy": "Static semantic composite reference with reusable card, code, and footer classes.",
+    "css_strategy": "Token-driven CSS linked from brand tokens plus shared actions.",
+    "js_strategy": "No interaction required for landing composites."
+  },
+  "assets": {
+    "tokens_css_path": ".maquette/brand/tokens.css",
+    "sheet_inventory_path": ".maquette/components/sheet-inventory.md",
+    "sheet_implementation_log_path": ".maquette/components/sheet-implementation-log.md",
+    "sheet_implementation_batches": [
+      {
+        "category": "cards-composites",
+        "sheet_path": ".maquette/components/component-sheet-landing-composites-css-contract-v1.png",
+        "contract_path": ".maquette/components/contracts/landing-composites.contract.css",
+        "replica_artifact_paths": [
+          ".maquette/components/landing-composites.replica.html"
+        ],
+        "component_artifact_paths": [
+          ".maquette/components/css/landing-composites.components.css",
+          ".maquette/components/js/landing-composites.components.js"
+        ],
+        "catalog_snapshot_path": ".maquette/components/landing-composites.component-catalog.json",
+        "review_path": ".maquette/components/landing-composites.review.md",
+        "review_artifact_paths": [
+          ".maquette/components/landing-composites.linked-assets.json",
+          ".maquette/components/landing-composites.responsive-audit.json"
+        ],
+        "screenshot_paths": [
+          ".maquette/components/landing-composites-responsive/responsive-390.png",
+          ".maquette/components/landing-composites-responsive/responsive-768.png",
+          ".maquette/components/landing-composites-responsive/responsive-1024.png",
+          ".maquette/components/landing-composites-responsive/responsive-1280.png",
+          ".maquette/components/landing-composites-responsive/responsive-1440.png"
+        ],
+        "review_mode": "screenshot",
+        "completed_before_next_sheet": true,
+        "rubric_scores": {
+          "coverage": 5,
+          "visual_match": 4,
+          "anatomy_match": 5,
+          "responsive_match": 5,
+          "implementation_quality": 4
+        },
+        "corrections_made": [
+          "Removed browser-default link underlines from documentation cards.",
+          "Documented code-panel internal horizontal scrolling as intentional for narrow viewports.",
+          "Normalized generated poster token names and typo in the responsive note."
+        ],
+        "simplifications": [
+          "The isolated composite reference does not include navigation because navigation was covered by the prior batch."
+        ],
+        "deferred_items": [
+          "Final page composition and hero-specific layout remain page-phase work."
+        ],
+        "status": "implemented"
+      }
+    ],
+    "replica_gallery_html_path": ".maquette/components/landing-composites.replica.html",
+    "component_reference_html_path": ".maquette/components/landing-composites.replica.html",
+    "component_sheet_path": ".maquette/components/component-sheet-landing-composites-css-contract-v1.png",
+    "component_sheet_paths": [
+      ".maquette/components/component-sheet-landing-composites-css-contract-v1.png"
+    ],
+    "component_contract_paths": [
+      ".maquette/components/contracts/landing-composites.contract.css"
+    ],
+    "gallery_screenshot_paths": [
+      ".maquette/components/landing-composites-responsive/responsive-390.png",
+      ".maquette/components/landing-composites-responsive/responsive-768.png",
+      ".maquette/components/landing-composites-responsive/responsive-1024.png",
+      ".maquette/components/landing-composites-responsive/responsive-1280.png",
+      ".maquette/components/landing-composites-responsive/responsive-1440.png"
+    ],
+    "gallery_review_artifact_paths": [
+      ".maquette/components/landing-composites.linked-assets.json",
+      ".maquette/components/landing-composites.responsive-audit.json"
+    ],
+    "replica_fidelity_review": {
+      "reference_sheet_paths": [
+        ".maquette/components/component-sheet-landing-composites-css-contract-v1.png"
+      ],
+      "gallery_screenshot_paths": [
+        ".maquette/components/landing-composites-responsive/responsive-390.png",
+        ".maquette/components/landing-composites-responsive/responsive-1440.png"
+      ],
+      "gallery_review_artifact_paths": [
+        ".maquette/components/landing-composites.linked-assets.json",
+        ".maquette/components/landing-composites.responsive-audit.json"
+      ],
+      "review_mode": "screenshot",
+      "rubric_scores": {
+        "coverage": 5,
+        "visual_match": 4,
+        "anatomy_match": 5,
+        "responsive_match": 5,
+        "implementation_quality": 4
+      },
+      "coverage_summary": "Feature cards, doc cards, code panel, and compact footer are implemented with stable anatomy and responsive wrapping.",
+      "failed_categories": [],
+      "corrections_made": [
+        "Doc-card text-decoration reset and focus state."
+      ],
+      "simplifications": [
+        "Navigation omitted from isolated composite reference because it was tested separately."
+      ],
+      "status": "matches"
+    },
+    "reusable_component_review": {
+      "status": "ready",
+      "api_summary": "Landing composites are reusable with stable slots and responsive behavior.",
+      "ready_for_pages": true,
+      "usage_examples_path": ".maquette/components/landing-composites.replica.html",
+      "gaps": []
+    }
+  },
+  "components": [
+    {
+      "name": "feature-card",
+      "source_required_component": "card",
+      "files": [
+        ".maquette/components/css/landing-composites.components.css",
+        ".maquette/components/landing-composites.replica.html"
+      ],
+      "selectors": [
+        ".feature-card",
+        ".feature-card__eyebrow",
+        ".feature-card__title",
+        ".feature-card__body"
+      ],
+      "implemented_variants": [
+        "default"
+      ],
+      "implemented_sizes": [
+        "responsive"
+      ],
+      "implemented_states": [
+        "default"
+      ],
+      "layout_behavior": {
+        "equal_height_grid": "Cards use height: 100% inside a grid.",
+        "body_layout": "Column flex layout with body flexing to fill available height.",
+        "action_row_alignment": "No action row in current feature-card variant.",
+        "responsive_notes": "Cards stack to one column below 860px."
+      },
+      "status": "reviewed"
+    },
+    {
+      "name": "doc-card",
+      "source_required_component": "card",
+      "files": [
+        ".maquette/components/css/landing-composites.components.css",
+        ".maquette/components/landing-composites.replica.html"
+      ],
+      "selectors": [
+        ".doc-card",
+        ".doc-card__title",
+        ".doc-card__body",
+        ".doc-card__meta"
+      ],
+      "implemented_variants": [
+        "default",
+        "link"
+      ],
+      "implemented_sizes": [
+        "responsive"
+      ],
+      "implemented_states": [
+        "default",
+        "hover",
+        "focus-visible"
+      ],
+      "layout_behavior": {
+        "equal_height_grid": "Doc cards share grid row height where possible.",
+        "body_layout": "Column flex layout with meta pinned to bottom.",
+        "action_row_alignment": "Meta row is bottom-pinned with margin-top: auto.",
+        "responsive_notes": "Cards stack to one column below 860px."
+      },
+      "status": "reviewed"
+    },
+    {
+      "name": "code-panel",
+      "source_required_component": "card",
+      "files": [
+        ".maquette/components/css/landing-composites.components.css",
+        ".maquette/components/landing-composites.replica.html"
+      ],
+      "selectors": [
+        ".code-panel",
+        ".code-panel__header",
+        ".code-panel__dot",
+        ".code-panel__body",
+        ".code-panel code"
+      ],
+      "implemented_variants": [
+        "inverse"
+      ],
+      "implemented_sizes": [
+        "responsive"
+      ],
+      "implemented_states": [
+        "default"
+      ],
+      "layout_behavior": {
+        "equal_height_grid": "Not applicable.",
+        "body_layout": "Header plus internally scrollable code body.",
+        "action_row_alignment": "Not applicable.",
+        "responsive_notes": "Long code lines scroll inside .code-panel__body on narrow screens; document-level overflow remains 0px."
+      },
+      "status": "reviewed"
+    },
+    {
+      "name": "footer-module",
+      "source_required_component": "navigation",
+      "files": [
+        ".maquette/components/css/landing-composites.components.css",
+        ".maquette/components/landing-composites.replica.html"
+      ],
+      "selectors": [
+        ".site-footer",
+        ".site-footer__brand",
+        ".site-footer__links",
+        ".site-footer__link",
+        ".site-footer__meta"
+      ],
+      "implemented_variants": [
+        "compact"
+      ],
+      "implemented_sizes": [
+        "responsive"
+      ],
+      "implemented_states": [
+        "default",
+        "hover",
+        "focus-visible"
+      ],
+      "layout_behavior": {
+        "equal_height_grid": "Not applicable.",
+        "body_layout": "Auto-fit grid with wrapping link row.",
+        "action_row_alignment": "Meta aligns right on desktop and left on narrow screens.",
+        "responsive_notes": "Footer columns wrap without horizontal overflow."
+      },
+      "status": "reviewed"
+    }
+  ]
+}

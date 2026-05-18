@@ -1,0 +1,209 @@
+{
+  "meta": {
+    "system_name": "ferric-rules Components",
+    "version": "0.4.0-footer-social",
+    "based_on_design_system_version": "1.0.0",
+    "status": "draft",
+    "notes": "Batch snapshot for the rich footer, social icon links, newsletter form, and legal/meta bottom strip."
+  },
+  "tech": {
+    "html_strategy": "Static semantic footer reference with reusable brand, link-column, newsletter, social, and meta slots.",
+    "css_strategy": "Token-driven CSS linked from brand tokens plus shared actions and navigation mark primitives.",
+    "js_strategy": "No interaction required for the footer module beyond native form controls."
+  },
+  "assets": {
+    "tokens_css_path": ".maquette/brand/tokens.css",
+    "sheet_inventory_path": ".maquette/components/sheet-inventory.md",
+    "sheet_implementation_log_path": ".maquette/components/sheet-implementation-log.md",
+    "sheet_implementation_batches": [
+      {
+        "category": "focused-follow-up",
+        "sheet_path": ".maquette/components/component-sheet-footer-social-css-contract-v1.png",
+        "contract_path": ".maquette/components/contracts/footer-social.contract.css",
+        "replica_artifact_paths": [
+          ".maquette/components/footer-social.replica.html"
+        ],
+        "component_artifact_paths": [
+          ".maquette/components/css/footer-social.components.css",
+          ".maquette/components/js/footer-social.components.js"
+        ],
+        "catalog_snapshot_path": ".maquette/components/footer-social.component-catalog.json",
+        "review_path": ".maquette/components/footer-social.review.md",
+        "review_artifact_paths": [
+          ".maquette/components/footer-social.linked-assets.json",
+          ".maquette/components/footer-social.responsive-audit.json"
+        ],
+        "screenshot_paths": [
+          ".maquette/components/footer-social-responsive/responsive-390.png",
+          ".maquette/components/footer-social-responsive/responsive-768.png",
+          ".maquette/components/footer-social-responsive/responsive-1024.png",
+          ".maquette/components/footer-social-responsive/responsive-1280.png",
+          ".maquette/components/footer-social-responsive/responsive-1440.png"
+        ],
+        "review_mode": "screenshot",
+        "completed_before_next_sheet": true,
+        "rubric_scores": {
+          "coverage": 5,
+          "visual_match": 4,
+          "anatomy_match": 5,
+          "responsive_match": 5,
+          "implementation_quality": 5
+        },
+        "corrections_made": [
+          "Added a reusable sr-only helper for the newsletter label.",
+          "Preserved 44px minimum link and social hit areas on mobile and desktop."
+        ],
+        "simplifications": [
+          "The CSS-contract poster is used as a selector and state contract rather than a full visual target."
+        ],
+        "deferred_items": [],
+        "status": "implemented"
+      }
+    ],
+    "replica_gallery_html_path": ".maquette/components/footer-social.replica.html",
+    "component_reference_html_path": ".maquette/components/footer-social.replica.html",
+    "component_sheet_path": ".maquette/components/component-sheet-footer-social-css-contract-v1.png",
+    "component_sheet_paths": [
+      ".maquette/components/component-sheet-footer-social-css-contract-v1.png"
+    ],
+    "component_contract_paths": [
+      ".maquette/components/contracts/footer-social.contract.css"
+    ],
+    "gallery_screenshot_paths": [
+      ".maquette/components/footer-social-responsive/responsive-390.png",
+      ".maquette/components/footer-social-responsive/responsive-768.png",
+      ".maquette/components/footer-social-responsive/responsive-1024.png",
+      ".maquette/components/footer-social-responsive/responsive-1280.png",
+      ".maquette/components/footer-social-responsive/responsive-1440.png"
+    ],
+    "gallery_review_artifact_paths": [
+      ".maquette/components/footer-social.linked-assets.json",
+      ".maquette/components/footer-social.responsive-audit.json"
+    ],
+    "replica_fidelity_review": {
+      "reference_sheet_paths": [
+        ".maquette/components/component-sheet-footer-social-css-contract-v1.png"
+      ],
+      "gallery_screenshot_paths": [
+        ".maquette/components/footer-social-responsive/responsive-390.png",
+        ".maquette/components/footer-social-responsive/responsive-1440.png"
+      ],
+      "gallery_review_artifact_paths": [
+        ".maquette/components/footer-social.linked-assets.json",
+        ".maquette/components/footer-social.responsive-audit.json"
+      ],
+      "review_mode": "screenshot",
+      "rubric_scores": {
+        "coverage": 5,
+        "visual_match": 4,
+        "anatomy_match": 5,
+        "responsive_match": 5,
+        "implementation_quality": 5
+      },
+      "coverage_summary": "Rich footer includes brand summary, three link columns, newsletter form, recognizable social icons, and compact legal/meta row.",
+      "failed_categories": [],
+      "corrections_made": [
+        "Added visually-hidden label helper before QA.",
+        "Verified no document-level overflow at all required widths."
+      ],
+      "simplifications": [
+        "No app/download or device module is included because the approved landing concept did not require one."
+      ],
+      "status": "matches"
+    },
+    "reusable_component_review": {
+      "status": "ready",
+      "api_summary": "Rich footer module is reusable with explicit slots, accessible icon links, newsletter label, responsive columns, and bottom meta strip.",
+      "ready_for_pages": true,
+      "usage_examples_path": ".maquette/components/footer-social.replica.html",
+      "gaps": []
+    }
+  },
+  "components": [
+    {
+      "name": "rich-footer",
+      "source_required_component": "navigation",
+      "files": [
+        ".maquette/components/css/footer-social.components.css",
+        ".maquette/components/footer-social.replica.html"
+      ],
+      "selectors": [
+        ".footer-rich",
+        ".footer-rich__inner",
+        ".footer-rich__main",
+        ".footer-rich__brand",
+        ".footer-rich__brand-row",
+        ".footer-rich__summary",
+        ".footer-rich__columns",
+        ".footer-rich__column",
+        ".footer-rich__heading",
+        ".footer-rich__link",
+        ".footer-rich__newsletter",
+        ".footer-rich__input",
+        ".footer-rich__social",
+        ".footer-rich__social-link",
+        ".footer-rich__bottom",
+        ".footer-rich__meta"
+      ],
+      "implemented_variants": [
+        "rich",
+        "inverse",
+        "newsletter",
+        "social"
+      ],
+      "implemented_sizes": [
+        "desktop-multicolumn",
+        "tablet-stacked",
+        "mobile-stacked"
+      ],
+      "implemented_states": [
+        "default",
+        "hover",
+        "focus-visible",
+        "active"
+      ],
+      "layout_behavior": {
+        "equal_height_grid": "Not applicable.",
+        "body_layout": "Desktop uses brand, link-column, and newsletter columns; tablet/mobile stack into a single flow.",
+        "action_row_alignment": "Newsletter submit wraps below the input on narrow screens.",
+        "responsive_notes": "Social links and text links preserve 44px minimum hit areas and wrap without document-level overflow."
+      },
+      "api": {
+        "slots": [
+          "brand mark",
+          "brand summary",
+          "social links",
+          "link columns",
+          "newsletter label/input/button",
+          "legal/meta rows"
+        ],
+        "required_attributes": [
+          "aria-label on social links",
+          "label associated with newsletter input",
+          "aria-label when footer links are wrapped in nav"
+        ],
+        "js_behavior": "None.",
+        "usage_examples": [
+          "<footer class=\"footer-rich\"><div class=\"footer-rich__inner\">...</div></footer>"
+        ]
+      },
+      "accessibility_notes": [
+        "Social controls use inline SVG icons with aria-label on each link.",
+        "Newsletter input has a visually-hidden label through .sr-only.",
+        "Text links and icon links meet the 44px tap-target target."
+      ],
+      "visual_review": {
+        "reference_image_paths": [
+          ".maquette/components/component-sheet-footer-social-css-contract-v1.png"
+        ],
+        "latest_screenshot_path": ".maquette/components/footer-social-responsive/responsive-1440.png",
+        "similarity_notes": "Rendered footer follows the approved inverse industrial palette, compact link-column rhythm, newsletter row, and social-icon control contract.",
+        "qa_notes": [
+          "Linked assets pass.",
+          "Responsive audit reports 0px document overflow at 390, 768, 1024, 1280, and 1440px."
+        ]
+      },
+      "status": "reviewed"
+    }
+  ]
+}

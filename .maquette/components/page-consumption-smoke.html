@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Maquette Page Consumption Smoke</title>
+  <link rel="stylesheet" href="./css/components.css">
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+    main { display: grid; gap: 24px; max-width: 1120px; margin: 0 auto; }
+    section { display: grid; gap: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section data-component="button">
+  <h2>button</h2>
+  <button class="btn btn--primary" type="button">Get Started</button>
+</section>
+<section data-component="responsive-navigation">
+  <h2>responsive-navigation</h2>
+  <button class="site-nav__toggle" aria-controls="nav-panel" aria-expanded="false" data-nav-toggle>...</button>
+</section>
+<section data-component="feature-card">
+  <h2>feature-card</h2>
+  <article class="feature-card"><div class="feature-card__eyebrow">Compatibility</div><h2 class="feature-card__title">Mostly CLIPS-compatible semantics</h2><p class="feature-card__body">...</p></article>
+</section>
+<section data-component="doc-card">
+  <h2>doc-card</h2>
+  <a class="doc-card" href="#"><h2 class="doc-card__title">User's Guide</h2><p class="doc-card__body">...</p><div class="doc-card__meta"><span>Guide</span></div></a>
+</section>
+<section data-component="code-panel">
+  <h2>code-panel</h2>
+  <div class="code-panel"><div class="code-panel__header"><span class="code-panel__dot"></span><span>Rust embedding example</span></div><pre class="code-panel__body"><code>...</code></pre></div>
+</section>
+<section data-component="footer-module">
+  <h2>footer-module</h2>
+  <footer class="site-footer"><div class="site-footer__brand">ferric-rules</div><nav class="site-footer__links" aria-label="Footer navigation">...</nav><div class="site-footer__meta">MIT or Apache-2.0</div></footer>
+</section>
+<section data-component="rich-footer">
+  <h2>rich-footer</h2>
+  <footer class="footer-rich"><div class="footer-rich__inner">...</div></footer>
+</section>
+  </main>
+  <script src="./js/components.js"></script>
+</body>
+</html>

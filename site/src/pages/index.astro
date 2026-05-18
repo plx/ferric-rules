@@ -1,0 +1,468 @@
+---
+import logoUrl from '../assets/ferric-rules-mark-v1.svg?url';
+import '../styles/site.css';
+
+const base = import.meta.env.BASE_URL;
+const siteBase = base.endsWith('/') ? base : `${base}/`;
+const sitePath = (path = '') => `${siteBase}${path.replace(/^\/+/, '')}`;
+---
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ferric-rules | CLIPS-style rules, modern Rust embedding</title>
+  <meta name="description" content="A mostly CLIPS-compatible forward-chaining rules engine in Rust, designed for embedding as independent engine instances.">
+</head>
+<body class="landing-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <nav class="site-nav landing-nav" aria-label="Primary navigation">
+      <a class="site-nav__brand landing-brand" href={sitePath()}>
+        <img class="landing-brand__mark" src={logoUrl} alt="" width="32" height="32">
+        <span>ferric-rules</span>
+      </a>
+      <div class="site-nav__links">
+        <a class="site-nav__link" href={sitePath('docs/')}>Docs</a>
+        <a class="site-nav__link" href="#compatibility">Compatibility</a>
+        <a class="site-nav__link" href="#embedding">Embedding</a>
+        <a class="site-nav__link" href="#benchmarks">Benchmarks</a>
+        <a class="site-nav__link" href="https://github.com/plx/ferric-rules">GitHub</a>
+      </div>
+      <div class="site-nav__actions">
+        <a class="btn btn--ghost btn--sm" href="https://github.com/plx/ferric-rules">
+          <span class="btn__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3-5.8 3 1.1-6.5-4.7-4.6 6.5-.9Z"/></svg>
+          </span>
+          Star on GitHub
+        </a>
+        <a class="btn btn--primary btn--sm" href={sitePath('docs/')}>Read the docs</a>
+      </div>
+      <button class="site-nav__toggle" type="button" aria-label="Open navigation" aria-controls="nav-panel" aria-expanded="false" data-nav-toggle>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
+      </button>
+    </nav>
+    <div class="site-nav__drawer-scrim" data-nav-scrim data-open="false"></div>
+    <div class="site-nav__panel" id="nav-panel" data-open="false">
+      <a class="site-nav__panel-link" href={sitePath('docs/')}>Docs</a>
+      <a class="site-nav__panel-link" href="#compatibility">Compatibility</a>
+      <a class="site-nav__panel-link" href="#embedding">Embedding</a>
+      <a class="site-nav__panel-link" href="#benchmarks">Benchmarks</a>
+      <a class="site-nav__panel-link" href="https://github.com/plx/ferric-rules">GitHub</a>
+      <a class="site-nav__panel-link" href={sitePath('docs/')}>Read the docs</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero section-band" aria-labelledby="hero-title">
+      <div class="section-shell hero__grid">
+        <div class="hero__copy">
+          <div class="section-index">.01 <span>First viewport</span></div>
+          <div class="hero__brand-line">
+            <img class="hero__mark" src={logoUrl} alt="" width="56" height="56">
+            <h1 id="hero-title">ferric-rules</h1>
+          </div>
+          <p class="hero__lede">CLIPS-style rules, modern Rust embedding.</p>
+          <p class="hero__body">A mostly CLIPS-compatible forward-chaining rules engine written in Rust. Designed for embedding as independent engine instances in modern applications.</p>
+          <div class="hero__badges" aria-label="Project highlights">
+            <span class="badge badge--accent">Rust crate</span>
+            <span class="badge badge--neutral">CLIPS syntax</span>
+            <span class="badge badge--success">Independent engines</span>
+          </div>
+          <div class="hero__actions">
+            <a class="btn btn--primary btn--lg" href={sitePath('docs/')}>
+              Read the docs
+              <span class="btn__icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></span>
+            </a>
+            <a class="btn btn--ghost btn--lg" href="#syntax">
+              View examples
+              <span class="btn__icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></span>
+            </a>
+          </div>
+          <div class="install-command" aria-label="Install command">
+            <code>$ cargo add ferric</code>
+            <button class="icon-btn" type="button" aria-label="Copy install command" data-copy-command="cargo add ferric">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="hero-visual" aria-label="Architectural drafting visual with bridge girders and abstract Rete nodes" role="img">
+          <svg class="hero-visual__svg" viewBox="0 0 840 560" aria-hidden="true">
+            <defs>
+              <pattern id="draft-grid" width="32" height="32" patternUnits="userSpaceOnUse">
+                <path d="M32 0H0V32" fill="none" stroke="#0F1115" stroke-opacity="0.08" stroke-width="1"/>
+              </pattern>
+              <marker id="node-dot" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5">
+                <circle cx="5" cy="5" r="3" fill="#6B7280"/>
+              </marker>
+            </defs>
+            <rect width="840" height="560" fill="url(#draft-grid)"/>
+            <g class="protractor">
+              <path d="M128 312a190 190 0 0 1 380 0" />
+              <path d="M168 312a150 150 0 0 1 300 0" />
+              <path d="M318 118v220" />
+              <path d="M128 312h380" />
+              <path d="M178 184l280 256" />
+              <path d="M458 184 178 440" />
+            </g>
+            <g class="girder">
+              <path d="M280 42 824 0" />
+              <path d="M294 104 840 70" />
+              <path d="M310 96 804 54" />
+              <path d="M338 100 412 42 480 92 552 31 625 84 704 20 792 75" />
+              <path d="M328 52 410 101 478 44 552 92 624 35 704 88 781 25" />
+              <path d="M560 71v214" />
+              <path d="M614 66v197" />
+              <path d="M560 188h54" />
+              <path d="M560 232h54" />
+            </g>
+            <g class="rete" marker-mid="url(#node-dot)">
+              <path d="M122 378H230H336H444H552H660" />
+              <path d="M122 438H230H336H444H552H660" />
+              <path d="M122 498H230H336H444H552H660" />
+              <path d="M230 378 336 438 444 378 552 498 660 438" />
+              <path d="M230 498 336 438 444 498 552 378 660 438" />
+            </g>
+            <g class="rete-nodes">
+              <circle cx="336" cy="438" r="10"/>
+              <circle cx="444" cy="378" r="10"/>
+              <circle cx="552" cy="498" r="10"/>
+              <circle cx="660" cy="438" r="10"/>
+            </g>
+          </svg>
+          <div class="visual-legend">
+            <span>Alpha</span>
+            <span>Beta</span>
+            <span>Join</span>
+            <span>Terminal</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band" id="compatibility" aria-labelledby="why-title">
+      <div class="section-shell">
+        <div class="section-heading">
+          <div class="section-index">.02 <span>Why ferric-rules</span></div>
+          <h2 id="why-title">Industrial-strength rule execution, built for embedding.</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <div class="card-icon" aria-hidden="true">[ ]</div>
+            <div class="feature-card__eyebrow">Compatibility</div>
+            <h3 class="feature-card__title">Mostly CLIPS-compatible semantics</h3>
+            <p class="feature-card__body">Write practical rules in familiar CLIPS syntax. Most core constructs behave predictably without dragging old runtime assumptions forward.</p>
+            <ul class="check-list">
+              <li>Facts, templates, deffacts</li>
+              <li>Pattern matching and constraints</li>
+              <li>Agenda, salience, activations</li>
+            </ul>
+            <a class="text-link" href={sitePath('docs/compatibility/')}>Learn more</a>
+          </article>
+          <article class="feature-card" id="embedding">
+            <div class="card-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 8 4v10l-8 4-8-4V7Z"/><path d="m4 7 8 4 8-4"/><path d="M12 11v10"/></svg>
+            </div>
+            <div class="feature-card__eyebrow">Embedding</div>
+            <h3 class="feature-card__title">Independent engine instances</h3>
+            <p class="feature-card__body">Create isolated engine instances, load rule sets, and host them in applications without global C runtime state.</p>
+            <ul class="check-list">
+              <li>Rust API, safe and ergonomic</li>
+              <li>Multi-instance isolation</li>
+              <li>FFI and host bindings in progress</li>
+            </ul>
+            <a class="text-link" href="#syntax">See examples</a>
+          </article>
+          <article class="feature-card" id="benchmarks">
+            <div class="card-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 20 7v5c0 5-3.3 8-8 9-4.7-1-8-4-8-9V7Z"/><path d="m9 12 2 2 4-5"/></svg>
+            </div>
+            <div class="feature-card__eyebrow">Rigor</div>
+            <h3 class="feature-card__title">Validation and benchmark policy</h3>
+            <p class="feature-card__body">Compatibility tests, scaling checks, and Criterion benchmarks keep correctness and performance visible.</p>
+            <ul class="check-list">
+              <li>Rete-based network</li>
+              <li>Deterministic and testable</li>
+              <li>Performance focused</li>
+            </ul>
+            <a class="text-link" href="#status">Current status</a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band section-band--muted" id="syntax" aria-labelledby="syntax-title">
+      <div class="section-shell syntax-grid">
+        <div class="syntax-copy">
+          <div class="section-index">.03 <span>Syntax. Rust. Performance.</span></div>
+          <h2 id="syntax-title">Author rules in CLIPS. Embed in Rust.</h2>
+          <p>Ferric keeps the language shape domain experts know while giving application code a modern ownership model and isolated runtime instances.</p>
+          <div class="mini-list">
+            <div>
+              <span class="mini-icon" aria-hidden="true"></span>
+              <strong>Rete network</strong>
+              <span>Incremental matching</span>
+            </div>
+            <div>
+              <span class="mini-icon" aria-hidden="true"></span>
+              <strong>Forward-chaining</strong>
+              <span>Data-driven execution</span>
+            </div>
+            <div>
+              <span class="mini-icon" aria-hidden="true"></span>
+              <strong>Independent engines</strong>
+              <span>Isolated, deterministic</span>
+            </div>
+          </div>
+        </div>
+        <div class="code-compare">
+          <div class="code-panel">
+            <div class="code-panel__header">
+              <span class="code-panel__dot" aria-hidden="true"></span>
+              <span>CLIPS source</span>
+            </div>
+            <pre class="code-panel__body"><code>(defrule high-temperature
+  (sensor (type temperature)
+          (value ?t&amp;:(&gt; ?t 75)))
+  =&gt;
+  (assert (alert
+    (level high)
+    (message "Temp high"))))</code></pre>
+          </div>
+          <div class="code-panel">
+            <div class="code-panel__header">
+              <span class="code-panel__dot" aria-hidden="true"></span>
+              <span>Rust host</span>
+            </div>
+            <pre class="code-panel__body"><code>use ferric::prelude::*;
+
+let mut engine = Engine::new();
+engine.load_rule_from_str(r#"
+  (defrule high-temperature
+    (sensor (type temperature)
+            (value ?t&amp;:(&gt; ?t 75)))
+    =&gt;
+    (assert (alert (level high)
+                   (message "Temp high"))))
+"#)?;
+engine.run()?;</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band" id="docs" aria-labelledby="docs-title">
+      <div class="section-shell">
+        <div class="section-heading">
+          <div class="section-index">.04 <span>Documentation</span></div>
+          <h2 id="docs-title">Reference material for adoption and validation.</h2>
+        </div>
+        <div class="doc-grid">
+          <a class="doc-card doc-card--page" href={sitePath('docs/getting-started/')}>
+            <span class="doc-icon" aria-hidden="true">[]</span>
+            <h3 class="doc-card__title">Getting started</h3>
+            <p class="doc-card__body">Install, load rules into an engine, assert facts, and fire rules.</p>
+            <div class="doc-card__meta"><span>10 min read</span><span>Guide</span><span aria-hidden="true">-&gt;</span></div>
+          </a>
+          <a class="doc-card doc-card--page" href={sitePath('docs/compatibility/')}>
+            <span class="doc-icon" aria-hidden="true">[ ]</span>
+            <h3 class="doc-card__title">CLIPS compatibility</h3>
+            <p class="doc-card__body">Supported language features, known differences, and migration notes.</p>
+            <div class="doc-card__meta"><span>Reference</span><span>Up to date</span><span aria-hidden="true">-&gt;</span></div>
+          </a>
+          <a class="doc-card doc-card--page" href={sitePath('docs/embedding/')}>
+            <span class="doc-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 8 4v10l-8 4-8-4V7Z"/><path d="m4 7 8 4 8-4"/></svg>
+            </span>
+            <h3 class="doc-card__title">Embedding API</h3>
+            <p class="doc-card__body">Runtime architecture, engine lifecycle, configuration, and host integration.</p>
+            <div class="doc-card__meta"><span>Reference</span><span>Runtime</span><span aria-hidden="true">-&gt;</span></div>
+          </a>
+          <a class="doc-card doc-card--page" href={sitePath('docs/getting-started/#minimal-rule-set')}>
+            <span class="doc-icon" aria-hidden="true">&lt;/&gt;</span>
+            <h3 class="doc-card__title">Examples</h3>
+            <p class="doc-card__body">End-to-end rules and patterns for real application flows.</p>
+            <div class="doc-card__meta"><span>Examples</span><span>Rules</span><span aria-hidden="true">-&gt;</span></div>
+          </a>
+          <a class="doc-card doc-card--page" href={sitePath('docs/performance/')}>
+            <span class="doc-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19V5"/><path d="M4 19h16"/><path d="m8 15 3-4 3 2 4-7"/><path d="m16 6h2v2"/></svg>
+            </span>
+            <h3 class="doc-card__title">Performance</h3>
+            <p class="doc-card__body">Benchmark policy, scaling behavior, and tuning guidance.</p>
+            <div class="doc-card__meta"><span>Benchmarks</span><span>Continuous</span><span aria-hidden="true">-&gt;</span></div>
+          </a>
+          <a class="doc-card doc-card--page" href={sitePath('docs/internals/')}>
+            <span class="doc-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M12 3v6"/><path d="M12 15v6"/><path d="m4.2 7.5 5.2 3"/><path d="m14.6 13.5 5.2 3"/><path d="m19.8 7.5-5.2 3"/><path d="m9.4 13.5-5.2 3"/></svg>
+            </span>
+            <h3 class="doc-card__title">Internals</h3>
+            <p class="doc-card__body">Architecture, Rete network implementation notes, and validation baseline.</p>
+            <div class="doc-card__meta"><span>Deep dive</span><span>Advanced</span><span aria-hidden="true">-&gt;</span></div>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band section-band--muted" id="status" aria-labelledby="status-title">
+      <div class="section-shell status-layout">
+        <div>
+          <div class="section-index">.05 <span>Status and known exclusions</span></div>
+          <h2 id="status-title">Early, functional, and explicit about scope.</h2>
+          <div class="status-table" role="list">
+            <div class="status-row" role="listitem">
+              <span class="status-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10 2h4"/><path d="M12 2v7l6 10a2 2 0 0 1-1.7 3H7.7A2 2 0 0 1 6 19L12 9"/></svg></span>
+              <strong>Status</strong>
+              <span class="badge badge--warning">Prototype</span>
+              <span>Core functionality implemented; validation, polish, and performance work continue.</span>
+            </div>
+            <div class="status-row" role="listitem">
+              <span class="status-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.5 2.5L16 9"/></svg></span>
+              <strong>Core coverage</strong>
+              <span class="badge badge--success">High</span>
+              <span>Ordered and template facts, negative and existential patterns, joins, modules, focus stacks, and core standard library support.</span>
+            </div>
+            <div class="status-row" role="listitem">
+              <span class="status-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M3 12h18"/></svg></span>
+              <strong>Validation</strong>
+              <span class="badge badge--accent">Ongoing</span>
+              <span>Compatibility tests, fuzzing, benchmarks, and scaling checks are part of the development loop.</span>
+            </div>
+            <div class="status-row" role="listitem">
+              <span class="status-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 2 21h20Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
+              <strong>Known exclusions</strong>
+              <span class="badge badge--neutral">Scoped</span>
+              <span>COOL object system is intentionally out of scope. Some I/O utilities are limited while rule execution remains the focus.</span>
+            </div>
+          </div>
+        </div>
+        <aside class="honest-card">
+          <h3>Honest by design.</h3>
+          <p>Ferric prioritizes correctness, determinism, and performance for the rule execution core. Non-core features are intentionally out of scope until the engine deserves them.</p>
+          <a class="text-link" href={sitePath('docs/compatibility/')}>See compatibility notes</a>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer-rich">
+    <div class="footer-rich__inner">
+      <div class="footer-rich__main">
+        <div class="footer-rich__brand">
+          <div class="footer-rich__brand-row">
+            <img class="footer-mark" src={logoUrl} alt="" width="32" height="32">
+            <span>ferric-rules</span>
+          </div>
+          <p class="footer-rich__summary">CLIPS-style rules, modern Rust embedding. Built for isolated engine instances and repeatable execution.</p>
+          <div class="footer-rich__social" aria-label="Project links">
+            <a class="footer-rich__social-link" href="https://github.com/plx/ferric-rules" aria-label="GitHub">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2a10 10 0 0 0-3 19c.5.1.7-.2.7-.5v-2c-2.8.6-3.4-1.2-3.4-1.2-.5-1.1-1.1-1.4-1.1-1.4-.9-.6.1-.6.1-.6 1 0 1.6 1.1 1.6 1.1.9 1.5 2.4 1.1 3 .8.1-.7.4-1.1.7-1.3-2.2-.3-4.6-1.1-4.6-5A3.9 3.9 0 0 1 7 7.1c-.1-.3-.5-1.3.1-2.7 0 0 .9-.3 2.9 1.1a9.8 9.8 0 0 1 5.2 0c2-1.4 2.9-1.1 2.9-1.1.6 1.4.2 2.4.1 2.7a3.9 3.9 0 0 1 1 2.7c0 3.9-2.4 4.7-4.6 5 .4.3.7 1 .7 2v3.7c0 .3.2.6.7.5A10 10 0 0 0 12 2Z"/></svg>
+            </a>
+            <a class="footer-rich__social-link" href="https://github.com/plx/ferric-rules/discussions" aria-label="Discussions">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>
+            </a>
+            <a class="footer-rich__social-link" href="https://github.com/plx/ferric-rules/issues" aria-label="Issues">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><path d="M12 17h.01"/></svg>
+            </a>
+          </div>
+        </div>
+
+        <nav class="footer-rich__columns" aria-label="Footer navigation">
+          <div class="footer-rich__column">
+            <h2 class="footer-rich__heading">Docs</h2>
+            <a class="footer-rich__link" href={sitePath('docs/getting-started/')}>Getting started</a>
+            <a class="footer-rich__link" href={sitePath('docs/compatibility/')}>CLIPS compatibility</a>
+            <a class="footer-rich__link" href={sitePath('docs/embedding/')}>Embedding API</a>
+            <a class="footer-rich__link" href={sitePath('docs/performance/')}>Performance</a>
+          </div>
+          <div class="footer-rich__column">
+            <h2 class="footer-rich__heading">Project</h2>
+            <a class="footer-rich__link" href="https://github.com/plx/ferric-rules">GitHub</a>
+            <a class="footer-rich__link" href="https://github.com/plx/ferric-rules/issues">Issues</a>
+            <a class="footer-rich__link" href={sitePath('docs/performance/#benchmarking-policy')}>Benchmarks</a>
+            <a class="footer-rich__link" href={sitePath('docs/#project-status')}>Roadmap</a>
+          </div>
+          <div class="footer-rich__column">
+            <h2 class="footer-rich__heading">Meta</h2>
+            <a class="footer-rich__link" href={sitePath('docs/compatibility/#known-exclusions')}>Migration</a>
+            <a class="footer-rich__link" href="https://github.com/plx/ferric-rules/blob/main/LICENSE-MIT">MIT license</a>
+            <a class="footer-rich__link" href="https://github.com/plx/ferric-rules/blob/main/LICENSE-APACHE">Apache-2.0</a>
+            <a class="footer-rich__link" href="https://github.com/plx/ferric-rules/blob/main/THIRD_PARTY_NOTICES.md">Third-party notices</a>
+          </div>
+        </nav>
+
+        <div class="footer-rich__column">
+          <h2 class="footer-rich__heading">Stay informed</h2>
+          <p class="footer-rich__summary">Release notes, compatibility changes, and benchmark updates.</p>
+          <a class="btn btn--primary btn--sm" href="https://github.com/plx/ferric-rules/releases">View releases</a>
+        </div>
+      </div>
+
+      <div class="footer-rich__bottom">
+        <div class="footer-rich__meta">
+          <span>&copy; ferric-rules contributors</span>
+          <span>MIT OR Apache-2.0</span>
+        </div>
+        <div class="footer-rich__meta">
+          <span>Built with Rust</span>
+          <span>v0.1.0</span>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    document.querySelectorAll<HTMLButtonElement>("[data-toggle-selected]").forEach((button) => {
+      button.addEventListener("click", () => {
+        button.classList.toggle("is-selected");
+        button.setAttribute("aria-pressed", String(button.classList.contains("is-selected")));
+      });
+    });
+
+    document.querySelectorAll<HTMLButtonElement>("[data-nav-toggle]").forEach((toggle) => {
+      const controls = toggle.getAttribute("aria-controls");
+      if (!controls) return;
+
+      const panel = document.getElementById(controls);
+      const scrim = document.querySelector("[data-nav-scrim]");
+
+      function setOpen(nextOpen: boolean) {
+        toggle.setAttribute("aria-expanded", String(nextOpen));
+        panel?.setAttribute("data-open", String(nextOpen));
+        scrim?.setAttribute("data-open", String(nextOpen));
+      }
+
+      toggle.addEventListener("click", () => {
+        setOpen(toggle.getAttribute("aria-expanded") !== "true");
+      });
+
+      scrim?.addEventListener("click", () => setOpen(false));
+
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          setOpen(false);
+          toggle.focus();
+        }
+      });
+    });
+
+    document.querySelectorAll<HTMLButtonElement>("[data-copy-command]").forEach((button) => {
+      const command = button.getAttribute("data-copy-command") || "";
+      button.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard?.writeText(command);
+        } catch {
+          // Clipboard can be unavailable in some local previews.
+        }
+
+        const strip = button.closest(".install-command");
+        strip?.classList.add("is-copied");
+        window.setTimeout(() => strip?.classList.remove("is-copied"), 1200);
+      });
+    });
+  </script>
+</body>
+</html>
