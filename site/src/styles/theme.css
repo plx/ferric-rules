@@ -1,0 +1,20 @@
+@import "./tokens.css";
+@import "./components.css";
+
+:root {
+  color-scheme: light;
+  --tool-accent: var(--color-semantic-action-primary);
+  --tool-accent-2: var(--color-semantic-feedback-info);
+  --tool-ink: var(--color-semantic-text-primary);
+  --tool-muted: var(--color-semantic-text-secondary);
+  --tool-surface: var(--color-semantic-background-page);
+  --tool-code: var(--color-semantic-text-code);
+  --tool-panel: var(--color-semantic-background-surface);
+  --tool-line: var(--color-semantic-border-default);
+  --tool-success: var(--color-semantic-feedback-success);
+  --tool-warning: var(--color-semantic-feedback-warning);
+  --tool-radius: var(--radius-sm);
+  --tool-shadow: var(--shadow-1);
+  --tool-font-sans: var(--typography-families-body);
+  --tool-font-mono: var(--typography-families-mono);
+}

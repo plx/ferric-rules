@@ -26,14 +26,14 @@ CLIPS is battle-tested, but its C runtime model can be awkward in modern applica
 
 The repository includes multiple host-facing layers:
 
-| Layer | Purpose |
-| --- | --- |
-| `ferric` | Public Rust facade crate. |
-| `ferric-runtime` | Engine, execution environment, value types, and routing. |
-| `ferric-ffi` | C ABI over the runtime. |
-| `bindings/go` | Go binding on top of the FFI. |
-| `crates/ferric-python` | PyO3 extension module. |
-| `packages/ferric` | TypeScript package work. |
+| Layer                  | Purpose                                                  |
+| ---------------------- | -------------------------------------------------------- |
+| `ferric`               | Public Rust facade crate.                                |
+| `ferric-runtime`       | Engine, execution environment, value types, and routing. |
+| `ferric-ffi`           | C ABI over the runtime.                                  |
+| `bindings/go`          | Go binding on top of the FFI.                            |
+| `crates/ferric-python` | PyO3 extension module.                                   |
+| `packages/ferric`      | TypeScript package work.                                 |
 
 Future embedding targets can reuse the same runtime and FFI boundary.
 

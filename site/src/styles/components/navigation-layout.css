@@ -28,7 +28,8 @@
 
 .skip-link:focus-visible {
   transform: translateY(0);
-  outline: var(--border-focus-ring-width) solid var(--color-semantic-focus-ring-inverse);
+  outline: var(--border-focus-ring-width) solid
+    var(--color-semantic-focus-ring-inverse);
 }
 
 .site-header {
@@ -38,7 +39,8 @@
   background:
     linear-gradient(90deg, rgba(209, 83, 26, 0.18), transparent 36%),
     var(--color-semantic-background-inverse);
-  border-bottom: var(--border-width-hairline) var(--border-style) var(--color-semantic-border-inverse);
+  border-bottom: var(--border-width-hairline) var(--border-style)
+    var(--color-semantic-border-inverse);
   color: var(--color-semantic-text-inverse);
 }
 
@@ -67,7 +69,8 @@
 }
 
 .site-nav__brand:focus-visible {
-  outline: var(--border-focus-ring-width) solid var(--color-semantic-focus-ring-inverse);
+  outline: var(--border-focus-ring-width) solid
+    var(--color-semantic-focus-ring-inverse);
   outline-offset: var(--border-focus-ring-offset);
   border-radius: var(--radius-md);
 }
@@ -124,7 +127,8 @@
 }
 
 .site-nav__link:focus-visible {
-  outline: var(--border-focus-ring-width) solid var(--color-semantic-focus-ring-inverse);
+  outline: var(--border-focus-ring-width) solid
+    var(--color-semantic-focus-ring-inverse);
   outline-offset: var(--border-focus-ring-offset);
 }
 
@@ -157,7 +161,8 @@
   justify-content: center;
   inline-size: 44px;
   block-size: 44px;
-  border: var(--border-width-hairline) var(--border-style) var(--color-semantic-border-inverse);
+  border: var(--border-width-hairline) var(--border-style)
+    var(--color-semantic-border-inverse);
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-semantic-text-inverse);
@@ -170,7 +175,8 @@
 }
 
 .site-nav__toggle:focus-visible {
-  outline: var(--border-focus-ring-width) solid var(--color-semantic-focus-ring-inverse);
+  outline: var(--border-focus-ring-width) solid
+    var(--color-semantic-focus-ring-inverse);
   outline-offset: var(--border-focus-ring-offset);
 }
 
@@ -198,7 +204,8 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--space-scale-3);
-  border: var(--border-width-hairline) var(--border-style) var(--color-semantic-border-inverse);
+  border: var(--border-width-hairline) var(--border-style)
+    var(--color-semantic-border-inverse);
   border-radius: var(--radius-lg);
   background: var(--color-semantic-background-inverse-muted);
   box-shadow: var(--shadow-4);
@@ -226,7 +233,8 @@
 }
 
 .site-nav__panel-link:focus-visible {
-  outline: var(--border-focus-ring-width) solid var(--color-semantic-focus-ring-inverse);
+  outline: var(--border-focus-ring-width) solid
+    var(--color-semantic-focus-ring-inverse);
   outline-offset: var(--border-focus-ring-offset);
 }
 
@@ -240,7 +248,8 @@
   display: grid;
   gap: var(--space-scale-4);
   padding: var(--space-scale-5);
-  border: var(--border-width-hairline) var(--border-style) var(--color-semantic-border-subtle);
+  border: var(--border-width-hairline) var(--border-style)
+    var(--color-semantic-border-subtle);
   border-radius: var(--radius-lg);
   background: var(--color-semantic-background-surface);
   box-shadow: var(--shadow-1);

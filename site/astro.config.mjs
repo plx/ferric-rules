@@ -1,48 +1,62 @@
-import { defineConfig } from 'astro/config';
-import starlight from '@astrojs/starlight';
+import { defineConfig } from "astro/config";
+import starlight from "@astrojs/starlight";
+import { siteConfig } from "./src/site.config.mjs";
+
+const fontStylesheetUrl =
+  "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap";
+
+const basePath =
+  siteConfig.site.basePath === "/" ? "" : siteConfig.site.basePath;
+/** @param {string} path */
+const siteAsset = (path) => `${basePath}/${path.replace(/^\/+/, "")}`;
 
 export default defineConfig({
-  site: 'https://plx.github.io',
-  base: '/ferric-rules',
+  site: siteConfig.site.host,
+  base: siteConfig.site.basePath,
+  trailingSlash: "always",
   integrations: [
     starlight({
-      title: 'ferric-rules',
-      description:
-        'A mostly CLIPS-compatible forward-chaining rules engine in Rust, designed for embedding as independent engine instances.',
+      title: siteConfig.project.title,
+      description: siteConfig.project.description,
       logo: {
-        src: './src/assets/ferric-rules-mark-v1.svg',
-        alt: 'ferric-rules',
+        src: "./src/assets/tool-mark.svg",
+        alt: "",
       },
-      favicon: '/favicon.svg',
-      customCss: ['./src/styles/starlight.css'],
+      customCss: ["./src/styles/starlight.css"],
+      head: [
+        {
+          tag: "link",
+          attrs: { rel: "preconnect", href: "https://fonts.googleapis.com" },
+        },
+        {
+          tag: "link",
+          attrs: {
+            rel: "preconnect",
+            href: "https://fonts.gstatic.com",
+            crossorigin: "",
+          },
+        },
+        { tag: "link", attrs: { rel: "stylesheet", href: fontStylesheetUrl } },
+        {
+          tag: "link",
+          attrs: {
+            rel: "icon",
+            href: siteAsset("favicon.svg"),
+            type: "image/svg+xml",
+          },
+        },
+      ],
       social: [
         {
-          icon: 'github',
-          label: 'GitHub',
-          href: 'https://github.com/plx/ferric-rules',
+          icon: "github",
+          label: "GitHub",
+          href: siteConfig.repository.url,
         },
       ],
       editLink: {
-        baseUrl: 'https://github.com/plx/ferric-rules/edit/main/site/',
+        baseUrl: `${siteConfig.repository.url}/edit/${siteConfig.repository.defaultBranch}/site/src/content/docs/`,
       },
-      sidebar: [
-        {
-          label: 'Start Here',
-          items: [
-            { slug: 'docs', label: 'Overview' },
-            { slug: 'docs/getting-started', label: 'Getting started' },
-            { slug: 'docs/compatibility', label: 'CLIPS compatibility' },
-          ],
-        },
-        {
-          label: 'Embedding',
-          items: [
-            { slug: 'docs/embedding', label: 'Embedding API' },
-            { slug: 'docs/performance', label: 'Performance' },
-            { slug: 'docs/internals', label: 'Internals' },
-          ],
-        },
-      ],
+      sidebar: siteConfig.docs.sidebar,
     }),
   ],
 });
