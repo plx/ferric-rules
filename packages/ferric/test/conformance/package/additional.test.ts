@@ -28,25 +28,27 @@ test("G-001 wire utilities toWire, fromWire, isWireSymbol are exported", async (
 });
 
 // ---------------------------------------------------------------------------
-// G-001: ERROR_REGISTRY is exported and maps known error names
+// G-001 property-style registry: every exported error factory is callable
 // ---------------------------------------------------------------------------
-test("G-001 ERROR_REGISTRY is exported and maps known Ferric error names", async () => {
+test("G-001 property-style ERROR_REGISTRY factories construct named Ferric errors", async () => {
   const { ERROR_REGISTRY } = await import("../../../dist/index");
   assert.ok(typeof ERROR_REGISTRY === "object" && ERROR_REGISTRY !== null, "ERROR_REGISTRY should be an object");
 
-  // Each of the standard error class names must appear as a key.
-  const requiredKeys = [
-    "FerricParseError",
-    "FerricCompileError",
-    "FerricRuntimeError",
-    "FerricFactNotFoundError",
-    "FerricTemplateNotFoundError",
-    "FerricSlotNotFoundError",
-    "FerricModuleNotFoundError",
-    "FerricEncodingError",
-    "FerricSerializationError",
-  ];
-  for (const key of requiredKeys) {
+  // This generated table proves the registry is not just present: every
+  // exported factory returns the documented class name and stable error code.
+  const required = [
+    ["FerricError", "FERRIC_ERROR"],
+    ["FerricParseError", "FERRIC_PARSE_ERROR"],
+    ["FerricCompileError", "FERRIC_COMPILE_ERROR"],
+    ["FerricRuntimeError", "FERRIC_RUNTIME_ERROR"],
+    ["FerricFactNotFoundError", "FERRIC_FACT_NOT_FOUND"],
+    ["FerricTemplateNotFoundError", "FERRIC_TEMPLATE_NOT_FOUND"],
+    ["FerricSlotNotFoundError", "FERRIC_SLOT_NOT_FOUND"],
+    ["FerricModuleNotFoundError", "FERRIC_MODULE_NOT_FOUND"],
+    ["FerricEncodingError", "FERRIC_ENCODING_ERROR"],
+    ["FerricSerializationError", "FERRIC_SERIALIZATION_ERROR"],
+  ] as const;
+  for (const [key, code] of required) {
     assert.ok(
       key in ERROR_REGISTRY,
       `ERROR_REGISTRY should contain key "${key}"`
@@ -56,6 +58,11 @@ test("G-001 ERROR_REGISTRY is exported and maps known Ferric error names", async
       "function",
       `ERROR_REGISTRY["${key}"] should be a constructor`
     );
+    const err = ERROR_REGISTRY[key]("registry probe");
+    assert.ok(err instanceof Error);
+    assert.strictEqual(err.name, key);
+    assert.strictEqual(err.code, code);
+    assert.strictEqual(err.message, "registry probe");
   }
 });
 

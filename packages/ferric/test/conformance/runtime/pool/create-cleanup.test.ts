@@ -10,6 +10,7 @@ class MockWorker extends EventEmitter {
   static instances: MockWorker[] = [];
   static failOnConstructAt: number | null = null;
   static failInitIndices = new Set<number>();
+  static rejectTerminateIndices = new Set<number>();
 
   readonly index: number;
   terminateCalls = 0;
@@ -18,6 +19,7 @@ class MockWorker extends EventEmitter {
     MockWorker.instances = [];
     MockWorker.failOnConstructAt = null;
     MockWorker.failInitIndices = new Set<number>();
+    MockWorker.rejectTerminateIndices = new Set<number>();
   }
 
   constructor(_filename: string) {
@@ -52,6 +54,9 @@ class MockWorker extends EventEmitter {
 
   terminate(): Promise<number> {
     this.terminateCalls += 1;
+    if (MockWorker.rejectTerminateIndices.has(this.index)) {
+      return Promise.reject(new Error("terminate failed"));
+    }
     return Promise.resolve(0);
   }
 }
@@ -92,6 +97,28 @@ test("EnginePool.create terminates earlier workers when a later spawn throws", a
     );
 
     assert.strictEqual(MockWorker.instances.length, 1);
+    assert.strictEqual(MockWorker.instances[0]?.terminateCalls, 1);
+  } finally {
+    workerThreads.Worker = OriginalWorker;
+  }
+});
+
+test("EnginePool.create ignores terminate failures while unwinding init failure", async () => {
+  MockWorker.reset();
+  MockWorker.failInitIndices = new Set([0]);
+  MockWorker.rejectTerminateIndices = new Set([0]);
+
+  const OriginalWorker = workerThreads.Worker;
+  workerThreads.Worker = MockWorker as unknown as typeof workerThreads.Worker;
+
+  try {
+    // Cleanup is best effort during create() failure; a terminate rejection
+    // must not mask the original initialization error.
+    await assert.rejects(
+      () => EnginePool.create([{ name: "test" }], { threads: 1 }),
+      /init failed/,
+    );
+
     assert.strictEqual(MockWorker.instances[0]?.terminateCalls, 1);
   } finally {
     workerThreads.Worker = OriginalWorker;

@@ -69,6 +69,26 @@ test("A-003 ClipsValue includes FerricSymbol", () => {
 });
 
 // ---------------------------------------------------------------------------
+// A-003 property-style type corpus: generated ClipsValue variants compile
+// ---------------------------------------------------------------------------
+test("A-003 property-style ClipsValue accepts generated public value variants", () => {
+  // This tuple is a compile-time generator over every public ClipsValue branch;
+  // the assertion is that all entries can inhabit ClipsValue under strict mode.
+  const values: ClipsValue[] = [
+    new FerricSymbol("x"),
+    { __type: "FerricSymbol", value: "wired" },
+    "text",
+    1,
+    1.5,
+    1n,
+    true,
+    [new FerricSymbol("nested"), "text"],
+    null,
+  ];
+  assert.strictEqual(values.length, 9);
+});
+
+// ---------------------------------------------------------------------------
 // A-004: Public enums are regular TS enums
 // ---------------------------------------------------------------------------
 test("A-004 public enums are usable at runtime", () => {

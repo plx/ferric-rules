@@ -235,7 +235,7 @@ export class EnginePool {
       slot.pending.delete(resp.id);
       slot.inflight--;
 
-      if (resp.error) {
+      if ("error" in resp) {
         entry.reject(reconstructError(resp.error));
       } else {
         entry.resolve(fromWire(resp.result, FerricSymbol));

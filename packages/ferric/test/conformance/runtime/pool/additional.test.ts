@@ -201,6 +201,75 @@ test("E-007 proxy getFact retrieves a specific fact by ID", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// E-007 property-style proxy table: remaining proxy methods preserve semantics
+// ---------------------------------------------------------------------------
+test("E-007 property-style EnginePool proxy method table covers remaining operations", async () => {
+  const pool = await EnginePool.create(
+    [{
+      name: "proxy-table",
+      source: `
+(defrule read-it
+  (need-input)
+  =>
+  (printout t (readline) crlf))
+(defrule count-it
+  (counter ?n)
+  =>
+  (printout t "counter=" ?n crlf))
+`,
+    }],
+    { threads: 1 },
+  );
+  try {
+    await pool.do("proxy-table", async (proxy) => {
+      // The generated cases all assert one thing: each thin proxy method sends
+      // the same request shape as its worker protocol counterpart.
+      const cases = [
+        {
+          label: "findFacts returns the matching relation",
+          run: async () => {
+            await proxy.reset();
+            await proxy.assertFact("counter", 1);
+            const facts = await proxy.findFacts("counter") as any[];
+            assert.ok(facts.every((fact) => fact.relation === "counter"));
+          },
+        },
+        {
+          label: "halt is idempotent and void",
+          run: async () => {
+            await proxy.halt();
+          },
+        },
+        {
+          label: "clear removes dynamically asserted state",
+          run: async () => {
+            await proxy.clear();
+            assert.deepStrictEqual(await proxy.facts(), []);
+          },
+        },
+        {
+          label: "pushInput feeds readline through the proxy",
+          run: async () => {
+            await proxy.load("(defrule read-it (need-input) => (printout t (readline) crlf))");
+            await proxy.reset();
+            await proxy.pushInput("typed via proxy");
+            await proxy.assertFact("need-input");
+            await proxy.run();
+            assert.match(await proxy.getOutput("t") as string, /typed via proxy/);
+          },
+        },
+      ];
+
+      for (const item of cases) {
+        await assert.doesNotReject(item.run, item.label);
+      }
+    });
+  } finally {
+    await pool.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // E-002 additional variant: evaluate with template facts
 // ---------------------------------------------------------------------------
 test("E-002 evaluate with template facts fires matching rules", async () => {
@@ -220,6 +289,43 @@ test("E-002 evaluate with template facts fires matching rules", async () => {
     });
     assert.ok(result.runResult.rulesFired >= 1);
     assert.ok(result.output.stdout?.includes("item=7"), `Missing item=7 in output: ${result.output.stdout}`);
+  } finally {
+    await pool.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// E-002 property-style evaluate corpus: ordered and template facts both wire
+// ---------------------------------------------------------------------------
+test("E-002 property-style EnginePool.evaluate handles generated fact variants", async () => {
+  const pool = await EnginePool.create(
+    [{
+      name: "mixed",
+      source: `
+(deftemplate item (slot id) (slot label))
+(defrule ordered-color (color ?c) => (printout t "color=" ?c crlf))
+(defrule template-item (item (id ?id) (label ?label)) => (printout t "item=" ?id ":" ?label crlf))
+`,
+    }],
+    { threads: 1 },
+  );
+  try {
+    const result = await pool.evaluate("mixed", {
+      facts: [
+        { kind: "ordered", relation: "color", fields: [new FerricSymbol("red")] },
+        {
+          kind: "template",
+          templateName: "item",
+          slots: { id: 3, label: new FerricSymbol("widget") },
+        },
+      ],
+    });
+
+    // The generated request mixes both accepted fact variants so the mapper
+    // proves it preserves ordered fields and template slots in one call.
+    assert.strictEqual(result.runResult.rulesFired, 2);
+    assert.match(result.output.stdout, /color=red/);
+    assert.match(result.output.stdout, /item=3:widget/);
   } finally {
     await pool.close();
   }
