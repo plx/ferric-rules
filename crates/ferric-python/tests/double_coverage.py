@@ -32,6 +32,16 @@ TOP_LEVEL_EXPORTS = frozenset(
     }
 )
 
+# Names exported by the ferric module only when built with the `testing`
+# feature (`crates/ferric-python/src/lib.rs` adds them under
+# `#[cfg(feature = "testing")]`). Contract tests treat these as optional so the
+# Python suite can run against either build configuration.
+TESTING_ONLY_TOP_LEVEL = frozenset(
+    {
+        "engine_instance_count",
+    }
+)
+
 ENGINE_MEMBERS = frozenset(
     {
         "Engine.agenda_size",

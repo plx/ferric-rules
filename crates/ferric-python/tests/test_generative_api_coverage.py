@@ -21,6 +21,7 @@ from double_coverage import (
     STRING_PROTOCOLS,
     SYMBOL_MEMBERS,
     SYMBOL_PROTOCOLS,
+    TESTING_ONLY_TOP_LEVEL,
     TOP_LEVEL_EXPORTS,
     covers_generative,
 )
@@ -65,7 +66,12 @@ def _ordered_source(count):
 
 @covers_generative(*(TOP_LEVEL_EXPORTS | EXCEPTION_EXPORTS | ENUM_VALUES))
 def test_generated_public_api_contract_from_runtime_introspection():
-    public_names = {name for name in dir(ferric) if not name.startswith("_")}
+    # Drop `testing`-only exports so this contract works in both build configs.
+    public_names = {
+        name
+        for name in dir(ferric)
+        if not name.startswith("_") and name not in TESTING_ONLY_TOP_LEVEL
+    }
     assert TOP_LEVEL_EXPORTS == {f"ferric.{name}" for name in public_names}
 
     for item in EXCEPTION_EXPORTS - {"ferric.FerricError"}:
