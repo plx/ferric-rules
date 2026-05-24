@@ -292,13 +292,13 @@ func TestManualFFIValueConversionEdges(t *testing.T) {
 	}
 
 	var external ffi.Value
-	*(*ffi.ValueType)(unsafe.Pointer(&external)) = ffi.ValueTypeExternalAddress
+	*(*ffi.ValueType)(unsafe.Pointer(&external)) = ffi.ValueTypeExternalAddress //nolint:gosec // intentional unsafe write of opaque ffi.Value type tag to exercise the discriminator branch
 	if got, ok := ffiValueToGo(&external).(unsafe.Pointer); !ok || got != nil {
 		t.Fatalf("zero external pointer = (%T, %v), want nil unsafe.Pointer", got, got)
 	}
 
 	var unknown ffi.Value
-	*(*ffi.ValueType)(unsafe.Pointer(&unknown)) = ffi.ValueType(9999)
+	*(*ffi.ValueType)(unsafe.Pointer(&unknown)) = ffi.ValueType(9999) //nolint:gosec // intentional unsafe write of opaque ffi.Value type tag to exercise the unknown-type branch
 	if got := ffiValueToGo(&unknown); got != nil {
 		t.Fatalf("unknown value type = %v, want nil", got)
 	}
@@ -1575,7 +1575,7 @@ func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 		}
 		e.ClearDiagnostics()
 		e.PushInput("unused")
-		for range e.FactIter() {
+		for range e.FactIter() { //nolint:revive // exhaust iterator without inspection to exercise the surface
 		}
 		for _, err := range e.FactIterE() {
 			if err != nil {
@@ -1790,12 +1790,12 @@ func TestPropertyErrorSentinelsAndFFIValueConversions(t *testing.T) {
 		}
 
 		var external ffi.Value
-		*(*ffi.ValueType)(unsafe.Pointer(&external)) = ffi.ValueTypeExternalAddress
+		*(*ffi.ValueType)(unsafe.Pointer(&external)) = ffi.ValueTypeExternalAddress //nolint:gosec // intentional unsafe write of opaque ffi.Value type tag to exercise the discriminator branch
 		if _, ok := ffiValueToGo(&external).(unsafe.Pointer); !ok {
 			t.Fatal("external FFI value did not convert to unsafe.Pointer")
 		}
 		var unknown ffi.Value
-		*(*ffi.ValueType)(unsafe.Pointer(&unknown)) = ffi.ValueType(999)
+		*(*ffi.ValueType)(unsafe.Pointer(&unknown)) = ffi.ValueType(999) //nolint:gosec // intentional unsafe write of opaque ffi.Value type tag to exercise the unknown-type branch
 		if got := ffiValueToGo(&unknown); got != nil {
 			t.Fatalf("unknown FFI value = %v, want nil", got)
 		}

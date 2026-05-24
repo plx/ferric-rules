@@ -270,7 +270,7 @@ func TestManualCopyAndFreeBytesBranches(t *testing.T) {
 
 	src := []byte{1, 2, 3}
 	freed = false
-	got := copyAndFreeBytes(unsafe.Pointer(&src[0]), uintptr(len(src)), func() { freed = true })
+	got := copyAndFreeBytes(unsafe.Pointer(&src[0]), uintptr(len(src)), func() { freed = true }) //nolint:gosec // intentional &slice pointer to exercise copyAndFreeBytes' non-empty path
 	if !freed || len(got) != len(src) || got[0] != 1 || got[2] != 3 {
 		t.Fatalf("copy = (%v, freed=%v), want copied bytes freed", got, freed)
 	}
@@ -437,7 +437,7 @@ func TestPropertyCopyAndFreeBytes(t *testing.T) {
 		freed := false
 		var ptr unsafe.Pointer
 		if len(src) > 0 {
-			ptr = unsafe.Pointer(&src[0])
+			ptr = unsafe.Pointer(&src[0]) //nolint:gosec // intentional &slice pointer to exercise copyAndFreeBytes' non-empty path
 		}
 		got := copyAndFreeBytes(ptr, uintptr(len(src)), func() { freed = true })
 		if !freed {
