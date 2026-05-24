@@ -50,5 +50,8 @@ func (a *RulesActivity) Register(w worker.Worker) {
 
 // Close shuts down the Coordinator. Call from worker shutdown hook.
 func (a *RulesActivity) Close() error {
-	return a.coord.Close()
+	if err := a.coord.Close(); err != nil {
+		return fmt.Errorf("temporal: closing coordinator: %w", err)
+	}
+	return nil
 }

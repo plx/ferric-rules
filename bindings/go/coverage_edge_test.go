@@ -341,15 +341,14 @@ func TestManualNilEngineErrorBranches(t *testing.T) {
 	if _, err := e.FactCount(); err == nil {
 		t.Fatal("FactCount: expected error")
 	}
-	if _, err := e.RunWithLimit(nil, 0); !errors.Is(err, errNilContext) {
+	var nilCtx context.Context
+	if _, err := e.RunWithLimit(nilCtx, 0); !errors.Is(err, errNilContext) {
 		t.Fatalf("nil context should fail with errNilContext, got %v", err)
 	}
 	if _, err := e.Run(context.Background()); err == nil {
 		t.Fatal("Run: expected error")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if _, err := e.RunWithLimit(ctx, 1); err == nil {
+	if _, err := e.RunWithLimit(t.Context(), 1); err == nil {
 		t.Fatal("RunWithLimit cancelable context: expected error")
 	}
 	if _, err := e.Step(); err == nil {
@@ -580,7 +579,8 @@ func TestManualCoordinatorWorkerAndManagerErrorBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mustClose(t, mgr)
-	if err := mgr.Do(nil, func(*Engine) error { return nil }); !errors.Is(err, errNilContext) {
+	var nilMgrCtx context.Context
+	if err := mgr.Do(nilMgrCtx, func(*Engine) error { return nil }); !errors.Is(err, errNilContext) {
 		t.Fatalf("Do nil context = %v", err)
 	}
 	if _, err := mgr.Evaluate(context.Background(), nil); !errors.Is(err, errNilEvaluateRequest) {
@@ -688,7 +688,8 @@ func TestManualPinnedEngineCancellationAndSerializationFile(t *testing.T) {
 	if err := p.SerializeToFile(path, FormatBincode); err != nil {
 		t.Fatalf("SerializeToFile failed: %v", err)
 	}
-	if err := p.Do(nil, func(*Engine) error { return nil }); !errors.Is(err, errNilContext) {
+	var nilPinnedCtx context.Context
+	if err := p.Do(nilPinnedCtx, func(*Engine) error { return nil }); !errors.Is(err, errNilContext) {
 		t.Fatalf("PinnedEngine.Do nil context = %v", err)
 	}
 
@@ -768,6 +769,9 @@ func TestManualEngineSourceConfigWrongThreadCloseAndDiagnostics(t *testing.T) {
 		count++
 		break
 	}
+	if count == 0 {
+		t.Fatal("DiagnosticIter yielded no diagnostics from a divide-by-zero rule")
+	}
 	for _, err := range diag.DiagnosticIterE() {
 		if err != nil {
 			t.Fatalf("DiagnosticIterE unexpected error: %v", err)
@@ -838,9 +842,7 @@ func TestManualHookedRunEdgeBranches(t *testing.T) {
 			return 2, ffi.HaltReason(999), ffi.ErrOK
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		result, err := (&Engine{}).RunWithLimit(ctx, 1)
+		result, err := (&Engine{}).RunWithLimit(t.Context(), 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -856,9 +858,7 @@ func TestManualHookedRunEdgeBranches(t *testing.T) {
 			return maxInt + 1, ffi.HaltReasonAgendaEmpty, ffi.ErrOK
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		_, err := (&Engine{}).RunWithLimit(ctx, 0)
+		_, err := (&Engine{}).RunWithLimit(t.Context(), 0)
 		if !errors.Is(err, errIntOverflow) {
 			t.Fatalf("cancelable overflow error = %v", err)
 		}
@@ -1270,6 +1270,7 @@ func TestPropertyHookedRunEdges(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			//nolint:gosec // fired is drawn from rapid.Uint64Range(2, 20), safely fits in int
 			if result.RulesFired != int(fired) || result.HaltReason != HaltLimitReached {
 				t.Fatalf("overfire result = %+v, fired %d", result, fired)
 			}
@@ -1536,7 +1537,7 @@ func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 
 		_ = e.Rules()
 		_, _ = e.RulesE()
-		for range e.RuleIter() {
+		for range e.RuleIter() { //nolint:revive // exhaust iterator without inspection to exercise the surface
 		}
 		for _, err := range e.RuleIterE() {
 			if err != nil {
@@ -1545,7 +1546,7 @@ func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 		}
 		_ = e.Templates()
 		_, _ = e.TemplatesE()
-		for range e.TemplateIter() {
+		for range e.TemplateIter() { //nolint:revive // exhaust iterator without inspection to exercise the surface
 		}
 		for _, err := range e.TemplateIterE() {
 			if err != nil {
@@ -1565,7 +1566,7 @@ func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 		_, _ = e.IsHaltedE()
 		_ = e.Diagnostics()
 		_, _ = e.DiagnosticsE()
-		for range e.DiagnosticIter() {
+		for range e.DiagnosticIter() { //nolint:revive // exhaust iterator without inspection to exercise the surface
 		}
 		for _, err := range e.DiagnosticIterE() {
 			if err != nil {
@@ -1733,6 +1734,7 @@ func TestPropertyErrorSentinelsAndFFIValueConversions(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		text := rapid.String().Draw(t, "text")
 		i := rapid.Int64().Draw(t, "integer")
+		i32 := rapid.Int32().Draw(t, "integer32")
 		f := rapid.Float64().Filter(func(v float64) bool { return !math.IsNaN(v) }).Draw(t, "float")
 
 		for _, tc := range []struct {
@@ -1762,7 +1764,7 @@ func TestPropertyErrorSentinelsAndFFIValueConversions(t *testing.T) {
 		values := []any{
 			int(i),
 			i,
-			int32(i),
+			i32,
 			f,
 			float32(f),
 			Symbol(text),
@@ -1800,7 +1802,7 @@ func TestPropertyErrorSentinelsAndFFIValueConversions(t *testing.T) {
 
 		nativeCases := []any{
 			int(i),
-			int32(i),
+			i32,
 			i,
 			float32(f),
 			f,

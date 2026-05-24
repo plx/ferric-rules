@@ -75,11 +75,12 @@ func TestManualValueAccessorsAndConstructors(t *testing.T) {
 	ValueFree(&emptyMultifield)
 
 	marker := 7
+	markerPtr := unsafe.Pointer(&marker) //nolint:gosec // intentional &local pointer used to round-trip an external address through the FFI accessor
 	var external Value
 	external.value_type = ValueTypeExternalAddress
-	external.external_pointer = unsafe.Pointer(&marker)
-	if got := ValueGetExternalPointer(&external); got != unsafe.Pointer(&marker) {
-		t.Fatalf("external pointer = %v, want %v", got, unsafe.Pointer(&marker))
+	external.external_pointer = markerPtr
+	if got := ValueGetExternalPointer(&external); got != markerPtr {
+		t.Fatalf("external pointer = %v, want %v", got, markerPtr)
 	}
 
 	cfg := MakeConfig(StringEncodingUTF8, ConflictStrategyLEX, 512)
@@ -130,6 +131,7 @@ func TestManualConfigConstructorsOutputDiagnosticsAndErrors(t *testing.T) {
 		t.Fatal("diagnostic engine returned nil")
 	}
 	defer EngineFree(diag)
+	//nolint:dogsled // run the engine purely to populate diagnostics; outcome is exercised separately above
 	_, _, _ = EngineRunEx(diag, -1)
 	count, rc := EngineActionDiagnosticCount(diag)
 	if rc != ErrOK {
@@ -272,7 +274,9 @@ func TestManualCopyAndFreeBytesBranches(t *testing.T) {
 	if !freed || len(got) != len(src) || got[0] != 1 || got[2] != 3 {
 		t.Fatalf("copy = (%v, freed=%v), want copied bytes freed", got, freed)
 	}
-	src[0] = 9
+	if len(src) > 0 {
+		src[0] = 9
+	}
 	if got[0] != 1 {
 		t.Fatalf("copy must be Go-owned, got mutated first byte %d", got[0])
 	}
