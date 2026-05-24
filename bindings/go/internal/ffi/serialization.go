@@ -20,18 +20,17 @@ func EngineSerializeAs(h EngineHandle, format SerializationFormat) ([]byte, Erro
 		return nil, rc
 	}
 
-	if length == 0 {
+	return copyAndFreeBytes(unsafe.Pointer(data), uintptr(length), func() {
 		C.ferric_bytes_free(data, length)
-		return nil, ErrOK
+	}), ErrOK
+}
+
+func copyAndFreeBytes(data unsafe.Pointer, length uintptr, free func()) []byte {
+	defer free()
+	if length == 0 {
+		return nil
 	}
-
-	// Copy the Rust-owned bytes into Go-managed memory.
-	goBytes := C.GoBytes(unsafe.Pointer(data), C.int(length))
-
-	// Free the Rust-allocated buffer.
-	C.ferric_bytes_free(data, length)
-
-	return goBytes, ErrOK
+	return C.GoBytes(data, C.int(length))
 }
 
 // EngineDeserializeAs creates an engine from previously serialized bytes

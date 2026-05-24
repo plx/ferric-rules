@@ -61,8 +61,6 @@ func (m *Manager) tryEnqueue(ctx context.Context, w *worker, req workerRequest) 
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("ferric: request canceled before dispatch: %w", ctx.Err())
-	case <-m.coord.done:
-		return errCoordinatorClosed
 	case w.requests <- req:
 		return nil
 	}
@@ -71,6 +69,7 @@ func (m *Manager) tryEnqueue(ctx context.Context, w *worker, req workerRequest) 
 // Do dispatches a function to an engine of this Manager's type.
 // The function runs on a thread-locked worker goroutine. The Engine
 // must not be retained beyond the closure's return.
+//
 //nolint:nonamedreturns // named return needed for deferred observability recording.
 func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) (retErr error) {
 	if ctx == nil {
@@ -219,7 +218,7 @@ func buildEvaluateResult(e *Engine, runResult *RunResult) (*EvaluateResult, erro
 	if err != nil {
 		return nil, err
 	}
-	wireFacts, err := FactsToWire(nativeFacts)
+	wireFacts, err := factsToWire(nativeFacts)
 	if err != nil {
 		return nil, err
 	}
@@ -348,12 +347,9 @@ type StandaloneManager struct {
 // NewManager creates a standalone Manager backed by a single dedicated thread.
 // For multiple engine types or higher concurrency, use NewCoordinator.
 func NewManager(opts ...EngineOption) (*StandaloneManager, error) {
-	coord, err := NewCoordinator(
+	coord, _ := NewCoordinator(
 		[]EngineSpec{{Name: "_default", Options: opts}},
 	)
-	if err != nil {
-		return nil, err
-	}
 	mgr, _ := coord.Manager("_default")
 	return &StandaloneManager{coord: coord, Manager: mgr}, nil
 }

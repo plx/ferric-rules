@@ -5,7 +5,6 @@ package temporal
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	ferric "github.com/prb/ferric-rules/bindings/go"
@@ -29,13 +28,7 @@ func NewRulesActivity(specs []ferric.EngineSpec, opts ...ferric.CoordinatorOptio
 	}
 	managers := make(map[string]*ferric.Manager, len(specs))
 	for _, s := range specs {
-		mgr, err := coord.Manager(s.Name)
-		if err != nil {
-			if closeErr := coord.Close(); closeErr != nil {
-				return nil, fmt.Errorf("temporal: getting manager for %q: %w", s.Name, errors.Join(err, closeErr))
-			}
-			return nil, fmt.Errorf("temporal: getting manager for %q: %w", s.Name, err)
-		}
+		mgr, _ := coord.Manager(s.Name)
 		managers[s.Name] = mgr
 	}
 	return &RulesActivity{coord: coord, managers: managers}, nil
@@ -57,8 +50,5 @@ func (a *RulesActivity) Register(w worker.Worker) {
 
 // Close shuts down the Coordinator. Call from worker shutdown hook.
 func (a *RulesActivity) Close() error {
-	if err := a.coord.Close(); err != nil {
-		return fmt.Errorf("temporal: closing coordinator: %w", err)
-	}
-	return nil
+	return a.coord.Close()
 }
