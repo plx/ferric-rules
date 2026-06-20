@@ -41,6 +41,10 @@ test("A-001 A-002 A-004 A-005 A-006 G-001 G-003 N-06 property-style public API e
   const engine = new ferric.Engine();
   try {
     assert.strictEqual(typeof engine[Symbol.dispose], "function");
+    // The wrapper returns a Proxy over the native engine; a custom
+    // Symbol.hasInstance keeps instanceof identity intact (see PR #82).
+    assert.ok(engine instanceof ferric.Engine, "engine should be instanceof Engine");
+    assert.ok(!({} instanceof ferric.Engine), "non-engine should not be instanceof Engine");
   } finally {
     engine.close();
   }

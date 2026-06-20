@@ -171,6 +171,17 @@ function wrapEngineWithErrorConversion(RawEngine: NativeEngineConstructor): Nati
       }
     }
 
+    // Every engine this class hands back (from `new`, `fromSource`, and the
+    // snapshot factories) is a Proxy whose target is a raw native engine, so
+    // its prototype chain contains `RawEngine.prototype` but not
+    // `WrappedEngine.prototype`. Without a custom `Symbol.hasInstance`,
+    // `engine instanceof Engine` would be `false`. Delegate the identity check
+    // to the native class so the proxies are recognized as `Engine` instances,
+    // matching the behavior of the previous constructor-Proxy implementation.
+    static [Symbol.hasInstance](value: unknown): boolean {
+      return value instanceof RawEngine;
+    }
+
     static fromSource(
       source: string,
       options?: { strategy?: number; encoding?: number; maxCallDepth?: number },

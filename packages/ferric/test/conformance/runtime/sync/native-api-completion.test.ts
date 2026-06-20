@@ -63,6 +63,48 @@ test("G-001 Engine static factories return wrapped native Engine instances", () 
 });
 
 // ---------------------------------------------------------------------------
+// G-001 manual native proxy: instanceof identity survives the wrapper
+// ---------------------------------------------------------------------------
+test("G-001 wrapped Engine instances are recognized by instanceof Engine", () => {
+  // Every engine the wrapper hands back is a Proxy over a raw native engine,
+  // so its prototype chain never contains WrappedEngine.prototype. A custom
+  // Symbol.hasInstance must keep `engine instanceof Engine` true across all
+  // construction paths, otherwise downstream `instanceof Engine` guards
+  // misclassify valid engines. Regression test for PR #82.
+  const dir = mkdtempSync(join(tmpdir(), "ferric-instanceof-"));
+  const path = join(dir, "snapshot.bin");
+
+  const constructed = new Engine();
+  const fromSource = Engine.fromSource(SOURCE);
+  const snapshot = fromSource.serialize(Format.Bincode);
+  const fromSnapshot = Engine.fromSnapshot(snapshot, Format.Bincode);
+  fromSnapshot.saveSnapshot(path, Format.Bincode);
+  const fromSnapshotFile = Engine.fromSnapshotFile(path, Format.Bincode);
+
+  try {
+    const engines: Array<[string, unknown]> = [
+      ["new Engine()", constructed],
+      ["Engine.fromSource", fromSource],
+      ["Engine.fromSnapshot", fromSnapshot],
+      ["Engine.fromSnapshotFile", fromSnapshotFile],
+    ];
+    for (const [label, engine] of engines) {
+      assert.ok(engine instanceof Engine, `${label} should be instanceof Engine`);
+    }
+
+    // Non-engine values must still be rejected by the custom hasInstance.
+    assert.ok(!({} instanceof Engine), "plain object is not an Engine");
+    assert.ok(!(null instanceof Engine), "null is not an Engine");
+    assert.ok(!(0 instanceof Engine), "primitive is not an Engine");
+  } finally {
+    constructed.close();
+    fromSource.close();
+    fromSnapshot.close();
+    fromSnapshotFile.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // G-001 manual native proxy: getter properties pass through unchanged
 // ---------------------------------------------------------------------------
 test("G-001 Engine native getter properties pass through proxy", () => {
