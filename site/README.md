@@ -1,18 +1,18 @@
 # ferric-rules site
 
-Static Astro/Starlight site for ferric-rules.
+Static Astro/Starlight site generated from `static-tool-page-template`.
 
-## Commands
+## Common commands
 
 ```sh
-npm install
-npm run dev
-npm run build
+just install
+just dev
+just check
+just test
+just build
 ```
 
-The production config targets `https://plx.github.io/ferric-rules` using:
+The site is configured for `https://plx.github.io/ferric-rules/` with the GitHub Pages base path `/ferric-rules`.
 
-- `site: "https://plx.github.io"`
-- `base: "/ferric-rules"`
-
-The deploy workflow is configured in `.github/workflows/site.yml` and builds from this `site/` directory.
+The generated Playwright suite runs against mobile, tablet, and desktop projects.
+Use `just install-browsers` once locally before `just test`.

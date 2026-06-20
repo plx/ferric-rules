@@ -7,30 +7,30 @@ Ferric targets semantic compatibility with the CLIPS Basic Programming Guide for
 
 ## Supported Core Areas
 
-| Area | Support |
-| --- | --- |
-| Ordered facts | Supported |
-| Template facts | Supported |
-| `initial-fact` on reset | Supported |
-| `defrule` | Supported |
-| Salience | Supported |
-| `test`, `not`, `exists`, `forall`, NCC | Supported |
-| Constraint connectives `~`, `|`, `&` | Supported |
-| Modules and focus stack | Supported |
-| `deffunction`, `defgeneric`, `defmethod` | Supported |
-| Globals | Supported |
+| Area                                                        | Support          |
+| ----------------------------------------------------------- | ---------------- |
+| Ordered facts                                               | Supported        |
+| Template facts                                              | Supported        |
+| `initial-fact` on reset                                     | Supported        |
+| `defrule`                                                   | Supported        |
+| Salience                                                    | Supported        |
+| `test`, `not`, `exists`, `forall`, NCC                      | Supported        |
+| Constraint connectives `~`, `\|`, `&`                       | Supported        |
+| Modules and focus stack                                     | Supported        |
+| `deffunction`, `defgeneric`, `defmethod`                    | Supported        |
+| Globals                                                     | Supported        |
 | Core math, string, multifield, predicate, and I/O functions | Supported subset |
 
 ## Conflict Resolution
 
 Ferric implements these configurable strategies:
 
-| Strategy | Description |
-| --- | --- |
-| Depth | Most recent activation fires first. |
-| Breadth | Oldest activation fires first. |
-| LEX | Lexicographic recency comparison. |
-| MEA | First-pattern recency, then LEX tiebreak. |
+| Strategy | Description                               |
+| -------- | ----------------------------------------- |
+| Depth    | Most recent activation fires first.       |
+| Breadth  | Oldest activation fires first.            |
+| LEX      | Lexicographic recency comparison.         |
+| MEA      | First-pattern recency, then LEX tiebreak. |
 
 Not implemented: Simplicity, Complexity, Random.
 

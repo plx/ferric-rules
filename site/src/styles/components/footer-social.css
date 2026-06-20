@@ -14,7 +14,8 @@
   min-width: 0;
   overflow-x: clip;
   padding: var(--space-scale-8) var(--space-scale-5) var(--space-scale-4);
-  border-top: var(--border-width-hairline) var(--border-style) var(--color-semantic-border-inverse);
+  border-top: var(--border-width-hairline) var(--border-style)
+    var(--color-semantic-border-inverse);
   background:
     linear-gradient(90deg, rgba(209, 83, 26, 0.12), transparent 28%),
     var(--color-semantic-background-inverse);
@@ -28,7 +29,10 @@
 
 .footer-rich__main {
   display: grid;
-  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 2.4fr) minmax(240px, 0.9fr);
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 2.4fr) minmax(
+      240px,
+      0.9fr
+    );
   gap: var(--space-scale-6);
   align-items: start;
 }
@@ -109,7 +113,8 @@
   min-height: 44px;
   flex: 1 1 180px;
   padding-inline: var(--space-scale-3);
-  border: var(--border-width-hairline) var(--border-style) var(--color-semantic-border-inverse);
+  border: var(--border-width-hairline) var(--border-style)
+    var(--color-semantic-border-inverse);
   border-radius: var(--radius-sm);
   background: var(--color-semantic-background-inverse-muted);
   color: var(--color-semantic-text-inverse);
@@ -123,7 +128,8 @@
 }
 
 .footer-rich__input:focus-visible {
-  outline: var(--border-focus-ring-width) solid var(--color-semantic-focus-ring-inverse);
+  outline: var(--border-focus-ring-width) solid
+    var(--color-semantic-focus-ring-inverse);
   outline-offset: var(--border-focus-ring-offset);
 }
 
@@ -138,7 +144,8 @@
   block-size: 44px;
   display: grid;
   place-items: center;
-  border: var(--border-width-hairline) var(--border-style) var(--color-semantic-border-inverse);
+  border: var(--border-width-hairline) var(--border-style)
+    var(--color-semantic-border-inverse);
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-semantic-text-inverse);
@@ -161,14 +168,16 @@
 }
 
 .footer-rich__social-link:focus-visible {
-  outline: var(--border-focus-ring-width) solid var(--color-semantic-focus-ring-inverse);
+  outline: var(--border-focus-ring-width) solid
+    var(--color-semantic-focus-ring-inverse);
   outline-offset: var(--border-focus-ring-offset);
 }
 
 .footer-rich__bottom {
   margin-top: var(--space-scale-6);
   padding-top: var(--space-scale-4);
-  border-top: var(--border-width-hairline) var(--border-style) var(--color-semantic-border-inverse);
+  border-top: var(--border-width-hairline) var(--border-style)
+    var(--color-semantic-border-inverse);
   display: flex;
   align-items: center;
   justify-content: space-between;
