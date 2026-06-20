@@ -54,7 +54,7 @@ export default defineConfig({
         },
       ],
       editLink: {
-        baseUrl: `${siteConfig.repository.url}/edit/${siteConfig.repository.defaultBranch}/site/src/content/docs/`,
+        baseUrl: `${siteConfig.repository.url}/edit/${siteConfig.repository.defaultBranch}/site/`,
       },
       sidebar: siteConfig.docs.sidebar,
     }),
