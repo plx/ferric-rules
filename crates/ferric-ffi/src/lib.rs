@@ -64,6 +64,7 @@
 pub mod engine;
 pub mod error;
 pub mod header;
+pub mod pinned;
 pub mod types;
 
 #[cfg(test)]
