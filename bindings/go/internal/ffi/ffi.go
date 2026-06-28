@@ -258,6 +258,13 @@ func uint64IDsFromTwoCall(query func(dst []uint64) (uintptr, ErrorCode)) ([]uint
 	if rc != ErrOK {
 		return nil, rc
 	}
+	// The query copies at most len(result) ids into the buffer. The second
+	// call normally reports the same count as the first (engine access is
+	// serialized between the two calls), but clamp defensively so a count
+	// that grew between calls truncates instead of panicking on the reslice.
+	if count > uintptr(len(result)) {
+		count = uintptr(len(result))
+	}
 	return result[:count], ErrOK
 }
 
@@ -655,6 +662,13 @@ func stringFromTwoCall(fn func(buf []byte) (uintptr, ErrorCode)) (string, ErrorC
 	needed, rc = fn(buf)
 	if rc != ErrOK {
 		return "", rc
+	}
+
+	// fn writes at most len(buf) bytes. The second call normally reports the
+	// same size as the first, but clamp defensively so a size that grew
+	// between the two calls truncates instead of panicking on buf[:needed-1].
+	if needed > uintptr(len(buf)) {
+		needed = uintptr(len(buf))
 	}
 
 	// Convert to Go string (exclude NUL terminator)

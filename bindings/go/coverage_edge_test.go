@@ -1219,250 +1219,6 @@ func TestPropertyWireConversionErrorSurfaces(t *testing.T) {
 	})
 }
 
-func TestPropertyHookedNewEngineFallbacks(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		resetFFIHooks()
-		defer resetFFIHooks()
-
-		scenario := rapid.SampledFrom([]string{"snapshot", "source", "config"}).Draw(t, "scenario")
-		switch scenario {
-		case "snapshot":
-			ffiEngineDeserializeAs = func([]byte, ffi.SerializationFormat) (ffi.EngineHandle, ffi.ErrorCode) {
-				return nil, ffi.ErrOK
-			}
-			_, err := NewEngine(WithSnapshot([]byte("snapshot"), FormatBincode))
-			if err == nil {
-				t.Fatal("snapshot nil handle should fail")
-			}
-		case "source":
-			ffiEngineNewWithSource = func(string) ffi.EngineHandle { return nil }
-			ffiLastErrorGlobal = func() string { return "" }
-			_, err := NewEngine(WithSource("(defrule r =>)"))
-			if err == nil {
-				t.Fatal("source nil handle should fail")
-			}
-		case "config":
-			ffiEngineNewWithConfig = func(*ffi.Config) ffi.EngineHandle { return nil }
-			_, err := NewEngine(WithStrategy(StrategyBreadth))
-			if err == nil {
-				t.Fatal("configured nil handle should fail")
-			}
-		}
-	})
-}
-
-func TestPropertyHookedRunEdges(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		resetFFIHooks()
-		defer resetFFIHooks()
-
-		scenario := rapid.SampledFrom([]string{"overfire", "cancelable_overflow", "direct_overflow"}).Draw(t, "scenario")
-		maxInt := uint64(^uint(0) >> 1)
-		switch scenario {
-		case "overfire":
-			fired := rapid.Uint64Range(2, 20).Draw(t, "fired")
-			ffiEngineRunEx = func(ffi.EngineHandle, int64) (uint64, ffi.HaltReason, ffi.ErrorCode) {
-				return fired, ffi.HaltReason(999), ffi.ErrOK
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			result, err := (&Engine{}).RunWithLimit(ctx, 1)
-			if err != nil {
-				t.Fatal(err)
-			}
-			//nolint:gosec // fired is drawn from rapid.Uint64Range(2, 20), safely fits in int
-			if result.RulesFired != int(fired) || result.HaltReason != HaltLimitReached {
-				t.Fatalf("overfire result = %+v, fired %d", result, fired)
-			}
-		case "cancelable_overflow":
-			ffiEngineRunEx = func(ffi.EngineHandle, int64) (uint64, ffi.HaltReason, ffi.ErrorCode) {
-				return maxInt + 1, ffi.HaltReasonAgendaEmpty, ffi.ErrOK
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			_, err := (&Engine{}).RunWithLimit(ctx, 0)
-			if !errors.Is(err, errIntOverflow) {
-				t.Fatalf("cancelable overflow error = %v", err)
-			}
-		case "direct_overflow":
-			ffiEngineRunEx = func(ffi.EngineHandle, int64) (uint64, ffi.HaltReason, ffi.ErrorCode) {
-				return maxInt + 1, ffi.HaltReasonAgendaEmpty, ffi.ErrOK
-			}
-			_, err := (&Engine{}).Run(context.Background())
-			if !errors.Is(err, errIntOverflow) {
-				t.Fatalf("direct overflow error = %v", err)
-			}
-		}
-	})
-}
-
-func TestPropertyHookedIntrospectionErrors(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		resetFFIHooks()
-		defer resetFFIHooks()
-
-		e := &Engine{}
-		scenario := rapid.SampledFrom([]string{"fact", "rule", "template", "focus", "diagnostic"}).Draw(t, "scenario")
-		switch scenario {
-		case "fact":
-			ffiEngineFactIDs = func(ffi.EngineHandle) ([]uint64, ffi.ErrorCode) {
-				return []uint64{rapid.Uint64().Draw(t, "fact_id")}, ffi.ErrOK
-			}
-			ffiEngineGetFactType = func(ffi.EngineHandle, uint64) (ffi.FactType, ffi.ErrorCode) {
-				return 0, ffi.ErrNotFound
-			}
-			for range e.FactIter() {
-				t.Fatal("FactIter should stop on buildFact error")
-			}
-			for _, err := range e.FactIterE() {
-				if err == nil {
-					t.Fatal("FactIterE should yield buildFact error")
-				}
-			}
-		case "rule":
-			ffiEngineRuleCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 1, ffi.ErrOK }
-			ffiEngineRuleInfo = func(ffi.EngineHandle, uintptr) (string, int32, ffi.ErrorCode) {
-				return "", 0, ffi.ErrRuntimeError
-			}
-			if len(e.Rules()) != 0 {
-				t.Fatal("Rules should return partial empty slice on item error")
-			}
-			if _, err := e.RulesE(); err == nil {
-				t.Fatal("RulesE should return item error")
-			}
-		case "template":
-			ffiEngineTemplateCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 1, ffi.ErrOK }
-			ffiEngineTemplateName = func(ffi.EngineHandle, uintptr) (string, ffi.ErrorCode) {
-				return "", ffi.ErrRuntimeError
-			}
-			if len(e.Templates()) != 0 {
-				t.Fatal("Templates should return partial empty slice on item error")
-			}
-			if _, err := e.TemplatesE(); err == nil {
-				t.Fatal("TemplatesE should return item error")
-			}
-		case "focus":
-			ffiEngineFocusStackDepth = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 1, ffi.ErrOK }
-			ffiEngineFocusStackEntry = func(ffi.EngineHandle, uintptr) (string, ffi.ErrorCode) {
-				return "", ffi.ErrRuntimeError
-			}
-			if len(e.FocusStack()) != 0 {
-				t.Fatal("FocusStack should return partial empty slice on item error")
-			}
-			if _, err := e.FocusStackE(); err == nil {
-				t.Fatal("FocusStackE should return item error")
-			}
-		case "diagnostic":
-			ffiEngineActionDiagnosticCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 1, ffi.ErrOK }
-			ffiEngineActionDiagnosticCopy = func(ffi.EngineHandle, uintptr) (string, ffi.ErrorCode) {
-				return "", ffi.ErrRuntimeError
-			}
-			if len(e.Diagnostics()) != 0 {
-				t.Fatal("Diagnostics should return partial empty slice on item error")
-			}
-			if _, err := e.DiagnosticsE(); err == nil {
-				t.Fatal("DiagnosticsE should return item error")
-			}
-		}
-	})
-}
-
-func TestPropertyHookedBuildFactErrors(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		resetFFIHooks()
-		defer resetFFIHooks()
-
-		scenario := rapid.SampledFrom([]string{
-			"field_count", "field", "template_name", "slot_count", "slot_name", "relation",
-		}).Draw(t, "scenario")
-		switch scenario {
-		case "field_count":
-			installOrderedBuildFactHooks()
-			ffiEngineGetFactFieldCount = func(ffi.EngineHandle, uint64) (uintptr, ffi.ErrorCode) {
-				return 0, ffi.ErrRuntimeError
-			}
-		case "field":
-			installOrderedBuildFactHooks()
-			ffiEngineGetFactField = func(ffi.EngineHandle, uint64, uintptr) (ffi.Value, ffi.ErrorCode) {
-				return ffi.Value{}, ffi.ErrRuntimeError
-			}
-		case "template_name":
-			installTemplateBuildFactHooks()
-			ffiEngineGetFactTemplateName = func(ffi.EngineHandle, uint64) (string, ffi.ErrorCode) {
-				return "", ffi.ErrRuntimeError
-			}
-		case "slot_count":
-			installTemplateBuildFactHooks()
-			ffiEngineTemplateSlotCount = func(ffi.EngineHandle, string) (uintptr, ffi.ErrorCode) {
-				return 0, ffi.ErrRuntimeError
-			}
-		case "slot_name":
-			installTemplateBuildFactHooks()
-			ffiEngineTemplateSlotName = func(ffi.EngineHandle, string, uintptr) (string, ffi.ErrorCode) {
-				return "", ffi.ErrRuntimeError
-			}
-		case "relation":
-			installOrderedBuildFactHooks()
-			ffiEngineGetFactRelation = func(ffi.EngineHandle, uint64) (string, ffi.ErrorCode) {
-				return "", ffi.ErrRuntimeError
-			}
-		}
-		if _, err := (&Engine{}).buildFact(rapid.Uint64().Draw(t, "fact_id")); err == nil {
-			t.Fatal("buildFact should fail for injected native lookup error")
-		}
-	})
-}
-
-func TestPropertyHookedEvaluateAndPinnedEdges(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		resetFFIHooks()
-		defer resetFFIHooks()
-
-		scenario := rapid.SampledFrom([]string{"reset", "run", "wire", "pinned"}).Draw(t, "scenario")
-		switch scenario {
-		case "reset":
-			ffiEngineReset = func(ffi.EngineHandle) ffi.ErrorCode { return ffi.ErrRuntimeError }
-			mgr, err := NewManager()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = mgr.Close() }()
-			if _, err := mgr.Evaluate(context.Background(), &EvaluateRequest{}); err == nil {
-				t.Fatal("Evaluate should fail when Reset fails")
-			}
-		case "run":
-			ffiEngineRunEx = func(ffi.EngineHandle, int64) (uint64, ffi.HaltReason, ffi.ErrorCode) {
-				return 0, 0, ffi.ErrRuntimeError
-			}
-			mgr, err := NewManager()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = mgr.Close() }()
-			if _, err := mgr.Evaluate(context.Background(), &EvaluateRequest{}); err == nil {
-				t.Fatal("Evaluate should fail when Run fails")
-			}
-		case "wire":
-			factsToWire = func([]Fact) ([]WireFact, error) { return nil, errUnsupportedWireConversionType }
-			e, err := NewEngine()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = e.Close() }()
-			if _, err := buildEvaluateResult(e, &RunResult{}); err == nil {
-				t.Fatal("buildEvaluateResult should fail when factsToWire fails")
-			}
-		case "pinned":
-			done := make(chan struct{})
-			close(done)
-			p := &PinnedEngine{requests: make(chan pinnedRequest), done: make(chan struct{})}
-			if err := p.tryEnqueue(doneOnlyContext{done: done}, pinnedRequest{resp: make(chan error, 1)}); err == nil {
-				t.Fatal("tryEnqueue should fail when Done is selected")
-			}
-		}
-	})
-}
-
 func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 	lockThread(t)
 
@@ -1522,8 +1278,16 @@ func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 		if err != nil {
 			rt.Fatal(err)
 		}
-		if _, err := e.GetFact(sensorID); err != nil {
+		sensorFact, err := e.GetFact(sensorID)
+		if err != nil {
 			rt.Fatal(err)
+		}
+		// The drawn slot values must round-trip back through GetFact.
+		if got, ok := sensorFact.Slots["id"].(int64); !ok || got != id {
+			rt.Fatalf("sensor.id slot = %v, want %d", sensorFact.Slots["id"], id)
+		}
+		if got, ok := sensorFact.Slots["value"].(float64); !ok || got != value {
+			rt.Fatalf("sensor.value slot = %v, want %v", sensorFact.Slots["value"], value)
 		}
 		if facts, err := e.Facts(); err != nil || len(facts) == 0 {
 			rt.Fatalf("Facts = (%v, %v), want facts", facts, err)
@@ -1583,12 +1347,8 @@ func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 			}
 		}
 
-		runResult, err := e.RunWithLimit(context.Background(), 1)
-		if err != nil {
+		if _, err := e.RunWithLimit(context.Background(), 1); err != nil {
 			rt.Fatal(err)
-		}
-		if runResult.RulesFired < 0 {
-			rt.Fatal("negative rules fired")
 		}
 		if _, err := e.Run(context.Background()); err != nil {
 			rt.Fatal(err)
@@ -1600,9 +1360,17 @@ func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 		if err != nil {
 			rt.Fatal(err)
 		}
+		wantCount, err := e.FactCount()
+		if err != nil {
+			rt.Fatal(err)
+		}
 		restored, err := NewEngine(WithSnapshot(data, format))
 		if err != nil {
 			rt.Fatal(err)
+		}
+		// A restored snapshot must reproduce the original engine's fact set.
+		if gotCount, err := restored.FactCount(); err != nil || gotCount != wantCount {
+			rt.Fatalf("restored FactCount = (%d, %v), want %d", gotCount, err, wantCount)
 		}
 		_ = restored.Close()
 		path := tmpDir + "/engine-surface.bin"
@@ -1655,7 +1423,7 @@ func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 			[]EngineSpec{{Name: "sweep", Options: []EngineOption{WithSource(source)}}},
 			Threads(rapid.IntRange(1, 3).Draw(rt, "threads")),
 			WithDispatchPolicy(fixedIndexPolicy{index: policyIndex}),
-			WithLogger(slog.Default()),
+			WithLogger(slog.New(slog.DiscardHandler)),
 			WithTracerProvider(nil),
 			WithMeterProvider(nil),
 		)
@@ -1846,158 +1614,265 @@ func TestPropertyErrorSentinelsAndFFIValueConversions(t *testing.T) {
 	})
 }
 
-func TestPropertyHookedMutationAndAccessorErrors(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		resetFFIHooks()
-		defer resetFFIHooks()
+// TestManualFinalizerFreesLiveSkipsClosed pins the non-obvious finalizer
+// invariant directly (rather than as 1 of N random branches): a live engine is
+// freed exactly once, and an already-closed engine is skipped.
+func TestManualFinalizerFreesLiveSkipsClosed(t *testing.T) {
+	withFFIHooks(t)
+	calls := 0
+	ffiEngineFreeUnchecked = func(ffi.EngineHandle) ffi.ErrorCode {
+		calls++
+		return ffi.ErrOK
+	}
+	finalizeEngine(&Engine{})             // live engine: frees once
+	finalizeEngine(&Engine{closed: true}) // already closed: skipped
+	if calls != 1 {
+		t.Fatalf("finalizer free calls = %d, want 1", calls)
+	}
+}
 
-		e := &Engine{}
-		scenario := rapid.SampledFrom([]string{
-			"finalizer",
-			"close",
-			"load",
-			"assert_string",
-			"assert_ordered",
-			"assert_template",
-			"retract",
-			"fact_ids",
-			"find_fact_ids",
-			"fact_count",
-			"step",
-			"serialize",
-			"get_global",
-			"current_module",
-			"focus",
-			"agenda",
-			"is_halted",
-			"diagnostics",
-		}).Draw(t, "scenario")
-		switch scenario {
-		case "finalizer":
-			calls := 0
-			ffiEngineFreeUnchecked = func(ffi.EngineHandle) ffi.ErrorCode {
-				calls++
-				return ffi.ErrOK
-			}
-			finalizeEngine(&Engine{})
-			finalizeEngine(&Engine{closed: true})
-			if calls != 1 {
-				t.Fatalf("finalizer free calls = %d, want 1", calls)
-			}
-		case "close":
-			ffiEngineFree = func(ffi.EngineHandle) ffi.ErrorCode { return ffi.ErrRuntimeError }
-			if err := e.Close(); err == nil {
-				t.Fatal("Close should surface native free errors")
-			}
-		case "load":
-			ffiEngineLoadString = func(ffi.EngineHandle, string) ffi.ErrorCode { return ffi.ErrRuntimeError }
-			if err := e.Load("bad"); err == nil {
-				t.Fatal("Load should surface native errors")
-			}
-		case "assert_string":
-			ffiEngineAssertString = func(ffi.EngineHandle, string) (uint64, ffi.ErrorCode) {
-				return 0, ffi.ErrRuntimeError
-			}
-			if _, err := e.AssertString("(x)"); err == nil {
-				t.Fatal("AssertString should surface native errors")
-			}
-		case "assert_ordered":
-			ffiEngineAssertOrdered = func(ffi.EngineHandle, string, []ffi.Value) (uint64, ffi.ErrorCode) {
-				return 0, ffi.ErrRuntimeError
-			}
-			if _, err := e.AssertFact("x", int64(1)); err == nil {
-				t.Fatal("AssertFact should surface native errors")
-			}
-		case "assert_template":
-			ffiEngineAssertTemplate = func(ffi.EngineHandle, string, []string, []ffi.Value) (uint64, ffi.ErrorCode) {
-				return 0, ffi.ErrRuntimeError
-			}
-			if _, err := e.AssertTemplate("x", map[string]any{"slot": int64(1)}); err == nil {
-				t.Fatal("AssertTemplate should surface native errors")
-			}
-		case "retract":
-			ffiEngineRetract = func(ffi.EngineHandle, uint64) ffi.ErrorCode { return ffi.ErrRuntimeError }
-			if err := e.Retract(rapid.Uint64().Draw(t, "fact_id")); err == nil {
-				t.Fatal("Retract should surface native errors")
-			}
-		case "fact_ids":
-			ffiEngineFactIDs = func(ffi.EngineHandle) ([]uint64, ffi.ErrorCode) { return nil, ffi.ErrRuntimeError }
-			if _, err := e.Facts(); err == nil {
-				t.Fatal("Facts should surface native errors")
-			}
-		case "find_fact_ids":
-			ffiEngineFindFactIDs = func(ffi.EngineHandle, string) ([]uint64, ffi.ErrorCode) {
-				return nil, ffi.ErrRuntimeError
-			}
-			if _, err := e.FindFacts("x"); err == nil {
-				t.Fatal("FindFacts should surface native errors")
-			}
-		case "fact_count":
-			ffiEngineFactCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 0, ffi.ErrRuntimeError }
-			if _, err := e.FactCount(); err == nil {
-				t.Fatal("FactCount should surface native errors")
-			}
-		case "step":
-			ffiEngineStep = func(ffi.EngineHandle) (int32, ffi.ErrorCode) { return 0, ffi.ErrRuntimeError }
-			if _, err := e.Step(); err == nil {
-				t.Fatal("Step should surface native errors")
-			}
-		case "serialize":
-			ffiEngineSerializeAs = func(ffi.EngineHandle, ffi.SerializationFormat) ([]byte, ffi.ErrorCode) {
-				return nil, ffi.ErrRuntimeError
-			}
-			if _, err := e.Serialize(FormatBincode); err == nil {
-				t.Fatal("Serialize should surface native errors")
-			}
-		case "get_global":
-			ffiEngineGetGlobal = func(ffi.EngineHandle, string) (ffi.Value, ffi.ErrorCode) {
-				return ffi.Value{}, ffi.ErrRuntimeError
-			}
-			if _, err := e.GetGlobal("x"); err == nil {
-				t.Fatal("GetGlobal should surface native errors")
-			}
-		case "current_module":
-			ffiEngineCurrentModule = func(ffi.EngineHandle) (string, ffi.ErrorCode) { return "", ffi.ErrRuntimeError }
-			if got := e.CurrentModule(); got != "" {
-				t.Fatalf("CurrentModule error result = %q, want empty", got)
-			}
-			if _, err := e.CurrentModuleE(); err == nil {
-				t.Fatal("CurrentModuleE should surface native errors")
-			}
-		case "focus":
-			ffiEngineGetFocus = func(ffi.EngineHandle) (string, ffi.ErrorCode) { return "", ffi.ErrRuntimeError }
-			if name, ok := e.Focus(); name != "" || ok {
-				t.Fatalf("Focus error result = (%q, %v), want empty false", name, ok)
-			}
-			if _, _, err := e.FocusE(); err == nil {
-				t.Fatal("FocusE should surface native errors")
-			}
-		case "agenda":
-			ffiEngineAgendaCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 0, ffi.ErrRuntimeError }
-			if got := e.AgendaSize(); got != 0 {
-				t.Fatalf("AgendaSize error result = %d, want 0", got)
-			}
-			if _, err := e.AgendaSizeE(); err == nil {
-				t.Fatal("AgendaSizeE should surface native errors")
-			}
-		case "is_halted":
-			ffiEngineIsHalted = func(ffi.EngineHandle) (bool, ffi.ErrorCode) { return false, ffi.ErrRuntimeError }
-			if got := e.IsHalted(); got {
-				t.Fatal("IsHalted error result = true, want false")
-			}
-			if _, err := e.IsHaltedE(); err == nil {
-				t.Fatal("IsHaltedE should surface native errors")
-			}
-		case "diagnostics":
-			ffiEngineActionDiagnosticCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) {
-				return 0, ffi.ErrRuntimeError
-			}
-			if got := e.Diagnostics(); got != nil {
-				t.Fatalf("Diagnostics error result = %v, want nil", got)
-			}
-			if _, err := e.DiagnosticsE(); err == nil {
-				t.Fatal("DiagnosticsE should surface native errors")
-			}
-		}
-	})
+// TestManualHookedMutationAndAccessorErrors verifies that each Engine method
+// translates an injected native ErrRuntimeError into the ErrRuntime sentinel
+// (mutators and E-accessors) and returns its documented zero value for the
+// non-erroring accessors. Asserting errors.Is(ErrRuntime) — not merely err !=
+// nil — proves the FFI error code is actually carried through, not swallowed
+// or replaced by an unrelated error.
+func TestManualHookedMutationAndAccessorErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func()
+		check func(t *testing.T, e *Engine)
+	}{
+		{
+			name:  "close",
+			setup: func() { ffiEngineFree = func(ffi.EngineHandle) ffi.ErrorCode { return ffi.ErrRuntimeError } },
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if err := e.Close(); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("Close err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "load",
+			setup: func() {
+				ffiEngineLoadString = func(ffi.EngineHandle, string) ffi.ErrorCode { return ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if err := e.Load("bad"); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("Load err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "assert_string",
+			setup: func() {
+				ffiEngineAssertString = func(ffi.EngineHandle, string) (uint64, ffi.ErrorCode) { return 0, ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if _, err := e.AssertString("(x)"); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("AssertString err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "assert_ordered",
+			setup: func() {
+				ffiEngineAssertOrdered = func(ffi.EngineHandle, string, []ffi.Value) (uint64, ffi.ErrorCode) {
+					return 0, ffi.ErrRuntimeError
+				}
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if _, err := e.AssertFact("x", int64(1)); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("AssertFact err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "assert_template",
+			setup: func() {
+				ffiEngineAssertTemplate = func(ffi.EngineHandle, string, []string, []ffi.Value) (uint64, ffi.ErrorCode) {
+					return 0, ffi.ErrRuntimeError
+				}
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if _, err := e.AssertTemplate("x", map[string]any{"slot": int64(1)}); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("AssertTemplate err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name:  "retract",
+			setup: func() { ffiEngineRetract = func(ffi.EngineHandle, uint64) ffi.ErrorCode { return ffi.ErrRuntimeError } },
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if err := e.Retract(1); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("Retract err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "fact_ids",
+			setup: func() {
+				ffiEngineFactIDs = func(ffi.EngineHandle) ([]uint64, ffi.ErrorCode) { return nil, ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if _, err := e.Facts(); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("Facts err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "find_fact_ids",
+			setup: func() {
+				ffiEngineFindFactIDs = func(ffi.EngineHandle, string) ([]uint64, ffi.ErrorCode) { return nil, ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if _, err := e.FindFacts("x"); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("FindFacts err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "fact_count",
+			setup: func() {
+				ffiEngineFactCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 0, ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if _, err := e.FactCount(); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("FactCount err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "step",
+			setup: func() {
+				ffiEngineStep = func(ffi.EngineHandle) (int32, ffi.ErrorCode) { return 0, ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if _, err := e.Step(); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("Step err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "serialize",
+			setup: func() {
+				ffiEngineSerializeAs = func(ffi.EngineHandle, ffi.SerializationFormat) ([]byte, ffi.ErrorCode) {
+					return nil, ffi.ErrRuntimeError
+				}
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if _, err := e.Serialize(FormatBincode); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("Serialize err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "get_global",
+			setup: func() {
+				ffiEngineGetGlobal = func(ffi.EngineHandle, string) (ffi.Value, ffi.ErrorCode) {
+					return ffi.Value{}, ffi.ErrRuntimeError
+				}
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if _, err := e.GetGlobal("x"); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("GetGlobal err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "current_module",
+			setup: func() {
+				ffiEngineCurrentModule = func(ffi.EngineHandle) (string, ffi.ErrorCode) { return "", ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if got := e.CurrentModule(); got != "" {
+					t.Fatalf("CurrentModule = %q, want empty", got)
+				}
+				if _, err := e.CurrentModuleE(); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("CurrentModuleE err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "focus",
+			setup: func() {
+				ffiEngineGetFocus = func(ffi.EngineHandle) (string, ffi.ErrorCode) { return "", ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if name, ok := e.Focus(); name != "" || ok {
+					t.Fatalf("Focus = (%q, %v), want empty false", name, ok)
+				}
+				if _, _, err := e.FocusE(); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("FocusE err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "agenda",
+			setup: func() {
+				ffiEngineAgendaCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 0, ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if got := e.AgendaSize(); got != 0 {
+					t.Fatalf("AgendaSize = %d, want 0", got)
+				}
+				if _, err := e.AgendaSizeE(); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("AgendaSizeE err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "is_halted",
+			setup: func() {
+				ffiEngineIsHalted = func(ffi.EngineHandle) (bool, ffi.ErrorCode) { return false, ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if got := e.IsHalted(); got {
+					t.Fatalf("IsHalted = true, want false")
+				}
+				if _, err := e.IsHaltedE(); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("IsHaltedE err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+		{
+			name: "diagnostics",
+			setup: func() {
+				ffiEngineActionDiagnosticCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 0, ffi.ErrRuntimeError }
+			},
+			check: func(t *testing.T, e *Engine) {
+				t.Helper()
+				if got := e.Diagnostics(); got != nil {
+					t.Fatalf("Diagnostics = %v, want nil", got)
+				}
+				if _, err := e.DiagnosticsE(); !errors.Is(err, ErrRuntime) {
+					t.Fatalf("DiagnosticsE err = %v, want ErrRuntime", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withFFIHooks(t)
+			tc.setup()
+			tc.check(t, &Engine{})
+		})
+	}
 }

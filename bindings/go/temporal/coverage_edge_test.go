@@ -2,12 +2,9 @@ package temporal
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"testing"
 
 	ferric "github.com/prb/ferric-rules/bindings/go"
-	"pgregory.net/rapid"
 )
 
 func TestManualRulesActivityErrorOptionsAndRegisteredClosure(t *testing.T) {
@@ -56,50 +53,44 @@ func TestManualRulesActivityErrorOptionsAndRegisteredClosure(t *testing.T) {
 	}
 }
 
-func TestPropertyRulesActivityRegistersGeneratedSpecs(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		count := rapid.IntRange(1, 4).Draw(t, "count")
-		threads := rapid.IntRange(1, 3).Draw(t, "threads")
-		var cfg activityConfig
-		WithCoordinatorOptions(ferric.Threads(threads))(&cfg)
-		if len(cfg.coordinatorOpts) != 1 {
-			t.Fatalf("coordinator option count = %d, want 1", len(cfg.coordinatorOpts))
-		}
-		if _, err := NewRulesActivity(nil, ferric.Threads(0)); err == nil {
-			t.Fatal("invalid coordinator option should fail construction")
-		}
+// TestManualRulesActivityRoutesEachSpecToOwnManager verifies that Register
+// builds a distinct closure per spec, each routed to that spec's own engine.
+// Existing tests (TestRegisterMultipleSpecs) only check activity names/count; a
+// regression that captured the same manager for every closure — or routed to
+// the wrong one — would pass those but fail here. Each spec prints a unique
+// token so the invoked closure's output identifies which engine actually ran.
+func TestManualRulesActivityRoutesEachSpecToOwnManager(t *testing.T) {
+	specs := []ferric.EngineSpec{
+		{Name: "alpha", Options: []ferric.EngineOption{ferric.WithSource(`(defrule a => (printout t "alpha" crlf))`)}},
+		{Name: "beta", Options: []ferric.EngineOption{ferric.WithSource(`(defrule b => (printout t "beta" crlf))`)}},
+	}
+	ra, err := NewRulesActivity(specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, ra)
 
-		specs := make([]ferric.EngineSpec, count)
-		for i := range specs {
-			specs[i] = ferric.EngineSpec{
-				Name: fmt.Sprintf("spec_%d", i),
-				Options: []ferric.EngineOption{
-					ferric.WithSource(`(defrule r => (assert (ok)))`),
-				},
-			}
-		}
+	spy := &spyWorker{}
+	ra.Register(spy)
+	if len(spy.activities) != len(specs) {
+		t.Fatalf("registered %d activities, want %d", len(spy.activities), len(specs))
+	}
 
-		ra, err := NewRulesActivity(specs)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() {
-			if err := ra.Close(); err != nil && !errors.Is(err, context.Canceled) {
-				t.Fatalf("close failed: %v", err)
-			}
-		}()
-
-		spy := &spyWorker{}
-		ra.Register(spy)
-		if len(spy.activities) != count {
-			t.Fatalf("registered %d activities, want %d", len(spy.activities), count)
-		}
-		fn, ok := spy.activities[0].fn.(func(context.Context, *ferric.EvaluateRequest) (*ferric.EvaluateResult, error))
+	want := map[string]string{
+		"ferric.Evaluate.alpha": "alpha\n",
+		"ferric.Evaluate.beta":  "beta\n",
+	}
+	for _, a := range spy.activities {
+		fn, ok := a.fn.(func(context.Context, *ferric.EvaluateRequest) (*ferric.EvaluateResult, error))
 		if !ok {
-			t.Fatalf("registered function has unexpected type %T", spy.activities[0].fn)
+			t.Fatalf("activity %q has unexpected fn type %T", a.opts.Name, a.fn)
 		}
-		if _, err := fn(context.Background(), &ferric.EvaluateRequest{}); err != nil {
-			t.Fatalf("registered function failed: %v", err)
+		result, err := fn(context.Background(), &ferric.EvaluateRequest{})
+		if err != nil {
+			t.Fatalf("activity %q failed: %v", a.opts.Name, err)
 		}
-	})
+		if got := result.Output["stdout"]; got != want[a.opts.Name] {
+			t.Fatalf("activity %q stdout = %q, want %q", a.opts.Name, got, want[a.opts.Name])
+		}
+	}
 }

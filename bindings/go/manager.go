@@ -347,9 +347,13 @@ type StandaloneManager struct {
 // NewManager creates a standalone Manager backed by a single dedicated thread.
 // For multiple engine types or higher concurrency, use NewCoordinator.
 func NewManager(opts ...EngineOption) (*StandaloneManager, error) {
-	coord, _ := NewCoordinator(
+	coord, err := NewCoordinator(
 		[]EngineSpec{{Name: "_default", Options: opts}},
 	)
+	if err != nil {
+		return nil, err
+	}
+	// "_default" was just registered above, so Manager cannot fail here.
 	mgr, _ := coord.Manager("_default")
 	return &StandaloneManager{coord: coord, Manager: mgr}, nil
 }

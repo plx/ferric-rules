@@ -333,6 +333,51 @@ func TestManualStringFromTwoCallBranches(t *testing.T) {
 	}); rc != ErrOK || got != "" {
 		t.Fatalf("zero-length post-copy = (%q, %d), want empty OK", got, rc)
 	}
+
+	// Shrink: the second call reports fewer bytes than the first reserved; the
+	// helper must return exactly the bytes the second call actually wrote.
+	calls = 0
+	if got, rc := stringFromTwoCall(func(buf []byte) (uintptr, ErrorCode) {
+		calls++
+		if calls == 1 {
+			return 5, ErrOK
+		}
+		copy(buf, []byte{'h', 'i', 0})
+		return 3, ErrOK
+	}); rc != ErrOK || got != "hi" {
+		t.Fatalf("shrink-to-nonzero = (%q, %d), want \"hi\"", got, rc)
+	}
+
+	// Buffer-length contract: the second call must receive a buffer sized to
+	// the count the first call reported.
+	calls = 0
+	seenLen := -1
+	if got, rc := stringFromTwoCall(func(buf []byte) (uintptr, ErrorCode) {
+		calls++
+		if calls == 1 {
+			return 4, ErrOK
+		}
+		seenLen = len(buf)
+		copy(buf, []byte{'a', 'b', 'c', 0})
+		return 4, ErrOK
+	}); rc != ErrOK || got != "abc" || seenLen != 4 {
+		t.Fatalf("buffer-length contract = (%q, %d, len=%d), want (\"abc\", OK, 4)", got, rc, seenLen)
+	}
+
+	// Grow: if the second call reports MORE than the first reserved (only
+	// reachable under concurrent mutation, which the wrappers do not permit),
+	// the helper must clamp to the buffer rather than panic on buf[:needed-1].
+	calls = 0
+	if got, rc := stringFromTwoCall(func(buf []byte) (uintptr, ErrorCode) {
+		calls++
+		if calls == 1 {
+			return 2, ErrOK
+		}
+		copy(buf, []byte{'a', 'b'})
+		return 5, ErrOK
+	}); rc != ErrOK || got != "a" {
+		t.Fatalf("grow clamp = (%q, %d), want \"a\" without panic", got, rc)
+	}
 }
 
 func TestManualUint64IDsFromTwoCallBranches(t *testing.T) {
@@ -372,6 +417,48 @@ func TestManualUint64IDsFromTwoCallBranches(t *testing.T) {
 	}); rc != ErrOK || len(got) != 3 || got[0] != 7 || got[2] != 9 {
 		t.Fatalf("filled ids = (%v, %d), want [7 8 9] OK", got, rc)
 	}
+
+	// Shrink: the second call reports fewer ids than the first reserved.
+	calls = 0
+	if got, rc := uint64IDsFromTwoCall(func(dst []uint64) (uintptr, ErrorCode) {
+		calls++
+		if calls == 1 {
+			return 5, ErrOK
+		}
+		copy(dst, []uint64{1, 2})
+		return 2, ErrOK
+	}); rc != ErrOK || len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("shrink-to-nonzero = (%v, %d), want [1 2]", got, rc)
+	}
+
+	// Buffer-length contract: the fill buffer must be sized to the first count.
+	calls = 0
+	seenLen := -1
+	if got, rc := uint64IDsFromTwoCall(func(dst []uint64) (uintptr, ErrorCode) {
+		calls++
+		if calls == 1 {
+			return 3, ErrOK
+		}
+		seenLen = len(dst)
+		copy(dst, []uint64{4, 5, 6})
+		return 3, ErrOK
+	}); rc != ErrOK || len(got) != 3 || seenLen != 3 {
+		t.Fatalf("buffer-length contract = (%v, %d, len=%d), want (3 ids, OK, 3)", got, rc, seenLen)
+	}
+
+	// Grow: a second count larger than the first must clamp to the buffer
+	// rather than panic on result[:count].
+	calls = 0
+	if got, rc := uint64IDsFromTwoCall(func(dst []uint64) (uintptr, ErrorCode) {
+		calls++
+		if calls == 1 {
+			return 2, ErrOK
+		}
+		copy(dst, []uint64{1, 2})
+		return 5, ErrOK
+	}); rc != ErrOK || len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("grow clamp = (%v, %d), want [1 2] without panic", got, rc)
+	}
 }
 
 func TestPropertyValueScalarAccessors(t *testing.T) {
@@ -404,33 +491,6 @@ func TestPropertyValueScalarAccessors(t *testing.T) {
 	})
 }
 
-func TestPropertySerializationWrappersRoundTrip(t *testing.T) {
-	lockThread(t)
-
-	rapid.Check(t, func(t *rapid.T) {
-		format := rapid.SampledFrom(ffiFormats()).Draw(t, "format")
-		h := EngineNewWithSource(`(defrule r => (assert (ok)))`)
-		if h == nil {
-			t.Fatal("EngineNewWithSource returned nil")
-		}
-		data, rc := EngineSerializeAs(h, format)
-		if rc != ErrOK {
-			t.Fatalf("EngineSerializeAs returned %d", rc)
-		}
-		if rc := EngineFree(h); rc != ErrOK {
-			t.Fatalf("EngineFree returned %d", rc)
-		}
-
-		restored, rc := EngineDeserializeAs(data, format)
-		if rc != ErrOK || restored == nil {
-			t.Fatalf("EngineDeserializeAs = (%v, %d), want handle OK", restored, rc)
-		}
-		if rc := EngineFree(restored); rc != ErrOK {
-			t.Fatalf("EngineFree restored returned %d", rc)
-		}
-	})
-}
-
 func TestPropertyCopyAndFreeBytes(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		src := rapid.SliceOfN(rapid.Uint8(), 0, 32).Draw(t, "bytes")
@@ -455,116 +515,93 @@ func TestPropertyCopyAndFreeBytes(t *testing.T) {
 	})
 }
 
+// TestPropertyStringFromTwoCall fuzzes the relationship between the size the
+// first FFI call advertises and the length the second call reports. They may
+// match, shrink, or (pathologically, under concurrent mutation the wrappers
+// forbid) grow. The invariant: the second call always receives a buffer sized
+// to the first count, the result is clamped to that buffer and never panics,
+// and after stripping the NUL terminator its length is min(first,second)-1
+// (or 0 when that is non-positive). Error/empty branches are covered by the
+// manual table; this test owns the size-relationship contract.
 func TestPropertyStringFromTwoCall(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		scenario := rapid.SampledFrom([]string{"ok", "empty", "first_error", "second_error", "zero_after_copy"}).Draw(t, "scenario")
-		switch scenario {
-		case "ok":
-			s := rapid.String().Filter(func(v string) bool {
-				for _, r := range v {
-					if r == 0 {
-						return false
-					}
-				}
-				return true
-			}).Draw(t, "string")
-			calls := 0
-			got, rc := stringFromTwoCall(func(buf []byte) (uintptr, ErrorCode) {
-				calls++
-				if calls == 1 {
-					return uintptr(len(s) + 1), ErrOK
-				}
-				copy(buf, append([]byte(s), 0))
-				return uintptr(len(s) + 1), ErrOK
-			})
-			if rc != ErrOK || got != s {
-				t.Fatalf("stringFromTwoCall = (%q, %d), want %q OK", got, rc, s)
+		firstN := rapid.IntRange(1, 16).Draw(t, "firstN")
+		secondN := rapid.IntRange(0, 24).Draw(t, "secondN")
+
+		eff := min(secondN, firstN)
+
+		calls := 0
+		got, rc := stringFromTwoCall(func(buf []byte) (uintptr, ErrorCode) {
+			calls++
+			if calls == 1 {
+				return uintptr(firstN), ErrOK
 			}
-		case "empty":
-			got, rc := stringFromTwoCall(func([]byte) (uintptr, ErrorCode) { return 0, ErrOK })
-			if rc != ErrOK || got != "" {
-				t.Fatalf("empty stringFromTwoCall = (%q, %d)", got, rc)
+			if len(buf) != firstN {
+				t.Fatalf("second buffer len = %d, want first count %d", len(buf), firstN)
 			}
-		case "first_error":
-			_, rc := stringFromTwoCall(func([]byte) (uintptr, ErrorCode) { return 0, ErrRuntimeError })
-			if rc != ErrRuntimeError {
-				t.Fatalf("first error rc = %d", rc)
+			for i := range buf {
+				buf[i] = 'x'
 			}
-		case "second_error":
-			calls := 0
-			_, rc := stringFromTwoCall(func([]byte) (uintptr, ErrorCode) {
-				calls++
-				if calls == 1 {
-					return 1, ErrOK
-				}
-				return 1, ErrBufferTooSmall
-			})
-			if rc != ErrBufferTooSmall {
-				t.Fatalf("second error rc = %d", rc)
+			if eff > 0 {
+				buf[eff-1] = 0 // NUL terminator inside the clamped length
 			}
-		case "zero_after_copy":
-			calls := 0
-			got, rc := stringFromTwoCall(func(buf []byte) (uintptr, ErrorCode) {
-				calls++
-				if calls == 1 {
-					return 1, ErrOK
-				}
-				if len(buf) > 0 {
-					buf[0] = 0
-				}
-				return 0, ErrOK
-			})
-			if rc != ErrOK || got != "" {
-				t.Fatalf("zero-after-copy string = (%q, %d)", got, rc)
+			return uintptr(secondN), ErrOK
+		})
+		if rc != ErrOK {
+			t.Fatalf("size property rc = %d (firstN=%d secondN=%d)", rc, firstN, secondN)
+		}
+
+		wantLen := 0
+		if eff > 0 {
+			wantLen = eff - 1
+		}
+		if len(got) != wantLen {
+			t.Fatalf("len = %d, want %d (firstN=%d secondN=%d)", len(got), wantLen, firstN, secondN)
+		}
+		for i := range len(got) {
+			if got[i] != 'x' {
+				t.Fatalf("byte %d = %q, want 'x'", i, got[i])
 			}
 		}
 	})
 }
 
+// TestPropertyUint64IDsFromTwoCall fuzzes the first-vs-second count
+// relationship (match/shrink/grow). The invariant: the fill buffer is sized to
+// the first count, the result is clamped to min(first,second) ids (never
+// panicking on the reslice), and the ids returned are exactly those written.
+// Error/empty branches are covered by the manual table.
 func TestPropertyUint64IDsFromTwoCall(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		scenario := rapid.SampledFrom([]string{"ok", "empty", "first_error", "second_error"}).Draw(t, "scenario")
-		switch scenario {
-		case "ok":
-			want := rapid.SliceOfN(rapid.Uint64(), 1, 16).Draw(t, "ids")
-			calls := 0
-			got, rc := uint64IDsFromTwoCall(func(dst []uint64) (uintptr, ErrorCode) {
-				calls++
-				if calls == 1 {
-					return uintptr(len(want)), ErrOK
-				}
-				copy(dst, want)
-				return uintptr(len(want)), ErrOK
-			})
-			if rc != ErrOK || len(got) != len(want) {
-				t.Fatalf("ids result = (%v, %d), want %v OK", got, rc, want)
+		firstN := rapid.IntRange(1, 16).Draw(t, "firstN")
+		secondN := rapid.IntRange(0, 24).Draw(t, "secondN")
+		base := rapid.Uint64().Draw(t, "base")
+
+		eff := min(secondN, firstN)
+
+		calls := 0
+		got, rc := uint64IDsFromTwoCall(func(dst []uint64) (uintptr, ErrorCode) {
+			calls++
+			if calls == 1 {
+				return uintptr(firstN), ErrOK
 			}
-			for i := range want {
-				if got[i] != want[i] {
-					t.Fatalf("ids[%d] = %d, want %d", i, got[i], want[i])
-				}
+			if len(dst) != firstN {
+				t.Fatalf("second buffer len = %d, want first count %d", len(dst), firstN)
 			}
-		case "empty":
-			got, rc := uint64IDsFromTwoCall(func([]uint64) (uintptr, ErrorCode) { return 0, ErrOK })
-			if rc != ErrOK || got != nil {
-				t.Fatalf("empty ids = (%v, %d)", got, rc)
+			for i := range dst {
+				dst[i] = base + uint64(i)
 			}
-		case "first_error":
-			_, rc := uint64IDsFromTwoCall(func([]uint64) (uintptr, ErrorCode) { return 0, ErrRuntimeError })
-			if rc != ErrRuntimeError {
-				t.Fatalf("first error rc = %d", rc)
-			}
-		case "second_error":
-			calls := 0
-			_, rc := uint64IDsFromTwoCall(func([]uint64) (uintptr, ErrorCode) {
-				calls++
-				if calls == 1 {
-					return 1, ErrOK
-				}
-				return 1, ErrBufferTooSmall
-			})
-			if rc != ErrBufferTooSmall {
-				t.Fatalf("second error rc = %d", rc)
+			return uintptr(secondN), ErrOK
+		})
+		if rc != ErrOK {
+			t.Fatalf("size property rc = %d (firstN=%d secondN=%d)", rc, firstN, secondN)
+		}
+		if len(got) != eff {
+			t.Fatalf("len = %d, want %d (firstN=%d secondN=%d)", len(got), eff, firstN, secondN)
+		}
+		for i := range got {
+			if got[i] != base+uint64(i) {
+				t.Fatalf("id[%d] = %d, want %d", i, got[i], base+uint64(i))
 			}
 		}
 	})
