@@ -203,6 +203,18 @@ func TestManualErrorTypesAndTranslations(t *testing.T) {
 	if err := errorFromFFI(ffi.ErrNullPointer, nil); err == nil || !strings.Contains(err.Error(), "error code") {
 		t.Fatalf("unknown FFI error should use generic fallback, got %v", err)
 	}
+
+	// The errors.Is sentinel match must be backed by the documented concrete
+	// type carrying the originating FFI code, not just any error.
+	var re *RuntimeError
+	if err := errorFromFFI(ffi.ErrRuntimeError, nil); !errors.As(err, &re) || re.Code != int(ffi.ErrRuntimeError) {
+		t.Fatalf("errorFromFFI(runtime) = %#v, want *RuntimeError with code %d", re, int(ffi.ErrRuntimeError))
+	}
+	// The generic fallback is a plain *FerricError that still propagates the code.
+	var fe *FerricError
+	if err := errorFromFFI(ffi.ErrNullPointer, nil); !errors.As(err, &fe) || fe.Code != int(ffi.ErrNullPointer) {
+		t.Fatalf("errorFromFFI(null) = %#v, want *FerricError with code %d", fe, int(ffi.ErrNullPointer))
+	}
 }
 
 func TestManualWireConversionEdges(t *testing.T) {
@@ -291,6 +303,20 @@ func TestManualFFIValueConversionEdges(t *testing.T) {
 		t.Fatalf("unsupported Go value should fail, got %v", err)
 	}
 
+	// Verify the documented cleanup actually runs: the elements converted
+	// before an unsupported one must each be freed exactly once.
+	t.Run("multifield error frees converted elements", func(t *testing.T) {
+		withFFIHooks(t)
+		freed := 0
+		ffiValueFree = func(*ffi.Value) { freed++ }
+		if _, err := goToFFIValue([]any{"a", "b", struct{}{}}); !errors.Is(err, errUnsupportedGoTypeForFFI) {
+			t.Fatalf("expected unsupported error, got %v", err)
+		}
+		if freed != 2 {
+			t.Fatalf("freed %d converted elements, want 2", freed)
+		}
+	})
+
 	var external ffi.Value
 	*(*ffi.ValueType)(unsafe.Pointer(&external)) = ffi.ValueTypeExternalAddress //nolint:gosec // intentional unsafe write of opaque ffi.Value type tag to exercise the discriminator branch
 	if got, ok := ffiValueToGo(&external).(unsafe.Pointer); !ok || got != nil {
@@ -317,6 +343,12 @@ func TestManualNilEngineErrorBranches(t *testing.T) {
 
 	if err := e.Close(); err != nil {
 		t.Fatalf("Close on a nil handle should remain idempotent, got %v", err)
+	}
+	// Representative check that the nil-handle path surfaces the native
+	// null-pointer code as a typed *FerricError, not just "some error".
+	var fe *FerricError
+	if err := e.Load(`(defrule r =>)`); !errors.As(err, &fe) || fe.Code != int(ffi.ErrNullPointer) {
+		t.Fatalf("Load on nil handle = %#v, want *FerricError code %d", fe, int(ffi.ErrNullPointer))
 	}
 	assertErr("Load", e.Load(`(defrule r =>)`))
 	if _, err := e.AssertString("(assert (x))"); err == nil {
@@ -806,8 +838,9 @@ func TestManualHookedNewEngineNativeFallbacks(t *testing.T) {
 			return nil, ffi.ErrOK
 		}
 		_, err := NewEngine(WithSnapshot([]byte("snapshot"), FormatBincode))
-		if err == nil || !strings.Contains(err.Error(), "snapshot") {
-			t.Fatalf("snapshot nil handle error = %v", err)
+		var fe *FerricError
+		if !errors.As(err, &fe) || !strings.Contains(err.Error(), "snapshot") {
+			t.Fatalf("snapshot nil handle error = %v, want *FerricError mentioning snapshot", err)
 		}
 	})
 
@@ -816,8 +849,23 @@ func TestManualHookedNewEngineNativeFallbacks(t *testing.T) {
 		ffiEngineNewWithSource = func(string) ffi.EngineHandle { return nil }
 		ffiLastErrorGlobal = func() string { return "" }
 		_, err := NewEngine(WithSource("(defrule r =>)"))
-		if err == nil || !strings.Contains(err.Error(), "failed to create engine from source") {
-			t.Fatalf("source nil handle error = %v", err)
+		// A nil handle from a source build is reported as a parse failure.
+		var pe *ParseError
+		if !errors.As(err, &pe) || !errors.Is(err, ErrParse) ||
+			!strings.Contains(err.Error(), "failed to create engine from source") {
+			t.Fatalf("source nil handle error = %v, want *ParseError fallback message", err)
+		}
+	})
+
+	t.Run("source nil handle prefers native message", func(t *testing.T) {
+		withFFIHooks(t)
+		ffiEngineNewWithSource = func(string) ffi.EngineHandle { return nil }
+		ffiLastErrorGlobal = func() string { return "native parse boom" }
+		_, err := NewEngine(WithSource("(defrule r =>)"))
+		// When the native error channel has a message, it is preferred over the
+		// generic fallback.
+		if !errors.Is(err, ErrParse) || !strings.Contains(err.Error(), "native parse boom") {
+			t.Fatalf("source nil handle error = %v, want native message preferred", err)
 		}
 	})
 
@@ -825,8 +873,9 @@ func TestManualHookedNewEngineNativeFallbacks(t *testing.T) {
 		withFFIHooks(t)
 		ffiEngineNewWithConfig = func(*ffi.Config) ffi.EngineHandle { return nil }
 		_, err := NewEngine(WithStrategy(StrategyBreadth))
-		if err == nil || !strings.Contains(err.Error(), "failed to create engine") {
-			t.Fatalf("configured nil handle error = %v", err)
+		var fe *FerricError
+		if !errors.As(err, &fe) || !strings.Contains(err.Error(), "failed to create engine") {
+			t.Fatalf("configured nil handle error = %v, want *FerricError", err)
 		}
 	})
 }
@@ -968,6 +1017,59 @@ func TestManualHookedIntrospectionAndIteratorErrors(t *testing.T) {
 	}
 }
 
+// TestManualHookedIntrospectionKeepsItemsBeforeError pins the partial-result
+// contract that the item-0-fails cases above cannot: when a mid-stream item
+// (here index 1 of 2) fails, the simple accessors break and return the items
+// collected *before* the failure rather than discarding them or returning nil.
+func TestManualHookedIntrospectionKeepsItemsBeforeError(t *testing.T) {
+	withFFIHooks(t)
+	e := &Engine{}
+
+	ffiEngineRuleCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 2, ffi.ErrOK }
+	ffiEngineRuleInfo = func(_ ffi.EngineHandle, i uintptr) (string, int32, ffi.ErrorCode) {
+		if i == 0 {
+			return "r0", 7, ffi.ErrOK
+		}
+		return "", 0, ffi.ErrRuntimeError
+	}
+	if got := e.Rules(); len(got) != 1 || got[0].Name != "r0" {
+		t.Fatalf("Rules after item-1 error = %v, want [r0]", got)
+	}
+
+	ffiEngineTemplateCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 2, ffi.ErrOK }
+	ffiEngineTemplateName = func(_ ffi.EngineHandle, i uintptr) (string, ffi.ErrorCode) {
+		if i == 0 {
+			return "t0", ffi.ErrOK
+		}
+		return "", ffi.ErrRuntimeError
+	}
+	if got := e.Templates(); len(got) != 1 || got[0] != "t0" {
+		t.Fatalf("Templates after item-1 error = %v, want [t0]", got)
+	}
+
+	ffiEngineFocusStackDepth = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 2, ffi.ErrOK }
+	ffiEngineFocusStackEntry = func(_ ffi.EngineHandle, i uintptr) (string, ffi.ErrorCode) {
+		if i == 0 {
+			return "MAIN", ffi.ErrOK
+		}
+		return "", ffi.ErrRuntimeError
+	}
+	if got := e.FocusStack(); len(got) != 1 || got[0] != "MAIN" {
+		t.Fatalf("FocusStack after item-1 error = %v, want [MAIN]", got)
+	}
+
+	ffiEngineActionDiagnosticCount = func(ffi.EngineHandle) (uintptr, ffi.ErrorCode) { return 2, ffi.ErrOK }
+	ffiEngineActionDiagnosticCopy = func(_ ffi.EngineHandle, i uintptr) (string, ffi.ErrorCode) {
+		if i == 0 {
+			return "d0", ffi.ErrOK
+		}
+		return "", ffi.ErrRuntimeError
+	}
+	if got := e.Diagnostics(); len(got) != 1 || got[0] != "d0" {
+		t.Fatalf("Diagnostics after item-1 error = %v, want [d0]", got)
+	}
+}
+
 func installOrderedBuildFactHooks() {
 	ffiEngineGetFactType = func(ffi.EngineHandle, uint64) (ffi.FactType, ffi.ErrorCode) {
 		return ffi.FactTypeOrdered, ffi.ErrOK
@@ -1076,8 +1178,10 @@ func TestManualHookedBuildFactErrors(t *testing.T) {
 			withFFIHooks(t)
 			tc.setup()
 			_, err := (&Engine{}).buildFact(1)
-			if err == nil {
-				t.Fatal("expected buildFact error")
+			// Every lookup failure must preserve the underlying native code
+			// (ErrRuntime) through any fmt.Errorf wrapping buildFact adds.
+			if !errors.Is(err, ErrRuntime) {
+				t.Fatalf("buildFact error = %v, want ErrRuntime", err)
 			}
 			if tc.want != "" && !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("buildFact error = %v, want substring %q", err, tc.want)
@@ -1144,7 +1248,7 @@ func TestManualHookedEvaluateAndPinnedEdges(t *testing.T) {
 
 func TestPropertyConfigurationHelpers(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		n := rapid.IntRange(0, 1<<31-1).Draw(t, "max_call_depth")
+		n := rapid.IntRange(0, math.MaxInt).Draw(t, "max_call_depth")
 		got, err := intToUintptr(n)
 		if err != nil {
 			t.Fatalf("non-negative depth rejected: %v", err)
