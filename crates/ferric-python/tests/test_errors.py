@@ -81,3 +81,13 @@ class TestMultiErrorContext:
         engine = ferric.Engine()
         with pytest.raises(ferric.FerricParseError):
             engine.load("(defrule incomplete")
+
+
+class TestEncodingError:
+    """FerricEncodingError must be the concrete type raised when a configured
+    encoding rejects a value (not a generic runtime or type error)."""
+
+    def test_ascii_engine_rejects_non_ascii_string(self):
+        engine = ferric.Engine(encoding=ferric.Encoding.ASCII)
+        with pytest.raises(ferric.FerricEncodingError):
+            engine.assert_fact("accent", ferric.String("é"))
