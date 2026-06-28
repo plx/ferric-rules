@@ -9,6 +9,8 @@ import * as assert from "node:assert/strict";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 
+import { FerricRuntimeError, FerricSerializationError } from "../../../dist/types";
+
 const requireFromHere = createRequire(__filename);
 const Module = requireFromHere("node:module") as any;
 
@@ -157,16 +159,18 @@ test("G-002 package native wrapper converts mocked constructor and static errors
   const nativePath = resolve(__dirname, "../../../dist/native.js");
   const bundledPath = resolve(dirname(nativePath), "..", "native", "index.js");
 
-  for (const [binding, exercise, expected] of [
+  for (const [binding, exercise, ErrorClass, strippedMessage] of [
     [
       fakeNativeBinding({ constructThrows: true }),
       (mod: any) => new mod.Engine(),
-      /constructor failed/,
+      FerricRuntimeError,
+      "constructor failed",
     ],
     [
       fakeNativeBinding({ snapshotFileThrows: true }),
       (mod: any) => mod.Engine.fromSnapshotFile("bad"),
-      /bad snapshot file/,
+      FerricSerializationError,
+      "bad snapshot file",
     ],
   ] as const) {
     clearModule(nativePath);
@@ -178,7 +182,18 @@ test("G-002 package native wrapper converts mocked constructor and static errors
       () => {
         try {
           const mod = requireFromHere(nativePath);
-          assert.throws(() => exercise(mod), expected);
+          assert.throws(() => exercise(mod), (err: unknown) => {
+            // The wrapper must CONVERT the raw napi-style error into the right
+            // FerricError subclass AND strip the "FerricXxxError:" prefix. A bare
+            // message substring would also match the unconverted error, so we
+            // pin both the class and the cleaned message to prove conversion ran.
+            assert.ok(
+              err instanceof ErrorClass,
+              `expected ${ErrorClass.name}, got ${(err as Error)?.constructor?.name}`,
+            );
+            assert.strictEqual((err as Error).message, strippedMessage);
+            return true;
+          });
         } finally {
           clearModule(nativePath);
         }

@@ -56,7 +56,9 @@ test("D-001 EngineHandle public methods cover loadFile/step/halt/clear/introspec
     assert.strictEqual(await handle.getGlobal("missing"), null);
 
     const fired = await handle.step();
-    assert.strictEqual(typeof fired?.ruleName, "string");
+    // `greet` is the only activated rule, so step() must fire exactly it — not
+    // some other rule and not return a generic string-shaped object.
+    assert.strictEqual(fired?.ruleName, "greet");
     assert.strictEqual(await handle.getAgendaSize(), 0);
     assert.match(await handle.getOutput("t") as string, /hi Ada/);
 
@@ -87,12 +89,35 @@ test("D-001 property-style EngineHandle fact operations preserve documented shap
     await handle.reset();
 
     // Generated fact cases exercise the same round-trip property over several
-    // value kinds: assert -> getFact/findFacts/facts returns a valid Fact.
-    const cases = [
-      { relation: "item", value: 1 },
-      { relation: "item", value: "text" },
-      { relation: "item", value: new FerricSymbol("symbolic") },
-      { relation: "item", value: [1, new FerricSymbol("nested")] },
+    // value kinds: assert -> getFact returns a Fact whose field VALUES survived
+    // the worker boundary intact (a wire bug that dropped or coerced fields
+    // would otherwise pass the array-shape check silently).
+    const cases: Array<{
+      relation: string;
+      value: unknown;
+      expectFields: (fields: any[]) => void;
+    }> = [
+      { relation: "item", value: 1, expectFields: (f) => assert.strictEqual(f[0], 1) },
+      { relation: "item", value: "text", expectFields: (f) => assert.strictEqual(f[0], "text") },
+      {
+        relation: "item",
+        value: new FerricSymbol("symbolic"),
+        expectFields: (f) => {
+          assert.ok(f[0] instanceof FerricSymbol);
+          assert.strictEqual(f[0].value, "symbolic");
+        },
+      },
+      {
+        relation: "item",
+        value: [1, new FerricSymbol("nested")],
+        expectFields: (f) => {
+          // The array argument becomes a single multifield field: [[1, sym]].
+          assert.ok(Array.isArray(f[0]));
+          assert.strictEqual(f[0][0], 1);
+          assert.ok(f[0][1] instanceof FerricSymbol);
+          assert.strictEqual(f[0][1].value, "nested");
+        },
+      },
     ];
 
     for (const item of cases) {
@@ -102,6 +127,7 @@ test("D-001 property-style EngineHandle fact operations preserve documented shap
       assert.strictEqual(fact.type, FactType.Ordered);
       assert.strictEqual(fact.relation, item.relation);
       assert.ok(Array.isArray(fact.fields));
+      item.expectFields(fact.fields);
     }
 
     const facts = await handle.findFacts("item");

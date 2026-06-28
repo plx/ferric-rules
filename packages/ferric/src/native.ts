@@ -210,6 +210,11 @@ function wrapEngineWithErrorConversion(RawEngine: NativeEngineConstructor): Nati
     }
   }
 
+  // Preserve the public class name "Engine". The constructor-Proxy this class
+  // replaced forwarded `.name` to the native class (whose name is "Engine"),
+  // so keep it stable for tooling and error messages that read `Engine.name`.
+  Object.defineProperty(WrappedEngine, "name", { value: "Engine", configurable: true });
+
   return WrappedEngine as unknown as NativeEngineConstructor;
 }
 

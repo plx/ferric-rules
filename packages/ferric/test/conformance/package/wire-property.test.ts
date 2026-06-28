@@ -71,27 +71,52 @@ test("G-004 property-style toWire/fromWire preserve generated nested shapes", ()
   ];
 
   // This deterministic corpus acts like a small generator over every supported
-  // wire primitive and nesting form; symbols should rehydrate only when a
-  // constructor is provided.
-  for (const value of generated) {
-    const wired = toWire(value);
-    const restored = fromWire(wired, FerricSymbol as any);
-
-    if (value === undefined) {
-      assert.strictEqual(restored, null);
-    } else if (value instanceof FerricSymbol) {
-      assert.ok(restored instanceof FerricSymbol);
-      assert.strictEqual((restored as any).value, value.value);
-    } else {
-      assert.deepStrictEqual(
-        JSON.parse(JSON.stringify(restored, (_key, val) => (
-          typeof val === "bigint" ? `${val}n` : val
-        ))),
-        JSON.parse(JSON.stringify(fromWire(wired, FerricSymbol as any), (_key, val) => (
-          typeof val === "bigint" ? `${val}n` : val
-        ))),
+  // wire primitive and nesting form. We assert that round-tripping reproduces
+  // the ORIGINAL value structurally: primitives compare by value, `undefined`
+  // normalizes to `null` (toWire collapses undefined), and FerricSymbols
+  // rehydrate to instances with the same `.value` — including symbols nested
+  // inside arrays and objects. Comparing against the input (rather than a second
+  // `fromWire()` call) is what gives this test power to catch a toWire/fromWire
+  // bug such as dropping recursion into nested collections.
+  const assertRoundTrip = (original: unknown, restored: unknown, path: string): void => {
+    if (original === undefined || original === null) {
+      assert.strictEqual(restored, null, `expected null at ${path}`);
+    } else if (original instanceof FerricSymbol) {
+      assert.ok(restored instanceof FerricSymbol, `expected FerricSymbol at ${path}`);
+      assert.strictEqual((restored as any).value, original.value, `symbol value at ${path}`);
+    } else if (Array.isArray(original)) {
+      assert.ok(Array.isArray(restored), `expected array at ${path}`);
+      assert.strictEqual((restored as unknown[]).length, original.length, `array length at ${path}`);
+      original.forEach((item, i) =>
+        assertRoundTrip(item, (restored as unknown[])[i], `${path}[${i}]`),
       );
+    } else if (typeof original === "object") {
+      assert.ok(
+        restored !== null && typeof restored === "object" && !Array.isArray(restored),
+        `expected plain object at ${path}`,
+      );
+      const originalKeys = Object.keys(original as Record<string, unknown>).sort();
+      assert.deepStrictEqual(
+        Object.keys(restored as object).sort(),
+        originalKeys,
+        `object keys at ${path}`,
+      );
+      for (const key of originalKeys) {
+        assertRoundTrip(
+          (original as Record<string, unknown>)[key],
+          (restored as Record<string, unknown>)[key],
+          `${path}.${key}`,
+        );
+      }
+    } else {
+      // Primitives (string/number/bigint/boolean) must survive unchanged.
+      assert.strictEqual(restored, original, `primitive at ${path}`);
     }
+  };
+
+  for (const value of generated) {
+    const restored = fromWire(toWire(value), FerricSymbol as any);
+    assertRoundTrip(value, restored, "root");
   }
 });
 

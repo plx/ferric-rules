@@ -165,14 +165,20 @@ test("E-007 proxy step fires exactly one rule", async () => {
     { threads: 1 },
   );
   try {
-    const result = await pool.do("basic", async (proxy) => {
+    const { fired, counters } = await pool.do("basic", async (proxy) => {
       await proxy.reset();
       await proxy.assertString("(counter 0)");
-      return proxy.step();
+      const f = await proxy.step();
+      const c = await proxy.findFacts("counter") as any[];
+      return { fired: f, counters: c };
     });
-    // step() returns FiredRule | null; a non-null result means exactly one rule fired.
-    assert.ok(result !== null, "step() should have fired one rule");
-    assert.strictEqual(typeof (result as any).ruleName, "string", "FiredRule should have a ruleName");
+    // The loop rule retracts (counter 0) and asserts (counter 1). Pinning the
+    // post-state — exactly one counter fact whose value advanced 0 -> 1 — proves
+    // step() fired precisely one activation (not zero, not many, not run()).
+    assert.ok(fired !== null, "step() should have fired one rule");
+    assert.strictEqual((fired as any).ruleName, "loop");
+    assert.strictEqual(counters.length, 1, "exactly one counter fact should remain");
+    assert.strictEqual(counters[0].fields[0], 1, "the counter must have advanced 0 -> 1");
   } finally {
     await pool.close();
   }
@@ -332,15 +338,20 @@ test("E-002 property-style EnginePool.evaluate handles generated fact variants",
 });
 
 // ---------------------------------------------------------------------------
-// Multi-thread pool: requests are distributed and all complete
+// Multi-thread pool: a burst of concurrent requests all complete correctly
+//
+// NOTE: this is a completion/smoke check, not a distribution proof — it does not
+// assert that work was actually spread across both worker threads (a 1-thread
+// pool or a pickSlot pinned to slot 0 would also pass). It guards that a
+// threads:2 pool services a concurrent burst without deadlock or cross-talk.
 // ---------------------------------------------------------------------------
-test("E-001 multi-thread pool with threads:2 handles concurrent requests", async () => {
+test("E-001 multi-thread pool with threads:2 handles a concurrent request burst", async () => {
   const pool = await EnginePool.create(
     [{ name: "basic", source: BASIC_RULE }],
     { threads: 2 },
   );
   try {
-    // Submit 4 requests to a 2-thread pool and verify all complete.
+    // Submit 4 concurrent requests to a 2-thread pool and verify all complete.
     const results = await Promise.all([
       pool.evaluate("basic", {}),
       pool.evaluate("basic", {}),

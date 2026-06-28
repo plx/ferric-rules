@@ -12,7 +12,7 @@
  */
 
 import "./package/additional.test.ts";
-import "./package/double-coverage-manifest.test.ts";
+import "./package/coverage-entrypoint-manifest.test.ts";
 import "./package/loader-paths.test.ts";
 import "./package/package-smoke.test.ts";
 import "./package/public-api-property.test.ts";

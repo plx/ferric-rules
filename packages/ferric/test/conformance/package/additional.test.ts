@@ -64,6 +64,39 @@ test("G-001 property-style ERROR_REGISTRY factories construct named Ferric error
     assert.strictEqual(err.code, code);
     assert.strictEqual(err.message, "registry probe");
   }
+
+  // The registry must expose exactly the documented factories — no stray or
+  // mis-named extra, which the per-key loop above would not catch.
+  assert.strictEqual(Object.keys(ERROR_REGISTRY).length, required.length);
+});
+
+// ---------------------------------------------------------------------------
+// C-003: convertNativeError is the production consumer of ERROR_REGISTRY
+// ---------------------------------------------------------------------------
+test("C-003 convertNativeError extracts the class prefix and rebuilds via ERROR_REGISTRY", async () => {
+  // convertNativeError is an internal helper (not re-exported from the barrel),
+  // so import it from the types module where it is defined.
+  const { convertNativeError, FerricParseError } = await import("../../../dist/types");
+
+  // napi surfaces errors as plain Error objects whose message is prefixed with
+  // the Ferric class name ("FerricParseError: ..."). This is the production path
+  // ERROR_REGISTRY exists to serve: convertNativeError must strip the prefix and
+  // reconstruct the correct subclass with a cleaned message and stable code.
+  const converted = convertNativeError(new Error("FerricParseError: unexpected token"));
+  assert.ok(converted instanceof FerricParseError);
+  assert.strictEqual((converted as any).name, "FerricParseError");
+  assert.strictEqual((converted as any).code, "FERRIC_PARSE_ERROR");
+  assert.strictEqual(converted.message, "unexpected token");
+
+  // An Error without a recognized Ferric prefix falls through unchanged.
+  const passthrough = convertNativeError(new TypeError("not a ferric error"));
+  assert.ok(passthrough instanceof TypeError);
+  assert.strictEqual(passthrough.message, "not a ferric error");
+
+  // A non-Error input is wrapped in a generic Error rather than thrown.
+  const wrapped = convertNativeError("raw string failure");
+  assert.ok(wrapped instanceof Error);
+  assert.strictEqual(wrapped.message, "raw string failure");
 });
 
 // ---------------------------------------------------------------------------
