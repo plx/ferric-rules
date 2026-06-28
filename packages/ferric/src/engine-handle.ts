@@ -104,7 +104,7 @@ export class EngineHandle {
       if (!entry) return;
       this.pending.delete(resp.id);
 
-      if (resp.error) {
+      if ("error" in resp) {
         entry.reject(reconstructError(resp.error));
       } else {
         entry.resolve(fromWire(resp.result, FerricSymbol));

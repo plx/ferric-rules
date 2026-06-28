@@ -147,7 +147,7 @@ function wrapEngineWithErrorConversion(RawEngine: NativeEngineConstructor): Nati
         };
       }
 
-      const value = Reflect.get(target, prop, receiver);
+      const value = Reflect.get(target, prop, target);
       if (typeof value === "function") {
         return function (this: unknown, ...args: unknown[]) {
           try {
@@ -161,34 +161,61 @@ function wrapEngineWithErrorConversion(RawEngine: NativeEngineConstructor): Nati
     },
   };
 
-  // Wrap static factory methods.
-  const staticHandler: ProxyHandler<NativeEngineConstructor> = {
-    construct(target, args) {
+  class WrappedEngine {
+    constructor(...args: ConstructorParameters<NativeEngineConstructor>) {
       try {
-        const instance = Reflect.construct(target, args);
+        const instance = Reflect.construct(RawEngine, args);
         return new Proxy(instance, instanceHandler);
       } catch (err) {
         throw convertNativeError(err);
       }
-    },
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (typeof value === "function" && typeof prop === "string" &&
-          ["fromSource", "fromSnapshot", "fromSnapshotFile"].includes(prop)) {
-        return function (...args: unknown[]) {
-          try {
-            const instance = (value as Function).apply(target, args);
-            return new Proxy(instance, instanceHandler);
-          } catch (err) {
-            throw convertNativeError(err);
-          }
-        };
-      }
-      return value;
-    },
-  };
+    }
 
-  return new Proxy(RawEngine, staticHandler);
+    // Every engine this class hands back (from `new`, `fromSource`, and the
+    // snapshot factories) is a Proxy whose target is a raw native engine, so
+    // its prototype chain contains `RawEngine.prototype` but not
+    // `WrappedEngine.prototype`. Without a custom `Symbol.hasInstance`,
+    // `engine instanceof Engine` would be `false`. Delegate the identity check
+    // to the native class so the proxies are recognized as `Engine` instances,
+    // matching the behavior of the previous constructor-Proxy implementation.
+    static [Symbol.hasInstance](value: unknown): boolean {
+      return value instanceof RawEngine;
+    }
+
+    static fromSource(
+      source: string,
+      options?: { strategy?: number; encoding?: number; maxCallDepth?: number },
+    ): NativeEngine {
+      try {
+        return new Proxy(RawEngine.fromSource(source, options), instanceHandler);
+      } catch (err) {
+        throw convertNativeError(err);
+      }
+    }
+
+    static fromSnapshot(data: Buffer, format?: number): NativeEngine {
+      try {
+        return new Proxy(RawEngine.fromSnapshot(data, format), instanceHandler);
+      } catch (err) {
+        throw convertNativeError(err);
+      }
+    }
+
+    static fromSnapshotFile(path: string, format?: number): NativeEngine {
+      try {
+        return new Proxy(RawEngine.fromSnapshotFile(path, format), instanceHandler);
+      } catch (err) {
+        throw convertNativeError(err);
+      }
+    }
+  }
+
+  // Preserve the public class name "Engine". The constructor-Proxy this class
+  // replaced forwarded `.name` to the native class (whose name is "Engine"),
+  // so keep it stable for tooling and error messages that read `Engine.name`.
+  Object.defineProperty(WrappedEngine, "name", { value: "Engine", configurable: true });
+
+  return WrappedEngine as unknown as NativeEngineConstructor;
 }
 
 /**

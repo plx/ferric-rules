@@ -28,25 +28,27 @@ test("G-001 wire utilities toWire, fromWire, isWireSymbol are exported", async (
 });
 
 // ---------------------------------------------------------------------------
-// G-001: ERROR_REGISTRY is exported and maps known error names
+// G-001 table-driven registry: every exported error factory is callable
 // ---------------------------------------------------------------------------
-test("G-001 ERROR_REGISTRY is exported and maps known Ferric error names", async () => {
+test("G-001 table-driven ERROR_REGISTRY factories construct named Ferric errors", async () => {
   const { ERROR_REGISTRY } = await import("../../../dist/index");
   assert.ok(typeof ERROR_REGISTRY === "object" && ERROR_REGISTRY !== null, "ERROR_REGISTRY should be an object");
 
-  // Each of the standard error class names must appear as a key.
-  const requiredKeys = [
-    "FerricParseError",
-    "FerricCompileError",
-    "FerricRuntimeError",
-    "FerricFactNotFoundError",
-    "FerricTemplateNotFoundError",
-    "FerricSlotNotFoundError",
-    "FerricModuleNotFoundError",
-    "FerricEncodingError",
-    "FerricSerializationError",
-  ];
-  for (const key of requiredKeys) {
+  // This table proves the registry is not just present: every
+  // exported factory returns the documented class name and stable error code.
+  const required = [
+    ["FerricError", "FERRIC_ERROR"],
+    ["FerricParseError", "FERRIC_PARSE_ERROR"],
+    ["FerricCompileError", "FERRIC_COMPILE_ERROR"],
+    ["FerricRuntimeError", "FERRIC_RUNTIME_ERROR"],
+    ["FerricFactNotFoundError", "FERRIC_FACT_NOT_FOUND"],
+    ["FerricTemplateNotFoundError", "FERRIC_TEMPLATE_NOT_FOUND"],
+    ["FerricSlotNotFoundError", "FERRIC_SLOT_NOT_FOUND"],
+    ["FerricModuleNotFoundError", "FERRIC_MODULE_NOT_FOUND"],
+    ["FerricEncodingError", "FERRIC_ENCODING_ERROR"],
+    ["FerricSerializationError", "FERRIC_SERIALIZATION_ERROR"],
+  ] as const;
+  for (const [key, code] of required) {
     assert.ok(
       key in ERROR_REGISTRY,
       `ERROR_REGISTRY should contain key "${key}"`
@@ -56,7 +58,45 @@ test("G-001 ERROR_REGISTRY is exported and maps known Ferric error names", async
       "function",
       `ERROR_REGISTRY["${key}"] should be a constructor`
     );
+    const err = ERROR_REGISTRY[key]("registry probe");
+    assert.ok(err instanceof Error);
+    assert.strictEqual(err.name, key);
+    assert.strictEqual(err.code, code);
+    assert.strictEqual(err.message, "registry probe");
   }
+
+  // The registry must expose exactly the documented factories — no stray or
+  // mis-named extra, which the per-key loop above would not catch.
+  assert.strictEqual(Object.keys(ERROR_REGISTRY).length, required.length);
+});
+
+// ---------------------------------------------------------------------------
+// C-003: convertNativeError is the production consumer of ERROR_REGISTRY
+// ---------------------------------------------------------------------------
+test("C-003 convertNativeError extracts the class prefix and rebuilds via ERROR_REGISTRY", async () => {
+  // convertNativeError is an internal helper (not re-exported from the barrel),
+  // so import it from the types module where it is defined.
+  const { convertNativeError, FerricParseError } = await import("../../../dist/types");
+
+  // napi surfaces errors as plain Error objects whose message is prefixed with
+  // the Ferric class name ("FerricParseError: ..."). This is the production path
+  // ERROR_REGISTRY exists to serve: convertNativeError must strip the prefix and
+  // reconstruct the correct subclass with a cleaned message and stable code.
+  const converted = convertNativeError(new Error("FerricParseError: unexpected token"));
+  assert.ok(converted instanceof FerricParseError);
+  assert.strictEqual((converted as any).name, "FerricParseError");
+  assert.strictEqual((converted as any).code, "FERRIC_PARSE_ERROR");
+  assert.strictEqual(converted.message, "unexpected token");
+
+  // An Error without a recognized Ferric prefix falls through unchanged.
+  const passthrough = convertNativeError(new TypeError("not a ferric error"));
+  assert.ok(passthrough instanceof TypeError);
+  assert.strictEqual(passthrough.message, "not a ferric error");
+
+  // A non-Error input is wrapped in a generic Error rather than thrown.
+  const wrapped = convertNativeError("raw string failure");
+  assert.ok(wrapped instanceof Error);
+  assert.strictEqual(wrapped.message, "raw string failure");
 });
 
 // ---------------------------------------------------------------------------
