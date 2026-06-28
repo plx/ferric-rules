@@ -34,9 +34,9 @@ function makeHandle(): { handle: EngineHandle; worker: FakeWorker } {
 }
 
 // ---------------------------------------------------------------------------
-// C-004 property-style reconstruction for special worker error payloads
+// C-004 table-driven reconstruction for special worker error payloads
 // ---------------------------------------------------------------------------
-test("C-004 property-style EngineHandle reconstructs special worker errors", async () => {
+test("C-004 table-driven EngineHandle reconstructs special worker errors", async () => {
   const cases = [
     {
       payload: { name: "AbortError", message: "aborted", code: "ABORT_ERR" },
@@ -123,9 +123,9 @@ test("F-003 EngineHandle rejects pending requests when worker emits error", asyn
 });
 
 // ---------------------------------------------------------------------------
-// F-003 property-style cleanup: Worker exit rejects pending requests
+// F-003 table-driven cleanup: Worker exit rejects pending requests
 // ---------------------------------------------------------------------------
-test("F-003 property-style EngineHandle rejects pending requests on worker exit", async () => {
+test("F-003 table-driven EngineHandle rejects pending requests on worker exit", async () => {
   for (const [code, pattern] of [
     [0, /exited before responding/],
     [7, /unexpectedly with code 7/],

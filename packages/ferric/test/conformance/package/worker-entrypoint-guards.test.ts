@@ -129,9 +129,9 @@ test("D-001 worker re-init ignores close failures from previous engine", () => {
 });
 
 // ---------------------------------------------------------------------------
-// D-001 property-style mocked worker protocol: generated branches stay stable
+// D-001 table-driven mocked worker protocol: table-driven branches stay stable
 // ---------------------------------------------------------------------------
-test("D-001 property-style mocked worker protocol covers init/run/close branches", () => {
+test("D-001 table-driven mocked worker protocol covers init/run/close branches", () => {
   const workerPath = resolve(__dirname, "../../../dist/worker.js");
   const developmentPath = resolve(
     dirname(workerPath),

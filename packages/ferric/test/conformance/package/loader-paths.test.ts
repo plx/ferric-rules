@@ -246,9 +246,9 @@ test("G-002 napi loader falls back from local node file to platform package", ()
 });
 
 // ---------------------------------------------------------------------------
-// G-002 property-style napi loader failures produce deterministic messages
+// G-002 table-driven napi loader failures produce deterministic messages
 // ---------------------------------------------------------------------------
-test("G-002 property-style napi loader failure cases are explicit", () => {
+test("G-002 table-driven napi loader failure cases are explicit", () => {
   const napiPath = resolve(__dirname, "../../../../../crates/ferric-napi/index.js");
   const fs = requireFromHere("node:fs") as typeof import("node:fs");
   const originalExistsSync = fs.existsSync;

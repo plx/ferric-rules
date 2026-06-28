@@ -1,7 +1,7 @@
 /**
  * Property-style package API surface tests.
  *
- * These complement the manual type and package smoke tests with generated
+ * These complement the manual type and package smoke tests with table-driven
  * tables over exported classes, enums, lifecycle symbols, and package helpers.
  */
 import { test } from "node:test";
@@ -10,9 +10,9 @@ import * as assert from "node:assert/strict";
 import * as ferric from "../../../dist/index";
 
 // ---------------------------------------------------------------------------
-// A-001/A-002/A-004/A-005/A-006/G-001/G-003/N-06 generated export corpus
+// A-001/A-002/A-004/A-005/A-006/G-001/G-003/N-06 export corpus
 // ---------------------------------------------------------------------------
-test("A-001 A-002 A-004 A-005 A-006 G-001 G-003 N-06 property-style public API export corpus", () => {
+test("A-001 A-002 A-004 A-005 A-006 G-001 G-003 N-06 table-driven public API export corpus", () => {
   const classExports = [
     ["Engine", ferric.Engine],
     ["FerricSymbol", ferric.FerricSymbol],
@@ -32,7 +32,7 @@ test("A-001 A-002 A-004 A-005 A-006 G-001 G-003 N-06 property-style public API e
     ["Format.Bincode", ferric.Format.Bincode, 0],
   ] as const;
 
-  // The generated enum table proves public enums are runtime objects with
+  // The enum table proves public enums are runtime objects with
   // stable values, not erased const-enum-only type declarations.
   for (const [name, actual, expected] of enumExports) {
     assert.strictEqual(actual, expected, `${name} should keep its public value`);

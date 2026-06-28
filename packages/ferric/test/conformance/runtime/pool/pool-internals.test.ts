@@ -35,9 +35,9 @@ function makePool(): { pool: EnginePool; worker: FakeWorker; slot: any } {
 }
 
 // ---------------------------------------------------------------------------
-// C-004 property-style reconstruction for special pool-worker errors
+// C-004 table-driven reconstruction for special pool-worker errors
 // ---------------------------------------------------------------------------
-test("C-004 property-style EnginePool reconstructs special worker errors", async () => {
+test("C-004 table-driven EnginePool reconstructs special worker errors", async () => {
   const cases = [
     {
       payload: { name: "FerricParseError", message: "bad syntax", code: "FERRIC_PARSE_ERROR" },
@@ -122,9 +122,9 @@ test("E-008 EnginePool rejects pending requests when worker emits error", async 
 });
 
 // ---------------------------------------------------------------------------
-// E-008 property-style cleanup: worker exit rejects pending pool requests
+// E-008 table-driven cleanup: worker exit rejects pending pool requests
 // ---------------------------------------------------------------------------
-test("E-008 property-style EnginePool rejects pending requests on worker exit", async () => {
+test("E-008 table-driven EnginePool rejects pending requests on worker exit", async () => {
   for (const [code, pattern] of [
     [0, /exited before responding/],
     [9, /unexpectedly with code 9/],
@@ -225,9 +225,9 @@ test("D-006 EnginePool proxy run honors already-aborted retained signal", async 
 });
 
 // ---------------------------------------------------------------------------
-// D-006 property-style proxy run: live abort signals set and remove listeners
+// D-006 table-driven proxy run: live abort signals set and remove listeners
 // ---------------------------------------------------------------------------
-test("D-006 property-style EnginePool proxy run handles generated abort states", async () => {
+test("D-006 table-driven EnginePool proxy run handles abort states", async () => {
   const { pool, worker, slot } = makePool();
   const ac = new AbortController();
   const proxy = (pool as any).makeProxy("rules", slot, ac.signal);

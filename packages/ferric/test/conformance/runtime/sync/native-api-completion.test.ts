@@ -179,10 +179,10 @@ test("A-005 Engine Symbol.dispose converts close errors from native proxy", () =
 });
 
 // ---------------------------------------------------------------------------
-// C-003 property-style error constructors preserve name/code/prototype
+// C-003 table-driven error constructors preserve name/code/prototype
 // ---------------------------------------------------------------------------
-test("C-003 property-style FerricError subclasses preserve name/code/prototype", () => {
-  // Deterministic generation over every exported error class proves the error
+test("C-003 table-driven FerricError subclasses preserve name/code/prototype", () => {
+  // Deterministic enumeration over every exported error class proves the error
   // hierarchy contract for constructors, registry factories, and instanceof.
   const cases: Array<[new (message: string) => FerricError, string, string]> = [
     [FerricParseError, "FerricParseError", "FERRIC_PARSE_ERROR"],
@@ -207,9 +207,9 @@ test("C-003 property-style FerricError subclasses preserve name/code/prototype",
 });
 
 // ---------------------------------------------------------------------------
-// C-003 property-style convertNativeError handles non-registry inputs
+// C-003 table-driven convertNativeError handles non-registry inputs
 // ---------------------------------------------------------------------------
-test("C-003 property-style convertNativeError preserves unknown native errors", () => {
+test("C-003 table-driven convertNativeError preserves unknown native errors", () => {
   const nonError = convertNativeError("plain failure");
   assert.ok(nonError instanceof Error);
   assert.strictEqual(nonError.message, "plain failure");

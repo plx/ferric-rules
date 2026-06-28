@@ -155,9 +155,9 @@ test("D-001 direct worker protocol covers loadFile/introspection/focus/io/snapsh
 });
 
 // ---------------------------------------------------------------------------
-// D-006 property-style direct worker run modes preserve N-01 semantics
+// D-006 table-driven direct worker run modes preserve N-01 semantics
 // ---------------------------------------------------------------------------
-test("D-006 property-style direct worker batched run covers generated limit modes", async () => {
+test("D-006 table-driven direct worker batched run covers limit modes", async () => {
   await withWorker(async (worker) => {
     await request(worker, "__init", [{
       source: `
@@ -210,7 +210,7 @@ test("D-006 property-style direct worker batched run covers generated limit mode
       },
     ];
 
-    // The table acts as a small generator over the public run-limit contract:
+    // The table enumerates the public run-limit contract:
     // zero, bounded positive, and cooperative abort all return stable shapes.
     for (const item of cases) {
       const args = await item.prepare();
@@ -221,9 +221,9 @@ test("D-006 property-style direct worker batched run covers generated limit mode
 });
 
 // ---------------------------------------------------------------------------
-// D-001 property-style protocol table: primitive methods preserve their shapes
+// D-001 table-driven protocol table: primitive methods preserve their shapes
 // ---------------------------------------------------------------------------
-test("D-001 property-style direct worker method table preserves result shapes", async () => {
+test("D-001 table-driven direct worker method table preserves result shapes", async () => {
   await withWorker(async (worker) => {
     await request(worker, "__init", [{
       source: `
@@ -232,7 +232,7 @@ test("D-001 property-style direct worker method table preserves result shapes", 
 `,
     }]);
 
-    // This generated table checks the same protocol property across a family
+    // This table checks the same protocol property across a family
     // of methods: every request returns the documented structured-clone shape.
     const cases: Array<{
       label: string;
@@ -357,7 +357,7 @@ test("D-001 direct worker rejects normal methods before __init", async () => {
 // ---------------------------------------------------------------------------
 // B-004 direct protocol: worker results use the canonical symbol wire shape
 // ---------------------------------------------------------------------------
-test("B-004 property-style direct worker symbol outputs use canonical wire shape", async () => {
+test("B-004 table-driven direct worker symbol outputs use canonical wire shape", async () => {
   await withWorker(async (worker) => {
     await request(worker, "__init", [{
       source: "(deffacts init (color red) (color blue))(defglobal ?*status* = running)",

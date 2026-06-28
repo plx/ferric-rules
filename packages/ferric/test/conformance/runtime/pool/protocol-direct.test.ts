@@ -80,7 +80,7 @@ const SOURCE = `
 // ---------------------------------------------------------------------------
 // E-007 direct pool protocol: method table preserves result shapes
 // ---------------------------------------------------------------------------
-test("E-007 property-style direct pool worker method table preserves result shapes", async () => {
+test("E-007 table-driven direct pool worker method table preserves result shapes", async () => {
   await withPoolWorker(async (worker) => {
     await request(worker, "__init", [{
       specs: [{ name: "rules", source: SOURCE }],
@@ -93,7 +93,7 @@ test("E-007 property-style direct pool worker method table preserves result shap
     ]);
     assert.strictEqual(typeof factId, "number");
 
-    // This generated table checks the same structured-clone contract across
+    // This table checks the same structured-clone contract across
     // the less frequently used pool-worker methods.
     const cases: Array<{
       label: string;
@@ -306,9 +306,9 @@ test("E-007 direct pool worker diagnostics and unknown errors are structured", a
 });
 
 // ---------------------------------------------------------------------------
-// B-002 direct pool protocol: wire symbols are accepted in generated facts
+// B-002 direct pool protocol: wire symbols are accepted in table-driven facts
 // ---------------------------------------------------------------------------
-test("B-002 property-style direct pool worker accepts generated wire-symbol facts", async () => {
+test("B-002 table-driven direct pool worker accepts wire-symbol facts", async () => {
   await withPoolWorker(async (worker) => {
     await request(worker, "__init", [{
       specs: [{
@@ -317,7 +317,7 @@ test("B-002 property-style direct pool worker accepts generated wire-symbol fact
       }],
     }]);
 
-    // Deterministically generated symbols exercise the same conversion
+    // A fixed corpus of symbols exercise the same conversion
     // property over multiple values without adding flake-prone randomness.
     const colors = ["red", "green", "blue", "amber"];
     for (const color of colors) {
@@ -338,9 +338,9 @@ test("B-002 property-style direct pool worker accepts generated wire-symbol fact
 });
 
 // ---------------------------------------------------------------------------
-// E-007 property-style direct pool run modes preserve proxy N-01 semantics
+// E-007 table-driven direct pool run modes preserve proxy N-01 semantics
 // ---------------------------------------------------------------------------
-test("E-007 property-style direct pool worker batched run covers generated limit modes", async () => {
+test("E-007 table-driven direct pool worker batched run covers limit modes", async () => {
   await withPoolWorker(async (worker) => {
     await request(worker, "__init", [{
       specs: [{
@@ -396,7 +396,7 @@ test("E-007 property-style direct pool worker batched run covers generated limit
       },
     ];
 
-    // These generated modes mirror EngineHandle's direct protocol coverage and
+    // These fixed modes mirror EngineHandle's direct protocol coverage and
     // establish the pool-worker batched run contract over its edge values.
     for (const item of cases) {
       const args = await item.prepare();

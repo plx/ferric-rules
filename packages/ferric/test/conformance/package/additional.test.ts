@@ -28,13 +28,13 @@ test("G-001 wire utilities toWire, fromWire, isWireSymbol are exported", async (
 });
 
 // ---------------------------------------------------------------------------
-// G-001 property-style registry: every exported error factory is callable
+// G-001 table-driven registry: every exported error factory is callable
 // ---------------------------------------------------------------------------
-test("G-001 property-style ERROR_REGISTRY factories construct named Ferric errors", async () => {
+test("G-001 table-driven ERROR_REGISTRY factories construct named Ferric errors", async () => {
   const { ERROR_REGISTRY } = await import("../../../dist/index");
   assert.ok(typeof ERROR_REGISTRY === "object" && ERROR_REGISTRY !== null, "ERROR_REGISTRY should be an object");
 
-  // This generated table proves the registry is not just present: every
+  // This table proves the registry is not just present: every
   // exported factory returns the documented class name and stable error code.
   const required = [
     ["FerricError", "FERRIC_ERROR"],

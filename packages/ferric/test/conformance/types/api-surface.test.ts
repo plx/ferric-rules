@@ -74,10 +74,10 @@ test("A-003 ClipsValue includes FerricSymbol", () => {
 });
 
 // ---------------------------------------------------------------------------
-// A-003 property-style type corpus: generated ClipsValue variants compile
+// A-003 table-driven type corpus: ClipsValue variants compile
 // ---------------------------------------------------------------------------
-test("A-003 property-style ClipsValue accepts generated public value variants", () => {
-  // This tuple is a compile-time generator over every public ClipsValue branch;
+test("A-003 table-driven ClipsValue accepts public value variants", () => {
+  // This tuple is a compile-time enumeration of every public ClipsValue branch;
   // the assertion is that all entries can inhabit ClipsValue under strict mode.
   const values: ClipsValue[] = [
     new FerricSymbol("x"),

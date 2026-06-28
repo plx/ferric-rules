@@ -207,9 +207,9 @@ test("E-007 proxy getFact retrieves a specific fact by ID", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// E-007 property-style proxy table: remaining proxy methods preserve semantics
+// E-007 table-driven proxy table: remaining proxy methods preserve semantics
 // ---------------------------------------------------------------------------
-test("E-007 property-style EnginePool proxy method table covers remaining operations", async () => {
+test("E-007 table-driven EnginePool proxy method table covers remaining operations", async () => {
   const pool = await EnginePool.create(
     [{
       name: "proxy-table",
@@ -228,7 +228,7 @@ test("E-007 property-style EnginePool proxy method table covers remaining operat
   );
   try {
     await pool.do("proxy-table", async (proxy) => {
-      // The generated cases all assert one thing: each thin proxy method sends
+      // These cases all assert one thing: each thin proxy method sends
       // the same request shape as its worker protocol counterpart.
       const cases = [
         {
@@ -301,9 +301,9 @@ test("E-002 evaluate with template facts fires matching rules", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// E-002 property-style evaluate corpus: ordered and template facts both wire
+// E-002 table-driven evaluate corpus: ordered and template facts both wire
 // ---------------------------------------------------------------------------
-test("E-002 property-style EnginePool.evaluate handles generated fact variants", async () => {
+test("E-002 table-driven EnginePool.evaluate handles fact variants", async () => {
   const pool = await EnginePool.create(
     [{
       name: "mixed",
@@ -327,7 +327,7 @@ test("E-002 property-style EnginePool.evaluate handles generated fact variants",
       ],
     });
 
-    // The generated request mixes both accepted fact variants so the mapper
+    // The request mixes both accepted fact variants so the mapper
     // proves it preserves ordered fields and template slots in one call.
     assert.strictEqual(result.runResult.rulesFired, 2);
     assert.match(result.output.stdout, /color=red/);

@@ -79,9 +79,9 @@ test("D-001 EngineHandle public methods cover loadFile/step/halt/clear/introspec
 });
 
 // ---------------------------------------------------------------------------
-// D-001 property-style API table: fact operations preserve documented shapes
+// D-001 table-driven API table: fact operations preserve documented shapes
 // ---------------------------------------------------------------------------
-test("D-001 property-style EngineHandle fact operations preserve documented shapes", async () => {
+test("D-001 table-driven EngineHandle fact operations preserve documented shapes", async () => {
   const handle = await EngineHandle.create({
     source: "(defrule item-rule (item ?v) =>)",
   });

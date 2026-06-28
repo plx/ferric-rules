@@ -1,7 +1,7 @@
 /**
- * Wire helper property-style tests.
+ * Wire helper table-driven tests.
  *
- * These complement the explicit package smoke tests by generating nested value
+ * These complement the explicit package smoke tests by exercising nested value
  * shapes and checking recursive conversion invariants.
  */
 import { test } from "node:test";
@@ -46,9 +46,9 @@ test("G-004 toWire returns existing wire symbols unchanged", () => {
 });
 
 // ---------------------------------------------------------------------------
-// G-004 property-style wire round-trips preserve nested generated values
+// G-004 table-driven wire round-trips preserve nested values
 // ---------------------------------------------------------------------------
-test("G-004 property-style toWire/fromWire preserve generated nested shapes", () => {
+test("G-004 table-driven toWire/fromWire preserve nested shapes", () => {
   const nullPrototypeRecord = Object.create(null) as Record<string, unknown>;
   nullPrototypeRecord.outer = new FerricSymbol("dictionary-symbol");
 
@@ -70,7 +70,7 @@ test("G-004 property-style toWire/fromWire preserve generated nested shapes", ()
     nullPrototypeRecord,
   ];
 
-  // This deterministic corpus acts like a small generator over every supported
+  // This deterministic corpus enumerates every supported
   // wire primitive and nesting form. We assert that round-tripping reproduces
   // the ORIGINAL value structurally: primitives compare by value, `undefined`
   // normalizes to `null` (toWire collapses undefined), and FerricSymbols
@@ -121,9 +121,9 @@ test("G-004 property-style toWire/fromWire preserve generated nested shapes", ()
 });
 
 // ---------------------------------------------------------------------------
-// G-004 property-style wire edge corpus covers absent constructors and records
+// G-004 table-driven wire edge corpus covers absent constructors and records
 // ---------------------------------------------------------------------------
-test("G-004 property-style wire helpers preserve generated edge values", () => {
+test("G-004 table-driven wire helpers preserve edge values", () => {
   const wireSymbol = { __type: "FerricSymbol", value: "plain" };
   const cases = [
     {
@@ -166,9 +166,9 @@ test("G-004 property-style wire helpers preserve generated edge values", () => {
 });
 
 // ---------------------------------------------------------------------------
-// B-002 property-style fromWireToNative rehydrates generated wire symbols
+// B-002 table-driven fromWireToNative rehydrates nested wire symbols
 // ---------------------------------------------------------------------------
-test("B-002 property-style fromWireToNative rehydrates generated symbols", () => {
+test("B-002 table-driven fromWireToNative rehydrates symbols", () => {
   const generated = {
     one: { __type: "FerricSymbol", value: "one" },
     many: [
@@ -184,9 +184,9 @@ test("B-002 property-style fromWireToNative rehydrates generated symbols", () =>
 });
 
 // ---------------------------------------------------------------------------
-// C-004 property-style error extraction preserves names/codes/messages
+// C-004 table-driven error extraction preserves names/codes/messages
 // ---------------------------------------------------------------------------
-test("C-004 property-style extractFerricError handles prefixed and generic errors", () => {
+test("C-004 table-driven extractFerricError handles prefixed and generic errors", () => {
   const prefixed = [
     ["FerricParseError: bad syntax", "FerricParseError", "bad syntax", "FERRIC_PARSE_ERROR"],
     ["FerricEncodingError: ascii only", "FerricEncodingError", "ascii only", "FERRIC_ENCODING_ERROR"],
