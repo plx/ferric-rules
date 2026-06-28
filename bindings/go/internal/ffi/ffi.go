@@ -209,27 +209,19 @@ func EngineFactCount(h EngineHandle) (uintptr, ErrorCode) {
 
 // EngineFactIDs retrieves all user-visible fact IDs.
 func EngineFactIDs(h EngineHandle) ([]uint64, ErrorCode) {
-	// Size query
-	var count C.uintptr_t
-	rc := ErrorCode(C.ferric_engine_fact_ids(h, nil, 0, &count))
-	if rc != ErrOK {
-		return nil, rc
-	}
-	if count == 0 {
-		return nil, ErrOK
-	}
-
-	ids := make([]C.uint64_t, count)
-	rc = ErrorCode(C.ferric_engine_fact_ids(h, &ids[0], count, &count))
-	if rc != ErrOK {
-		return nil, rc
-	}
-
-	result := make([]uint64, count)
-	for i := range count {
-		result[i] = uint64(ids[i])
-	}
-	return result, ErrOK
+	return uint64IDsFromTwoCall(func(dst []uint64) (uintptr, ErrorCode) {
+		var count C.uintptr_t
+		if dst == nil {
+			rc := ErrorCode(C.ferric_engine_fact_ids(h, nil, 0, &count))
+			return uintptr(count), rc
+		}
+		ids := make([]C.uint64_t, len(dst))
+		rc := ErrorCode(C.ferric_engine_fact_ids(h, &ids[0], C.uintptr_t(len(ids)), &count))
+		for i := uintptr(0); i < uintptr(count) && i < uintptr(len(dst)); i++ {
+			dst[i] = uint64(ids[i])
+		}
+		return uintptr(count), rc
+	})
 }
 
 // EngineFindFactIDs finds fact IDs by relation name.
@@ -237,9 +229,23 @@ func EngineFindFactIDs(h EngineHandle, relation string) ([]uint64, ErrorCode) {
 	crel := C.CString(relation)
 	defer C.free(unsafe.Pointer(crel))
 
-	// Size query
-	var count C.uintptr_t
-	rc := ErrorCode(C.ferric_engine_find_fact_ids(h, crel, nil, 0, &count))
+	return uint64IDsFromTwoCall(func(dst []uint64) (uintptr, ErrorCode) {
+		var count C.uintptr_t
+		if dst == nil {
+			rc := ErrorCode(C.ferric_engine_find_fact_ids(h, crel, nil, 0, &count))
+			return uintptr(count), rc
+		}
+		ids := make([]C.uint64_t, len(dst))
+		rc := ErrorCode(C.ferric_engine_find_fact_ids(h, crel, &ids[0], C.uintptr_t(len(ids)), &count))
+		for i := uintptr(0); i < uintptr(count) && i < uintptr(len(dst)); i++ {
+			dst[i] = uint64(ids[i])
+		}
+		return uintptr(count), rc
+	})
+}
+
+func uint64IDsFromTwoCall(query func(dst []uint64) (uintptr, ErrorCode)) ([]uint64, ErrorCode) {
+	count, rc := query(nil)
 	if rc != ErrOK {
 		return nil, rc
 	}
@@ -247,17 +253,19 @@ func EngineFindFactIDs(h EngineHandle, relation string) ([]uint64, ErrorCode) {
 		return nil, ErrOK
 	}
 
-	ids := make([]C.uint64_t, count)
-	rc = ErrorCode(C.ferric_engine_find_fact_ids(h, crel, &ids[0], count, &count))
+	result := make([]uint64, count)
+	count, rc = query(result)
 	if rc != ErrOK {
 		return nil, rc
 	}
-
-	result := make([]uint64, count)
-	for i := range count {
-		result[i] = uint64(ids[i])
+	// The query copies at most len(result) ids into the buffer. The second
+	// call normally reports the same count as the first (engine access is
+	// serialized between the two calls), but clamp defensively so a count
+	// that grew between calls truncates instead of panicking on the reslice.
+	if count > uintptr(len(result)) {
+		count = uintptr(len(result))
 	}
-	return result, ErrOK
+	return result[:count], ErrOK
 }
 
 // EngineGetFactType returns the type (ordered vs template) of a fact.
@@ -629,9 +637,19 @@ func getString(fn func(buf *C.char, bufLen C.uintptr_t, outLen *C.uintptr_t) Err
 // Separated from getString to allow callers that need to capture extra
 // out-params from the same FFI call (e.g., EngineRuleInfo captures salience).
 func getStringWith(fn func(buf *C.char, bufLen C.uintptr_t, outLen *C.uintptr_t) ErrorCode) (string, ErrorCode) {
-	// Size query
-	var needed C.uintptr_t
-	rc := fn(nil, 0, &needed)
+	return stringFromTwoCall(func(buf []byte) (uintptr, ErrorCode) {
+		var needed C.uintptr_t
+		var ptr *C.char
+		if len(buf) > 0 {
+			ptr = (*C.char)(unsafe.Pointer(&buf[0]))
+		}
+		rc := fn(ptr, C.uintptr_t(len(buf)), &needed)
+		return uintptr(needed), rc
+	})
+}
+
+func stringFromTwoCall(fn func(buf []byte) (uintptr, ErrorCode)) (string, ErrorCode) {
+	needed, rc := fn(nil)
 	if rc != ErrOK {
 		return "", rc
 	}
@@ -641,9 +659,16 @@ func getStringWith(fn func(buf *C.char, bufLen C.uintptr_t, outLen *C.uintptr_t)
 
 	// Allocate and copy
 	buf := make([]byte, needed)
-	rc = fn((*C.char)(unsafe.Pointer(&buf[0])), C.uintptr_t(needed), &needed)
+	needed, rc = fn(buf)
 	if rc != ErrOK {
 		return "", rc
+	}
+
+	// fn writes at most len(buf) bytes. The second call normally reports the
+	// same size as the first, but clamp defensively so a size that grew
+	// between the two calls truncates instead of panicking on buf[:needed-1].
+	if needed > uintptr(len(buf)) {
+		needed = uintptr(len(buf))
 	}
 
 	// Convert to Go string (exclude NUL terminator)

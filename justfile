@@ -336,7 +336,10 @@ test-go-stress count="10":
     cd bindings/go && go test -race -count={{count}} -v ./...
 
 # Version of golangci-lint to install when not already present.
-golangci_lint_version := "v2.8.0"
+# v2.12.x is the first line that runs under the Go 1.26 toolchain; v2.8.0
+# panics when loading 1.26 export data (CI itself runs Go 1.25, so it was
+# unaffected, but local 1.26 developers hit the crash on auto-install).
+golangci_lint_version := "v2.12.2"
 
 # Runs the golang-ci linter suite (auto-installs to ./bin/ if needed).
 run-golang-ci:

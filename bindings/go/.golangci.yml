@@ -8,6 +8,10 @@ linters:
 
     # Very low-signal for this codebase without substantial custom policy.
     - depguard
+    # Sibling import-guard linter to depguard; unused here and deprecated in
+    # golangci-lint v2.12 (replaced by gomodguard_v2). Disable to avoid the
+    # deprecation warning without adopting an import policy we don't need.
+    - gomodguard
     - exhaustruct
     - varnamelen
     - nlreturn
@@ -39,3 +43,9 @@ linters:
         linters:
           - gocritic
         text: exitAfterDefer
+      # Repeated string literals in tests (rule sources, spec names, slot keys,
+      # fixture values) read more clearly inline than hoisted into shared
+      # constants; goconst's signal is for production code.
+      - path: _test\.go
+        linters:
+          - goconst

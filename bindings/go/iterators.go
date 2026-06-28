@@ -10,7 +10,7 @@ import (
 // Each iteration yields a Fact snapshot. Stops early on error.
 func (e *Engine) FactIter() iter.Seq[Fact] {
 	return func(yield func(Fact) bool) {
-		ids, rc := ffi.EngineFactIDs(e.handle)
+		ids, rc := ffiEngineFactIDs(e.handle)
 		if rc != ffi.ErrOK {
 			return
 		}
@@ -29,12 +29,12 @@ func (e *Engine) FactIter() iter.Seq[Fact] {
 // RuleIter returns an iterator over all registered rules.
 func (e *Engine) RuleIter() iter.Seq[RuleInfo] {
 	return func(yield func(RuleInfo) bool) {
-		count, rc := ffi.EngineRuleCount(e.handle)
+		count, rc := ffiEngineRuleCount(e.handle)
 		if rc != ffi.ErrOK {
 			return
 		}
 		for i := range count {
-			name, salience, rc := ffi.EngineRuleInfo(e.handle, i)
+			name, salience, rc := ffiEngineRuleInfo(e.handle, i)
 			if rc != ffi.ErrOK {
 				return
 			}
@@ -48,12 +48,12 @@ func (e *Engine) RuleIter() iter.Seq[RuleInfo] {
 // TemplateIter returns an iterator over all registered template names.
 func (e *Engine) TemplateIter() iter.Seq[string] {
 	return func(yield func(string) bool) {
-		count, rc := ffi.EngineTemplateCount(e.handle)
+		count, rc := ffiEngineTemplateCount(e.handle)
 		if rc != ffi.ErrOK {
 			return
 		}
 		for i := range count {
-			name, rc := ffi.EngineTemplateName(e.handle, i)
+			name, rc := ffiEngineTemplateName(e.handle, i)
 			if rc != ffi.ErrOK {
 				return
 			}
@@ -67,12 +67,12 @@ func (e *Engine) TemplateIter() iter.Seq[string] {
 // DiagnosticIter returns an iterator over action diagnostic messages.
 func (e *Engine) DiagnosticIter() iter.Seq[string] {
 	return func(yield func(string) bool) {
-		count, rc := ffi.EngineActionDiagnosticCount(e.handle)
+		count, rc := ffiEngineActionDiagnosticCount(e.handle)
 		if rc != ffi.ErrOK {
 			return
 		}
 		for i := range count {
-			msg, rc := ffi.EngineActionDiagnosticCopy(e.handle, i)
+			msg, rc := ffiEngineActionDiagnosticCopy(e.handle, i)
 			if rc != ffi.ErrOK {
 				return
 			}
@@ -92,7 +92,7 @@ func (e *Engine) DiagnosticIter() iter.Seq[string] {
 // a final (Fact{}, err) is yielded and iteration stops.
 func (e *Engine) FactIterE() iter.Seq2[Fact, error] {
 	return func(yield func(Fact, error) bool) {
-		ids, rc := ffi.EngineFactIDs(e.handle)
+		ids, rc := ffiEngineFactIDs(e.handle)
 		if rc != ffi.ErrOK {
 			yield(Fact{}, errorFromFFI(rc, e.handle))
 			return
@@ -115,13 +115,13 @@ func (e *Engine) FactIterE() iter.Seq2[Fact, error] {
 // a final (RuleInfo{}, err) is yielded and iteration stops.
 func (e *Engine) RuleIterE() iter.Seq2[RuleInfo, error] {
 	return func(yield func(RuleInfo, error) bool) {
-		count, rc := ffi.EngineRuleCount(e.handle)
+		count, rc := ffiEngineRuleCount(e.handle)
 		if rc != ffi.ErrOK {
 			yield(RuleInfo{}, errorFromFFI(rc, e.handle))
 			return
 		}
 		for i := range count {
-			name, salience, rc := ffi.EngineRuleInfo(e.handle, i)
+			name, salience, rc := ffiEngineRuleInfo(e.handle, i)
 			if rc != ffi.ErrOK {
 				yield(RuleInfo{}, errorFromFFI(rc, e.handle))
 				return
@@ -138,13 +138,13 @@ func (e *Engine) RuleIterE() iter.Seq2[RuleInfo, error] {
 // error occurs, a final ("", err) is yielded and iteration stops.
 func (e *Engine) TemplateIterE() iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
-		count, rc := ffi.EngineTemplateCount(e.handle)
+		count, rc := ffiEngineTemplateCount(e.handle)
 		if rc != ffi.ErrOK {
 			yield("", errorFromFFI(rc, e.handle))
 			return
 		}
 		for i := range count {
-			name, rc := ffi.EngineTemplateName(e.handle, i)
+			name, rc := ffiEngineTemplateName(e.handle, i)
 			if rc != ffi.ErrOK {
 				yield("", errorFromFFI(rc, e.handle))
 				return
@@ -161,13 +161,13 @@ func (e *Engine) TemplateIterE() iter.Seq2[string, error] {
 // occurs, a final ("", err) is yielded and iteration stops.
 func (e *Engine) DiagnosticIterE() iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
-		count, rc := ffi.EngineActionDiagnosticCount(e.handle)
+		count, rc := ffiEngineActionDiagnosticCount(e.handle)
 		if rc != ffi.ErrOK {
 			yield("", errorFromFFI(rc, e.handle))
 			return
 		}
 		for i := range count {
-			msg, rc := ffi.EngineActionDiagnosticCopy(e.handle, i)
+			msg, rc := ffiEngineActionDiagnosticCopy(e.handle, i)
 			if rc != ffi.ErrOK {
 				yield("", errorFromFFI(rc, e.handle))
 				return
