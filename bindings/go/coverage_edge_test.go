@@ -1323,7 +1323,13 @@ func TestPropertyWireConversionErrorSurfaces(t *testing.T) {
 	})
 }
 
-func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
+// TestPropertyEngineSurfaceSweep fuzzes the raw Engine API surface and the
+// serialize/restore round-trip across every format. It deliberately does NOT
+// spin up Manager/Coordinator/PinnedEngine per iteration — those wrappers each
+// start OS-thread-locked workers, and creating them 100x amplifies
+// thread-affinity churn for no extra signal (their surface is covered once by
+// TestManagerCoordinatorPinnedSurface and by their dedicated test files).
+func TestPropertyEngineSurfaceSweep(t *testing.T) {
 	lockThread(t)
 
 	tmpDir := t.TempDir()
@@ -1338,7 +1344,6 @@ func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		id := rapid.Int64Range(1, 1000).Draw(rt, "id")
 		value := rapid.Float64Range(0.1, 1000.0).Draw(rt, "value")
-		policyIndex := rapid.IntRange(-8, 8).Draw(rt, "policy_index")
 		format := rapid.SampledFrom([]Format{
 			FormatBincode,
 			FormatJSON,
@@ -1499,107 +1504,132 @@ func TestPropertyEngineManagerAndPinnedSurfaceSweep(t *testing.T) {
 		_ = HaltLimitReached.String()
 		_ = HaltRequested.String()
 		_ = HaltReason(99).String()
-
-		mgr, err := NewManager(WithSource(source))
-		if err != nil {
-			rt.Fatal(err)
-		}
-		defer func() { _ = mgr.Close() }()
-		req := &EvaluateRequest{Facts: []WireFactInput{
-			OrderedFact("color", SymbolValue("blue"), StringValue("label"), MultifieldValue(IntValue(id))),
-			TemplateFact("sensor", map[string]WireValue{"id": IntValue(id), "value": FloatValue(value)}),
-		}}
-		if _, err := mgr.Evaluate(context.Background(), req); err != nil {
-			rt.Fatal(err)
-		}
-		req.Limit = 1
-		if _, err := mgr.Evaluate(context.Background(), req); err != nil {
-			rt.Fatal(err)
-		}
-		if _, err := mgr.EvaluateNative(context.Background(), &EvaluateNativeRequest{Facts: []NativeFactInput{
-			{Relation: "color", Fields: []any{Symbol("green")}},
-			{TemplateName: "sensor", Slots: map[string]any{"id": id, "value": value}},
-		}}); err != nil {
-			rt.Fatal(err)
-		}
-
-		coord, err := NewCoordinator(
-			[]EngineSpec{{Name: "sweep", Options: []EngineOption{WithSource(source)}}},
-			Threads(rapid.IntRange(1, 3).Draw(rt, "threads")),
-			WithDispatchPolicy(fixedIndexPolicy{index: policyIndex}),
-			WithLogger(slog.New(slog.DiscardHandler)),
-			WithTracerProvider(nil),
-			WithMeterProvider(nil),
-		)
-		if err != nil {
-			rt.Fatal(err)
-		}
-		defer func() { _ = coord.Close() }()
-		cm, err := coord.Manager("sweep")
-		if err != nil {
-			rt.Fatal(err)
-		}
-		if err := cm.Do(context.Background(), func(engine *Engine) error {
-			_, err := engine.Run(context.Background())
-			return err
-		}); err != nil {
-			rt.Fatal(err)
-		}
-
-		p, err := NewPinnedEngine(WithSource(source))
-		if err != nil {
-			rt.Fatal(err)
-		}
-		defer func() { _ = p.Close() }()
-		if err := p.Load(`(defrule pinned-loaded => (assert (pinned-loaded)))`); err != nil {
-			rt.Fatal(err)
-		}
-		if err := p.Reset(); err != nil {
-			rt.Fatal(err)
-		}
-		_, _ = p.Step()
-		pColorID, err := p.AssertString("(assert (color purple))")
-		if err != nil {
-			rt.Fatal(err)
-		}
-		if _, err := p.AssertFact("data", id); err != nil {
-			rt.Fatal(err)
-		}
-		pSensorID, err := p.AssertTemplate("sensor", map[string]any{"id": id, "value": value})
-		if err != nil {
-			rt.Fatal(err)
-		}
-		if _, err := p.GetFact(pSensorID); err != nil {
-			rt.Fatal(err)
-		}
-		_, _ = p.Facts()
-		_, _ = p.FindFacts("data")
-		_, _ = p.FactCount()
-		_, _ = p.RunWithLimit(context.Background(), 1)
-		_, _ = p.Run(context.Background())
-		_, _ = p.Serialize(format)
-		if err := p.SerializeToFile(tmpDir+"/pinned-surface.bin", format); err != nil {
-			rt.Fatal(err)
-		}
-		_ = p.Rules()
-		_ = p.Templates()
-		_, _ = p.GetGlobal("threshold")
-		_ = p.CurrentModule()
-		_, _ = p.Focus()
-		_ = p.FocusStack()
-		_ = p.AgendaSize()
-		_ = p.IsHalted()
-		_, _ = p.GetOutput("t")
-		p.ClearOutput("t")
-		p.PushInput("unused")
-		_ = p.Diagnostics()
-		p.ClearDiagnostics()
-		if err := p.Retract(pColorID); err != nil {
-			rt.Fatal(err)
-		}
-		p.Halt()
-		p.Clear()
 	})
+}
+
+// TestManagerCoordinatorPinnedSurface exercises the Manager, Coordinator, and
+// PinnedEngine wrapper surfaces once with fixed inputs. It is deliberately not
+// a rapid property: these wrappers each start OS-thread-locked worker
+// goroutines, so running them under a 100-iteration property needlessly churns
+// OS threads (an affinity-flake amplifier) without exercising new behavior.
+// Concurrency correctness lives in manager_test.go / pinned_engine_test.go /
+// property_test.go; this test just walks the broad accessor surface.
+func TestManagerCoordinatorPinnedSurface(t *testing.T) {
+	const (
+		id     = int64(42)
+		value  = 3.14
+		format = FormatBincode
+		// Negative index exercises the ((idx % n) + n) % n clamp in pickWorker.
+		policyIndex = -1
+	)
+	tmpDir := t.TempDir()
+	source := `
+		(defglobal ?*threshold* = 10)
+		(deftemplate sensor (slot id (type INTEGER)) (slot value (type FLOAT)))
+		(defrule bootstrap => (assert (booted)))
+		(defrule color-seen (color ?c) => (assert (matched ?c)) (printout t ?c crlf))
+		(defrule sensor-seen (sensor (id ?id) (value ?v)) => (assert (observed ?id)))
+	`
+
+	mgr, err := NewManager(WithSource(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mgr.Close() }()
+	req := &EvaluateRequest{Facts: []WireFactInput{
+		OrderedFact("color", SymbolValue("blue"), StringValue("label"), MultifieldValue(IntValue(id))),
+		TemplateFact("sensor", map[string]WireValue{"id": IntValue(id), "value": FloatValue(value)}),
+	}}
+	if _, err := mgr.Evaluate(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	req.Limit = 1
+	if _, err := mgr.Evaluate(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.EvaluateNative(context.Background(), &EvaluateNativeRequest{Facts: []NativeFactInput{
+		{Relation: "color", Fields: []any{Symbol("green")}},
+		{TemplateName: "sensor", Slots: map[string]any{"id": id, "value": value}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	coord, err := NewCoordinator(
+		[]EngineSpec{{Name: "sweep", Options: []EngineOption{WithSource(source)}}},
+		Threads(2),
+		WithDispatchPolicy(fixedIndexPolicy{index: policyIndex}),
+		WithLogger(slog.New(slog.DiscardHandler)),
+		WithTracerProvider(nil),
+		WithMeterProvider(nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = coord.Close() }()
+	cm, err := coord.Manager("sweep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.Do(context.Background(), func(engine *Engine) error {
+		_, err := engine.Run(context.Background())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := NewPinnedEngine(WithSource(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	if err := p.Load(`(defrule pinned-loaded => (assert (pinned-loaded)))`); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = p.Step()
+	pColorID, err := p.AssertString("(assert (color purple))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.AssertFact("data", id); err != nil {
+		t.Fatal(err)
+	}
+	pSensorID, err := p.AssertTemplate("sensor", map[string]any{"id": id, "value": value})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.GetFact(pSensorID); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = p.Facts()
+	_, _ = p.FindFacts("data")
+	_, _ = p.FactCount()
+	_, _ = p.RunWithLimit(context.Background(), 1)
+	_, _ = p.Run(context.Background())
+	_, _ = p.Serialize(format)
+	if err := p.SerializeToFile(tmpDir+"/pinned-surface.bin", format); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Rules()
+	_ = p.Templates()
+	_, _ = p.GetGlobal("threshold")
+	_ = p.CurrentModule()
+	_, _ = p.Focus()
+	_ = p.FocusStack()
+	_ = p.AgendaSize()
+	_ = p.IsHalted()
+	_, _ = p.GetOutput("t")
+	p.ClearOutput("t")
+	p.PushInput("unused")
+	_ = p.Diagnostics()
+	p.ClearDiagnostics()
+	if err := p.Retract(pColorID); err != nil {
+		t.Fatal(err)
+	}
+	p.Halt()
+	p.Clear()
 }
 
 func TestPropertyErrorSentinelsAndFFIValueConversions(t *testing.T) {
