@@ -22,6 +22,17 @@ SOURCE = """
 """
 
 
+class TestFormatEnum:
+    def test_format_values_distinct(self):
+        """The five serialization formats must be mutually distinct."""
+        values = ALL_FORMATS
+        assert all(
+            left != right
+            for i, left in enumerate(values)
+            for right in values[i + 1 :]
+        )
+
+
 class TestSerializeRoundtrip:
     @pytest.mark.parametrize("fmt", ALL_FORMATS)
     def test_roundtrip_preserves_state(self, fmt):
@@ -58,6 +69,20 @@ class TestSerializeRoundtrip:
         data = engine.serialize()  # no format arg
         restored = ferric.Engine.from_snapshot(data)  # no format arg
         assert len(restored.rules()) == 1
+
+    @pytest.mark.parametrize("fmt", ALL_FORMATS)
+    def test_roundtrip_preserves_fact_content(self, fmt):
+        # The other roundtrip tests only check that rules/globals survive; pin
+        # that pre-existing *fact* content (template slot values) survives too.
+        engine = ferric.Engine.from_source(
+            "(deftemplate record (slot label) (slot count (type INTEGER)))"
+        )
+        engine.assert_template("record", label="alpha", count=7)
+        restored = ferric.Engine.from_snapshot(engine.serialize(format=fmt), format=fmt)
+        facts = restored.facts()
+        assert len(facts) == 1
+        assert facts[0].slots["label"] == "alpha"
+        assert facts[0].slots["count"] == 7
 
 
 class TestSerializeErrors:
