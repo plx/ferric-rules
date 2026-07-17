@@ -88,6 +88,14 @@ class TestGetFact:
         engine.retract(fid)
         assert engine.get_fact(fid) is None
 
+    def test_fact_exposes_engine_id(self, engine):
+        # engine_id backs cross-engine fact equality/hashing; ensure it is
+        # populated and stable across snapshots of the same fact.
+        fid = engine.assert_fact("color", "red")
+        fact = engine.get_fact(fid)
+        assert fact.engine_id > 0
+        assert engine.get_fact(fid).engine_id == fact.engine_id
+
 
 class TestFacts:
     def test_facts_empty(self, engine):
@@ -109,13 +117,13 @@ class TestFacts:
 
 class TestFindFacts:
     def test_find_by_relation(self, engine):
-        engine.assert_fact("color", "red")
-        engine.assert_fact("color", "blue")
-        engine.assert_fact("shape", "circle")
-        colors = engine.find_facts("color")
-        assert len(colors) == 2
-        shapes = engine.find_facts("shape")
-        assert len(shapes) == 1
+        c1 = engine.assert_fact("color", "red")
+        c2 = engine.assert_fact("color", "blue")
+        s1 = engine.assert_fact("shape", "circle")
+        # find_facts must return exactly the facts of that relation (by id),
+        # not merely the right count.
+        assert {f.id for f in engine.find_facts("color")} == {c1, c2}
+        assert {f.id for f in engine.find_facts("shape")} == {s1}
 
     def test_find_no_match(self, engine):
         engine.assert_fact("color", "red")

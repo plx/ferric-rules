@@ -77,3 +77,32 @@ class TestModuleAttribution:
 
     def test_string_module(self):
         assert ferric.String.__module__ == "ferric"
+
+
+class TestEnumDistinctness:
+    """Result/discriminator enum members must be mutually distinct."""
+
+    def test_fact_type_distinct(self):
+        assert ferric.FactType.ORDERED != ferric.FactType.TEMPLATE
+
+    def test_halt_reason_distinct(self):
+        values = [
+            ferric.HaltReason.AGENDA_EMPTY,
+            ferric.HaltReason.LIMIT_REACHED,
+            ferric.HaltReason.HALT_REQUESTED,
+        ]
+        assert all(
+            left != right
+            for i, left in enumerate(values)
+            for right in values[i + 1 :]
+        )
+
+
+class TestExtensionModuleFacade:
+    """The compiled extension is re-exposed as ferric.ferric; it must hand back
+    the same class objects as the package facade."""
+
+    def test_nested_module_reexports_same_classes(self):
+        assert ferric.ferric.Engine is ferric.Engine
+        assert ferric.ferric.Symbol is ferric.Symbol
+        assert ferric.ferric.Fact is ferric.Fact

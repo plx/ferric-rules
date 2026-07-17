@@ -194,6 +194,16 @@ class TestListConversion:
         assert isinstance(fact.fields[0], list)
         assert fact.fields[0] == [1, 2]
 
+    def test_multifield_preserves_symbol_and_string_types(self, engine):
+        """Symbol/String wrappers nested inside a multifield keep their distinct
+        CLIPS types through the round-trip rather than collapsing to str."""
+        fid = engine.assert_fact("data", [ferric.Symbol("sym"), ferric.String("str")])
+        field = engine.get_fact(fid).fields[0]
+        assert isinstance(field[0], ferric.Symbol)
+        assert isinstance(field[1], ferric.String)
+        assert field[0] == "sym"
+        assert field[1] == "str"
+
 
 class TestHashContract:
     """hash(a) == hash(b) whenever a == b (Python invariant)."""
