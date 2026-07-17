@@ -12,11 +12,13 @@
     "build": "tsc",
     "lint": "tsc --noEmit",
     "test:types": "tsc --noEmit -p tsconfig.typetest.json",
+    "test:runtime:types": "tsx --test test/conformance/types/**/*.test.ts",
     "test:runtime:sync": "tsx --test test/conformance/runtime/sync/**/*.test.ts",
     "test:runtime:worker": "tsx --test test/conformance/runtime/worker/**/*.test.ts",
     "test:runtime:pool": "tsx --test test/conformance/runtime/pool/**/*.test.ts",
     "test:package": "tsx --test test/conformance/package/**/*.test.ts",
-    "test": "npm run test:types && npm run test:runtime:sync && npm run test:runtime:worker && npm run test:runtime:pool && npm run test:package",
+    "test": "npm run test:types && npm run test:runtime:types && npm run test:runtime:sync && npm run test:runtime:worker && npm run test:runtime:pool && npm run test:package",
+    "test:coverage": "npm run build && node --import tsx --test --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 test/conformance/coverage-entrypoint.test.ts",
     "clean": "rm -rf dist"
   },
   "engines": {

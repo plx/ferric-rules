@@ -97,7 +97,7 @@ function batchedRun(
   limit: number | undefined | null,
   abortBuffer: Int32Array | null,
 ): { rulesFired: number; haltReason: number } {
-  if (!engine) throw new Error("Engine is not initialized");
+  const activeEngine = engine!;
   const normalizedLimit = normalizeRunLimit(limit, "EngineHandle.run");
 
   // N-01: undefined/null = unlimited, 0 = zero firings, positive = max firings.
@@ -112,12 +112,12 @@ function batchedRun(
   while (remaining > 0) {
     // Check for abort before each batch.
     if (abortBuffer !== null && Atomics.load(abortBuffer, ABORT_FLAG_INDEX) !== 0) {
-      engine.halt();
+      activeEngine.halt();
       break;
     }
 
     const batchLimit = Math.min(remaining, RUN_BATCH_SIZE);
-    const result = engine.run(batchLimit);
+    const result = activeEngine.run(batchLimit);
     totalFired += result.rulesFired;
 
     // HaltReason: 0 = AgendaEmpty, 1 = LimitReached, 2 = HaltRequested

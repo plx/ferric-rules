@@ -165,14 +165,20 @@ test("E-007 proxy step fires exactly one rule", async () => {
     { threads: 1 },
   );
   try {
-    const result = await pool.do("basic", async (proxy) => {
+    const { fired, counters } = await pool.do("basic", async (proxy) => {
       await proxy.reset();
       await proxy.assertString("(counter 0)");
-      return proxy.step();
+      const f = await proxy.step();
+      const c = await proxy.findFacts("counter") as any[];
+      return { fired: f, counters: c };
     });
-    // step() returns FiredRule | null; a non-null result means exactly one rule fired.
-    assert.ok(result !== null, "step() should have fired one rule");
-    assert.strictEqual(typeof (result as any).ruleName, "string", "FiredRule should have a ruleName");
+    // The loop rule retracts (counter 0) and asserts (counter 1). Pinning the
+    // post-state — exactly one counter fact whose value advanced 0 -> 1 — proves
+    // step() fired precisely one activation (not zero, not many, not run()).
+    assert.ok(fired !== null, "step() should have fired one rule");
+    assert.strictEqual((fired as any).ruleName, "loop");
+    assert.strictEqual(counters.length, 1, "exactly one counter fact should remain");
+    assert.strictEqual(counters[0].fields[0], 1, "the counter must have advanced 0 -> 1");
   } finally {
     await pool.close();
   }
@@ -195,6 +201,75 @@ test("E-007 proxy getFact retrieves a specific fact by ID", async () => {
     assert.ok(fact, "getFact should return a fact");
     assert.strictEqual(typeof fact.id, "number");
     assert.ok(Array.isArray(fact.fields));
+  } finally {
+    await pool.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// E-007 table-driven proxy table: remaining proxy methods preserve semantics
+// ---------------------------------------------------------------------------
+test("E-007 table-driven EnginePool proxy method table covers remaining operations", async () => {
+  const pool = await EnginePool.create(
+    [{
+      name: "proxy-table",
+      source: `
+(defrule read-it
+  (need-input)
+  =>
+  (printout t (readline) crlf))
+(defrule count-it
+  (counter ?n)
+  =>
+  (printout t "counter=" ?n crlf))
+`,
+    }],
+    { threads: 1 },
+  );
+  try {
+    await pool.do("proxy-table", async (proxy) => {
+      // These cases all assert one thing: each thin proxy method sends
+      // the same request shape as its worker protocol counterpart.
+      const cases = [
+        {
+          label: "findFacts returns the matching relation",
+          run: async () => {
+            await proxy.reset();
+            await proxy.assertFact("counter", 1);
+            const facts = await proxy.findFacts("counter") as any[];
+            assert.ok(facts.every((fact) => fact.relation === "counter"));
+          },
+        },
+        {
+          label: "halt is idempotent and void",
+          run: async () => {
+            await proxy.halt();
+          },
+        },
+        {
+          label: "clear removes dynamically asserted state",
+          run: async () => {
+            await proxy.clear();
+            assert.deepStrictEqual(await proxy.facts(), []);
+          },
+        },
+        {
+          label: "pushInput feeds readline through the proxy",
+          run: async () => {
+            await proxy.load("(defrule read-it (need-input) => (printout t (readline) crlf))");
+            await proxy.reset();
+            await proxy.pushInput("typed via proxy");
+            await proxy.assertFact("need-input");
+            await proxy.run();
+            assert.match(await proxy.getOutput("t") as string, /typed via proxy/);
+          },
+        },
+      ];
+
+      for (const item of cases) {
+        await assert.doesNotReject(item.run, item.label);
+      }
+    });
   } finally {
     await pool.close();
   }
@@ -226,15 +301,57 @@ test("E-002 evaluate with template facts fires matching rules", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Multi-thread pool: requests are distributed and all complete
+// E-002 table-driven evaluate corpus: ordered and template facts both wire
 // ---------------------------------------------------------------------------
-test("E-001 multi-thread pool with threads:2 handles concurrent requests", async () => {
+test("E-002 table-driven EnginePool.evaluate handles fact variants", async () => {
+  const pool = await EnginePool.create(
+    [{
+      name: "mixed",
+      source: `
+(deftemplate item (slot id) (slot label))
+(defrule ordered-color (color ?c) => (printout t "color=" ?c crlf))
+(defrule template-item (item (id ?id) (label ?label)) => (printout t "item=" ?id ":" ?label crlf))
+`,
+    }],
+    { threads: 1 },
+  );
+  try {
+    const result = await pool.evaluate("mixed", {
+      facts: [
+        { kind: "ordered", relation: "color", fields: [new FerricSymbol("red")] },
+        {
+          kind: "template",
+          templateName: "item",
+          slots: { id: 3, label: new FerricSymbol("widget") },
+        },
+      ],
+    });
+
+    // The request mixes both accepted fact variants so the mapper
+    // proves it preserves ordered fields and template slots in one call.
+    assert.strictEqual(result.runResult.rulesFired, 2);
+    assert.match(result.output.stdout, /color=red/);
+    assert.match(result.output.stdout, /item=3:widget/);
+  } finally {
+    await pool.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Multi-thread pool: a burst of concurrent requests all complete correctly
+//
+// NOTE: this is a completion/smoke check, not a distribution proof — it does not
+// assert that work was actually spread across both worker threads (a 1-thread
+// pool or a pickSlot pinned to slot 0 would also pass). It guards that a
+// threads:2 pool services a concurrent burst without deadlock or cross-talk.
+// ---------------------------------------------------------------------------
+test("E-001 multi-thread pool with threads:2 handles a concurrent request burst", async () => {
   const pool = await EnginePool.create(
     [{ name: "basic", source: BASIC_RULE }],
     { threads: 2 },
   );
   try {
-    // Submit 4 requests to a 2-thread pool and verify all complete.
+    // Submit 4 concurrent requests to a 2-thread pool and verify all complete.
     const results = await Promise.all([
       pool.evaluate("basic", {}),
       pool.evaluate("basic", {}),

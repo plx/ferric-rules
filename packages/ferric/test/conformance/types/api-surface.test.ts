@@ -2,8 +2,13 @@
  * Type conformance tests — these verify that the public API surface
  * compiles correctly under tsc --strict.
  *
- * These tests are validated by the TypeScript compiler (tsc --noEmit).
- * They also run at runtime as a basic smoke check.
+ * Two complementary mechanisms exercise this file:
+ * - `npm run test:types` type-checks it with `tsc --noEmit` (this is where the
+ *   `@ts-expect-error` negative assertions and type-inhabitance checks have
+ *   teeth — they fail the build if the public types stop rejecting bad shapes).
+ * - `npm run test:runtime:types` executes it with the node test runner, so the
+ *   runtime `assert.*` calls (enum values, error codes, method presence) run as
+ *   a smoke check rather than being dead code.
  */
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -66,6 +71,26 @@ test("A-002 FerricSymbol is a concrete class export", () => {
 test("A-003 ClipsValue includes FerricSymbol", () => {
   const v: ClipsValue = new FerricSymbol("x");
   assert.ok(v);
+});
+
+// ---------------------------------------------------------------------------
+// A-003 table-driven type corpus: ClipsValue variants compile
+// ---------------------------------------------------------------------------
+test("A-003 table-driven ClipsValue accepts public value variants", () => {
+  // This tuple is a compile-time enumeration of every public ClipsValue branch;
+  // the assertion is that all entries can inhabit ClipsValue under strict mode.
+  const values: ClipsValue[] = [
+    new FerricSymbol("x"),
+    { __type: "FerricSymbol", value: "wired" },
+    "text",
+    1,
+    1.5,
+    1n,
+    true,
+    [new FerricSymbol("nested"), "text"],
+    null,
+  ];
+  assert.strictEqual(values.length, 9);
 });
 
 // ---------------------------------------------------------------------------
@@ -169,4 +194,32 @@ test("G-003 type compilation: EngineOptions and related types are usable", () =>
 test("A-006 EngineHandle and EnginePool support Symbol.asyncDispose", () => {
   // Just verify the types compile — runtime check is elsewhere
   assert.ok(Symbol.asyncDispose !== undefined, "Symbol.asyncDispose should exist");
+});
+
+// ---------------------------------------------------------------------------
+// A-003 / A-004: NEGATIVE type assertions — the public types must REJECT wrong
+// shapes. The positive checks above cannot catch a type being loosened to `any`
+// (everything would still compile). Each `@ts-expect-error` below is itself
+// verified by tsc: if the type stopped rejecting the value, the now-unused
+// directive fails the type check. At runtime these are inert (the values are
+// constructed but never used for behavior).
+// ---------------------------------------------------------------------------
+test("A-003 public types reject invalid shapes (compile-time)", () => {
+  // ClipsValue must not admit a function...
+  // @ts-expect-error - a function is not a ClipsValue
+  const notValue1: ClipsValue = () => 1;
+  // ...nor an arbitrary object lacking the wire-symbol shape.
+  // @ts-expect-error - a plain object is not a ClipsValue
+  const notValue2: ClipsValue = { not: "a clips value" };
+
+  // EngineOptions.strategy is the numeric Strategy enum, not a string.
+  // @ts-expect-error - strategy must be a Strategy enum value, not a string
+  const badOptions: EngineOptions = { strategy: "depth" };
+
+  // EngineSpec.name is required.
+  // @ts-expect-error - name is a required field on EngineSpec
+  const badSpec: EngineSpec = {};
+
+  // Reference the bindings so the assertions are not optimized away as unused.
+  assert.strictEqual([notValue1, notValue2, badOptions, badSpec].length, 4);
 });
