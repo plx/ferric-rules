@@ -45,8 +45,11 @@ func goToFFIValue(v any) (ffi.Value, error) {
 		for i, elem := range val {
 			ev, err := goToFFIValue(elem)
 			if err != nil {
+				// Free the elements converted before this failure. Goes through
+				// the ffiValueFree seam (as AssertFact/AssertTemplate do) so the
+				// cleanup is observable in tests.
 				for j := range i {
-					ffi.ValueFree(&elements[j])
+					ffiValueFree(&elements[j])
 				}
 				return ffi.Value{}, err
 			}

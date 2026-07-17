@@ -69,7 +69,9 @@ jobs:
       - run: just build-go-ffi
       - uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.8.0
+          # Keep in sync with golangci_lint_version in the justfile. v2.12.x is
+          # the first line compatible with the Go 1.26 toolchain.
+          version: v2.12.2
           working-directory: bindings/go
 
   go-test-stress:

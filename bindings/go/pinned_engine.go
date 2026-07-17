@@ -130,8 +130,6 @@ func (p *PinnedEngine) tryEnqueue(ctx context.Context, req pinnedRequest) error 
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("ferric: request canceled before dispatch: %w", ctx.Err())
-	case <-p.done:
-		return errPinnedEngineClosed
 	case p.requests <- req:
 		return nil
 	}
