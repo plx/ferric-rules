@@ -16,6 +16,7 @@
     "COOL",
     "crate",
     "Criterion",
+    "daemonizes",
     "deffacts",
     "deffunction",
     "defgeneric",
@@ -69,6 +70,7 @@
     "stdlib",
     "syntax",
     "Waltz",
+    "withastro",
     "worktree",
     "worktrees"
   ],
