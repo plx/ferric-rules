@@ -8,6 +8,14 @@ use std::os::raw::c_char;
 ///
 /// Stable numeric values — new codes may be added but existing values
 /// must never change.
+///
+/// Numeric ranges:
+///
+/// - `0`           : success
+/// - `1..=10`      : raw engine + pre-pinned errors (stable)
+/// - `11..=19`     : pinned-execution errors (reserved range)
+/// - `20..=98`     : reserved for future growth
+/// - `99`          : internal/unexpected error
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FerricError {
@@ -33,6 +41,14 @@ pub enum FerricError {
     InvalidArgument = 9,
     /// Serialization or deserialization error.
     SerializationError = 10,
+    /// Pinned engine handle has been closed.
+    PinnedClosed = 11,
+    /// Pinned engine request was canceled before completion.
+    PinnedCanceled = 12,
+    /// Pinned engine bounded queue rejected a new request (queue full).
+    PinnedQueueFull = 13,
+    /// Pinned engine worker thread stopped unexpectedly (panicked or vanished).
+    PinnedDispatchFailed = 14,
     /// Internal/unexpected error.
     InternalError = 99,
 }
@@ -270,4 +286,27 @@ pub(crate) fn set_engine_error_global(err: &EngineError) -> FerricError {
     let code = map_engine_error(err);
     set_global_error(err.to_string());
     code
+}
+
+// ---------------------------------------------------------------------------
+// Pinned-engine error mapping
+// ---------------------------------------------------------------------------
+
+use ferric_pinned::PinnedError;
+
+/// Map a [`PinnedError`] to an FFI error code.
+pub(crate) fn map_pinned_error(err: &PinnedError) -> FerricError {
+    match err {
+        PinnedError::Closed => FerricError::PinnedClosed,
+        PinnedError::Canceled => FerricError::PinnedCanceled,
+        PinnedError::QueueFull => FerricError::PinnedQueueFull,
+        PinnedError::DispatchFailed => FerricError::PinnedDispatchFailed,
+        PinnedError::Init(_) => FerricError::InternalError,
+        PinnedError::Load(errors) => errors
+            .first()
+            .map_or(FerricError::CompileError, map_load_error),
+        PinnedError::Engine(e) => map_engine_error(e),
+        #[cfg(feature = "serde")]
+        PinnedError::Serialization(_) => FerricError::SerializationError,
+    }
 }

@@ -56,6 +56,36 @@
  *    FERRIC_NULL_TERMINATED annotations when compiled with
  *    Clang -fbounds-safety. Define FERRIC_NO_BOUNDS_ANNOTATIONS
  *    before including this header to suppress.
+ *
+ * ============================================================
+ * PINNED EXECUTION (ferric_pinned_*)
+ * ============================================================
+ *
+ * FerricPinnedEngine owns a dedicated Rust worker thread plus
+ * one engine. The handle is safe to use from any thread; calls
+ * are serialized through a bounded FIFO queue on the worker.
+ *
+ * - Sync entry points (ferric_pinned_engine_load_string, _reset,
+ *   _run, _serialize_as) block the caller until the worker
+ *   completes the operation, then write outputs into caller-
+ *   provided pointers.
+ *
+ * - Async entry points (ferric_pinned_engine_run_async,
+ *   _load_string_async) return immediately on successful
+ *   submission and later invoke the supplied
+ *   FerricPinnedCompletionFn with an owned FerricPinnedResult
+ *   carrying the echoed request_id.
+ *
+ * The async completion callback runs ON THE WORKER THREAD.
+ * It must be transport-only: resume a continuation, signal an
+ * event, post to an actor / event loop. It must NOT call back
+ * into the same FerricPinnedEngine synchronously, perform long
+ * work, or block. The owned FerricPinnedResult outlives the
+ * callback; the caller is responsible for ferric_pinned_result_free.
+ *
+ * Halt: ferric_pinned_engine_halt() flips a shared cancel flag
+ * that the in-flight run() checks between bounded chunks of
+ * rule firings (cooperative cancellation, not hard preemption).
  */
 
 #ifndef FERRIC_H
@@ -105,6 +135,14 @@
 //
 // Stable numeric values — new codes may be added but existing values
 // must never change.
+//
+// Numeric ranges:
+//
+// - `0`           : success
+// - `1..=10`      : raw engine + pre-pinned errors (stable)
+// - `11..=19`     : pinned-execution errors (reserved range)
+// - `20..=98`     : reserved for future growth
+// - `99`          : internal/unexpected error
 typedef enum FerricError {
     // Operation succeeded.
     FERRIC_ERROR_OK = 0,
@@ -128,6 +166,14 @@ typedef enum FerricError {
     FERRIC_ERROR_INVALID_ARGUMENT = 9,
     // Serialization or deserialization error.
     FERRIC_ERROR_SERIALIZATION_ERROR = 10,
+    // Pinned engine handle has been closed.
+    FERRIC_ERROR_PINNED_CLOSED = 11,
+    // Pinned engine request was canceled before completion.
+    FERRIC_ERROR_PINNED_CANCELED = 12,
+    // Pinned engine bounded queue rejected a new request (queue full).
+    FERRIC_ERROR_PINNED_QUEUE_FULL = 13,
+    // Pinned engine worker thread stopped unexpectedly (panicked or vanished).
+    FERRIC_ERROR_PINNED_DISPATCH_FAILED = 14,
     // Internal/unexpected error.
     FERRIC_ERROR_INTERNAL_ERROR = 99,
 } FerricError;
@@ -188,11 +234,29 @@ typedef enum FerricSerializationFormat {
 } FerricSerializationFormat;
 #endif
 
+// Autorelease-pool installation policy used by the pinned worker.
+typedef enum FerricPinnedAutoreleasePolicy {
+    // Never install an Apple autorelease pool.
+    FERRIC_PINNED_AUTORELEASE_POLICY_NONE = 0,
+    // Install one pool per drained request.
+    FERRIC_PINNED_AUTORELEASE_POLICY_PER_ITEM = 1,
+    // Install one pool per drained batch.
+    FERRIC_PINNED_AUTORELEASE_POLICY_PER_BATCH = 2,
+} FerricPinnedAutoreleasePolicy;
+
 // Opaque engine handle exposed to C.
 //
 // Contains the Rust [`Engine`] plus per-engine error state.
 // C code receives `*mut FerricEngine` as an opaque pointer.
 typedef struct FerricEngine FerricEngine;
+
+// Opaque handle to a Rust-owned pinned engine. Cloning is not supported;
+// the FFI handle is the unique owner of its worker thread.
+typedef struct FerricPinnedEngine FerricPinnedEngine;
+
+// Opaque handle to an async-operation result. Caller must free with
+// [`ferric_pinned_result_free`].
+typedef struct FerricPinnedResult FerricPinnedResult;
 
 // C-facing engine configuration used by `ferric_engine_new_with_config`.
 typedef struct FerricConfig {
@@ -247,6 +311,36 @@ typedef struct FerricValue {
 // signal allocation failure.
 typedef uint8_t *(*FerricAllocFn)(uintptr_t size, void *context);
 #endif
+
+// C-facing options struct for [`ferric_pinned_engine_new`].
+//
+// Zero / NULL values are interpreted as "use default" (see the corresponding
+// fields on [`ferric_pinned::PinnedEngineOptions`]).
+typedef struct FerricPinnedEngineOptions {
+    // Inner engine configuration.
+    struct FerricConfig engine;
+    // Raw [`FerricPinnedAutoreleasePolicy`] discriminant.
+    uint32_t autorelease_policy;
+    // Maximum drain-batch size. `0` ⇒ drain everything available.
+    uintptr_t max_batch_size;
+    // Bounded request-queue capacity. `0` ⇒ default.
+    uintptr_t queue_capacity;
+    // Worker thread name (NUL-terminated). NULL ⇒ default.
+    const char *thread_name;
+} FerricPinnedEngineOptions;
+
+// C completion-callback type. The result handle is non-NULL and owned by
+// the caller; the caller can read its echoed request ID with
+// [`ferric_pinned_result_request_id`] and must release it with
+// [`ferric_pinned_result_free`].
+//
+// **Threading contract**: the callback runs on the Rust pinned worker
+// thread. It must be transport-only — resume a continuation, signal an
+// event, post to an actor — and must not call back into the same
+// `FerricPinnedEngine` synchronously or perform long work.
+typedef void (*FerricPinnedCompletionFn)(void *context,
+                                         enum FerricError code,
+                                         struct FerricPinnedResult *result);
 
 // Create a new engine with default configuration.
 //
@@ -1131,6 +1225,206 @@ void ferric_clear_error_global(void);
 // - `buf` must point to `buf_len` writable bytes, or be null for size query.
 // - `out_len` must be a valid pointer (non-null).
 enum FerricError ferric_last_error_global_copy(char *buf FERRIC_SIZED_BY(buf_len), uintptr_t buf_len, uintptr_t *out_len);
+
+// Construct a new pinned engine.
+//
+// Returns a heap-allocated handle on success, or NULL on failure (with the
+// error message in the global error channel).
+//
+// # Safety
+//
+// - `options` must point to a valid [`FerricPinnedEngineOptions`] or be NULL.
+// - The returned handle must be freed with [`ferric_pinned_engine_free`].
+struct FerricPinnedEngine *ferric_pinned_engine_new(const struct FerricPinnedEngineOptions *options);
+
+// Stop accepting requests, drain any already-queued requests, and join the
+// worker. Idempotent.
+//
+// # Safety
+//
+// - `engine` must be a valid handle or NULL.
+enum FerricError ferric_pinned_engine_close(struct FerricPinnedEngine *engine);
+
+// Free a pinned engine handle. Closes it first if needed.
+//
+// # Safety
+//
+// - `engine` must be a pointer returned by [`ferric_pinned_engine_new`], or NULL.
+// - The pointer must not be used after this call.
+enum FerricError ferric_pinned_engine_free(struct FerricPinnedEngine *engine);
+
+// Returns `true` once close has begun.
+//
+// # Safety
+//
+// - `engine` must be a valid handle (NULL ⇒ `false`).
+bool ferric_pinned_engine_is_closed(const struct FerricPinnedEngine *engine);
+
+// Flip the shared cancel flag. The currently-running (or next-dispatched)
+// `run` will exit with `HaltRequested` at the next cancel-chunk boundary.
+//
+// # Safety
+//
+// - `engine` must be a valid handle.
+enum FerricError ferric_pinned_engine_halt(struct FerricPinnedEngine *engine);
+
+// Cancel an accepted async request before the worker starts executing it.
+//
+// Returns [`FerricError::Ok`] if the request is still pending and will
+// complete with [`FerricError::PinnedCanceled`]. Returns
+// [`FerricError::NotFound`] if the request is unknown or has already started.
+//
+// # Safety
+//
+// - `engine` must be a valid handle.
+enum FerricError ferric_pinned_engine_cancel_request(struct FerricPinnedEngine *engine,
+                                                     uint64_t request_id);
+
+// Retrieve the last per-engine error message as a C string.
+//
+// # Safety
+//
+// - `engine` must be a valid handle (NULL ⇒ NULL return).
+const char *ferric_pinned_engine_last_error(const struct FerricPinnedEngine *engine);
+
+// Load a CLIPS source string (synchronous).
+//
+// # Safety
+//
+// - `engine` must be a valid handle.
+// - `source` must be a valid NUL-terminated UTF-8 string.
+enum FerricError ferric_pinned_engine_load_string(struct FerricPinnedEngine *engine,
+                                                  const char *source);
+
+// Reset the engine state (synchronous).
+//
+// # Safety
+//
+// - `engine` must be a valid handle.
+enum FerricError ferric_pinned_engine_reset(struct FerricPinnedEngine *engine);
+
+// Clear the engine state (synchronous).
+//
+// # Safety
+//
+// - `engine` must be a valid handle.
+enum FerricError ferric_pinned_engine_clear(struct FerricPinnedEngine *engine);
+
+// Run the engine until the agenda is empty, the limit is reached, or halt is
+// requested. Synchronous: blocks the caller until the worker completes.
+//
+// - `limit`: `-1` ⇒ unlimited; ≥ 0 ⇒ count limit.
+// - `out_fired`: optional pointer to receive rules-fired count.
+// - `out_reason`: optional pointer to receive halt reason.
+//
+// # Safety
+//
+// - `engine` must be a valid handle.
+// - `out_fired` and `out_reason` may be NULL.
+enum FerricError ferric_pinned_engine_run(struct FerricPinnedEngine *engine,
+                                          int64_t limit,
+                                          uint64_t *out_fired,
+                                          enum FerricHaltReason *out_reason);
+
+#if defined(FERRIC_SERDE)
+// Serialize the engine state to the specified format (synchronous).
+// Mirrors the allocator-callback contract of `ferric_engine_serialize_as`.
+//
+// # Safety
+//
+// - `engine` must be a valid handle.
+// - `out_data` and `out_len` must be valid, non-null pointers.
+// - If `alloc_fn` is non-null, see [`crate::engine::FerricAllocFn`].
+enum FerricError ferric_pinned_engine_serialize_as(struct FerricPinnedEngine *engine,
+                                                   uint32_t format,
+                                                   FerricAllocFn alloc_fn,
+                                                   void *alloc_context,
+                                                   uint8_t **out_data,
+                                                   uintptr_t *out_len);
+#endif
+
+// Submit a `run` asynchronously. Returns immediately on successful
+// submission. `completion` fires on the worker thread when the operation
+// completes (or fails).
+//
+// `request_id` identifies the pending request for
+// [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
+// pending async requests for this engine, and is echoed on the completion
+// result handle.
+//
+// # Safety
+//
+// - `engine` must be a valid handle.
+// - `completion` must be a callable function pointer.
+// - `context` may be any pointer; the caller is responsible for ensuring it
+//   is safe to access from the worker thread.
+enum FerricError ferric_pinned_engine_run_async(struct FerricPinnedEngine *engine,
+                                                int64_t limit,
+                                                uint64_t request_id,
+                                                void *context,
+                                                FerricPinnedCompletionFn completion);
+
+// Submit `load_str` asynchronously.
+//
+// `request_id` identifies the pending request for
+// [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
+// pending async requests for this engine, and is echoed on the completion
+// result handle.
+//
+// # Safety
+//
+// - `engine` must be a valid handle.
+// - `source` must be a valid NUL-terminated UTF-8 string. The string is
+//   copied; the caller may free it immediately after this call returns.
+// - `completion` must be a callable function pointer.
+enum FerricError ferric_pinned_engine_load_string_async(struct FerricPinnedEngine *engine,
+                                                        const char *source,
+                                                        uint64_t request_id,
+                                                        void *context,
+                                                        FerricPinnedCompletionFn completion);
+
+// Read the result's `FerricError` code.
+//
+// # Safety
+//
+// - `result` must be a valid handle returned via a completion callback.
+enum FerricError ferric_pinned_result_code(const struct FerricPinnedResult *result);
+
+// Read the result's echoed async request ID. Returns `0` for NULL.
+//
+// # Safety
+//
+// - `result` must be a valid handle returned via a completion callback.
+uint64_t ferric_pinned_result_request_id(const struct FerricPinnedResult *result);
+
+// Read a Run-typed result (`rules_fired` and halt reason).
+//
+// Returns [`FerricError::InvalidArgument`] if the result does not carry a Run payload.
+//
+// # Safety
+//
+// - `result` must be a valid handle.
+// - `out_fired` and `out_reason` may be NULL.
+enum FerricError ferric_pinned_result_get_run(const struct FerricPinnedResult *result,
+                                              uint64_t *out_fired,
+                                              enum FerricHaltReason *out_reason);
+
+// Read the result's error message as a borrowed C string. Valid until
+// [`ferric_pinned_result_free`] is called on the handle. Returns NULL
+// if the result has no message.
+//
+// # Safety
+//
+// - `result` must be a valid handle.
+const char *ferric_pinned_result_error_message(const struct FerricPinnedResult *result);
+
+// Free a result handle. Idempotent for NULL.
+//
+// # Safety
+//
+// - `result` must be a handle obtained from a completion callback, or NULL.
+// - The handle must not be used after this call.
+void ferric_pinned_result_free(struct FerricPinnedResult *result);
 
 // Create an integer `FerricValue`.
 struct FerricValue ferric_value_integer(int64_t value);

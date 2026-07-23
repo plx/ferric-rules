@@ -7,6 +7,7 @@ members = [
     "crates/ferric-ffi",
     "crates/ferric-napi",
     "crates/ferric-parser",
+    "crates/ferric-pinned",
     "crates/ferric-runtime",
     "crates/ferric-python",
     "examples/users-guide/*",
@@ -72,12 +73,16 @@ tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "registry"] }
 tracing-chrome = "0.7"
 
+# Apple Objective-C runtime (Apple targets only, used by ferric-pinned for autorelease pools)
+objc2 = { version = "0.6" }
+
 # Internal crates
 ferric = { path = "crates/ferric" }
 ferric-core = { path = "crates/ferric-core" }
 ferric-ffi = { path = "crates/ferric-ffi" }
 ferric-cli = { path = "crates/ferric-cli" }
 ferric-parser = { path = "crates/ferric-parser" }
+ferric-pinned = { path = "crates/ferric-pinned" }
 ferric-runtime = { path = "crates/ferric-runtime" }
 
 [workspace.lints.rust]
