@@ -14,6 +14,11 @@ export default defineConfig({
   site: siteConfig.site.host,
   base: siteConfig.site.basePath,
   trailingSlash: "always",
+  // Astro 7 changed the default `compressHTML` from `true` to `'jsx'`, which
+  // collapses inter-element whitespace using JSX rules. That can produce
+  // user-visible spacing changes in the hand-authored landing page, so we pin
+  // the previous behavior to keep the rendered output byte-for-byte identical.
+  compressHTML: true,
   integrations: [
     starlight({
       title: siteConfig.project.title,
