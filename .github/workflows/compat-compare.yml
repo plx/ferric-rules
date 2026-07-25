@@ -52,7 +52,22 @@ jobs:
       - uses: astral-sh/setup-uv@v5
 
       - name: Build CLIPS reference image
-        run: docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+        timeout-minutes: 10
+        run: |
+          for attempt in 1 2 3; do
+            if docker build -t ferric-rules/clips-reference:latest docker/clips-reference/; then
+              exit 0
+            fi
+
+            if [[ "$attempt" -eq 3 ]]; then
+              echo "::error::Docker build failed after ${attempt} attempts"
+              exit 1
+            fi
+
+            retry_delay=$((attempt * 10))
+            echo "::warning::Docker build attempt ${attempt} failed; retrying in ${retry_delay} seconds"
+            sleep "$retry_delay"
+          done
 
       # ── Base branch assessment ─────────────────────────────────────────
       - name: Assess base branch
