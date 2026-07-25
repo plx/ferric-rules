@@ -4,7 +4,7 @@ package ffi
 
 /*
 #cgo LDFLAGS: -L${SRCDIR}/lib -lferric_ffi -lm -ldl -lpthread
-#cgo darwin LDFLAGS: -framework Security -framework CoreFoundation
+#cgo darwin LDFLAGS: -framework Security -framework CoreFoundation -lobjc
 #include "lib/ferric.h"
 #include <stdlib.h>
 */
