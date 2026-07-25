@@ -1280,12 +1280,43 @@ enum FerricError ferric_pinned_engine_halt(struct FerricPinnedEngine *engine);
 enum FerricError ferric_pinned_engine_cancel_request(struct FerricPinnedEngine *engine,
                                                      uint64_t request_id);
 
-// Retrieve the last per-engine error message as a C string.
+// Retrieve the last per-engine error message as a borrowed C string.
+//
+// Another call to this function may invalidate the returned pointer. Callers
+// that can race with other threads should use
+// [`ferric_pinned_engine_last_error_copy`] instead.
 //
 // # Safety
 //
 // - `engine` must be a valid handle (NULL ⇒ NULL return).
 const char *ferric_pinned_engine_last_error(const struct FerricPinnedEngine *engine);
+
+// Copy the last per-engine error message into a caller-provided buffer.
+//
+// Unlike [`ferric_pinned_engine_last_error`], the copied bytes are owned by
+// the caller and cannot be invalidated by another thread reading the same
+// pinned handle.
+//
+// ## Contract
+//
+// | Condition | Return | `*out_len` |
+// |-----------|--------|------------|
+// | `engine` is null | `NullPointer` | 0 |
+// | No error stored | `NotFound` | 0 |
+// | `out_len` is null | `InvalidArgument` | (not written) |
+// | `buf` is null AND `buf_len` is 0 (size query) | `Ok` | required size (incl. NUL) |
+// | `buf` non-null, `buf_len` >= needed | `Ok` | bytes written (incl. NUL) |
+// | `buf` non-null, `buf_len` < needed | `BufferTooSmall` | full needed size (incl. NUL) |
+//
+// # Safety
+//
+// - `engine` must be a valid pinned engine pointer or null.
+// - `buf` must point to `buf_len` writable bytes, or be null for a size query.
+// - `out_len` must be a valid, non-null pointer.
+enum FerricError ferric_pinned_engine_last_error_copy(const struct FerricPinnedEngine *engine,
+                                                      char *buf FERRIC_SIZED_BY(buf_len),
+                                                      uintptr_t buf_len,
+                                                      uintptr_t *out_len);
 
 // Load a CLIPS source string (synchronous).
 //

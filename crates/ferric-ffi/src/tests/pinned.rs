@@ -1,7 +1,7 @@
 //! FFI tests for the `ferric_pinned_*` surface — pinned engine lifecycle,
 //! sync ops, and async completion.
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
 use std::sync::{Arc, Barrier, Condvar, Mutex};
@@ -11,11 +11,12 @@ use crate::error::FerricError;
 use crate::pinned::{
     ferric_pinned_engine_cancel_request, ferric_pinned_engine_close, ferric_pinned_engine_free,
     ferric_pinned_engine_halt, ferric_pinned_engine_is_closed, ferric_pinned_engine_last_error,
-    ferric_pinned_engine_load_string, ferric_pinned_engine_load_string_async,
-    ferric_pinned_engine_new, ferric_pinned_engine_reset, ferric_pinned_engine_run,
-    ferric_pinned_engine_run_async, ferric_pinned_result_code, ferric_pinned_result_error_message,
-    ferric_pinned_result_free, ferric_pinned_result_get_run, ferric_pinned_result_request_id,
-    FerricPinnedAutoreleasePolicy, FerricPinnedEngineOptions, FerricPinnedResult,
+    ferric_pinned_engine_last_error_copy, ferric_pinned_engine_load_string,
+    ferric_pinned_engine_load_string_async, ferric_pinned_engine_new, ferric_pinned_engine_reset,
+    ferric_pinned_engine_run, ferric_pinned_engine_run_async, ferric_pinned_result_code,
+    ferric_pinned_result_error_message, ferric_pinned_result_free, ferric_pinned_result_get_run,
+    ferric_pinned_result_request_id, FerricPinnedAutoreleasePolicy, FerricPinnedEngineOptions,
+    FerricPinnedResult,
 };
 use crate::types::{FerricConfig, FerricHaltReason};
 
@@ -132,6 +133,103 @@ fn ops_after_close_return_pinned_closed() {
         // last_error_message should report the closed error.
         let msg_ptr = ferric_pinned_engine_last_error(engine);
         assert!(!msg_ptr.is_null());
+
+        ferric_pinned_engine_free(engine);
+    }
+}
+
+#[test]
+fn last_error_copy_supports_size_query_and_owned_copy() {
+    unsafe {
+        let engine = ferric_pinned_engine_new(&default_options());
+        assert_eq!(ferric_pinned_engine_close(engine), FerricError::Ok);
+
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_pinned_engine_run(engine, -1, &mut fired, &mut reason),
+            FerricError::PinnedClosed
+        );
+
+        let mut needed = 0;
+        assert_eq!(
+            ferric_pinned_engine_last_error_copy(engine, ptr::null_mut(), 0, &mut needed),
+            FerricError::Ok
+        );
+        assert!(needed > 1);
+
+        let mut buffer = vec![0_u8; needed];
+        let mut written = 0;
+        assert_eq!(
+            ferric_pinned_engine_last_error_copy(
+                engine,
+                buffer.as_mut_ptr().cast::<c_char>(),
+                buffer.len(),
+                &mut written,
+            ),
+            FerricError::Ok
+        );
+        assert_eq!(written, needed);
+        assert_eq!(
+            CStr::from_ptr(buffer.as_ptr().cast::<c_char>())
+                .to_str()
+                .unwrap(),
+            "pinned engine handle is closed"
+        );
+
+        ferric_pinned_engine_free(engine);
+    }
+}
+
+#[test]
+fn last_error_copy_is_safe_under_concurrent_reads() {
+    unsafe {
+        let engine = ferric_pinned_engine_new(&default_options());
+        assert_eq!(ferric_pinned_engine_close(engine), FerricError::Ok);
+
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_pinned_engine_run(engine, -1, &mut fired, &mut reason),
+            FerricError::PinnedClosed
+        );
+
+        let engine_addr = engine as usize;
+        let thread_count = 12_usize;
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let handles: Vec<_> = (0..thread_count)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let engine = engine_addr as *const crate::pinned::FerricPinnedEngine;
+                    barrier.wait();
+                    for _ in 0..100 {
+                        let mut buffer = [0_u8; 64];
+                        let mut written = 0;
+                        assert_eq!(
+                            ferric_pinned_engine_last_error_copy(
+                                engine,
+                                buffer.as_mut_ptr().cast::<c_char>(),
+                                buffer.len(),
+                                &mut written,
+                            ),
+                            FerricError::Ok
+                        );
+                        assert_eq!(
+                            CStr::from_ptr(buffer.as_ptr().cast::<c_char>())
+                                .to_str()
+                                .unwrap(),
+                            "pinned engine handle is closed"
+                        );
+                        assert_eq!(written, "pinned engine handle is closed".len() + 1);
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
 
         ferric_pinned_engine_free(engine);
     }

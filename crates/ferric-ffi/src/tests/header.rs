@@ -310,6 +310,10 @@ fn header_contains_error_functions() {
         "Missing ferric_engine_last_error_copy"
     );
     assert!(
+        header.contains("ferric_pinned_engine_last_error_copy"),
+        "Missing ferric_pinned_engine_last_error_copy"
+    );
+    assert!(
         header.contains("ferric_engine_clear_error"),
         "Missing ferric_engine_clear_error"
     );
@@ -390,6 +394,12 @@ fn header_has_counted_by_and_sized_by_annotations() {
     assert!(
         header.contains("*buf FERRIC_SIZED_BY(buf_len),\n                                               uintptr_t buf_len,\n                                               uintptr_t *out_len);"),
         "Missing FERRIC_SIZED_BY on ferric_engine_last_error_copy buf parameter"
+    );
+
+    // ferric_pinned_engine_last_error_copy: buf sized_by buf_len
+    assert!(
+        header.contains("ferric_pinned_engine_last_error_copy(const struct FerricPinnedEngine *engine,\n                                                      char *buf FERRIC_SIZED_BY(buf_len),"),
+        "Missing FERRIC_SIZED_BY on ferric_pinned_engine_last_error_copy buf parameter"
     );
 
     // ferric_engine_action_diagnostic_copy: buf sized_by buf_len

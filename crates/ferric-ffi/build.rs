@@ -259,6 +259,12 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
         "ferric_engine_last_error_copy(const struct FerricEngine *engine,\n                                               char *buf,",
         "ferric_engine_last_error_copy(const struct FerricEngine *engine,\n                                               char *buf FERRIC_SIZED_BY(buf_len),",
     ),
+    // ferric_pinned_engine_last_error_copy: buf is a byte buffer of buf_len bytes.
+    // (multi-line signature — pattern spans the line break)
+    (
+        "ferric_pinned_engine_last_error_copy(const struct FerricPinnedEngine *engine,\n                                                      char *buf,",
+        "ferric_pinned_engine_last_error_copy(const struct FerricPinnedEngine *engine,\n                                                      char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
     // ferric_engine_action_diagnostic_copy: buf is a byte buffer of buf_len bytes.
     // (multi-line signature — pattern spans the line break)
     (
