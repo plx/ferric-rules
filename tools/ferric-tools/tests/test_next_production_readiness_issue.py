@@ -888,22 +888,104 @@ def _get_selection(client) -> selector.Selection:
     )
 
 
+def test_get_selection_returns_stable_selected_issue_after_two_snapshots():
+    client = _SnapshotClient(
+        [
+            ("main", [_raw_issue(10)]),
+            ("main", [_raw_issue(10)]),
+        ],
+        guard_results=[True, True],
+    )
+
+    result = _get_selection(client)
+
+    assert result.issue == _issue(10)
+    assert client.fetch_count == 2
+    assert client.membership_fetch_count == 2
+    assert client.pull_request_fetch_count == 2
+    assert client.guarded_numbers == [10, 10]
+
+
+def test_get_selection_stabilizes_after_one_stale_guard():
+    client = _SnapshotClient(
+        [
+            ("main", [_raw_issue(10)]),
+            ("main", [_raw_issue(10)]),
+            ("main", [_raw_issue(10)]),
+            ("main", [_raw_issue(10)]),
+        ],
+        guard_results=[True, False, True, True],
+    )
+
+    result = _get_selection(client)
+
+    assert result.issue == _issue(10)
+    assert client.fetch_count == 4
+    assert client.membership_fetch_count == 4
+    assert client.pull_request_fetch_count == 4
+    assert client.guarded_numbers == [10, 10, 10, 10]
+
+
+def test_get_selection_rejects_oscillating_selected_issues():
+    client = _SnapshotClient(
+        [
+            ("main", [_raw_issue(10)]),
+            ("main", [_raw_issue(20)]),
+            ("main", [_raw_issue(10)]),
+            ("main", [_raw_issue(20)]),
+        ],
+        guard_results=[True, True, True, True],
+    )
+
+    with pytest.raises(WorkflowError, match="did not stabilize"):
+        _get_selection(client)
+
+    assert client.fetch_count == 4
+    assert client.membership_fetch_count == 4
+    assert client.pull_request_fetch_count == 4
+    assert client.guarded_numbers == [10, 20, 10, 20]
+
+
+def test_get_selection_uses_node_identity_for_consecutive_selection():
+    original = _raw_issue(10)
+    replacement = {**_raw_issue(10), "id": "I_replacement_10"}
+    client = _SnapshotClient(
+        [
+            ("main", [original]),
+            ("main", [replacement]),
+            ("main", [replacement]),
+        ],
+        guard_results=[True, True, True],
+    )
+
+    result = _get_selection(client)
+
+    assert result.issue is not None
+    assert result.issue.number == 10
+    assert result.issue.node_id == "I_replacement_10"
+    assert client.fetch_count == 3
+    assert client.membership_fetch_count == 3
+    assert client.pull_request_fetch_count == 3
+    assert client.guarded_numbers == [10, 10, 10]
+
+
 def test_get_selection_retries_once_when_first_selected_issue_is_stale():
     client = _SnapshotClient(
         [
             ("main", [_raw_issue(10)]),
             ("main", [_raw_issue(20)]),
+            ("main", [_raw_issue(20)]),
         ],
-        guard_results=[False, True],
+        guard_results=[False, True, True],
     )
 
     result = _get_selection(client)
 
     assert result.issue == _issue(20)
-    assert client.fetch_count == 2
-    assert client.membership_fetch_count == 2
-    assert client.pull_request_fetch_count == 2
-    assert client.guarded_numbers == [10, 20]
+    assert client.fetch_count == 3
+    assert client.membership_fetch_count == 3
+    assert client.pull_request_fetch_count == 3
+    assert client.guarded_numbers == [10, 20, 20]
 
 
 def test_get_selection_errors_when_both_selected_snapshots_are_stale():
@@ -959,7 +1041,7 @@ def test_get_selection_confirms_complete_after_selected_issue_goes_stale():
     assert client.guarded_numbers == [10]
 
 
-def test_get_selection_supports_longest_stabilization_sequence():
+def test_get_selection_supports_complete_stale_complete_sequence():
     client = _SnapshotClient(
         [
             ("main", [_raw_issue(10, state="CLOSED")]),
@@ -977,6 +1059,52 @@ def test_get_selection_supports_longest_stabilization_sequence():
     assert client.membership_fetch_count == 4
     assert client.pull_request_fetch_count == 4
     assert client.guarded_numbers == [10]
+
+
+def test_get_selection_does_not_return_dependent_if_blocker_reopens():
+    closed_blocker = {
+        "id": "I_issue_10",
+        "number": 10,
+        "title": "Issue 10",
+        "url": f"https://github.com/{REPO}/issues/10",
+        "state": "CLOSED",
+        "repository": {"nameWithOwner": REPO},
+    }
+    open_blocker = {**closed_blocker, "state": "OPEN"}
+    client = _SnapshotClient(
+        [
+            (
+                "main",
+                [
+                    _raw_issue(10, state="CLOSED"),
+                    _raw_issue(20, blockers=[closed_blocker]),
+                ],
+            ),
+            (
+                "main",
+                [
+                    _raw_issue(10),
+                    _raw_issue(20, blockers=[open_blocker]),
+                ],
+            ),
+            (
+                "main",
+                [
+                    _raw_issue(10),
+                    _raw_issue(20, blockers=[open_blocker]),
+                ],
+            ),
+        ],
+        guard_results=[True, True, True],
+    )
+
+    result = _get_selection(client)
+
+    assert result.issue == _issue(10)
+    assert client.fetch_count == 3
+    assert client.membership_fetch_count == 3
+    assert client.pull_request_fetch_count == 3
+    assert client.guarded_numbers == [20, 10, 10]
 
 
 def test_cli_selected_output_is_exactly_one_issue_url(monkeypatch):

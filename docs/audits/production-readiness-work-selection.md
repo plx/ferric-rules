@@ -203,15 +203,17 @@ closing PR. The intended initial workflow is one coordinating session. Before
 parallel workers are introduced, add serialized claim coordination rather than
 assuming labels or assignees are compare-and-swap locks.
 
-Before printing a selected URL, the command performs a targeted fresh query to
-confirm that the issue is still open, has unchanged workflow taxonomy, and has
-not acquired a default-branch closing PR. If that check detects a state race,
-the command retries that selected snapshot once; repeated selected-issue
-changes fail with a nonzero exit. A complete result independently requires two
-consecutive complete snapshots. These checks narrow, but cannot eliminate, the
-interval between the last GitHub query and the caller acting on its output. If
-the returned issue is already closed or covered when work begins, rerun the
-selector.
+Before printing a selected URL, the command requires the same issue to win two
+consecutive full selections. This re-evaluates its native blockers and the
+complete transitive chain of covered leaf prerequisites. Each selection also
+performs a targeted fresh query to confirm that the issue is still open, has
+unchanged workflow taxonomy, and has not acquired a default-branch closing PR.
+If a targeted check detects a state race, the command retries once; repeated
+selected-issue changes fail with a nonzero exit. A complete result independently
+requires two consecutive complete snapshots. These checks narrow, but cannot
+eliminate, the interval between the last GitHub query and the caller acting on
+its output. If the returned issue is already closed or covered when work begins,
+rerun the selector.
 
 GitHub may take a few seconds to index a newly added closing reference. If the
 same issue is returned immediately after opening its PR, verify

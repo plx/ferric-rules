@@ -943,11 +943,12 @@ def get_selection(
 ) -> Selection:
     """Fetch live GitHub state and produce a selection."""
     resolved_repository = client.resolve_repository(repository)
-    previous_snapshot_was_complete = False
+    previous_candidate: tuple[SelectionStatus, str | None] | None = None
     stale_selection_retries = 0
 
-    # Four snapshots cover the longest permitted stabilization sequence:
-    # COMPLETE -> selected-but-stale -> COMPLETE -> COMPLETE.
+    # A selected issue must survive two consecutive full dependency snapshots
+    # and both targeted freshness guards. Four snapshots cover the longest
+    # permitted stabilization sequence when one guard detects a stale issue.
     for _snapshot_number in range(4):
         default_branch, raw_issues = client.fetch_work_universe(resolved_repository, universe_label)
         raw_work_members = (
@@ -982,15 +983,15 @@ def get_selection(
         )
 
         if selection.status is SelectionStatus.COMPLETE:
-            if previous_snapshot_was_complete:
+            candidate = (SelectionStatus.COMPLETE, None)
+            if previous_candidate == candidate:
                 return selection
-            previous_snapshot_was_complete = True
+            previous_candidate = candidate
             continue
-        previous_snapshot_was_complete = False
 
         if selection.issue is None:
             return selection
-        if client.selection_is_current(
+        selection_is_current = client.selection_is_current(
             repository=resolved_repository,
             default_branch=default_branch,
             universe_label=universe_label,
@@ -998,8 +999,15 @@ def get_selection(
             leaf_label=leaf_label,
             gate_label=gate_label,
             issue=selection.issue,
-        ):
-            return selection
+        )
+        if selection_is_current:
+            candidate = (SelectionStatus.SELECTED, selection.issue.node_id)
+            if previous_candidate == candidate:
+                return selection
+            previous_candidate = candidate
+            continue
+
+        previous_candidate = None
         stale_selection_retries += 1
         if stale_selection_retries > 1:
             raise WorkflowError("GitHub issue state changed repeatedly during selection; rerun")
