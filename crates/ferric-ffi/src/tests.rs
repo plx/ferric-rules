@@ -47,3 +47,6 @@ mod ffi_expansion;
 
 #[cfg(test)]
 mod template_assertion;
+
+#[cfg(test)]
+mod pinned;

@@ -2056,7 +2056,7 @@ pub enum FerricSerializationFormat {
 impl FerricSerializationFormat {
     /// Try to convert a raw C integer to a valid format variant.
     /// Returns `None` for out-of-range discriminants.
-    fn from_raw(raw: u32) -> Option<Self> {
+    pub(crate) fn from_raw(raw: u32) -> Option<Self> {
         match raw {
             0 => Some(Self::Bincode),
             1 => Some(Self::Json),
@@ -2067,7 +2067,7 @@ impl FerricSerializationFormat {
         }
     }
 
-    fn to_runtime(self) -> ferric_runtime::SerializationFormat {
+    pub(crate) fn to_runtime(self) -> ferric_runtime::SerializationFormat {
         match self {
             Self::Bincode => ferric_runtime::SerializationFormat::Bincode,
             Self::Json => ferric_runtime::SerializationFormat::Json,

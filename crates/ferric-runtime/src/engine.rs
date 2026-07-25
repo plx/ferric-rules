@@ -832,10 +832,35 @@ impl Engine {
     ///
     /// Returns an error if the engine is called from the wrong thread.
     pub fn run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
+        self.run_inner(limit, true)
+    }
+
+    /// Continue a count-limited run without clearing its halt flag or action
+    /// diagnostics.
+    ///
+    /// This is an internal integration hook for hosts that split one logical
+    /// run into bounded chunks. Call it only after [`Self::run`] or another
+    /// continuation returned [`HaltReason::LimitReached`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine is called from the wrong thread.
+    #[doc(hidden)]
+    pub fn continue_run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
+        self.run_inner(limit, false)
+    }
+
+    fn run_inner(
+        &mut self,
+        limit: RunLimit,
+        clear_execution_state: bool,
+    ) -> Result<RunResult, EngineError> {
         self.check_thread_affinity()?;
         ferric_span!(info_span, "engine_run", limit = ?limit);
-        self.halted = false;
-        self.action_diagnostics.clear();
+        if clear_execution_state {
+            self.halted = false;
+            self.action_diagnostics.clear();
+        }
 
         let max_fires = match limit {
             RunLimit::Unlimited => usize::MAX,

@@ -21,6 +21,13 @@ fn read_committed_header() -> String {
     })
 }
 
+fn read_ci_workflow() -> String {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow_path = crate_dir.join("../../.github/workflows/ci.yml");
+    std::fs::read_to_string(&workflow_path)
+        .unwrap_or_else(|_| panic!("CI workflow not found at {}", workflow_path.display()))
+}
+
 #[test]
 fn header_has_include_guard() {
     let header = read_committed_header();
@@ -65,6 +72,76 @@ fn header_has_ownership_docs() {
 }
 
 #[test]
+fn header_documents_active_only_pinned_halt() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("does not latch onto\n * queued or future runs"),
+        "Pinned halt docs must state that idle calls do not latch"
+    );
+}
+
+#[test]
+fn header_contains_capacity_wait_async_entry_points() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("ferric_pinned_engine_run_async_wait_for_capacity"),
+        "Missing capacity-waiting pinned run entry point"
+    );
+    assert!(
+        header.contains("ferric_pinned_engine_load_string_async_wait_for_capacity"),
+        "Missing capacity-waiting pinned load entry point"
+    );
+    assert!(
+        header.contains("queue_wait_ms"),
+        "Capacity-wait entry points must expose queue_wait_ms"
+    );
+    assert!(
+        header.contains("request was not admitted") && header.contains("not fire."),
+        "Capacity-wait docs must define the no-completion-on-rejection contract"
+    );
+}
+
+#[test]
+fn header_documents_cancel_and_submission_race() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("does not guarantee that a concurrent submission succeeds"),
+        "Cancellation docs must weaken the concurrent-submission promise"
+    );
+    assert!(
+        header.contains("failed submission fires no completion"),
+        "Cancellation docs must retain the no-completion-on-rejection contract"
+    );
+}
+
+#[test]
+fn header_documents_completion_callback_unwind_contract() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("must not unwind across the FFI boundary"),
+        "Completion callback docs must forbid unwinding into Rust"
+    );
+}
+
+#[test]
+fn ci_checks_both_committed_headers_after_generation() {
+    let workflow = read_ci_workflow();
+    let build_position = workflow
+        .find("- run: just build-go-ffi")
+        .expect("CI must build the Go FFI before checking headers");
+    let check_position = workflow
+        .find(
+            "git diff --exit-code -- crates/ferric-ffi/ferric.h \
+             bindings/go/internal/ffi/lib/ferric.h",
+        )
+        .expect("CI must reject drift in both committed FFI headers");
+    assert!(
+        build_position < check_position,
+        "CI must generate headers before checking them for drift"
+    );
+}
+
+#[test]
 fn header_contains_ferric_error_enum() {
     let header = read_committed_header();
     assert!(header.contains("FerricError"), "Missing FerricError type");
@@ -92,6 +169,10 @@ fn header_contains_ferric_error_enum() {
     assert!(
         header.contains("FERRIC_ERROR_BUFFER_TOO_SMALL"),
         "Missing FERRIC_ERROR_BUFFER_TOO_SMALL variant"
+    );
+    assert!(
+        header.contains("FERRIC_ERROR_PINNED_REENTRANT_CALL"),
+        "Missing FERRIC_ERROR_PINNED_REENTRANT_CALL variant"
     );
 }
 
@@ -310,6 +391,10 @@ fn header_contains_error_functions() {
         "Missing ferric_engine_last_error_copy"
     );
     assert!(
+        header.contains("ferric_pinned_engine_last_error_copy"),
+        "Missing ferric_pinned_engine_last_error_copy"
+    );
+    assert!(
         header.contains("ferric_engine_clear_error"),
         "Missing ferric_engine_clear_error"
     );
@@ -390,6 +475,12 @@ fn header_has_counted_by_and_sized_by_annotations() {
     assert!(
         header.contains("*buf FERRIC_SIZED_BY(buf_len),\n                                               uintptr_t buf_len,\n                                               uintptr_t *out_len);"),
         "Missing FERRIC_SIZED_BY on ferric_engine_last_error_copy buf parameter"
+    );
+
+    // ferric_pinned_engine_last_error_copy: buf sized_by buf_len
+    assert!(
+        header.contains("ferric_pinned_engine_last_error_copy(const struct FerricPinnedEngine *engine,\n                                                      char *buf FERRIC_SIZED_BY(buf_len),"),
+        "Missing FERRIC_SIZED_BY on ferric_pinned_engine_last_error_copy buf parameter"
     );
 
     // ferric_engine_action_diagnostic_copy: buf sized_by buf_len

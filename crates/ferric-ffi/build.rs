@@ -59,6 +59,46 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *    FERRIC_NULL_TERMINATED annotations when compiled with
  *    Clang -fbounds-safety. Define FERRIC_NO_BOUNDS_ANNOTATIONS
  *    before including this header to suppress.
+ *
+ * ============================================================
+ * PINNED EXECUTION (ferric_pinned_*)
+ * ============================================================
+ *
+ * FerricPinnedEngine owns a dedicated Rust worker thread plus
+ * one engine. The handle is safe to use from any thread; calls
+ * are serialized through a bounded FIFO queue on the worker.
+ *
+ * - Sync entry points (ferric_pinned_engine_load_string, _reset,
+ *   _run, _serialize_as) block the caller until the worker
+ *   completes the operation, then write outputs into caller-
+ *   provided pointers.
+ *
+ * - Async entry points (ferric_pinned_engine_run_async,
+ *   _load_string_async) return immediately on successful
+ *   submission and later invoke the supplied
+ *   FerricPinnedCompletionFn with an owned FerricPinnedResult
+ *   carrying the echoed request_id.
+ *
+ * The async completion callback runs ON THE WORKER THREAD.
+ * It must be transport-only: resume a continuation, signal an
+ * event, post to an actor / event loop. It must NOT call back
+ * into the same FerricPinnedEngine synchronously, perform long
+ * work, or block, and must not unwind across the FFI boundary.
+ * The owned FerricPinnedResult outlives the callback; the caller
+ * is responsible for ferric_pinned_result_free.
+ *
+ * Halt: ferric_pinned_engine_halt() requests cancellation of
+ * the active run, which checks between bounded chunks of rule
+ * firings (cooperative cancellation, not hard preemption). If
+ * no run is active, halt has no effect and does not latch onto
+ * queued or future runs.
+ *
+ * ferric_pinned_engine_cancel_request() targets one async
+ * request by ID. Capacity waiters wake without being admitted,
+ * admitted pending requests are canceled before dispatch, and
+ * an active run is interrupted cooperatively at a chunk boundary.
+ * A successful cancel does not guarantee that a concurrent
+ * submission succeeds; any failed submission fires no completion.
  */";
 
 /// Bounds-safety annotation macros injected after the standard includes.
@@ -228,6 +268,12 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
     (
         "ferric_engine_last_error_copy(const struct FerricEngine *engine,\n                                               char *buf,",
         "ferric_engine_last_error_copy(const struct FerricEngine *engine,\n                                               char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+    // ferric_pinned_engine_last_error_copy: buf is a byte buffer of buf_len bytes.
+    // (multi-line signature — pattern spans the line break)
+    (
+        "ferric_pinned_engine_last_error_copy(const struct FerricPinnedEngine *engine,\n                                                      char *buf,",
+        "ferric_pinned_engine_last_error_copy(const struct FerricPinnedEngine *engine,\n                                                      char *buf FERRIC_SIZED_BY(buf_len),",
     ),
     // ferric_engine_action_diagnostic_copy: buf is a byte buffer of buf_len bytes.
     // (multi-line signature — pattern spans the line break)

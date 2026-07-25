@@ -11,12 +11,13 @@ repository.workspace = true
 crate-type = ["cdylib", "staticlib"]
 
 [features]
-serde = ["ferric-runtime/serde"]
-tracing = ["dep:tracing", "ferric-runtime/tracing"]
+serde = ["ferric-runtime/serde", "ferric-pinned/serde"]
+tracing = ["dep:tracing", "ferric-runtime/tracing", "ferric-pinned/tracing"]
 
 [dependencies]
 ferric-core = { workspace = true }
 ferric-parser = { workspace = true }
+ferric-pinned = { workspace = true }
 ferric-runtime = { workspace = true }
 slotmap = { workspace = true }
 tracing = { workspace = true, optional = true }
