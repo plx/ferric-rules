@@ -7,6 +7,7 @@
 //!
 //! [`Engine`]: ferric_runtime::Engine
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 
@@ -74,24 +75,31 @@ fn run_batch(
     let remaining_after_first = batch_limit.saturating_sub(1);
     match policy {
         P::None => {
-            first(engine);
+            dispatch_request(engine, first);
             drain_more(rx, engine, remaining_after_first);
         }
         P::PerItem => {
-            autorelease::wrap(|| first(engine));
+            autorelease::wrap(|| dispatch_request(engine, first));
             drain_more_per_item(rx, engine, remaining_after_first);
         }
         P::PerBatch => autorelease::wrap(|| {
-            first(engine);
+            dispatch_request(engine, first);
             drain_more(rx, engine, remaining_after_first);
         }),
     }
 }
 
+fn dispatch_request(engine: &mut Engine, request: Request) {
+    // One misbehaving request must not terminate the worker and drop every
+    // queued completion. Sync requests observe their dropped response sender
+    // as DispatchFailed; later requests remain available for dispatch.
+    drop(catch_unwind(AssertUnwindSafe(|| request(engine))));
+}
+
 fn drain_more(rx: &Receiver<Request>, engine: &mut Engine, max: usize) {
     for _ in 0..max {
         match rx.try_recv() {
-            Ok(req) => req(engine),
+            Ok(req) => dispatch_request(engine, req),
             Err(_) => return,
         }
     }
@@ -100,7 +108,7 @@ fn drain_more(rx: &Receiver<Request>, engine: &mut Engine, max: usize) {
 fn drain_more_per_item(rx: &Receiver<Request>, engine: &mut Engine, max: usize) {
     for _ in 0..max {
         match rx.try_recv() {
-            Ok(req) => autorelease::wrap(|| req(engine)),
+            Ok(req) => autorelease::wrap(|| dispatch_request(engine, req)),
             Err(_) => return,
         }
     }
