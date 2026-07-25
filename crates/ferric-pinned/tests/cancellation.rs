@@ -14,6 +14,30 @@ const CYCLING_RULES: &str = r"
 ";
 
 #[test]
+fn rule_halt_on_chunk_boundary_stops_without_extra_firing() {
+    let engine = PinnedEngine::new(PinnedEngineOptions::default()).unwrap();
+    engine
+        .load_str(
+            r"
+            (defrule count-to-boundary
+                ?f <- (counter ?n&:(< ?n 65))
+                =>
+                (retract ?f)
+                (assert (counter (+ ?n 1)))
+                (if (= ?n 63) then (halt)))
+            (deffacts initial (counter 0))
+            ",
+        )
+        .unwrap();
+    engine.reset().unwrap();
+
+    let result = engine.run(RunLimit::Unlimited).unwrap();
+
+    assert_eq!(result.rules_fired, 64);
+    assert_eq!(result.halt_reason, HaltReason::HaltRequested);
+}
+
+#[test]
 fn halt_cancels_unlimited_run() {
     let engine = Arc::new(PinnedEngine::new(PinnedEngineOptions::default()).unwrap());
     engine.load_str(CYCLING_RULES).unwrap();

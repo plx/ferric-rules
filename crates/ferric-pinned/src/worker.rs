@@ -148,6 +148,16 @@ pub(crate) fn run_with_cancel(
         let r = engine.run(RunLimit::Count(step))?;
         total = total.saturating_add(r.rules_fired);
         remaining = remaining.saturating_sub(r.rules_fired);
+        // Engine::run reports LimitReached when the limit-th firing requests
+        // a halt because the loop reaches its count bound before re-checking
+        // the flag. Preserve that rule-side halt before another chunk can
+        // clear it on entry.
+        if engine.is_halted() {
+            return Ok(RunResult {
+                rules_fired: total,
+                halt_reason: HaltReason::HaltRequested,
+            });
+        }
         if matches!(
             r.halt_reason,
             HaltReason::AgendaEmpty | HaltReason::HaltRequested
