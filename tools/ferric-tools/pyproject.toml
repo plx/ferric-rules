@@ -26,6 +26,7 @@ ferric-segment-check = "ferric_tools.bat.segment:app"
 ferric-perf-collect = "ferric_tools.perf.collect:app"
 ferric-perf-report = "ferric_tools.perf.report:app"
 ferric-perf-diff = "ferric_tools.perf.diff:app"
+ferric-next-production-readiness-issue = "ferric_tools.issues.next_production_readiness:app"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.9"]
