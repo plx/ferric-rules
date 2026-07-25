@@ -21,6 +21,13 @@ fn read_committed_header() -> String {
     })
 }
 
+fn read_ci_workflow() -> String {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow_path = crate_dir.join("../../.github/workflows/ci.yml");
+    std::fs::read_to_string(&workflow_path)
+        .unwrap_or_else(|_| panic!("CI workflow not found at {}", workflow_path.display()))
+}
+
 #[test]
 fn header_has_include_guard() {
     let header = read_committed_header();
@@ -104,6 +111,24 @@ fn header_documents_cancel_and_submission_race() {
     assert!(
         header.contains("failed submission fires no completion"),
         "Cancellation docs must retain the no-completion-on-rejection contract"
+    );
+}
+
+#[test]
+fn ci_checks_both_committed_headers_after_generation() {
+    let workflow = read_ci_workflow();
+    let build_position = workflow
+        .find("- run: just build-go-ffi")
+        .expect("CI must build the Go FFI before checking headers");
+    let check_position = workflow
+        .find(
+            "git diff --exit-code -- crates/ferric-ffi/ferric.h \
+             bindings/go/internal/ffi/lib/ferric.h",
+        )
+        .expect("CI must reject drift in both committed FFI headers");
+    assert!(
+        build_position < check_position,
+        "CI must generate headers before checking them for drift"
     );
 }
 

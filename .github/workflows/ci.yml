@@ -67,6 +67,8 @@ jobs:
         with:
           go-version-file: bindings/go/go.mod
       - run: just build-go-ffi
+      - name: Verify committed FFI headers
+        run: git diff --exit-code -- crates/ferric-ffi/ferric.h bindings/go/internal/ffi/lib/ferric.h
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.8.0
