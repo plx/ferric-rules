@@ -364,8 +364,9 @@ Queue behavior:
 - FIFO within one pinned engine.
 - One request executes at a time.
 - Batched draining affects autorelease-pool lifetime only, not observable order.
-- Accepted requests complete with their real result unless cancellation succeeds
-  before execution starts.
+- Accepted requests complete with their real result unless canceled before
+  execution starts. An in-flight run can also be interrupted cooperatively by
+  its request ID.
 
 Shutdown behavior:
 
@@ -380,8 +381,8 @@ Shutdown behavior:
 Cancellation:
 
 - Support pre-dispatch cancellation.
-- Support cooperative in-flight cancellation for `run`, using a Rust-owned
-  cancellation token checked between rule-firing batches.
+- Support cooperative in-flight cancellation for `run` by request ID, using
+  the same Rust-owned cancellation token checked between rule-firing batches.
 - Do not claim hard preemption.
 
 ## Coordinator Design

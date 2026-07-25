@@ -102,7 +102,7 @@ pub struct FerricPinnedEngine {
     pinned: PinnedEngine,
     error_state: Mutex<EngineErrorState>,
     error_cstring: Mutex<Option<CString>>,
-    async_requests: Arc<Mutex<HashMap<u64, Arc<PreDispatchCancelToken>>>>,
+    async_requests: Arc<Mutex<HashMap<u64, AsyncRequestRegistration>>>,
 }
 
 /// Opaque handle to an async-operation result. Caller must free with
@@ -120,6 +120,18 @@ enum PinnedResultPayload {
         fired: u64,
         reason: FerricHaltReason,
     },
+}
+
+#[derive(Clone, Copy)]
+enum AsyncRequestKind {
+    Run,
+    Load,
+}
+
+#[derive(Clone)]
+struct AsyncRequestRegistration {
+    kind: AsyncRequestKind,
+    token: Arc<PreDispatchCancelToken>,
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +208,7 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 fn register_async_request(
     handle: &FerricPinnedEngine,
     request_id: u64,
+    kind: AsyncRequestKind,
 ) -> Result<Arc<PreDispatchCancelToken>, FerricError> {
     let mut requests = lock_unpoisoned(&handle.async_requests);
     if requests.contains_key(&request_id) {
@@ -205,15 +218,34 @@ fn register_async_request(
         return Err(FerricError::InvalidArgument);
     }
     let token = Arc::new(PreDispatchCancelToken::new());
-    requests.insert(request_id, token.clone());
+    requests.insert(
+        request_id,
+        AsyncRequestRegistration {
+            kind,
+            token: token.clone(),
+        },
+    );
     Ok(token)
 }
 
 fn unregister_async_request(
-    registry: &Arc<Mutex<HashMap<u64, Arc<PreDispatchCancelToken>>>>,
+    registry: &Arc<Mutex<HashMap<u64, AsyncRequestRegistration>>>,
     request_id: u64,
 ) {
     lock_unpoisoned(registry).remove(&request_id);
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn async_request_is_started(
+    engine: *const FerricPinnedEngine,
+    request_id: u64,
+) -> bool {
+    let Ok(handle) = validate_engine_ptr(engine) else {
+        return false;
+    };
+    lock_unpoisoned(&handle.async_requests)
+        .get(&request_id)
+        .is_some_and(|request| request.token.is_started())
 }
 
 fn record_pinned_error(handle: &FerricPinnedEngine, err: &PinnedError) -> FerricError {
@@ -368,11 +400,13 @@ pub unsafe extern "C" fn ferric_pinned_engine_halt(engine: *mut FerricPinnedEngi
     FerricError::Ok
 }
 
-/// Cancel an accepted async request before the worker starts executing it.
+/// Cancel an accepted async request by ID.
 ///
-/// Returns [`FerricError::Ok`] if the request is still pending and will
-/// complete with [`FerricError::PinnedCanceled`]. Returns
-/// [`FerricError::NotFound`] if the request is unknown or has already started.
+/// A pending request completes with [`FerricError::PinnedCanceled`]. An
+/// in-flight run completes normally with
+/// [`FerricHaltReason::HaltRequested`]. Returns [`FerricError::NotFound`] if
+/// the request is unknown, finished, or is a non-run operation that has
+/// already started.
 ///
 /// # Safety
 ///
@@ -385,21 +419,25 @@ pub unsafe extern "C" fn ferric_pinned_engine_cancel_request(
     let Ok(handle) = validate_engine_ptr(engine) else {
         return FerricError::NullPointer;
     };
-    let token = {
+    let registration = {
         let requests = lock_unpoisoned(&handle.async_requests);
         requests.get(&request_id).cloned()
     };
-    let Some(token) = token else {
+    let Some(registration) = registration else {
         set_global_error(format!(
             "pinned async request_id {request_id} is not pending"
         ));
         return FerricError::NotFound;
     };
-    if token.cancel_before_start() {
+    let canceled = match registration.kind {
+        AsyncRequestKind::Run => registration.token.cancel_run(),
+        AsyncRequestKind::Load => registration.token.cancel_before_start(),
+    };
+    if canceled {
         FerricError::Ok
     } else {
         set_global_error(format!(
-            "pinned async request_id {request_id} has already started"
+            "pinned async request_id {request_id} is no longer cancellable"
         ));
         FerricError::NotFound
     }
@@ -638,7 +676,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_serialize_as(
 /// `request_id` identifies the pending request for
 /// [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
 /// pending async requests for this engine, and is echoed on the completion
-/// result handle.
+/// result handle. Cancellation by ID remains available after the run starts.
 ///
 /// # Safety
 ///
@@ -661,7 +699,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_run_async(
         set_global_error("completion callback is null".to_string());
         return FerricError::InvalidArgument;
     };
-    let pre_dispatch = match register_async_request(handle, request_id) {
+    let pre_dispatch = match register_async_request(handle, request_id, AsyncRequestKind::Run) {
         Ok(token) => token,
         Err(code) => return code,
     };
@@ -719,7 +757,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_load_string_async(
         set_global_error("completion callback is null".to_string());
         return FerricError::InvalidArgument;
     };
-    let pre_dispatch = match register_async_request(handle, request_id) {
+    let pre_dispatch = match register_async_request(handle, request_id, AsyncRequestKind::Load) {
         Ok(token) => token,
         Err(code) => return code,
     };

@@ -91,6 +91,10 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * firings (cooperative cancellation, not hard preemption). If
  * no run is active, halt has no effect and does not latch onto
  * queued or future runs.
+ *
+ * ferric_pinned_engine_cancel_request() targets one async
+ * request by ID. Pending requests are canceled before dispatch;
+ * an active run is interrupted cooperatively at a chunk boundary.
  */";
 
 /// Bounds-safety annotation macros injected after the standard includes.

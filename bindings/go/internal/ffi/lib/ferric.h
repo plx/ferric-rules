@@ -88,6 +88,10 @@
  * firings (cooperative cancellation, not hard preemption). If
  * no run is active, halt has no effect and does not latch onto
  * queued or future runs.
+ *
+ * ferric_pinned_engine_cancel_request() targets one async
+ * request by ID. Pending requests are canceled before dispatch;
+ * an active run is interrupted cooperatively at a chunk boundary.
  */
 
 #ifndef FERRIC_H
@@ -1274,11 +1278,13 @@ bool ferric_pinned_engine_is_closed(const struct FerricPinnedEngine *engine);
 // - `engine` must be a valid handle.
 enum FerricError ferric_pinned_engine_halt(struct FerricPinnedEngine *engine);
 
-// Cancel an accepted async request before the worker starts executing it.
+// Cancel an accepted async request by ID.
 //
-// Returns [`FerricError::Ok`] if the request is still pending and will
-// complete with [`FerricError::PinnedCanceled`]. Returns
-// [`FerricError::NotFound`] if the request is unknown or has already started.
+// A pending request completes with [`FerricError::PinnedCanceled`]. An
+// in-flight run completes normally with
+// [`FerricHaltReason::HaltRequested`]. Returns [`FerricError::NotFound`] if
+// the request is unknown, finished, or is a non-run operation that has
+// already started.
 //
 // # Safety
 //
@@ -1387,7 +1393,7 @@ enum FerricError ferric_pinned_engine_serialize_as(struct FerricPinnedEngine *en
 // `request_id` identifies the pending request for
 // [`ferric_pinned_engine_cancel_request`]. It must be unique among currently
 // pending async requests for this engine, and is echoed on the completion
-// result handle.
+// result handle. Cancellation by ID remains available after the run starts.
 //
 // # Safety
 //

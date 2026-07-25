@@ -53,11 +53,17 @@ struct ActiveRunGuard<'a> {
 const REQUEST_PENDING: u8 = 0;
 const REQUEST_STARTED: u8 = 1;
 const REQUEST_CANCELED: u8 = 2;
+const REQUEST_FINISHED: u8 = 3;
+const REQUEST_CANCEL_REQUESTED: u8 = 4;
 
-/// Token used to cancel an accepted async request before the worker starts it.
+/// Token used to cancel an accepted async request.
+///
+/// Every request can be canceled before dispatch. Run requests also use the
+/// token's per-run flag for cooperative cancellation after they have started.
 #[derive(Debug)]
 pub struct PreDispatchCancelToken {
     state: AtomicU8,
+    run_cancel: Arc<AtomicBool>,
 }
 
 impl PinnedEngine {
@@ -224,28 +230,35 @@ impl PinnedEngine {
         self.run_async_cancelable(limit, Arc::new(PreDispatchCancelToken::new()), completion)
     }
 
-    /// Async variant of [`Self::run`] with pre-dispatch cancellation support.
+    /// Async variant of [`Self::run`] with pre-dispatch and in-flight
+    /// cooperative cancellation support.
     pub fn run_async_cancelable<F>(
         &self,
         limit: RunLimit,
-        pre_dispatch: Arc<PreDispatchCancelToken>,
+        request_cancel: Arc<PreDispatchCancelToken>,
         completion: F,
     ) -> Result<(), PinnedError>
     where
         F: FnOnce(Result<RunResult, PinnedError>) + Send + 'static,
     {
         let cancel_state = self.inner.cancel.clone();
-        let cancel_token = Arc::new(AtomicBool::new(false));
+        let cancel_token = request_cancel.run_cancel_flag();
         let closed = self.inner.closed.clone();
         self.submit(move |engine| {
-            if let Err(err) = pre_dispatch.begin() {
+            if let Err(err) = request_cancel.begin() {
+                let _ = request_cancel.finish();
                 completion(Err(err));
                 return;
             }
             let guard = cancel_state.activate(cancel_token.clone());
-            let result = crate::worker::run_with_cancel(engine, limit, &cancel_token, &closed)
+            let mut result = crate::worker::run_with_cancel(engine, limit, &cancel_token, &closed)
                 .map_err(PinnedError::from);
             drop(guard);
+            if request_cancel.finish() {
+                if let Ok(run_result) = &mut result {
+                    run_result.halt_reason = ferric_runtime::HaltReason::HaltRequested;
+                }
+            }
             completion(result);
         })
     }
@@ -262,18 +275,20 @@ impl PinnedEngine {
     pub fn load_str_async_cancelable<F>(
         &self,
         source: String,
-        pre_dispatch: Arc<PreDispatchCancelToken>,
+        request_cancel: Arc<PreDispatchCancelToken>,
         completion: F,
     ) -> Result<(), PinnedError>
     where
         F: FnOnce(Result<ferric_runtime::LoadResult, PinnedError>) + Send + 'static,
     {
         self.submit(move |engine| {
-            if let Err(err) = pre_dispatch.begin() {
+            if let Err(err) = request_cancel.begin() {
+                let _ = request_cancel.finish();
                 completion(Err(err));
                 return;
             }
             let result = engine.load_str(&source).map_err(PinnedError::from);
+            let _ = request_cancel.finish();
             completion(result);
         })
     }
@@ -301,9 +316,10 @@ impl Default for PreDispatchCancelToken {
 
 impl PreDispatchCancelToken {
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: AtomicU8::new(REQUEST_PENDING),
+            run_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -335,6 +351,61 @@ impl PreDispatchCancelToken {
         }
     }
 
+    /// Cancel a run before dispatch or request cooperative cancellation after
+    /// it has started.
+    ///
+    /// Returns `false` once the run has finished.
+    pub fn cancel_run(&self) -> bool {
+        loop {
+            match self.state.load(Ordering::Acquire) {
+                REQUEST_PENDING => {
+                    if self
+                        .state
+                        .compare_exchange(
+                            REQUEST_PENDING,
+                            REQUEST_CANCELED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        return true;
+                    }
+                }
+                REQUEST_STARTED => {
+                    if self
+                        .state
+                        .compare_exchange(
+                            REQUEST_STARTED,
+                            REQUEST_CANCEL_REQUESTED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        self.run_cancel.store(true, Ordering::Release);
+                        return true;
+                    }
+                }
+                REQUEST_CANCELED | REQUEST_CANCEL_REQUESTED => return true,
+                _ => return false,
+            }
+        }
+    }
+
+    /// Returns whether the worker has started this request.
+    #[doc(hidden)]
+    pub fn is_started(&self) -> bool {
+        matches!(
+            self.state.load(Ordering::Acquire),
+            REQUEST_STARTED | REQUEST_CANCEL_REQUESTED
+        )
+    }
+
+    fn run_cancel_flag(&self) -> Arc<AtomicBool> {
+        self.run_cancel.clone()
+    }
+
     fn begin(&self) -> Result<(), PinnedError> {
         match self.state.compare_exchange(
             REQUEST_PENDING,
@@ -346,6 +417,12 @@ impl PreDispatchCancelToken {
             Err(REQUEST_CANCELED) => Err(PinnedError::Canceled),
             Err(_) => Err(PinnedError::DispatchFailed),
         }
+    }
+
+    /// Mark the request finished and report whether in-flight cancellation won
+    /// the race with completion.
+    fn finish(&self) -> bool {
+        self.state.swap(REQUEST_FINISHED, Ordering::AcqRel) == REQUEST_CANCEL_REQUESTED
     }
 }
 
