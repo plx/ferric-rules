@@ -326,9 +326,11 @@ typedef uint8_t *(*FerricAllocFn)(uintptr_t size, void *context);
 // C-facing options struct for [`ferric_pinned_engine_new`].
 //
 // Zero / NULL values are interpreted as "use default" (see the corresponding
-// fields on [`ferric_pinned::PinnedEngineOptions`]).
+// fields on [`ferric_pinned::PinnedEngineOptions`]). In particular, an
+// all-zero [`FerricConfig`] selects [`ferric_runtime::EngineConfig::default`].
 typedef struct FerricPinnedEngineOptions {
-    // Inner engine configuration.
+    // Inner engine configuration. All fields zero selects the default UTF-8,
+    // Depth-strategy configuration with a call-depth limit of 64.
     struct FerricConfig engine;
     // Raw [`FerricPinnedAutoreleasePolicy`] discriminant.
     uint32_t autorelease_policy;

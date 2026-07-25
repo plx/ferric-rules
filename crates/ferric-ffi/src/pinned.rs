@@ -77,11 +77,13 @@ impl FerricPinnedAutoreleasePolicy {
 /// C-facing options struct for [`ferric_pinned_engine_new`].
 ///
 /// Zero / NULL values are interpreted as "use default" (see the corresponding
-/// fields on [`ferric_pinned::PinnedEngineOptions`]).
+/// fields on [`ferric_pinned::PinnedEngineOptions`]). In particular, an
+/// all-zero [`FerricConfig`] selects [`ferric_runtime::EngineConfig::default`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FerricPinnedEngineOptions {
-    /// Inner engine configuration.
+    /// Inner engine configuration. All fields zero selects the default UTF-8,
+    /// Depth-strategy configuration with a call-depth limit of 64.
     pub engine: FerricConfig,
     /// Raw [`FerricPinnedAutoreleasePolicy`] discriminant.
     pub autorelease_policy: u32,
@@ -287,10 +289,17 @@ fn record_pinned_error(handle: &FerricPinnedEngine, err: &PinnedError) -> Ferric
 fn build_options_from_ffi(
     options: &FerricPinnedEngineOptions,
 ) -> Result<PinnedEngineOptions, FerricError> {
-    let engine_config = ferric_runtime::EngineConfig::try_from(&options.engine).map_err(|m| {
-        set_global_error(m);
-        FerricError::InvalidArgument
-    })?;
+    let engine_config = if options.engine.string_encoding == 0
+        && options.engine.strategy == 0
+        && options.engine.max_call_depth == 0
+    {
+        ferric_runtime::EngineConfig::default()
+    } else {
+        ferric_runtime::EngineConfig::try_from(&options.engine).map_err(|m| {
+            set_global_error(m);
+            FerricError::InvalidArgument
+        })?
+    };
     let policy_enum = FerricPinnedAutoreleasePolicy::from_raw(options.autorelease_policy)
         .ok_or_else(|| {
             set_global_error(format!(
@@ -1056,4 +1065,51 @@ pub unsafe extern "C" fn ferric_pinned_result_free(result: *mut FerricPinnedResu
         return;
     }
     drop(Box::from_raw(result));
+}
+
+#[cfg(test)]
+mod option_conversion_tests {
+    use super::*;
+
+    fn zero_initialized_options() -> FerricPinnedEngineOptions {
+        FerricPinnedEngineOptions {
+            engine: FerricConfig {
+                string_encoding: 0,
+                strategy: 0,
+                max_call_depth: 0,
+            },
+            autorelease_policy: 0,
+            max_batch_size: 0,
+            queue_capacity: 0,
+            thread_name: ptr::null(),
+        }
+    }
+
+    #[test]
+    fn zero_initialized_pinned_options_use_engine_defaults() {
+        let resolved = build_options_from_ffi(&zero_initialized_options()).unwrap();
+        let expected = ferric_runtime::EngineConfig::default();
+        assert_eq!(
+            resolved.engine_config.string_encoding,
+            expected.string_encoding
+        );
+        assert_eq!(resolved.engine_config.strategy, expected.strategy);
+        assert_eq!(
+            resolved.engine_config.max_call_depth,
+            expected.max_call_depth
+        );
+    }
+
+    #[test]
+    fn explicit_ascii_pinned_options_remain_ascii() {
+        let mut options = zero_initialized_options();
+        options.engine.max_call_depth = 32;
+        let expected = ferric_runtime::EngineConfig::try_from(&options.engine).unwrap();
+        let resolved = build_options_from_ffi(&options).unwrap();
+        assert_eq!(
+            resolved.engine_config.string_encoding,
+            expected.string_encoding
+        );
+        assert_eq!(resolved.engine_config.max_call_depth, 32);
+    }
 }
