@@ -126,6 +126,7 @@ pub(crate) fn run_with_cancel(
     cancel: &AtomicBool,
 ) -> Result<RunResult, EngineError> {
     let mut total = 0usize;
+    let mut first_chunk = true;
     let mut remaining = match limit {
         RunLimit::Unlimited => usize::MAX,
         RunLimit::Count(n) => n,
@@ -145,7 +146,12 @@ pub(crate) fn run_with_cancel(
             });
         }
         let step = remaining.min(CANCEL_CHUNK_SIZE);
-        let r = engine.run(RunLimit::Count(step))?;
+        let r = if first_chunk {
+            first_chunk = false;
+            engine.run(RunLimit::Count(step))?
+        } else {
+            engine.continue_run(RunLimit::Count(step))?
+        };
         total = total.saturating_add(r.rules_fired);
         remaining = remaining.saturating_sub(r.rules_fired);
         // Engine::run reports LimitReached when the limit-th firing requests
