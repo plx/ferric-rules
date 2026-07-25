@@ -402,6 +402,10 @@ clean:
 
 # ── Issue tracking ────────────────────────────────────────────────────────────
 
+# Print the next production-readiness issue URL, completion, or waiting state
+get-next-production-readiness-issue *args:
+    ./scripts/get-next-production-readiness-issue.sh {{args}}
+
 # Find the next unblocked issue matching comma-separated labels (e.g. `just find-next-matching-issue golang-binding,remediation`)
 find-next-matching-issue labels:
     ./scripts/find-next-matching-issue.sh {{labels}}

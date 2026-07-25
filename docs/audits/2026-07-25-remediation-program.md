@@ -16,6 +16,9 @@ The durable source documents are the [2026-07-25 due-diligence report](2026-07-2
 
 GitHub is the **canonical mutable dependency and status state**. This document is the **2026-07-25 bootstrap snapshot**: use it to understand the initial program, taxonomy, and graph, but use live issue state and native dependencies for scheduling and closure decisions after this date.
 
+The operational selector and PR lifecycle are defined in
+[Production-readiness automatic work selection](production-readiness-work-selection.md).
+
 ## Milestone and program control
 
 All 141 issues are open in milestone [#1, Production readiness remediation](https://github.com/plx/ferric-rules/milestone/1). At snapshot time the milestone has 141 open and 0 closed issues.
@@ -109,9 +112,26 @@ Every program issue carries `program:production-readiness`, exactly one `priorit
 | `size/s` | Small task (<= 0.5 day) |
 | `size/xl` | Extra-large task that should be decomposed across several PRs |
 
+### Workflow labels
+
+These three operational labels were added after the 46-label audit taxonomy was
+inventoried. They drive automatic selection without changing the historical
+taxonomy counts above.
+
+| Label | Meaning |
+|---|---|
+| `workflow:production-readiness` | Member of the automatic remediation workflow |
+| `workflow:production-readiness-leaf` | One of 126 independently actionable remediation tickets |
+| `workflow:production-readiness-gate` | One of 15 topic/component, audit, or program gates |
+
 ## Priority and dependency burn rules
 
-1. **Native dependencies outrank numeric priority.** An issue is ready only when every live GitHub `Blocked by` relationship is closed. Pull a lower-priority prerequisite before a nominally higher-priority dependent.
+1. **Native dependencies outrank numeric priority.** For automatic leaf
+   scheduling, a blocker is covered when closed or when an open default-branch
+   PR will close it; this permits intentional sequential or stacked work.
+   Organizing/audit gates remain blocked until every blocker is actually
+   closed. Coverage is not merge or acceptance evidence, and a dependent PR
+   must not merge until its blocker issues are closed.
 2. Among ready leaves, burn `p0` first, then `p1`, `p2`, and `p3`. `p0` represents a release blocker; `p1` is required before a production-readiness claim; `p2` is important hardening/quality/delivery; `p3` is follow-up optimization or polish unless it blocks a higher gate.
 3. Keep dependencies native. Body checklists explain hierarchy, but scheduling and readiness come from GitHub blocked-by state.
 4. Component epics close only after all their native blockers/tracked leaves are closed and their epic-level validation and acceptance criteria pass.
@@ -131,6 +151,12 @@ Every implementation PR must:
 - update user-facing compatibility, limits, ownership, platform, or packaging documentation when behavior changes.
 
 A leaf closes only when its native blockers are closed, regression tests and implementation are merged, validation passes, and every acceptance criterion is satisfied or explicitly moved to a separately linked issue without weakening a blocking gate. An epic closes only when every tracked child and epic-level criterion is complete. A merged PR alone is not sufficient closure evidence.
+
+When acceptance work moves to a follow-up issue, that issue must also receive
+the milestone, program/workflow classification, priority and semantic taxonomy,
+and native prerequisite/gate relationships described in
+[Production-readiness automatic work selection](production-readiness-work-selection.md).
+A body link by itself does not keep deferred work inside the burn-down graph.
 
 ## Epic hierarchy
 
@@ -368,7 +394,9 @@ The bootstrap was validated against live GitHub state on 2026-07-25:
 
 - 141 open issues carry `program:production-readiness`.
 - All 141 stable IDs parsed from titles are unique.
-- All 141 issues belong to milestone #1 and carry only recognized program taxonomy labels; required priority, type, area, component, and risk dimensions are present.
+- All 141 issues belong to milestone #1 and carry recognized program taxonomy
+  and workflow labels; required priority, type, area, component, and risk
+  dimensions are present.
 - The native blocked-by endpoints contain 205 edges, including #224 → #223, #223 → 12 component epics, FR-RETE-029..035 → #225, and #225 → #211.
 - Every inventory row contains the stable ID, GitHub link/number, priority, type, primary component labels, and complete native blocker list.
 
