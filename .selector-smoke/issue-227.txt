@@ -1,0 +1,1 @@
+Temporary unmerged file used only to validate prerequisite closing-reference behavior.
