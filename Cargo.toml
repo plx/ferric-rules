@@ -53,6 +53,9 @@ smallvec = { version = "1", features = ["serde"] }
 # Faster internal hash tables/sets
 rustc-hash = "2"
 
+# Bounded channels with cancel-aware and timeout-aware admission.
+crossbeam-channel = "0.5"
+
 # PyO3 Python bindings
 pyo3 = { version = "0.23", features = ["extension-module"] }
 pyo3-build-config = "0.23"

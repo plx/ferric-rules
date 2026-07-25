@@ -364,6 +364,9 @@ Queue behavior:
 - FIFO within one pinned engine.
 - One request executes at a time.
 - Batched draining affects autorelease-pool lifetime only, not observable order.
+- Existing async entry points reject a full queue immediately. Explicit
+  capacity-wait variants can wait indefinitely or up to a caller-supplied
+  timeout, and wake early on request cancellation or engine close.
 - Accepted requests complete with their real result unless canceled before
   execution starts. An in-flight run can also be interrupted cooperatively by
   its request ID.
@@ -380,7 +383,8 @@ Shutdown behavior:
 
 Cancellation:
 
-- Support pre-dispatch cancellation.
+- Support pre-dispatch cancellation, including requests waiting for queue
+  capacity.
 - Support cooperative in-flight cancellation for `run` by request ID, using
   the same Rust-owned cancellation token checked between rule-firing batches.
 - Do not claim hard preemption.

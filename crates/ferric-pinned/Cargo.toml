@@ -12,6 +12,7 @@ serde = ["ferric-runtime/serde"]
 tracing = ["dep:tracing", "ferric-runtime/tracing"]
 
 [dependencies]
+crossbeam-channel = { workspace = true }
 ferric-runtime = { workspace = true }
 tracing = { workspace = true, optional = true }
 

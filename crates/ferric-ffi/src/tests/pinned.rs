@@ -9,14 +9,16 @@ use std::time::{Duration, Instant};
 
 use crate::error::FerricError;
 use crate::pinned::{
-    async_request_is_started, ferric_pinned_engine_cancel_request, ferric_pinned_engine_close,
-    ferric_pinned_engine_free, ferric_pinned_engine_halt, ferric_pinned_engine_is_closed,
-    ferric_pinned_engine_last_error, ferric_pinned_engine_last_error_copy,
-    ferric_pinned_engine_load_string, ferric_pinned_engine_load_string_async,
-    ferric_pinned_engine_new, ferric_pinned_engine_reset, ferric_pinned_engine_run,
-    ferric_pinned_engine_run_async, ferric_pinned_result_code, ferric_pinned_result_error_message,
-    ferric_pinned_result_free, ferric_pinned_result_get_run, ferric_pinned_result_request_id,
-    FerricPinnedAutoreleasePolicy, FerricPinnedEngineOptions, FerricPinnedResult,
+    async_request_is_registered, async_request_is_started, ferric_pinned_engine_cancel_request,
+    ferric_pinned_engine_close, ferric_pinned_engine_free, ferric_pinned_engine_halt,
+    ferric_pinned_engine_is_closed, ferric_pinned_engine_last_error,
+    ferric_pinned_engine_last_error_copy, ferric_pinned_engine_load_string,
+    ferric_pinned_engine_load_string_async, ferric_pinned_engine_new, ferric_pinned_engine_reset,
+    ferric_pinned_engine_run, ferric_pinned_engine_run_async,
+    ferric_pinned_engine_run_async_wait_for_capacity, ferric_pinned_result_code,
+    ferric_pinned_result_error_message, ferric_pinned_result_free, ferric_pinned_result_get_run,
+    ferric_pinned_result_request_id, FerricPinnedAutoreleasePolicy, FerricPinnedEngineOptions,
+    FerricPinnedResult,
 };
 use crate::types::{FerricConfig, FerricHaltReason};
 
@@ -574,6 +576,126 @@ fn cancel_request_cancels_in_flight_run_by_id() {
         assert_eq!(cancel_code, FerricError::Ok);
         assert!(saw_canceled_run);
         assert!(saw_queued_run);
+        ferric_pinned_engine_free(engine);
+    }
+}
+
+#[test]
+fn cancel_request_wakes_capacity_wait_without_firing_completion() {
+    unsafe {
+        let mut options = default_options();
+        options.queue_capacity = 1;
+        let engine = ferric_pinned_engine_new(&options);
+        let source = CString::new(
+            r"(defrule cycle ?f <- (counter ?n) => (retract ?f) (assert (counter (+ ?n 1))))
+              (deffacts initial (counter 0))",
+        )
+        .unwrap();
+        assert_eq!(
+            ferric_pinned_engine_load_string(engine, source.as_ptr()),
+            FerricError::Ok
+        );
+        assert_eq!(ferric_pinned_engine_reset(engine), FerricError::Ok);
+
+        let inbox = CompletionInbox::new();
+        let ctx_ptr = Arc::as_ptr(&inbox).cast::<c_void>().cast_mut();
+        assert_eq!(
+            ferric_pinned_engine_run_async(engine, -1, 301, ctx_ptr, Some(record_completion)),
+            FerricError::Ok
+        );
+        let started_deadline = Instant::now() + Duration::from_secs(2);
+        while !async_request_is_started(engine, 301) {
+            assert!(
+                Instant::now() < started_deadline,
+                "blocking run request never started"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            ferric_pinned_engine_run_async(engine, 1, 302, ctx_ptr, Some(record_completion)),
+            FerricError::Ok
+        );
+
+        let engine_addr = engine as usize;
+        let context_addr = ctx_ptr as usize;
+        let (submit_tx, submit_rx) = std::sync::mpsc::channel();
+        let submitter = std::thread::spawn(move || {
+            let code = ferric_pinned_engine_run_async_wait_for_capacity(
+                engine_addr as *mut crate::pinned::FerricPinnedEngine,
+                1,
+                303,
+                -1,
+                context_addr as *mut c_void,
+                Some(record_completion),
+            );
+            submit_tx.send(code).unwrap();
+        });
+
+        let registered_deadline = Instant::now() + Duration::from_secs(2);
+        while !async_request_is_registered(engine, 303) {
+            assert!(
+                Instant::now() < registered_deadline,
+                "capacity-waiting request was never registered"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            submit_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "capacity wait returned while the queue was still full"
+        );
+        assert_eq!(
+            ferric_pinned_engine_cancel_request(engine, 303),
+            FerricError::Ok
+        );
+        assert_eq!(
+            submit_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            FerricError::PinnedCanceled
+        );
+        submitter.join().unwrap();
+        assert!(!async_request_is_registered(engine, 303));
+
+        assert_eq!(
+            ferric_pinned_engine_cancel_request(engine, 301),
+            FerricError::Ok
+        );
+        let mut completed_ids = Vec::new();
+        for _ in 0..2 {
+            let (code, result) = inbox
+                .wait_one(Duration::from_secs(5))
+                .expect("accepted request completion never fired");
+            assert_eq!(code, FerricError::Ok);
+            completed_ids.push(ferric_pinned_result_request_id(result));
+            ferric_pinned_result_free(result);
+        }
+        completed_ids.sort_unstable();
+        assert_eq!(completed_ids, [301, 302]);
+        assert!(
+            inbox.wait_one(Duration::from_millis(50)).is_none(),
+            "unadmitted request unexpectedly fired a completion"
+        );
+        ferric_pinned_engine_free(engine);
+    }
+}
+
+#[test]
+fn capacity_wait_rejects_invalid_negative_timeout() {
+    unsafe {
+        let engine = ferric_pinned_engine_new(&default_options());
+        let inbox = CompletionInbox::new();
+        let ctx_ptr = Arc::as_ptr(&inbox).cast::<c_void>().cast_mut();
+        assert_eq!(
+            ferric_pinned_engine_run_async_wait_for_capacity(
+                engine,
+                1,
+                304,
+                -2,
+                ctx_ptr,
+                Some(record_completion),
+            ),
+            FerricError::InvalidArgument
+        );
+        assert!(!async_request_is_registered(engine, 304));
+        assert!(inbox.wait_one(Duration::from_millis(20)).is_none());
         ferric_pinned_engine_free(engine);
     }
 }

@@ -1,10 +1,12 @@
 //! The public [`PinnedEngine`] handle.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::mpsc::{self, sync_channel, SyncSender, TrySendError};
+use std::sync::mpsc::{self, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle, ThreadId};
+use std::time::Duration;
 
+use crossbeam_channel::{after, bounded, never, Receiver, Sender};
 use ferric_runtime::{Engine, LoadResult, RunLimit, RunResult};
 
 #[cfg(feature = "serde")]
@@ -24,10 +26,26 @@ pub struct PinnedEngine {
     inner: Arc<PinnedInner>,
 }
 
+/// How long an asynchronous submission may wait for bounded-queue capacity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueWait {
+    /// Return [`PinnedError::QueueFull`] immediately when the queue is full.
+    NoWait,
+    /// Wait up to this duration for queue capacity. A zero duration is
+    /// equivalent to [`Self::NoWait`].
+    Timeout(Duration),
+    /// Wait until capacity becomes available, the request is canceled, or the
+    /// engine closes.
+    Indefinite,
+}
+
 /// Shared internal state of a [`PinnedEngine`].
 struct PinnedInner {
-    /// Wrapped sender. `None` ⇒ closed; subsequent `try_send` returns `Closed`.
-    tx: Mutex<Option<SyncSender<Request>>>,
+    /// Wrapped sender. `None` means subsequent submissions return `Closed`.
+    tx: Mutex<Option<Sender<Request>>>,
+    /// Dropping the sole sender wakes every queue-admission waiter on close.
+    close_tx: Mutex<Option<Sender<()>>>,
+    close_rx: Receiver<()>,
     /// Worker join handle. `None` after `close()` joins (or detaches) it.
     worker: Mutex<Option<JoinHandle<()>>>,
     /// Identity of the worker thread. Used by `do_close` to detect a
@@ -56,14 +74,17 @@ const REQUEST_CANCELED: u8 = 2;
 const REQUEST_FINISHED: u8 = 3;
 const REQUEST_CANCEL_REQUESTED: u8 = 4;
 
-/// Token used to cancel an accepted async request.
+/// Token used to cancel a registered async request.
 ///
-/// Every request can be canceled before dispatch. Run requests also use the
-/// token's per-run flag for cooperative cancellation after they have started.
+/// Every request can be canceled while waiting for capacity or before
+/// dispatch. Run requests also use the token's per-run flag for cooperative
+/// cancellation after they have started.
 #[derive(Debug)]
 pub struct PreDispatchCancelToken {
     state: AtomicU8,
     run_cancel: Arc<AtomicBool>,
+    admission_cancel_tx: Sender<()>,
+    admission_cancel_rx: Receiver<()>,
 }
 
 impl PinnedEngine {
@@ -73,7 +94,8 @@ impl PinnedEngine {
     /// construction propagate as [`PinnedError::Init`].
     pub fn new(options: PinnedEngineOptions) -> Result<Self, PinnedError> {
         let resolved = ResolvedOptions::from_user(options);
-        let (tx, rx) = sync_channel::<Request>(resolved.queue_capacity);
+        let (tx, rx) = bounded::<Request>(resolved.queue_capacity);
+        let (close_tx, close_rx) = bounded::<()>(0);
         let (init_tx, init_rx) = sync_channel::<Result<(), PinnedError>>(1);
         let cancel = Arc::new(CancelState::new());
         let closed = Arc::new(AtomicBool::new(false));
@@ -104,6 +126,8 @@ impl PinnedEngine {
         let worker_thread_id = worker.thread().id();
         let inner = PinnedInner {
             tx: Mutex::new(Some(tx)),
+            close_tx: Mutex::new(Some(close_tx)),
+            close_rx,
             worker: Mutex::new(Some(worker)),
             worker_thread_id,
             cancel,
@@ -153,7 +177,7 @@ impl PinnedEngine {
             // Caller may have abandoned; send failure is fine.
             let _ = tx.send(result);
         });
-        self.try_send(req)?;
+        self.send_request(req, QueueWait::NoWait, None)?;
         rx.recv().map_err(|_| PinnedError::DispatchFailed)?
     }
 
@@ -214,7 +238,16 @@ impl PinnedEngine {
         F: FnOnce(&mut Engine) + Send + 'static,
     {
         let req: Request = Box::new(f);
-        self.try_send(req)
+        self.send_request(req, QueueWait::NoWait, None)
+    }
+
+    /// Submit a closure, optionally waiting for bounded-queue capacity.
+    pub fn submit_with_queue_wait<F>(&self, wait: QueueWait, f: F) -> Result<(), PinnedError>
+    where
+        F: FnOnce(&mut Engine) + Send + 'static,
+    {
+        let req: Request = Box::new(f);
+        self.send_request(req, wait, None)
     }
 
     /// Async variant of [`Self::run`].
@@ -230,6 +263,24 @@ impl PinnedEngine {
         self.run_async_cancelable(limit, Arc::new(PreDispatchCancelToken::new()), completion)
     }
 
+    /// Async variant of [`Self::run`] with configurable queue admission.
+    pub fn run_async_with_queue_wait<F>(
+        &self,
+        limit: RunLimit,
+        queue_wait: QueueWait,
+        completion: F,
+    ) -> Result<(), PinnedError>
+    where
+        F: FnOnce(Result<RunResult, PinnedError>) + Send + 'static,
+    {
+        self.run_async_cancelable_with_queue_wait(
+            limit,
+            Arc::new(PreDispatchCancelToken::new()),
+            queue_wait,
+            completion,
+        )
+    }
+
     /// Async variant of [`Self::run`] with pre-dispatch and in-flight
     /// cooperative cancellation support.
     pub fn run_async_cancelable<F>(
@@ -241,10 +292,30 @@ impl PinnedEngine {
     where
         F: FnOnce(Result<RunResult, PinnedError>) + Send + 'static,
     {
+        self.run_async_cancelable_with_queue_wait(
+            limit,
+            request_cancel,
+            QueueWait::NoWait,
+            completion,
+        )
+    }
+
+    /// Async variant of [`Self::run`] with cancel-aware queue admission.
+    pub fn run_async_cancelable_with_queue_wait<F>(
+        &self,
+        limit: RunLimit,
+        request_cancel: Arc<PreDispatchCancelToken>,
+        queue_wait: QueueWait,
+        completion: F,
+    ) -> Result<(), PinnedError>
+    where
+        F: FnOnce(Result<RunResult, PinnedError>) + Send + 'static,
+    {
         let cancel_state = self.inner.cancel.clone();
         let cancel_token = request_cancel.run_cancel_flag();
         let closed = self.inner.closed.clone();
-        self.submit(move |engine| {
+        let admission_cancel = request_cancel.clone();
+        let req: Request = Box::new(move |engine| {
             if let Err(err) = request_cancel.begin() {
                 let _ = request_cancel.finish();
                 completion(Err(err));
@@ -260,7 +331,8 @@ impl PinnedEngine {
                 }
             }
             completion(result);
-        })
+        });
+        self.send_request(req, queue_wait, Some(&admission_cancel))
     }
 
     /// Async variant of [`Self::load_str`].
@@ -269,6 +341,24 @@ impl PinnedEngine {
         F: FnOnce(Result<ferric_runtime::LoadResult, PinnedError>) + Send + 'static,
     {
         self.load_str_async_cancelable(source, Arc::new(PreDispatchCancelToken::new()), completion)
+    }
+
+    /// Async variant of [`Self::load_str`] with configurable queue admission.
+    pub fn load_str_async_with_queue_wait<F>(
+        &self,
+        source: String,
+        queue_wait: QueueWait,
+        completion: F,
+    ) -> Result<(), PinnedError>
+    where
+        F: FnOnce(Result<ferric_runtime::LoadResult, PinnedError>) + Send + 'static,
+    {
+        self.load_str_async_cancelable_with_queue_wait(
+            source,
+            Arc::new(PreDispatchCancelToken::new()),
+            queue_wait,
+            completion,
+        )
     }
 
     /// Async variant of [`Self::load_str`] with pre-dispatch cancellation support.
@@ -281,7 +371,27 @@ impl PinnedEngine {
     where
         F: FnOnce(Result<ferric_runtime::LoadResult, PinnedError>) + Send + 'static,
     {
-        self.submit(move |engine| {
+        self.load_str_async_cancelable_with_queue_wait(
+            source,
+            request_cancel,
+            QueueWait::NoWait,
+            completion,
+        )
+    }
+
+    /// Async variant of [`Self::load_str`] with cancel-aware queue admission.
+    pub fn load_str_async_cancelable_with_queue_wait<F>(
+        &self,
+        source: String,
+        request_cancel: Arc<PreDispatchCancelToken>,
+        queue_wait: QueueWait,
+        completion: F,
+    ) -> Result<(), PinnedError>
+    where
+        F: FnOnce(Result<ferric_runtime::LoadResult, PinnedError>) + Send + 'static,
+    {
+        let admission_cancel = request_cancel.clone();
+        let req: Request = Box::new(move |engine| {
             if let Err(err) = request_cancel.begin() {
                 let _ = request_cancel.finish();
                 completion(Err(err));
@@ -290,20 +400,73 @@ impl PinnedEngine {
             let result = engine.load_str(&source).map_err(PinnedError::from);
             let _ = request_cancel.finish();
             completion(result);
-        })
+        });
+        self.send_request(req, queue_wait, Some(&admission_cancel))
     }
 
-    fn try_send(&self, req: Request) -> Result<(), PinnedError> {
-        let guard = self
-            .inner
-            .tx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let sender = guard.as_ref().ok_or(PinnedError::Closed)?;
-        match sender.try_send(req) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(PinnedError::QueueFull),
-            Err(TrySendError::Disconnected(_)) => Err(PinnedError::DispatchFailed),
+    fn send_request(
+        &self,
+        req: Request,
+        wait: QueueWait,
+        cancel: Option<&PreDispatchCancelToken>,
+    ) -> Result<(), PinnedError> {
+        let may_block = !matches!(wait, QueueWait::NoWait | QueueWait::Timeout(Duration::ZERO));
+        if may_block && thread::current().id() == self.inner.worker_thread_id {
+            return Err(PinnedError::ReentrantCall);
+        }
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(PinnedError::Closed);
+        }
+        let sender = {
+            let guard = self
+                .inner
+                .tx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.as_ref().cloned().ok_or(PinnedError::Closed)?
+        };
+        let close_rx = self.inner.close_rx.clone();
+        let cancel_rx = cancel.map_or_else(never, PreDispatchCancelToken::cancel_receiver);
+
+        match wait {
+            QueueWait::NoWait | QueueWait::Timeout(Duration::ZERO) => {
+                crossbeam_channel::select_biased! {
+                    recv(close_rx) -> _ => Err(PinnedError::Closed),
+                    recv(cancel_rx) -> _ => Err(PinnedError::Canceled),
+                    send(sender, req) -> result => {
+                        result.map_err(|_| self.disconnected_error())
+                    }
+                    default => Err(PinnedError::QueueFull),
+                }
+            }
+            QueueWait::Timeout(duration) => {
+                let timeout_rx = after(duration);
+                crossbeam_channel::select_biased! {
+                    recv(close_rx) -> _ => Err(PinnedError::Closed),
+                    recv(cancel_rx) -> _ => Err(PinnedError::Canceled),
+                    send(sender, req) -> result => {
+                        result.map_err(|_| self.disconnected_error())
+                    }
+                    recv(timeout_rx) -> _ => Err(PinnedError::QueueFull),
+                }
+            }
+            QueueWait::Indefinite => {
+                crossbeam_channel::select_biased! {
+                    recv(close_rx) -> _ => Err(PinnedError::Closed),
+                    recv(cancel_rx) -> _ => Err(PinnedError::Canceled),
+                    send(sender, req) -> result => {
+                        result.map_err(|_| self.disconnected_error())
+                    }
+                }
+            }
+        }
+    }
+
+    fn disconnected_error(&self) -> PinnedError {
+        if self.inner.closed.load(Ordering::Acquire) {
+            PinnedError::Closed
+        } else {
+            PinnedError::DispatchFailed
         }
     }
 }
@@ -317,9 +480,12 @@ impl Default for PreDispatchCancelToken {
 impl PreDispatchCancelToken {
     #[must_use]
     pub fn new() -> Self {
+        let (admission_cancel_tx, admission_cancel_rx) = bounded(1);
         Self {
             state: AtomicU8::new(REQUEST_PENDING),
             run_cancel: Arc::new(AtomicBool::new(false)),
+            admission_cancel_tx,
+            admission_cancel_rx,
         }
     }
 
@@ -342,6 +508,7 @@ impl PreDispatchCancelToken {
                         )
                         .is_ok()
                     {
+                        self.signal_admission_cancel();
                         return true;
                     }
                 }
@@ -369,6 +536,7 @@ impl PreDispatchCancelToken {
                         )
                         .is_ok()
                     {
+                        self.signal_admission_cancel();
                         return true;
                     }
                 }
@@ -384,6 +552,7 @@ impl PreDispatchCancelToken {
                         .is_ok()
                     {
                         self.run_cancel.store(true, Ordering::Release);
+                        self.signal_admission_cancel();
                         return true;
                     }
                 }
@@ -404,6 +573,14 @@ impl PreDispatchCancelToken {
 
     fn run_cancel_flag(&self) -> Arc<AtomicBool> {
         self.run_cancel.clone()
+    }
+
+    fn cancel_receiver(&self) -> Receiver<()> {
+        self.admission_cancel_rx.clone()
+    }
+
+    fn signal_admission_cancel(&self) {
+        let _ = self.admission_cancel_tx.try_send(());
     }
 
     fn begin(&self) -> Result<(), PinnedError> {
@@ -472,6 +649,15 @@ impl Drop for ActiveRunGuard<'_> {
 impl PinnedInner {
     fn do_close(&self) -> Result<(), PinnedError> {
         self.closed.store(true, Ordering::Release);
+        // Disconnect the close channel to wake every blocked admission call.
+        let close_sender = {
+            let mut guard = self
+                .close_tx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.take()
+        };
+        drop(close_sender);
         // Drop the sender; worker will drain buffered requests then exit.
         let sender = {
             let mut guard = self

@@ -74,6 +74,27 @@ fn header_documents_active_only_pinned_halt() {
 }
 
 #[test]
+fn header_contains_capacity_wait_async_entry_points() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("ferric_pinned_engine_run_async_wait_for_capacity"),
+        "Missing capacity-waiting pinned run entry point"
+    );
+    assert!(
+        header.contains("ferric_pinned_engine_load_string_async_wait_for_capacity"),
+        "Missing capacity-waiting pinned load entry point"
+    );
+    assert!(
+        header.contains("queue_wait_ms"),
+        "Capacity-wait entry points must expose queue_wait_ms"
+    );
+    assert!(
+        header.contains("request was not admitted") && header.contains("not fire."),
+        "Capacity-wait docs must define the no-completion-on-rejection contract"
+    );
+}
+
+#[test]
 fn header_contains_ferric_error_enum() {
     let header = read_committed_header();
     assert!(header.contains("FerricError"), "Missing FerricError type");

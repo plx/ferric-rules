@@ -9,8 +9,9 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::mpsc::SyncSender;
 
+use crossbeam_channel::Receiver;
 use ferric_runtime::engine::EngineError;
 use ferric_runtime::{Engine, HaltReason, RunLimit, RunResult};
 
@@ -50,9 +51,8 @@ pub(crate) fn worker_main(
     };
 
     loop {
-        // All senders dropped ⇒ recv returns Err. The standard library
-        // guarantees `recv` returns buffered messages before signaling
-        // disconnection, so close-drain falls out for free.
+        // All senders dropped ⇒ recv returns Err. Buffered messages are
+        // returned before disconnection, so close-drain falls out for free.
         let Ok(first) = rx.recv() else { return };
         run_batch(
             &rx,

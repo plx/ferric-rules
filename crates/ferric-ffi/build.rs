@@ -93,7 +93,8 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * queued or future runs.
  *
  * ferric_pinned_engine_cancel_request() targets one async
- * request by ID. Pending requests are canceled before dispatch;
+ * request by ID. Capacity waiters wake without being admitted,
+ * admitted pending requests are canceled before dispatch, and
  * an active run is interrupted cooperatively at a chunk boundary.
  */";
 

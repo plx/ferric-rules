@@ -90,7 +90,8 @@
  * queued or future runs.
  *
  * ferric_pinned_engine_cancel_request() targets one async
- * request by ID. Pending requests are canceled before dispatch;
+ * request by ID. Capacity waiters wake without being admitted,
+ * admitted pending requests are canceled before dispatch, and
  * an active run is interrupted cooperatively at a chunk boundary.
  */
 
@@ -1278,13 +1279,14 @@ bool ferric_pinned_engine_is_closed(const struct FerricPinnedEngine *engine);
 // - `engine` must be a valid handle.
 enum FerricError ferric_pinned_engine_halt(struct FerricPinnedEngine *engine);
 
-// Cancel an accepted async request by ID.
+// Cancel a registered async request by ID.
 //
-// A pending request completes with [`FerricError::PinnedCanceled`]. An
-// in-flight run completes normally with
-// [`FerricHaltReason::HaltRequested`]. Returns [`FerricError::NotFound`] if
-// the request is unknown, finished, or is a non-run operation that has
-// already started.
+// A request waiting for queue capacity makes its submission call return
+// [`FerricError::PinnedCanceled`] without firing its completion. An admitted
+// pending request completes with [`FerricError::PinnedCanceled`]. An in-flight
+// run completes normally with [`FerricHaltReason::HaltRequested`]. Returns
+// [`FerricError::NotFound`] if the request is unknown, finished, or is a
+// non-run operation that has already started.
 //
 // # Safety
 //
@@ -1407,6 +1409,26 @@ enum FerricError ferric_pinned_engine_run_async(struct FerricPinnedEngine *engin
                                                 void *context,
                                                 FerricPinnedCompletionFn completion);
 
+// Submit a `run` asynchronously, waiting only for bounded-queue capacity.
+//
+// `queue_wait_ms` controls admission: `-1` waits indefinitely, `0` retains
+// fail-fast behavior, and a positive value waits up to that many
+// milliseconds. The wait ends early if this request is canceled or the
+// engine closes. Timeout expiry returns [`FerricError::PinnedQueueFull`]. Any
+// synchronous error means the request was not admitted and `completion` will
+// not fire. [`FerricError::Ok`] means the callback fires exactly once.
+//
+// # Safety
+//
+// The safety requirements are the same as
+// [`ferric_pinned_engine_run_async`].
+enum FerricError ferric_pinned_engine_run_async_wait_for_capacity(struct FerricPinnedEngine *engine,
+                                                                  int64_t limit,
+                                                                  uint64_t request_id,
+                                                                  int64_t queue_wait_ms,
+                                                                  void *context,
+                                                                  FerricPinnedCompletionFn completion);
+
 // Submit `load_str` asynchronously.
 //
 // `request_id` identifies the pending request for
@@ -1425,6 +1447,26 @@ enum FerricError ferric_pinned_engine_load_string_async(struct FerricPinnedEngin
                                                         uint64_t request_id,
                                                         void *context,
                                                         FerricPinnedCompletionFn completion);
+
+// Submit `load_str` asynchronously, waiting only for bounded-queue capacity.
+//
+// `queue_wait_ms` controls admission: `-1` waits indefinitely, `0` retains
+// fail-fast behavior, and a positive value waits up to that many
+// milliseconds. The wait ends early if this request is canceled or the
+// engine closes. Timeout expiry returns [`FerricError::PinnedQueueFull`]. Any
+// synchronous error means the request was not admitted and `completion` will
+// not fire. [`FerricError::Ok`] means the callback fires exactly once.
+//
+// # Safety
+//
+// The safety requirements are the same as
+// [`ferric_pinned_engine_load_string_async`].
+enum FerricError ferric_pinned_engine_load_string_async_wait_for_capacity(struct FerricPinnedEngine *engine,
+                                                                          const char *source,
+                                                                          uint64_t request_id,
+                                                                          int64_t queue_wait_ms,
+                                                                          void *context,
+                                                                          FerricPinnedCompletionFn completion);
 
 // Read the result's `FerricError` code.
 //

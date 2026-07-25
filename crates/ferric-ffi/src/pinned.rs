@@ -24,10 +24,11 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use ferric_pinned::{
     AutoreleasePolicy, HaltReason, PinnedEngine, PinnedEngineOptions, PinnedError,
-    PreDispatchCancelToken, RunLimit, RunResult,
+    PreDispatchCancelToken, QueueWait, RunLimit, RunResult,
 };
 
 use crate::error::{
@@ -248,6 +249,33 @@ pub(crate) unsafe fn async_request_is_started(
         .is_some_and(|request| request.token.is_started())
 }
 
+#[cfg(test)]
+pub(crate) unsafe fn async_request_is_registered(
+    engine: *const FerricPinnedEngine,
+    request_id: u64,
+) -> bool {
+    let Ok(handle) = validate_engine_ptr(engine) else {
+        return false;
+    };
+    lock_unpoisoned(&handle.async_requests).contains_key(&request_id)
+}
+
+fn queue_wait_from_millis(queue_wait_ms: i64) -> Result<QueueWait, FerricError> {
+    match queue_wait_ms {
+        -1 => Ok(QueueWait::Indefinite),
+        0 => Ok(QueueWait::NoWait),
+        1.. => Ok(QueueWait::Timeout(Duration::from_millis(
+            u64::try_from(queue_wait_ms).expect("positive queue wait must fit in u64"),
+        ))),
+        _ => {
+            set_global_error(format!(
+                "queue_wait_ms must be -1, 0, or a positive timeout; got {queue_wait_ms}"
+            ));
+            Err(FerricError::InvalidArgument)
+        }
+    }
+}
+
 fn record_pinned_error(handle: &FerricPinnedEngine, err: &PinnedError) -> FerricError {
     let code = map_pinned_error(err);
     let message = err.to_string();
@@ -400,13 +428,14 @@ pub unsafe extern "C" fn ferric_pinned_engine_halt(engine: *mut FerricPinnedEngi
     FerricError::Ok
 }
 
-/// Cancel an accepted async request by ID.
+/// Cancel a registered async request by ID.
 ///
-/// A pending request completes with [`FerricError::PinnedCanceled`]. An
-/// in-flight run completes normally with
-/// [`FerricHaltReason::HaltRequested`]. Returns [`FerricError::NotFound`] if
-/// the request is unknown, finished, or is a non-run operation that has
-/// already started.
+/// A request waiting for queue capacity makes its submission call return
+/// [`FerricError::PinnedCanceled`] without firing its completion. An admitted
+/// pending request completes with [`FerricError::PinnedCanceled`]. An in-flight
+/// run completes normally with [`FerricHaltReason::HaltRequested`]. Returns
+/// [`FerricError::NotFound`] if the request is unknown, finished, or is a
+/// non-run operation that has already started.
 ///
 /// # Safety
 ///
@@ -692,7 +721,54 @@ pub unsafe extern "C" fn ferric_pinned_engine_run_async(
     context: *mut c_void,
     completion: FerricPinnedCompletionFn,
 ) -> FerricError {
-    let Ok(handle) = validate_engine_ptr(engine) else {
+    pinned_engine_run_async_impl(
+        engine,
+        limit,
+        request_id,
+        QueueWait::NoWait,
+        context,
+        completion,
+    )
+}
+
+/// Submit a `run` asynchronously, waiting only for bounded-queue capacity.
+///
+/// `queue_wait_ms` controls admission: `-1` waits indefinitely, `0` retains
+/// fail-fast behavior, and a positive value waits up to that many
+/// milliseconds. The wait ends early if this request is canceled or the
+/// engine closes. Timeout expiry returns [`FerricError::PinnedQueueFull`]. Any
+/// synchronous error means the request was not admitted and `completion` will
+/// not fire. [`FerricError::Ok`] means the callback fires exactly once.
+///
+/// # Safety
+///
+/// The safety requirements are the same as
+/// [`ferric_pinned_engine_run_async`].
+#[no_mangle]
+pub unsafe extern "C" fn ferric_pinned_engine_run_async_wait_for_capacity(
+    engine: *mut FerricPinnedEngine,
+    limit: i64,
+    request_id: u64,
+    queue_wait_ms: i64,
+    context: *mut c_void,
+    completion: FerricPinnedCompletionFn,
+) -> FerricError {
+    let queue_wait = match queue_wait_from_millis(queue_wait_ms) {
+        Ok(wait) => wait,
+        Err(code) => return code,
+    };
+    pinned_engine_run_async_impl(engine, limit, request_id, queue_wait, context, completion)
+}
+
+fn pinned_engine_run_async_impl(
+    engine: *mut FerricPinnedEngine,
+    limit: i64,
+    request_id: u64,
+    queue_wait: QueueWait,
+    context: *mut c_void,
+    completion: FerricPinnedCompletionFn,
+) -> FerricError {
+    let Ok(handle) = (unsafe { validate_engine_ptr(engine) }) else {
         return FerricError::NullPointer;
     };
     let Some(func) = completion else {
@@ -707,14 +783,17 @@ pub unsafe extern "C" fn ferric_pinned_engine_run_async(
     let callback = CompletionCallback { context, func };
     let run_limit = run_limit_from_i64(limit);
 
-    let submission = handle
-        .pinned
-        .run_async_cancelable(run_limit, pre_dispatch, move |result| {
+    let submission = handle.pinned.run_async_cancelable_with_queue_wait(
+        run_limit,
+        pre_dispatch,
+        queue_wait,
+        move |result| {
             unregister_async_request(&registry, request_id);
             let pinned_result = build_run_result(request_id, &result);
             let code = pinned_result.code;
             callback.fire(code, Box::new(pinned_result));
-        });
+        },
+    );
 
     match submission {
         Ok(()) => FerricError::Ok,
@@ -746,10 +825,59 @@ pub unsafe extern "C" fn ferric_pinned_engine_load_string_async(
     context: *mut c_void,
     completion: FerricPinnedCompletionFn,
 ) -> FerricError {
-    let Ok(handle) = validate_engine_ptr(engine) else {
+    pinned_engine_load_string_async_impl(
+        engine,
+        source,
+        request_id,
+        QueueWait::NoWait,
+        context,
+        completion,
+    )
+}
+
+/// Submit `load_str` asynchronously, waiting only for bounded-queue capacity.
+///
+/// `queue_wait_ms` controls admission: `-1` waits indefinitely, `0` retains
+/// fail-fast behavior, and a positive value waits up to that many
+/// milliseconds. The wait ends early if this request is canceled or the
+/// engine closes. Timeout expiry returns [`FerricError::PinnedQueueFull`]. Any
+/// synchronous error means the request was not admitted and `completion` will
+/// not fire. [`FerricError::Ok`] means the callback fires exactly once.
+///
+/// # Safety
+///
+/// The safety requirements are the same as
+/// [`ferric_pinned_engine_load_string_async`].
+#[no_mangle]
+pub unsafe extern "C" fn ferric_pinned_engine_load_string_async_wait_for_capacity(
+    engine: *mut FerricPinnedEngine,
+    source: *const c_char,
+    request_id: u64,
+    queue_wait_ms: i64,
+    context: *mut c_void,
+    completion: FerricPinnedCompletionFn,
+) -> FerricError {
+    let queue_wait = match queue_wait_from_millis(queue_wait_ms) {
+        Ok(wait) => wait,
+        Err(code) => return code,
+    };
+    pinned_engine_load_string_async_impl(
+        engine, source, request_id, queue_wait, context, completion,
+    )
+}
+
+fn pinned_engine_load_string_async_impl(
+    engine: *mut FerricPinnedEngine,
+    source: *const c_char,
+    request_id: u64,
+    queue_wait: QueueWait,
+    context: *mut c_void,
+    completion: FerricPinnedCompletionFn,
+) -> FerricError {
+    let Ok(handle) = (unsafe { validate_engine_ptr(engine) }) else {
         return FerricError::NullPointer;
     };
-    let source_owned = match c_str_to_string(source, "source string") {
+    let source_owned = match unsafe { c_str_to_string(source, "source string") } {
         Ok(s) => s,
         Err(code) => return code,
     };
@@ -764,25 +892,27 @@ pub unsafe extern "C" fn ferric_pinned_engine_load_string_async(
     let registry = handle.async_requests.clone();
     let callback = CompletionCallback { context, func };
 
-    let submission =
-        handle
-            .pinned
-            .load_str_async_cancelable(source_owned, pre_dispatch, move |result| {
-                unregister_async_request(&registry, request_id);
-                let (code, message) = match result {
-                    Ok(_) => (FerricError::Ok, None),
-                    Err(ref e) => (map_pinned_error(e), Some(e.to_string())),
-                };
-                callback.fire(
+    let submission = handle.pinned.load_str_async_cancelable_with_queue_wait(
+        source_owned,
+        pre_dispatch,
+        queue_wait,
+        move |result| {
+            unregister_async_request(&registry, request_id);
+            let (code, message) = match result {
+                Ok(_) => (FerricError::Ok, None),
+                Err(ref e) => (map_pinned_error(e), Some(e.to_string())),
+            };
+            callback.fire(
+                code,
+                Box::new(FerricPinnedResult {
                     code,
-                    Box::new(FerricPinnedResult {
-                        code,
-                        request_id,
-                        payload: PinnedResultPayload::Empty,
-                        message: message.and_then(|m| CString::new(m).ok()),
-                    }),
-                );
-            });
+                    request_id,
+                    payload: PinnedResultPayload::Empty,
+                    message: message.and_then(|m| CString::new(m).ok()),
+                }),
+            );
+        },
+    );
 
     match submission {
         Ok(()) => FerricError::Ok,

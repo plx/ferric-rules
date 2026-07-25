@@ -16,7 +16,7 @@ acceptable license is selected for notice generation.
 
 ## License Overview
 
-- MIT License: 210
+- MIT License: 211
 - Apache License 2.0: 4
 - Boost Software License 1.0: 2
 - ISC License: 1
@@ -2695,6 +2695,7 @@ SOFTWARE.
 
 Used by:
 
+- crossbeam-channel 0.5.16 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
 - crossbeam-deque 0.8.6 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
 - crossbeam-epoch 0.9.18 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
 - crossbeam-utils 0.8.21 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
