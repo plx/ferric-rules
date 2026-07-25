@@ -159,6 +159,33 @@ fn close_interrupts_active_and_queued_unlimited_runs() {
     assert_eq!(second.halt_reason, HaltReason::HaltRequested);
 }
 
+#[test]
+fn reentrant_with_engine_returns_error_without_deadlock() {
+    let engine = PinnedEngine::new(PinnedEngineOptions::default()).unwrap();
+    let reentrant_engine = engine.clone();
+    let (result_tx, result_rx) = mpsc::channel();
+
+    engine
+        .submit(move |_| {
+            let _ = result_tx.send(reentrant_engine.reset());
+        })
+        .unwrap();
+
+    let Ok(result) = result_rx.recv_timeout(Duration::from_secs(2)) else {
+        // The pre-fix worker is waiting on a request it enqueued to itself.
+        // Leaking the outer handle prevents Drop from joining that worker.
+        std::mem::forget(engine);
+        panic!("reentrant with_engine call deadlocked");
+    };
+    assert!(
+        matches!(result, Err(PinnedError::ReentrantCall)),
+        "reentrant call should be rejected, got {result:?}"
+    );
+
+    engine.reset().expect("worker should remain usable");
+    engine.close().unwrap();
+}
+
 /// Calling `close()` from inside a worker-side callback must not self-join
 /// (which would deadlock the worker). The detached worker still exits
 /// cleanly once the callback returns and observes the dropped sender.

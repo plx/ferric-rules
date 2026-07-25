@@ -138,6 +138,9 @@ impl PinnedEngine {
         F: FnOnce(&mut Engine) -> Result<R, PinnedError> + Send + 'static,
         R: Send + 'static,
     {
+        if thread::current().id() == self.inner.worker_thread_id {
+            return Err(PinnedError::ReentrantCall);
+        }
         let (tx, rx) = mpsc::channel::<Result<R, PinnedError>>();
         let req: Request = Box::new(move |engine: &mut Engine| {
             let result = f(engine);

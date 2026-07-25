@@ -174,6 +174,8 @@ typedef enum FerricError {
     FERRIC_ERROR_PINNED_QUEUE_FULL = 13,
     // Pinned engine worker thread stopped unexpectedly (panicked or vanished).
     FERRIC_ERROR_PINNED_DISPATCH_FAILED = 14,
+    // A synchronous pinned call was attempted from that engine's worker thread.
+    FERRIC_ERROR_PINNED_REENTRANT_CALL = 15,
     // Internal/unexpected error.
     FERRIC_ERROR_INTERNAL_ERROR = 99,
 } FerricError;

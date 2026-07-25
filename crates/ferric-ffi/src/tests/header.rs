@@ -93,6 +93,10 @@ fn header_contains_ferric_error_enum() {
         header.contains("FERRIC_ERROR_BUFFER_TOO_SMALL"),
         "Missing FERRIC_ERROR_BUFFER_TOO_SMALL variant"
     );
+    assert!(
+        header.contains("FERRIC_ERROR_PINNED_REENTRANT_CALL"),
+        "Missing FERRIC_ERROR_PINNED_REENTRANT_CALL variant"
+    );
 }
 
 #[test]

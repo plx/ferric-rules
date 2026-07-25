@@ -49,6 +49,8 @@ pub enum FerricError {
     PinnedQueueFull = 13,
     /// Pinned engine worker thread stopped unexpectedly (panicked or vanished).
     PinnedDispatchFailed = 14,
+    /// A synchronous pinned call was attempted from that engine's worker thread.
+    PinnedReentrantCall = 15,
     /// Internal/unexpected error.
     InternalError = 99,
 }
@@ -301,6 +303,7 @@ pub(crate) fn map_pinned_error(err: &PinnedError) -> FerricError {
         PinnedError::Canceled => FerricError::PinnedCanceled,
         PinnedError::QueueFull => FerricError::PinnedQueueFull,
         PinnedError::DispatchFailed => FerricError::PinnedDispatchFailed,
+        PinnedError::ReentrantCall => FerricError::PinnedReentrantCall,
         PinnedError::Init(_) => FerricError::InternalError,
         PinnedError::Load(errors) => errors
             .first()
