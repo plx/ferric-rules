@@ -1,0 +1,1 @@
+Temporary unmerged file used only to validate issue-selector closing-reference behavior.
