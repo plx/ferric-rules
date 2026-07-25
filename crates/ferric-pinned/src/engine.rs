@@ -37,7 +37,7 @@ struct PinnedInner {
     /// Cancellation state shared with worker-side `run_with_cancel` calls.
     cancel: Arc<CancelState>,
     /// Fast-path "is closed" without touching the sender mutex.
-    closed: AtomicBool,
+    closed: Arc<AtomicBool>,
 }
 
 /// Coordinates `halt()` with the worker's currently active or next-dispatched
@@ -72,6 +72,7 @@ impl PinnedEngine {
         let (tx, rx) = sync_channel::<Request>(resolved.queue_capacity);
         let (init_tx, init_rx) = sync_channel::<Result<(), PinnedError>>(1);
         let cancel = Arc::new(CancelState::new());
+        let closed = Arc::new(AtomicBool::new(false));
 
         let thread_name = resolved.thread_name.clone();
         let worker_opts = resolved.clone();
@@ -102,7 +103,7 @@ impl PinnedEngine {
             worker: Mutex::new(Some(worker)),
             worker_thread_id,
             cancel,
-            closed: AtomicBool::new(false),
+            closed,
         };
         Ok(Self {
             inner: Arc::new(inner),
@@ -110,7 +111,9 @@ impl PinnedEngine {
     }
 
     /// Stop accepting new requests, drain already-queued requests, and join
-    /// the worker. Idempotent.
+    /// the worker. Active and queued runs exit with
+    /// [`ferric_runtime::HaltReason::HaltRequested`]; other accepted work runs
+    /// to completion. Idempotent.
     pub fn close(&self) -> Result<(), PinnedError> {
         self.inner.do_close()
     }
@@ -170,9 +173,11 @@ impl PinnedEngine {
     pub fn run(&self, limit: RunLimit) -> Result<RunResult, PinnedError> {
         let cancel_state = self.inner.cancel.clone();
         let cancel_token = Arc::new(AtomicBool::new(false));
+        let closed = self.inner.closed.clone();
         self.with_engine(move |engine| {
             let _guard = cancel_state.activate(cancel_token.clone());
-            worker::run_with_cancel(engine, limit, &cancel_token).map_err(PinnedError::from)
+            worker::run_with_cancel(engine, limit, &cancel_token, &closed)
+                .map_err(PinnedError::from)
         })
     }
 
@@ -226,13 +231,14 @@ impl PinnedEngine {
     {
         let cancel_state = self.inner.cancel.clone();
         let cancel_token = Arc::new(AtomicBool::new(false));
+        let closed = self.inner.closed.clone();
         self.submit(move |engine| {
             if let Err(err) = pre_dispatch.begin() {
                 completion(Err(err));
                 return;
             }
             let _guard = cancel_state.activate(cancel_token.clone());
-            let result = crate::worker::run_with_cancel(engine, limit, &cancel_token)
+            let result = crate::worker::run_with_cancel(engine, limit, &cancel_token, &closed)
                 .map_err(PinnedError::from);
             completion(result);
         })

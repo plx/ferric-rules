@@ -117,8 +117,10 @@ fn drain_more_per_item(rx: &Receiver<Request>, engine: &mut Engine, max: usize) 
 /// Run the engine with cooperative cancellation.
 ///
 /// Splits a user-requested [`RunLimit`] into chunks of [`CANCEL_CHUNK_SIZE`]
-/// firings, calling [`Engine::run`] repeatedly and checking `cancel` between
-/// chunks. When `cancel` flips to `true`, returns with
+/// firings, starting with [`Engine::run`] and then continuing the same logical
+/// run between cancellation checks. The sticky `closed` flag ensures shutdown
+/// also interrupts every accepted run while the queue drains. When either
+/// flag flips to `true`, returns with
 /// [`HaltReason::HaltRequested`] and the rules fired so far.
 ///
 /// Note: the [`HaltReason::HaltRequested`] return code is the merged
@@ -132,6 +134,7 @@ pub(crate) fn run_with_cancel(
     engine: &mut Engine,
     limit: RunLimit,
     cancel: &AtomicBool,
+    closed: &AtomicBool,
 ) -> Result<RunResult, EngineError> {
     let mut total = 0usize;
     let mut first_chunk = true;
@@ -141,7 +144,7 @@ pub(crate) fn run_with_cancel(
     };
 
     loop {
-        if cancel.load(Ordering::Acquire) {
+        if cancel.load(Ordering::Acquire) || closed.load(Ordering::Acquire) {
             return Ok(RunResult {
                 rules_fired: total,
                 halt_reason: HaltReason::HaltRequested,

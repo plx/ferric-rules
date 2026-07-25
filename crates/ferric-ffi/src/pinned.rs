@@ -302,8 +302,9 @@ pub unsafe extern "C" fn ferric_pinned_engine_new(
     }
 }
 
-/// Stop accepting requests, drain any already-queued requests, and join the
-/// worker. Idempotent.
+/// Stop accepting requests, interrupt active and queued runs, drain any other
+/// already-queued requests, and join the worker. Interrupted runs complete
+/// with [`FerricHaltReason::HaltRequested`]. Idempotent.
 ///
 /// # Safety
 ///

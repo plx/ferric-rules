@@ -4,9 +4,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use ferric_pinned::{PinnedEngine, PinnedEngineOptions, PinnedError};
+use ferric_pinned::{
+    HaltReason, PinnedEngine, PinnedEngineOptions, PinnedError, RunLimit, RunResult,
+};
+
+const CYCLING_RULES: &str = r"
+(defrule cycle ?f <- (counter ?n) => (retract ?f) (assert (counter (+ ?n 1))))
+(deffacts initial (counter 0))
+";
 
 #[test]
 fn close_drains_already_queued_requests() {
@@ -82,6 +89,74 @@ fn requests_submitted_after_close_return_closed() {
 
     let err = engine.with_engine(|_| Ok(())).unwrap_err();
     assert!(matches!(err, PinnedError::Closed));
+}
+
+#[test]
+fn close_interrupts_active_and_queued_unlimited_runs() {
+    let engine = PinnedEngine::new(PinnedEngineOptions::default()).unwrap();
+    engine.load_str(CYCLING_RULES).unwrap();
+    engine.reset().unwrap();
+
+    let (release_first_tx, release_first_rx) = mpsc::channel();
+    let (first_tx, first_rx) = mpsc::channel::<Result<RunResult, PinnedError>>();
+    engine
+        .run_async(RunLimit::Unlimited, move |result| {
+            first_tx.send(result).unwrap();
+            release_first_rx.recv().unwrap();
+        })
+        .unwrap();
+
+    let (second_tx, second_rx) = mpsc::channel::<Result<RunResult, PinnedError>>();
+    engine
+        .run_async(RunLimit::Unlimited, move |result| {
+            second_tx.send(result).unwrap();
+        })
+        .unwrap();
+
+    // Ensure the first cycling run is active, then stop it so its completion
+    // can hold the worker while close marks the engine closed.
+    thread::sleep(Duration::from_millis(50));
+    engine.halt();
+    let first = first_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.halt_reason, HaltReason::HaltRequested);
+
+    let close_engine = engine.clone();
+    let (close_tx, close_rx) = mpsc::channel();
+    let close_thread = thread::spawn(move || {
+        let _ = close_tx.send(close_engine.close());
+    });
+
+    let closed_deadline = Instant::now() + Duration::from_secs(2);
+    while !engine.is_closed() {
+        assert!(
+            Instant::now() < closed_deadline,
+            "close never marked the engine closed"
+        );
+        thread::yield_now();
+    }
+    release_first_tx.send(()).unwrap();
+
+    let Ok(close_result) = close_rx.recv_timeout(Duration::from_secs(2)) else {
+        // Clean up the pre-fix failure mode before failing the assertion:
+        // close is waiting for the second unlimited run, so halt it.
+        engine.halt();
+        let _ = second_rx.recv_timeout(Duration::from_secs(2));
+        let _ = close_rx.recv_timeout(Duration::from_secs(2));
+        close_thread.join().unwrap();
+        panic!("close did not interrupt the queued unlimited run");
+    };
+    close_result.unwrap();
+    close_thread.join().unwrap();
+
+    let second = second_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.rules_fired, 0);
+    assert_eq!(second.halt_reason, HaltReason::HaltRequested);
 }
 
 /// Calling `close()` from inside a worker-side callback must not self-join

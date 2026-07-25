@@ -1237,8 +1237,9 @@ enum FerricError ferric_last_error_global_copy(char *buf FERRIC_SIZED_BY(buf_len
 // - The returned handle must be freed with [`ferric_pinned_engine_free`].
 struct FerricPinnedEngine *ferric_pinned_engine_new(const struct FerricPinnedEngineOptions *options);
 
-// Stop accepting requests, drain any already-queued requests, and join the
-// worker. Idempotent.
+// Stop accepting requests, interrupt active and queued runs, drain any other
+// already-queued requests, and join the worker. Interrupted runs complete
+// with [`FerricHaltReason::HaltRequested`]. Idempotent.
 //
 // # Safety
 //
