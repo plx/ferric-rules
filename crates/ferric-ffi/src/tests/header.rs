@@ -95,6 +95,19 @@ fn header_contains_capacity_wait_async_entry_points() {
 }
 
 #[test]
+fn header_documents_cancel_and_submission_race() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("does not guarantee that a concurrent submission succeeds"),
+        "Cancellation docs must weaken the concurrent-submission promise"
+    );
+    assert!(
+        header.contains("failed submission fires no completion"),
+        "Cancellation docs must retain the no-completion-on-rejection contract"
+    );
+}
+
+#[test]
 fn header_contains_ferric_error_enum() {
     let header = read_committed_header();
     assert!(header.contains("FerricError"), "Missing FerricError type");

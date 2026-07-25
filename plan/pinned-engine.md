@@ -387,6 +387,9 @@ Cancellation:
   capacity.
 - Support cooperative in-flight cancellation for `run` by request ID, using
   the same Rust-owned cancellation token checked between rule-firing batches.
+- A successful cancellation records the request token but does not guarantee
+  that a concurrent submission wins its own timeout/close/dispatch race.
+  Failed submissions are unadmitted and do not fire completions.
 - Do not claim hard preemption.
 
 ## Coordinator Design

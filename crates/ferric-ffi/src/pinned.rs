@@ -430,12 +430,19 @@ pub unsafe extern "C" fn ferric_pinned_engine_halt(engine: *mut FerricPinnedEngi
 
 /// Cancel a registered async request by ID.
 ///
-/// A request waiting for queue capacity makes its submission call return
-/// [`FerricError::PinnedCanceled`] without firing its completion. An admitted
-/// pending request completes with [`FerricError::PinnedCanceled`]. An in-flight
-/// run completes normally with [`FerricHaltReason::HaltRequested`]. Returns
-/// [`FerricError::NotFound`] if the request is unknown, finished, or is a
-/// non-run operation that has already started.
+/// Ordinarily, a request waiting for queue capacity makes its submission call
+/// return [`FerricError::PinnedCanceled`] without firing its completion. An
+/// admitted pending request completes with [`FerricError::PinnedCanceled`].
+/// An in-flight run completes normally with
+/// [`FerricHaltReason::HaltRequested`].
+///
+/// [`FerricError::Ok`] confirms only that cancellation was recorded.
+/// Cancellation does not guarantee that a concurrent submission succeeds.
+/// Queue timeout, close, or dispatch failure may win the race.
+/// A failed submission fires no completion.
+///
+/// Returns [`FerricError::NotFound`] if the request is unknown, finished, or
+/// is a non-run operation that has already started.
 ///
 /// # Safety
 ///

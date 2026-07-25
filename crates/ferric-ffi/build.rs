@@ -96,6 +96,8 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * request by ID. Capacity waiters wake without being admitted,
  * admitted pending requests are canceled before dispatch, and
  * an active run is interrupted cooperatively at a chunk boundary.
+ * A successful cancel does not guarantee that a concurrent
+ * submission succeeds; any failed submission fires no completion.
  */";
 
 /// Bounds-safety annotation macros injected after the standard includes.
