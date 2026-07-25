@@ -150,6 +150,7 @@ struct AsyncRequestRegistration {
 /// thread. It must be transport-only — resume a continuation, signal an
 /// event, post to an actor — and must not call back into the same
 /// `FerricPinnedEngine` synchronously or perform long work.
+/// It must return normally and must not unwind across the FFI boundary.
 pub type FerricPinnedCompletionFn = Option<
     unsafe extern "C" fn(context: *mut c_void, code: FerricError, result: *mut FerricPinnedResult),
 >;

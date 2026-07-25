@@ -83,8 +83,9 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * It must be transport-only: resume a continuation, signal an
  * event, post to an actor / event loop. It must NOT call back
  * into the same FerricPinnedEngine synchronously, perform long
- * work, or block. The owned FerricPinnedResult outlives the
- * callback; the caller is responsible for ferric_pinned_result_free.
+ * work, or block, and must not unwind across the FFI boundary.
+ * The owned FerricPinnedResult outlives the callback; the caller
+ * is responsible for ferric_pinned_result_free.
  *
  * Halt: ferric_pinned_engine_halt() requests cancellation of
  * the active run, which checks between bounded chunks of rule

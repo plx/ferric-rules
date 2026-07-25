@@ -115,6 +115,15 @@ fn header_documents_cancel_and_submission_race() {
 }
 
 #[test]
+fn header_documents_completion_callback_unwind_contract() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("must not unwind across the FFI boundary"),
+        "Completion callback docs must forbid unwinding into Rust"
+    );
+}
+
+#[test]
 fn ci_checks_both_committed_headers_after_generation() {
     let workflow = read_ci_workflow();
     let build_position = workflow
