@@ -15,9 +15,9 @@
 //!   Typed operations (`run`, `load_str`, …) are thin wrappers that construct
 //!   the closure and ship the typed `Result` back through a per-request
 //!   oneshot.
-//! - [`PinnedEngine::halt`] flips a shared `AtomicBool`; the worker's
-//!   `run` handler bounds [`Engine::run`] into 64-firing chunks and checks
-//!   the flag between chunks. No changes to `ferric-runtime` are required.
+//! - [`PinnedEngine::halt`] flips the active run's cancellation token; the
+//!   worker bounds [`Engine::run`] into 64-firing chunks and checks the token
+//!   between chunks. Idle calls are non-latching no-ops.
 //! - Autorelease policy (`None` / `PerItem` / `PerBatch`) is a no-op on
 //!   non-Apple platforms.
 

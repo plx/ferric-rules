@@ -83,9 +83,11 @@
  * work, or block. The owned FerricPinnedResult outlives the
  * callback; the caller is responsible for ferric_pinned_result_free.
  *
- * Halt: ferric_pinned_engine_halt() flips a shared cancel flag
- * that the in-flight run() checks between bounded chunks of
- * rule firings (cooperative cancellation, not hard preemption).
+ * Halt: ferric_pinned_engine_halt() requests cancellation of
+ * the active run, which checks between bounded chunks of rule
+ * firings (cooperative cancellation, not hard preemption). If
+ * no run is active, halt has no effect and does not latch onto
+ * queued or future runs.
  */
 
 #ifndef FERRIC_H
@@ -1263,8 +1265,9 @@ enum FerricError ferric_pinned_engine_free(struct FerricPinnedEngine *engine);
 // - `engine` must be a valid handle (NULL ⇒ `false`).
 bool ferric_pinned_engine_is_closed(const struct FerricPinnedEngine *engine);
 
-// Flip the shared cancel flag. The currently-running (or next-dispatched)
-// `run` will exit with `HaltRequested` at the next cancel-chunk boundary.
+// Request that the active run exit with `HaltRequested` at the next
+// cancel-chunk boundary. Has no effect when no run is active and does not
+// latch onto queued or future runs.
 //
 // # Safety
 //

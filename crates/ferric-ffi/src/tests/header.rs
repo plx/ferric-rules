@@ -65,6 +65,15 @@ fn header_has_ownership_docs() {
 }
 
 #[test]
+fn header_documents_active_only_pinned_halt() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("does not latch onto\n * queued or future runs"),
+        "Pinned halt docs must state that idle calls do not latch"
+    );
+}
+
+#[test]
 fn header_contains_ferric_error_enum() {
     let header = read_committed_header();
     assert!(header.contains("FerricError"), "Missing FerricError type");

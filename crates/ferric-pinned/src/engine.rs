@@ -40,11 +40,9 @@ struct PinnedInner {
     closed: Arc<AtomicBool>,
 }
 
-/// Coordinates `halt()` with the worker's currently active or next-dispatched
-/// run request.
+/// Coordinates `halt()` with the worker's currently active run request.
 struct CancelState {
     active_run: Mutex<Option<Arc<AtomicBool>>>,
-    pending_halt: AtomicBool,
 }
 
 struct ActiveRunGuard<'a> {
@@ -123,8 +121,10 @@ impl PinnedEngine {
         self.inner.closed.load(Ordering::Acquire)
     }
 
-    /// Request that the in-flight, or next-dispatched, `run` exit at the next
-    /// cancel-chunk boundary.
+    /// Request that the active `run` exit at the next cancel-chunk boundary.
+    ///
+    /// Has no effect while the worker is idle or handling another operation,
+    /// and does not latch onto queued or future runs.
     pub fn halt(&self) {
         self.inner.cancel.halt();
     }
@@ -178,9 +178,11 @@ impl PinnedEngine {
         let cancel_token = Arc::new(AtomicBool::new(false));
         let closed = self.inner.closed.clone();
         self.with_engine(move |engine| {
-            let _guard = cancel_state.activate(cancel_token.clone());
-            worker::run_with_cancel(engine, limit, &cancel_token, &closed)
-                .map_err(PinnedError::from)
+            let guard = cancel_state.activate(cancel_token.clone());
+            let result = worker::run_with_cancel(engine, limit, &cancel_token, &closed)
+                .map_err(PinnedError::from);
+            drop(guard);
+            result
         })
     }
 
@@ -240,9 +242,10 @@ impl PinnedEngine {
                 completion(Err(err));
                 return;
             }
-            let _guard = cancel_state.activate(cancel_token.clone());
+            let guard = cancel_state.activate(cancel_token.clone());
             let result = crate::worker::run_with_cancel(engine, limit, &cancel_token, &closed)
                 .map_err(PinnedError::from);
+            drop(guard);
             completion(result);
         })
     }
@@ -350,7 +353,6 @@ impl CancelState {
     fn new() -> Self {
         Self {
             active_run: Mutex::new(None),
-            pending_halt: AtomicBool::new(false),
         }
     }
 
@@ -361,8 +363,6 @@ impl CancelState {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(token) = active.as_ref() {
             token.store(true, Ordering::Release);
-        } else {
-            self.pending_halt.store(true, Ordering::Release);
         }
     }
 
@@ -371,9 +371,6 @@ impl CancelState {
             .active_run
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.pending_halt.swap(false, Ordering::AcqRel) {
-            token.store(true, Ordering::Release);
-        }
         *active = Some(token.clone());
         ActiveRunGuard { state: self, token }
     }

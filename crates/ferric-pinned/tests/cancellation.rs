@@ -64,21 +64,21 @@ fn halt_cancels_unlimited_run() {
 }
 
 #[test]
-fn halt_before_run_takes_effect_immediately() {
+fn halt_while_idle_does_not_affect_later_run() {
     let engine = PinnedEngine::new(PinnedEngineOptions::default()).unwrap();
     engine.load_str(CYCLING_RULES).unwrap();
     engine.reset().unwrap();
 
-    // Halt before run applies to the next-dispatched run.
+    // Global halt is active-run-only; an idle call must not poison a later run.
     engine.halt();
 
     let result = engine.run(RunLimit::Count(5)).unwrap();
-    assert_eq!(result.halt_reason, HaltReason::HaltRequested);
-    assert_eq!(result.rules_fired, 0);
+    assert_eq!(result.halt_reason, HaltReason::LimitReached);
+    assert_eq!(result.rules_fired, 5);
 }
 
 #[test]
-fn halt_after_submit_but_before_dispatch_is_honored() {
+fn halt_does_not_cancel_a_queued_run() {
     let engine = Arc::new(PinnedEngine::new(PinnedEngineOptions::default()).unwrap());
     engine.load_str(CYCLING_RULES).unwrap();
     engine.reset().unwrap();
@@ -105,7 +105,7 @@ fn halt_after_submit_but_before_dispatch_is_honored() {
         .unwrap();
 
     // This halt happens after the first run is accepted but before the worker
-    // dispatches it.
+    // dispatches it. Global halt must not latch onto queued work.
     engine.halt();
 
     let (second_tx, second_rx) = mpsc::channel();
@@ -122,8 +122,8 @@ fn halt_after_submit_but_before_dispatch_is_honored() {
         .recv_timeout(Duration::from_secs(2))
         .unwrap()
         .unwrap();
-    assert_eq!(first.halt_reason, HaltReason::HaltRequested);
-    assert_eq!(first.rules_fired, 0);
+    assert_eq!(first.halt_reason, HaltReason::LimitReached);
+    assert_eq!(first.rules_fired, 10);
 
     let second = second_rx
         .recv_timeout(Duration::from_secs(2))

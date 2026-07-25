@@ -86,9 +86,11 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * work, or block. The owned FerricPinnedResult outlives the
  * callback; the caller is responsible for ferric_pinned_result_free.
  *
- * Halt: ferric_pinned_engine_halt() flips a shared cancel flag
- * that the in-flight run() checks between bounded chunks of
- * rule firings (cooperative cancellation, not hard preemption).
+ * Halt: ferric_pinned_engine_halt() requests cancellation of
+ * the active run, which checks between bounded chunks of rule
+ * firings (cooperative cancellation, not hard preemption). If
+ * no run is active, halt has no effect and does not latch onto
+ * queued or future runs.
  */";
 
 /// Bounds-safety annotation macros injected after the standard includes.

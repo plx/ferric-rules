@@ -352,8 +352,9 @@ pub unsafe extern "C" fn ferric_pinned_engine_is_closed(engine: *const FerricPin
     }
 }
 
-/// Flip the shared cancel flag. The currently-running (or next-dispatched)
-/// `run` will exit with `HaltRequested` at the next cancel-chunk boundary.
+/// Request that the active run exit with `HaltRequested` at the next
+/// cancel-chunk boundary. Has no effect when no run is active and does not
+/// latch onto queued or future runs.
 ///
 /// # Safety
 ///
