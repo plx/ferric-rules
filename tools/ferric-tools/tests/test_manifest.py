@@ -6,7 +6,11 @@ Verifies load/save round-trip fidelity and the ISO timestamp helper.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import pytest
+
+import ferric_tools._manifest as manifest_module
 from ferric_tools._manifest import load_manifest, save_manifest, utc_now_iso
 
 # ---------------------------------------------------------------------------
@@ -76,6 +80,46 @@ def test_save_preserves_unicode(tmp_path):
 
     raw = manifest_path.read_text(encoding="utf-8")
     assert "héllo wörld" in raw, "save_manifest must not escape non-ASCII characters"
+
+
+def test_save_replaces_from_same_directory(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text('{"version": 1}\n', encoding="utf-8")
+    real_replace = manifest_module.os.replace
+    replacements: list[tuple[Path, Path]] = []
+
+    def recording_replace(source, destination):
+        source_path = Path(source)
+        destination_path = Path(destination)
+        replacements.append((source_path, destination_path))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(manifest_module.os, "replace", recording_replace)
+
+    save_manifest(manifest_path, {"version": 2})
+
+    assert len(replacements) == 1
+    assert replacements[0][1] == manifest_path
+    assert replacements[0][0].parent == manifest_path.parent
+    assert load_manifest(manifest_path) == {"version": 2}
+    assert list(tmp_path.iterdir()) == [manifest_path]
+
+
+def test_save_replace_failure_preserves_old_manifest_and_cleans_temp(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.json"
+    old_data = {"version": 1, "files": {"old.clp": {}}}
+    save_manifest(manifest_path, old_data)
+
+    def fail_replace(_source, _destination):
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(manifest_module.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="injected replace failure"):
+        save_manifest(manifest_path, {"version": 2, "files": {"new.clp": {}}})
+
+    assert load_manifest(manifest_path) == old_data
+    assert list(tmp_path.iterdir()) == [manifest_path]
 
 
 def test_load_manifest_returns_dict(tmp_path):

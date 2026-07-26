@@ -21,6 +21,11 @@ import typer
 from rich.console import Console
 
 from ferric_tools._formatting import normalize_floats, normalize_output
+from ferric_tools._harness import (
+    HarnessContractError,
+    ResolvedHarness,
+    resolve_harness_contract,
+)
 from ferric_tools._manifest import load_manifest, save_manifest
 from ferric_tools._paths import (
     examples_dir as default_examples_dir,
@@ -38,6 +43,7 @@ from ferric_tools._subprocess import parallel_run
 
 app = typer.Typer(help="Run CLIPS compatibility assessment.")
 console = Console(stderr=True)
+VALID_RUNABILITY = {"batch", "interactive", "library", "standalone", "unknown"}
 
 
 # ---------------------------------------------------------------------------
@@ -183,27 +189,27 @@ def classify_results(ferric_result: dict, clips_result: dict | None) -> tuple[st
 
 def process_file(args: tuple) -> tuple:
     """Process a single file through both engines."""
-    rel_path, abs_path, ferric, root, script, timeout, skip_clips, harness_path = args
+    rel_path, abs_path, ferric, root, script, timeout, skip_clips, harness = args
 
     run_path = abs_path
     tmp_path = None
     try:
-        if harness_path and os.path.exists(harness_path):
-            with open(abs_path) as f_orig:
-                original_content = f_orig.read()
-            with open(harness_path) as f_harness:
-                harness_content = f_harness.read()
-            with tempfile.NamedTemporaryFile(suffix=".clp", delete=False, mode="w") as tmp:
-                tmp.write(original_content)
-                tmp.write("\n")
-                tmp.write(harness_content)
+        if harness is not None:
+            with tempfile.NamedTemporaryFile(suffix=".clp", delete=False, mode="wb") as tmp:
+                tmp.write(harness.source_bytes)
+                tmp.write(b"\n")
+                tmp.write(harness.harness_bytes)
             tmp_path = tmp.name
             run_path = tmp_path
 
         ferric_result = run_ferric(run_path, ferric, timeout)
+        if harness is not None:
+            ferric_result["harness"] = dict(harness.metadata)
         clips_result = None
         if not skip_clips:
             clips_result = run_clips_docker(run_path, root, script, timeout)
+            if harness is not None:
+                clips_result["harness"] = dict(harness.metadata)
         classification, reason = classify_results(ferric_result, clips_result)
         return rel_path, ferric_result, clips_result, classification, reason
     finally:
@@ -212,13 +218,20 @@ def process_file(args: tuple) -> tuple:
                 os.unlink(tmp_path)
 
 
-def _resolve_harness(entry: dict, root: Path) -> str | None:
-    """Resolve harness path from manifest entry, or None."""
-    harness = entry.get("harness")
-    if not harness:
-        return None
-    path = root / harness
-    return str(path) if path.exists() else None
+def _resolve_harness(
+    entry: dict,
+    *,
+    source_path: Path,
+    root: Path,
+    manifest_key: str,
+) -> ResolvedHarness | None:
+    """Validate and resolve a library entry's structured harness contract."""
+    return resolve_harness_contract(
+        entry,
+        source_path=source_path,
+        root=root,
+        manifest_key=manifest_key,
+    )
 
 
 @app.command()
@@ -275,9 +288,23 @@ def main(
             console.print("[yellow]warning:[/] Docker not available. Using --skip-clips mode.")
             skip_clips = True
 
-    # Select files to run
+    # Select files and validate all library harnesses before starting engines.
     files_to_run: list[tuple[str, str]] = []
+    resolved_harnesses: dict[str, ResolvedHarness | None] = {}
+    harness_targets: dict[Path, str] = {}
     for rel_path, info in mdata["files"].items():
+        runability = info.get("runability")
+        if runability not in VALID_RUNABILITY:
+            console.print(
+                f"[red]error:[/] {rel_path}: invalid or missing runability: {runability!r}"
+            )
+            raise typer.Exit(1)
+        if "harness" in info and runability != "library":
+            console.print(
+                f"[red]error:[/] {rel_path}: harness contract requires library runability"
+            )
+            raise typer.Exit(1)
+
         if file:
             if rel_path != file:
                 continue
@@ -308,8 +335,40 @@ def main(
             abs_path = root / "tests" / rel_path
         else:
             abs_path = ed / rel_path
-        if not abs_path.exists():
+        if runability == "library":
+            try:
+                resolved_harness = _resolve_harness(
+                    info,
+                    source_path=abs_path,
+                    root=root,
+                    manifest_key=rel_path,
+                )
+            except HarnessContractError as error:
+                console.print(f"[red]error:[/] {error}")
+                raise typer.Exit(1) from error
+
+            if resolved_harness is None:
+                if file:
+                    skip_reason = info["harness"].get("skip_reason", "not executable")
+                    console.print(
+                        f"[red]error:[/] {rel_path}: harness is not executable ({skip_reason})"
+                    )
+                    raise typer.Exit(1)
+                continue
+
+            target = resolved_harness.path
+            if previous := harness_targets.get(target):
+                console.print(
+                    "[red]error:[/] duplicate harness mapping: "
+                    f"{previous} and {rel_path} -> {target}"
+                )
+                raise typer.Exit(1)
+            harness_targets[target] = rel_path
+            resolved_harnesses[rel_path] = resolved_harness
+        elif not abs_path.exists():
             continue
+        else:
+            resolved_harnesses[rel_path] = None
 
         files_to_run.append((rel_path, str(abs_path)))
 
@@ -337,7 +396,7 @@ def main(
             script,
             timeout,
             skip_clips,
-            _resolve_harness(mdata["files"].get(rel, {}), root),
+            resolved_harnesses[rel],
         )
         for rel, abs_p in files_to_run
     ]
