@@ -532,6 +532,24 @@ fn main() {
     bindings.write(&mut buf);
     let mut header = String::from_utf8(buf).expect("cbindgen output was not valid UTF-8");
 
+    // Strip the trailing comma cbindgen emits after the last enum variant:
+    // strict C++98/03 (-pedantic-errors) rejects it. Applied line-wise so
+    // only a comma immediately preceding a closing brace is touched.
+    let mut lines: Vec<String> = header.lines().map(String::from).collect();
+    let mut stripped = 0;
+    for i in 0..lines.len().saturating_sub(1) {
+        if lines[i].ends_with(',') && lines[i + 1].trim_start().starts_with('}') {
+            lines[i].pop();
+            stripped += 1;
+        }
+    }
+    assert!(
+        stripped > 0,
+        "expected at least one trailing enum comma to strip; cbindgen output format changed"
+    );
+    header = lines.join("\n");
+    header.push('\n');
+
     // Inject bounds-safety macro definitions after the standard includes.
     let inject_marker = "#include <stdlib.h>";
     let inject_pos = header

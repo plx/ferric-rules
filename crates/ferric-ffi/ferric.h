@@ -187,27 +187,27 @@ typedef enum FerricError {
     // A synchronous pinned call was attempted from that engine's worker thread.
     FERRIC_ERROR_PINNED_REENTRANT_CALL = 15,
     // Internal/unexpected error.
-    FERRIC_ERROR_INTERNAL_ERROR = 99,
+    FERRIC_ERROR_INTERNAL_ERROR = 99
 } FerricError;
 
 // C-facing fact type discriminant.
 typedef enum FerricFactType {
     FERRIC_FACT_TYPE_ORDERED = 0,
-    FERRIC_FACT_TYPE_TEMPLATE = 1,
+    FERRIC_FACT_TYPE_TEMPLATE = 1
 } FerricFactType;
 
 // C-facing halt reason returned by `ferric_engine_run_ex`.
 typedef enum FerricHaltReason {
     FERRIC_HALT_REASON_AGENDA_EMPTY = 0,
     FERRIC_HALT_REASON_LIMIT_REACHED = 1,
-    FERRIC_HALT_REASON_HALT_REQUESTED = 2,
+    FERRIC_HALT_REASON_HALT_REQUESTED = 2
 } FerricHaltReason;
 
 // C-facing string-encoding configuration for `FerricConfig`.
 typedef enum FerricStringEncoding {
     FERRIC_STRING_ENCODING_ASCII = 0,
     FERRIC_STRING_ENCODING_UTF8 = 1,
-    FERRIC_STRING_ENCODING_ASCII_SYMBOLS_UTF8_STRINGS = 2,
+    FERRIC_STRING_ENCODING_ASCII_SYMBOLS_UTF8_STRINGS = 2
 } FerricStringEncoding;
 
 // C-facing conflict-resolution strategy for `FerricConfig`.
@@ -215,7 +215,7 @@ typedef enum FerricConflictStrategy {
     FERRIC_CONFLICT_STRATEGY_DEPTH = 0,
     FERRIC_CONFLICT_STRATEGY_BREADTH = 1,
     FERRIC_CONFLICT_STRATEGY_LEX = 2,
-    FERRIC_CONFLICT_STRATEGY_MEA = 3,
+    FERRIC_CONFLICT_STRATEGY_MEA = 3
 } FerricConflictStrategy;
 
 // C-facing value type discriminant.
@@ -234,7 +234,7 @@ typedef enum FerricValueType {
     FERRIC_VALUE_TYPE_SYMBOL = 3,
     FERRIC_VALUE_TYPE_STRING = 4,
     FERRIC_VALUE_TYPE_MULTIFIELD = 5,
-    FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6,
+    FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6
 } FerricValueType;
 
 #if defined(FERRIC_SERDE)
@@ -250,7 +250,7 @@ typedef enum FerricSerializationFormat {
     // `MessagePack` (compact binary, JSON-like schema).
     FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK = 3,
     // Postcard (compact, `no_std`-friendly binary).
-    FERRIC_SERIALIZATION_FORMAT_POSTCARD = 4,
+    FERRIC_SERIALIZATION_FORMAT_POSTCARD = 4
 } FerricSerializationFormat;
 #endif
 
@@ -261,7 +261,7 @@ typedef enum FerricPinnedAutoreleasePolicy {
     // Install one pool per drained request.
     FERRIC_PINNED_AUTORELEASE_POLICY_PER_ITEM = 1,
     // Install one pool per drained batch.
-    FERRIC_PINNED_AUTORELEASE_POLICY_PER_BATCH = 2,
+    FERRIC_PINNED_AUTORELEASE_POLICY_PER_BATCH = 2
 } FerricPinnedAutoreleasePolicy;
 
 // Opaque engine handle exposed to C.

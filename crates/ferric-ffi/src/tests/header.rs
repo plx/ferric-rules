@@ -333,6 +333,17 @@ fn header_has_abi_static_assertions() {
 }
 
 #[test]
+fn header_enums_have_no_trailing_commas() {
+    // Strict C++98/03 (-pedantic-errors) rejects a trailing comma after the
+    // last enum variant; the generator strips the ones cbindgen emits.
+    let header = read_committed_header();
+    assert!(
+        !header.contains(",\n}"),
+        "committed header must not contain trailing commas before closing braces"
+    );
+}
+
+#[test]
 fn header_contains_ferric_engine_opaque() {
     let header = read_committed_header();
     // FerricEngine must appear as an opaque struct, not with its fields exposed
