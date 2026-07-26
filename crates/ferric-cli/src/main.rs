@@ -80,6 +80,29 @@ enum Command {
         file: PathBuf,
     },
 
+    /// Emit a structured compatibility observation.
+    #[command(hide = true)]
+    CompatObserve {
+        /// Stable fixture identifier bound into the lifecycle records.
+        #[arg(long, value_parser = commands::compat_observe::parse_fixture_id)]
+        fixture_id: String,
+
+        /// Per-invocation nonce bound into the lifecycle records.
+        #[arg(long, value_parser = commands::compat_observe::parse_nonce)]
+        nonce: String,
+
+        /// SHA-256 digest of the original fixture source.
+        #[arg(long, value_parser = commands::compat_observe::parse_sha256)]
+        source_sha256: String,
+
+        /// SHA-256 digest of the exact composed input file.
+        #[arg(long, value_parser = commands::compat_observe::parse_sha256)]
+        composed_sha256: String,
+
+        /// Path to the composed CLIPS source to observe.
+        file: PathBuf,
+    },
+
     /// Parse and validate a CLIPS file without executing.
     Check {
         /// Emit diagnostics as JSON objects on stderr.
@@ -150,6 +173,19 @@ fn main() {
 
     let exit_code = match cli.command {
         Command::Run { json, file } => commands::run::execute(json, &file),
+        Command::CompatObserve {
+            fixture_id,
+            nonce,
+            source_sha256,
+            composed_sha256,
+            file,
+        } => commands::compat_observe::execute(
+            &file,
+            fixture_id,
+            nonce,
+            source_sha256,
+            composed_sha256,
+        ),
         Command::Check { json, file } => commands::check::execute(json, &file),
         Command::Repl {
             load,

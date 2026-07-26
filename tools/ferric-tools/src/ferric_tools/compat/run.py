@@ -8,8 +8,11 @@ the manifest with classification results.
 from __future__ import annotations
 
 import contextlib
+import copy
+import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -20,7 +23,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from ferric_tools._formatting import normalize_floats, normalize_output
+from ferric_tools._formatting import normalize_output
 from ferric_tools._harness import (
     HarnessContractError,
     ResolvedHarness,
@@ -42,6 +45,19 @@ from ferric_tools._paths import (
     repo_root,
 )
 from ferric_tools._subprocess import parallel_run
+from ferric_tools.compat.clips_oracle import build_probe_operations, parse_probe_output
+from ferric_tools.compat.oracle import (
+    DECLARATION_VERSION,
+    EvidenceStatus,
+    evaluate_oracle,
+    evaluation_to_dict,
+    validate_declaration,
+)
+from ferric_tools.compat.projection import (
+    ObservationProjectionError,
+    project_clips_observation,
+    project_ferric_observation,
+)
 
 app = typer.Typer(help="Run CLIPS compatibility assessment.")
 console = Console(stderr=True)
@@ -286,38 +302,77 @@ def _retain_failure_artifact(
         ) from error
 
 
-# ---------------------------------------------------------------------------
-# Engine runners
-# ---------------------------------------------------------------------------
+def _timeout_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
-def run_ferric(file_path: str, ferric_bin: str, root: str, timeout_secs: int) -> dict:
-    """Run a .clp file through the ferric CLI."""
+def _output_bytes(value: str | bytes | None) -> bytes:
+    if value is None:
+        return b""
+    if isinstance(value, bytes):
+        return value
+    return value.encode("utf-8")
+
+
+def _display_output(value: bytes) -> str:
+    return value.decode("utf-8", errors="replace")
+
+
+def run_ferric_observer(
+    file_path: str,
+    ferric_bin: str,
+    root: str,
+    timeout_secs: int,
+    *,
+    fixture_id: str,
+    nonce: str,
+    source_sha256: str,
+    composed_sha256: str,
+) -> dict:
+    """Run the dedicated Ferric compatibility observer."""
     start = time.monotonic()
+    command = [
+        ferric_bin,
+        "compat-observe",
+        "--fixture-id",
+        fixture_id,
+        "--nonce",
+        nonce,
+        "--source-sha256",
+        source_sha256,
+        "--composed-sha256",
+        composed_sha256,
+        file_path,
+    ]
     try:
         proc = subprocess.run(
-            [ferric_bin, "run", file_path],
+            command,
             capture_output=True,
             text=True,
             timeout=timeout_secs,
             cwd=root,
         )
         duration_ms = int((time.monotonic() - start) * 1000)
-        return {
+        result = {
             "exit_code": proc.returncode,
             "stdout": proc.stdout,
             "stderr": proc.stderr,
             "duration_ms": duration_ms,
             "timed_out": False,
         }
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
         duration_ms = int((time.monotonic() - start) * 1000)
         return {
             "exit_code": -1,
-            "stdout": "",
-            "stderr": f"timeout after {timeout_secs}s",
+            "stdout": _timeout_text(error.stdout),
+            "stderr": _timeout_text(error.stderr) or f"timeout after {timeout_secs}s",
             "duration_ms": duration_ms,
             "timed_out": True,
+            "observation_error": "observer timed out before terminal evidence",
         }
     except FileNotFoundError:
         return {
@@ -326,41 +381,103 @@ def run_ferric(file_path: str, ferric_bin: str, root: str, timeout_secs: int) ->
             "stderr": f"ferric binary not found: {ferric_bin}",
             "duration_ms": 0,
             "timed_out": False,
+            "observation_error": "observer executable not found",
         }
 
+    try:
+        if result["stdout"].count("\n") != 1 or not result["stdout"].endswith("\n"):
+            raise ValueError("stdout must contain exactly one newline-terminated JSON object")
+        observation = json.loads(result["stdout"])
+        if type(observation) is not dict:
+            raise ValueError("observation must be a JSON object")
+    except (json.JSONDecodeError, ValueError) as error:
+        result["observation_error"] = str(error)
+    else:
+        result["observation"] = observation
+    return result
 
-def run_clips_docker(file_path: str, root: str, script: str, timeout_secs: int) -> dict:
-    """Run a .clp file through the Docker CLIPS harness."""
+
+def run_clips_observer(
+    file_path: str,
+    root: str,
+    script: str,
+    timeout_secs: int,
+    *,
+    fixture_id: str,
+    nonce: str,
+    source_sha256: str,
+    composed_sha256: str,
+    globals_to_capture: tuple[str, ...],
+    harnessed: bool,
+) -> dict:
+    """Run reference CLIPS quietly and parse its nonce-bound post-run probe."""
     resolved_path = _require_contained_file(
         Path(file_path),
         root=Path(root),
         label="CLIPS input",
     )
+    operations = build_probe_operations(
+        fixture_id=fixture_id,
+        nonce=nonce,
+        source_sha256=source_sha256,
+        composed_sha256=composed_sha256,
+        globals_to_capture=globals_to_capture,
+    )
+    auth_key = secrets.token_hex(32)
+    command = [
+        script,
+        "run",
+        "--quiet",
+        "--observer-nonce",
+        nonce,
+        "--observer-fixture-id",
+        fixture_id,
+        "--observer-source-sha256",
+        source_sha256,
+        "--observer-composed-sha256",
+        composed_sha256,
+        "--observer-auth-key",
+        auth_key,
+        "--file",
+        str(resolved_path),
+    ]
+    for operation in operations:
+        command.extend(["--op", operation])
+
     start = time.monotonic()
+    raw_stdout = b""
+    raw_stderr = b""
     try:
         proc = subprocess.run(
-            [script, "run", "--file", str(resolved_path)],
+            command,
             capture_output=True,
-            text=True,
+            text=False,
             timeout=timeout_secs,
             cwd=root,
         )
+        raw_stdout = _output_bytes(proc.stdout)
+        raw_stderr = _output_bytes(proc.stderr)
         duration_ms = int((time.monotonic() - start) * 1000)
-        return {
+        result = {
             "exit_code": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
+            "stdout": _display_output(raw_stdout),
+            "stderr": _display_output(raw_stderr),
             "duration_ms": duration_ms,
             "timed_out": False,
         }
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
         duration_ms = int((time.monotonic() - start) * 1000)
-        return {
+        raw_stdout = _output_bytes(error.stdout)
+        raw_stderr = _output_bytes(error.stderr)
+        partial_stdout = _display_output(raw_stdout)
+        partial_stderr = _display_output(raw_stderr)
+        result = {
             "exit_code": -1,
-            "stdout": "",
-            "stderr": f"timeout after {timeout_secs}s",
+            "stdout": partial_stdout,
+            "stderr": partial_stderr or f"timeout after {timeout_secs}s",
             "duration_ms": duration_ms,
             "timed_out": True,
+            "observation_error": "reference observer timed out before terminal evidence",
         }
     except FileNotFoundError:
         return {
@@ -369,7 +486,25 @@ def run_clips_docker(file_path: str, root: str, script: str, timeout_secs: int) 
             "stderr": f"harness script not found: {script}",
             "duration_ms": 0,
             "timed_out": False,
+            "observation_error": "reference observer executable not found",
         }
+
+    try:
+        observation = parse_probe_output(
+            raw_stdout,
+            raw_stderr=raw_stderr,
+            fixture_id=fixture_id,
+            nonce=nonce,
+            source_sha256=source_sha256,
+            composed_sha256=composed_sha256,
+            auth_key=auth_key,
+            harnessed=harnessed,
+        )
+    except (ValueError, RuntimeError) as error:
+        result["observation_error"] = str(error)
+    else:
+        result["observation"] = observation
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -377,55 +512,146 @@ def run_clips_docker(file_path: str, root: str, script: str, timeout_secs: int) 
 # ---------------------------------------------------------------------------
 
 
-def classify_results(ferric_result: dict, clips_result: dict | None) -> tuple[str, str]:
-    """Classify based on ferric and CLIPS results."""
-    f = ferric_result
-    c = clips_result
+def _oracle_outcome(evaluation) -> tuple[str, str, dict]:
+    """Translate one strict oracle evaluation into manifest fields."""
+    evaluation_dict = evaluation_to_dict(evaluation)
+    mismatches = evaluation_dict["mismatches"]
+    declaration_valid = evaluation.declaration.status is EvidenceStatus.VALID
+    observations_valid = (
+        evaluation.ferric.status is EvidenceStatus.VALID
+        and evaluation.clips.status is EvidenceStatus.VALID
+    )
+    effect_mismatch = any(mismatch["field"] == "effects" for mismatch in mismatches)
+    normalizations = (
+        list(evaluation.declaration.value.normalizers)
+        if declaration_valid and evaluation.declaration.value is not None
+        else []
+    )
+    violations = [
+        f"{mismatch['scope']}.{mismatch['field']}: {mismatch['message']}" for mismatch in mismatches
+    ]
+    evidence = {
+        "status": evaluation.status.value,
+        "version": 1,
+        "declaration": declaration_valid,
+        "reached": observations_valid,
+        "completed": observations_valid,
+        "effect": observations_valid and not effect_mismatch,
+        "normalizations": normalizations,
+        "violations": violations,
+        "evaluation": evaluation_dict,
+    }
 
-    if f["timed_out"] and (c is None or c["timed_out"]):
-        return "incompatible", "timeout-both"
+    if evaluation.status is EvidenceStatus.MISSING:
+        return "pending", "oracle-missing", evidence
+    if evaluation.status is EvidenceStatus.INVALID:
+        field = mismatches[0]["field"] if mismatches else "evidence"
+        reason_field = re.sub(r"[^a-z0-9]+", "-", field.lower()).strip("-") or "evidence"
+        return "pending", f"oracle-invalid:{reason_field}", evidence
+    if evaluation.equivalent:
+        return "equivalent", "oracle-v1-match", evidence
 
-    if c is None:
-        if f["timed_out"]:
-            return "incompatible", "timeout-ferric"
-        if f["exit_code"] != 0:
-            return "incompatible", "ferric-error"
-        return "pending", "ferric-only-clean"
+    field = mismatches[0]["field"] if mismatches else "semantic"
+    reason_field = re.sub(r"[^a-z0-9]+", "-", field.lower()).strip("-") or "semantic"
+    return "divergent", f"oracle-{reason_field}-mismatch", evidence
 
-    if f["timed_out"] and not c["timed_out"]:
-        return "divergent", "timeout-ferric"
 
-    if not f["timed_out"] and c["timed_out"]:
-        return "divergent", "timeout-clips"
+def classify_results(
+    ferric_result: dict,
+    clips_result: dict | None,
+    evaluation=None,
+) -> tuple[str, str]:
+    """Classify only from independently validated structured evidence."""
+    del ferric_result, clips_result
+    if evaluation is None:
+        return "pending", "oracle-missing"
+    classification, reason, _evidence = _oracle_outcome(evaluation)
+    return classification, reason
 
-    if c["exit_code"] == 0:
-        clips_has_error = bool(re.search(r"\[[A-Z]+\d+\]", c["stdout"]))
-        if clips_has_error and f["exit_code"] != 0:
-            return "incompatible", "both-error"
-        if clips_has_error:
-            return "incompatible", "clips-load-error"
 
-    if f["exit_code"] != 0 and c["exit_code"] == 0:
-        return "divergent", "ferric-error"
+def _missing_oracle_evidence() -> dict:
+    """Return the canonical manifest view for an undeclared fixture."""
+    return {
+        "status": "missing",
+        "version": DECLARATION_VERSION,
+        "declaration": False,
+        "reached": False,
+        "completed": False,
+        "effect": False,
+        "normalizations": [],
+        "violations": [],
+    }
 
-    if f["exit_code"] == 0 and c["exit_code"] != 0:
-        return "divergent", "clips-error"
 
-    if f["exit_code"] != 0 and c["exit_code"] != 0:
-        return "incompatible", "both-error"
+def _invalid_observation(error: str) -> dict[str, str]:
+    """Create deliberately invalid input for the strict oracle validator."""
+    return {"observation_error": error}
 
-    f_out = normalize_output(f["stdout"], "ferric")
-    c_out = normalize_output(c["stdout"], "clips")
 
-    if f_out == c_out:
-        if f_out.strip() == "":
-            return "equivalent", "empty-match"
-        return "equivalent", "exact-match"
+def _invalid_preflight_evidence(error: str) -> dict:
+    """Return fail-closed evidence for an oracle input rejected before execution."""
+    return {
+        "status": "invalid",
+        "version": DECLARATION_VERSION,
+        "declaration": False,
+        "reached": False,
+        "completed": False,
+        "effect": False,
+        "normalizations": [],
+        "violations": [error],
+    }
 
-    if normalize_floats(f_out) == normalize_floats(c_out):
-        return "equivalent", "float-normalized-match"
 
-    return "divergent", "output-mismatch"
+def _project_result(
+    result: dict,
+    *,
+    engine: str,
+    harnessed: bool,
+    require_firing_names: bool = False,
+    require_globals: bool = False,
+) -> dict:
+    """Project one successful observer result or return invalid evidence."""
+    observation = result.get("observation")
+    if result.get("timed_out"):
+        error = result.get("observation_error", f"{engine} observer timed out")
+        result["projection_error"] = error
+        return _invalid_observation(error)
+    if result.get("exit_code") != 0:
+        error = result.get(
+            "observation_error",
+            f"{engine} observer exited with status {result.get('exit_code')!r}",
+        )
+        result["projection_error"] = error
+        return _invalid_observation(error)
+    if engine == "ferric" and result.get("stderr"):
+        error = "ferric observer emitted out-of-band stderr"
+        result["projection_error"] = error
+        return _invalid_observation(error)
+    if type(observation) is not dict:
+        error = result.get("observation_error", f"{engine} observation is missing")
+        result["projection_error"] = error
+        return _invalid_observation(error)
+
+    try:
+        if engine == "ferric":
+            projected = project_ferric_observation(
+                observation,
+                harnessed=harnessed,
+                require_firing_names=require_firing_names,
+                require_globals=require_globals,
+            )
+        else:
+            projected = project_clips_observation(
+                observation,
+                harnessed=harnessed,
+                require_firing_names=require_firing_names,
+            )
+    except ObservationProjectionError as error:
+        result["projection_error"] = str(error)
+        return _invalid_observation(str(error))
+
+    result["canonical_observation"] = projected
+    return projected
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +672,11 @@ def process_file(args: tuple) -> tuple:
         harness,
         run_workspace,
         failures_dir,
+        *oracle_args,
     ) = args
+    if len(oracle_args) != 1 or oracle_args[0] is None:
+        raise TypeError("compatibility work item requires one structured oracle declaration")
+    declaration = oracle_args[0]
 
     run_path = abs_path
     composed_path: Path | None = None
@@ -468,6 +698,29 @@ def process_file(args: tuple) -> tuple:
                 root=resolved_root,
             )
             run_path = str(composed_path)
+        else:
+            if run_workspace is None:
+                raise CompatibilityWorkspaceError(
+                    f"{rel_path}: oracle execution requires an invocation workspace"
+                )
+            source_path = _require_contained_file(
+                Path(abs_path),
+                root=resolved_root,
+                label=f"{rel_path} source",
+            )
+            try:
+                composed_content = source_path.read_bytes()
+            except OSError as error:
+                raise CompatibilityWorkspaceError(
+                    f"{rel_path}: cannot read compatibility source: {error}"
+                ) from error
+            composed_digest = sha256_bytes(composed_content)
+            composed_path = _materialize_composed_source(
+                composed_content,
+                workspace=Path(run_workspace),
+                root=resolved_root,
+            )
+            run_path = str(composed_path)
 
         if composed_path is not None and composed_content is not None:
             _verify_composed_source(
@@ -476,20 +729,127 @@ def process_file(args: tuple) -> tuple:
                 root=resolved_root,
                 boundary="before Ferric execution",
             )
-        ferric_result = run_ferric(run_path, ferric, root, timeout)
+        assert composed_content is not None
+        assert composed_digest is not None
+        source_content = harness.source_bytes if harness is not None else composed_content
+        source_digest = sha256_bytes(source_content)
+        runtime_declaration = copy.deepcopy(declaration)
+        runtime_declaration["nonce"] = secrets.token_hex(16)
+        declaration_evidence = validate_declaration(
+            runtime_declaration,
+            expected_source_sha256=source_digest,
+            expected_composed_sha256=composed_digest,
+        )
+
+        if declaration_evidence.status is EvidenceStatus.VALID:
+            fixture_id = runtime_declaration["id"]
+            nonce = runtime_declaration["nonce"]
+            ferric_result = run_ferric_observer(
+                run_path,
+                ferric,
+                root,
+                timeout,
+                fixture_id=fixture_id,
+                nonce=nonce,
+                source_sha256=source_digest,
+                composed_sha256=composed_digest,
+            )
+            ferric_observation = _project_result(
+                ferric_result,
+                engine="ferric",
+                harnessed=harness is not None,
+                require_firing_names=(
+                    runtime_declaration["expectations"]["firings"]["names"] is not None
+                ),
+                require_globals=(runtime_declaration["expectations"]["globals"] is not None),
+            )
+        else:
+            ferric_result = {
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": "oracle declaration is invalid for the current source",
+                "duration_ms": 0,
+                "timed_out": False,
+                "observation_error": "oracle declaration validation failed",
+            }
+            ferric_observation = None
+
+        if composed_path is not None:
+            _verify_composed_source(
+                composed_path,
+                composed_content,
+                root=resolved_root,
+                boundary="before CLIPS execution",
+            )
+
+        if declaration_evidence.status is EvidenceStatus.VALID and not skip_clips:
+            globals_expectation = runtime_declaration["expectations"]["globals"]
+            globals_to_capture = (
+                ()
+                if globals_expectation is None
+                else tuple(item["name"] for item in globals_expectation)
+            )
+            clips_result = run_clips_observer(
+                run_path,
+                root,
+                script,
+                timeout,
+                fixture_id=fixture_id,
+                nonce=nonce,
+                source_sha256=source_digest,
+                composed_sha256=composed_digest,
+                globals_to_capture=globals_to_capture,
+                harnessed=harness is not None,
+            )
+            clips_observation = _project_result(
+                clips_result,
+                engine="clips",
+                harnessed=harness is not None,
+                require_firing_names=(
+                    runtime_declaration["expectations"]["firings"]["names"] is not None
+                ),
+            )
+        else:
+            clips_result = {
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": (
+                    "reference observer was skipped"
+                    if skip_clips
+                    else "oracle declaration is invalid for the current source"
+                ),
+                "duration_ms": 0,
+                "timed_out": False,
+                "observation_error": (
+                    "reference observer was skipped"
+                    if skip_clips
+                    else "oracle declaration validation failed"
+                ),
+            }
+            clips_observation = (
+                _invalid_observation("reference observer was skipped") if skip_clips else None
+            )
+
+        evaluation = evaluate_oracle(
+            runtime_declaration,
+            ferric_observation,
+            clips_observation,
+            expected_source_sha256=source_digest,
+            expected_composed_sha256=composed_digest,
+        )
+        classification, reason, evidence = _oracle_outcome(evaluation)
+        for engine_name, engine_result in (
+            ("ferric", ferric_result),
+            ("clips", clips_result),
+        ):
+            if projection_error := engine_result.get("projection_error"):
+                evidence["violations"].append(f"{engine_name}.projection: {projection_error}")
+        ferric_result["oracle_evidence"] = evidence
+        clips_result["oracle_evidence"] = evidence
+
         if harness is not None:
             ferric_result["harness"] = dict(harness.metadata)
-        clips_result = None
-        if not skip_clips:
-            if composed_path is not None and composed_content is not None:
-                _verify_composed_source(
-                    composed_path,
-                    composed_content,
-                    root=resolved_root,
-                    boundary="before CLIPS execution",
-                )
-            clips_result = run_clips_docker(run_path, root, script, timeout)
-            if harness is not None:
+            if clips_result is not None:
                 clips_result["harness"] = dict(harness.metadata)
         if composed_path is not None and composed_content is not None:
             _verify_composed_source(
@@ -498,14 +858,16 @@ def process_file(args: tuple) -> tuple:
                 root=resolved_root,
                 boundary="after engine execution",
             )
-        classification, reason = classify_results(ferric_result, clips_result)
 
+        retain_failure = classification in FAILED_CLASSIFICATIONS or reason.startswith(
+            "oracle-invalid"
+        )
         if composed_content is not None and composed_digest is not None:
             composed_metadata: dict[str, str | int] = {
                 "sha256": composed_digest,
                 "size_bytes": len(composed_content),
             }
-            if classification in FAILED_CLASSIFICATIONS:
+            if retain_failure:
                 retained_artifact = _retain_failure_artifact(
                     composed_content,
                     composed_digest,
@@ -570,6 +932,24 @@ def _resolve_harness(
     )
 
 
+def _recompute_summary(manifest_data: dict) -> dict[str, int]:
+    """Recompute compatibility totals after selection or execution updates."""
+    summary = {
+        "total": 0,
+        "equivalent": 0,
+        "divergent": 0,
+        "incompatible": 0,
+        "pending": 0,
+    }
+    for info in manifest_data["files"].values():
+        summary["total"] += 1
+        classification = info.get("classification")
+        if classification in summary:
+            summary[classification] += 1
+    manifest_data["summary"] = summary
+    return summary
+
+
 @app.command()
 def main(
     all_files: Annotated[bool, typer.Option("--all", help="Run all testable files")] = False,
@@ -601,33 +981,25 @@ def main(
         raise typer.Exit(1)
 
     mdata = load_manifest(manifest_path)
-
-    if not dry_run and not Path(ferric).exists():
-        console.print(f"[red]error:[/] ferric binary not found: {ferric}")
-        console.print("Run: cargo build --release -p ferric-cli")
+    if (
+        mdata.get("version") != 3
+        or mdata.get("oracle_protocol_version") != DECLARATION_VERSION
+        or type(mdata.get("files")) is not dict
+    ):
+        console.print(
+            "[red]error:[/] manifest is not structured-oracle schema v3; "
+            "run ferric-compat-scan first"
+        )
         raise typer.Exit(1)
-
-    # Check Docker CLIPS availability
-    if not skip_clips and not dry_run:
-        try:
-            result = subprocess.run(
-                ["docker", "image", "inspect", "ferric-rules/clips-reference:latest"],
-                capture_output=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                console.print(
-                    "[yellow]warning:[/] Docker CLIPS image not found. Using --skip-clips mode."
-                )
-                skip_clips = True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            console.print("[yellow]warning:[/] Docker not available. Using --skip-clips mode.")
-            skip_clips = True
 
     # Select files and validate all library harnesses before starting engines.
     files_to_run: list[tuple[str, str]] = []
     resolved_harnesses: dict[str, ResolvedHarness | None] = {}
+    declarations: dict[str, dict] = {}
     harness_targets: dict[Path, str] = {}
+    missing_selected: list[str] = []
+    invalid_selected: list[tuple[str, str]] = []
+    file_was_found = False
     for rel_path, info in mdata["files"].items():
         runability = info.get("runability")
         if runability not in VALID_RUNABILITY:
@@ -644,6 +1016,7 @@ def main(
         if file:
             if rel_path != file:
                 continue
+            file_was_found = True
         elif only_pending:
             if info["classification"] != "pending":
                 continue
@@ -662,6 +1035,27 @@ def main(
                 continue
 
         if source and info["source"] != source:
+            continue
+
+        declaration = info.get("oracle")
+        if declaration is None:
+            missing_selected.append(rel_path)
+            if not dry_run:
+                info["classification"] = "pending"
+                info["reason"] = "oracle-missing"
+                info["oracle_evidence"] = _missing_oracle_evidence()
+                info["ferric"] = None
+                info["clips"] = None
+            continue
+        if type(declaration) is not dict:
+            message = "oracle declaration must be an object"
+            invalid_selected.append((rel_path, message))
+            if not dry_run:
+                info["classification"] = "pending"
+                info["reason"] = "oracle-invalid:declaration"
+                info["oracle_evidence"] = _invalid_preflight_evidence(message)
+                info["ferric"] = None
+                info["clips"] = None
             continue
 
         generated = info.get("generated")
@@ -701,27 +1095,99 @@ def main(
                 raise typer.Exit(1)
             harness_targets[target] = rel_path
             resolved_harnesses[rel_path] = resolved_harness
-        elif not abs_path.exists():
-            continue
         else:
+            try:
+                _require_contained_file(
+                    abs_path,
+                    root=root,
+                    label=f"{rel_path} source",
+                )
+            except CompatibilityWorkspaceError as error:
+                message = str(error)
+                invalid_selected.append((rel_path, message))
+                if not dry_run:
+                    info["classification"] = "pending"
+                    info["reason"] = "oracle-invalid:source"
+                    info["oracle_evidence"] = _invalid_preflight_evidence(message)
+                    info["ferric"] = None
+                    info["clips"] = None
+                continue
             resolved_harnesses[rel_path] = None
 
         files_to_run.append((rel_path, str(abs_path)))
+        declarations[rel_path] = declaration
+
+    if file and not file_was_found:
+        console.print(f"[red]error:[/] file is absent from the manifest: {file}")
+        raise typer.Exit(1)
+    if file and missing_selected:
+        if not dry_run:
+            _recompute_summary(mdata)
+            save_manifest(manifest_path, mdata)
+        console.print(
+            f"[red]error:[/] {file}: no structured oracle declaration; the fixture remains pending"
+        )
+        if not dry_run:
+            console.print(f"Manifest updated: {manifest_path}")
+        raise typer.Exit(1)
+    if invalid_selected:
+        if not dry_run:
+            _recompute_summary(mdata)
+            save_manifest(manifest_path, mdata)
+        for rel_path, message in invalid_selected:
+            console.print(f"[red]error:[/] {rel_path}: {message}")
+        if not dry_run:
+            console.print(f"Manifest updated: {manifest_path}")
+        raise typer.Exit(1)
 
     if not files_to_run:
-        print("No files to run.")
+        if not dry_run and missing_selected:
+            _recompute_summary(mdata)
+            save_manifest(manifest_path, mdata)
+            print(
+                f"No oracle-backed files to run; "
+                f"{len(missing_selected)} selected file(s) remain pending."
+            )
+            print(f"Manifest updated: {manifest_path}")
+        else:
+            print("No oracle-backed files to run.")
         raise typer.Exit(0)
 
     print(f"Files to run: {len(files_to_run)}")
+    if missing_selected:
+        print(f"Pending without oracle: {len(missing_selected)}")
     print(f"Timeout: {timeout}s per engine")
     print(f"Workers: {workers}")
-    print(f"Skip CLIPS: {skip_clips}")
     print()
 
     if dry_run:
         for rel_path, _ in files_to_run:
             print(f"  {rel_path}")
         raise typer.Exit(0)
+
+    if not Path(ferric).exists():
+        console.print(f"[red]error:[/] ferric binary not found: {ferric}")
+        console.print("Run: cargo build --release -p ferric-cli")
+        raise typer.Exit(1)
+    if skip_clips:
+        console.print(
+            "[red]error:[/] --skip-clips cannot produce structured compatibility evidence"
+        )
+        raise typer.Exit(1)
+    try:
+        docker_result = subprocess.run(
+            ["docker", "image", "inspect", "ferric-rules/clips-reference:latest"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+        console.print(f"[red]error:[/] Docker CLIPS is unavailable: {error}")
+        raise typer.Exit(1) from error
+    if docker_result.returncode != 0:
+        console.print(
+            "[red]error:[/] Docker CLIPS image not found: ferric-rules/clips-reference:latest"
+        )
+        raise typer.Exit(1)
 
     completed = 0
     results: dict[str, tuple] = {}
@@ -740,6 +1206,7 @@ def main(
                 resolved_harnesses[rel],
                 str(run_workspace),
                 str(failures_dir),
+                declarations[rel],
             )
             for rel, abs_p in files_to_run
         ]
@@ -775,15 +1242,10 @@ def main(
             entry["clips"] = clips_result
             entry["classification"] = classification
             entry["reason"] = reason
+            entry["oracle_evidence"] = ferric_result["oracle_evidence"]
 
     # Recompute summary
-    summary = {"total": 0, "equivalent": 0, "divergent": 0, "incompatible": 0, "pending": 0}
-    for info in mdata["files"].values():
-        summary["total"] += 1
-        cls = info["classification"]
-        if cls in summary:
-            summary[cls] += 1
-    mdata["summary"] = summary
+    _recompute_summary(mdata)
 
     save_manifest(manifest_path, mdata)
 
@@ -814,6 +1276,19 @@ def main(
                 print(f"    clips:  {c_out!r}")
         if len(divergent) > 20:
             print(f"  ... and {len(divergent) - 20} more")
+
+    invalid = [
+        (rel_path, values)
+        for rel_path, values in results.items()
+        if values[3].startswith("oracle-invalid")
+    ]
+    if invalid:
+        print(f"\nInvalid oracle evidence ({len(invalid)}):")
+        for rel_path, (ferric_r, _clips_r, _classification, reason) in invalid[:20]:
+            print(f"  {rel_path} ({reason})")
+            for violation in ferric_r["oracle_evidence"].get("violations", [])[:3]:
+                print(f"    {violation}")
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

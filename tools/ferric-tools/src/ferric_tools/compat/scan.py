@@ -7,6 +7,7 @@ classifying each file by detected features and ferric compatibility.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -22,13 +23,152 @@ from ferric_tools._clips_parser import (
     detect_features,
     strip_comments,
 )
-from ferric_tools._harness import attach_harness_contracts
+from ferric_tools._harness import attach_harness_contracts, sha256_bytes
 from ferric_tools._manifest import save_manifest, utc_now_iso
 from ferric_tools._paths import examples_dir as default_examples_dir
 from ferric_tools._paths import repo_root
+from ferric_tools.compat.oracle import (
+    DECLARATION_VERSION,
+    EvidenceStatus,
+    validate_declaration,
+)
 
 app = typer.Typer(help="Scan CLIPS examples for compatibility assessment.")
 console = Console(stderr=True)
+MANIFEST_VERSION = 3
+ORACLE_REGISTRY_VERSION = 1
+
+
+class OracleRegistryError(ValueError):
+    """Raised when a checked-in compatibility oracle registry is invalid."""
+
+
+def _reject_duplicate_json_fields(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise OracleRegistryError(f"duplicate JSON field in oracle registry: {key!r}")
+        result[key] = value
+    return result
+
+
+def _load_oracle_registry(path: Path) -> dict[str, dict]:
+    """Load the strict, tracked per-fixture oracle registry."""
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_fields,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise OracleRegistryError(f"cannot read oracle registry {path}: {error}") from error
+    if type(raw) is not dict or set(raw) != {"version", "fixtures"}:
+        raise OracleRegistryError("oracle registry must contain exactly 'version' and 'fixtures'")
+    if raw["version"] != ORACLE_REGISTRY_VERSION:
+        raise OracleRegistryError(f"unsupported oracle registry version: {raw['version']!r}")
+    fixtures = raw["fixtures"]
+    if type(fixtures) is not dict:
+        raise OracleRegistryError("oracle registry fixtures must be an object")
+
+    declarations: dict[str, dict] = {}
+    fixture_ids: dict[str, str] = {}
+    for raw_path, declaration in fixtures.items():
+        if type(raw_path) is not str or type(declaration) is not dict:
+            raise OracleRegistryError("oracle registry paths must map to declaration objects")
+        normalized = Path(raw_path)
+        if (
+            normalized.is_absolute()
+            or normalized.as_posix() != raw_path
+            or any(part in {"", ".", ".."} for part in normalized.parts)
+        ):
+            raise OracleRegistryError(
+                f"oracle registry path must be normalized and relative: {raw_path!r}"
+            )
+        fixture_id = declaration.get("id")
+        if type(fixture_id) is not str:
+            raise OracleRegistryError(f"{raw_path}: oracle id must be a string")
+        if previous := fixture_ids.get(fixture_id):
+            raise OracleRegistryError(
+                f"duplicate oracle id {fixture_id!r}: {previous} and {raw_path}"
+            )
+        fixture_ids[fixture_id] = raw_path
+        declarations[raw_path] = declaration
+    return declarations
+
+
+def _attach_oracle_declarations(
+    files: dict[str, dict],
+    *,
+    examples_path: Path,
+    root: Path,
+) -> None:
+    """Validate tracked declarations and attach them to generated entries."""
+    declarations = _load_oracle_registry(examples_path / "compat-oracles.json")
+    unknown_paths = sorted(set(declarations) - set(files))
+    if unknown_paths:
+        raise OracleRegistryError(
+            "oracle registry references files absent from the scan: " + ", ".join(unknown_paths)
+        )
+
+    for rel_path, entry in files.items():
+        source_path = examples_path / rel_path
+        try:
+            source_bytes = source_path.read_bytes()
+        except OSError as error:
+            entry["source_sha256"] = None
+            if rel_path in declarations:
+                raise OracleRegistryError(
+                    f"{rel_path}: declared oracle source cannot be read: {error}"
+                ) from error
+            continue
+
+        source_sha256 = sha256_bytes(source_bytes)
+        entry["source_sha256"] = source_sha256
+        declaration = declarations.get(rel_path)
+        if declaration is None:
+            continue
+
+        composed_sha256 = source_sha256
+        harness = entry.get("harness")
+        if harness is not None:
+            if harness.get("executable") is not True:
+                raise OracleRegistryError(
+                    f"{rel_path}: declared library oracle has no executable harness"
+                )
+            harness_path = harness.get("path")
+            if type(harness_path) is not str:
+                raise OracleRegistryError(
+                    f"{rel_path}: declared library oracle has no harness path"
+                )
+            try:
+                harness_bytes = (root / harness_path).read_bytes()
+            except OSError as error:
+                raise OracleRegistryError(
+                    f"{rel_path}: declared harness cannot be read: {error}"
+                ) from error
+            composed_sha256 = sha256_bytes(source_bytes + b"\n" + harness_bytes)
+
+        evidence = validate_declaration(
+            declaration,
+            expected_source_sha256=source_sha256,
+            expected_composed_sha256=composed_sha256,
+        )
+        if evidence.status is not EvidenceStatus.VALID:
+            detail = "; ".join(f"{issue.field}: {issue.message}" for issue in evidence.issues)
+            raise OracleRegistryError(f"{rel_path}: invalid oracle declaration: {detail}")
+
+        entry["oracle"] = declaration
+        entry["oracle_evidence"] = {
+            "status": "missing",
+            "version": DECLARATION_VERSION,
+            "declaration": True,
+            "reached": False,
+            "completed": False,
+            "effect": False,
+            "normalizations": list(declaration["normalizers"]),
+            "violations": [],
+        }
 
 
 def classify_file(path: Path, features: list[str], unsupported: list[str]) -> tuple[str, str, str]:
@@ -126,6 +266,7 @@ def scan_examples(
         output_dir=output_dir,
         root=root,
     )
+    _attach_oracle_declarations(files, examples_path=examples_path, root=root)
     return files
 
 
@@ -186,16 +327,21 @@ def main(
 
     console.print(f"Scanning {examples_path} ...")
     root = repo_root()
-    files = scan_examples(
-        examples_path,
-        root=root,
-        harness_dir=root / "tests" / "harnesses",
-    )
+    try:
+        files = scan_examples(
+            examples_path,
+            root=root,
+            harness_dir=root / "tests" / "harnesses",
+        )
+    except OracleRegistryError as error:
+        console.print(f"[red]error:[/] {error}")
+        raise typer.Exit(1) from error
     dup_count = dedup_batch_files(files, examples_path)
     summary = build_summary(files)
 
     manifest = {
-        "version": 2,
+        "version": MANIFEST_VERSION,
+        "oracle_protocol_version": DECLARATION_VERSION,
         "generated": utc_now_iso(),
         "summary": summary,
         "files": files,

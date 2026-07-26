@@ -111,7 +111,8 @@ def main(
         stats["generated"] += 1
 
     if not dry_run:
-        manifest["version"] = 2
+        current_version = manifest.get("version")
+        manifest["version"] = max(current_version, 2) if type(current_version) is int else 2
         save_manifest(manifest_path, manifest)
         print(f"\nManifest updated: {manifest_path}")
 
