@@ -119,14 +119,14 @@ fn assert_template_defaults_filled() {
         let mut age_val = FerricValue::void();
         let rc = ferric_engine_get_fact_field(engine, fact_id, 1, &mut age_val);
         assert_eq!(rc, FerricError::Ok);
-        assert_eq!(age_val.value_type, FerricValueType::Integer);
+        assert_eq!(age_val.value_type, FerricValueType::Integer.as_raw());
         assert_eq!(age_val.integer, 0);
 
         // active default is TRUE (a symbol)
         let mut active_val = FerricValue::void();
         let rc = ferric_engine_get_fact_field(engine, fact_id, 2, &mut active_val);
         assert_eq!(rc, FerricError::Ok);
-        assert_eq!(active_val.value_type, FerricValueType::Symbol);
+        assert_eq!(active_val.value_type, FerricValueType::Symbol.as_raw());
         let active_str = std::ffi::CStr::from_ptr(active_val.string_ptr)
             .to_str()
             .unwrap();
@@ -265,7 +265,7 @@ fn get_slot_by_name_basic() {
         let rc =
             ferric_engine_get_fact_slot_by_name(engine, fact_id, query_name.as_ptr(), &mut out_val);
         assert_eq!(rc, FerricError::Ok);
-        assert_eq!(out_val.value_type, FerricValueType::String);
+        assert_eq!(out_val.value_type, FerricValueType::String.as_raw());
         let name_str = std::ffi::CStr::from_ptr(out_val.string_ptr)
             .to_str()
             .unwrap();
@@ -278,7 +278,7 @@ fn get_slot_by_name_basic() {
         let rc =
             ferric_engine_get_fact_slot_by_name(engine, fact_id, query_age.as_ptr(), &mut out_val);
         assert_eq!(rc, FerricError::Ok);
-        assert_eq!(out_val.value_type, FerricValueType::Integer);
+        assert_eq!(out_val.value_type, FerricValueType::Integer.as_raw());
         assert_eq!(out_val.integer, 25);
 
         ferric_engine_free(engine);
@@ -456,7 +456,7 @@ fn assert_template_with_float_slot() {
         let mut out_val = FerricValue::void();
         let rc = ferric_engine_get_fact_slot_by_name(engine, fact_id, query.as_ptr(), &mut out_val);
         assert_eq!(rc, FerricError::Ok);
-        assert_eq!(out_val.value_type, FerricValueType::Float);
+        assert_eq!(out_val.value_type, FerricValueType::Float.as_raw());
         assert!((out_val.float - 98.6).abs() < f64::EPSILON);
 
         let query_unit = CString::new("unit").unwrap();
@@ -464,7 +464,7 @@ fn assert_template_with_float_slot() {
         let rc =
             ferric_engine_get_fact_slot_by_name(engine, fact_id, query_unit.as_ptr(), &mut out_val);
         assert_eq!(rc, FerricError::Ok);
-        assert_eq!(out_val.value_type, FerricValueType::Symbol);
+        assert_eq!(out_val.value_type, FerricValueType::Symbol.as_raw());
         let unit_str = std::ffi::CStr::from_ptr(out_val.string_ptr)
             .to_str()
             .unwrap();

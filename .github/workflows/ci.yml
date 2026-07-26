@@ -54,6 +54,19 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: ./scripts/preflight.sh test
 
+  ffi-c-harness:
+    name: FFI C Harness (ASan/UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: just ffi-c-harness
+        env:
+          FERRIC_REQUIRE_SANITIZERS: "1"
+
   go-lint:
     name: Go Lint
     runs-on: ubuntu-latest

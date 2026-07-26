@@ -9,6 +9,8 @@ use std::ffi::CStr;
 use ferric_core::{ConflictResolutionStrategy, StringEncoding};
 use ferric_runtime::{Engine, EngineConfig, HaltReason};
 
+use crate::error::{set_global_error, FerricError};
+
 /// C-facing string-encoding configuration for `FerricConfig`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +174,14 @@ impl From<HaltReason> for FerricHaltReason {
 }
 
 /// C-facing value type discriminant.
+///
+/// Crosses the ABI as a raw `u32` (`FerricValue::value_type`), never as this
+/// Rust enum: caller-populated memory is validated with [`Self::from_raw`] /
+/// `TryFrom<u32>` before being interpreted, and unknown discriminants are
+/// rejected with `FERRIC_ERROR_INVALID_ARGUMENT`.
+///
+/// Stable numeric values — new variants may be added but existing values
+/// must never change.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FerricValueType {
@@ -182,6 +192,37 @@ pub enum FerricValueType {
     String = 4,
     Multifield = 5,
     ExternalAddress = 6,
+}
+
+impl FerricValueType {
+    /// Integer discriminant used in `FerricValue::value_type`.
+    #[must_use]
+    pub const fn as_raw(self) -> u32 {
+        self as u32
+    }
+
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Void),
+            1 => Some(Self::Integer),
+            2 => Some(Self::Float),
+            3 => Some(Self::Symbol),
+            4 => Some(Self::String),
+            5 => Some(Self::Multifield),
+            6 => Some(Self::ExternalAddress),
+            _ => None,
+        }
+    }
+}
+
+impl TryFrom<u32> for FerricValueType {
+    type Error = String;
+
+    fn try_from(raw: u32) -> Result<Self, Self::Error> {
+        Self::from_raw(raw)
+            .ok_or_else(|| format!("invalid value_type discriminant: {raw} (expected 0..=6)"))
+    }
 }
 
 /// C-facing value representation.
@@ -208,7 +249,13 @@ pub enum FerricValueType {
 /// | ExternalAddress | `external_type_id`, `external_pointer` |
 #[repr(C)]
 pub struct FerricValue {
-    pub value_type: FerricValueType,
+    /// Raw `FerricValueType` discriminant.
+    ///
+    /// Every API that reads a caller-populated `FerricValue` validates this
+    /// field before interpreting it; values outside the documented
+    /// `FerricValueType` range are rejected with
+    /// `FERRIC_ERROR_INVALID_ARGUMENT`.
+    pub value_type: u32,
     pub integer: i64,
     pub float: f64,
     pub string_ptr: *mut c_char,
@@ -223,7 +270,7 @@ impl FerricValue {
     #[must_use]
     pub const fn void() -> Self {
         Self {
-            value_type: FerricValueType::Void,
+            value_type: FerricValueType::Void.as_raw(),
             integer: 0,
             float: 0.0,
             string_ptr: ptr::null_mut(),
@@ -249,12 +296,12 @@ use ferric_core::Value;
 pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> FerricValue {
     match value {
         Value::Integer(i) => FerricValue {
-            value_type: FerricValueType::Integer,
+            value_type: FerricValueType::Integer.as_raw(),
             integer: *i,
             ..FerricValue::void()
         },
         Value::Float(f) => FerricValue {
-            value_type: FerricValueType::Float,
+            value_type: FerricValueType::Float.as_raw(),
             float: *f,
             ..FerricValue::void()
         },
@@ -262,7 +309,7 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> FerricValue {
             let name = engine.resolve_symbol(*sym).unwrap_or("<unknown>");
             let cstring = CString::new(name).unwrap_or_default();
             FerricValue {
-                value_type: FerricValueType::Symbol,
+                value_type: FerricValueType::Symbol.as_raw(),
                 string_ptr: cstring.into_raw(),
                 ..FerricValue::void()
             }
@@ -270,7 +317,7 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> FerricValue {
         Value::String(s) => {
             let cstring = CString::new(s.as_str()).unwrap_or_default();
             FerricValue {
-                value_type: FerricValueType::String,
+                value_type: FerricValueType::String.as_raw(),
                 string_ptr: cstring.into_raw(),
                 ..FerricValue::void()
             }
@@ -286,14 +333,14 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> FerricValue {
                 raw.cast::<FerricValue>()
             };
             FerricValue {
-                value_type: FerricValueType::Multifield,
+                value_type: FerricValueType::Multifield.as_raw(),
                 multifield_ptr: ptr,
                 multifield_len: len,
                 ..FerricValue::void()
             }
         }
         Value::ExternalAddress(ea) => FerricValue {
-            value_type: FerricValueType::ExternalAddress,
+            value_type: FerricValueType::ExternalAddress.as_raw(),
             external_type_id: ea.type_id.0,
             external_pointer: ea.pointer,
             ..FerricValue::void()
@@ -311,6 +358,10 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> FerricValue {
 /// For Symbol and String types, the `string_ptr` is read as a NUL-terminated
 /// C string. For Symbol, the string is interned via the engine's symbol table.
 ///
+/// The raw `value_type` discriminant is validated before interpretation;
+/// unknown discriminants (including in nested multifield elements) produce an
+/// `Err`, which callers surface as `FERRIC_ERROR_INVALID_ARGUMENT`.
+///
 /// # Safety
 ///
 /// - `fv` must be a valid `FerricValue` with active fields matching `value_type`.
@@ -320,7 +371,7 @@ pub(crate) unsafe fn ferric_to_value(
     fv: &FerricValue,
     engine: &mut Engine,
 ) -> Result<Value, String> {
-    match fv.value_type {
+    match FerricValueType::try_from(fv.value_type)? {
         FerricValueType::Void => Ok(Value::Void),
         FerricValueType::Integer => Ok(Value::Integer(fv.integer)),
         FerricValueType::Float => Ok(Value::Float(fv.float)),
@@ -372,7 +423,7 @@ pub(crate) unsafe fn ferric_to_value(
 #[no_mangle]
 pub extern "C" fn ferric_value_integer(value: i64) -> FerricValue {
     FerricValue {
-        value_type: FerricValueType::Integer,
+        value_type: FerricValueType::Integer.as_raw(),
         integer: value,
         ..FerricValue::void()
     }
@@ -382,7 +433,7 @@ pub extern "C" fn ferric_value_integer(value: i64) -> FerricValue {
 #[no_mangle]
 pub extern "C" fn ferric_value_float(value: f64) -> FerricValue {
     FerricValue {
-        value_type: FerricValueType::Float,
+        value_type: FerricValueType::Float.as_raw(),
         float: value,
         ..FerricValue::void()
     }
@@ -404,7 +455,7 @@ pub unsafe extern "C" fn ferric_value_symbol(name: *const c_char) -> FerricValue
     let cstr = CStr::from_ptr(name);
     let cstring = CString::new(cstr.to_bytes()).unwrap_or_default();
     FerricValue {
-        value_type: FerricValueType::Symbol,
+        value_type: FerricValueType::Symbol.as_raw(),
         string_ptr: cstring.into_raw(),
         ..FerricValue::void()
     }
@@ -426,7 +477,7 @@ pub unsafe extern "C" fn ferric_value_string(s: *const c_char) -> FerricValue {
     let cstr = CStr::from_ptr(s);
     let cstring = CString::new(cstr.to_bytes()).unwrap_or_default();
     FerricValue {
-        value_type: FerricValueType::String,
+        value_type: FerricValueType::String.as_raw(),
         string_ptr: cstring.into_raw(),
         ..FerricValue::void()
     }
@@ -459,72 +510,124 @@ pub unsafe extern "C" fn ferric_string_free(ptr: *mut c_char) {
 
 /// Free a `FerricValue` and its owned resources.
 ///
-/// Recursively frees owned strings and multifield arrays.
-/// Null pointers are safely ignored.
+/// Recursively frees owned strings and multifield arrays. Null pointers are
+/// safely ignored and return `FERRIC_ERROR_OK`.
+///
+/// If the value (or any nested multifield element) carries an unknown
+/// `value_type` discriminant, returns `FERRIC_ERROR_INVALID_ARGUMENT` and
+/// records a diagnostic in the global error channel. The unknown-tagged
+/// value's payload fields are never interpreted (nothing of it is freed),
+/// but all sibling values with known discriminants and every owned
+/// containing multifield array are still released.
 ///
 /// # Safety
 ///
 /// - `value` must point to a valid `FerricValue` or be null.
 /// - Any owned resources (`string_ptr`, `multifield_ptr`) must not have been freed already.
 #[no_mangle]
-pub unsafe extern "C" fn ferric_value_free(value: *mut FerricValue) {
+pub unsafe extern "C" fn ferric_value_free(value: *mut FerricValue) -> FerricError {
     if value.is_null() {
-        return;
+        return FerricError::Ok;
     }
     let val = &*value;
-    free_value_resources(val);
+    report_free_result(free_value_resources(val))
 }
 
 /// Free an array of `FerricValue`s and all their owned resources.
 ///
 /// Frees each element's owned resources, then frees the array allocation.
-/// Null pointers are safely ignored.
+/// Null pointers are safely ignored and return `FERRIC_ERROR_OK`.
+///
+/// If any element (or any nested multifield element) carries an unknown
+/// `value_type` discriminant, returns `FERRIC_ERROR_INVALID_ARGUMENT` and
+/// records a diagnostic in the global error channel. Unknown-tagged
+/// elements' payload fields are never interpreted (nothing of them is
+/// freed), but all elements with known discriminants and the array
+/// allocation itself are still released.
 ///
 /// # Safety
 ///
 /// - `arr` must point to a contiguous array of `len` `FerricValue`s, or be null.
 /// - The array must have been allocated by the FFI.
 #[no_mangle]
-pub unsafe extern "C" fn ferric_value_array_free(arr: *mut FerricValue, len: usize) {
+pub unsafe extern "C" fn ferric_value_array_free(arr: *mut FerricValue, len: usize) -> FerricError {
     if arr.is_null() || len == 0 {
-        return;
+        return FerricError::Ok;
     }
-    // Free each element's owned resources
+    // Free each element's owned resources, retaining the first invalid tag.
+    let mut result = Ok(());
     for i in 0..len {
         let elem = &*arr.add(i);
-        free_value_resources(elem);
+        let elem_result = free_value_resources(elem);
+        if result.is_ok() {
+            result = elem_result;
+        }
     }
     // Free the array allocation itself
     let slice = std::slice::from_raw_parts_mut(arr, len);
     drop(Box::from_raw(slice as *mut [FerricValue]));
+    report_free_result(result)
+}
+
+/// Map a cleanup result to an FFI error code, storing any diagnostic in the
+/// global error channel.
+fn report_free_result(result: Result<(), String>) -> FerricError {
+    match result {
+        Ok(()) => FerricError::Ok,
+        Err(msg) => {
+            set_global_error(msg);
+            FerricError::InvalidArgument
+        }
+    }
 }
 
 /// Internal: free owned resources inside a `FerricValue` without freeing the struct itself.
+///
+/// The raw `value_type` discriminant is validated before interpretation. An
+/// unknown discriminant returns `Err` and frees nothing of that value: with
+/// an invalid tag there is no way to know which fields are active, so leaking
+/// any caller-supplied resources is preferred over interpreting arbitrary bit
+/// patterns (potential wild frees). Cleanup still proceeds for all sibling
+/// values with known discriminants and for the owned containing array; the
+/// first invalid tag encountered is retained in the returned diagnostic.
 ///
 /// # Safety
 ///
 /// - `val` must point to a valid `FerricValue`.
 /// - Any owned resources referenced by `val` must not have been freed already.
-unsafe fn free_value_resources(val: &FerricValue) {
-    match val.value_type {
-        FerricValueType::Symbol | FerricValueType::String => {
+unsafe fn free_value_resources(val: &FerricValue) -> Result<(), String> {
+    match FerricValueType::from_raw(val.value_type) {
+        Some(FerricValueType::Symbol | FerricValueType::String) => {
             if !val.string_ptr.is_null() {
                 drop(CString::from_raw(val.string_ptr));
             }
+            Ok(())
         }
-        FerricValueType::Multifield => {
+        Some(FerricValueType::Multifield) => {
+            let mut result = Ok(());
             if !val.multifield_ptr.is_null() && val.multifield_len > 0 {
                 for i in 0..val.multifield_len {
                     let elem = &*val.multifield_ptr.add(i);
-                    free_value_resources(elem);
+                    let elem_result = free_value_resources(elem);
+                    if result.is_ok() {
+                        result = elem_result;
+                    }
                 }
                 let slice = std::slice::from_raw_parts_mut(val.multifield_ptr, val.multifield_len);
                 drop(Box::from_raw(slice as *mut [FerricValue]));
             }
+            result
         }
-        FerricValueType::Void
-        | FerricValueType::Integer
-        | FerricValueType::Float
-        | FerricValueType::ExternalAddress => {}
+        Some(
+            FerricValueType::Void
+            | FerricValueType::Integer
+            | FerricValueType::Float
+            | FerricValueType::ExternalAddress,
+        ) => Ok(()),
+        None => Err(format!(
+            "cannot free value: invalid value_type discriminant: {} (expected 0..=6); \
+             its owned resources were not freed",
+            val.value_type
+        )),
     }
 }

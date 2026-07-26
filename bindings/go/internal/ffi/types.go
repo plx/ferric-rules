@@ -28,8 +28,9 @@ const (
 	ErrInternalError      ErrorCode = C.FERRIC_ERROR_INTERNAL_ERROR
 )
 
-// ValueType mirrors the C FerricValueType enum.
-type ValueType = C.enum_FerricValueType
+// ValueType mirrors FerricValue.value_type, which crosses the C ABI as a
+// fixed-width uint32_t carrying a FerricValueType discriminant (FR-CABI-001).
+type ValueType = C.uint32_t
 
 // ValueType values mirror C.FERRIC_VALUE_TYPE_*.
 const (

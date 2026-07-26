@@ -39,7 +39,7 @@ unsafe fn first_fact_id(handle: &FerricEngine) -> u64 {
 #[test]
 fn value_void_is_zeroed() {
     let v = FerricValue::void();
-    assert_eq!(v.value_type, FerricValueType::Void);
+    assert_eq!(v.value_type, FerricValueType::Void.as_raw());
     assert_eq!(v.integer, 0);
     assert!(v.float.abs() < f64::EPSILON);
     assert!(v.string_ptr.is_null());
@@ -73,7 +73,7 @@ fn value_integer_conversion() {
         // Field 0 is the integer value 42
         let result = ferric_engine_get_fact_field(engine, fid, 0, &mut out);
         assert_eq!(result, FerricError::Ok);
-        assert_eq!(out.value_type, FerricValueType::Integer);
+        assert_eq!(out.value_type, FerricValueType::Integer.as_raw());
         assert_eq!(out.integer, 42);
 
         ferric_engine_free(engine);
@@ -97,7 +97,7 @@ fn value_float_conversion() {
         let mut out = FerricValue::void();
         let result = ferric_engine_get_fact_field(engine, fid, 0, &mut out);
         assert_eq!(result, FerricError::Ok);
-        assert_eq!(out.value_type, FerricValueType::Float);
+        assert_eq!(out.value_type, FerricValueType::Float.as_raw());
         assert!((out.float - 98.6_f64).abs() < 1e-9);
 
         ferric_engine_free(engine);
@@ -122,7 +122,7 @@ fn value_symbol_conversion() {
         // Field 0 is the symbol `red`
         let result = ferric_engine_get_fact_field(engine, fid, 0, &mut out);
         assert_eq!(result, FerricError::Ok);
-        assert_eq!(out.value_type, FerricValueType::Symbol);
+        assert_eq!(out.value_type, FerricValueType::Symbol.as_raw());
         assert!(!out.string_ptr.is_null());
 
         let s = CStr::from_ptr(out.string_ptr).to_str().unwrap();
@@ -151,7 +151,7 @@ fn value_string_conversion() {
         // Field 0 is the string "hello world"
         let result = ferric_engine_get_fact_field(engine, fid, 0, &mut out);
         assert_eq!(result, FerricError::Ok);
-        assert_eq!(out.value_type, FerricValueType::String);
+        assert_eq!(out.value_type, FerricValueType::String.as_raw());
         assert!(!out.string_ptr.is_null());
 
         let s = CStr::from_ptr(out.string_ptr).to_str().unwrap();
@@ -176,14 +176,14 @@ fn string_free_null_is_safe() {
 #[test]
 fn value_free_null_is_safe() {
     unsafe {
-        ferric_value_free(ptr::null_mut());
+        assert_eq!(ferric_value_free(ptr::null_mut()), FerricError::Ok);
     }
 }
 
 #[test]
 fn value_array_free_null_is_safe() {
     unsafe {
-        ferric_value_array_free(ptr::null_mut(), 0);
+        assert_eq!(ferric_value_array_free(ptr::null_mut(), 0), FerricError::Ok);
     }
 }
 
@@ -204,10 +204,10 @@ fn value_free_releases_string() {
         let mut out = FerricValue::void();
         let result = ferric_engine_get_fact_field(engine, fid, 0, &mut out);
         assert_eq!(result, FerricError::Ok);
-        assert_eq!(out.value_type, FerricValueType::Symbol);
+        assert_eq!(out.value_type, FerricValueType::Symbol.as_raw());
 
         // Free via ferric_value_free — must not crash or leak
-        ferric_value_free(&mut out);
+        assert_eq!(ferric_value_free(&mut out), FerricError::Ok);
 
         ferric_engine_free(engine);
     }
@@ -406,7 +406,7 @@ fn get_global_value() {
         let mut out = FerricValue::void();
         let result = ferric_engine_get_global(engine, name.as_ptr(), &mut out);
         assert_eq!(result, FerricError::Ok);
-        assert_eq!(out.value_type, FerricValueType::Integer);
+        assert_eq!(out.value_type, FerricValueType::Integer.as_raw());
         assert_eq!(out.integer, 42);
 
         ferric_engine_free(engine);
@@ -453,7 +453,7 @@ fn full_assert_query_retract_cycle() {
             ferric_engine_get_fact_field(engine, fid, 0, &mut f0),
             FerricError::Ok
         );
-        assert_eq!(f0.value_type, FerricValueType::Symbol);
+        assert_eq!(f0.value_type, FerricValueType::Symbol.as_raw());
         let s = CStr::from_ptr(f0.string_ptr).to_str().unwrap();
         assert_eq!(s, "widget");
         ferric_string_free(f0.string_ptr);
@@ -464,7 +464,7 @@ fn full_assert_query_retract_cycle() {
             ferric_engine_get_fact_field(engine, fid, 1, &mut f1),
             FerricError::Ok
         );
-        assert_eq!(f1.value_type, FerricValueType::Integer);
+        assert_eq!(f1.value_type, FerricValueType::Integer.as_raw());
         assert_eq!(f1.integer, 99);
 
         // Retract the fact

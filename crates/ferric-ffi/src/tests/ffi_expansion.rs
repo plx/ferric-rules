@@ -608,7 +608,7 @@ fn assert_ordered_integer_fields() {
         let get_result =
             crate::engine::ferric_engine_get_fact_field(engine, out_fact_id, 0, &mut field_out);
         assert_eq!(get_result, FerricError::Ok);
-        assert_eq!(field_out.value_type, FerricValueType::Integer);
+        assert_eq!(field_out.value_type, FerricValueType::Integer.as_raw());
         assert_eq!(field_out.integer, 42);
 
         ferric_engine_free(engine);
@@ -723,7 +723,7 @@ fn assert_ordered_null_out_fact_id() {
 fn value_integer_constructor() {
     // ferric_value_integer produces a value with the correct type and numeric content.
     let v = ferric_value_integer(42);
-    assert_eq!(v.value_type, FerricValueType::Integer);
+    assert_eq!(v.value_type, FerricValueType::Integer.as_raw());
     assert_eq!(v.integer, 42);
     assert!(v.string_ptr.is_null());
     assert!(v.multifield_ptr.is_null());
@@ -733,7 +733,7 @@ fn value_integer_constructor() {
 fn value_float_constructor() {
     // ferric_value_float produces a value with the correct type and float content.
     let v = ferric_value_float(42.5);
-    assert_eq!(v.value_type, FerricValueType::Float);
+    assert_eq!(v.value_type, FerricValueType::Float.as_raw());
     assert!((v.float - 42.5_f64).abs() < 1e-9);
     assert!(v.string_ptr.is_null());
 }
@@ -745,7 +745,7 @@ fn value_symbol_constructor() {
         let name = CString::new("mySymbol").unwrap();
         let v = ferric_value_symbol(name.as_ptr());
 
-        assert_eq!(v.value_type, FerricValueType::Symbol);
+        assert_eq!(v.value_type, FerricValueType::Symbol.as_raw());
         assert!(!v.string_ptr.is_null(), "symbol must own a heap string");
         let s = CStr::from_ptr(v.string_ptr).to_str().unwrap();
         assert_eq!(s, "mySymbol");
@@ -761,7 +761,7 @@ fn value_string_constructor() {
         let raw = CString::new("hello, world").unwrap();
         let v = ferric_value_string(raw.as_ptr());
 
-        assert_eq!(v.value_type, FerricValueType::String);
+        assert_eq!(v.value_type, FerricValueType::String.as_raw());
         assert!(
             !v.string_ptr.is_null(),
             "string value must own a heap string"
@@ -777,7 +777,7 @@ fn value_string_constructor() {
 fn value_void_constructor() {
     // ferric_value_void produces a fully zeroed value of type Void.
     let v = ferric_value_void();
-    assert_eq!(v.value_type, FerricValueType::Void);
+    assert_eq!(v.value_type, FerricValueType::Void.as_raw());
     assert_eq!(v.integer, 0);
     assert!(v.float.abs() < f64::EPSILON);
     assert!(v.string_ptr.is_null());
@@ -791,7 +791,7 @@ fn value_symbol_null_returns_void() {
         let v = ferric_value_symbol(ptr::null());
         assert_eq!(
             v.value_type,
-            FerricValueType::Void,
+            FerricValueType::Void.as_raw(),
             "null symbol name must produce a Void value"
         );
         assert!(v.string_ptr.is_null());
@@ -805,7 +805,7 @@ fn value_string_null_returns_void() {
         let v = ferric_value_string(ptr::null());
         assert_eq!(
             v.value_type,
-            FerricValueType::Void,
+            FerricValueType::Void.as_raw(),
             "null string pointer must produce a Void value"
         );
         assert!(v.string_ptr.is_null());

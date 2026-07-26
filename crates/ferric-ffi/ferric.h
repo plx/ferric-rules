@@ -190,17 +190,6 @@ typedef enum FerricError {
     FERRIC_ERROR_INTERNAL_ERROR = 99,
 } FerricError;
 
-// C-facing value type discriminant.
-typedef enum FerricValueType {
-    FERRIC_VALUE_TYPE_VOID = 0,
-    FERRIC_VALUE_TYPE_INTEGER = 1,
-    FERRIC_VALUE_TYPE_FLOAT = 2,
-    FERRIC_VALUE_TYPE_SYMBOL = 3,
-    FERRIC_VALUE_TYPE_STRING = 4,
-    FERRIC_VALUE_TYPE_MULTIFIELD = 5,
-    FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6,
-} FerricValueType;
-
 // C-facing fact type discriminant.
 typedef enum FerricFactType {
     FERRIC_FACT_TYPE_ORDERED = 0,
@@ -228,6 +217,25 @@ typedef enum FerricConflictStrategy {
     FERRIC_CONFLICT_STRATEGY_LEX = 2,
     FERRIC_CONFLICT_STRATEGY_MEA = 3,
 } FerricConflictStrategy;
+
+// C-facing value type discriminant.
+//
+// Crosses the ABI as a raw `u32` (`FerricValue::value_type`), never as this
+// Rust enum: caller-populated memory is validated with [`Self::from_raw`] /
+// `TryFrom<u32>` before being interpreted, and unknown discriminants are
+// rejected with `FERRIC_ERROR_INVALID_ARGUMENT`.
+//
+// Stable numeric values — new variants may be added but existing values
+// must never change.
+typedef enum FerricValueType {
+    FERRIC_VALUE_TYPE_VOID = 0,
+    FERRIC_VALUE_TYPE_INTEGER = 1,
+    FERRIC_VALUE_TYPE_FLOAT = 2,
+    FERRIC_VALUE_TYPE_SYMBOL = 3,
+    FERRIC_VALUE_TYPE_STRING = 4,
+    FERRIC_VALUE_TYPE_MULTIFIELD = 5,
+    FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6,
+} FerricValueType;
 
 #if defined(FERRIC_SERDE)
 // Serialization format selector for `ferric_engine_serialize_as` and
@@ -302,7 +310,13 @@ typedef struct FerricConfig {
 // | Multifield | `multifield_ptr` (owned), `multifield_len` |
 // | ExternalAddress | `external_type_id`, `external_pointer` |
 typedef struct FerricValue {
-    enum FerricValueType value_type;
+    // Raw `FerricValueType` discriminant.
+    //
+    // Every API that reads a caller-populated `FerricValue` validates this
+    // field before interpreting it; values outside the documented
+    // `FerricValueType` range are rejected with
+    // `FERRIC_ERROR_INVALID_ARGUMENT`.
+    uint32_t value_type;
     int64_t integer;
     double float_;
     char * FERRIC_NULL_TERMINATED string_ptr;
@@ -1565,24 +1579,172 @@ void ferric_string_free(char * FERRIC_NULL_TERMINATED ptr);
 
 // Free a `FerricValue` and its owned resources.
 //
-// Recursively frees owned strings and multifield arrays.
-// Null pointers are safely ignored.
+// Recursively frees owned strings and multifield arrays. Null pointers are
+// safely ignored and return `FERRIC_ERROR_OK`.
+//
+// If the value (or any nested multifield element) carries an unknown
+// `value_type` discriminant, returns `FERRIC_ERROR_INVALID_ARGUMENT` and
+// records a diagnostic in the global error channel. The unknown-tagged
+// value's payload fields are never interpreted (nothing of it is freed),
+// but all sibling values with known discriminants and every owned
+// containing multifield array are still released.
 //
 // # Safety
 //
 // - `value` must point to a valid `FerricValue` or be null.
 // - Any owned resources (`string_ptr`, `multifield_ptr`) must not have been freed already.
-void ferric_value_free(struct FerricValue *value);
+enum FerricError ferric_value_free(struct FerricValue *value);
 
 // Free an array of `FerricValue`s and all their owned resources.
 //
 // Frees each element's owned resources, then frees the array allocation.
-// Null pointers are safely ignored.
+// Null pointers are safely ignored and return `FERRIC_ERROR_OK`.
+//
+// If any element (or any nested multifield element) carries an unknown
+// `value_type` discriminant, returns `FERRIC_ERROR_INVALID_ARGUMENT` and
+// records a diagnostic in the global error channel. Unknown-tagged
+// elements' payload fields are never interpreted (nothing of them is
+// freed), but all elements with known discriminants and the array
+// allocation itself are still released.
 //
 // # Safety
 //
 // - `arr` must point to a contiguous array of `len` `FerricValue`s, or be null.
 // - The array must have been allocated by the FFI.
-void ferric_value_array_free(struct FerricValue *arr FERRIC_COUNTED_BY(len), uintptr_t len);
+enum FerricError ferric_value_array_free(struct FerricValue *arr FERRIC_COUNTED_BY(len), uintptr_t len);
+
+
+/*
+ * ============================================================
+ * ABI STATIC ASSERTIONS
+ * ============================================================
+ *
+ * Caller-populated discriminants cross this ABI as fixed-width
+ * 32-bit integers (never as C enum objects), and every accepting
+ * API validates them before interpretation: unknown values are
+ * rejected with FERRIC_ERROR_INVALID_ARGUMENT. The assertions
+ * below lock the field widths and the documented numeric values
+ * at compile time for every consumer of this header.
+ */
+
+#if defined(__cplusplus)
+  #define FERRIC_STATIC_ASSERT(COND, MSG) static_assert(COND, MSG)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+  #define FERRIC_STATIC_ASSERT(COND, MSG) _Static_assert(COND, MSG)
+#else
+  #define FERRIC_STATIC_ASSERT_CAT2(A, B) A##B
+  #define FERRIC_STATIC_ASSERT_CAT(A, B) FERRIC_STATIC_ASSERT_CAT2(A, B)
+  #define FERRIC_STATIC_ASSERT(COND, MSG) \
+      typedef char FERRIC_STATIC_ASSERT_CAT(ferric_static_assert_, __LINE__)[(COND) ? 1 : -1]
+#endif
+
+/* Discriminant field widths (all fixed at 32 bits). */
+FERRIC_STATIC_ASSERT(sizeof(((FerricValue *)0)->value_type) == 4,
+                     "FerricValue.value_type must be a 32-bit integer");
+FERRIC_STATIC_ASSERT(sizeof(((FerricValue *)0)->external_type_id) == 4,
+                     "FerricValue.external_type_id must be a 32-bit integer");
+FERRIC_STATIC_ASSERT(sizeof(((FerricConfig *)0)->string_encoding) == 4,
+                     "FerricConfig.string_encoding must be a 32-bit integer");
+FERRIC_STATIC_ASSERT(sizeof(((FerricConfig *)0)->strategy) == 4,
+                     "FerricConfig.strategy must be a 32-bit integer");
+FERRIC_STATIC_ASSERT(sizeof(((FerricPinnedEngineOptions *)0)->autorelease_policy) == 4,
+                     "FerricPinnedEngineOptions.autorelease_policy must be a 32-bit integer");
+
+/* C enum object widths for every enum crossing the ABI (as return values
+ * or out-parameters). Rust emits these as 32-bit values; a consumer
+ * compiled with -fshort-enums (or an equivalent packed-enum ABI) fails
+ * these assertions instead of silently miscompiling. */
+FERRIC_STATIC_ASSERT(sizeof(enum FerricError) == 4, "enum FerricError must be 32 bits");
+FERRIC_STATIC_ASSERT(sizeof(enum FerricValueType) == 4, "enum FerricValueType must be 32 bits");
+FERRIC_STATIC_ASSERT(sizeof(enum FerricStringEncoding) == 4,
+                     "enum FerricStringEncoding must be 32 bits");
+FERRIC_STATIC_ASSERT(sizeof(enum FerricConflictStrategy) == 4,
+                     "enum FerricConflictStrategy must be 32 bits");
+FERRIC_STATIC_ASSERT(sizeof(enum FerricFactType) == 4, "enum FerricFactType must be 32 bits");
+FERRIC_STATIC_ASSERT(sizeof(enum FerricHaltReason) == 4, "enum FerricHaltReason must be 32 bits");
+FERRIC_STATIC_ASSERT(sizeof(enum FerricPinnedAutoreleasePolicy) == 4,
+                     "enum FerricPinnedAutoreleasePolicy must be 32 bits");
+
+/* FerricValueType: stable numeric values. */
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_VOID == 0, "FERRIC_VALUE_TYPE_VOID must be 0");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_INTEGER == 1, "FERRIC_VALUE_TYPE_INTEGER must be 1");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_FLOAT == 2, "FERRIC_VALUE_TYPE_FLOAT must be 2");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_SYMBOL == 3, "FERRIC_VALUE_TYPE_SYMBOL must be 3");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_STRING == 4, "FERRIC_VALUE_TYPE_STRING must be 4");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_MULTIFIELD == 5, "FERRIC_VALUE_TYPE_MULTIFIELD must be 5");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS == 6,
+                     "FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS must be 6");
+
+/* FerricStringEncoding: stable numeric values. */
+FERRIC_STATIC_ASSERT(FERRIC_STRING_ENCODING_ASCII == 0, "FERRIC_STRING_ENCODING_ASCII must be 0");
+FERRIC_STATIC_ASSERT(FERRIC_STRING_ENCODING_UTF8 == 1, "FERRIC_STRING_ENCODING_UTF8 must be 1");
+FERRIC_STATIC_ASSERT(FERRIC_STRING_ENCODING_ASCII_SYMBOLS_UTF8_STRINGS == 2,
+                     "FERRIC_STRING_ENCODING_ASCII_SYMBOLS_UTF8_STRINGS must be 2");
+
+/* FerricConflictStrategy: stable numeric values. */
+FERRIC_STATIC_ASSERT(FERRIC_CONFLICT_STRATEGY_DEPTH == 0, "FERRIC_CONFLICT_STRATEGY_DEPTH must be 0");
+FERRIC_STATIC_ASSERT(FERRIC_CONFLICT_STRATEGY_BREADTH == 1,
+                     "FERRIC_CONFLICT_STRATEGY_BREADTH must be 1");
+FERRIC_STATIC_ASSERT(FERRIC_CONFLICT_STRATEGY_LEX == 2, "FERRIC_CONFLICT_STRATEGY_LEX must be 2");
+FERRIC_STATIC_ASSERT(FERRIC_CONFLICT_STRATEGY_MEA == 3, "FERRIC_CONFLICT_STRATEGY_MEA must be 3");
+
+/* FerricFactType: stable numeric values. */
+FERRIC_STATIC_ASSERT(FERRIC_FACT_TYPE_ORDERED == 0, "FERRIC_FACT_TYPE_ORDERED must be 0");
+FERRIC_STATIC_ASSERT(FERRIC_FACT_TYPE_TEMPLATE == 1, "FERRIC_FACT_TYPE_TEMPLATE must be 1");
+
+/* FerricHaltReason: stable numeric values. */
+FERRIC_STATIC_ASSERT(FERRIC_HALT_REASON_AGENDA_EMPTY == 0,
+                     "FERRIC_HALT_REASON_AGENDA_EMPTY must be 0");
+FERRIC_STATIC_ASSERT(FERRIC_HALT_REASON_LIMIT_REACHED == 1,
+                     "FERRIC_HALT_REASON_LIMIT_REACHED must be 1");
+FERRIC_STATIC_ASSERT(FERRIC_HALT_REASON_HALT_REQUESTED == 2,
+                     "FERRIC_HALT_REASON_HALT_REQUESTED must be 2");
+
+/* FerricPinnedAutoreleasePolicy: stable numeric values. */
+FERRIC_STATIC_ASSERT(FERRIC_PINNED_AUTORELEASE_POLICY_NONE == 0,
+                     "FERRIC_PINNED_AUTORELEASE_POLICY_NONE must be 0");
+FERRIC_STATIC_ASSERT(FERRIC_PINNED_AUTORELEASE_POLICY_PER_ITEM == 1,
+                     "FERRIC_PINNED_AUTORELEASE_POLICY_PER_ITEM must be 1");
+FERRIC_STATIC_ASSERT(FERRIC_PINNED_AUTORELEASE_POLICY_PER_BATCH == 2,
+                     "FERRIC_PINNED_AUTORELEASE_POLICY_PER_BATCH must be 2");
+
+/* FerricError: stable numeric values. */
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_OK == 0, "FERRIC_ERROR_OK must be 0");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_NULL_POINTER == 1, "FERRIC_ERROR_NULL_POINTER must be 1");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_THREAD_VIOLATION == 2, "FERRIC_ERROR_THREAD_VIOLATION must be 2");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_NOT_FOUND == 3, "FERRIC_ERROR_NOT_FOUND must be 3");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_PARSE_ERROR == 4, "FERRIC_ERROR_PARSE_ERROR must be 4");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_COMPILE_ERROR == 5, "FERRIC_ERROR_COMPILE_ERROR must be 5");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_RUNTIME_ERROR == 6, "FERRIC_ERROR_RUNTIME_ERROR must be 6");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_IO_ERROR == 7, "FERRIC_ERROR_IO_ERROR must be 7");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_BUFFER_TOO_SMALL == 8, "FERRIC_ERROR_BUFFER_TOO_SMALL must be 8");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_INVALID_ARGUMENT == 9, "FERRIC_ERROR_INVALID_ARGUMENT must be 9");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_SERIALIZATION_ERROR == 10,
+                     "FERRIC_ERROR_SERIALIZATION_ERROR must be 10");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_PINNED_CLOSED == 11, "FERRIC_ERROR_PINNED_CLOSED must be 11");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_PINNED_CANCELED == 12, "FERRIC_ERROR_PINNED_CANCELED must be 12");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_PINNED_QUEUE_FULL == 13,
+                     "FERRIC_ERROR_PINNED_QUEUE_FULL must be 13");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_PINNED_DISPATCH_FAILED == 14,
+                     "FERRIC_ERROR_PINNED_DISPATCH_FAILED must be 14");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_PINNED_REENTRANT_CALL == 15,
+                     "FERRIC_ERROR_PINNED_REENTRANT_CALL must be 15");
+FERRIC_STATIC_ASSERT(FERRIC_ERROR_INTERNAL_ERROR == 99, "FERRIC_ERROR_INTERNAL_ERROR must be 99");
+
+#if defined(FERRIC_SERDE)
+/* FerricSerializationFormat: enum object width and stable numeric values. */
+FERRIC_STATIC_ASSERT(sizeof(enum FerricSerializationFormat) == 4,
+                     "enum FerricSerializationFormat must be 32 bits");
+FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_BINCODE == 0,
+                     "FERRIC_SERIALIZATION_FORMAT_BINCODE must be 0");
+FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_JSON == 1,
+                     "FERRIC_SERIALIZATION_FORMAT_JSON must be 1");
+FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_CBOR == 2,
+                     "FERRIC_SERIALIZATION_FORMAT_CBOR must be 2");
+FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK == 3,
+                     "FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK must be 3");
+FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_POSTCARD == 4,
+                     "FERRIC_SERIALIZATION_FORMAT_POSTCARD must be 4");
+#endif
 
 #endif  /* FERRIC_H */
