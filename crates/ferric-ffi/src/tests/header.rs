@@ -21,6 +21,13 @@ fn read_committed_header() -> String {
     })
 }
 
+fn read_committed_go_header() -> String {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let header_path = crate_dir.join("../../bindings/go/internal/ffi/lib/ferric.h");
+    std::fs::read_to_string(&header_path)
+        .unwrap_or_else(|_| panic!("Go FFI header not found at {}", header_path.display()))
+}
+
 fn read_ci_workflow() -> String {
     let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let workflow_path = crate_dir.join("../../.github/workflows/ci.yml");
@@ -95,6 +102,23 @@ fn header_has_ownership_docs() {
     assert!(
         header.contains("ferric_value_free"),
         "Ownership docs must mention ferric_value_free"
+    );
+    assert!(
+        header.contains("Borrowed value inputs: Value trees passed to structured"),
+        "Ownership docs must identify structured value inputs as borrowed"
+    );
+    assert!(
+        header.contains("Never pass stack or\n *    foreign-allocated value trees"),
+        "Ownership docs must forbid freeing foreign value trees"
+    );
+}
+
+#[test]
+fn committed_ffi_headers_are_identical() {
+    assert_eq!(
+        read_committed_header(),
+        read_committed_go_header(),
+        "crate and Go binding copies of ferric.h must remain identical"
     );
 }
 
@@ -562,6 +586,32 @@ fn header_contains_value_free_functions() {
     );
 }
 
+#[test]
+fn header_contains_multifield_copy_contract() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("enum FerricError ferric_value_multifield_copy("),
+        "Missing ferric_value_multifield_copy declaration"
+    );
+    assert!(
+        header.contains("*elements FERRIC_COUNTED_BY(len),"),
+        "multifield copy input must be annotated with FERRIC_COUNTED_BY(len)"
+    );
+    for required in [
+        "complete nested value tree are borrowed",
+        "Ferric never retains or frees caller-provided",
+        "External-address payload pointers are copied shallowly",
+        "remains Void on every failure",
+        "not overlap the borrowed input tree",
+        "foreign-allocated value trees must not be passed",
+    ] {
+        assert!(
+            header.contains(required),
+            "multifield ownership contract is missing: {required}"
+        );
+    }
+}
+
 // ── Bounds-safety annotation tests ─────────────────────────────────────
 
 #[test]
@@ -608,6 +658,12 @@ fn header_has_counted_by_and_sized_by_annotations() {
     assert!(
         header.contains("*arr FERRIC_COUNTED_BY(len)"),
         "Missing FERRIC_COUNTED_BY on ferric_value_array_free arr parameter"
+    );
+
+    // ferric_value_multifield_copy: elements counted_by len
+    assert!(
+        header.contains("*elements FERRIC_COUNTED_BY(len)"),
+        "Missing FERRIC_COUNTED_BY on ferric_value_multifield_copy elements"
     );
 
     // ferric_last_error_global_copy: buf sized_by buf_len

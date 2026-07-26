@@ -34,6 +34,9 @@ mod copy_error;
 mod values;
 
 #[cfg(test)]
+mod multifield_copy;
+
+#[cfg(test)]
 mod discriminant_validation;
 
 #[cfg(test)]

@@ -48,27 +48,35 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *    error writers and the copy API do not invalidate it. Do NOT
  *    free either pointer.
  *
- * 3. Owned string pointers: String fields in FerricValue
- *    (string_ptr for Symbol/String types) are heap-allocated.
- *    Free with ferric_string_free() or ferric_value_free().
+ * 3. Ferric-owned string pointers: String fields in values
+ *    returned by Ferric (string_ptr for Symbol/String types)
+ *    are heap-allocated. Free with ferric_string_free() or
+ *    ferric_value_free().
  *
- * 4. FerricValue ownership: Values returned through out-params
- *    (e.g., ferric_engine_get_fact_field) are caller-owned.
- *    Free with ferric_value_free() which recursively releases
- *    owned strings and multifield arrays.
+ * 4. Ferric-owned values: Values returned through out-params
+ *    (e.g., ferric_engine_get_fact_field and
+ *    ferric_value_multifield_copy) are caller-owned. Free with
+ *    ferric_value_free(), which recursively releases Ferric-owned
+ *    strings and multifield arrays.
  *
- * 5. Multifield arrays: FerricValue.multifield_ptr is a heap-
- *    allocated array. Free with ferric_value_array_free() or
- *    ferric_value_free() (which handles it recursively).
+ * 5. Borrowed value inputs: Value trees passed to structured
+ *    assertion APIs or ferric_value_multifield_copy() are borrowed
+ *    for that call. Ferric never retains or frees caller-provided
+ *    strings or arrays.
  *
- * 6. External address pointers: FerricValue.external_pointer
+ * 6. Multifield provenance: Only Ferric-owned arrays returned by
+ *    Ferric may be passed to ferric_value_array_free() or released
+ *    recursively with ferric_value_free(). Never pass stack or
+ *    foreign-allocated value trees to those cleanup APIs.
+ *
+ * 7. External address pointers: FerricValue.external_pointer
  *    is NOT owned by the FFI. Lifetime is caller-managed.
  *
- * 7. Output string pointers: ferric_engine_get_output() returns
+ * 8. Output string pointers: ferric_engine_get_output() returns
  *    a borrowed pointer valid until the next call that writes
  *    to that channel. Do NOT free.
  *
- * 8. Bounds annotations: Pointer parameters and struct fields
+ * 9. Bounds annotations: Pointer parameters and struct fields
  *    carry FERRIC_COUNTED_BY, FERRIC_SIZED_BY, and
  *    FERRIC_NULL_TERMINATED annotations when compiled with
  *    Clang -fbounds-safety. Define FERRIC_NO_BOUNDS_ANNOTATIONS
@@ -413,6 +421,11 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
     (
         "ferric_value_array_free(struct FerricValue *arr, uintptr_t len)",
         "ferric_value_array_free(struct FerricValue *arr FERRIC_COUNTED_BY(len), uintptr_t len)",
+    ),
+    // ferric_value_multifield_copy: elements is an array of len borrowed values.
+    (
+        "ferric_value_multifield_copy(const struct FerricValue *elements,\n                                              uintptr_t len,",
+        "ferric_value_multifield_copy(const struct FerricValue *elements FERRIC_COUNTED_BY(len),\n                                              uintptr_t len,",
     ),
     // ferric_last_error_global_copy: buf is a byte buffer of buf_len bytes.
     (

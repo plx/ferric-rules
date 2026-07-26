@@ -70,8 +70,8 @@ test-runtime:
 test-ffi:
     cargo test -p ferric-ffi
 
-# Build the FFI staticlib and run the C ABI discriminant-abuse harness
-# as a real C subprocess under ASan/UBSan (when the compiler supports them)
+# Build the FFI staticlib and run the C ABI regression harnesses as real C
+# subprocesses under ASan/UBSan (when the compiler supports them)
 ffi-c-harness:
     ./scripts/ffi-c-harness.sh
 

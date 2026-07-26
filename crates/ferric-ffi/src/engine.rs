@@ -1307,6 +1307,12 @@ pub unsafe extern "C" fn ferric_engine_get_fact_template_name(
 
 /// Assert an ordered fact from structured values, bypassing CLIPS source parsing.
 ///
+/// `fields` and every active string or multifield reachable from it are
+/// borrowed for the duration of this call. Ferric converts the values into
+/// engine-owned runtime data and never retains or frees caller storage. The
+/// complete input tree must remain readable and unchanged until the call
+/// returns.
+///
 /// # Safety
 ///
 /// - `engine` must be a valid engine pointer.
@@ -2029,6 +2035,10 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 /// `slot_names` and `slot_values` must each point to `count` elements.
 /// Each `slot_names[i]` is a NUL-terminated C string naming a slot,
 /// and `slot_values[i]` is the corresponding value for that slot.
+/// Both arrays and every active string or multifield reachable from the slot
+/// values are borrowed for the duration of this call. Ferric never retains or
+/// frees caller storage. The complete input tree must remain readable and
+/// unchanged until the call returns.
 ///
 /// # Safety
 ///
