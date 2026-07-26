@@ -194,7 +194,9 @@ helpers: `_clips_parser.py`, `_manifest.py`, `_subprocess.py`, `_formatting.py`,
 - `bat/` — `analyze`, `convert`, `extract`, `harness`, `segment`: processes
   CLIPS `.bat` batch scripts into runnable `.clp` segments and harnesses.
 - `compat/` — `scan`, `run`, `report`, `diff`: compatibility assessment
-  pipeline (ferric vs. CLIPS reference container).
+  pipeline (ferric vs. CLIPS reference container). Its structured,
+  non-vacuous oracle contract is documented in
+  [`compatibility-assessment.md`](compatibility-assessment.md).
 - `perf/` — `collect`, `report`, `diff`: Criterion → performance-manifest
   pipeline.
 
@@ -237,6 +239,8 @@ thresholds). Scaling regression: `just scaling-check` runs facade-crate
   multi-module pipelines.
 - `compatibility.md` — CLIPS compatibility matrix, by Basic Programming Guide
   section.
+- `compatibility-assessment.md` — maintainer contract for structured
+  differential oracles and evidence.
 - `migration.md` — CLIPS → ferric migration guide.
 - `benchmark-policy.md` — regression policy and thresholds.
 - `performance-analysis.md` — Phase 6 baseline numbers.

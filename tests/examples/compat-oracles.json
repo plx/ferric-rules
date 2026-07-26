@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "fixtures": {
+    "ferric-oracle/empty-output-state.clp": {
+      "version": 1,
+      "id": "ferric-oracle.empty-output-state",
+      "feature": "ordered fact state transition with intentionally empty output",
+      "source_sha256": "cae413047bc57c27241dc9567f3728114f498b27115c106eaa0d0f6d7035c09f",
+      "composed_sha256": "cae413047bc57c27241dc9567f3728114f498b27115c106eaa0d0f6d7035c09f",
+      "nonce": "00000000000000000000000000000000",
+      "setup": [
+        "load",
+        "reset",
+        "run"
+      ],
+      "expectations": {
+        "phase": "run-complete",
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 42
+                }
+              ]
+            }
+          }
+        ],
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 0,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 42
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids"
+      ]
+    }
+  }
+}

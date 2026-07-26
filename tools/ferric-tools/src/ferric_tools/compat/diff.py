@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 
 from ferric_tools._manifest import load_manifest
+from ferric_tools.compat.report import compute_oracle_coverage, oracle_evidence_view
 
 app = typer.Typer(help="Compare two compat manifests.")
 console = Console(stderr=True)
@@ -17,6 +18,25 @@ DISPLAY_ORDER = ["equivalent", "divergent", "incompatible", "pending"]
 
 # Ordered from best to worst for determining regressions vs improvements.
 RANK = {"equivalent": 0, "divergent": 1, "pending": 2, "incompatible": 3}
+ORACLE_STATUS_RANK = {"invalid": 0, "missing": 1, "valid": 2}
+ORACLE_BOOLEAN_COVERAGE = ("selected", "declaration", "reached", "completed", "effect")
+STRUCTURED_ORACLE_MANIFEST_VERSION = 3
+ABSENT_CLASSIFICATION = "absent"
+ABSENT_REASON = "not present"
+LEGACY_RUNNER_CLASSIFICATIONS = {
+    "timeout-both": frozenset({"incompatible"}),
+    "timeout-ferric": frozenset({"divergent", "incompatible"}),
+    "ferric-only-clean": frozenset({"pending"}),
+    "timeout-clips": frozenset({"divergent"}),
+    "clips-load-error": frozenset({"incompatible"}),
+    "both-error": frozenset({"incompatible"}),
+    "ferric-error": frozenset({"divergent", "incompatible"}),
+    "clips-error": frozenset({"divergent"}),
+    "empty-match": frozenset({"equivalent"}),
+    "exact-match": frozenset({"equivalent"}),
+    "float-normalized-match": frozenset({"equivalent"}),
+    "output-mismatch": frozenset({"divergent"}),
+}
 
 
 def fmt_delta(n: int) -> str:
@@ -25,6 +45,117 @@ def fmt_delta(n: int) -> str:
     if n < 0:
         return str(n)
     return "0"
+
+
+def _oracle_loss_details(
+    base_info: dict | None,
+    head_info: dict | None,
+    *,
+    require_verified_head: bool,
+) -> list[str]:
+    """Describe oracle-evidence losses from one file entry to another."""
+    if base_info is None:
+        assert head_info is not None
+        head = oracle_evidence_view(head_info)
+        if head_info.get("classification") == "equivalent" and head["status"] != "valid":
+            return ["unverified equivalent claim"]
+        return []
+
+    if head_info is None:
+        base = oracle_evidence_view(base_info)
+        if base["selected"] and base["status"] == "valid":
+            return ["valid oracle-backed fixture removed"]
+        return []
+
+    base = oracle_evidence_view(base_info)
+    head = oracle_evidence_view(head_info)
+    losses: list[str] = []
+
+    for field in ORACLE_BOOLEAN_COVERAGE:
+        if base[field] and not head[field]:
+            losses.append(f"{field} true\u2192false")
+
+    if ORACLE_STATUS_RANK[head["status"]] < ORACLE_STATUS_RANK[base["status"]]:
+        losses.append(f"status {base['status']}\u2192{head['status']}")
+
+    if base["version"] is not None and head["version"] is None:
+        losses.append(f"version {base['version']}\u2192unspecified")
+
+    added_violations = sorted(set(head["violations"]) - set(base["violations"]))
+    if added_violations:
+        losses.append(f"violations added: {', '.join(added_violations)}")
+
+    unverified_equivalent = (
+        head_info.get("classification") == "equivalent"
+        and head["status"] != "valid"
+        and (
+            require_verified_head
+            or base_info.get("classification") != "equivalent"
+            or base["status"] == "valid"
+        )
+    )
+    if unverified_equivalent:
+        losses.append("unverified equivalent claim")
+
+    return losses
+
+
+def _reason_with_oracle_loss(reason: str, losses: list[str]) -> str:
+    detail = f"oracle regression: {', '.join(losses)}"
+    return f"{reason}; {detail}" if reason else detail
+
+
+def _is_v3_oracle_reset(
+    base_version: object,
+    head_version: object,
+    base_info: dict,
+    head_info: dict,
+) -> bool:
+    """Return whether a legacy result was reset for a missing v3 oracle."""
+    if (
+        type(base_version) is not int
+        or type(head_version) is not int
+        or base_version >= STRUCTURED_ORACLE_MANIFEST_VERSION
+        or head_version < STRUCTURED_ORACLE_MANIFEST_VERSION
+    ):
+        return False
+
+    if base_info.get("oracle") is not None or base_info.get("oracle_evidence") is not None:
+        return False
+
+    if (
+        head_info.get("classification") != "pending"
+        or head_info.get("reason") != "oracle-missing"
+        or head_info.get("oracle") is not None
+        or not isinstance(head_info.get("oracle_evidence"), dict)
+    ):
+        return False
+
+    head_evidence = oracle_evidence_view(head_info)
+    return (
+        head_evidence["selected"]
+        and head_evidence["status"] == "missing"
+        and not any(
+            head_evidence[field] for field in ("declaration", "reached", "completed", "effect")
+        )
+    )
+
+
+def _is_legacy_runner_migration(
+    base_version: object,
+    head_version: object,
+    base_info: dict,
+    head_info: dict,
+) -> bool:
+    """Recognize approved resets of classifications produced by the legacy runner."""
+    if not _is_v3_oracle_reset(base_version, head_version, base_info, head_info):
+        return False
+
+    allowed_classifications = LEGACY_RUNNER_CLASSIFICATIONS.get(base_info.get("reason"))
+    return (
+        allowed_classifications is not None
+        and base_info.get("classification") in allowed_classifications
+    )
 
 
 def compute_diff(base: dict, head: dict) -> tuple[dict, dict, list, list, list]:
@@ -48,8 +179,12 @@ def compute_diff(base: dict, head: dict) -> tuple[dict, dict, list, list, list]:
         if cls in head_counts:
             head_counts[cls] += 1
 
-    improvements: list[tuple] = []
+    real_improvements: list[tuple] = []
     regressions: list[tuple] = []
+    reason_changes: list[tuple] = []
+    require_verified_head = (
+        type(head.get("version")) is int and head["version"] >= STRUCTURED_ORACLE_MANIFEST_VERSION
+    )
 
     all_keys = sorted(set(base_files) | set(head_files))
     for key in all_keys:
@@ -57,29 +192,83 @@ def compute_diff(base: dict, head: dict) -> tuple[dict, dict, list, list, list]:
         h = head_files.get(key)
 
         if b is None or h is None:
+            oracle_losses = _oracle_loss_details(
+                b,
+                h,
+                require_verified_head=require_verified_head,
+            )
+            if oracle_losses:
+                b_cls = ABSENT_CLASSIFICATION if b is None else b["classification"]
+                b_reason = ABSENT_REASON if b is None else b.get("reason", "")
+                h_cls = ABSENT_CLASSIFICATION if h is None else h["classification"]
+                h_reason = ABSENT_REASON if h is None else h.get("reason", "")
+                regressions.append(
+                    (
+                        key,
+                        b_cls,
+                        b_reason,
+                        h_cls,
+                        _reason_with_oracle_loss(h_reason, oracle_losses),
+                    )
+                )
             continue
 
         b_cls = b["classification"]
         h_cls = h["classification"]
+        b_reason = b.get("reason", "")
+        h_reason = h.get("reason", "")
 
-        if b_cls == h_cls:
-            b_reason = b.get("reason", "")
-            h_reason = h.get("reason", "")
-            if b_reason != h_reason:
-                improvements.append((key, b_cls, b_reason, h_cls, h_reason))
+        if _is_legacy_runner_migration(
+            base.get("version"),
+            head.get("version"),
+            b,
+            h,
+        ):
             continue
 
-        entry = (key, b_cls, b.get("reason", ""), h_cls, h.get("reason", ""))
+        entry = (key, b_cls, b_reason, h_cls, h_reason)
+        oracle_losses = _oracle_loss_details(
+            b,
+            h,
+            require_verified_head=require_verified_head,
+        )
+
+        if oracle_losses:
+            regressions.append(
+                (
+                    key,
+                    b_cls,
+                    b_reason,
+                    h_cls,
+                    _reason_with_oracle_loss(h_reason, oracle_losses),
+                )
+            )
+            continue
+
+        if b_cls == h_cls:
+            if b_reason != h_reason:
+                # A reason change within the same semantic classification is
+                # neutral. This is especially important during manifest and
+                # oracle schema migrations, where legacy reasons are replaced.
+                reason_changes.append((key, b_cls, b_reason, h_cls, h_reason))
+            continue
+
+        if _is_v3_oracle_reset(
+            base.get("version"),
+            head.get("version"),
+            b,
+            h,
+        ):
+            regressions.append(entry)
+            continue
+
         b_rank = RANK.get(b_cls, 99)
         h_rank = RANK.get(h_cls, 99)
 
         if h_rank < b_rank:
-            improvements.append(entry)
+            real_improvements.append(entry)
         else:
             regressions.append(entry)
-
-    real_improvements = [e for e in improvements if e[1] != e[3]]
-    reason_changes = [e for e in improvements if e[1] == e[3]]
 
     return base_counts, head_counts, regressions, real_improvements, reason_changes
 
@@ -94,6 +283,8 @@ def format_markdown(
     repo: str | None = None,
     base_sha: str | None = None,
     head_sha: str | None = None,
+    base_oracle: dict | None = None,
+    head_oracle: dict | None = None,
 ) -> list[str]:
     """Build the full Markdown report as a list of lines."""
     lines: list[str] = []
@@ -101,7 +292,8 @@ def format_markdown(
     lines.append("")
     lines.append("Compares ferric's compatibility with CLIPS across a corpus of")
     lines.append("example `.clp` files. Each file is classified as **equivalent**")
-    lines.append("(output matches CLIPS), **divergent** (runs but output differs),")
+    lines.append("(a valid structured oracle matches CLIPS), **divergent** (semantic")
+    lines.append("observations differ),")
     lines.append("**incompatible** (cannot run), or **pending** (not yet tested).")
     lines.append("")
 
@@ -125,6 +317,38 @@ def format_markdown(
     d_total = head_total - base_total
     delta_total = f"**{fmt_delta(d_total)}**" if d_total != 0 else "\u2014"
     lines.append(f"| **total** | **{base_total}** | **{head_total}** | {delta_total} |")
+
+    if base_oracle is not None and head_oracle is not None:
+        lines.append("")
+        lines.append("### Oracle evidence coverage")
+        lines.append("")
+        lines.append("| Metric | Base | Head | Delta |")
+        lines.append("|---|---:|---:|---:|")
+        for key in [
+            "selected",
+            "declaration",
+            "valid",
+            "missing",
+            "invalid",
+            "reached",
+            "completed",
+            "effect",
+            "refused_equivalent",
+        ]:
+            b = base_oracle[key]
+            h = head_oracle[key]
+            lines.append(f"| {key.replace('_', ' ')} | {b} | {h} | {fmt_delta(h - b)} |")
+        lines.append("")
+        lines.append(
+            f"Versions — base: {_format_counter(base_oracle['versions'])}; "
+            f"head: {_format_counter(head_oracle['versions'])}"
+        )
+        lines.append("")
+        lines.append(
+            "Normalizations — "
+            f"base: {_format_counter(base_oracle['normalizations'])}; "
+            f"head: {_format_counter(head_oracle['normalizations'])}"
+        )
 
     lines.append("")
     if regressions:
@@ -169,6 +393,79 @@ def format_markdown(
     return lines
 
 
+def _format_counter(counter: dict[str, int]) -> str:
+    if not counter:
+        return "(none)"
+    return ", ".join(f"{name}: {count}" for name, count in sorted(counter.items()))
+
+
+def _change_kind(
+    base_info: dict | None,
+    head_info: dict | None,
+    *,
+    base_version: object = None,
+    head_version: object = None,
+) -> tuple[str, list[str]]:
+    """Return the TSV change label and any oracle regression details."""
+    require_verified_head = (
+        type(head_version) is int and head_version >= STRUCTURED_ORACLE_MANIFEST_VERSION
+    )
+    if base_info is None:
+        oracle_losses = _oracle_loss_details(
+            None,
+            head_info,
+            require_verified_head=require_verified_head,
+        )
+        if oracle_losses:
+            return "regression", oracle_losses
+        return "added", []
+    if head_info is None:
+        oracle_losses = _oracle_loss_details(
+            base_info,
+            None,
+            require_verified_head=require_verified_head,
+        )
+        if oracle_losses:
+            return "regression", oracle_losses
+        return "removed", []
+
+    if _is_legacy_runner_migration(
+        base_version,
+        head_version,
+        base_info,
+        head_info,
+    ):
+        return "schema-migration", []
+
+    oracle_losses = _oracle_loss_details(
+        base_info,
+        head_info,
+        require_verified_head=require_verified_head,
+    )
+    if oracle_losses:
+        return "regression", oracle_losses
+
+    base_classification = base_info["classification"]
+    head_classification = head_info["classification"]
+    if base_classification == head_classification:
+        if base_info.get("reason", "") != head_info.get("reason", ""):
+            return "reason-changed", []
+        return "unchanged", []
+
+    if _is_v3_oracle_reset(
+        base_version,
+        head_version,
+        base_info,
+        head_info,
+    ):
+        return "regression", []
+
+    base_rank = RANK.get(base_classification, 99)
+    head_rank = RANK.get(head_classification, 99)
+    change = "improvement" if head_rank < base_rank else "regression"
+    return change, []
+
+
 def write_tsv(base: dict, head: dict, tsv_path: str) -> None:
     """Write per-file raw data as TSV."""
     base_files = base.get("files", {})
@@ -182,6 +479,13 @@ def write_tsv(base: dict, head: dict, tsv_path: str) -> None:
         "base_reason",
         "head_classification",
         "head_reason",
+        "base_oracle_status",
+        "head_oracle_status",
+        "base_oracle_version",
+        "head_oracle_version",
+        "base_oracle_normalizations",
+        "head_oracle_normalizations",
+        "oracle_regression",
         "change",
     ]
 
@@ -198,19 +502,14 @@ def write_tsv(base: dict, head: dict, tsv_path: str) -> None:
             h_cls = h["classification"] if h else ""
             h_reason = h.get("reason", "") if h else ""
             source_val = (h or b).get("source", "")
-
-            if not b:
-                change = "added"
-            elif not h:
-                change = "removed"
-            elif b_cls != h_cls:
-                b_rank = RANK.get(b_cls, 99)
-                h_rank = RANK.get(h_cls, 99)
-                change = "improvement" if h_rank < b_rank else "regression"
-            elif b_reason != h_reason:
-                change = "reason-changed"
-            else:
-                change = "unchanged"
+            base_oracle = oracle_evidence_view(b) if b else None
+            head_oracle = oracle_evidence_view(h) if h else None
+            change, oracle_losses = _change_kind(
+                b,
+                h,
+                base_version=base.get("version"),
+                head_version=head.get("version"),
+            )
 
             writer.writerow(
                 {
@@ -220,6 +519,25 @@ def write_tsv(base: dict, head: dict, tsv_path: str) -> None:
                     "base_reason": b_reason,
                     "head_classification": h_cls,
                     "head_reason": h_reason,
+                    "base_oracle_status": base_oracle["status"] if base_oracle else "",
+                    "head_oracle_status": head_oracle["status"] if head_oracle else "",
+                    "base_oracle_version": (
+                        ""
+                        if base_oracle is None or base_oracle["version"] is None
+                        else str(base_oracle["version"])
+                    ),
+                    "head_oracle_version": (
+                        ""
+                        if head_oracle is None or head_oracle["version"] is None
+                        else str(head_oracle["version"])
+                    ),
+                    "base_oracle_normalizations": (
+                        ";".join(base_oracle["normalizations"]) if base_oracle else ""
+                    ),
+                    "head_oracle_normalizations": (
+                        ";".join(head_oracle["normalizations"]) if head_oracle else ""
+                    ),
+                    "oracle_regression": ";".join(oracle_losses),
                     "change": change,
                 }
             )
@@ -252,6 +570,8 @@ def main(
         repo=repo,
         base_sha=base_sha,
         head_sha=head_sha,
+        base_oracle=compute_oracle_coverage(base),
+        head_oracle=compute_oracle_coverage(head),
     )
     print("\n".join(md_lines))
 

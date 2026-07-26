@@ -51,12 +51,12 @@ ensure_cargo_about
 
 case "${command}" in
 generate)
-    generate_notices >"${OUT}"
+    generate_notices | tr -d '\r' >"${OUT}"
     ;;
 check)
     tmp="$(mktemp)"
     trap 'rm -f "${tmp}"' EXIT
-    generate_notices >"${tmp}"
+    generate_notices | tr -d '\r' >"${tmp}"
     if ! diff -u "${OUT}" "${tmp}"; then
         echo "THIRD_PARTY_NOTICES.md is stale. Run: just license-notices" >&2
         exit 1

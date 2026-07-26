@@ -10,6 +10,7 @@ classify_file(path, features, unsupported) returns
 from __future__ import annotations
 
 import copy
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -30,7 +31,12 @@ from ferric_tools._manifest import load_manifest, save_manifest
 from ferric_tools._paths import repo_root
 from ferric_tools.bat import harness as harness_module
 from ferric_tools.compat import run as run_module
-from ferric_tools.compat.scan import build_summary, classify_file, scan_examples
+from ferric_tools.compat.scan import (
+    OracleRegistryError,
+    build_summary,
+    classify_file,
+    scan_examples,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -187,7 +193,13 @@ def test_classify_file_bat_extension_is_incompatible():
     assert reason == "test-suite-batch"
 
 
-def test_harness_generation_attaches_structured_manifest_contract(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("input_version", "expected_version"), [(1, 2), (3, 3)])
+def test_harness_generation_attaches_structured_manifest_contract(
+    tmp_path,
+    monkeypatch,
+    input_version,
+    expected_version,
+):
     root = tmp_path / "repo"
     examples = root / "tests" / "examples"
     source = examples / "libraries" / "facts.clp"
@@ -199,7 +211,7 @@ def test_harness_generation_attaches_structured_manifest_contract(tmp_path, monk
     save_manifest(
         manifest_path,
         {
-            "version": 1,
+            "version": input_version,
             "generated": "2026-07-26T00:00:00+00:00",
             "summary": build_summary(files),
             "files": files,
@@ -226,7 +238,7 @@ def test_harness_generation_attaches_structured_manifest_contract(tmp_path, monk
         "generation_version": HARNESS_GENERATION_VERSION,
         "executable": True,
     }
-    assert load_manifest(manifest_path)["version"] == 2
+    assert load_manifest(manifest_path)["version"] == expected_version
 
 
 def test_scan_attaches_non_executable_contract_for_empty_library(tmp_path):
@@ -260,7 +272,8 @@ def test_harness_generation_is_deterministic(tmp_path, monkeypatch):
     save_manifest(
         manifest_path,
         {
-            "version": 2,
+            "version": 3,
+            "oracle_protocol_version": 1,
             "generated": "2026-07-26T00:00:00+00:00",
             "summary": build_summary(files),
             "files": files,
@@ -764,11 +777,14 @@ def test_compat_runner_rejects_duplicate_selected_harness_mapping(tmp_path, monk
     assert first_plan.harness_bytes is not None
     atomic_write_bytes(first_plan.harness_path, first_plan.harness_bytes)
     files["b.clp"]["harness"] = copy.deepcopy(files["a.clp"]["harness"])
+    files["a.clp"]["oracle"] = {}
+    files["b.clp"]["oracle"] = {}
     manifest_path = examples / "compat-manifest.json"
     save_manifest(
         manifest_path,
         {
-            "version": 2,
+            "version": 3,
+            "oracle_protocol_version": 1,
             "generated": "2026-07-26T00:00:00+00:00",
             "summary": build_summary(files),
             "files": files,
@@ -786,7 +802,10 @@ def test_compat_runner_rejects_duplicate_selected_harness_mapping(tmp_path, monk
     assert "duplicate harness mapping" in result.output
 
 
-def test_compat_runner_skips_explicitly_non_executable_library(tmp_path, monkeypatch):
+def test_compat_runner_demotes_undeclared_library_and_rejects_explicit_run(
+    tmp_path,
+    monkeypatch,
+):
     root = tmp_path / "repo"
     examples = root / "tests" / "examples"
     source = examples / "empty.clp"
@@ -797,7 +816,8 @@ def test_compat_runner_skips_explicitly_non_executable_library(tmp_path, monkeyp
     save_manifest(
         manifest_path,
         {
-            "version": 2,
+            "version": 3,
+            "oracle_protocol_version": 1,
             "generated": "2026-07-26T00:00:00+00:00",
             "summary": build_summary(files),
             "files": files,
@@ -816,9 +836,9 @@ def test_compat_runner_skips_explicitly_non_executable_library(tmp_path, monkeyp
     )
 
     assert result.exit_code == 0
-    assert "No files to run." in result.output
+    assert "No oracle-backed files to run." in result.output
     assert explicit.exit_code == 1
-    assert "harness is not executable (empty)" in explicit.output
+    assert "no structured oracle declaration" in explicit.output
 
 
 @pytest.mark.parametrize("mutation", ["missing", "standalone"])
@@ -836,7 +856,8 @@ def test_compat_runner_rejects_runability_that_bypasses_harness_validation(
     save_manifest(
         manifest_path,
         {
-            "version": 2,
+            "version": 3,
+            "oracle_protocol_version": 1,
             "generated": "2026-07-26T00:00:00+00:00",
             "summary": build_summary({"libraries/facts.clp": malformed_entry}),
             "files": {"libraries/facts.clp": malformed_entry},
@@ -868,8 +889,13 @@ def test_process_file_records_harness_executed_by_both_engines(tmp_path, monkeyp
     )
     assert resolved is not None
     invocations: list[tuple[str, str, bytes]] = []
+    composed = resolved.source_bytes + b"\n" + resolved.harness_bytes
+    declaration = _oracle_declaration(
+        sha256_bytes(resolved.source_bytes),
+        composed_digest=sha256_bytes(composed),
+    )
 
-    def fake_ferric(path, _ferric, _root, _timeout):
+    def fake_ferric(path, _ferric, _root, _timeout, **identity):
         invocations.append(("ferric", path, Path(path).read_bytes()))
         return {
             "exit_code": 0,
@@ -877,9 +903,21 @@ def test_process_file_records_harness_executed_by_both_engines(tmp_path, monkeyp
             "stderr": "",
             "duration_ms": 1,
             "timed_out": False,
+            "observation": {"identity": identity},
         }
 
-    def fake_clips(path, _root, _script, _timeout):
+    def fake_clips(
+        path,
+        _root,
+        _script,
+        _timeout,
+        *,
+        globals_to_capture,
+        harnessed,
+        **identity,
+    ):
+        assert globals_to_capture == ()
+        assert harnessed is True
         invocations.append(("clips", path, Path(path).read_bytes()))
         return {
             "exit_code": 0,
@@ -887,10 +925,27 @@ def test_process_file_records_harness_executed_by_both_engines(tmp_path, monkeyp
             "stderr": "",
             "duration_ms": 1,
             "timed_out": False,
+            "observation": {"identity": identity},
         }
 
-    monkeypatch.setattr(run_module, "run_ferric", fake_ferric)
-    monkeypatch.setattr(run_module, "run_clips_docker", fake_clips)
+    monkeypatch.setattr(run_module, "run_ferric_observer", fake_ferric)
+    monkeypatch.setattr(run_module, "run_clips_observer", fake_clips)
+    monkeypatch.setattr(
+        run_module,
+        "project_ferric_observation",
+        lambda raw, **_kwargs: _canonical_observation(
+            raw["identity"],
+            fact_id=11,
+        ),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "project_clips_observation",
+        lambda raw, **_kwargs: _canonical_observation(
+            raw["identity"],
+            fact_id=2,
+        ),
+    )
 
     with run_module._compatibility_run_workspace(root) as (run_workspace, failures_dir):
         result = run_module.process_file(
@@ -905,6 +960,7 @@ def test_process_file_records_harness_executed_by_both_engines(tmp_path, monkeyp
                 resolved,
                 str(run_workspace),
                 str(failures_dir),
+                declaration,
             )
         )
 
@@ -922,7 +978,7 @@ def test_process_file_records_harness_executed_by_both_engines(tmp_path, monkeyp
         "size_bytes": len(invocations[0][2]),
     }
     assert classification == "equivalent"
-    assert reason == "exact-match"
+    assert reason == "oracle-v1-match"
 
 
 def test_process_file_composes_harness_inside_clips_mounted_root(tmp_path, monkeypatch):
@@ -934,6 +990,11 @@ def test_process_file_composes_harness_inside_clips_mounted_root(tmp_path, monke
         manifest_key="libraries/facts.clp",
     )
     assert resolved is not None
+    composed = resolved.source_bytes + b"\n" + resolved.harness_bytes
+    declaration = _oracle_declaration(
+        sha256_bytes(resolved.source_bytes),
+        composed_digest=sha256_bytes(composed),
+    )
 
     system_temp = tmp_path / "system-temp"
     system_temp.mkdir()
@@ -950,12 +1011,25 @@ def test_process_file_composes_harness_inside_clips_mounted_root(tmp_path, monke
             "timed_out": False,
         }
 
-    def fake_ferric(path, _ferric, _root, _timeout):
+    def fake_ferric(path, _ferric, _root, _timeout, **identity):
         candidate = Path(path)
         invocations.append(("ferric", candidate, candidate.read_bytes()))
-        return engine_result()
+        result = engine_result()
+        result["observation"] = {"identity": identity}
+        return result
 
-    def fake_clips(path, mounted_root, _script, _timeout):
+    def fake_clips(
+        path,
+        mounted_root,
+        _script,
+        _timeout,
+        *,
+        globals_to_capture,
+        harnessed,
+        **identity,
+    ):
+        assert globals_to_capture == ()
+        assert harnessed is True
         candidate = Path(path)
         invocations.append(("clips", candidate, candidate.read_bytes()))
         if not candidate.resolve().is_relative_to(Path(mounted_root).resolve()):
@@ -963,10 +1037,28 @@ def test_process_file_composes_harness_inside_clips_mounted_root(tmp_path, monke
             result["exit_code"] = 1
             result["stderr"] = "path is outside the mounted repository"
             return result
-        return engine_result()
+        result = engine_result()
+        result["observation"] = {"identity": identity}
+        return result
 
-    monkeypatch.setattr(run_module, "run_ferric", fake_ferric)
-    monkeypatch.setattr(run_module, "run_clips_docker", fake_clips)
+    monkeypatch.setattr(run_module, "run_ferric_observer", fake_ferric)
+    monkeypatch.setattr(run_module, "run_clips_observer", fake_clips)
+    monkeypatch.setattr(
+        run_module,
+        "project_ferric_observation",
+        lambda raw, **_kwargs: _canonical_observation(
+            raw["identity"],
+            fact_id=11,
+        ),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "project_clips_observation",
+        lambda raw, **_kwargs: _canonical_observation(
+            raw["identity"],
+            fact_id=2,
+        ),
+    )
 
     with run_module._compatibility_run_workspace(root) as (run_workspace, failures_dir):
         result = run_module.process_file(
@@ -981,14 +1073,168 @@ def test_process_file_composes_harness_inside_clips_mounted_root(tmp_path, monke
                 resolved,
                 str(run_workspace),
                 str(failures_dir),
+                declaration,
             )
         )
 
     _, _ferric_result, _clips_result, classification, reason = result
     assert classification == "equivalent"
-    assert reason == "exact-match"
+    assert reason == "oracle-v1-match"
     assert [engine for engine, _, _ in invocations] == ["ferric", "clips"]
     assert invocations[0][1] == invocations[1][1]
     assert invocations[0][2] == invocations[1][2]
     assert invocations[0][1].resolve().is_relative_to(root.resolve())
     assert not invocations[0][1].exists()
+
+
+def _oracle_declaration(digest: str, *, composed_digest: str | None = None) -> dict:
+    return {
+        "version": 1,
+        "id": "fixture.oracle",
+        "feature": "state effect",
+        "source_sha256": digest,
+        "composed_sha256": composed_digest or digest,
+        "nonce": "0" * 32,
+        "setup": ["load", "reset", "run"],
+        "expectations": {
+            "phase": "run-complete",
+            "firings": {"count": 1, "names": None},
+            "effects": [
+                {
+                    "name": "fact:MAIN::result",
+                    "value": {
+                        "type": "multifield",
+                        "value": [{"type": "integer", "value": 1}],
+                    },
+                }
+            ],
+            "facts": [
+                {
+                    "kind": "ordered",
+                    "id": 0,
+                    "origin": "fixture",
+                    "module": "MAIN",
+                    "relation": "result",
+                    "fields": [{"type": "integer", "value": 1}],
+                }
+            ],
+            "channels": {"stdout": "", "stderr": ""},
+            "diagnostic": {"phase": "none", "category": "none", "continued": True},
+            "run": {"limit": None, "halt_reason": "agenda-empty"},
+            "focus_stack": None,
+            "globals": None,
+        },
+        "normalizers": ["fact-ids"],
+    }
+
+
+def _canonical_observation(identity: dict, *, fact_id: int) -> dict:
+    integer = {"type": "integer", "value": 1}
+    return {
+        "version": 1,
+        "id": identity["fixture_id"],
+        "source_sha256": identity["source_sha256"],
+        "composed_sha256": identity["composed_sha256"],
+        "nonce": identity["nonce"],
+        "markers": [
+            {
+                "kind": kind,
+                "id": identity["fixture_id"],
+                "source_sha256": identity["source_sha256"],
+                "composed_sha256": identity["composed_sha256"],
+                "nonce": identity["nonce"],
+            }
+            for kind in ("START", "COMPLETE")
+        ],
+        "phase": "run-complete",
+        "firings": [{"rule": "counted-firing-1", "origin": "fixture"}],
+        "effects": [
+            {
+                "name": "fact:MAIN::result",
+                "value": {"type": "multifield", "value": [integer]},
+                "origin": "fixture",
+            }
+        ],
+        "facts": [
+            {
+                "kind": "ordered",
+                "id": fact_id,
+                "origin": "fixture",
+                "module": "MAIN",
+                "relation": "result",
+                "fields": [integer],
+            }
+        ],
+        "channels": {"stdout": "", "stderr": ""},
+        "diagnostic": {"phase": "none", "category": "none", "continued": True},
+        "run": {"limit": None, "halt_reason": "agenda-empty"},
+        "focus_stack": [],
+        "globals": None,
+    }
+
+
+def test_scan_attaches_digest_bound_oracle_declaration(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    source = examples / "fixture.clp"
+    examples.mkdir(parents=True)
+    source.write_text("(defrule effect => (assert (result 1)))\n", encoding="utf-8")
+    digest = sha256_bytes(source.read_bytes())
+    registry = {
+        "version": 1,
+        "fixtures": {"fixture.clp": _oracle_declaration(digest)},
+    }
+    (examples / "compat-oracles.json").write_text(
+        json.dumps(registry),
+        encoding="utf-8",
+    )
+
+    files = scan_examples(examples, root=root)
+
+    assert files["fixture.clp"]["source_sha256"] == digest
+    assert files["fixture.clp"]["oracle"] == registry["fixtures"]["fixture.clp"]
+    assert files["fixture.clp"]["oracle_evidence"] == {
+        "status": "missing",
+        "version": 1,
+        "declaration": True,
+        "reached": False,
+        "completed": False,
+        "effect": False,
+        "normalizations": ["fact-ids"],
+        "violations": [],
+    }
+
+
+def test_scan_rejects_stale_oracle_source_digest(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    examples.mkdir(parents=True)
+    (examples / "fixture.clp").write_text(
+        "(defrule effect => (assert (result 1)))\n",
+        encoding="utf-8",
+    )
+    registry = {
+        "version": 1,
+        "fixtures": {"fixture.clp": _oracle_declaration("f" * 64)},
+    }
+    (examples / "compat-oracles.json").write_text(
+        json.dumps(registry),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OracleRegistryError, match="source digest is stale"):
+        scan_examples(examples, root=root)
+
+
+def test_scan_rejects_duplicate_registry_json_field(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    examples.mkdir(parents=True)
+    (examples / "fixture.clp").write_text("(defrule effect =>)\n", encoding="utf-8")
+    (examples / "compat-oracles.json").write_text(
+        '{"version":1,"version":1,"fixtures":{}}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OracleRegistryError, match="duplicate JSON field"):
+        scan_examples(examples, root=root)

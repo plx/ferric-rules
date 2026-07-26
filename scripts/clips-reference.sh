@@ -5,9 +5,15 @@ IMAGE_NAME="ferric-rules/clips-reference"
 IMAGE_TAG="latest"
 PLATFORMS="linux/amd64,linux/arm64"
 LOAD_LOCAL=0
+QUIET=0
 CLIPS_FILES=()
 OPS=()
 OPS_FILE=""
+OBSERVER_NONCE=""
+OBSERVER_FIXTURE_ID=""
+OBSERVER_SOURCE_SHA256=""
+OBSERVER_COMPOSED_SHA256=""
+OBSERVER_AUTH_KEY=""
 WORKDIR_IN_CONTAINER="/workspace"
 
 usage() {
@@ -33,6 +39,17 @@ Run options:
   --file <path>         CLIPS source file to batch* load (repeatable)
   --ops-file <path>     Text file containing CLIPS expressions (one per line)
   --op <expr>           CLIPS expression to execute (repeatable)
+  --observer-nonce <n>  Enable nonce-bound native run metadata (internal)
+  --observer-fixture-id <id>
+                        Bind native observations to a fixture (internal)
+  --observer-source-sha256 <digest>
+                        Bind native observations to source bytes (internal)
+  --observer-composed-sha256 <digest>
+                        Bind native observations to composed bytes (internal)
+  --observer-auth-key <key>
+                        Authenticate native observation records (internal)
+  --quiet               Execute stdin with CLIPS batch* semantics, suppressing
+                        the interactive banner, prompts, and return values
 
 Examples:
   scripts/clips-reference.sh build
@@ -116,6 +133,7 @@ run_command() {
   repo_root="$(cd "$repo_root" && pwd -P)"
 
   local commands=()
+  local container_files=()
   local file
   for file in ${CLIPS_FILES[@]+"${CLIPS_FILES[@]}"}; do
     local abs
@@ -132,7 +150,10 @@ run_command() {
     fi
     local container_path
     container_path="$(escape_clips_string "${WORKDIR_IN_CONTAINER}/${rel}")"
-    commands+=("(batch* \"${container_path}\")")
+    container_files+=("${WORKDIR_IN_CONTAINER}/${rel}")
+    if [[ -z "$OBSERVER_NONCE" ]]; then
+      commands+=("(batch* \"${container_path}\")")
+    fi
   done
 
   if [[ -n "$OPS_FILE" ]]; then
@@ -149,7 +170,12 @@ run_command() {
     commands+=("$op")
   done
 
-  if [[ "${#commands[@]}" -eq 0 ]]; then
+  if [[ -n "$OBSERVER_NONCE" ]]; then
+    if [[ "${#container_files[@]}" -ne 1 ]]; then
+      echo "error: structured observer requires exactly one --file" >&2
+      exit 1
+    fi
+  elif [[ "${#commands[@]}" -eq 0 ]]; then
     commands+=("(reset)" "(run)")
   elif [[ "${#OPS[@]}" -eq 0 && -z "$OPS_FILE" ]]; then
     # When only --file was given (no explicit --op or --ops-file),
@@ -158,15 +184,65 @@ run_command() {
     commands+=("(reset)" "(run)")
   fi
 
+  local clips_args=()
+  local observer_args=()
+  if [[ "$QUIET" -eq 1 && -z "$OBSERVER_NONCE" ]]; then
+    clips_args+=("-f2" "/dev/stdin")
+  fi
+  if [[ -n "$OBSERVER_NONCE" ]]; then
+    if [[ ! "$OBSERVER_NONCE" =~ ^[0-9a-f]{32,128}$ ]] ||
+       (( ${#OBSERVER_NONCE} % 2 != 0 )); then
+      echo "error: --observer-nonce must encode 16-64 bytes as lowercase hexadecimal" >&2
+      exit 1
+    fi
+    if [[ ! "$OBSERVER_FIXTURE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$ ]]; then
+      echo "error: --observer-fixture-id must be a protocol-safe token" >&2
+      exit 1
+    fi
+    if [[ ! "$OBSERVER_SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+      echo "error: --observer-source-sha256 must be a lowercase SHA-256 digest" >&2
+      exit 1
+    fi
+    if [[ ! "$OBSERVER_COMPOSED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+      echo "error: --observer-composed-sha256 must be a lowercase SHA-256 digest" >&2
+      exit 1
+    fi
+    if [[ ! "$OBSERVER_AUTH_KEY" =~ ^[0-9a-f]{64}$ ]]; then
+      echo "error: --observer-auth-key must encode 32 bytes as lowercase hexadecimal" >&2
+      exit 1
+    fi
+    observer_args+=(
+      "--ferric-observer"
+      "--source"
+      "${container_files[0]}"
+    )
+  elif [[ -n "$OBSERVER_FIXTURE_ID" || -n "$OBSERVER_SOURCE_SHA256" ||
+          -n "$OBSERVER_COMPOSED_SHA256" || -n "$OBSERVER_AUTH_KEY" ]]; then
+    echo "error: observer bindings require --observer-nonce" >&2
+    exit 1
+  fi
+
   {
-    for cmd in "${commands[@]}"; do
+    if [[ -n "$OBSERVER_NONCE" ]]; then
+      printf '%s|%s|%s|%s|%s\n' \
+        "$OBSERVER_NONCE" \
+        "$OBSERVER_FIXTURE_ID" \
+        "$OBSERVER_SOURCE_SHA256" \
+        "$OBSERVER_COMPOSED_SHA256" \
+        "$OBSERVER_AUTH_KEY"
+    fi
+    for cmd in ${commands[@]+"${commands[@]}"}; do
       printf '%s\n' "$cmd"
     done
-    printf '(exit)\n'
+    if [[ -z "$OBSERVER_NONCE" ]]; then
+      printf '(exit)\n'
+    fi
   } | docker run --rm -i \
       -v "${repo_root}:${WORKDIR_IN_CONTAINER}:ro" \
       -w "$WORKDIR_IN_CONTAINER" \
-      "$full_image"
+      "$full_image" \
+      ${observer_args[@]+"${observer_args[@]}"} \
+      ${clips_args[@]+"${clips_args[@]}"}
 }
 
 [[ $# -eq 0 ]] && { usage; exit 1; }
@@ -203,6 +279,30 @@ while [[ $# -gt 0 ]]; do
     --op)
       OPS+=("$2")
       shift 2
+      ;;
+    --observer-nonce)
+      OBSERVER_NONCE="$2"
+      shift 2
+      ;;
+    --observer-fixture-id)
+      OBSERVER_FIXTURE_ID="$2"
+      shift 2
+      ;;
+    --observer-source-sha256)
+      OBSERVER_SOURCE_SHA256="$2"
+      shift 2
+      ;;
+    --observer-composed-sha256)
+      OBSERVER_COMPOSED_SHA256="$2"
+      shift 2
+      ;;
+    --observer-auth-key)
+      OBSERVER_AUTH_KEY="$2"
+      shift 2
+      ;;
+    --quiet)
+      QUIET=1
+      shift
       ;;
     -h|--help)
       usage

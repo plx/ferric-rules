@@ -12,9 +12,149 @@ from rich.console import Console
 
 from ferric_tools._manifest import load_manifest
 from ferric_tools._paths import examples_dir as default_examples_dir
+from ferric_tools.compat.oracle import SUPPORTED_NORMALIZERS
 
 app = typer.Typer(help="Generate compatibility assessment reports.")
 console = Console(stderr=True)
+
+ORACLE_STATUSES = ("valid", "missing", "invalid")
+ORACLE_COVERAGE_FIELDS = ("declaration", "reached", "completed", "effect")
+ORACLE_EVIDENCE_VERSION = 1
+
+
+def oracle_evidence_view(info: dict) -> dict:
+    """Return a defensive, report-ready view of one file's oracle evidence.
+
+    Legacy entries have no ``oracle_evidence`` member and are treated as
+    missing. An equivalent claim without valid evidence is refused and counted
+    as invalid, while the rest of a legacy manifest remains reportable.
+    """
+    raw = info.get("oracle_evidence")
+    selected = raw is not None
+    malformed = selected and not isinstance(raw, dict)
+    evidence = raw if isinstance(raw, dict) else {}
+
+    status = evidence.get("status", "missing")
+    if status not in ORACLE_STATUSES:
+        status = "invalid"
+        malformed = True
+
+    version = evidence.get("version")
+    if selected and (type(version) is not int or version != ORACLE_EVIDENCE_VERSION):
+        malformed = True
+
+    coverage: dict[str, bool] = {}
+    for field in ORACLE_COVERAGE_FIELDS:
+        value = evidence.get(field, False)
+        if selected and (field not in evidence or type(value) is not bool):
+            malformed = True
+        coverage[field] = value is True
+
+    raw_normalizations = evidence.get("normalizations", [])
+    if not isinstance(raw_normalizations, list) or not all(
+        isinstance(item, str) for item in raw_normalizations
+    ):
+        normalizations: list[str] = []
+        malformed = True
+    else:
+        normalizations = sorted(set(raw_normalizations))
+        if (
+            selected
+            and version == ORACLE_EVIDENCE_VERSION
+            and any(normalization not in SUPPORTED_NORMALIZERS for normalization in normalizations)
+        ):
+            malformed = True
+
+    raw_violations = evidence.get("violations", [])
+    if not isinstance(raw_violations, list) or not all(
+        isinstance(item, str) for item in raw_violations
+    ):
+        violations = ["malformed violations"]
+        malformed = True
+    else:
+        violations = list(raw_violations)
+
+    invalid_valid_shape = status == "valid" and not all(
+        coverage[field] for field in ("declaration", "reached", "completed")
+    )
+    invalid_missing_shape = status == "missing" and any(coverage.values())
+    if malformed or invalid_valid_shape or invalid_missing_shape:
+        status = "invalid"
+
+    refused_equivalent = info.get("classification") == "equivalent" and (
+        status != "valid" or not all(coverage.values()) or bool(violations)
+    )
+    if refused_equivalent:
+        status = "invalid"
+
+    return {
+        "selected": selected,
+        "status": status,
+        "version": version,
+        **coverage,
+        "normalizations": normalizations,
+        "violations": violations,
+        "refused_equivalent": refused_equivalent,
+    }
+
+
+def compute_oracle_coverage(manifest: dict) -> dict:
+    """Aggregate oracle evidence coverage for a compatibility manifest."""
+    files = manifest.get("files", {})
+    coverage: dict = {
+        "total": len(files),
+        "selected": 0,
+        "declaration": 0,
+        "valid": 0,
+        "missing": 0,
+        "invalid": 0,
+        "reached": 0,
+        "completed": 0,
+        "effect": 0,
+        "refused_equivalent": 0,
+        "versions": {},
+        "normalizations": {},
+    }
+
+    for info in files.values():
+        evidence = oracle_evidence_view(info)
+        if evidence["selected"]:
+            coverage["selected"] += 1
+            version = evidence["version"]
+            version_label = "(unspecified)" if version is None else str(version)
+            coverage["versions"][version_label] = coverage["versions"].get(version_label, 0) + 1
+
+        coverage[evidence["status"]] += 1
+        for field in ORACLE_COVERAGE_FIELDS:
+            if evidence[field]:
+                coverage[field] += 1
+        if evidence["refused_equivalent"]:
+            coverage["refused_equivalent"] += 1
+        for normalization in evidence["normalizations"]:
+            coverage["normalizations"][normalization] = (
+                coverage["normalizations"].get(normalization, 0) + 1
+            )
+
+    return coverage
+
+
+_ORACLE_METRICS = [
+    ("selected", "selected"),
+    ("declaration", "declaration"),
+    ("valid", "valid"),
+    ("missing", "missing"),
+    ("invalid", "invalid"),
+    ("reached", "reached"),
+    ("completed", "completed"),
+    ("effect", "effect"),
+    ("refused_equivalent", "refused equivalent"),
+]
+
+
+def _format_counter(counter: dict[str, int]) -> str:
+    if not counter:
+        return "(none)"
+    return ", ".join(f"{name}: {count:,}" for name, count in sorted(counter.items()))
 
 
 def print_summary(manifest: dict) -> None:
@@ -35,6 +175,17 @@ def print_summary(manifest: dict) -> None:
         count = summary.get(cls, 0)
         pct = (count / total * 100) if total else 0
         print(f"  {cls:15s}: {count:6,} ({pct:5.1f}%)")
+
+    oracle = compute_oracle_coverage(manifest)
+    oracle_total = oracle["total"]
+    print()
+    print("Oracle evidence:")
+    for key, label in _ORACLE_METRICS:
+        count = oracle[key]
+        pct = (count / oracle_total * 100) if oracle_total else 0
+        print(f"  {label:20s}: {count:6,} ({pct:5.1f}%)")
+    print(f"  {'versions':20s}: {_format_counter(oracle['versions'])}")
+    print(f"  {'normalizations':20s}: {_format_counter(oracle['normalizations'])}")
 
     reason_counts: dict[str, int] = {}
     for info in manifest["files"].values():
@@ -86,7 +237,9 @@ def print_summary(manifest: dict) -> None:
         print()
         print(f"Equivalent files ({len(equivalent)}):")
         for k, v in sorted(equivalent):
-            print(f"  {k} ({v['reason']})")
+            oracle = oracle_evidence_view(v)
+            suffix = " [REFUSED: invalid oracle evidence]" if oracle["refused_equivalent"] else ""
+            print(f"  {k} ({v['reason']}){suffix}")
 
     divergent = [(k, v) for k, v in manifest["files"].items() if v["classification"] == "divergent"]
     if divergent:
@@ -116,6 +269,16 @@ _FIELDNAMES = [
     "clips_exit",
     "clips_duration_ms",
     "clips_timed_out",
+    "oracle_selected",
+    "oracle_declaration",
+    "oracle_status",
+    "oracle_version",
+    "oracle_reached",
+    "oracle_completed",
+    "oracle_effect",
+    "oracle_normalizations",
+    "oracle_violations",
+    "oracle_refused_equivalent",
     "notes",
 ]
 
@@ -128,13 +291,14 @@ def _write_delimited(manifest: dict, out_path: str, delimiter: str) -> None:
         for path, info in sorted(manifest["files"].items()):
             ferric = info.get("ferric") or {}
             clips = info.get("clips") or {}
+            oracle = oracle_evidence_view(info)
             writer.writerow(
                 {
                     "path": path,
-                    "source": info["source"],
-                    "classification": info["classification"],
-                    "reason": info["reason"],
-                    "runability": info["runability"],
+                    "source": info.get("source", ""),
+                    "classification": info.get("classification", ""),
+                    "reason": info.get("reason", ""),
+                    "runability": info.get("runability", ""),
                     "features": ";".join(info.get("features", [])),
                     "unsupported_features": ";".join(info.get("unsupported_features", [])),
                     "ferric_exit": ferric.get("exit_code", ""),
@@ -143,6 +307,16 @@ def _write_delimited(manifest: dict, out_path: str, delimiter: str) -> None:
                     "clips_exit": clips.get("exit_code", ""),
                     "clips_duration_ms": clips.get("duration_ms", ""),
                     "clips_timed_out": clips.get("timed_out", ""),
+                    "oracle_selected": oracle["selected"],
+                    "oracle_declaration": oracle["declaration"],
+                    "oracle_status": oracle["status"],
+                    "oracle_version": ("" if oracle["version"] is None else str(oracle["version"])),
+                    "oracle_reached": oracle["reached"],
+                    "oracle_completed": oracle["completed"],
+                    "oracle_effect": oracle["effect"],
+                    "oracle_normalizations": ";".join(oracle["normalizations"]),
+                    "oracle_violations": ";".join(oracle["violations"]),
+                    "oracle_refused_equivalent": oracle["refused_equivalent"],
                     "notes": info.get("notes", ""),
                 }
             )
@@ -162,7 +336,8 @@ def write_report(
     lines.append("")
     lines.append("Assessment of ferric's compatibility with CLIPS across a corpus of")
     lines.append("example `.clp` files. Each file is classified as **equivalent**")
-    lines.append("(output matches CLIPS), **divergent** (runs but output differs),")
+    lines.append("(a valid structured oracle matches CLIPS), **divergent** (semantic")
+    lines.append("observations differ),")
     lines.append("**incompatible** (cannot run), or **pending** (not yet tested).")
     lines.append("")
 
@@ -180,6 +355,22 @@ def write_report(
         pct = (count / total * 100) if total else 0
         lines.append(f"| {cls} | {count:,} | {pct:.1f}% |")
     lines.append(f"| **total** | **{total:,}** | |")
+
+    oracle = compute_oracle_coverage(manifest)
+    oracle_total = oracle["total"]
+    lines.append("")
+    lines.append("### Oracle evidence coverage")
+    lines.append("")
+    lines.append("| Metric | Count | % of files |")
+    lines.append("|---|---:|---:|")
+    for key, label in _ORACLE_METRICS:
+        count = oracle[key]
+        pct = (count / oracle_total * 100) if oracle_total else 0
+        lines.append(f"| {label} | {count:,} | {pct:.1f}% |")
+    lines.append("")
+    lines.append(f"Versions: {_format_counter(oracle['versions'])}")
+    lines.append("")
+    lines.append(f"Normalizations: {_format_counter(oracle['normalizations'])}")
 
     source_stats: dict[str, dict] = {}
     for info in manifest["files"].values():
@@ -217,7 +408,11 @@ def write_report(
         lines.append(f"### Equivalent files ({len(equivalent)})")
         lines.append("")
         for k, v in equivalent:
-            lines.append(f"- `{k}` ({v['reason']})")
+            oracle = oracle_evidence_view(v)
+            suffix = (
+                " — **REFUSED: invalid oracle evidence**" if oracle["refused_equivalent"] else ""
+            )
+            lines.append(f"- `{k}` ({v['reason']}){suffix}")
 
     divergent = sorted(
         (k, v) for k, v in manifest["files"].items() if v["classification"] == "divergent"
