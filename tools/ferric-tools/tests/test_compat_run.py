@@ -54,7 +54,7 @@ def _engine_result(*, stdout: str = "matched\n", exit_code: int = 0) -> dict:
     }
 
 
-def test_classify_results_preserves_prompt_prefixed_harness_start_as_exact_match():
+def test_classify_results_rejects_prompt_prefixed_harness_without_feature_oracle():
     verifier_id = "ferric-harness-" + ("a" * 64)
     output = (
         f"FERRIC-HARNESS|2|{verifier_id}|START\n"
@@ -68,7 +68,16 @@ def test_classify_results_preserves_prompt_prefixed_harness_start_as_exact_match
         _engine_result(stdout=clips_output),
     )
 
-    assert result == ("equivalent", "exact-match")
+    assert result == ("pending", "oracle-missing")
+
+
+def test_classify_results_rejects_matching_empty_output_without_oracle():
+    result = run_module.classify_results(
+        _engine_result(stdout=""),
+        _engine_result(stdout=""),
+    )
+
+    assert result == ("pending", "oracle-missing")
 
 
 def _work_item(
