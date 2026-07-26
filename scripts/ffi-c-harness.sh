@@ -14,6 +14,7 @@ cd "$root"
 cargo build -p ferric-ffi --profile ffi-dev
 
 CC="${CC:-cc}"
+CXX="${CXX:-c++}"
 harness_src="crates/ferric-ffi/tests/c/discriminant_abuse.c"
 outdir="target/c-harness"
 mkdir -p "$outdir"
@@ -55,6 +56,11 @@ if echo 'int main(void){return 0;}' |
 else
     echo "ffi-c-harness: compiler lacks -fshort-enums; skipping negative check" >&2
 fi
+
+# Pre-C++11 consumers must use the typedef-based static-assertion fallback.
+printf '#include "ferric.h"\nint main(){return 0;}\n' |
+    "$CXX" -std=c++98 -Wall -Wextra -Werror -DFERRIC_SERDE \
+        -fsyntax-only -I crates/ferric-ffi -x c++ -
 
 "$CC" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" \
     -I crates/ferric-ffi \

@@ -1627,7 +1627,7 @@ enum FerricError ferric_value_array_free(struct FerricValue *arr FERRIC_COUNTED_
  * at compile time for every consumer of this header.
  */
 
-#if defined(__cplusplus)
+#if defined(__cplusplus) && __cplusplus >= 201103L
   #define FERRIC_STATIC_ASSERT(COND, MSG) static_assert(COND, MSG)
 #elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
   #define FERRIC_STATIC_ASSERT(COND, MSG) _Static_assert(COND, MSG)

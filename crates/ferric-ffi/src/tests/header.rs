@@ -281,6 +281,10 @@ fn header_has_abi_static_assertions() {
         header.contains("#define FERRIC_STATIC_ASSERT(COND, MSG)"),
         "Missing FERRIC_STATIC_ASSERT macro definition"
     );
+    assert!(
+        header.contains("#if defined(__cplusplus) && __cplusplus >= 201103L"),
+        "C++ static_assert must be gated on C++11 so older modes use the typedef fallback"
+    );
     // Width locks for every caller-populated discriminant field.
     for field in [
         "((FerricValue *)0)->value_type",
