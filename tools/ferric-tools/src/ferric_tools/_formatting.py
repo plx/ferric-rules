@@ -6,7 +6,6 @@ import re
 
 # CLIPS Docker output includes the interactive prompt and banner.
 CLIPS_NOISE_PATTERNS = [
-    re.compile(r"^CLIPS>"),
     re.compile(r"^CLIPS \("),
     re.compile(r"^\s+CLIPS \("),
     re.compile(r"^         CLIPS"),
@@ -65,6 +64,14 @@ def normalize_output(raw: str, engine: str) -> str:
 
     for line in lines:
         if engine == "clips":
+            had_prompt = False
+            while line.startswith("CLIPS>"):
+                had_prompt = True
+                line = line.removeprefix("CLIPS>")
+                if line.startswith(" "):
+                    line = line[1:]
+            if had_prompt and line in {"", "TRUE"}:
+                continue
             skip = any(pat.match(line) for pat in CLIPS_NOISE_PATTERNS)
             if skip:
                 continue

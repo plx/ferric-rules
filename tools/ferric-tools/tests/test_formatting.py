@@ -105,6 +105,25 @@ def test_normalize_output_strips_clips_prompt():
     assert "result" in result
 
 
+def test_normalize_output_preserves_output_after_repeated_clips_prompts():
+    raw = (
+        "         CLIPS (6.30 3/17/15)\n"
+        "CLIPS> TRUE\n"
+        "CLIPS> CLIPS> FERRIC-HARNESS|2|proof|START\n"
+        "FERRIC-HARNESS|2|proof|STATE|focus=MAIN\n"
+        "FERRIC-HARNESS|2|proof|COMPLETE\n"
+        "CLIPS> "
+    )
+
+    result = normalize_output(raw, engine="clips")
+
+    assert result == (
+        "FERRIC-HARNESS|2|proof|START\n"
+        "FERRIC-HARNESS|2|proof|STATE|focus=MAIN\n"
+        "FERRIC-HARNESS|2|proof|COMPLETE\n"
+    )
+
+
 def test_normalize_output_strips_trailing_empty_lines():
     # The normalizer removes blank lines at the end of the output so that
     # comparisons are not sensitive to trailing whitespace.
