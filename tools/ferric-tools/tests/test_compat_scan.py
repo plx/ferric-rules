@@ -10,11 +10,14 @@ classify_file(path, features, unsupported) returns
 from __future__ import annotations
 
 import copy
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from ferric_tools import _harness as harness_core
 from ferric_tools._harness import (
     HARNESS_GENERATION_VERSION,
     HarnessContractError,
@@ -24,6 +27,7 @@ from ferric_tools._harness import (
     sha256_bytes,
 )
 from ferric_tools._manifest import load_manifest, save_manifest
+from ferric_tools._paths import repo_root
 from ferric_tools.bat import harness as harness_module
 from ferric_tools.compat import run as run_module
 from ferric_tools.compat.scan import build_summary, classify_file, scan_examples
@@ -56,6 +60,27 @@ def _materialized_library_harness(tmp_path):
     assert plan.harness_bytes is not None
     atomic_write_bytes(plan.harness_path, plan.harness_bytes)
     return root, source, files["libraries/facts.clp"], plan
+
+
+def _generated_harness_for_source(
+    tmp_path,
+    source_text: str,
+    manifest_key: str = "fixture.clp",
+) -> str:
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    source = examples.joinpath(*Path(manifest_key).parts)
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(source_text, encoding="utf-8")
+    plans = build_harness_plans(
+        {manifest_key: {"runability": "library"}},
+        examples_dir=examples,
+        output_dir=root / "tests" / "harnesses",
+        root=root,
+    )
+    harness_bytes = plans[manifest_key].harness_bytes
+    assert harness_bytes is not None
+    return harness_bytes.decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +222,8 @@ def test_harness_generation_attaches_structured_manifest_contract(tmp_path, monk
     assert entry["harness"] == {
         "path": "tests/harnesses/libraries/facts-harness.clp",
         "source_sha256": ("9cbd4ed905513641a466371ad9acd658ef729cd071739ad84340b30273cfa088"),
-        "harness_sha256": ("813e26ca00f6dd8f89322aca61d1ef07441795aae6fe58dc653e69f969693e57"),
-        "generation_version": 1,
+        "harness_sha256": ("688b349b774260e05fe36879a6af9a8bb15af3c835fcf601b56a97b201930ce3"),
+        "generation_version": HARNESS_GENERATION_VERSION,
         "executable": True,
     }
     assert load_manifest(manifest_path)["version"] == 2
@@ -260,6 +285,198 @@ def test_harness_generation_is_deterministic(tmp_path, monkeypatch):
     assert second.exit_code == 0, second.output
     assert manifest_path.read_bytes() == first_manifest
     assert harness_path.read_bytes() == first_harness
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    [
+        "(deffacts sample (value 1))\n(defmodule TRAILING)\n",
+        "(defmodule MAIN (export ?ALL))\n"
+        "(deffacts MAIN::sample (value 1))\n"
+        "(defmodule TRAILING (export ?ALL))\n",
+        "(defmodule MAIN)\n(deffacts MAIN::sample (value 1))\n(defmodule TRAILING)\n",
+        "(defmodule FERRIC-HARNESS-AUDIT)\n(deffacts FERRIC-HARNESS-AUDIT::sample (value 1))\n",
+        "(defmodule MAIN)\n"
+        "(defmodule FIRST)\n"
+        "(defmodule SECOND)\n"
+        "(defrule MAIN::seed-focus (initial-fact) => (focus FIRST SECOND))\n"
+        "(defmodule TRAILING)\n",
+        "(defmodule TRAILING)\n"
+        '(defrule harness-verify (initial-fact) => (printout t "fixture" crlf))\n',
+    ],
+    ids=[
+        "ends-non-main",
+        "explicit-exports",
+        "no-exports",
+        "audit-module-collision",
+        "nested-focus-stack",
+        "legacy-rule-collision",
+    ],
+)
+def test_generated_verifier_has_isolated_main_execution_proof(
+    tmp_path,
+    source_text,
+):
+    harness = _generated_harness_for_source(tmp_path, source_text)
+    rule_match = re.search(
+        r"\(defrule MAIN::(ferric-harness-[0-9a-f]{64}(?:-[0-9]+)?)-verify\b",
+        harness,
+    )
+
+    assert rule_match is not None
+    verifier_id = rule_match.group(1)
+    assert verifier_id.casefold() not in source_text.casefold()
+    assert "\n(defmodule " not in harness
+    assert "\n(defrule harness-verify" not in harness
+    assert "(declare (salience 10000))" in harness
+
+    start = f'"FERRIC-HARNESS|{HARNESS_GENERATION_VERSION}|{verifier_id}|START"'
+    state = f'"FERRIC-HARNESS|{HARNESS_GENERATION_VERSION}|{verifier_id}|STATE|focus=" (get-focus)'
+    complete = f'"FERRIC-HARNESS|{HARNESS_GENERATION_VERSION}|{verifier_id}|COMPLETE"'
+    assert harness.index(start) < harness.index(state) < harness.index(complete)
+    assert harness.endswith(
+        f"(defrule MAIN::{verifier_id}-verify\n"
+        "   (declare (salience 10000))\n"
+        "   (initial-fact)\n"
+        "   =>\n"
+        f"   (printout t {start} crlf)\n"
+        f"   (printout t {state} crlf)\n"
+        f"   (printout t {complete} crlf))\n"
+    )
+
+
+def test_harness_generation_rejects_control_bearing_manifest_path(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    examples.mkdir(parents=True)
+
+    with pytest.raises(HarnessContractError, match="control characters"):
+        build_harness_plans(
+            {"fixture.clp\n(defrule injected =>)": {"runability": "library"}},
+            examples_dir=examples,
+            output_dir=root / "tests" / "harnesses",
+            root=root,
+        )
+
+
+def test_generate_harness_rejects_comment_injection_at_sink():
+    source_bytes = b"(deffacts sample (value 1))\n"
+    constructs = harness_core.detect_constructs(source_bytes.decode())
+
+    with pytest.raises(HarnessContractError, match="control characters"):
+        harness_core.generate_harness(
+            "fixture.clp\n(defrule MAIN::path-injected =>)\n;",
+            source_bytes,
+            constructs,
+        )
+
+    malicious_constructs = copy.deepcopy(constructs)
+    malicious_constructs["deffacts"] = ["sample\n(defrule MAIN::construct-injected =>)\n;"]
+    with pytest.raises(HarnessContractError, match="control characters"):
+        harness_core.generate_harness(
+            "fixture.clp",
+            source_bytes,
+            malicious_constructs,
+        )
+
+
+def test_generated_verifier_identity_is_deterministic_and_path_scoped(tmp_path):
+    source_text = "(deffacts sample (value 1))\n(defmodule TRAILING)\n"
+
+    first = _generated_harness_for_source(tmp_path, source_text, "a/library.clp")
+    repeated = _generated_harness_for_source(tmp_path, source_text, "a/library.clp")
+    second_path = _generated_harness_for_source(tmp_path, source_text, "b/library.clp")
+
+    pattern = r"\(defrule MAIN::(ferric-harness-[0-9a-f]{64})-verify\b"
+    first_id = re.search(pattern, first)
+    second_id = re.search(pattern, second_path)
+    assert first == repeated
+    assert first_id is not None
+    assert second_id is not None
+    assert first_id.group(1) != second_id.group(1)
+
+
+def test_generated_verifier_advances_past_forced_name_collisions(monkeypatch):
+    digest = "a" * 64
+    base = f"ferric-harness-{digest}"
+    source_bytes = (
+        f"(defmodule {base})\n(defmodule {base}-1)\n(deffacts {base}-1::sample (value 1))\n"
+    ).encode()
+    source_text = source_bytes.decode()
+    monkeypatch.setattr(harness_core, "sha256_bytes", lambda _content: digest)
+
+    harness = harness_core.generate_harness(
+        "fixture.clp",
+        source_bytes,
+        harness_core.detect_constructs(source_text),
+    )
+
+    assert f"(defrule MAIN::{base}-2-verify\n" in harness
+
+
+def test_generated_verifier_executes_after_trailing_module_without_changing_feature_output(
+    tmp_path,
+):
+    source_text = (
+        "(defmodule MAIN)\n"
+        "(defrule MAIN::feature-result\n"
+        "   (declare (salience -10000))\n"
+        "   (initial-fact)\n"
+        "   =>\n"
+        '   (printout t "FEATURE|module=MAIN" crlf))\n'
+        "(defmodule TRAILING)\n"
+    )
+    root = tmp_path / "fixture-repo"
+    examples = root / "tests" / "examples"
+    source = examples / "trailing.clp"
+    source.parent.mkdir(parents=True)
+    source.write_text(source_text, encoding="utf-8")
+    plan = build_harness_plans(
+        {"trailing.clp": {"runability": "library"}},
+        examples_dir=examples,
+        output_dir=root / "tests" / "harnesses",
+        root=root,
+    )["trailing.clp"]
+    assert plan.harness_bytes is not None
+    composed = root / "composed.clp"
+    composed.write_bytes(plan.source_bytes + b"\n" + plan.harness_bytes)
+
+    command = ["cargo", "run", "--quiet", "-p", "ferric-cli", "--", "run"]
+    baseline = subprocess.run(
+        [*command, str(source)],
+        cwd=repo_root(),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    instrumented = subprocess.run(
+        [*command, str(composed)],
+        cwd=repo_root(),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert baseline.returncode == 0, baseline.stderr
+    assert instrumented.returncode == 0, instrumented.stderr
+    rule_match = re.search(
+        rb"\(defrule MAIN::(ferric-harness-[0-9a-f]{64})-verify\b",
+        plan.harness_bytes,
+    )
+    assert rule_match is not None
+    verifier_id = rule_match.group(1).decode()
+    proof_lines = [
+        line for line in instrumented.stdout.splitlines() if line.startswith("FERRIC-HARNESS|")
+    ]
+    assert proof_lines == [
+        f"FERRIC-HARNESS|{HARNESS_GENERATION_VERSION}|{verifier_id}|START",
+        (f"FERRIC-HARNESS|{HARNESS_GENERATION_VERSION}|{verifier_id}|STATE|focus=MAIN"),
+        f"FERRIC-HARNESS|{HARNESS_GENERATION_VERSION}|{verifier_id}|COMPLETE",
+    ]
+    feature_lines = [
+        line for line in instrumented.stdout.splitlines() if not line.startswith("FERRIC-HARNESS|")
+    ]
+    assert feature_lines == baseline.stdout.splitlines() == ["FEATURE|module=MAIN"]
 
 
 def test_harness_generation_uses_stable_library_identity(tmp_path, monkeypatch):

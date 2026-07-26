@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-HARNESS_GENERATION_VERSION = 1
+HARNESS_GENERATION_VERSION = 2
 EXTERNAL_DEP_KEYWORDS = ["ros-", "ament-", "blackboard-", "pb-", "navgraph-", "protobuf-"]
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 SKIP_REASONS = {"empty", "external-deps"}
@@ -103,8 +103,38 @@ def has_any_constructs(constructs: dict) -> bool:
     return any(len(items) > 0 for items in constructs.values())
 
 
-def generate_harness(source_relpath: str, constructs: dict) -> str:
+def _collision_safe_verifier_id(source_relpath: str, source_bytes: bytes) -> str:
+    """Return a deterministic verifier identity absent from the source bytes."""
+    identity_input = (
+        f"ferric-harness-v{HARNESS_GENERATION_VERSION}\0".encode()
+        + source_relpath.encode("utf-8")
+        + b"\0"
+        + sha256_bytes(source_bytes).encode("ascii")
+    )
+    base = f"ferric-harness-{sha256_bytes(identity_input)}"
+    source_text = source_bytes.decode("utf-8", errors="replace").casefold()
+    candidate = base
+    suffix = 1
+    while candidate.casefold() in source_text:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _single_line_comment_field(value: object, *, label: str) -> str:
+    """Return a comment field only when it cannot escape onto a new CLIPS line."""
+    text = str(value)
+    if any(ord(character) < 32 or ord(character) == 127 for character in text):
+        raise HarnessContractError(f"{label} must not contain control characters")
+    return text
+
+
+def generate_harness(source_relpath: str, source_bytes: bytes, constructs: dict) -> str:
     """Generate a harness .clp file for the given source file."""
+    source_relpath = _normalized_relative_path(
+        source_relpath,
+        label="source path",
+    ).as_posix()
     summary_parts: list[str] = []
     for kind in [
         "deffacts",
@@ -118,23 +148,40 @@ def generate_harness(source_relpath: str, constructs: dict) -> str:
         items = constructs[kind]
         if items:
             if kind == "deffunction":
-                names = [f"{name}/{count}" for name, count in items]
+                names = [
+                    (
+                        f"{_single_line_comment_field(name, label='construct name')}/"
+                        f"{_single_line_comment_field(count, label='construct arity')}"
+                    )
+                    for name, count in items
+                ]
                 summary_parts.append(f"{kind}: {', '.join(names)}")
             else:
-                summary_parts.append(f"{kind}: {', '.join(items)}")
+                names = [_single_line_comment_field(item, label="construct name") for item in items]
+                summary_parts.append(f"{kind}: {', '.join(names)}")
 
     summary = "; ".join(summary_parts) if summary_parts else "no named constructs"
+    verifier_id = _collision_safe_verifier_id(source_relpath, source_bytes)
     lines = [
         f"; Harness for {source_relpath}",
         f"; Detected constructs: {summary}",
         ";",
-        "; Strategy: verify file loads and reset succeeds.",
-        "; The source file is loaded via (load ...) before this harness.",
+        "; Strategy: prove reset/run reaches an isolated MAIN verifier.",
+        "; The source and harness are composed and loaded together before reset.",
         "",
-        "(defrule harness-verify",
+        f"(defrule MAIN::{verifier_id}-verify",
+        "   (declare (salience 10000))",
         "   (initial-fact)",
         "   =>",
-        '   (printout t "HARNESS: loaded" crlf))',
+        (f'   (printout t "FERRIC-HARNESS|{HARNESS_GENERATION_VERSION}|{verifier_id}|START" crlf)'),
+        (
+            f'   (printout t "FERRIC-HARNESS|{HARNESS_GENERATION_VERSION}|'
+            f'{verifier_id}|STATE|focus=" (get-focus) crlf)'
+        ),
+        (
+            f'   (printout t "FERRIC-HARNESS|{HARNESS_GENERATION_VERSION}|'
+            f'{verifier_id}|COMPLETE" crlf))'
+        ),
         "",
     ]
     return "\n".join(lines)
@@ -150,6 +197,8 @@ def compute_harness_path(output_dir: Path, manifest_key: str) -> Path:
 def _normalized_relative_path(value: str, *, label: str) -> PurePosixPath:
     if not value or "\\" in value:
         raise HarnessContractError(f"{label} must be a normalized POSIX relative path")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise HarnessContractError(f"{label} must not contain control characters")
 
     path = PurePosixPath(value)
     windows_path = PureWindowsPath(value)
@@ -226,7 +275,7 @@ def build_harness_plan(
         }
         return HarnessPlan(source_path, source_bytes, None, None, metadata)
 
-    harness_text = generate_harness(manifest_key, constructs)
+    harness_text = generate_harness(manifest_key, source_bytes, constructs)
     harness_bytes = harness_text.encode("utf-8")
     harness_path = compute_harness_path(output_dir, manifest_key)
     if harness_path.is_symlink():

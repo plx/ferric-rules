@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ferric_tools._harness import ResolvedHarness, sha256_bytes
+from ferric_tools._harness import HARNESS_GENERATION_VERSION, ResolvedHarness, sha256_bytes
 from ferric_tools._paths import repo_root
 from ferric_tools.compat import run as run_module
 
@@ -37,7 +37,7 @@ def _resolved_harness(
             "path": f"tests/harnesses/{name}-harness.clp",
             "source_sha256": sha256_bytes(source_bytes),
             "harness_sha256": sha256_bytes(harness_bytes),
-            "generation_version": 1,
+            "generation_version": HARNESS_GENERATION_VERSION,
             "executable": True,
         },
     )
@@ -52,6 +52,23 @@ def _engine_result(*, stdout: str = "matched\n", exit_code: int = 0) -> dict:
         "duration_ms": 1,
         "timed_out": False,
     }
+
+
+def test_classify_results_preserves_prompt_prefixed_harness_start_as_exact_match():
+    verifier_id = "ferric-harness-" + ("a" * 64)
+    output = (
+        f"FERRIC-HARNESS|2|{verifier_id}|START\n"
+        f"FERRIC-HARNESS|2|{verifier_id}|STATE|focus=MAIN\n"
+        f"FERRIC-HARNESS|2|{verifier_id}|COMPLETE\n"
+    )
+    clips_output = f"         CLIPS (6.30 3/17/15)\nCLIPS> TRUE\nCLIPS> CLIPS> {output}CLIPS> "
+
+    result = run_module.classify_results(
+        _engine_result(stdout=output),
+        _engine_result(stdout=clips_output),
+    )
+
+    assert result == ("equivalent", "exact-match")
 
 
 def _work_item(

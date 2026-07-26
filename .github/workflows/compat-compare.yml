@@ -76,6 +76,10 @@ jobs:
           git checkout ${{ inputs.head_sha }} -- tools/ferric-tools/
           cargo build --release -p ferric-cli
           uv run --project tools/ferric-tools ferric-compat-scan
+          # Materialize head-format harnesses for base sources without modifying
+          # the base branch's tracked harnesses.
+          uv run --project tools/ferric-tools ferric-harness-gen \
+            --output-dir .ferric-compat/base-harnesses
           uv run --project tools/ferric-tools ferric-compat-run --workers 4 --timeout 30
           cp tests/examples/compat-manifest.json /tmp/base-compat-manifest.json
           rm -f tests/examples/compat-manifest.json

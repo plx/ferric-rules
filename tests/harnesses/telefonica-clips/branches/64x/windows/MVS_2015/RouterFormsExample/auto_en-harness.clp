@@ -1,10 +1,13 @@
 ; Harness for telefonica-clips/branches/64x/windows/MVS_2015/RouterFormsExample/auto_en.clp
 ; Detected constructs: deffacts: text-for-id
 ;
-; Strategy: verify file loads and reset succeeds.
-; The source file is loaded via (load ...) before this harness.
+; Strategy: prove reset/run reaches an isolated MAIN verifier.
+; The source and harness are composed and loaded together before reset.
 
-(defrule harness-verify
+(defrule MAIN::ferric-harness-db576e5d90c301810deb4a32d1bfcc303730f97dec107d141e1c64efcd245f69-verify
+   (declare (salience 10000))
    (initial-fact)
    =>
-   (printout t "HARNESS: loaded" crlf))
+   (printout t "FERRIC-HARNESS|2|ferric-harness-db576e5d90c301810deb4a32d1bfcc303730f97dec107d141e1c64efcd245f69|START" crlf)
+   (printout t "FERRIC-HARNESS|2|ferric-harness-db576e5d90c301810deb4a32d1bfcc303730f97dec107d141e1c64efcd245f69|STATE|focus=" (get-focus) crlf)
+   (printout t "FERRIC-HARNESS|2|ferric-harness-db576e5d90c301810deb4a32d1bfcc303730f97dec107d141e1c64efcd245f69|COMPLETE" crlf))
