@@ -80,7 +80,11 @@ function fakeNativeBinding(options?: { constructThrows?: boolean; snapshotFileTh
     }
   }
 
-  return { Engine, FerricSymbol };
+  return {
+    Engine,
+    FerricSymbol,
+    nativePackageVersion: () => "0.1.0",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -111,26 +115,17 @@ test("G-002 package native loader accepts bundled native path", () => {
 });
 
 // ---------------------------------------------------------------------------
-// G-002 manual package loader: native.ts reports both failed paths
+// G-002 manual package loader: native.ts preserves the actionable loader error
 // ---------------------------------------------------------------------------
 test("G-002 package native loader reports deterministic failure", () => {
   const nativePath = resolve(__dirname, "../../../dist/native.js");
   const bundledPath = resolve(dirname(nativePath), "..", "native", "index.js");
-  const developmentPath = resolve(
-    dirname(nativePath),
-    "..",
-    "..",
-    "..",
-    "crates",
-    "ferric-napi",
-    "index.js",
-  );
 
   clearModule(nativePath);
   withModuleLoad(
     (request, parent, isMain, originalLoad) => {
-      if (request === bundledPath || request === developmentPath) {
-        throw new Error(`missing ${request}`);
+      if (request === bundledPath) {
+        throw new Error("native package was omitted");
       }
       return originalLoad(request, parent, isMain);
     },
@@ -141,7 +136,7 @@ test("G-002 package native loader reports deterministic failure", () => {
           (err: any) => {
             assert.match(err.message, /Could not load native addon/);
             assert.match(err.message, /native\/index\.js/);
-            assert.match(err.message, /crates\/ferric-napi\/index\.js/);
+            assert.match(err.message, /native package was omitted/);
             return true;
           },
         );
@@ -207,16 +202,34 @@ test("G-002 package native wrapper converts mocked constructor and static errors
 // ---------------------------------------------------------------------------
 test("G-002 napi loader falls back from local node file to platform package", () => {
   const napiPath = resolve(__dirname, "../../../../../crates/ferric-napi/index.js");
+  const releaseLoaderPath = resolve(
+    __dirname,
+    "../../../native/index.js",
+  );
   const devPath = join(dirname(napiPath), "ferric-napi.node");
-  const platformPackage = `@ferric-rules/napi-${process.platform}-${process.arch === "x64" ? "x64-gnu" : process.arch}`;
+  const targets = requireFromHere("../../../native/targets.json") as Array<{
+    platform: string;
+    arch: string;
+    packageName: string;
+  }>;
+  const platformPackage = targets.find(
+    (target) =>
+      target.platform === process.platform &&
+      target.arch === process.arch,
+  )?.packageName;
+  assert.ok(platformPackage, "test host must be a declared native target");
   const fs = requireFromHere("node:fs") as typeof import("node:fs");
   const originalExistsSync = fs.existsSync;
 
   clearModule(napiPath);
+  clearModule(releaseLoaderPath);
   fs.existsSync = (path) => path === devPath || originalExistsSync(path);
   withModuleLoad(
     (request, parent, isMain, originalLoad) => {
       if (request === devPath) throw new Error("bad local binary");
+      if (request === `${platformPackage}/package.json`) {
+        return { version: "0.1.0" };
+      }
       if (request === platformPackage || request.startsWith("@ferric-rules/napi-")) {
         return fakeNativeBinding();
       }
@@ -240,9 +253,78 @@ test("G-002 napi loader falls back from local node file to platform package", ()
       } finally {
         fs.existsSync = originalExistsSync;
         clearModule(napiPath);
+        clearModule(releaseLoaderPath);
       }
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// G-002 table-driven napi loader: package and binary versions must match
+// ---------------------------------------------------------------------------
+test("G-002 napi loader rejects native package version skew", () => {
+  const napiPath = resolve(__dirname, "../../../../../crates/ferric-napi/index.js");
+  const releaseLoaderPath = resolve(__dirname, "../../../native/index.js");
+  const platformPackage = "@ferric-rules/napi-darwin-arm64";
+  const fs = requireFromHere("node:fs") as typeof import("node:fs");
+  const originalExistsSync = fs.existsSync;
+  const originalPlatform = process.platform;
+  const originalArch = process.arch;
+
+  const cases = [
+    {
+      label: "platform package metadata",
+      metadataVersion: "9.0.0",
+      bindingVersion: "0.1.0",
+      expected: /package metadata reports 9\.0\.0/,
+    },
+    {
+      label: "embedded native addon",
+      metadataVersion: "0.1.0",
+      bindingVersion: "9.0.0",
+      expected: /Native addon version mismatch/,
+    },
+  ];
+
+  fs.existsSync = () => false;
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  Object.defineProperty(process, "arch", { value: "arm64" });
+
+  try {
+    for (const item of cases) {
+      clearModule(napiPath);
+      clearModule(releaseLoaderPath);
+      withModuleLoad(
+        (request, parent, isMain, originalLoad) => {
+          if (request === `${platformPackage}/package.json`) {
+            return { version: item.metadataVersion };
+          }
+          if (request === platformPackage) {
+            return {
+              ...fakeNativeBinding(),
+              nativePackageVersion: () => item.bindingVersion,
+            };
+          }
+          return originalLoad(request, parent, isMain);
+        },
+        () => {
+          assert.throws(
+            () => requireFromHere(napiPath),
+            (error: any) => {
+              assert.match(error.message, item.expected, item.label);
+              return true;
+            },
+          );
+        },
+      );
+    }
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+    Object.defineProperty(process, "arch", { value: originalArch });
+    fs.existsSync = originalExistsSync;
+    clearModule(napiPath);
+    clearModule(releaseLoaderPath);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -250,6 +332,10 @@ test("G-002 napi loader falls back from local node file to platform package", ()
 // ---------------------------------------------------------------------------
 test("G-002 table-driven napi loader failure cases are explicit", () => {
   const napiPath = resolve(__dirname, "../../../../../crates/ferric-napi/index.js");
+  const releaseLoaderPath = resolve(
+    __dirname,
+    "../../../native/index.js",
+  );
   const fs = requireFromHere("node:fs") as typeof import("node:fs");
   const originalExistsSync = fs.existsSync;
   const originalPlatform = process.platform;
@@ -260,25 +346,26 @@ test("G-002 table-driven napi loader failure cases are explicit", () => {
       platform: "darwin",
       arch: "arm64",
       exists: false,
-      expected: /Cannot find module|Failed to load native binding/,
+      expected: /Could not load @ferric-rules\/napi-darwin-arm64@0\.1\.0/,
     },
     {
       platform: "freebsd",
       arch: "riscv64",
       exists: false,
-      expected: /No \.node file found/,
+      expected: /Unsupported native target freebsd-riscv64/,
     },
     {
-      platform: "freebsd",
-      arch: "riscv64",
+      platform: "darwin",
+      arch: "arm64",
       exists: true,
-      expected: /The \.node file existed but could not be loaded/,
+      expected: /development addon .* also failed/,
       devReturnsNull: true,
     },
   ];
 
   for (const item of cases) {
     clearModule(napiPath);
+    clearModule(releaseLoaderPath);
     fs.existsSync = () => item.exists;
     Object.defineProperty(process, "platform", { value: item.platform });
     Object.defineProperty(process, "arch", { value: item.arch });
@@ -306,6 +393,7 @@ test("G-002 table-driven napi loader failure cases are explicit", () => {
       Object.defineProperty(process, "arch", { value: originalArch });
       fs.existsSync = originalExistsSync;
       clearModule(napiPath);
+      clearModule(releaseLoaderPath);
     }
   }
 });

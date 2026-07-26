@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "prepack": "npm run build && node ../../scripts/validate-node-package.mjs",
     "lint": "tsc --noEmit",
     "test:types": "tsc --noEmit -p tsconfig.typetest.json",
     "test:runtime:types": "tsx --test test/conformance/types/**/*.test.ts",
@@ -17,12 +18,22 @@
     "test:runtime:worker": "tsx --test test/conformance/runtime/worker/**/*.test.ts",
     "test:runtime:pool": "tsx --test test/conformance/runtime/pool/**/*.test.ts",
     "test:package": "tsx --test test/conformance/package/**/*.test.ts",
+    "test:artifact": "node ../../scripts/test-node-package-artifact.mjs",
     "test": "npm run test:types && npm run test:runtime:types && npm run test:runtime:sync && npm run test:runtime:worker && npm run test:runtime:pool && npm run test:package",
     "test:coverage": "npm run build && node --import tsx --test --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 test/conformance/coverage-entrypoint.test.ts",
     "clean": "rm -rf dist"
   },
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "@ferric-rules/napi-darwin-arm64": "0.1.0",
+    "@ferric-rules/napi-darwin-x64": "0.1.0",
+    "@ferric-rules/napi-linux-x64-gnu": "0.1.0",
+    "@ferric-rules/napi-win32-x64-msvc": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

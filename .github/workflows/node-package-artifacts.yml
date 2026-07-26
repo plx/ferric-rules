@@ -1,0 +1,107 @@
+name: Node Package Artifacts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/node-package-artifacts.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "justfile"
+      - "crates/ferric-*/**"
+      - "packages/ferric/**"
+      - "scripts/node-package-lib.mjs"
+      - "scripts/test-node-package-artifact.mjs"
+      - "scripts/validate-node-package.mjs"
+      - "scripts/verify-node-package-artifacts.mjs"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/node-package-artifacts.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "justfile"
+      - "crates/ferric-*/**"
+      - "packages/ferric/**"
+      - "scripts/node-package-lib.mjs"
+      - "scripts/test-node-package-artifact.mjs"
+      - "scripts/validate-node-package.mjs"
+      - "scripts/verify-node-package-artifacts.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_TOOLCHAIN: "1.93.0"
+
+jobs:
+  pack-and-smoke:
+    name: Pack and smoke (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+          - target: win32-x64-msvc
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            crates/ferric-napi/package-lock.json
+            packages/ferric/package-lock.json
+      - name: Build native addon
+        working-directory: crates/ferric-napi
+        run: |
+          npm ci
+          npm run build
+      - name: Install and build JavaScript package
+        working-directory: packages/ferric
+        run: |
+          npm ci --omit=optional
+          npm run build
+      - name: Pack and smoke exact release artifacts
+        run: >-
+          node scripts/test-node-package-artifact.mjs
+          --target ${{ matrix.target }}
+          --binary crates/ferric-napi/ferric-napi.node
+          --artifacts-dir node-release-artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-package-${{ matrix.target }}
+          path: node-release-artifacts/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-artifact-set:
+    name: Verify deterministic Node artifact set
+    needs: pack-and-smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: node-package-*
+          path: downloaded-node-artifacts
+      - name: Verify versions, coverage, and deterministic main tarball
+        run: >-
+          node scripts/verify-node-package-artifacts.mjs
+          downloaded-node-artifacts

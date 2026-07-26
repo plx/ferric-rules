@@ -66,15 +66,7 @@ test("E-007 pool-worker entrypoint rejects main-thread require", () => {
 // ---------------------------------------------------------------------------
 test("D-001 worker re-init ignores close failures from previous engine", () => {
   const workerPath = resolve(__dirname, "../../../dist/worker.js");
-  const developmentPath = resolve(
-    dirname(workerPath),
-    "..",
-    "..",
-    "..",
-    "crates",
-    "ferric-napi",
-    "index.js",
-  );
+  const bundledPath = resolve(dirname(workerPath), "..", "native", "index.js");
 
   class FakeParentPort extends EventEmitter {
     readonly responses: unknown[] = [];
@@ -99,7 +91,7 @@ test("D-001 worker re-init ignores close failures from previous engine", () => {
   withPatchedLoad(
     (request, parent, isMain, originalLoad) => {
       if (request === "node:worker_threads") return { parentPort };
-      if (request === developmentPath) {
+      if (request === bundledPath) {
         return {
           Engine: FakeEngine,
           FerricSymbol: class FerricSymbol {
@@ -133,15 +125,7 @@ test("D-001 worker re-init ignores close failures from previous engine", () => {
 // ---------------------------------------------------------------------------
 test("D-001 table-driven mocked worker protocol covers init/run/close branches", () => {
   const workerPath = resolve(__dirname, "../../../dist/worker.js");
-  const developmentPath = resolve(
-    dirname(workerPath),
-    "..",
-    "..",
-    "..",
-    "crates",
-    "ferric-napi",
-    "index.js",
-  );
+  const bundledPath = resolve(dirname(workerPath), "..", "native", "index.js");
 
   class FakeParentPort extends EventEmitter {
     readonly responses: any[] = [];
@@ -207,7 +191,7 @@ test("D-001 table-driven mocked worker protocol covers init/run/close branches",
   withPatchedLoad(
     (request, parent, isMain, originalLoad) => {
       if (request === "node:worker_threads") return { parentPort };
-      if (request === developmentPath) {
+      if (request === bundledPath) {
         return {
           Engine: FakeEngine,
           FerricSymbol: class FerricSymbol {

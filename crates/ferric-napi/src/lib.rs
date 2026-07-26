@@ -10,9 +10,22 @@
 #![allow(clippy::used_underscore_binding)]
 #![allow(clippy::needless_pass_by_value)]
 
+use napi_derive::napi;
+
 pub mod config;
 pub mod engine;
 pub mod error;
 pub mod fact;
 pub mod result;
 pub mod value;
+
+/// Return the version embedded in this native addon.
+///
+/// The npm loader compares this value with the JavaScript and platform-package
+/// versions before exposing the binding. This makes it impossible to silently
+/// combine release artifacts from different Ferric versions.
+#[napi]
+#[must_use]
+pub fn native_package_version() -> String {
+    env!("CARGO_PKG_VERSION").to_owned()
+}

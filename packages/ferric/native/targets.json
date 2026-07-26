@@ -1,0 +1,35 @@
+[
+  {
+    "id": "darwin-arm64",
+    "packageName": "@ferric-rules/napi-darwin-arm64",
+    "platform": "darwin",
+    "arch": "arm64",
+    "os": ["darwin"],
+    "cpu": ["arm64"]
+  },
+  {
+    "id": "darwin-x64",
+    "packageName": "@ferric-rules/napi-darwin-x64",
+    "platform": "darwin",
+    "arch": "x64",
+    "os": ["darwin"],
+    "cpu": ["x64"]
+  },
+  {
+    "id": "linux-x64-gnu",
+    "packageName": "@ferric-rules/napi-linux-x64-gnu",
+    "platform": "linux",
+    "arch": "x64",
+    "os": ["linux"],
+    "cpu": ["x64"],
+    "libc": ["glibc"]
+  },
+  {
+    "id": "win32-x64-msvc",
+    "packageName": "@ferric-rules/napi-win32-x64-msvc",
+    "platform": "win32",
+    "arch": "x64",
+    "os": ["win32"],
+    "cpu": ["x64"]
+  }
+]

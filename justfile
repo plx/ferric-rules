@@ -383,11 +383,11 @@ go-full: build-go-ffi test-go-race
 
 # Build the napi-rs native addon for Node.js bindings
 build-napi:
-    cd crates/ferric-napi && npm run build
+    cd crates/ferric-napi && npm ci && npm run build
 
 # Install TypeScript package dependencies
 ts-install:
-    cd packages/ferric && npm install
+    cd packages/ferric && npm ci --omit=optional
 
 # Build the TypeScript package
 ts-build: ts-install
@@ -403,6 +403,10 @@ test-napi: build-napi ts-build
 
 # Full Node.js build pipeline: build native addon, then build and test TS
 napi-full: build-napi ts-build test-napi
+
+# Pack the exact Node release artifacts and install them in a clean consumer
+node-package-smoke: build-napi ts-build
+    cd packages/ferric && npm run test:artifact
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 

@@ -116,8 +116,8 @@ A release is conformant only if all are true:
 
 | ID | Requirement (`MUST`) | Validation | Spec Ref | Related Remediation | Status |
 |---|---|---|---|---|---|
-| `G-001` | Published package contains barrel exports, async wrappers, and native loader assets per layout intent. | Package content audit. | Package layout sections | TSB-009 | PASS |
-| `G-002` | Native load failure is explicit at runtime for value imports (no silent undefined API surface). | Simulate missing native binary import path. | Public API expectations | TSB-002 | PASS |
+| `G-001` | Packed main and exact-version native artifacts install without source or network access and expose the barrel, sync engine, and worker API through CommonJS and dynamic import. | Pack the release tarballs, install them offline with an empty npm cache, create/run/close sync and worker engines, and compare manifest/embedded versions. | Package layout sections; FR-DIST-001 | TSB-009 | PASS |
+| `G-002` | Native load failure is explicit at runtime for missing, unsupported, or version-skewed value imports (no silent undefined API surface). | Simulate missing packages, unsupported targets, and metadata/embedded binary version mismatch. | Public API expectations; FR-DIST-001 | TSB-002 | PASS |
 | `G-003` | TS binding tests execute non-zero cases in CI/local scripts. | `npm test` should report >0 tests. | Process quality requirement | TSB-009 | PASS |
 | `G-004` | Conformance matrix items map to concrete test files and are tracked in CI. | CI config + test manifest check. | This document | TSB-009 | PASS |
 

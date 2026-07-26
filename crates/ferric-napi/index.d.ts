@@ -81,6 +81,14 @@ export interface RuleInfo {
   salience: number
 }
 /**
+ * Return the version embedded in this native addon.
+ *
+ * The npm loader compares this value with the JavaScript and platform-package
+ * versions before exposing the binding. This makes it impossible to silently
+ * combine release artifacts from different Ferric versions.
+ */
+export declare function nativePackageVersion(): string
+/**
  * The Ferric rules engine — Node.js binding.
  *
  * This wraps a `ferric_runtime::Engine` and exposes it to JavaScript via
