@@ -5,16 +5,28 @@
  * THREAD SAFETY
  * ============================================================
  *
- * Engine handles (FerricEngine*) are bound to the thread that
- * created them. Every ferric_engine_* function validates thread
- * affinity before any state mutation.
+ * Raw engine handles (FerricEngine*) are bound to the thread that
+ * created them. Ordinary ferric_engine_* runtime accessors validate
+ * thread affinity before accessing runtime state.
  *
  * - Creating thread: all operations succeed normally.
- * - Other threads: operations return FERRIC_ERROR_THREAD_VIOLATION
- *   with a descriptive message in the global error channel.
- * - Exception: ferric_engine_last_error() and
- *   ferric_engine_last_error_copy() skip thread checks
- *   (diagnostic access should always work).
+ * - Other threads: ordinary runtime operations return
+ *   FERRIC_ERROR_THREAD_VIOLATION with a descriptive message in the
+ *   global error channel.
+ * - ferric_engine_last_error_copy() is synchronized and may run
+ *   concurrently from any thread. Each call copies one coherent
+ *   error snapshot.
+ * - ferric_engine_last_error() may be called from any thread, but
+ *   the returned borrowed pointer must not be used while another
+ *   borrowed read or engine destruction may occur. Use the copy API
+ *   when pointer-use windows could overlap.
+ * - ferric_engine_free_unchecked() is a destruction-only escape
+ *   hatch that deliberately skips affinity. Like all destruction,
+ *   it must not overlap any access to that engine.
+ * - Neither diagnostic reader may race with engine destruction.
+ * - Same-engine runtime reentry from a host callback fails with
+ *   FERRIC_ERROR_INTERNAL_ERROR. The last-error readers remain safe
+ *   to call from such callbacks.
  *
  * The global error functions (ferric_last_error_global, etc.)
  * use thread-local storage and are safe to call from any thread.
@@ -26,10 +38,12 @@
  * 1. Engine handles: Caller owns the handle returned by
  *    ferric_engine_new(). Must free with ferric_engine_free().
  *
- * 2. Borrowed string pointers: Pointers returned by
- *    ferric_last_error_global() and ferric_engine_last_error()
- *    are valid until the next FFI call that may modify that
- *    error channel. Do NOT free these pointers.
+ * 2. Borrowed error pointers: ferric_last_error_global() remains
+ *    valid until the next call that may modify that thread's global
+ *    error channel. ferric_engine_last_error() remains valid until
+ *    the next borrowed read on that engine or engine destruction;
+ *    error writers and the copy API do not invalidate it. Do NOT
+ *    free either pointer.
  *
  * 3. Owned string pointers: String fields in FerricValue
  *    (string_ptr for Symbol/String types) are heap-allocated.
@@ -266,7 +280,15 @@ typedef enum FerricPinnedAutoreleasePolicy {
 
 // Opaque engine handle exposed to C.
 //
-// Contains the Rust [`Engine`] plus per-engine error state.
+// The runtime engine remains owner-thread-only. Per-engine error snapshots
+// are stored separately so the two last-error accessors can safely read them
+// from any thread.
+//
+// Production accessors never construct a Rust reference to this whole
+// structure. They project references to individual fields from the raw
+// handle, which permits an owner-thread `&mut Engine` to coexist with a
+// foreign-thread reference to the disjoint diagnostic mutex.
+//
 // C code receives `*mut FerricEngine` as an opaque pointer.
 typedef struct FerricEngine FerricEngine;
 
@@ -335,6 +357,10 @@ typedef struct FerricValue {
 //
 // Must return a pointer to at least `size` writable bytes, or null to
 // signal allocation failure.
+//
+// The callback may query the same raw engine's last-error channel. Other
+// same-engine runtime calls are rejected with `InternalError` while
+// serialization is active, and the callback must not free the engine.
 typedef uint8_t *(*FerricAllocFn)(uintptr_t size, void *context);
 #endif
 
@@ -415,8 +441,15 @@ enum FerricError ferric_engine_load_string(struct FerricEngine *engine, const ch
 
 // Retrieve the last per-engine error message.
 //
-// Returns a pointer to a NUL-terminated string, or null if no error
-// is stored. The pointer is valid until the next call on this engine.
+// Returns a pointer to a NUL-terminated string, or null if no error is
+// stored. This accessor may be called from any thread, including from a host
+// callback.
+//
+// The pointer is borrowed from the engine and may be invalidated by the next
+// call to `ferric_engine_last_error` on the same engine or by freeing the
+// engine. Do not dereference or otherwise use the pointer while another
+// borrowed read or engine destruction may occur. Use
+// `ferric_engine_last_error_copy` when pointer-use windows could overlap.
 //
 // # Safety
 //
@@ -426,8 +459,13 @@ const char * FERRIC_NULL_TERMINATED ferric_engine_last_error(const struct Ferric
 // Copy the per-engine error message into a caller-provided buffer.
 //
 // Same contract as `ferric_last_error_global_copy` but reads from the
-// per-engine error channel. Deliberately skips thread-affinity check
-// (diagnostic operation).
+// per-engine error channel. This accessor may be called concurrently from
+// any thread and from a host callback. Each invocation observes and copies
+// one coherent error snapshot.
+//
+// A size query and a later copy are separate snapshots. If the error changes
+// between those calls, the copy may return `BufferTooSmall` with the newer
+// required size; callers should resize and retry.
 //
 // ## Contract
 //

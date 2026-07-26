@@ -761,11 +761,20 @@ ferric_engine_free(engine);
 
 Engine instances are bound to their creating thread (`!Send + !Sync`):
 
-- Every `ferric_engine_*` function validates thread affinity before mutation.
-- Wrong-thread calls return `FERRIC_ERROR_THREAD_VIOLATION` with no state
-  modified.
-- **Exceptions**: `ferric_engine_last_error` and `ferric_engine_last_error_copy`
-  skip thread checks (diagnostic access should always work).
+- Ordinary runtime-facing `ferric_engine_*` functions validate thread affinity
+  before accessing engine state.
+- Wrong-thread ordinary runtime calls return
+  `FERRIC_ERROR_THREAD_VIOLATION` with no state modified.
+- `ferric_engine_last_error_copy` is synchronized, may be called concurrently
+  from any thread, and copies one coherent snapshot per invocation.
+- `ferric_engine_last_error` may also be called from any thread. Its returned
+  pointer must not be used while another borrowed read or engine destruction
+  may occur; use the copy API when pointer-use windows could overlap.
+- `ferric_engine_free_unchecked` is a destruction-only escape hatch that skips
+  affinity. It must not overlap any access to the engine.
+- Same-engine runtime reentry from a host callback returns
+  `FERRIC_ERROR_INTERNAL_ERROR`. Last-error access remains safe in callbacks.
+- No engine accessor may race with engine destruction.
 
 Global error functions (`ferric_last_error_global`, etc.) use thread-local
 storage and are safe from any thread.
@@ -849,9 +858,11 @@ ferric_engine_clear_action_diagnostics(engine);
 | `ferric_value_free` | Free a `FerricValue` and its owned resources (recursive); returns `FERRIC_ERROR_INVALID_ARGUMENT` if any `value_type` tag is unknown (that value's payload is left untouched; known siblings and owned arrays are still freed) |
 | `ferric_value_array_free` | Free an array of `FerricValue`s; same unknown-tag contract as `ferric_value_free` |
 
-Borrowed pointers (from `ferric_engine_last_error`, `ferric_engine_get_output`)
-must **not** be freed by the caller and are valid only until the next FFI call
-that may modify that channel.
+Borrowed pointers must **not** be freed by the caller.
+`ferric_engine_last_error` remains valid until the next borrowed last-error
+read on that engine or engine destruction; error writers and the copy API do
+not invalidate it. `ferric_engine_get_output` remains valid until the next
+call that writes to that output channel.
 
 ### Panic Policy
 

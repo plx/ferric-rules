@@ -218,7 +218,7 @@ fn thread_violation_from_other_thread_via_raw_pointer() {
 fn clear_error_rejects_other_thread_before_mutation() {
     unsafe {
         let engine = ferric_engine_new();
-        (*engine).error_state.set("sticky error".to_string());
+        (*engine).set_error_for_test("sticky error".to_string());
 
         let engine_addr = engine as usize;
         let result = std::thread::spawn(move || {
@@ -264,8 +264,8 @@ fn engine_last_error_pointer_storage_is_per_engine() {
     unsafe {
         let e1 = ferric_engine_new();
         let e2 = ferric_engine_new();
-        (*e1).error_state.set("engine one".to_string());
-        (*e2).error_state.set("engine two".to_string());
+        (*e1).set_error_for_test("engine one".to_string());
+        (*e2).set_error_for_test("engine two".to_string());
 
         let p1 = ferric_engine_last_error(e1);
         assert!(!p1.is_null());

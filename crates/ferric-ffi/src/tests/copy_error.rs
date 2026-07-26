@@ -293,7 +293,7 @@ fn engine_copy_size_query() {
     unsafe {
         let engine = ferric_engine_new();
         // Set the per-engine error directly (pub(crate) field accessible within crate).
-        (*engine).error_state.set(msg.to_string());
+        (*engine).set_error_for_test(msg.to_string());
 
         let mut out_len: usize = 0;
         let result = ferric_engine_last_error_copy(engine, std::ptr::null_mut(), 0, &mut out_len);
@@ -311,7 +311,7 @@ fn engine_copy_exact_fit() {
     let needed = msg.len() + 1;
     unsafe {
         let engine = ferric_engine_new();
-        (*engine).error_state.set(msg.to_string());
+        (*engine).set_error_for_test(msg.to_string());
 
         let mut buf = make_buf(needed);
         let mut out_len: usize = 0;
@@ -338,7 +338,7 @@ fn engine_copy_truncation() {
     let needed = msg.len() + 1;
     unsafe {
         let engine = ferric_engine_new();
-        (*engine).error_state.set(msg.to_string());
+        (*engine).set_error_for_test(msg.to_string());
 
         let mut buf = make_buf(buf_len);
         let mut out_len: usize = 0;

@@ -101,8 +101,10 @@ profiles with `panic = abort`.
 - `tests.rs` + `src/tests/` — lifecycle, contract-lock, diagnostic-parity,
   error-model, execution, template-assertion, copy-error, build-matrix,
   ffi-expansion, values, header tests.
-- Thread-affinity invariant: engine handles bound to creating thread;
-  diagnostic readers skip the check.
+- Thread-affinity invariant: runtime state is owner-thread-only. Per-engine
+  last-error copies are synchronized across threads; borrowed last-error
+  pointer use must not overlap other borrowed reads or destruction. The
+  destruction-only unchecked free skips affinity but must not overlap access.
 
 ### `ferric-cli`
 

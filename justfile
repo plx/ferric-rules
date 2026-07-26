@@ -75,6 +75,11 @@ test-ffi:
 ffi-c-harness:
     ./scripts/ffi-c-harness.sh
 
+# Run the mixed Rust/C pthread diagnostic harness under ThreadSanitizer
+# (x86_64 Linux; uses a pinned nightly to instrument Rust and std)
+ffi-tsan-harness:
+    ./scripts/ffi-tsan-harness.sh
+
 # Run tests for the facade crate
 test-ferric:
     cargo test -p ferric

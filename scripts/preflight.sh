@@ -29,6 +29,7 @@ run_clippy() {
 
 run_test() {
     cargo test --workspace --exclude ferric-python --exclude ferric-napi
+    cargo test -p ferric-ffi --features serde
 }
 
 command="${1:-all}"

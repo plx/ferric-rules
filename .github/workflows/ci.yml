@@ -67,6 +67,23 @@ jobs:
         env:
           FERRIC_REQUIRE_SANITIZERS: "1"
 
+  ffi-diagnostics-tsan:
+    name: FFI Diagnostics (ThreadSanitizer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2025-11-04
+          components: rust-src
+      - run: sudo apt-get update && sudo apt-get install -y clang llvm
+      - run: just ffi-tsan-harness
+        env:
+          CC: clang
+          FERRIC_TSAN_TOOLCHAIN: nightly-2025-11-04
+
   go-lint:
     name: Go Lint
     runs-on: ubuntu-latest

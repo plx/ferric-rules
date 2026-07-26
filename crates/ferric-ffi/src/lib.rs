@@ -11,15 +11,20 @@
 //!   module visibility/ambiguity failures, generic dispatch/conflict diagnostics)
 //!   are surfaced through FFI without reinterpretation or loss of source context.
 //!
-//! - **Thread affinity**: An engine handle is bound to its creating thread.
-//!   Every `ferric_engine_*` entry point validates thread affinity before any
-//!   mutable borrow or state mutation. The internal `unsafe fn move_to_current_thread`
-//!   is deliberately NOT exposed in the C API.
+//! - **Thread affinity**: A raw engine handle is bound to its creating thread.
+//!   Runtime operations validate affinity before accessing the engine. The
+//!   synchronized `ferric_engine_last_error_copy` accessor may run concurrently
+//!   from any thread; the borrowed `ferric_engine_last_error` accessor also
+//!   skips affinity but requires external serialization for pointer use. The
+//!   destruction-only `ferric_engine_free_unchecked` escape hatch also skips
+//!   affinity and must not overlap any access to the engine. The
+//!   internal `unsafe fn move_to_current_thread` is deliberately NOT exposed in
+//!   the C API.
 //!
 //! - **Ownership conventions**: Callers own handles returned by `_new` functions and
-//!   must free them with corresponding `_free` functions. String pointers returned by
-//!   error-retrieval APIs are valid only until the next call that may modify the
-//!   error channel.
+//!   must free them with corresponding `_free` functions. The borrowed raw-engine
+//!   error pointer remains valid until the next borrowed read on that engine or
+//!   engine destruction; concurrent consumers should use the copy API.
 //!
 //! - **Panic policy**: FFI builds use `panic = "abort"` profiles (`ffi-dev`,
 //!   `ffi-release`) so that Rust panics never unwind across the C ABI boundary.
