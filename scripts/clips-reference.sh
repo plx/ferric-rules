@@ -52,13 +52,30 @@ require_command() {
 
 resolve_path() {
   local input="$1"
-  if [[ -f "$input" ]]; then
-    echo "$(cd "$(dirname "$input")" && pwd)/$(basename "$input")"
-    return
+  if [[ ! -f "$input" ]]; then
+    echo "error: file not found: $input" >&2
+    exit 1
   fi
 
-  echo "error: file not found: $input" >&2
-  exit 1
+  if [[ -L "$input" ]]; then
+    echo "error: file path must not be a symlink: $input" >&2
+    exit 1
+  fi
+
+  local directory
+  local filename
+  local physical_directory
+  directory="$(dirname "$input")"
+  filename="$(basename "$input")"
+  physical_directory="$(cd "$directory" && pwd -P)"
+  printf '%s/%s\n' "$physical_directory" "$filename"
+}
+
+escape_clips_string() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "$value"
 }
 
 build_command() {
@@ -96,6 +113,7 @@ run_command() {
   local full_image="${IMAGE_NAME}:${IMAGE_TAG}"
   local repo_root
   repo_root="$(git rev-parse --show-toplevel)"
+  repo_root="$(cd "$repo_root" && pwd -P)"
 
   local commands=()
   local file
@@ -107,8 +125,14 @@ run_command() {
       exit 1
     fi
 
-    local rel="${abs#${repo_root}/}"
-    commands+=("(batch* \"${WORKDIR_IN_CONTAINER}/${rel}\")")
+    local rel="${abs:$(( ${#repo_root} + 1 ))}"
+    if [[ "$rel" =~ [[:cntrl:]] ]]; then
+      echo "error: --file path contains an unsupported control character: $file" >&2
+      exit 1
+    fi
+    local container_path
+    container_path="$(escape_clips_string "${WORKDIR_IN_CONTAINER}/${rel}")"
+    commands+=("(batch* \"${container_path}\")")
   done
 
   if [[ -n "$OPS_FILE" ]]; then
@@ -140,7 +164,7 @@ run_command() {
     done
     printf '(exit)\n'
   } | docker run --rm -i \
-      -v "${repo_root}:${WORKDIR_IN_CONTAINER}" \
+      -v "${repo_root}:${WORKDIR_IN_CONTAINER}:ro" \
       -w "$WORKDIR_IN_CONTAINER" \
       "$full_image"
 }

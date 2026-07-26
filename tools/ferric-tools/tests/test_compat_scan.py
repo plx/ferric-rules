@@ -652,7 +652,7 @@ def test_process_file_records_harness_executed_by_both_engines(tmp_path, monkeyp
     assert resolved is not None
     invocations: list[tuple[str, str, bytes]] = []
 
-    def fake_ferric(path, _ferric, _timeout):
+    def fake_ferric(path, _ferric, _root, _timeout):
         invocations.append(("ferric", path, Path(path).read_bytes()))
         return {
             "exit_code": 0,
@@ -675,18 +675,21 @@ def test_process_file_records_harness_executed_by_both_engines(tmp_path, monkeyp
     monkeypatch.setattr(run_module, "run_ferric", fake_ferric)
     monkeypatch.setattr(run_module, "run_clips_docker", fake_clips)
 
-    result = run_module.process_file(
-        (
-            "libraries/facts.clp",
-            str(source),
-            "ferric",
-            str(root),
-            "clips-reference",
-            5,
-            False,
-            resolved,
+    with run_module._compatibility_run_workspace(root) as (run_workspace, failures_dir):
+        result = run_module.process_file(
+            (
+                "libraries/facts.clp",
+                str(source),
+                "ferric",
+                str(root),
+                "clips-reference",
+                5,
+                False,
+                resolved,
+                str(run_workspace),
+                str(failures_dir),
+            )
         )
-    )
 
     _, ferric_result, clips_result, classification, reason = result
     assert [engine for engine, _, _ in invocations] == ["ferric", "clips"]
@@ -696,5 +699,79 @@ def test_process_file_records_harness_executed_by_both_engines(tmp_path, monkeyp
     assert ferric_result["harness"] == resolved.metadata
     assert clips_result is not None
     assert clips_result["harness"] == resolved.metadata
+    assert ferric_result["composed_source"] == clips_result["composed_source"]
+    assert ferric_result["composed_source"] == {
+        "sha256": sha256_bytes(invocations[0][2]),
+        "size_bytes": len(invocations[0][2]),
+    }
     assert classification == "equivalent"
     assert reason == "exact-match"
+
+
+def test_process_file_composes_harness_inside_clips_mounted_root(tmp_path, monkeypatch):
+    root, source, entry, _plan = _materialized_library_harness(tmp_path)
+    resolved = resolve_harness_contract(
+        entry,
+        source_path=source,
+        root=root,
+        manifest_key="libraries/facts.clp",
+    )
+    assert resolved is not None
+
+    system_temp = tmp_path / "system-temp"
+    system_temp.mkdir()
+    monkeypatch.setattr(run_module.tempfile, "tempdir", str(system_temp))
+
+    invocations: list[tuple[str, Path, bytes]] = []
+
+    def engine_result() -> dict:
+        return {
+            "exit_code": 0,
+            "stdout": "matched\n",
+            "stderr": "",
+            "duration_ms": 1,
+            "timed_out": False,
+        }
+
+    def fake_ferric(path, _ferric, _root, _timeout):
+        candidate = Path(path)
+        invocations.append(("ferric", candidate, candidate.read_bytes()))
+        return engine_result()
+
+    def fake_clips(path, mounted_root, _script, _timeout):
+        candidate = Path(path)
+        invocations.append(("clips", candidate, candidate.read_bytes()))
+        if not candidate.resolve().is_relative_to(Path(mounted_root).resolve()):
+            result = engine_result()
+            result["exit_code"] = 1
+            result["stderr"] = "path is outside the mounted repository"
+            return result
+        return engine_result()
+
+    monkeypatch.setattr(run_module, "run_ferric", fake_ferric)
+    monkeypatch.setattr(run_module, "run_clips_docker", fake_clips)
+
+    with run_module._compatibility_run_workspace(root) as (run_workspace, failures_dir):
+        result = run_module.process_file(
+            (
+                "libraries/facts.clp",
+                str(source),
+                "ferric",
+                str(root),
+                "clips-reference",
+                5,
+                False,
+                resolved,
+                str(run_workspace),
+                str(failures_dir),
+            )
+        )
+
+    _, _ferric_result, _clips_result, classification, reason = result
+    assert classification == "equivalent"
+    assert reason == "exact-match"
+    assert [engine for engine, _, _ in invocations] == ["ferric", "clips"]
+    assert invocations[0][1] == invocations[1][1]
+    assert invocations[0][2] == invocations[1][2]
+    assert invocations[0][1].resolve().is_relative_to(root.resolve())
+    assert not invocations[0][1].exists()
