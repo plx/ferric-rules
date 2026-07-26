@@ -22,8 +22,10 @@ from ferric_tools._clips_parser import (
     detect_features,
     strip_comments,
 )
+from ferric_tools._harness import attach_harness_contracts
 from ferric_tools._manifest import save_manifest, utc_now_iso
 from ferric_tools._paths import examples_dir as default_examples_dir
+from ferric_tools._paths import repo_root
 
 app = typer.Typer(help="Scan CLIPS examples for compatibility assessment.")
 console = Console(stderr=True)
@@ -65,14 +67,19 @@ def classify_file(path: Path, features: list[str], unsupported: list[str]) -> tu
     return "pending", "testable", "standalone"
 
 
-def scan_examples(examples_path: Path) -> dict:
+def scan_examples(
+    examples_path: Path,
+    *,
+    root: Path | None = None,
+    harness_dir: Path | None = None,
+) -> dict:
     """Scan all .clp and .bat files under examples_path."""
     files: dict[str, dict] = {}
     all_files = sorted(examples_path.rglob("*.clp")) + sorted(examples_path.rglob("*.bat"))
 
     for filepath in all_files:
         rel = filepath.relative_to(examples_path)
-        rel_str = str(rel)
+        rel_str = rel.as_posix()
         source = rel.parts[0] if len(rel.parts) > 1 else ""
 
         try:
@@ -107,6 +114,18 @@ def scan_examples(examples_path: Path) -> dict:
             "notes": "",
         }
 
+    if root is None:
+        if examples_path.name == "examples" and examples_path.parent.name == "tests":
+            root = examples_path.parent.parent
+        else:
+            root = repo_root()
+    output_dir = harness_dir or root / "tests" / "harnesses"
+    attach_harness_contracts(
+        files,
+        examples_dir=examples_path,
+        output_dir=output_dir,
+        root=root,
+    )
     return files
 
 
@@ -166,12 +185,17 @@ def main(
         raise typer.Exit(1)
 
     console.print(f"Scanning {examples_path} ...")
-    files = scan_examples(examples_path)
+    root = repo_root()
+    files = scan_examples(
+        examples_path,
+        root=root,
+        harness_dir=root / "tests" / "harnesses",
+    )
     dup_count = dedup_batch_files(files, examples_path)
     summary = build_summary(files)
 
     manifest = {
-        "version": 1,
+        "version": 2,
         "generated": utc_now_iso(),
         "summary": summary,
         "files": files,
