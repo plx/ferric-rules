@@ -95,12 +95,14 @@ profiles with `panic = abort`.
 
 - `engine.rs` — `ferric_engine_*` surface (new/free, asserts, run, serialize,
   query).
-- `types.rs` — `FerricValue`, `FerricFact`, multifield arrays, ownership.
+- `types.rs` — `FerricValue`, allocator-owned multifield copying, arrays,
+  ownership, and recursive cleanup.
 - `error.rs` — global + per-engine error channels, thread-local storage.
 - `header.rs` — C header metadata generation.
 - `tests.rs` + `src/tests/` — lifecycle, contract-lock, diagnostic-parity,
   error-model, execution, template-assertion, copy-error, build-matrix,
-  ffi-expansion, values, header tests.
+  ffi-expansion, values, multifield-copy, and header tests.
+- `tests/c/` — real-C ABI regressions run under the sanitizer harness.
 - Thread-affinity invariant: runtime state is owner-thread-only. Per-engine
   last-error copies are synchronized across threads; borrowed last-error
   pointer use must not overlap other borrowed reads or destruction. The

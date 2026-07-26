@@ -133,8 +133,14 @@ C-ABI functions with opaque `FerricEngine*` handle:
 
 **Value/Memory Management:**
 - `ferric_string_free` -- free a Ferric-allocated C string
+- `ferric_value_multifield_copy` -- deep-copy a borrowed nested value tree into a Ferric-owned multifield
 - `ferric_value_free` -- free a single `FerricValue`
 - `ferric_value_array_free` -- free an array of `FerricValue`
+
+Structured assertion and multifield-copy inputs are borrowed for the duration
+of the call and are never retained or freed by Ferric. Only Ferric-owned output
+trees may be passed to the value cleanup APIs; external-address payloads remain
+caller-owned.
 
 **Thread Affinity Contract:**
 - Engine instances are thread-affine (`!Send + !Sync`).

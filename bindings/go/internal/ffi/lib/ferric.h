@@ -45,27 +45,35 @@
  *    error writers and the copy API do not invalidate it. Do NOT
  *    free either pointer.
  *
- * 3. Owned string pointers: String fields in FerricValue
- *    (string_ptr for Symbol/String types) are heap-allocated.
- *    Free with ferric_string_free() or ferric_value_free().
+ * 3. Ferric-owned string pointers: String fields in values
+ *    returned by Ferric (string_ptr for Symbol/String types)
+ *    are heap-allocated. Free with ferric_string_free() or
+ *    ferric_value_free().
  *
- * 4. FerricValue ownership: Values returned through out-params
- *    (e.g., ferric_engine_get_fact_field) are caller-owned.
- *    Free with ferric_value_free() which recursively releases
- *    owned strings and multifield arrays.
+ * 4. Ferric-owned values: Values returned through out-params
+ *    (e.g., ferric_engine_get_fact_field and
+ *    ferric_value_multifield_copy) are caller-owned. Free with
+ *    ferric_value_free(), which recursively releases Ferric-owned
+ *    strings and multifield arrays.
  *
- * 5. Multifield arrays: FerricValue.multifield_ptr is a heap-
- *    allocated array. Free with ferric_value_array_free() or
- *    ferric_value_free() (which handles it recursively).
+ * 5. Borrowed value inputs: Value trees passed to structured
+ *    assertion APIs or ferric_value_multifield_copy() are borrowed
+ *    for that call. Ferric never retains or frees caller-provided
+ *    strings or arrays.
  *
- * 6. External address pointers: FerricValue.external_pointer
+ * 6. Multifield provenance: Only Ferric-owned arrays returned by
+ *    Ferric may be passed to ferric_value_array_free() or released
+ *    recursively with ferric_value_free(). Never pass stack or
+ *    foreign-allocated value trees to those cleanup APIs.
+ *
+ * 7. External address pointers: FerricValue.external_pointer
  *    is NOT owned by the FFI. Lifetime is caller-managed.
  *
- * 7. Output string pointers: ferric_engine_get_output() returns
+ * 8. Output string pointers: ferric_engine_get_output() returns
  *    a borrowed pointer valid until the next call that writes
  *    to that channel. Do NOT free.
  *
- * 8. Bounds annotations: Pointer parameters and struct fields
+ * 9. Bounds annotations: Pointer parameters and struct fields
  *    carry FERRIC_COUNTED_BY, FERRIC_SIZED_BY, and
  *    FERRIC_NULL_TERMINATED annotations when compiled with
  *    Clang -fbounds-safety. Define FERRIC_NO_BOUNDS_ANNOTATIONS
@@ -313,11 +321,16 @@ typedef struct FerricConfig {
 //
 // ## Ownership
 //
-// - `string_ptr`: when non-null, is a heap-allocated NUL-terminated string.
-//   The caller must free it with `ferric_string_free` or `ferric_value_free`.
-// - `multifield_ptr`: when non-null, is a heap-allocated array of `FerricValue`s.
-//   The caller must free it with `ferric_value_free` (which recursively frees elements)
-//   or `ferric_value_array_free`.
+// Ownership is contextual:
+//
+// - Values returned by Ferric APIs and constructors are Ferric-owned.
+//   Their non-null `string_ptr` and `multifield_ptr` fields must be released
+//   with `ferric_value_free` (or the matching type-specific Ferric free API).
+// - Values passed to structured assertion APIs or
+//   `ferric_value_multifield_copy` are borrowed for that call. Ferric neither
+//   retains nor frees any part of the caller-provided tree.
+// - Only Ferric-owned values and arrays may be passed to
+//   `ferric_value_free` and `ferric_value_array_free`.
 // - `external_pointer`: NOT owned by `FerricValue`. Lifetime is caller-managed.
 //
 // ## Active Fields by Type
@@ -327,9 +340,9 @@ typedef struct FerricConfig {
 // | Void | (none) |
 // | Integer | `integer` |
 // | Float | `float` |
-// | Symbol | `string_ptr` (owned) |
-// | String | `string_ptr` (owned) |
-// | Multifield | `multifield_ptr` (owned), `multifield_len` |
+// | Symbol | `string_ptr` |
+// | String | `string_ptr` |
+// | Multifield | `multifield_ptr`, `multifield_len` |
 // | ExternalAddress | `external_type_id`, `external_pointer` |
 typedef struct FerricValue {
     // Raw `FerricValueType` discriminant.
@@ -730,6 +743,12 @@ enum FerricError ferric_engine_get_fact_template_name(const struct FerricEngine 
 
 // Assert an ordered fact from structured values, bypassing CLIPS source parsing.
 //
+// `fields` and every active string or multifield reachable from it are
+// borrowed for the duration of this call. Ferric converts the values into
+// engine-owned runtime data and never retains or frees caller storage. The
+// complete input tree must remain readable and unchanged until the call
+// returns.
+//
 // # Safety
 //
 // - `engine` must be a valid engine pointer.
@@ -1000,6 +1019,10 @@ enum FerricError ferric_engine_run_ex(struct FerricEngine *engine,
 // `slot_names` and `slot_values` must each point to `count` elements.
 // Each `slot_names[i]` is a NUL-terminated C string naming a slot,
 // and `slot_values[i]` is the corresponding value for that slot.
+// Both arrays and every active string or multifield reachable from the slot
+// values are borrowed for the duration of this call. Ferric never retains or
+// frees caller storage. The complete input tree must remain readable and
+// unchanged until the call returns.
 //
 // # Safety
 //
@@ -1605,6 +1628,41 @@ struct FerricValue ferric_value_string(const char * FERRIC_NULL_TERMINATED s);
 // Create a void `FerricValue` with all fields zeroed/null.
 struct FerricValue ferric_value_void(void);
 
+// Deep-copy a borrowed array of values into one Ferric-owned multifield.
+//
+// The input array and its complete nested value tree are borrowed for the
+// duration of this call. Ferric never retains or frees caller-provided
+// arrays or strings. On success, `*out_value` owns independent copies of
+// every Symbol, String, and Multifield allocation and must be released with
+// `ferric_value_free`. External-address payload pointers are copied shallowly
+// and remain caller-owned.
+//
+// `elements == null` with `len == 0` constructs an empty multifield.
+// Unknown tags, null active string pointers, null non-empty multifield
+// pointers, cyclic or ancestor-overlapping array storage, and nesting deeper
+// than 128 levels return `FERRIC_ERROR_INVALID_ARGUMENT`. A null required
+// pointer returns `FERRIC_ERROR_NULL_POINTER`.
+//
+// When `out_value` is non-null, it is overwritten with Void before any input
+// validation and remains Void on every failure. Every partial Ferric-owned
+// copy is released before an error is returned.
+//
+// # Safety
+//
+// - `out_value` must point to writable storage for one `FerricValue`, must
+//   not overlap the borrowed input tree, and must not currently contain live
+//   Ferric-owned resources.
+// - If `len > 0`, `elements` must point to `len` aligned, initialized
+//   `FerricValue`s.
+// - Every active nested string pointer must address a NUL-terminated byte
+//   string, and every active nested multifield pointer must address its
+//   declared number of initialized `FerricValue`s.
+// - The complete input tree must remain readable and unchanged until this
+//   function returns.
+enum FerricError ferric_value_multifield_copy(const struct FerricValue *elements FERRIC_COUNTED_BY(len),
+                                              uintptr_t len,
+                                              struct FerricValue *out_value);
+
 // Free a heap-allocated C string returned by the FFI.
 //
 // Null pointers are safely ignored.
@@ -1630,6 +1688,8 @@ void ferric_string_free(char * FERRIC_NULL_TERMINATED ptr);
 // # Safety
 //
 // - `value` must point to a valid `FerricValue` or be null.
+// - Every recursively owned allocation must have Ferric provenance; borrowed
+//   or foreign-allocated value trees must not be passed to this function.
 // - Any owned resources (`string_ptr`, `multifield_ptr`) must not have been freed already.
 enum FerricError ferric_value_free(struct FerricValue *value);
 
@@ -1648,7 +1708,8 @@ enum FerricError ferric_value_free(struct FerricValue *value);
 // # Safety
 //
 // - `arr` must point to a contiguous array of `len` `FerricValue`s, or be null.
-// - The array must have been allocated by the FFI.
+// - The array and every recursively owned allocation must have been allocated
+//   by Ferric; borrowed or foreign-allocated arrays must not be passed here.
 enum FerricError ferric_value_array_free(struct FerricValue *arr FERRIC_COUNTED_BY(len), uintptr_t len);
 
 

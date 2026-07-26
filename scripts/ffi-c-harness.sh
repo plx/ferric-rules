@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the ferric-ffi static library and run the C ABI discriminant-abuse
-# harness (crates/ferric-ffi/tests/c/) as a real C subprocess.
+# Build the ferric-ffi static library and run the C ABI regression harnesses
+# (crates/ferric-ffi/tests/c/) as real C subprocesses.
 #
 # The harness is compiled with AddressSanitizer + UndefinedBehaviorSanitizer
 # when the local C compiler supports them (falls back to plain compilation
@@ -15,7 +15,10 @@ cargo build -p ferric-ffi --profile ffi-dev
 
 CC="${CC:-cc}"
 CXX="${CXX:-c++}"
-harness_src="crates/ferric-ffi/tests/c/discriminant_abuse.c"
+harness_sources=(
+    "crates/ferric-ffi/tests/c/discriminant_abuse.c"
+    "crates/ferric-ffi/tests/c/multifield_copy.c"
+)
 outdir="target/c-harness"
 mkdir -p "$outdir"
 
@@ -30,6 +33,16 @@ if ! echo 'int main(void){return 0;}' |
     san_flags=()
 fi
 rm -f "$outdir/san-probe"
+if ((${#san_flags[@]} > 0)); then
+    if [[ -z ${ASAN_OPTIONS:-} ]]; then
+        if [[ $(uname -s) == Linux ]]; then
+            export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1"
+        else
+            export ASAN_OPTIONS="halt_on_error=1"
+        fi
+    fi
+    export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1}"
+fi
 
 case "$(uname -s)" in
 Darwin)
@@ -84,11 +97,13 @@ else
     echo "ffi-c-harness: compiler lacks C++98 -fshort-enums; skipping negative check" >&2
 fi
 
-"$CC" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" \
-    -I crates/ferric-ffi \
-    -o "$outdir/discriminant_abuse" \
-    "$harness_src" \
-    target/ffi-dev/libferric_ffi.a \
-    "${platform_libs[@]}"
-
-"$outdir/discriminant_abuse"
+for harness_src in "${harness_sources[@]}"; do
+    harness_name="$(basename "$harness_src" .c)"
+    "$CC" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" \
+        -I crates/ferric-ffi \
+        -o "$outdir/$harness_name" \
+        "$harness_src" \
+        target/ffi-dev/libferric_ffi.a \
+        "${platform_libs[@]}"
+    "$outdir/$harness_name"
+done

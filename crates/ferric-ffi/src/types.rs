@@ -229,11 +229,16 @@ impl TryFrom<u32> for FerricValueType {
 ///
 /// ## Ownership
 ///
-/// - `string_ptr`: when non-null, is a heap-allocated NUL-terminated string.
-///   The caller must free it with `ferric_string_free` or `ferric_value_free`.
-/// - `multifield_ptr`: when non-null, is a heap-allocated array of `FerricValue`s.
-///   The caller must free it with `ferric_value_free` (which recursively frees elements)
-///   or `ferric_value_array_free`.
+/// Ownership is contextual:
+///
+/// - Values returned by Ferric APIs and constructors are Ferric-owned.
+///   Their non-null `string_ptr` and `multifield_ptr` fields must be released
+///   with `ferric_value_free` (or the matching type-specific Ferric free API).
+/// - Values passed to structured assertion APIs or
+///   `ferric_value_multifield_copy` are borrowed for that call. Ferric neither
+///   retains nor frees any part of the caller-provided tree.
+/// - Only Ferric-owned values and arrays may be passed to
+///   `ferric_value_free` and `ferric_value_array_free`.
 /// - `external_pointer`: NOT owned by `FerricValue`. Lifetime is caller-managed.
 ///
 /// ## Active Fields by Type
@@ -243,9 +248,9 @@ impl TryFrom<u32> for FerricValueType {
 /// | Void | (none) |
 /// | Integer | `integer` |
 /// | Float | `float` |
-/// | Symbol | `string_ptr` (owned) |
-/// | String | `string_ptr` (owned) |
-/// | Multifield | `multifield_ptr` (owned), `multifield_len` |
+/// | Symbol | `string_ptr` |
+/// | String | `string_ptr` |
+/// | Multifield | `multifield_ptr`, `multifield_len` |
 /// | ExternalAddress | `external_type_id`, `external_pointer` |
 #[repr(C)]
 pub struct FerricValue {
@@ -278,6 +283,68 @@ impl FerricValue {
             multifield_len: 0,
             external_type_id: 0,
             external_pointer: ptr::null_mut(),
+        }
+    }
+}
+
+/// Maximum recursively nested multifield levels accepted by the copy
+/// constructor. This keeps both construction and the matching recursive free
+/// path within a bounded stack depth.
+const MAX_MULTIFIELD_COPY_DEPTH: usize = 128;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BorrowedValueRange {
+    start: usize,
+    end: usize,
+}
+
+impl BorrowedValueRange {
+    fn overlaps(self, other: Self) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+}
+
+/// RAII guard for Ferric-owned values that have not yet been transferred to a
+/// caller-visible multifield. A validation failure at any later element drops
+/// the guard and recursively releases every successful earlier copy.
+struct OwnedFerricValues(Vec<FerricValue>);
+
+impl OwnedFerricValues {
+    fn with_capacity(capacity: usize) -> Self {
+        Self(Vec::with_capacity(capacity))
+    }
+
+    fn push(&mut self, value: FerricValue) {
+        self.0.push(value);
+    }
+
+    fn into_multifield(mut self) -> FerricValue {
+        let values = std::mem::take(&mut self.0);
+        let len = values.len();
+        let multifield_ptr = if values.is_empty() {
+            ptr::null_mut()
+        } else {
+            Box::into_raw(values.into_boxed_slice()).cast::<FerricValue>()
+        };
+        FerricValue {
+            value_type: FerricValueType::Multifield.as_raw(),
+            multifield_ptr,
+            multifield_len: len,
+            ..FerricValue::void()
+        }
+    }
+}
+
+impl Drop for OwnedFerricValues {
+    fn drop(&mut self) {
+        for value in &self.0 {
+            // Values in this guard were constructed below and therefore have
+            // valid tags and exclusively Ferric-owned recursive resources.
+            let result = unsafe { free_value_resources(value) };
+            debug_assert!(
+                result.is_ok(),
+                "internally constructed FerricValue must be freeable: {result:?}"
+            );
         }
     }
 }
@@ -324,20 +391,7 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> FerricValue {
         }
         Value::Multifield(mf) => {
             let values: Vec<FerricValue> = mf.iter().map(|v| value_to_ferric(v, engine)).collect();
-            let len = values.len();
-            let ptr = if values.is_empty() {
-                ptr::null_mut()
-            } else {
-                let boxed = values.into_boxed_slice();
-                let raw = Box::into_raw(boxed);
-                raw.cast::<FerricValue>()
-            };
-            FerricValue {
-                value_type: FerricValueType::Multifield.as_raw(),
-                multifield_ptr: ptr,
-                multifield_len: len,
-                ..FerricValue::void()
-            }
+            OwnedFerricValues(values).into_multifield()
         }
         Value::ExternalAddress(ea) => FerricValue {
             value_type: FerricValueType::ExternalAddress.as_raw(),
@@ -489,6 +543,194 @@ pub extern "C" fn ferric_value_void() -> FerricValue {
     FerricValue::void()
 }
 
+/// Deep-copy a borrowed array of values into one Ferric-owned multifield.
+///
+/// The input array and its complete nested value tree are borrowed for the
+/// duration of this call. Ferric never retains or frees caller-provided
+/// arrays or strings. On success, `*out_value` owns independent copies of
+/// every Symbol, String, and Multifield allocation and must be released with
+/// `ferric_value_free`. External-address payload pointers are copied shallowly
+/// and remain caller-owned.
+///
+/// `elements == null` with `len == 0` constructs an empty multifield.
+/// Unknown tags, null active string pointers, null non-empty multifield
+/// pointers, cyclic or ancestor-overlapping array storage, and nesting deeper
+/// than 128 levels return `FERRIC_ERROR_INVALID_ARGUMENT`. A null required
+/// pointer returns `FERRIC_ERROR_NULL_POINTER`.
+///
+/// When `out_value` is non-null, it is overwritten with Void before any input
+/// validation and remains Void on every failure. Every partial Ferric-owned
+/// copy is released before an error is returned.
+///
+/// # Safety
+///
+/// - `out_value` must point to writable storage for one `FerricValue`, must
+///   not overlap the borrowed input tree, and must not currently contain live
+///   Ferric-owned resources.
+/// - If `len > 0`, `elements` must point to `len` aligned, initialized
+///   `FerricValue`s.
+/// - Every active nested string pointer must address a NUL-terminated byte
+///   string, and every active nested multifield pointer must address its
+///   declared number of initialized `FerricValue`s.
+/// - The complete input tree must remain readable and unchanged until this
+///   function returns.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_value_multifield_copy(
+    elements: *const FerricValue,
+    len: usize,
+    out_value: *mut FerricValue,
+) -> FerricError {
+    if out_value.is_null() {
+        return report_multifield_copy_error(FerricError::NullPointer, "out_value is null");
+    }
+    ptr::write(out_value, FerricValue::void());
+
+    if elements.is_null() && len > 0 {
+        return report_multifield_copy_error(
+            FerricError::NullPointer,
+            "elements is null with non-zero length",
+        );
+    }
+
+    let mut active_ranges = Vec::new();
+    match copy_borrowed_ferric_values(elements, len, 0, &mut active_ranges) {
+        Ok(values) => {
+            ptr::write(out_value, values.into_multifield());
+            FerricError::Ok
+        }
+        Err(message) => report_multifield_copy_error(FerricError::InvalidArgument, &message),
+    }
+}
+
+fn report_multifield_copy_error(code: FerricError, message: &str) -> FerricError {
+    set_global_error(format!("ferric_value_multifield_copy: {message}"));
+    code
+}
+
+fn borrowed_value_range(
+    elements: *const FerricValue,
+    len: usize,
+) -> Result<Option<BorrowedValueRange>, String> {
+    if len == 0 {
+        return Ok(None);
+    }
+    if elements.is_null() {
+        return Err("nested multifield pointer is null with non-zero length".to_string());
+    }
+
+    let start = elements as usize;
+    if start % std::mem::align_of::<FerricValue>() != 0 {
+        return Err("multifield pointer is not aligned for FerricValue".to_string());
+    }
+    let byte_len = len
+        .checked_mul(std::mem::size_of::<FerricValue>())
+        .filter(|size| isize::try_from(*size).is_ok())
+        .ok_or_else(|| "multifield length exceeds the addressable value-array bound".to_string())?;
+    let end = start
+        .checked_add(byte_len)
+        .ok_or_else(|| "multifield pointer range wraps the address space".to_string())?;
+    Ok(Some(BorrowedValueRange { start, end }))
+}
+
+/// Copy one borrowed value tree into a wholly Ferric-owned value.
+///
+/// # Safety
+///
+/// `value` and every active pointer reachable from it must satisfy the public
+/// copy constructor's safety contract.
+unsafe fn copy_borrowed_ferric_value(
+    value: &FerricValue,
+    depth: usize,
+    active_ranges: &mut Vec<BorrowedValueRange>,
+) -> Result<FerricValue, String> {
+    match FerricValueType::try_from(value.value_type)? {
+        FerricValueType::Void => Ok(FerricValue::void()),
+        FerricValueType::Integer => Ok(FerricValue {
+            value_type: FerricValueType::Integer.as_raw(),
+            integer: value.integer,
+            ..FerricValue::void()
+        }),
+        FerricValueType::Float => Ok(FerricValue {
+            value_type: FerricValueType::Float.as_raw(),
+            float: value.float,
+            ..FerricValue::void()
+        }),
+        FerricValueType::Symbol | FerricValueType::String => {
+            if value.string_ptr.is_null() {
+                return Err(format!(
+                    "{} string_ptr is null",
+                    if value.value_type == FerricValueType::Symbol.as_raw() {
+                        "symbol"
+                    } else {
+                        "string"
+                    }
+                ));
+            }
+            let copied = CStr::from_ptr(value.string_ptr).to_owned();
+            Ok(FerricValue {
+                value_type: value.value_type,
+                string_ptr: copied.into_raw(),
+                ..FerricValue::void()
+            })
+        }
+        FerricValueType::Multifield => copy_borrowed_ferric_values(
+            value.multifield_ptr,
+            value.multifield_len,
+            depth + 1,
+            active_ranges,
+        )
+        .map(OwnedFerricValues::into_multifield),
+        FerricValueType::ExternalAddress => Ok(FerricValue {
+            value_type: FerricValueType::ExternalAddress.as_raw(),
+            external_type_id: value.external_type_id,
+            external_pointer: value.external_pointer,
+            ..FerricValue::void()
+        }),
+    }
+}
+
+/// Copy a borrowed value array while rejecting cycles and bounding recursive
+/// construction/free depth.
+///
+/// # Safety
+///
+/// `elements` and all reachable active pointers must satisfy the public copy
+/// constructor's safety contract.
+unsafe fn copy_borrowed_ferric_values(
+    elements: *const FerricValue,
+    len: usize,
+    depth: usize,
+    active_ranges: &mut Vec<BorrowedValueRange>,
+) -> Result<OwnedFerricValues, String> {
+    if depth > MAX_MULTIFIELD_COPY_DEPTH {
+        return Err(format!(
+            "multifield nesting depth exceeds maximum of {MAX_MULTIFIELD_COPY_DEPTH}"
+        ));
+    }
+
+    let Some(range) = borrowed_value_range(elements, len)? else {
+        return Ok(OwnedFerricValues::with_capacity(0));
+    };
+    if active_ranges.iter().any(|active| range.overlaps(*active)) {
+        return Err(
+            "input contains cyclic or ancestor-overlapping multifield array storage".to_string(),
+        );
+    }
+
+    active_ranges.push(range);
+    let result = (|| {
+        let mut copied = OwnedFerricValues::with_capacity(len);
+        for index in 0..len {
+            let value = &*elements.add(index);
+            copied.push(copy_borrowed_ferric_value(value, depth, active_ranges)?);
+        }
+        Ok(copied)
+    })();
+    let popped = active_ranges.pop();
+    debug_assert_eq!(popped, Some(range));
+    result
+}
+
 // ---------------------------------------------------------------------------
 // C API: Resource management
 // ---------------------------------------------------------------------------
@@ -523,6 +765,8 @@ pub unsafe extern "C" fn ferric_string_free(ptr: *mut c_char) {
 /// # Safety
 ///
 /// - `value` must point to a valid `FerricValue` or be null.
+/// - Every recursively owned allocation must have Ferric provenance; borrowed
+///   or foreign-allocated value trees must not be passed to this function.
 /// - Any owned resources (`string_ptr`, `multifield_ptr`) must not have been freed already.
 #[no_mangle]
 pub unsafe extern "C" fn ferric_value_free(value: *mut FerricValue) -> FerricError {
@@ -548,7 +792,8 @@ pub unsafe extern "C" fn ferric_value_free(value: *mut FerricValue) -> FerricErr
 /// # Safety
 ///
 /// - `arr` must point to a contiguous array of `len` `FerricValue`s, or be null.
-/// - The array must have been allocated by the FFI.
+/// - The array and every recursively owned allocation must have been allocated
+///   by Ferric; borrowed or foreign-allocated arrays must not be passed here.
 #[no_mangle]
 pub unsafe extern "C" fn ferric_value_array_free(arr: *mut FerricValue, len: usize) -> FerricError {
     if arr.is_null() || len == 0 {

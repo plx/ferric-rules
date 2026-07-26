@@ -21,8 +21,8 @@ use crate::error::{
     ferric_clear_error_global, ferric_last_error_global, ferric_last_error_global_copy, FerricError,
 };
 use crate::types::{
-    ferric_string_free, ferric_value_array_free, ferric_value_free, FerricConfig,
-    FerricConflictStrategy, FerricStringEncoding, FerricValue,
+    ferric_string_free, ferric_value_array_free, ferric_value_free, ferric_value_multifield_copy,
+    FerricConfig, FerricConflictStrategy, FerricStringEncoding, FerricValue,
 };
 use std::os::raw::c_char;
 
@@ -109,6 +109,8 @@ fn contract_lock_canonical_function_names_exist() {
 
     // value resource management
     let _: unsafe extern "C" fn(*mut c_char) = ferric_string_free;
+    let _: unsafe extern "C" fn(*const FerricValue, usize, *mut FerricValue) -> FerricError =
+        ferric_value_multifield_copy;
     let _: unsafe extern "C" fn(*mut FerricValue) -> FerricError = ferric_value_free;
     let _: unsafe extern "C" fn(*mut FerricValue, usize) -> FerricError = ferric_value_array_free;
 }

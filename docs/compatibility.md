@@ -855,10 +855,19 @@ ferric_engine_clear_action_diagnostics(engine);
 | Function | Purpose |
 |----------|---------|
 | `ferric_string_free` | Free a Ferric-allocated C string |
+| `ferric_value_multifield_copy` | Deep-copy a borrowed `FerricValue` array and its nested tree into one Ferric-owned multifield; external-address payload pointers remain caller-owned |
 | `ferric_value_free` | Free a `FerricValue` and its owned resources (recursive); returns `FERRIC_ERROR_INVALID_ARGUMENT` if any `value_type` tag is unknown (that value's payload is left untouched; known siblings and owned arrays are still freed) |
 | `ferric_value_array_free` | Free an array of `FerricValue`s; same unknown-tag contract as `ferric_value_free` |
 
-Borrowed pointers must **not** be freed by the caller.
+Structured values passed to assertion APIs and
+`ferric_value_multifield_copy` are borrowed for the call: Ferric never retains
+or frees their strings or arrays. The copy constructor returns an independent
+Ferric-owned tree that must be released with `ferric_value_free`; only
+Ferric-owned trees may be passed to Ferric value cleanup APIs. External-address
+payload pointers are always shallow and caller-owned. Multifield-copy inputs
+must be acyclic and no deeper than 128 nested multifield levels.
+
+Other borrowed pointers must **not** be freed by the caller.
 `ferric_engine_last_error` remains valid until the next borrowed last-error
 read on that engine or engine destruction; error writers and the copy API do
 not invalidate it. `ferric_engine_get_output` remains valid until the next
