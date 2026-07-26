@@ -24,7 +24,9 @@ from ferric_tools._formatting import normalize_floats, normalize_output
 from ferric_tools._harness import (
     HarnessContractError,
     ResolvedHarness,
+    atomic_write_bytes,
     resolve_harness_contract,
+    sha256_bytes,
 )
 from ferric_tools._manifest import load_manifest, save_manifest
 from ferric_tools._paths import (
@@ -44,6 +46,244 @@ from ferric_tools._subprocess import parallel_run
 app = typer.Typer(help="Run CLIPS compatibility assessment.")
 console = Console(stderr=True)
 VALID_RUNABILITY = {"batch", "interactive", "library", "standalone", "unknown"}
+FAILED_CLASSIFICATIONS = {"divergent", "incompatible"}
+COMPAT_WORKSPACE = Path(".ferric-compat")
+IS_WINDOWS = os.name == "nt"
+
+
+class CompatibilityWorkspaceError(RuntimeError):
+    """Raised when composed compatibility inputs cannot be staged safely."""
+
+
+def _make_read_only(path: Path) -> None:
+    """Make retained or staged inputs immutable where chmod does not block unlink."""
+    if not IS_WINDOWS:
+        path.chmod(0o444)
+
+
+def _require_contained(path: Path, *, root: Path, label: str) -> Path:
+    """Resolve *path* and require it to remain physically inside *root*."""
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+    except OSError as error:
+        raise CompatibilityWorkspaceError(f"{label} cannot be resolved: {error}") from error
+
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError as error:
+        raise CompatibilityWorkspaceError(
+            f"{label} escapes repository root: {resolved_path}"
+        ) from error
+    return resolved_path
+
+
+def _require_contained_directory(path: Path, *, root: Path, label: str) -> Path:
+    """Validate an existing repository-contained directory."""
+    resolved_path = _require_contained(path, root=root, label=label)
+    if not resolved_path.is_dir():
+        raise CompatibilityWorkspaceError(f"{label} is not a directory: {resolved_path}")
+    return resolved_path
+
+
+def _require_contained_file(path: Path, *, root: Path, label: str) -> Path:
+    """Validate an existing regular file without following a leaf symlink."""
+    if path.is_symlink():
+        raise CompatibilityWorkspaceError(f"{label} must not be a symlink: {path}")
+    resolved_path = _require_contained(path, root=root, label=label)
+    if not resolved_path.is_file():
+        raise CompatibilityWorkspaceError(f"{label} is not a regular file: {resolved_path}")
+    return resolved_path
+
+
+def _ensure_workspace_directory(root: Path, relative_path: Path, *, label: str) -> Path:
+    """Create a fixed relative directory without traversing outside *root*."""
+    if relative_path.is_absolute() or any(part in {"", ".", ".."} for part in relative_path.parts):
+        raise CompatibilityWorkspaceError(f"{label} must be a normalized relative path")
+
+    try:
+        resolved_root = root.resolve(strict=True)
+    except OSError as error:
+        raise CompatibilityWorkspaceError(f"repository root cannot be resolved: {error}") from error
+    if not resolved_root.is_dir():
+        raise CompatibilityWorkspaceError(f"repository root is not a directory: {resolved_root}")
+
+    current = resolved_root
+    for part in relative_path.parts:
+        candidate = current / part
+        if candidate.is_symlink():
+            raise CompatibilityWorkspaceError(f"{label} must not contain a symlink: {candidate}")
+        try:
+            candidate.mkdir(mode=0o755, exist_ok=True)
+        except OSError as error:
+            raise CompatibilityWorkspaceError(f"cannot create {label}: {error}") from error
+        if candidate.is_symlink():
+            raise CompatibilityWorkspaceError(f"{label} must not contain a symlink: {candidate}")
+        current = _require_contained_directory(candidate, root=resolved_root, label=label)
+        try:
+            current.chmod(0o755)
+        except OSError as error:
+            raise CompatibilityWorkspaceError(
+                f"cannot set traversal permissions on {label}: {error}"
+            ) from error
+    return current
+
+
+@contextlib.contextmanager
+def _compatibility_run_workspace(root: Path):
+    """Yield one repository-visible run directory and the retained-failure directory."""
+    resolved_root = root.resolve(strict=True)
+    runs_dir = _ensure_workspace_directory(
+        resolved_root,
+        COMPAT_WORKSPACE / "runs",
+        label="compatibility run workspace",
+    )
+    failures_dir = _ensure_workspace_directory(
+        resolved_root,
+        COMPAT_WORKSPACE / "failures",
+        label="compatibility failure workspace",
+    )
+    try:
+        temporary_directory = tempfile.TemporaryDirectory(prefix="run-", dir=runs_dir)
+    except OSError as error:
+        message = f"cannot create compatibility run directory: {error}"
+        raise CompatibilityWorkspaceError(message) from error
+
+    with temporary_directory as temp_name:
+        run_dir = _require_contained_directory(
+            Path(temp_name),
+            root=resolved_root,
+            label="compatibility run directory",
+        )
+        try:
+            run_dir.chmod(0o755)
+        except OSError as error:
+            raise CompatibilityWorkspaceError(
+                f"cannot set traversal permissions on compatibility run directory: {error}"
+            ) from error
+        yield run_dir, failures_dir
+
+
+def _materialize_composed_source(content: bytes, *, workspace: Path, root: Path) -> Path:
+    """Write one closed, fsynced composed source in the invocation workspace."""
+    resolved_workspace = _require_contained_directory(
+        workspace,
+        root=root,
+        label="compatibility run directory",
+    )
+    file_descriptor = -1
+    temp_path: Path | None = None
+    materialized = False
+    try:
+        file_descriptor, temp_name = tempfile.mkstemp(
+            prefix="composed-",
+            suffix=".clp",
+            dir=resolved_workspace,
+        )
+        temp_path = Path(temp_name)
+        with os.fdopen(file_descriptor, "wb") as composed_file:
+            file_descriptor = -1
+            composed_file.write(content)
+            composed_file.flush()
+            os.fsync(composed_file.fileno())
+        _make_read_only(temp_path)
+        resolved_path = _require_contained_file(
+            temp_path,
+            root=root,
+            label="composed compatibility source",
+        )
+        if resolved_path.read_bytes() != content:
+            raise CompatibilityWorkspaceError(
+                f"composed compatibility source changed after write: {resolved_path}"
+            )
+        materialized = True
+        return resolved_path
+    except OSError as error:
+        raise CompatibilityWorkspaceError(
+            f"cannot materialize composed compatibility source: {error}"
+        ) from error
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        if temp_path is not None and not materialized:
+            temp_path.unlink(missing_ok=True)
+
+
+def _verify_composed_source(
+    path: Path,
+    expected_content: bytes,
+    *,
+    root: Path,
+    boundary: str,
+) -> Path:
+    """Fail closed if a staged source changes across an engine boundary."""
+    resolved_path = _require_contained_file(
+        path,
+        root=root,
+        label="composed compatibility source",
+    )
+    try:
+        actual_content = resolved_path.read_bytes()
+    except OSError as error:
+        raise CompatibilityWorkspaceError(
+            f"cannot verify composed compatibility source {boundary}: {error}"
+        ) from error
+    if actual_content != expected_content:
+        raise CompatibilityWorkspaceError(
+            f"composed compatibility source changed {boundary}: {resolved_path}"
+        )
+    return resolved_path
+
+
+def _retain_failure_artifact(
+    content: bytes,
+    digest: str,
+    *,
+    failures_dir: Path,
+    root: Path,
+) -> Path:
+    """Atomically retain exact failed input bytes under their SHA-256 digest."""
+    resolved_failures_dir = _require_contained_directory(
+        failures_dir,
+        root=root,
+        label="compatibility failure workspace",
+    )
+    artifact_path = resolved_failures_dir / f"{digest}.clp"
+    if artifact_path.is_symlink():
+        raise CompatibilityWorkspaceError(
+            f"compatibility failure artifact must not be a symlink: {artifact_path}"
+        )
+
+    try:
+        if artifact_path.exists():
+            resolved_artifact = _require_contained_file(
+                artifact_path,
+                root=root,
+                label="compatibility failure artifact",
+            )
+            if resolved_artifact.read_bytes() != content:
+                raise CompatibilityWorkspaceError(
+                    f"compatibility failure artifact digest collision: {artifact_path}"
+                )
+            _make_read_only(resolved_artifact)
+            return resolved_artifact
+
+        atomic_write_bytes(artifact_path, content)
+        _make_read_only(artifact_path)
+        resolved_artifact = _require_contained_file(
+            artifact_path,
+            root=root,
+            label="compatibility failure artifact",
+        )
+        if sha256_bytes(resolved_artifact.read_bytes()) != digest:
+            raise CompatibilityWorkspaceError(
+                f"compatibility failure artifact changed after retention: {resolved_artifact}"
+            )
+        return resolved_artifact
+    except OSError as error:
+        raise CompatibilityWorkspaceError(
+            f"cannot retain compatibility failure artifact: {error}"
+        ) from error
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +291,7 @@ VALID_RUNABILITY = {"batch", "interactive", "library", "standalone", "unknown"}
 # ---------------------------------------------------------------------------
 
 
-def run_ferric(file_path: str, ferric_bin: str, timeout_secs: int) -> dict:
+def run_ferric(file_path: str, ferric_bin: str, root: str, timeout_secs: int) -> dict:
     """Run a .clp file through the ferric CLI."""
     start = time.monotonic()
     try:
@@ -60,6 +300,7 @@ def run_ferric(file_path: str, ferric_bin: str, timeout_secs: int) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout_secs,
+            cwd=root,
         )
         duration_ms = int((time.monotonic() - start) * 1000)
         return {
@@ -90,10 +331,15 @@ def run_ferric(file_path: str, ferric_bin: str, timeout_secs: int) -> dict:
 
 def run_clips_docker(file_path: str, root: str, script: str, timeout_secs: int) -> dict:
     """Run a .clp file through the Docker CLIPS harness."""
+    resolved_path = _require_contained_file(
+        Path(file_path),
+        root=Path(root),
+        label="CLIPS input",
+    )
     start = time.monotonic()
     try:
         proc = subprocess.run(
-            [script, "run", "--file", file_path],
+            [script, "run", "--file", str(resolved_path)],
             capture_output=True,
             text=True,
             timeout=timeout_secs,
@@ -189,33 +435,123 @@ def classify_results(ferric_result: dict, clips_result: dict | None) -> tuple[st
 
 def process_file(args: tuple) -> tuple:
     """Process a single file through both engines."""
-    rel_path, abs_path, ferric, root, script, timeout, skip_clips, harness = args
+    (
+        rel_path,
+        abs_path,
+        ferric,
+        root,
+        script,
+        timeout,
+        skip_clips,
+        harness,
+        run_workspace,
+        failures_dir,
+    ) = args
 
     run_path = abs_path
-    tmp_path = None
+    composed_path: Path | None = None
+    composed_content: bytes | None = None
+    composed_digest: str | None = None
+    retained_artifact: Path | None = None
+    resolved_root = Path(root).resolve(strict=True)
     try:
         if harness is not None:
-            with tempfile.NamedTemporaryFile(suffix=".clp", delete=False, mode="wb") as tmp:
-                tmp.write(harness.source_bytes)
-                tmp.write(b"\n")
-                tmp.write(harness.harness_bytes)
-            tmp_path = tmp.name
-            run_path = tmp_path
+            if run_workspace is None or failures_dir is None:
+                raise CompatibilityWorkspaceError(
+                    f"{rel_path}: harness execution requires an invocation workspace"
+                )
+            composed_content = harness.source_bytes + b"\n" + harness.harness_bytes
+            composed_digest = sha256_bytes(composed_content)
+            composed_path = _materialize_composed_source(
+                composed_content,
+                workspace=Path(run_workspace),
+                root=resolved_root,
+            )
+            run_path = str(composed_path)
 
-        ferric_result = run_ferric(run_path, ferric, timeout)
+        if composed_path is not None and composed_content is not None:
+            _verify_composed_source(
+                composed_path,
+                composed_content,
+                root=resolved_root,
+                boundary="before Ferric execution",
+            )
+        ferric_result = run_ferric(run_path, ferric, root, timeout)
         if harness is not None:
             ferric_result["harness"] = dict(harness.metadata)
         clips_result = None
         if not skip_clips:
+            if composed_path is not None and composed_content is not None:
+                _verify_composed_source(
+                    composed_path,
+                    composed_content,
+                    root=resolved_root,
+                    boundary="before CLIPS execution",
+                )
             clips_result = run_clips_docker(run_path, root, script, timeout)
             if harness is not None:
                 clips_result["harness"] = dict(harness.metadata)
+        if composed_path is not None and composed_content is not None:
+            _verify_composed_source(
+                composed_path,
+                composed_content,
+                root=resolved_root,
+                boundary="after engine execution",
+            )
         classification, reason = classify_results(ferric_result, clips_result)
+
+        if composed_content is not None and composed_digest is not None:
+            composed_metadata: dict[str, str | int] = {
+                "sha256": composed_digest,
+                "size_bytes": len(composed_content),
+            }
+            if classification in FAILED_CLASSIFICATIONS:
+                retained_artifact = _retain_failure_artifact(
+                    composed_content,
+                    composed_digest,
+                    failures_dir=Path(failures_dir),
+                    root=resolved_root,
+                )
+                composed_metadata["artifact_path"] = retained_artifact.relative_to(
+                    resolved_root
+                ).as_posix()
+            ferric_result["composed_source"] = dict(composed_metadata)
+            if clips_result is not None:
+                clips_result["composed_source"] = dict(composed_metadata)
+
         return rel_path, ferric_result, clips_result, classification, reason
+    except BaseException as error:
+        if (
+            composed_content is not None
+            and composed_digest is not None
+            and failures_dir is not None
+            and retained_artifact is None
+        ):
+            try:
+                retained_artifact = _retain_failure_artifact(
+                    composed_content,
+                    composed_digest,
+                    failures_dir=Path(failures_dir),
+                    root=resolved_root,
+                )
+            except Exception as retention_error:
+                error.add_note(f"could not retain composed failure artifact: {retention_error}")
+            else:
+                artifact_relpath = retained_artifact.relative_to(resolved_root).as_posix()
+                error.add_note(f"composed failure artifact retained at {artifact_relpath}")
+        raise
     finally:
-        if tmp_path:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
+        if composed_path is not None:
+            try:
+                composed_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                active_error = sys.exception()
+                message = (
+                    f"could not remove composed temporary source {composed_path}: {cleanup_error}"
+                )
+                if active_error is None:
+                    raise CompatibilityWorkspaceError(message) from cleanup_error
+                active_error.add_note(message)
 
 
 def _resolve_harness(
@@ -387,43 +723,46 @@ def main(
             print(f"  {rel_path}")
         raise typer.Exit(0)
 
-    work_items = [
-        (
-            rel,
-            abs_p,
-            ferric,
-            str(root),
-            script,
-            timeout,
-            skip_clips,
-            resolved_harnesses[rel],
-        )
-        for rel, abs_p in files_to_run
-    ]
-
     completed = 0
     results: dict[str, tuple] = {}
     start_time = time.monotonic()
 
-    for result_tuple in parallel_run(process_file, work_items, workers=workers):
-        try:
-            rel, ferric_result, clips_result, classification, reason = result_tuple
-            results[rel] = (ferric_result, clips_result, classification, reason)
-            completed += 1
-            status_char = {
-                "equivalent": ".",
-                "divergent": "D",
-                "incompatible": "X",
-                "pending": "?",
-            }.get(classification, "?")
-            sys.stdout.write(status_char)
-            if completed % 80 == 0:
-                sys.stdout.write(f" [{completed}/{len(files_to_run)}]\n")
-            sys.stdout.flush()
-        except Exception:
-            completed += 1
-            sys.stdout.write("E")
-            sys.stdout.flush()
+    with _compatibility_run_workspace(root) as (run_workspace, failures_dir):
+        work_items = [
+            (
+                rel,
+                abs_p,
+                ferric,
+                str(root),
+                script,
+                timeout,
+                skip_clips,
+                resolved_harnesses[rel],
+                str(run_workspace),
+                str(failures_dir),
+            )
+            for rel, abs_p in files_to_run
+        ]
+
+        for result_tuple in parallel_run(process_file, work_items, workers=workers):
+            try:
+                rel, ferric_result, clips_result, classification, reason = result_tuple
+                results[rel] = (ferric_result, clips_result, classification, reason)
+                completed += 1
+                status_char = {
+                    "equivalent": ".",
+                    "divergent": "D",
+                    "incompatible": "X",
+                    "pending": "?",
+                }.get(classification, "?")
+                sys.stdout.write(status_char)
+                if completed % 80 == 0:
+                    sys.stdout.write(f" [{completed}/{len(files_to_run)}]\n")
+                sys.stdout.flush()
+            except Exception:
+                completed += 1
+                sys.stdout.write("E")
+                sys.stdout.flush()
 
     elapsed = time.monotonic() - start_time
     print(f"\n\nCompleted {completed} files in {elapsed:.1f}s")
@@ -465,6 +804,9 @@ def main(
         print(f"\nDivergent files ({len(divergent)}):")
         for rel_path, (ferric_r, clips_r, _cls, reason) in divergent[:20]:
             print(f"  {rel_path} ({reason})")
+            artifact_path = (ferric_r.get("composed_source") or {}).get("artifact_path")
+            if artifact_path:
+                print(f"    composed artifact: {artifact_path}")
             if reason == "output-mismatch" and clips_r:
                 f_out = normalize_output(ferric_r["stdout"], "ferric")[:100]
                 c_out = normalize_output(clips_r["stdout"], "clips")[:100]
