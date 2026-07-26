@@ -258,6 +258,92 @@ fn header_contains_ferric_value_struct() {
 }
 
 #[test]
+fn header_value_type_is_fixed_width_integer() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("uint32_t value_type;"),
+        "FerricValue.value_type must cross the ABI as uint32_t, not a C enum"
+    );
+    assert!(
+        !header.contains("enum FerricValueType value_type;"),
+        "FerricValue.value_type must not be typed as a C enum"
+    );
+}
+
+#[test]
+fn header_has_abi_static_assertions() {
+    let header = read_committed_header();
+    assert!(
+        header.contains("ABI STATIC ASSERTIONS"),
+        "Missing ABI STATIC ASSERTIONS section"
+    );
+    assert!(
+        header.contains("#define FERRIC_STATIC_ASSERT(COND, MSG)"),
+        "Missing FERRIC_STATIC_ASSERT macro definition"
+    );
+    assert!(
+        header.contains("#if defined(__cplusplus) && __cplusplus >= 201103L"),
+        "C++ static_assert must be gated on C++11 so older modes use the typedef fallback"
+    );
+    // Width locks for every caller-populated discriminant field.
+    for field in [
+        "((FerricValue *)0)->value_type",
+        "((FerricValue *)0)->external_type_id",
+        "((FerricConfig *)0)->string_encoding",
+        "((FerricConfig *)0)->strategy",
+        "((FerricPinnedEngineOptions *)0)->autorelease_policy",
+    ] {
+        assert!(
+            header.contains(&format!("FERRIC_STATIC_ASSERT(sizeof({field}) == 4")),
+            "Missing width assertion for {field}"
+        );
+    }
+    // Enum object widths for every enum crossing the ABI (rejects
+    // -fshort-enums / packed-enum consumer ABIs at compile time).
+    for e in [
+        "FerricError",
+        "FerricValueType",
+        "FerricStringEncoding",
+        "FerricConflictStrategy",
+        "FerricFactType",
+        "FerricHaltReason",
+        "FerricPinnedAutoreleasePolicy",
+        "FerricSerializationFormat",
+    ] {
+        assert!(
+            header.contains(&format!("FERRIC_STATIC_ASSERT(sizeof(enum {e}) == 4")),
+            "Missing enum-width assertion for enum {e}"
+        );
+    }
+    // Documented numeric values for the ABI enums (spot-check boundaries).
+    for assertion in [
+        "FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_VOID == 0",
+        "FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS == 6",
+        "FERRIC_STATIC_ASSERT(FERRIC_ERROR_INVALID_ARGUMENT == 9",
+        "FERRIC_STATIC_ASSERT(FERRIC_ERROR_INTERNAL_ERROR == 99",
+        "FERRIC_STATIC_ASSERT(FERRIC_STRING_ENCODING_ASCII == 0",
+        "FERRIC_STATIC_ASSERT(FERRIC_CONFLICT_STRATEGY_MEA == 3",
+        "FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_POSTCARD == 4",
+    ] {
+        assert!(
+            header.contains(assertion),
+            "Missing numeric-value assertion: {assertion}"
+        );
+    }
+}
+
+#[test]
+fn header_enums_have_no_trailing_commas() {
+    // Strict C++98/03 (-pedantic-errors) rejects a trailing comma after the
+    // last enum variant; the generator strips the ones cbindgen emits.
+    let header = read_committed_header();
+    assert!(
+        !header.contains(",\n}"),
+        "committed header must not contain trailing commas before closing braces"
+    );
+}
+
+#[test]
 fn header_contains_ferric_engine_opaque() {
     let header = read_committed_header();
     // FerricEngine must appear as an opaque struct, not with its fields exposed
@@ -407,13 +493,14 @@ fn header_contains_value_free_functions() {
         header.contains("ferric_string_free"),
         "Missing ferric_string_free"
     );
+    // Both value-free functions report invalid discriminants via FerricError.
     assert!(
-        header.contains("ferric_value_free"),
-        "Missing ferric_value_free"
+        header.contains("enum FerricError ferric_value_free("),
+        "ferric_value_free must return FerricError"
     );
     assert!(
-        header.contains("ferric_value_array_free"),
-        "Missing ferric_value_array_free"
+        header.contains("enum FerricError ferric_value_array_free("),
+        "ferric_value_array_free must return FerricError"
     );
 }
 

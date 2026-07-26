@@ -34,6 +34,9 @@ mod copy_error;
 mod values;
 
 #[cfg(test)]
+mod discriminant_validation;
+
+#[cfg(test)]
 mod build_matrix;
 
 #[cfg(test)]

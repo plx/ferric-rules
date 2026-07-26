@@ -109,8 +109,8 @@ fn contract_lock_canonical_function_names_exist() {
 
     // value resource management
     let _: unsafe extern "C" fn(*mut c_char) = ferric_string_free;
-    let _: unsafe extern "C" fn(*mut FerricValue) = ferric_value_free;
-    let _: unsafe extern "C" fn(*mut FerricValue, usize) = ferric_value_array_free;
+    let _: unsafe extern "C" fn(*mut FerricValue) -> FerricError = ferric_value_free;
+    let _: unsafe extern "C" fn(*mut FerricValue, usize) -> FerricError = ferric_value_array_free;
 }
 
 // ---------------------------------------------------------------------------

@@ -846,8 +846,8 @@ ferric_engine_clear_action_diagnostics(engine);
 | Function | Purpose |
 |----------|---------|
 | `ferric_string_free` | Free a Ferric-allocated C string |
-| `ferric_value_free` | Free a `FerricValue` and its owned resources (recursive) |
-| `ferric_value_array_free` | Free an array of `FerricValue`s |
+| `ferric_value_free` | Free a `FerricValue` and its owned resources (recursive); returns `FERRIC_ERROR_INVALID_ARGUMENT` if any `value_type` tag is unknown (that value's payload is left untouched; known siblings and owned arrays are still freed) |
+| `ferric_value_array_free` | Free an array of `FerricValue`s; same unknown-tag contract as `ferric_value_free` |
 
 Borrowed pointers (from `ferric_engine_last_error`, `ferric_engine_get_output`)
 must **not** be freed by the caller and are valid only until the next FFI call
