@@ -2,12 +2,19 @@
 //!
 //! ## Thread Affinity Contract
 //!
-//! Every `ferric_engine_*` entry point validates that the calling thread
-//! matches the thread that created the engine. This check happens BEFORE
-//! any mutable borrow or state mutation.
+//! Runtime-facing `ferric_engine_*` entry points validate that the calling
+//! thread matches the thread that created the engine before projecting a
+//! reference to runtime state.
 //!
 //! - Thread violations return `FERRIC_ERROR_THREAD_VIOLATION` with a descriptive
 //!   message in the global error channel.
+//! - `ferric_engine_last_error_copy` provides synchronized, coherent snapshots
+//!   to any thread.
+//! - `ferric_engine_last_error` also skips affinity checks, but its returned
+//!   pointer must not be used while another borrowed read or engine free may
+//!   occur.
+//! - `ferric_engine_free_unchecked` deliberately skips affinity solely to
+//!   destroy the handle; it must not overlap any access to that engine.
 //!
 //! The internal `unsafe fn move_to_current_thread` is deliberately NOT
 //! exposed through the C API.
@@ -16,7 +23,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use std::ptr;
+use std::ptr::{self, NonNull};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
+use std::thread::ThreadId;
 
 use crate::types::{
     engine_config_from_ffi, ferric_to_value, value_to_ferric, FerricConfig, FerricFactType,
@@ -33,12 +43,52 @@ use ferric_runtime::{Engine, EngineConfig, InitError, RunLimit};
 
 /// Opaque engine handle exposed to C.
 ///
-/// Contains the Rust [`Engine`] plus per-engine error state.
+/// The runtime engine remains owner-thread-only. Per-engine error snapshots
+/// are stored separately so the two last-error accessors can safely read them
+/// from any thread.
+///
+/// Production accessors never construct a Rust reference to this whole
+/// structure. They project references to individual fields from the raw
+/// handle, which permits an owner-thread `&mut Engine` to coexist with a
+/// foreign-thread reference to the disjoint diagnostic mutex.
+///
 /// C code receives `*mut FerricEngine` as an opaque pointer.
 pub struct FerricEngine {
     pub(crate) engine: Engine,
-    pub(crate) error_state: EngineErrorState,
-    pub(crate) error_cstring: RefCell<Option<CString>>,
+    owner_thread: ThreadId,
+    call_active: AtomicBool,
+    diagnostics: Mutex<EngineDiagnostics>,
+}
+
+#[derive(Debug, Default)]
+struct EngineDiagnostics {
+    error_state: EngineErrorState,
+    borrowed_cstring: Option<CString>,
+}
+
+impl EngineDiagnostics {
+    fn new() -> Self {
+        Self {
+            error_state: EngineErrorState::new(),
+            borrowed_cstring: None,
+        }
+    }
+}
+
+impl FerricEngine {
+    fn new(engine: Engine) -> Self {
+        Self {
+            engine,
+            owner_thread: std::thread::current().id(),
+            call_active: AtomicBool::new(false),
+            diagnostics: Mutex::new(EngineDiagnostics::new()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_error_for_test(&self, message: String) {
+        lock_unpoisoned(&self.diagnostics).error_state.set(message);
+    }
 }
 
 thread_local! {
@@ -55,65 +105,152 @@ struct CachedOutputCString {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Validate a non-null engine pointer, returning a shared reference.
+/// Validate a non-null engine pointer without constructing a Rust reference.
 ///
-/// Sets global error on null pointer. Used for read-only operations
-/// and as the first step of the two-step borrow pattern.
-unsafe fn validate_engine_ptr<'a>(
-    engine: *const FerricEngine,
-) -> Result<&'a FerricEngine, FerricError> {
-    if engine.is_null() {
+/// A whole-handle reference would overlap owner-thread access to `engine` with
+/// foreign-thread diagnostic access. Callers must project only the field they
+/// need from the returned token.
+fn validate_engine_ptr(engine: *const FerricEngine) -> Result<NonNull<FerricEngine>, FerricError> {
+    NonNull::new(engine.cast_mut()).ok_or_else(|| {
         set_global_error("engine pointer is null".to_string());
-        return Err(FerricError::NullPointer);
-    }
-    Ok(&*engine)
+        FerricError::NullPointer
+    })
 }
 
-/// Validate a non-null engine pointer, returning a mutable reference.
-///
-/// Sets global error on null pointer. Used after thread-affinity check passes.
-unsafe fn validate_engine_ptr_mut<'a>(
-    engine: *mut FerricEngine,
-) -> Result<&'a mut FerricEngine, FerricError> {
-    if engine.is_null() {
-        set_global_error("engine pointer is null".to_string());
-        return Err(FerricError::NullPointer);
-    }
-    Ok(&mut *engine)
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Check thread affinity on the engine's inner runtime Engine.
+/// Project the immutable owner-thread field from an opaque handle.
 ///
-/// This is the canonical "step 1" of the two-step borrow pattern:
-/// obtain a shared reference, verify the thread, THEN proceed to mutable access.
-fn check_thread_affinity(handle: &FerricEngine) -> Result<(), FerricError> {
-    match handle.engine.check_thread_affinity() {
-        Ok(()) => Ok(()),
-        Err(ref err @ EngineError::WrongThread { .. }) => {
-            set_global_error(err.to_string());
-            Err(FerricError::ThreadViolation)
-        }
-        Err(ref err) => {
-            set_global_error(err.to_string());
-            Err(FerricError::InternalError)
+/// # Safety
+///
+/// `handle` must remain valid for the duration of the returned reference.
+unsafe fn owner_thread<'a>(handle: NonNull<FerricEngine>) -> &'a ThreadId {
+    &*std::ptr::addr_of!((*handle.as_ptr()).owner_thread)
+}
+
+/// Project the active-call flag from an opaque handle.
+///
+/// # Safety
+///
+/// `handle` must remain valid for the duration of the returned reference.
+unsafe fn call_active<'a>(handle: NonNull<FerricEngine>) -> &'a AtomicBool {
+    &*std::ptr::addr_of!((*handle.as_ptr()).call_active)
+}
+
+/// Project the synchronized diagnostic state from an opaque handle.
+///
+/// # Safety
+///
+/// `handle` must remain valid for the duration of the returned reference.
+unsafe fn diagnostics<'a>(handle: NonNull<FerricEngine>) -> &'a Mutex<EngineDiagnostics> {
+    &*std::ptr::addr_of!((*handle.as_ptr()).diagnostics)
+}
+
+/// Check thread affinity without touching the owner-thread-only runtime.
+///
+/// # Safety
+///
+/// `handle` must point to a live engine handle.
+unsafe fn check_thread_affinity(handle: NonNull<FerricEngine>) -> Result<(), FerricError> {
+    let creator = *owner_thread(handle);
+    let current = std::thread::current().id();
+    if current != creator {
+        let err = EngineError::WrongThread { creator, current };
+        set_global_error(err.to_string());
+        return Err(FerricError::ThreadViolation);
+    }
+    Ok(())
+}
+
+struct EngineCallGuard<'a> {
+    active: &'a AtomicBool,
+    release_on_drop: bool,
+}
+
+impl EngineCallGuard<'_> {
+    fn disarm(mut self) {
+        self.release_on_drop = false;
+    }
+}
+
+impl Drop for EngineCallGuard<'_> {
+    fn drop(&mut self) {
+        if self.release_on_drop {
+            self.active.store(false, Ordering::Release);
         }
     }
+}
+
+struct EngineWriteAccess<'a> {
+    engine: &'a mut Engine,
+    diagnostics: &'a Mutex<EngineDiagnostics>,
+    _guard: EngineCallGuard<'a>,
+}
+
+struct EngineReadAccess<'a> {
+    engine: &'a Engine,
+    _guard: EngineCallGuard<'a>,
+}
+
+/// Reject overlapping access to the owner-thread-only runtime.
+///
+/// This primarily protects against a host callback synchronously re-entering
+/// the same raw engine. Diagnostic-only access does not use this guard and is
+/// safe to perform reentrantly.
+///
+/// # Safety
+///
+/// `handle` must point to a live engine handle.
+unsafe fn enter_engine_call<'a>(
+    handle: NonNull<FerricEngine>,
+) -> Result<EngineCallGuard<'a>, FerricError> {
+    let active = call_active(handle);
+    if active
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        set_global_error(
+            "reentrant call on a raw engine is not supported; only per-engine error accessors may be called from a host callback"
+                .to_string(),
+        );
+        return Err(FerricError::InternalError);
+    }
+    Ok(EngineCallGuard {
+        active,
+        release_on_drop: true,
+    })
 }
 
 unsafe fn borrow_engine_mut<'a>(
     engine: *mut FerricEngine,
-) -> Result<&'a mut FerricEngine, FerricError> {
+) -> Result<EngineWriteAccess<'a>, FerricError> {
     let handle = validate_engine_ptr(engine)?;
     check_thread_affinity(handle)?;
-    validate_engine_ptr_mut(engine)
+    let guard = enter_engine_call(handle)?;
+    let runtime = &mut *std::ptr::addr_of_mut!((*handle.as_ptr()).engine);
+    let diagnostic_state = diagnostics(handle);
+    Ok(EngineWriteAccess {
+        engine: runtime,
+        diagnostics: diagnostic_state,
+        _guard: guard,
+    })
 }
 
 unsafe fn borrow_engine_checked<'a>(
     engine: *const FerricEngine,
-) -> Result<&'a FerricEngine, FerricError> {
+) -> Result<EngineReadAccess<'a>, FerricError> {
     let handle = validate_engine_ptr(engine)?;
     check_thread_affinity(handle)?;
-    Ok(handle)
+    let guard = enter_engine_call(handle)?;
+    let runtime = &*std::ptr::addr_of!((*handle.as_ptr()).engine);
+    Ok(EngineReadAccess {
+        engine: runtime,
+        _guard: guard,
+    })
 }
 
 unsafe fn c_str_to_str<'a>(ptr: *const c_char, label: &str) -> Result<&'a str, FerricError> {
@@ -129,20 +266,22 @@ unsafe fn c_str_to_str<'a>(ptr: *const c_char, label: &str) -> Result<&'a str, F
 }
 
 fn set_engine_error_message(
-    handle: &mut FerricEngine,
+    handle: &EngineWriteAccess<'_>,
     code: FerricError,
     message: String,
 ) -> FerricError {
-    handle.error_state.set(message.clone());
+    lock_unpoisoned(handle.diagnostics)
+        .error_state
+        .set(message.clone());
     set_global_error(message);
     code
 }
 
-fn set_engine_runtime_error(handle: &mut FerricEngine, err: &EngineError) -> FerricError {
+fn set_engine_runtime_error(handle: &EngineWriteAccess<'_>, err: &EngineError) -> FerricError {
     set_engine_error_message(handle, map_engine_error(err), err.to_string())
 }
 
-fn set_engine_load_error(handle: &mut FerricEngine, err: &LoadError) -> FerricError {
+fn set_engine_load_error(handle: &EngineWriteAccess<'_>, err: &LoadError) -> FerricError {
     set_engine_error_message(handle, map_load_error(err), err.to_string())
 }
 
@@ -237,12 +376,7 @@ pub unsafe extern "C" fn ferric_engine_new_with_config(
     };
 
     let engine = Engine::new(engine_config);
-    let handle = FerricEngine {
-        engine,
-        error_state: EngineErrorState::new(),
-        error_cstring: RefCell::new(None),
-    };
-    Box::into_raw(Box::new(handle))
+    Box::into_raw(Box::new(FerricEngine::new(engine)))
 }
 
 /// Free an engine handle.
@@ -260,10 +394,20 @@ pub unsafe extern "C" fn ferric_engine_free(engine: *mut FerricEngine) -> Ferric
     if engine.is_null() {
         return FerricError::Ok;
     }
-    let handle = &*engine;
+    let handle = match validate_engine_ptr(engine) {
+        Ok(handle) => handle,
+        Err(code) => return code,
+    };
     if let Err(code) = check_thread_affinity(handle) {
         return code;
     }
+    let guard = match enter_engine_call(handle) {
+        Ok(guard) => guard,
+        Err(code) => return code,
+    };
+    // The allocation is about to be destroyed, so the active flag must not be
+    // touched by the guard's destructor.
+    guard.disarm();
     drop(Box::from_raw(engine));
     FerricError::Ok
 }
@@ -295,10 +439,10 @@ pub unsafe extern "C" fn ferric_engine_load_string(
         Ok(_) => FerricError::Ok,
         Err(errors) => {
             if let Some(first) = errors.first() {
-                set_engine_load_error(handle, first)
+                set_engine_load_error(&handle, first)
             } else {
                 set_engine_error_message(
-                    handle,
+                    &handle,
                     FerricError::InternalError,
                     "internal error: load failed without diagnostics".to_string(),
                 )
@@ -309,26 +453,36 @@ pub unsafe extern "C" fn ferric_engine_load_string(
 
 /// Retrieve the last per-engine error message.
 ///
-/// Returns a pointer to a NUL-terminated string, or null if no error
-/// is stored. The pointer is valid until the next call on this engine.
+/// Returns a pointer to a NUL-terminated string, or null if no error is
+/// stored. This accessor may be called from any thread, including from a host
+/// callback.
+///
+/// The pointer is borrowed from the engine and may be invalidated by the next
+/// call to `ferric_engine_last_error` on the same engine or by freeing the
+/// engine. Do not dereference or otherwise use the pointer while another
+/// borrowed read or engine destruction may occur. Use
+/// `ferric_engine_last_error_copy` when pointer-use windows could overlap.
 ///
 /// # Safety
 ///
 /// - `engine` must be a valid engine pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_last_error(engine: *const FerricEngine) -> *const c_char {
-    // Deliberately skip thread-affinity check: reading the error message
-    // is a diagnostic operation that should always succeed.
+    // Deliberately skip thread-affinity and active-call checks. Error snapshots
+    // are synchronized separately and are safe to query reentrantly.
     let Ok(handle) = validate_engine_ptr(engine) else {
         return ptr::null();
     };
 
-    match handle.error_state.message() {
+    let mut state = lock_unpoisoned(diagnostics(handle));
+    let message = state.error_state.message().map(str::to_owned);
+    match message {
         Some(msg) => {
-            let cstring = CString::new(msg).unwrap_or_default();
-            let mut slot = handle.error_cstring.borrow_mut();
-            *slot = Some(cstring);
-            slot.as_ref().map_or(ptr::null(), |cs| cs.as_ptr())
+            state.borrowed_cstring = Some(CString::new(msg).unwrap_or_default());
+            state
+                .borrowed_cstring
+                .as_ref()
+                .map_or(ptr::null(), |cs| cs.as_ptr())
         }
         None => ptr::null(),
     }
@@ -337,8 +491,13 @@ pub unsafe extern "C" fn ferric_engine_last_error(engine: *const FerricEngine) -
 /// Copy the per-engine error message into a caller-provided buffer.
 ///
 /// Same contract as `ferric_last_error_global_copy` but reads from the
-/// per-engine error channel. Deliberately skips thread-affinity check
-/// (diagnostic operation).
+/// per-engine error channel. This accessor may be called concurrently from
+/// any thread and from a host callback. Each invocation observes and copies
+/// one coherent error snapshot.
+///
+/// A size query and a later copy are separate snapshots. If the error changes
+/// between those calls, the copy may return `BufferTooSmall` with the newer
+/// required size; callers should resize and retry.
 ///
 /// ## Contract
 ///
@@ -367,13 +526,14 @@ pub unsafe extern "C" fn ferric_engine_last_error_copy(
         return FerricError::InvalidArgument;
     }
     let handle = match validate_engine_ptr(engine) {
-        Ok(h) => h,
+        Ok(handle) => handle,
         Err(code) => {
             *out_len = 0;
             return code;
         }
     };
-    copy_error_to_buffer(handle.error_state.message(), buf, buf_len, out_len)
+    let state = lock_unpoisoned(diagnostics(handle));
+    copy_error_to_buffer(state.error_state.message(), buf, buf_len, out_len)
 }
 
 /// Clear the per-engine error state.
@@ -383,11 +543,14 @@ pub unsafe extern "C" fn ferric_engine_last_error_copy(
 /// - `engine` must be a valid engine pointer or null (null returns `NullPointer`).
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_clear_error(engine: *mut FerricEngine) -> FerricError {
-    let handle = match borrow_engine_mut(engine) {
-        Ok(h) => h,
+    let handle = match validate_engine_ptr(engine) {
+        Ok(handle) => handle,
         Err(code) => return code,
     };
-    handle.error_state.clear();
+    if let Err(code) = check_thread_affinity(handle) {
+        return code;
+    }
+    lock_unpoisoned(diagnostics(handle)).error_state.clear();
     FerricError::Ok
 }
 
@@ -405,7 +568,7 @@ pub unsafe extern "C" fn ferric_engine_reset(engine: *mut FerricEngine) -> Ferri
 
     match handle.engine.reset() {
         Ok(()) => FerricError::Ok,
-        Err(ref err) => set_engine_runtime_error(handle, err),
+        Err(ref err) => set_engine_runtime_error(&handle, err),
     }
 }
 
@@ -450,7 +613,7 @@ pub unsafe extern "C" fn ferric_engine_run(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_runtime_error(handle, err),
+        Err(ref err) => set_engine_runtime_error(&handle, err),
     }
 }
 
@@ -492,7 +655,7 @@ pub unsafe extern "C" fn ferric_engine_step(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_runtime_error(handle, err),
+        Err(ref err) => set_engine_runtime_error(&handle, err),
     }
 }
 
@@ -539,10 +702,10 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
         }
         Err(errors) => {
             if let Some(first) = errors.first() {
-                set_engine_load_error(handle, first)
+                set_engine_load_error(&handle, first)
             } else {
                 set_engine_error_message(
-                    handle,
+                    &handle,
                     FerricError::InternalError,
                     "internal error: load failed without diagnostics".to_string(),
                 )
@@ -572,7 +735,7 @@ pub unsafe extern "C" fn ferric_engine_retract(
 
     match handle.engine.retract(fid) {
         Ok(()) => FerricError::Ok,
-        Err(ref err) => set_engine_runtime_error(handle, err),
+        Err(ref err) => set_engine_runtime_error(&handle, err),
     }
 }
 
@@ -727,7 +890,7 @@ pub unsafe extern "C" fn ferric_engine_fact_count(
     engine: *const FerricEngine,
     out_count: *mut usize,
 ) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
+    let handle = match borrow_engine_checked(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
@@ -760,7 +923,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field_count(
     fact_id: u64,
     out_count: *mut usize,
 ) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
+    let handle = match borrow_engine_checked(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
@@ -809,7 +972,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field(
     index: usize,
     out_value: *mut FerricValue,
 ) -> FerricError {
-    let handle = match validate_engine_ptr(engine) {
+    let handle = match borrow_engine_checked(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
@@ -829,7 +992,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field(
                 Fact::Template(t) => t.slots.get(index),
             };
             if let Some(val) = field_value {
-                *out_value = value_to_ferric(val, &handle.engine);
+                *out_value = value_to_ferric(val, handle.engine);
                 FerricError::Ok
             } else {
                 set_global_error(format!("field index {index} out of bounds"));
@@ -880,7 +1043,7 @@ pub unsafe extern "C" fn ferric_engine_get_global(
     };
 
     if let Some(val) = handle.engine.get_global(name_str) {
-        *out_value = value_to_ferric(val, &handle.engine);
+        *out_value = value_to_ferric(val, handle.engine);
         FerricError::Ok
     } else {
         set_global_error(format!("global variable not found: {name_str}"));
@@ -1178,11 +1341,11 @@ pub unsafe extern "C" fn ferric_engine_assert_ordered(
     let mut values = Vec::with_capacity(field_count);
     for i in 0..field_count {
         let fv = &*fields.add(i);
-        match ferric_to_value(fv, &mut handle.engine) {
+        match ferric_to_value(fv, handle.engine) {
             Ok(v) => values.push(v),
             Err(msg) => {
                 return set_engine_error_message(
-                    handle,
+                    &handle,
                     FerricError::InvalidArgument,
                     format!("field {i}: {msg}"),
                 );
@@ -1197,7 +1360,7 @@ pub unsafe extern "C" fn ferric_engine_assert_ordered(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_runtime_error(handle, err),
+        Err(ref err) => set_engine_runtime_error(&handle, err),
     }
 }
 
@@ -1773,14 +1936,7 @@ pub unsafe extern "C" fn ferric_engine_new_with_source_config(
     };
 
     match Engine::with_rules_config(source_str, engine_config) {
-        Ok(engine) => {
-            let handle = FerricEngine {
-                engine,
-                error_state: EngineErrorState::new(),
-                error_cstring: RefCell::new(None),
-            };
-            Box::into_raw(Box::new(handle))
-        }
+        Ok(engine) => Box::into_raw(Box::new(FerricEngine::new(engine))),
         Err(err) => {
             set_global_error(match err {
                 InitError::Load(ref errors) => errors
@@ -1857,7 +2013,7 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_runtime_error(handle, err),
+        Err(ref err) => set_engine_runtime_error(&handle, err),
     }
 }
 
@@ -1927,11 +2083,11 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
     let mut values = Vec::with_capacity(count);
     for i in 0..count {
         let fv = &*slot_values.add(i);
-        match ferric_to_value(fv, &mut handle.engine) {
+        match ferric_to_value(fv, handle.engine) {
             Ok(v) => values.push(v),
             Err(msg) => {
                 return set_engine_error_message(
-                    handle,
+                    &handle,
                     FerricError::InvalidArgument,
                     format!("slot_values[{i}]: {msg}"),
                 );
@@ -1948,7 +2104,7 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_runtime_error(handle, err),
+        Err(ref err) => set_engine_runtime_error(&handle, err),
     }
 }
 
@@ -1997,7 +2153,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_slot_by_name(
 
     match handle.engine.get_fact_slot_by_name(fid, name_str) {
         Ok(value) => {
-            *out_value = value_to_ferric(value, &handle.engine);
+            *out_value = value_to_ferric(value, handle.engine);
             FerricError::Ok
         }
         Err(ref err) => set_engine_error_global(err),
@@ -2026,6 +2182,15 @@ pub unsafe extern "C" fn ferric_engine_free_unchecked(engine: *mut FerricEngine)
     if engine.is_null() {
         return FerricError::Ok;
     }
+    let handle = match validate_engine_ptr(engine) {
+        Ok(handle) => handle,
+        Err(code) => return code,
+    };
+    let guard = match enter_engine_call(handle) {
+        Ok(guard) => guard,
+        Err(code) => return code,
+    };
+    guard.disarm();
     drop(Box::from_raw(engine));
     FerricError::Ok
 }
@@ -2086,6 +2251,10 @@ impl FerricSerializationFormat {
 ///
 /// Must return a pointer to at least `size` writable bytes, or null to
 /// signal allocation failure.
+///
+/// The callback may query the same raw engine's last-error channel. Other
+/// same-engine runtime calls are rejected with `InternalError` while
+/// serialization is active, and the callback must not free the engine.
 #[cfg(feature = "serde")]
 pub type FerricAllocFn =
     Option<unsafe extern "C" fn(size: usize, context: *mut std::ffi::c_void) -> *mut u8>;
@@ -2170,13 +2339,7 @@ unsafe fn deserialize_engine_impl(
         }
     };
 
-    let handle = FerricEngine {
-        engine,
-        error_state: EngineErrorState::new(),
-        error_cstring: RefCell::new(None),
-    };
-
-    *out_engine = Box::into_raw(Box::new(handle));
+    *out_engine = Box::into_raw(Box::new(FerricEngine::new(engine)));
     FerricError::Ok
 }
 

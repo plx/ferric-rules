@@ -120,8 +120,10 @@ C-ABI functions with opaque `FerricEngine*` handle:
 - `ferric_last_error_global` -- thread-local error (borrowed pointer, valid until next Ferric call)
 - `ferric_last_error_global_copy` -- thread-local error (copy-to-buffer)
 - `ferric_clear_error_global` -- clear thread-local error
-- `ferric_engine_last_error` -- per-engine error (borrowed pointer)
-- `ferric_engine_last_error_copy` -- per-engine error (copy-to-buffer)
+- `ferric_engine_last_error` -- synchronized per-engine error read (borrowed
+  pointer; serialize pointer use against another borrowed read)
+- `ferric_engine_last_error_copy` -- concurrent-safe coherent per-engine error
+  snapshot (copy-to-buffer)
 - `ferric_engine_clear_error` -- clear per-engine error
 
 **Action Diagnostics:**
@@ -136,9 +138,16 @@ C-ABI functions with opaque `FerricEngine*` handle:
 
 **Thread Affinity Contract:**
 - Engine instances are thread-affine (`!Send + !Sync`).
-- Every `ferric_engine_*` entry point checks thread affinity before mutation.
+- Runtime operations check thread affinity before accessing engine state.
 - Mismatch returns `FERRIC_ERROR_THREAD_VIOLATION` with no state modified.
-- Diagnostic read exceptions: `ferric_engine_last_error` and `ferric_engine_last_error_copy`.
+- `ferric_engine_last_error_copy` is a synchronized, coherent snapshot API
+  callable concurrently from any thread.
+- `ferric_engine_last_error` is callable from any thread, but borrowed-pointer
+  use must not overlap another borrowed read or engine destruction.
+- `ferric_engine_free_unchecked` skips affinity solely for destruction and must
+  not overlap any engine access.
+- Same-engine runtime reentry from host callbacks fails deterministically;
+  last-error access remains callback-safe.
 
 **FFI Panic Policy:**
 - Shipped FFI artifacts use `ffi-dev` / `ffi-release` profiles with `panic = "abort"`.

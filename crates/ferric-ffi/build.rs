@@ -8,16 +8,28 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * THREAD SAFETY
  * ============================================================
  *
- * Engine handles (FerricEngine*) are bound to the thread that
- * created them. Every ferric_engine_* function validates thread
- * affinity before any state mutation.
+ * Raw engine handles (FerricEngine*) are bound to the thread that
+ * created them. Ordinary ferric_engine_* runtime accessors validate
+ * thread affinity before accessing runtime state.
  *
  * - Creating thread: all operations succeed normally.
- * - Other threads: operations return FERRIC_ERROR_THREAD_VIOLATION
- *   with a descriptive message in the global error channel.
- * - Exception: ferric_engine_last_error() and
- *   ferric_engine_last_error_copy() skip thread checks
- *   (diagnostic access should always work).
+ * - Other threads: ordinary runtime operations return
+ *   FERRIC_ERROR_THREAD_VIOLATION with a descriptive message in the
+ *   global error channel.
+ * - ferric_engine_last_error_copy() is synchronized and may run
+ *   concurrently from any thread. Each call copies one coherent
+ *   error snapshot.
+ * - ferric_engine_last_error() may be called from any thread, but
+ *   the returned borrowed pointer must not be used while another
+ *   borrowed read or engine destruction may occur. Use the copy API
+ *   when pointer-use windows could overlap.
+ * - ferric_engine_free_unchecked() is a destruction-only escape
+ *   hatch that deliberately skips affinity. Like all destruction,
+ *   it must not overlap any access to that engine.
+ * - Neither diagnostic reader may race with engine destruction.
+ * - Same-engine runtime reentry from a host callback fails with
+ *   FERRIC_ERROR_INTERNAL_ERROR. The last-error readers remain safe
+ *   to call from such callbacks.
  *
  * The global error functions (ferric_last_error_global, etc.)
  * use thread-local storage and are safe to call from any thread.
@@ -29,10 +41,12 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * 1. Engine handles: Caller owns the handle returned by
  *    ferric_engine_new(). Must free with ferric_engine_free().
  *
- * 2. Borrowed string pointers: Pointers returned by
- *    ferric_last_error_global() and ferric_engine_last_error()
- *    are valid until the next FFI call that may modify that
- *    error channel. Do NOT free these pointers.
+ * 2. Borrowed error pointers: ferric_last_error_global() remains
+ *    valid until the next call that may modify that thread's global
+ *    error channel. ferric_engine_last_error() remains valid until
+ *    the next borrowed read on that engine or engine destruction;
+ *    error writers and the copy API do not invalidate it. Do NOT
+ *    free either pointer.
  *
  * 3. Owned string pointers: String fields in FerricValue
  *    (string_ptr for Symbol/String types) are heap-allocated.

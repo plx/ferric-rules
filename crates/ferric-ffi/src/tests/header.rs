@@ -28,6 +28,13 @@ fn read_ci_workflow() -> String {
         .unwrap_or_else(|_| panic!("CI workflow not found at {}", workflow_path.display()))
 }
 
+fn read_tsan_harness() -> String {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script_path = crate_dir.join("../../scripts/ffi-tsan-harness.sh");
+    std::fs::read_to_string(&script_path)
+        .unwrap_or_else(|_| panic!("TSan harness not found at {}", script_path.display()))
+}
+
 #[test]
 fn header_has_include_guard() {
     let header = read_committed_header();
@@ -47,6 +54,26 @@ fn header_has_thread_safety_banner() {
     assert!(
         header.contains("FERRIC_ERROR_THREAD_VIOLATION"),
         "Thread-safety section must mention FERRIC_ERROR_THREAD_VIOLATION"
+    );
+    assert!(
+        header.contains("ferric_engine_last_error_copy() is synchronized"),
+        "Thread-safety section must promise synchronized owned snapshots"
+    );
+    assert!(
+        header.contains("returned borrowed pointer must not be used while another"),
+        "Thread-safety section must constrain borrowed-pointer use"
+    );
+    assert!(
+        header.contains("ferric_engine_free_unchecked() is a destruction-only escape"),
+        "Thread-safety section must document unchecked destruction"
+    );
+    assert!(
+        header.contains("Neither diagnostic reader may race with engine destruction"),
+        "Thread-safety section must forbid concurrent engine destruction"
+    );
+    assert!(
+        header.contains("Same-engine runtime reentry from a host callback fails"),
+        "Thread-safety section must document deterministic reentry rejection"
     );
 }
 
@@ -139,6 +166,37 @@ fn ci_checks_both_committed_headers_after_generation() {
         build_position < check_position,
         "CI must generate headers before checking them for drift"
     );
+}
+
+#[test]
+fn ci_runs_mixed_language_thread_sanitizer_harness() {
+    let workflow = read_ci_workflow();
+    assert!(
+        workflow.contains("FFI Diagnostics (ThreadSanitizer)"),
+        "CI must contain the raw-engine diagnostic TSan job"
+    );
+    assert!(
+        workflow.contains("just ffi-tsan-harness"),
+        "CI must run the mixed Rust/C TSan harness"
+    );
+}
+
+#[test]
+fn tsan_harness_instruments_rust_std_and_c() {
+    let script = read_tsan_harness();
+    for required in [
+        "-Zsanitizer=thread",
+        "-Zexternal-clangrt",
+        "-Zbuild-std=std,panic_abort",
+        "--crate-type staticlib",
+        "-fsanitize=thread",
+        "nm -u",
+    ] {
+        assert!(
+            script.contains(required),
+            "TSan harness is missing required mixed-language instrumentation: {required}"
+        );
+    }
 }
 
 #[test]

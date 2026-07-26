@@ -43,6 +43,9 @@ mod build_matrix;
 mod diagnostic_parity;
 
 #[cfg(test)]
+mod diagnostic_concurrency;
+
+#[cfg(test)]
 mod contract_lock;
 
 #[cfg(test)]

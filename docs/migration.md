@@ -163,7 +163,10 @@ Ferric uses byte-equality comparison with no Unicode normalization:
 If your application embeds CLIPS via its C API, Ferric provides a similar
 C FFI surface. Key differences:
 
-- Engine handles are thread-affine (must be used on the creating thread).
+- Engine runtime operations are thread-affine (must be used on the creating
+  thread). Per-engine last-error copies are synchronized across threads;
+  borrowed-pointer use must not overlap another borrowed read or destruction.
+  The destruction-only unchecked free skips affinity.
 - Error handling uses return codes + error channels (per-engine and global).
 - Include `ferric.h` and link against the Ferric shared library.
 
