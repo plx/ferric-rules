@@ -222,7 +222,8 @@ typedef enum FerricFactType {
 typedef enum FerricHaltReason {
     FERRIC_HALT_REASON_AGENDA_EMPTY = 0,
     FERRIC_HALT_REASON_LIMIT_REACHED = 1,
-    FERRIC_HALT_REASON_HALT_REQUESTED = 2
+    FERRIC_HALT_REASON_HALT_REQUESTED = 2,
+    FERRIC_HALT_REASON_ACTION_ERROR = 3
 } FerricHaltReason;
 
 // C-facing string-encoding configuration for `FerricConfig`.
@@ -579,8 +580,9 @@ const char * FERRIC_NULL_TERMINATED ferric_engine_get_output(const struct Ferric
 
 // Get the number of action diagnostics captured during recent execution.
 //
-// Diagnostics are collected by `run`/`step` when non-fatal action errors occur
-// (for example module visibility failures surfaced as warnings).
+// Diagnostics are collected by `run`/`step` when action evaluation fails.
+// Such a failure stops the current activation and `run`, but does not
+// invalidate the engine.
 //
 // # Safety
 //
@@ -1798,6 +1800,8 @@ FERRIC_STATIC_ASSERT(FERRIC_HALT_REASON_LIMIT_REACHED == 1,
                      "FERRIC_HALT_REASON_LIMIT_REACHED must be 1");
 FERRIC_STATIC_ASSERT(FERRIC_HALT_REASON_HALT_REQUESTED == 2,
                      "FERRIC_HALT_REASON_HALT_REQUESTED must be 2");
+FERRIC_STATIC_ASSERT(FERRIC_HALT_REASON_ACTION_ERROR == 3,
+                     "FERRIC_HALT_REASON_ACTION_ERROR must be 3");
 
 /* FerricPinnedAutoreleasePolicy: stable numeric values. */
 FERRIC_STATIC_ASSERT(FERRIC_PINNED_AUTORELEASE_POLICY_NONE == 0,

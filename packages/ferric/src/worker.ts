@@ -114,9 +114,8 @@ function batchedRun(
     const result = activeEngine.run(batchLimit);
     totalFired += result.rulesFired;
 
-    // HaltReason: 0 = AgendaEmpty, 1 = LimitReached, 2 = HaltRequested
+    // Any terminal reason (AgendaEmpty, HaltRequested, or ActionError) stops batching.
     if (result.haltReason !== 1 /* LimitReached */) {
-      // Agenda empty or halt requested — we're done.
       return { rulesFired: totalFired, haltReason: result.haltReason };
     }
 

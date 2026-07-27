@@ -14,15 +14,15 @@ type ErrorCode = C.enum_FerricError
 
 // ErrorCode values mirror C.FERRIC_ERROR_*.
 const (
-	ErrOK              ErrorCode = C.FERRIC_ERROR_OK
-	ErrNullPointer     ErrorCode = C.FERRIC_ERROR_NULL_POINTER
-	ErrThreadViolation ErrorCode = C.FERRIC_ERROR_THREAD_VIOLATION
-	ErrNotFound        ErrorCode = C.FERRIC_ERROR_NOT_FOUND
-	ErrParseError      ErrorCode = C.FERRIC_ERROR_PARSE_ERROR
-	ErrCompileError    ErrorCode = C.FERRIC_ERROR_COMPILE_ERROR
-	ErrRuntimeError    ErrorCode = C.FERRIC_ERROR_RUNTIME_ERROR
-	ErrIOError         ErrorCode = C.FERRIC_ERROR_IO_ERROR
-	ErrBufferTooSmall  ErrorCode = C.FERRIC_ERROR_BUFFER_TOO_SMALL
+	ErrOK                 ErrorCode = C.FERRIC_ERROR_OK
+	ErrNullPointer        ErrorCode = C.FERRIC_ERROR_NULL_POINTER
+	ErrThreadViolation    ErrorCode = C.FERRIC_ERROR_THREAD_VIOLATION
+	ErrNotFound           ErrorCode = C.FERRIC_ERROR_NOT_FOUND
+	ErrParseError         ErrorCode = C.FERRIC_ERROR_PARSE_ERROR
+	ErrCompileError       ErrorCode = C.FERRIC_ERROR_COMPILE_ERROR
+	ErrRuntimeError       ErrorCode = C.FERRIC_ERROR_RUNTIME_ERROR
+	ErrIOError            ErrorCode = C.FERRIC_ERROR_IO_ERROR
+	ErrBufferTooSmall     ErrorCode = C.FERRIC_ERROR_BUFFER_TOO_SMALL
 	ErrInvalidArgument    ErrorCode = C.FERRIC_ERROR_INVALID_ARGUMENT
 	ErrSerializationError ErrorCode = C.FERRIC_ERROR_SERIALIZATION_ERROR
 	ErrInternalError      ErrorCode = C.FERRIC_ERROR_INTERNAL_ERROR
@@ -60,6 +60,7 @@ const (
 	HaltReasonAgendaEmpty   HaltReason = C.FERRIC_HALT_REASON_AGENDA_EMPTY
 	HaltReasonLimitReached  HaltReason = C.FERRIC_HALT_REASON_LIMIT_REACHED
 	HaltReasonHaltRequested HaltReason = C.FERRIC_HALT_REASON_HALT_REQUESTED
+	HaltReasonActionError   HaltReason = C.FERRIC_HALT_REASON_ACTION_ERROR
 )
 
 // StringEncoding mirrors the C FerricStringEncoding enum.
@@ -88,11 +89,11 @@ type SerializationFormat = C.enum_FerricSerializationFormat
 
 // SerializationFormat values mirror C.FERRIC_SERIALIZATION_FORMAT_*.
 const (
-	FormatBincode    SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_BINCODE
-	FormatJSON       SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_JSON
-	FormatCBOR       SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_CBOR
+	FormatBincode     SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_BINCODE
+	FormatJSON        SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_JSON
+	FormatCBOR        SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_CBOR
 	FormatMessagePack SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK
-	FormatPostcard   SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_POSTCARD
+	FormatPostcard    SerializationFormat = C.FERRIC_SERIALIZATION_FORMAT_POSTCARD
 )
 
 // Config mirrors the C FerricConfig struct.

@@ -588,6 +588,70 @@ fn test_compat_return_argument_error_preserves_diagnostic_class() {
     ));
 }
 
+#[test]
+fn test_compat_rhs_error_stops_run_and_retains_later_activation() {
+    // Pinned CLIPS 6.30 behavior: an RHS evaluation error consumes the
+    // failing activation, stops its remaining actions and the current run,
+    // and leaves lower-priority activations available to a later run.
+    let source = r#"
+(deffacts startup (trigger))
+
+(defrule failing
+    (declare (salience 10))
+    (trigger)
+    =>
+    (printout t "before-error|" crlf)
+    (/ 1 0)
+    (printout t "after-error|" crlf)
+    (assert (rhs-after)))
+
+(defrule later
+    (declare (salience 0))
+    (trigger)
+    =>
+    (printout t "later-activation|" crlf)
+    (assert (later-ran)))
+"#;
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine.load_str(source).expect("load RHS error fixture");
+    engine.reset().expect("reset RHS error fixture");
+
+    let first = engine.run(RunLimit::Unlimited).expect("first run");
+    assert_eq!(first.rules_fired, 1);
+    assert_eq!(first.halt_reason, HaltReason::ActionError);
+    assert_eq!(engine.get_output("t").unwrap_or(""), "before-error|\n");
+    assert!(engine
+        .find_facts("rhs-after")
+        .expect("rhs-after facts")
+        .is_empty());
+    assert!(engine
+        .find_facts("later-ran")
+        .expect("later-ran facts")
+        .is_empty());
+    assert_eq!(engine.agenda_len(), 1);
+    assert!(!engine.is_halted());
+    assert!(matches!(
+        engine.action_diagnostics(),
+        [ActionError::Evaluator(EvalError::DivisionByZero { .. })]
+    ));
+
+    let second = engine.run(RunLimit::Unlimited).expect("second run");
+    assert_eq!(second.rules_fired, 1);
+    assert_eq!(second.halt_reason, HaltReason::AgendaEmpty);
+    assert_eq!(
+        engine.get_output("t").unwrap_or(""),
+        "before-error|\nlater-activation|\n"
+    );
+    assert_eq!(
+        engine
+            .find_facts("later-ran")
+            .expect("later-ran facts")
+            .len(),
+        1
+    );
+    assert!(engine.action_diagnostics().is_empty());
+}
+
 // ===========================================================================
 // Stdlib domain compatibility tests
 // ===========================================================================

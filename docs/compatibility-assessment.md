@@ -22,10 +22,12 @@ Each declaration binds:
   and any selected focus-stack or global state; and
 - the fixture-specific normalizers that are allowed.
 
-Oracle v1 supports an unlimited run, `agenda-empty` or `halt-requested`
-completion, and exactly the `stdout` and `stderr` semantic channels. Firing
-count must agree with the number of firing names when both are declared.
-Unsupported declarations are invalid configuration, not engine divergence.
+Oracle v1 supports an unlimited run and `agenda-empty`, `halt-requested`, or
+`action-error` completion, plus exactly the `stdout` and `stderr` semantic
+channels. The projection normalizes the pinned CLIPS adapter's native `error`
+spelling to `action-error`. Firing count must agree with the number of firing
+names when both are declared. Unsupported declarations are invalid
+configuration, not engine divergence.
 
 The only normalizers are:
 

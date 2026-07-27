@@ -1612,3 +1612,28 @@ fn run_ex_halt_requested() {
         ferric_engine_free(engine);
     }
 }
+
+#[test]
+fn run_ex_action_error() {
+    // An action evaluation error stops the current run and remains available
+    // through the action-diagnostic API.
+    unsafe {
+        let engine = ferric_engine_new();
+        let source = CString::new("(defrule fail-now => (/ 1 0) (assert (must-not-run)))").unwrap();
+        assert_eq!(
+            ferric_engine_load_string(engine, source.as_ptr()),
+            FerricError::Ok
+        );
+        ferric_engine_reset(engine);
+
+        let mut fired: u64 = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        let result = ferric_engine_run_ex(engine, -1, &mut fired, &mut reason);
+
+        assert_eq!(result, FerricError::Ok);
+        assert_eq!(fired, 1);
+        assert_eq!(reason, FerricHaltReason::ActionError);
+
+        ferric_engine_free(engine);
+    }
+}

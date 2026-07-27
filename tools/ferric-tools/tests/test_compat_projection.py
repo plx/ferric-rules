@@ -203,10 +203,24 @@ def test_seed_ordered_result_projects_to_equivalent_non_vacuous_evidence():
     )
     assert ferric["facts"][0]["origin"] == clips["facts"][0]["origin"] == "fixture"
     assert ferric["firings"] == [{"rule": "counted-firing-1", "origin": "fixture"}]
+
+
+def test_action_error_halt_reason_is_canonical_across_adapters():
+    ferric_raw = _raw_observation("ferric")
+    ferric_raw["run"]["halt_reason"] = "action-error"
+    clips_raw = _raw_observation("clips")
+    clips_raw["run"]["halt_reason"] = "error"
+
+    ferric = project_ferric_observation(ferric_raw, harnessed=False)
+    clips = project_clips_observation(clips_raw, harnessed=False)
+
+    assert ferric["run"]["halt_reason"] == clips["run"]["halt_reason"] == "action-error"
     assert clips["firings"] == [{"rule": "counted-firing-1", "origin": "fixture"}]
 
+    declaration = _declaration()
+    declaration["expectations"]["run"]["halt_reason"] = "action-error"
     evaluation = evaluate_oracle(
-        _declaration(),
+        declaration,
         ferric,
         clips,
         expected_source_sha256=SOURCE_DIGEST,

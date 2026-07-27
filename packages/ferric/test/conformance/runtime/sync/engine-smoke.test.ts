@@ -130,3 +130,19 @@ test("G-003 basic engine run smoke test", () => {
   assert.ok(output?.includes("hello from ferric"));
   e.close();
 });
+
+test("action evaluation error stops the current run", () => {
+  const e = new Engine();
+  e.load(`
+    (defrule failing
+      =>
+      (/ 1 0)
+      (assert (must-not-run)))
+  `);
+  e.reset();
+  const result = e.run();
+  assert.strictEqual(result.rulesFired, 1);
+  assert.strictEqual(result.haltReason, HaltReason.ActionError);
+  assert.strictEqual(e.diagnostics.length, 1);
+  e.close();
+});

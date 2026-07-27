@@ -461,7 +461,7 @@ impl PyEngine {
         })
     }
 
-    /// Non-fatal action diagnostics from the most recent run/step.
+    /// Action evaluation diagnostics from the most recent run/step.
     #[getter]
     fn diagnostics(&self) -> PyResult<Vec<String>> {
         self.with_engine(|engine| {

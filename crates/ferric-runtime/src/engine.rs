@@ -26,6 +26,13 @@ use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
 use crate::tracing_support::{ferric_event, ferric_span};
 
+fn run_result(rules_fired: usize, halt_reason: HaltReason) -> RunResult {
+    RunResult {
+        rules_fired,
+        halt_reason,
+    }
+}
+
 /// Dense indexed storage for per-rule data, keyed by `RuleId`.
 ///
 /// This uses a `Vec<Option<T>>` instead of a `HashMap` because `RuleId`s are
@@ -665,20 +672,21 @@ impl Engine {
 
     /// Execute RHS actions for a rule activation.
     ///
-    /// Returns `(logically_fired, reset_requested, clear_requested)`.
+    /// Returns `(logically_fired, reset_requested, clear_requested, action_error)`.
     /// - `logically_fired` is `true` if all test CEs passed and actions were executed.
     /// - `reset_requested` is `true` if a `(reset)` action was executed in the RHS.
     /// - `clear_requested` is `true` if a `(clear)` action was executed in the RHS.
+    /// - `action_error` is `true` if evaluation produced an action diagnostic.
     fn execute_activation_actions(
         &mut self,
         rule_id: RuleId,
         token_id: ferric_core::token::TokenId,
-    ) -> (bool, bool, bool) {
+    ) -> (bool, bool, bool, bool) {
         ferric_span!(debug_span, "fire_rule", rule = rule_id.0);
         let Some(token) = self.rete.token_store.get(token_id).cloned() else {
             // No token — treat as not fired.
             ferric_event!(debug, rule = rule_id.0, token = ?token_id, "activation_missing_token");
-            return (false, false, false);
+            return (false, false, false, false);
         };
 
         // Clone the handle so we can pass both this rule and the full map to
@@ -686,7 +694,7 @@ impl Engine {
         let Some(info) = rule_index_get(&self.rule_info, rule_id).cloned() else {
             // No compiled rule info — treat as not fired.
             ferric_event!(debug, rule = rule_id.0, "activation_missing_rule_info");
-            return (false, false, false);
+            return (false, false, false, false);
         };
 
         let current_module = rule_index_get(&self.rule_modules, rule_id)
@@ -725,8 +733,9 @@ impl Engine {
             focus_requests = focus_requests.len(),
             "activation_actions_complete"
         );
+        let action_error = !errors.is_empty();
         self.action_diagnostics.extend(errors);
-        (fired, reset_requested, clear_requested)
+        (fired, reset_requested, clear_requested, action_error)
     }
 
     /// Transfer ownership of this engine to the current thread.
@@ -790,13 +799,13 @@ impl Engine {
             token_id: activation.token,
         };
 
-        // Execute actions (errors are currently silently ignored).
-        // The boolean return indicates whether test CEs passed, but step()
-        // always returns Some(fired) to indicate an activation was processed.
-        let (logically_fired, reset_requested, clear_requested) =
+        // Execute actions. Diagnostics remain available through
+        // action_diagnostics(), while step() returns Some(fired) to indicate
+        // that the activation was processed even when action evaluation fails.
+        let (logically_fired, reset_requested, clear_requested, action_error) =
             self.execute_activation_actions(activation.rule, activation.token);
         #[cfg(not(feature = "tracing"))]
-        let _ = logically_fired;
+        let _ = (logically_fired, action_error);
         ferric_event!(
             debug,
             rule = activation.rule.0,
@@ -804,6 +813,7 @@ impl Engine {
             logically_fired,
             reset_requested,
             clear_requested,
+            action_error,
             "engine_step_activation_processed"
         );
 
@@ -819,7 +829,7 @@ impl Engine {
     }
 
     /// Run the engine, firing rules until the agenda is empty, the limit is
-    /// reached, or halt is requested.
+    /// reached, halt is requested, or an activation reports an action error.
     ///
     /// Clears any previous halt request before starting.
     ///
@@ -879,10 +889,7 @@ impl Engine {
                     halt_reason = "halt_requested",
                     "engine_run_complete"
                 );
-                return Ok(RunResult {
-                    rules_fired,
-                    halt_reason: HaltReason::HaltRequested,
-                });
+                return Ok(run_result(rules_fired, HaltReason::HaltRequested));
             }
 
             // Focus-aware activation selection preserves the final baseline
@@ -894,13 +901,10 @@ impl Engine {
                     halt_reason = "agenda_empty",
                     "engine_run_complete"
                 );
-                return Ok(RunResult {
-                    rules_fired,
-                    halt_reason: HaltReason::AgendaEmpty,
-                });
+                return Ok(run_result(rules_fired, HaltReason::AgendaEmpty));
             };
 
-            let (logically_fired, reset_requested, clear_requested) =
+            let (logically_fired, reset_requested, clear_requested, action_error) =
                 self.execute_activation_actions(activation.rule, activation.token);
 
             if logically_fired {
@@ -913,9 +917,20 @@ impl Engine {
                 logically_fired,
                 reset_requested,
                 clear_requested,
+                action_error,
                 rules_fired,
                 "engine_run_activation_processed"
             );
+
+            if action_error {
+                ferric_event!(
+                    info,
+                    rules_fired,
+                    halt_reason = "action_error",
+                    "engine_run_complete"
+                );
+                return Ok(run_result(rules_fired, HaltReason::ActionError));
+            }
 
             if clear_requested {
                 self.clear();
@@ -925,10 +940,7 @@ impl Engine {
                     halt_reason = "clear_requested",
                     "engine_run_complete"
                 );
-                return Ok(RunResult {
-                    rules_fired,
-                    halt_reason: HaltReason::HaltRequested,
-                });
+                return Ok(run_result(rules_fired, HaltReason::HaltRequested));
             }
 
             if reset_requested {
@@ -941,10 +953,7 @@ impl Engine {
                     halt_reason = "reset_requested",
                     "engine_run_complete"
                 );
-                return Ok(RunResult {
-                    rules_fired,
-                    halt_reason: HaltReason::HaltRequested,
-                });
+                return Ok(run_result(rules_fired, HaltReason::HaltRequested));
             }
         }
 
@@ -954,10 +963,7 @@ impl Engine {
             halt_reason = "limit_reached",
             "engine_run_complete"
         );
-        Ok(RunResult {
-            rules_fired,
-            halt_reason: HaltReason::LimitReached,
-        })
+        Ok(run_result(rules_fired, HaltReason::LimitReached))
     }
 
     /// Request that the engine stop execution after the current rule completes.

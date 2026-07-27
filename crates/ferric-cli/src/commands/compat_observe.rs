@@ -276,6 +276,7 @@ fn capture_state(engine: &Engine, run_result: Option<RunResult>) -> Result<Captu
             HaltReason::AgendaEmpty => HaltReasonObservation::AgendaEmpty,
             HaltReason::LimitReached => HaltReasonObservation::LimitReached,
             HaltReason::HaltRequested => HaltReasonObservation::HaltRequested,
+            HaltReason::ActionError => HaltReasonObservation::ActionError,
         },
         agenda_size: engine.agenda_len(),
         halted: engine.is_halted(),
@@ -576,6 +577,7 @@ enum HaltReasonObservation {
     AgendaEmpty,
     LimitReached,
     HaltRequested,
+    ActionError,
 }
 
 #[derive(Serialize)]

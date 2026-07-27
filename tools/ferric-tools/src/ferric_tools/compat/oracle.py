@@ -38,7 +38,7 @@ _HALT_REASONS = frozenset(
         "agenda-empty",
         "limit-reached",
         "halt-requested",
-        "error",
+        "action-error",
         "not-run",
     }
 )
@@ -639,10 +639,10 @@ def _expectations(raw: object, *, field: str) -> Expectations:
             f"{field}.run.limit",
             "oracle v1 supports only an unlimited run",
         )
-    if run.halt_reason not in {"agenda-empty", "halt-requested"}:
+    if run.halt_reason not in {"agenda-empty", "halt-requested", "action-error"}:
         _fail(
             f"{field}.run.halt_reason",
-            "oracle v1 supports only agenda-empty or halt-requested completion",
+            "oracle v1 supports only agenda-empty, halt-requested, or action-error completion",
         )
     return Expectations(
         phase=_string(expectations_object["phase"], field=f"{field}.phase"),

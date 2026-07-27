@@ -165,6 +165,215 @@ fn qualified_function_call_unknown_module() {
 }
 
 #[test]
+fn action_error_stops_current_rhs_and_run_without_discarding_later_activations() {
+    let temp = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = temp.path().to_string_lossy().replace('\\', "\\\\");
+    let source = format!(
+        r#"
+(deftemplate item (slot id) (slot state))
+(deffacts startup
+    (trigger)
+    (retractable)
+    (item (id 1) (state original)))
+
+(deffunction callback-sentinel ()
+    (printout t "callback-after|" crlf)
+    TRUE)
+
+(defrule failing
+    (declare (salience 10))
+    (trigger)
+    ?retractable <- (retractable)
+    ?modifiable <- (item (id 1) (state original))
+    =>
+    (printout t "before-error|" crlf)
+    (/ 1 0)
+    (assert (assert-after))
+    (retract ?retractable)
+    (modify ?modifiable (state modified))
+    (printout t "print-after|" crlf)
+    (printout stderr "router-after|" crlf)
+    (callback-sentinel)
+    (save-facts "{path}"))
+
+(defrule later
+    (declare (salience 0))
+    (trigger)
+    =>
+    (printout t "later-activation|" crlf)
+    (assert (later-ran)))
+"#
+    );
+
+    let mut engine = new_utf8_engine();
+    load_ok(&mut engine, &source);
+    engine.reset().expect("reset");
+
+    let first = engine.run(crate::RunLimit::Unlimited).expect("first run");
+    assert_eq!(first.rules_fired, 1);
+    assert_eq!(first.halt_reason, crate::HaltReason::ActionError);
+    assert_eq!(engine.get_output("t").unwrap_or(""), "before-error|\n");
+    assert_eq!(engine.get_output("stderr").unwrap_or(""), "");
+    assert_no_fact_with_relation(&engine, "assert-after");
+    assert_has_fact_with_relation(&engine, "retractable");
+    assert_no_fact_with_relation(&engine, "later-ran");
+    let item_facts = find_template_facts(&engine, "item");
+    assert_eq!(item_facts.len(), 1);
+    let state = item_facts[0]
+        .iter()
+        .find(|(slot, _)| slot == "state")
+        .map(|(_, value)| value)
+        .expect("item state slot");
+    let crate::Value::Symbol(state) = state else {
+        panic!("expected item state to be a symbol, got {state:?}");
+    };
+    assert_eq!(engine.resolve_symbol(*state), Some("original"));
+    assert_eq!(
+        std::fs::metadata(temp.path())
+            .expect("tempfile metadata")
+            .len(),
+        0,
+        "save-facts after the error must not run"
+    );
+    assert!(matches!(
+        engine.action_diagnostics(),
+        [crate::ActionError::Evaluator(
+            crate::evaluator::EvalError::DivisionByZero { .. }
+        )]
+    ));
+    assert!(!engine.is_halted());
+    assert_eq!(engine.agenda_len(), 1);
+
+    let second = engine.run(crate::RunLimit::Unlimited).expect("second run");
+    assert_eq!(second.rules_fired, 1);
+    assert_eq!(second.halt_reason, crate::HaltReason::AgendaEmpty);
+    assert_eq!(
+        engine.get_output("t").unwrap_or(""),
+        "before-error|\nlater-activation|\n"
+    );
+    assert_has_fact_with_relation(&engine, "later-ran");
+    assert!(
+        engine.action_diagnostics().is_empty(),
+        "a fresh run should clear the prior action diagnostic"
+    );
+
+    engine.reset().expect("reset after action error");
+    let after_reset = engine
+        .run(crate::RunLimit::Unlimited)
+        .expect("run after reset");
+    assert_eq!(after_reset.rules_fired, 1);
+    assert_eq!(after_reset.halt_reason, crate::HaltReason::ActionError);
+    assert_eq!(engine.get_output("t").unwrap_or(""), "before-error|\n");
+    assert_eq!(engine.agenda_len(), 1);
+    assert!(matches!(
+        engine.action_diagnostics(),
+        [crate::ActionError::Evaluator(
+            crate::evaluator::EvalError::DivisionByZero { .. }
+        )]
+    ));
+}
+
+#[test]
+fn action_error_preserves_arity_type_and_domain_diagnostics() {
+    for (label, failing_expression) in [
+        ("arity", r#"(str-length "a" "b")"#),
+        ("type", "(+ 1 not-a-number)"),
+        ("domain", "(/ 1 0)"),
+    ] {
+        let source = format!(
+            r"
+(defrule failing
+    =>
+    {failing_expression}
+    (assert (sentinel-after-{label})))
+"
+        );
+        let mut engine = new_utf8_engine();
+        load_ok(&mut engine, &source);
+        engine.reset().expect("reset");
+
+        let result = engine.run(crate::RunLimit::Unlimited).expect("run");
+        assert_eq!(result.rules_fired, 1, "{label}");
+        assert_eq!(
+            result.halt_reason,
+            crate::HaltReason::ActionError,
+            "{label}"
+        );
+        assert_no_fact_with_relation(&engine, &format!("sentinel-after-{label}"));
+
+        let [crate::ActionError::Evaluator(diagnostic)] = engine.action_diagnostics() else {
+            panic!(
+                "{label}: expected one evaluator diagnostic, got {:?}",
+                engine.action_diagnostics()
+            );
+        };
+        match label {
+            "arity" => assert!(
+                matches!(
+                    diagnostic,
+                    crate::evaluator::EvalError::ArityMismatch { .. }
+                ),
+                "got {diagnostic:?}"
+            ),
+            "type" => assert!(
+                matches!(diagnostic, crate::evaluator::EvalError::TypeError { .. }),
+                "got {diagnostic:?}"
+            ),
+            "domain" => assert!(
+                matches!(
+                    diagnostic,
+                    crate::evaluator::EvalError::DivisionByZero { .. }
+                ),
+                "got {diagnostic:?}"
+            ),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn action_error_step_processes_only_the_failing_activation() {
+    let mut engine = new_utf8_engine();
+    load_ok(
+        &mut engine,
+        r"
+(defrule failing
+    (declare (salience 10))
+    =>
+    (/ 1 0)
+    (assert (failing-sentinel)))
+(defrule later
+    =>
+    (assert (later-ran)))
+",
+    );
+    engine.reset().expect("reset");
+
+    let first = engine
+        .step()
+        .expect("first step")
+        .expect("first activation");
+    assert_eq!(engine.rule_name(first.rule_id), Some("failing"));
+    assert_no_fact_with_relation(&engine, "failing-sentinel");
+    assert_no_fact_with_relation(&engine, "later-ran");
+    assert_eq!(engine.agenda_len(), 1);
+    assert!(matches!(
+        engine.action_diagnostics(),
+        [crate::ActionError::Evaluator(
+            crate::evaluator::EvalError::DivisionByZero { .. }
+        )]
+    ));
+
+    let second = engine
+        .step()
+        .expect("second step")
+        .expect("second activation");
+    assert_eq!(engine.rule_name(second.rule_id), Some("later"));
+    assert_has_fact_with_relation(&engine, "later-ran");
+    assert!(engine.action_diagnostics().is_empty());
+}
+
+#[test]
 fn qualified_function_call_wrong_module() {
     // Function exists in MATH but qualified as MAIN::add — should fail.
     let mut engine = new_utf8_engine();

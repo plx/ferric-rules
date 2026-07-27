@@ -90,6 +90,7 @@ class TestEnumDistinctness:
             ferric.HaltReason.AGENDA_EMPTY,
             ferric.HaltReason.LIMIT_REACHED,
             ferric.HaltReason.HALT_REQUESTED,
+            ferric.HaltReason.ACTION_ERROR,
         ]
         assert all(
             left != right

@@ -345,6 +345,7 @@ func TestHaltReasonString(t *testing.T) {
 		{HaltAgendaEmpty, "agenda_empty"},
 		{HaltLimitReached, "limit_reached"},
 		{HaltRequested, "requested"},
+		{HaltActionError, "action_error"},
 		{HaltReason(99), "unknown"},
 	}
 	for _, tt := range tests {

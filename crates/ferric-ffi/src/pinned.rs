@@ -954,6 +954,7 @@ fn build_run_result(
                     HaltReason::AgendaEmpty => HaltReason::AgendaEmpty,
                     HaltReason::LimitReached => HaltReason::LimitReached,
                     HaltReason::HaltRequested => HaltReason::HaltRequested,
+                    HaltReason::ActionError => HaltReason::ActionError,
                 }),
             },
             message: None,

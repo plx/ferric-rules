@@ -19,7 +19,7 @@ _HALT_REASONS = frozenset(
         "agenda-empty",
         "limit-reached",
         "halt-requested",
-        "error",
+        "action-error",
         "not-run",
     }
 )
@@ -240,6 +240,10 @@ def _halt_reason(raw: object) -> str:
     if type(raw) is not str:
         raise ObservationProjectionError("run halt reason is missing")
     normalized = raw.replace("_", "-")
+    if normalized == "error":
+        # The pinned CLIPS adapter reports its native evaluation-error stop as
+        # `error`; Ferric exposes the same semantic boundary as `action-error`.
+        normalized = "action-error"
     if normalized not in _HALT_REASONS:
         raise ObservationProjectionError(f"run halt reason is unsupported: {raw!r}")
     return normalized

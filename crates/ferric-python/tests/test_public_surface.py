@@ -127,7 +127,7 @@ _CLASS_MEMBERS = {
 _ENUM_MEMBERS = {
     "Encoding": {"ASCII", "ASCII_SYMBOLS_UTF8_STRINGS", "UTF8"},
     "FactType": {"ORDERED", "TEMPLATE"},
-    "HaltReason": {"AGENDA_EMPTY", "HALT_REQUESTED", "LIMIT_REACHED"},
+    "HaltReason": {"ACTION_ERROR", "AGENDA_EMPTY", "HALT_REQUESTED", "LIMIT_REACHED"},
     "Strategy": {"BREADTH", "DEPTH", "LEX", "MEA"},
 }
 if _HAS_SERDE:

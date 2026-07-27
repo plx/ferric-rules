@@ -474,6 +474,8 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 			return &RunResult{RulesFired: totalFired, HaltReason: HaltAgendaEmpty}, nil
 		case ffi.HaltReasonHaltRequested:
 			return &RunResult{RulesFired: totalFired, HaltReason: HaltRequested}, nil
+		case ffi.HaltReasonActionError:
+			return &RunResult{RulesFired: totalFired, HaltReason: HaltActionError}, nil
 		case ffi.HaltReasonLimitReached:
 			// Batch limit reached — continue if we haven't hit total limit.
 			if limit > 0 && totalFired >= limit {
@@ -497,6 +499,8 @@ func (e *Engine) runDirect(handle ffi.EngineHandle, limit int64) (*RunResult, er
 		hr = HaltLimitReached
 	case ffi.HaltReasonHaltRequested:
 		hr = HaltRequested
+	case ffi.HaltReasonActionError:
+		hr = HaltActionError
 	}
 	firedCount, err := uint64ToInt(fired)
 	if err != nil {
