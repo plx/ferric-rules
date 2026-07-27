@@ -718,6 +718,413 @@ mod tests {
     }
 
     #[test]
+    fn fr_rete_006_exists_multiple_tuples_one_activation() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule joined
+                (exists (a ?x) (b ?x))
+                =>
+                (assert (found-join)))
+        ",
+        );
+
+        engine.assert_ordered("a", 1_i64).unwrap();
+        engine.assert_ordered("b", 1_i64).unwrap();
+        engine.assert_ordered("a", 2_i64).unwrap();
+        engine.assert_ordered("b", 2_i64).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "complete inner tuples must collapse to one Boolean activation"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn fr_rete_006_exists_partial_retract_keeps_activation() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule joined
+                (exists (a ?x) (b ?x))
+                =>
+                (assert (found-join)))
+        ",
+        );
+
+        engine.assert_ordered("a", 1_i64).unwrap();
+        let first_b = engine.assert_ordered("b", 1_i64).unwrap();
+        engine.assert_ordered("a", 2_i64).unwrap();
+        engine.assert_ordered("b", 2_i64).unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+
+        engine.retract(first_b).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "one remaining complete tuple must keep the activation alive"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn fr_rete_006_exists_last_retract_removes_activation() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule joined
+                (exists (a ?x) (b ?x))
+                =>
+                (assert (found-join)))
+        ",
+        );
+
+        engine.assert_ordered("a", 1_i64).unwrap();
+        let first_b = engine.assert_ordered("b", 1_i64).unwrap();
+        engine.assert_ordered("a", 2_i64).unwrap();
+        let second_b = engine.assert_ordered("b", 2_i64).unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+        engine.retract(first_b).unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+
+        engine.retract(second_b).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            0,
+            "the activation must retract with the final complete tuple"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn fr_rete_006_exists_isolated_per_outer_token() {
+        use ferric_rules_core::Value;
+
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule joined
+                (outer ?owner)
+                (exists (a ?owner ?x) (b ?owner ?x))
+                =>
+                (assert (found-owner ?owner)))
+        ",
+        );
+
+        engine.assert_ordered("outer", 1_i64).unwrap();
+        engine.assert_ordered("outer", 2_i64).unwrap();
+        engine
+            .assert_ordered("a", [Value::Integer(1), Value::Integer(10)])
+            .unwrap();
+        let owner_one_first = engine
+            .assert_ordered("b", [Value::Integer(1), Value::Integer(10)])
+            .unwrap();
+        engine
+            .assert_ordered("a", [Value::Integer(1), Value::Integer(11)])
+            .unwrap();
+        let owner_one_second = engine
+            .assert_ordered("b", [Value::Integer(1), Value::Integer(11)])
+            .unwrap();
+        engine
+            .assert_ordered("a", [Value::Integer(2), Value::Integer(20)])
+            .unwrap();
+        engine
+            .assert_ordered("b", [Value::Integer(2), Value::Integer(20)])
+            .unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            2,
+            "each outer token must contribute at most one activation"
+        );
+        engine.retract(owner_one_first).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            2,
+            "one remaining owner-one tuple must preserve only that owner's activation"
+        );
+        engine.retract(owner_one_second).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "removing owner one's final tuple must not affect owner two"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn fr_rete_006_exists_isolated_per_outer_token_after_reset() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (deffacts startup
+                (outer one)
+                (a one 10)
+                (b one 10)
+                (outer two)
+                (a two 20)
+                (b two 20))
+
+            (defrule joined
+                (outer ?owner)
+                (exists (a ?owner ?x) (b ?owner ?x))
+                =>
+                (assert (found-owner ?owner)))
+        ",
+        );
+
+        engine.reset().unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            2,
+            "reset-time support tuples must remain isolated per outer token"
+        );
+        assert_engine_consistent(&engine);
+    }
+
+    #[test]
+    fn fr_rete_006_template_exists_isolated_per_outer_token_after_reset() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (deftemplate sensor (slot id))
+            (deftemplate reading (slot sensor-id) (slot reading-id))
+            (deftemplate calibration (slot sensor-id) (slot reading-id))
+
+            (deffacts startup
+                (sensor (id one))
+                (reading (sensor-id one) (reading-id 10))
+                (calibration (sensor-id one) (reading-id 10))
+                (sensor (id two))
+                (reading (sensor-id two) (reading-id 20))
+                (calibration (sensor-id two) (reading-id 20)))
+
+            (defrule joined
+                (sensor (id ?owner))
+                (exists
+                    (reading (sensor-id ?owner) (reading-id ?reading))
+                    (calibration (sensor-id ?owner) (reading-id ?reading)))
+                =>
+                (assert (ready ?owner)))
+        ",
+        );
+
+        engine.reset().unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            2,
+            "template support tuples must remain isolated per outer token"
+        );
+        let run = run_to_completion(&mut engine);
+        assert_eq!(
+            run.rules_fired, 2,
+            "firing one outer activation must not invalidate another"
+        );
+        assert_engine_consistent(&engine);
+    }
+
+    #[test]
+    fn fr_rete_006_exists_nested_join_variant() {
+        use ferric_rules_core::Value;
+
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule chained
+                (exists (a ?x) (b ?x ?y) (c ?y))
+                =>
+                (assert (found-chain)))
+        ",
+        );
+
+        engine.assert_ordered("a", 1_i64).unwrap();
+        engine
+            .assert_ordered("b", [Value::Integer(1), Value::Integer(10)])
+            .unwrap();
+        engine.assert_ordered("c", 10_i64).unwrap();
+        engine.assert_ordered("a", 2_i64).unwrap();
+        engine
+            .assert_ordered("b", [Value::Integer(2), Value::Integer(20)])
+            .unwrap();
+        engine.assert_ordered("c", 20_i64).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "multiple chained join results must collapse to one activation"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn fr_rete_006_exists_tuple_test_filters_before_boolean_collapse() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule filtered
+                (exists
+                    (a ?x)
+                    (test (> ?x 1))
+                    (b ?x))
+                =>
+                (assert (found-filtered-join)))
+        ",
+        );
+
+        engine.assert_ordered("a", 1_i64).unwrap();
+        engine.assert_ordered("b", 1_i64).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            0,
+            "a complete tuple that fails its test must not support exists"
+        );
+
+        engine.assert_ordered("a", 2_i64).unwrap();
+        let second_b = engine.assert_ordered("b", 2_i64).unwrap();
+        engine.assert_ordered("a", 3_i64).unwrap();
+        let third_b = engine.assert_ordered("b", 3_i64).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "passing tuples must still collapse to one activation"
+        );
+
+        engine.retract(second_b).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "one remaining tuple that passes its test must preserve the activation"
+        );
+        engine.retract(third_b).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            0,
+            "the activation must retract with the final passing tuple"
+        );
+        assert_engine_consistent(&engine);
+    }
+
+    #[test]
+    fn fr_rete_006_nested_exists_preserves_tuple_scope() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule nested
+                (exists
+                    (a ?x)
+                    (exists (b ?x) (c ?x)))
+                =>
+                (assert (found-nested)))
+        ",
+        );
+
+        engine.assert_ordered("a", 1_i64).unwrap();
+        engine.assert_ordered("b", 1_i64).unwrap();
+        engine.assert_ordered("c", 1_i64).unwrap();
+        engine.assert_ordered("a", 2_i64).unwrap();
+        engine.assert_ordered("b", 2_i64).unwrap();
+        engine.assert_ordered("c", 2_i64).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "nested exists groups must remain Boolean at every level"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn fr_rete_006_exists_handles_online_compile_and_reset() {
+        let mut engine = new_utf8_engine();
+        engine.assert_ordered("a", 1_i64).unwrap();
+        engine.assert_ordered("b", 1_i64).unwrap();
+        engine.assert_ordered("a", 2_i64).unwrap();
+        engine.assert_ordered("b", 2_i64).unwrap();
+
+        load_ok(
+            &mut engine,
+            r"
+            (defrule joined
+                (exists (a ?x) (b ?x))
+                =>
+                (assert (found-join)))
+        ",
+        );
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "online compilation must collapse existing support tuples"
+        );
+        assert_engine_consistent(&engine);
+
+        engine.reset().unwrap();
+        assert_eq!(engine.agenda_len(), 0);
+        engine.assert_ordered("a", 3_i64).unwrap();
+        engine.assert_ordered("b", 3_i64).unwrap();
+        engine.assert_ordered("a", 4_i64).unwrap();
+        engine.assert_ordered("b", 4_i64).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "reset must clear old owners and preserve Boolean cardinality"
+        );
+        assert_engine_consistent(&engine);
+    }
+
+    #[test]
+    fn fr_rete_006_supported_outer_retract_cleans_owner_state() {
+        use ferric_rules_core::Value;
+
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule joined
+                (outer ?owner)
+                (exists (a ?owner ?x) (b ?owner ?x))
+                =>
+                (assert (found-owner ?owner)))
+        ",
+        );
+
+        let outer_one = engine.assert_ordered("outer", 1_i64).unwrap();
+        engine.assert_ordered("outer", 2_i64).unwrap();
+        for (owner, value) in [(1, 10), (1, 11), (2, 20)] {
+            engine
+                .assert_ordered("a", [Value::Integer(owner), Value::Integer(value)])
+                .unwrap();
+            engine
+                .assert_ordered("b", [Value::Integer(owner), Value::Integer(value)])
+                .unwrap();
+        }
+        assert_eq!(engine.agenda_len(), 2);
+
+        engine.retract(outer_one).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "retracting a supported parent must remove only its owned activation"
+        );
+        assert_engine_consistent(&engine);
+    }
+
+    #[test]
     fn nested_function_call_in_rhs_evaluates() {
         let mut engine = new_utf8_engine();
         load_ok(

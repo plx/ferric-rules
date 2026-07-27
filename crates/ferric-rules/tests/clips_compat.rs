@@ -829,6 +829,26 @@ fn fr_rete_005_clips_double_not_existential_transition_fixture() {
     );
 }
 
+#[test]
+fn fr_rete_006_clips_multi_pattern_exists_transition_fixture() {
+    // Pinned against the repository's CLIPS 6.30 reference image. Complete
+    // joined tuples are Boolean support for the whole exists CE, so only one
+    // "one" line appears and partial tuple retraction preserves the match.
+    let _ = assert_fixture_output(
+        "core/multi_pattern_exists_transitions.clp",
+        5,
+        "zero\none\ntwo\npartial\nzero-again\n",
+    );
+}
+
+#[test]
+fn fr_rete_006_clips_multi_pattern_exists_nested_join_fixture() {
+    // Pinned against the repository's CLIPS 6.30 reference image. The test CE
+    // participates in each three-pattern tuple before both complete tuples
+    // collapse to one existential activation.
+    let _ = assert_fixture_output("core/multi_pattern_exists_nested_join.clp", 1, "nested\n");
+}
+
 /// Multi-pattern join: a rule with two patterns joined by a shared variable.
 #[test]
 fn test_compat_core_multi_pattern_join() {
