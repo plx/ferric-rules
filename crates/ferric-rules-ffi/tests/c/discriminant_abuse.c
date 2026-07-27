@@ -216,11 +216,11 @@ static void test_value_free_null_and_valid_return_ok(void) {
  * FFI-allocated multifield array: [Symbol(owned string), Integer].
  * Returns 0 on failure. The caller owns *out and the fact `*fact_id`. */
 static int read_back_multislot(FerricEngine *engine, FerricValue *out,
-                               uint64_t *fact_id) {
+                               uint64_t *fact_id, int64_t discriminator) {
     const char *slot_names[1] = {"tags"};
     FerricValue elems[2];
     elems[0] = ferric_value_symbol("owned-sibling");
-    elems[1] = ferric_value_integer(22);
+    elems[1] = ferric_value_integer(discriminator);
     FerricValue mf = ferric_value_void();
     mf.value_type = FERRIC_VALUE_TYPE_MULTIFIELD;
     mf.multifield_ptr = elems;
@@ -255,7 +255,7 @@ static void test_value_free_corrupted_nested_tag(FerricEngine *engine) {
      * and the containing array (a leaked sibling fails ASan leak checks). */
     FerricValue out;
     uint64_t fact_id = 0;
-    if (!read_back_multislot(engine, &out, &fact_id)) {
+    if (!read_back_multislot(engine, &out, &fact_id, 22)) {
         return;
     }
 
@@ -280,7 +280,7 @@ static void test_value_array_free_top_level_invalid(FerricEngine *engine) {
      * while freeing the known sibling string and the array allocation. */
     FerricValue out;
     uint64_t fact_id = 0;
-    if (!read_back_multislot(engine, &out, &fact_id)) {
+    if (!read_back_multislot(engine, &out, &fact_id, 23)) {
         return;
     }
 
@@ -307,8 +307,8 @@ static void test_value_array_free_nested_invalid(FerricEngine *engine) {
     FerricValue inner;
     uint64_t outer_fact = 0;
     uint64_t inner_fact = 0;
-    if (!read_back_multislot(engine, &outer, &outer_fact) ||
-        !read_back_multislot(engine, &inner, &inner_fact)) {
+    if (!read_back_multislot(engine, &outer, &outer_fact, 24) ||
+        !read_back_multislot(engine, &inner, &inner_fact, 25)) {
         return;
     }
 
