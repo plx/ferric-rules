@@ -793,13 +793,15 @@ impl Engine {
         // Execute actions (errors are currently silently ignored).
         // The boolean return indicates whether test CEs passed, but step()
         // always returns Some(fired) to indicate an activation was processed.
-        let (_logically_fired, reset_requested, clear_requested) =
+        let (logically_fired, reset_requested, clear_requested) =
             self.execute_activation_actions(activation.rule, activation.token);
+        #[cfg(not(feature = "tracing"))]
+        let _ = logically_fired;
         ferric_event!(
             debug,
             rule = activation.rule.0,
             token = ?activation.token,
-            logically_fired = _logically_fired,
+            logically_fired,
             reset_requested,
             clear_requested,
             "engine_step_activation_processed"

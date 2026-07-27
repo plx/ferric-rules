@@ -391,9 +391,15 @@ Ferric supports user-defined functions via `deffunction`.
 ### Evaluation
 
 Function bodies are expression sequences. The value of the last expression is
-the return value. Bodies are evaluator expressions, not full RHS action lists:
-expression functions such as `str-cat`, `format`, and `printout` are available,
-but fact mutation and agenda/focus control belong in the calling rule's RHS.
+the return value. `(return)` and `(return <expression>)` immediately unwind the
+current deffunction or generic-method call; an inner callable's return does not
+unwind its caller. A top-level return is an evaluation error. On a rule RHS,
+`return` follows CLIPS behavior and stops only the remaining actions in that
+activation.
+
+Bodies are evaluator expressions, not full RHS action lists: expression
+functions such as `str-cat`, `format`, and `printout` are available, but fact
+mutation and agenda/focus control belong in the calling rule's RHS.
 
 ### Module Scoping
 
