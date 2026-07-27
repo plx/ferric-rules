@@ -51,6 +51,11 @@ pub struct CompilablePattern {
 pub enum CompilableCondition {
     /// A single pattern CE (positive, not, or exists).
     Pattern(CompilablePattern),
+    /// A runtime-owned predicate evaluated for each incoming partial match.
+    Predicate {
+        /// Rule-local index into the runtime's compiled match conditions.
+        condition_index: u32,
+    },
     /// A negated conjunction CE: `(not (and ...))`.
     /// May contain nested NCCs for deeply nested `not(and(...not(and(...))))`.
     Ncc(Vec<CompilableCondition>),
@@ -260,6 +265,7 @@ impl ReteCompiler {
                             .map_err(|_| CompileError::VarMapOverflow)?;
                     }
                 }
+                CompilableCondition::Predicate { .. } => {}
                 CompilableCondition::Ncc(subconditions) => {
                     for subcondition in subconditions {
                         register_condition(subcondition, var_map)?;
@@ -311,6 +317,12 @@ impl ReteCompiler {
                         &mut bound_vars,
                         &mut alpha_memories,
                     );
+                }
+                CompilableCondition::Predicate { condition_index } => {
+                    let (predicate, _) =
+                        rete.beta
+                            .create_predicate_node(current_parent, rule_id, *condition_index);
+                    current_parent = predicate;
                 }
                 CompilableCondition::Ncc(subpatterns) => {
                     current_parent = self.compile_ncc_condition(
@@ -375,6 +387,7 @@ impl ReteCompiler {
                     let context = format!("condition {condition_idx}");
                     Self::validate_pattern_structure(pattern, &context, true, true, &mut errors);
                 }
+                CompilableCondition::Predicate { .. } => {}
                 CompilableCondition::Ncc(subconditions) => {
                     if subconditions.is_empty() {
                         Self::push_unsupported_structure_error(
@@ -411,6 +424,15 @@ impl ReteCompiler {
                         pattern, &context,
                         true, // Negated subpatterns in NCC are valid for forall(P, not(Q)) desugaring.
                         false, errors,
+                    );
+                }
+                CompilableCondition::Predicate { .. } => {
+                    Self::push_unsupported_structure_error(
+                        errors,
+                        format!(
+                            "{prefix} NCC subpattern {idx} contains a runtime predicate; \
+                             test CEs inside mixed negated conjunctions are not supported"
+                        ),
                     );
                 }
                 CompilableCondition::Ncc(inner) => {
@@ -692,6 +714,9 @@ impl ReteCompiler {
                         &mut sub_bound_vars,
                         alpha_memories,
                     );
+                }
+                CompilableCondition::Predicate { .. } => {
+                    unreachable!("predicate nodes inside NCC must fail validation")
                 }
                 CompilableCondition::Ncc(inner_conditions) => {
                     sub_parent = self.compile_ncc_condition(

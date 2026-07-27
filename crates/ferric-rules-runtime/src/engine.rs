@@ -182,6 +182,8 @@ pub struct Engine {
     pub(crate) initial_fact_id: Option<FactId>,
     /// Non-fatal action diagnostics captured during execution.
     pub(crate) action_diagnostics: Vec<ActionError>,
+    /// Guards match-time predicate draining against evaluator-triggered assertions.
+    pub(crate) processing_predicates: bool,
     /// Whether a halt has been requested.
     pub(crate) halted: bool,
     /// Input buffer for `read`/`readline` calls from rules.
@@ -219,6 +221,7 @@ impl Engine {
             generic_modules: HashMap::default(),
             initial_fact_id: None,
             action_diagnostics: Vec::new(),
+            processing_predicates: false,
             halted: false,
             input_buffer: VecDeque::new(),
             creator_thread: std::thread::current().id(),
@@ -281,10 +284,84 @@ impl Engine {
         match self.fact_base.assert_fact(fact, self.fact_duplication()) {
             FactInsertionResult::Inserted(fact_id) => {
                 propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
+                self.drain_pending_predicate_matches();
                 FactAssertionResult::Asserted(fact_id)
             }
             FactInsertionResult::Duplicate(fact_id) => FactAssertionResult::Duplicate(fact_id),
         }
+    }
+
+    pub(crate) fn drain_pending_predicate_matches(&mut self) {
+        if self.processing_predicates {
+            return;
+        }
+        self.processing_predicates = true;
+
+        while let Some(pending) = self.rete.pop_pending_predicate_match() {
+            let Some(token) = self.rete.token_store.get(pending.parent_token).cloned() else {
+                continue;
+            };
+            let Some(info) = rule_index_get(&self.rule_info, pending.rule).cloned() else {
+                continue;
+            };
+            let Some(condition) = info.test_conditions.get(pending.condition_index as usize) else {
+                self.action_diagnostics.push(ActionError::EvalError(format!(
+                    "rule `{}` references missing match condition {}",
+                    info.name, pending.condition_index
+                )));
+                continue;
+            };
+            let current_module = rule_index_get(&self.rule_modules, pending.rule)
+                .copied()
+                .unwrap_or_else(|| self.module_registry.main_module_id());
+            let collected_facts = if info.multifield_tail_bindings.is_empty() {
+                smallvec::SmallVec::new()
+            } else {
+                self.rete
+                    .token_store
+                    .collect_all_facts(pending.parent_token)
+            };
+
+            let mut focus_requests = Vec::new();
+            let evaluation = {
+                let mut context = actions::ActionExecutionContext {
+                    engine: self,
+                    focus_requests: &mut focus_requests,
+                    current_module,
+                };
+                actions::evaluate_test_condition(
+                    &token,
+                    info.as_ref(),
+                    condition,
+                    &collected_facts,
+                    &mut context,
+                )
+            };
+            let passed = match evaluation {
+                Ok(passed) => passed,
+                Err(error) => {
+                    ferric_event!(
+                        warn,
+                        rule = %info.name,
+                        error = %error,
+                        "match_condition_eval_error"
+                    );
+                    self.action_diagnostics.push(error);
+                    false
+                }
+            };
+
+            if !focus_requests.is_empty() {
+                self.action_diagnostics.push(ActionError::EvalError(format!(
+                    "rule `{}` test CE attempted a focus change during matching",
+                    info.name
+                )));
+            }
+            self.rete
+                .resolve_predicate_match_with_parent(pending, passed, token, &self.fact_base);
+        }
+
+        self.processing_predicates = false;
     }
 
     /// Assert an ordered fact into working memory.
@@ -511,6 +588,7 @@ impl Engine {
         self.fact_base
             .retract(fact_id)
             .ok_or(EngineError::FactNotFound(fact_id))?;
+        self.drain_pending_predicate_matches();
 
         Ok(())
     }
@@ -762,7 +840,7 @@ impl Engine {
     /// Execute RHS actions for a rule activation.
     ///
     /// Returns `(logically_fired, reset_requested, clear_requested, action_error)`.
-    /// - `logically_fired` is `true` if all test CEs passed and actions were executed.
+    /// - `logically_fired` is `true` if the already-matched activation executed.
     /// - `reset_requested` is `true` if a `(reset)` action was executed in the RHS.
     /// - `clear_requested` is `true` if a `(clear)` action was executed in the RHS.
     /// - `action_error` is `true` if evaluation produced an action diagnostic.
@@ -801,6 +879,9 @@ impl Engine {
             };
             actions::execute_actions(&token, info.as_ref(), &mut action_context, &collected_facts)
         };
+        // Retractions and modifications performed by RHS actions can unblock
+        // negative nodes and create new predicate candidates.
+        self.drain_pending_predicate_matches();
 
         // Apply focus requests (push in reverse order so first arg is on top)
         for module_name in focus_requests.iter().rev() {
@@ -868,7 +949,7 @@ impl Engine {
     ///
     /// Returns `None` when no activation is eligible under current focus
     /// semantics. Otherwise pops the highest-priority eligible activation and
-    /// fires it (executing RHS actions if all test CEs pass).
+    /// fires its already-matched RHS actions.
     ///
     /// # Errors
     ///
@@ -1093,6 +1174,7 @@ impl Engine {
         for (module_id, name, value) in &self.registered_globals {
             self.globals.set(*module_id, name, value.clone());
         }
+        self.drain_pending_predicate_matches();
 
         // Re-assert registered deffacts under the current duplication policy.
         // Clone the declarations so assertion can mutably update working memory.
@@ -1155,6 +1237,7 @@ impl Engine {
         self.generic_modules.clear();
         self.initial_fact_id = None;
         self.action_diagnostics.clear();
+        self.processing_predicates = false;
         self.halted = false;
         self.input_buffer.clear();
     }

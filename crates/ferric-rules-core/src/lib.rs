@@ -74,7 +74,7 @@ pub use fact::{
 };
 pub use ncc::{NccMemory, NccMemoryId};
 pub use negative::{NegativeMemory, NegativeMemoryId};
-pub use rete::ReteNetwork;
+pub use rete::{PendingPredicateMatch, ReteNetwork};
 pub use strategy::ConflictResolutionStrategy;
 pub use string::FerricString;
 pub use symbol::{Symbol, SymbolTable};

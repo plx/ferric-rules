@@ -5,18 +5,30 @@
 
 use smallvec::SmallVec;
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 
 use crate::tracing_support::ferric_span;
 
 use crate::agenda::{Activation, ActivationId, ActivationSeq, Agenda};
 use crate::alpha::{get_slot_value, AlphaMemory, AlphaMemoryId, AlphaNetwork, SlotIndex};
-use crate::beta::{BetaMemory, BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType};
+use crate::beta::{
+    BetaMemory, BetaMemoryId, BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId,
+};
 use crate::binding::{BindingSet, ValueRef, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
 use crate::negative::NegativeMemoryId;
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::{AtomKey, Value};
+
+/// A partial match waiting for a runtime-owned predicate evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingPredicateMatch {
+    pub node: NodeId,
+    pub parent_token: TokenId,
+    pub rule: RuleId,
+    pub condition_index: u32,
+}
 
 /// The complete Rete network.
 ///
@@ -30,6 +42,8 @@ pub struct ReteNetwork {
     pub agenda: Agenda,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::std_hash_set"))]
     disabled_rules: std::collections::HashSet<crate::beta::RuleId>,
+    #[cfg_attr(feature = "serde", serde(skip, default))]
+    pending_predicate_matches: VecDeque<PendingPredicateMatch>,
 }
 
 impl ReteNetwork {
@@ -58,6 +72,7 @@ impl ReteNetwork {
             token_store,
             agenda,
             disabled_rules: std::collections::HashSet::new(),
+            pending_predicate_matches: VecDeque::new(),
         };
         rete.seed_root_token();
         rete
@@ -213,6 +228,7 @@ impl ReteNetwork {
         self.alpha.clear_all_memories();
         self.token_store.clear();
         self.beta.clear_all_runtime();
+        self.pending_predicate_matches.clear();
         let strategy = self.agenda.strategy();
         self.agenda = Agenda::with_strategy(strategy);
 
@@ -321,6 +337,88 @@ impl ReteNetwork {
     pub fn disable_rule(&mut self, rule_id: crate::beta::RuleId) {
         self.disabled_rules.insert(rule_id);
         let _ = self.agenda.remove_activations_for_rule(rule_id);
+        self.pending_predicate_matches
+            .retain(|pending| pending.rule != rule_id);
+    }
+
+    /// Pop the next runtime predicate evaluation requested by token propagation.
+    pub fn pop_pending_predicate_match(&mut self) -> Option<PendingPredicateMatch> {
+        self.pending_predicate_matches.pop_front()
+    }
+
+    /// Resolve one pending predicate evaluation.
+    ///
+    /// A passing predicate creates a factless pass-through token owned by the
+    /// predicate node and continues normal propagation. A failing predicate
+    /// creates no token, so no terminal token or agenda activation can exist for
+    /// that partial match.
+    pub fn resolve_predicate_match(
+        &mut self,
+        pending: PendingPredicateMatch,
+        passed: bool,
+        fact_base: &FactBase,
+    ) -> Vec<ActivationId> {
+        let Some(parent_token) = self.token_store.get(pending.parent_token).cloned() else {
+            return Vec::new();
+        };
+        self.resolve_predicate_match_with_parent(pending, passed, parent_token, fact_base)
+    }
+
+    /// Resolve a predicate using a caller-owned snapshot of its parent token.
+    ///
+    /// This avoids cloning the same bindings twice when the runtime already
+    /// needed a token snapshot to evaluate the predicate. The live parent is
+    /// still checked before a passing token is admitted.
+    pub fn resolve_predicate_match_with_parent(
+        &mut self,
+        pending: PendingPredicateMatch,
+        passed: bool,
+        parent_token: Token,
+        fact_base: &FactBase,
+    ) -> Vec<ActivationId> {
+        if self.token_store.get(pending.parent_token).is_none() {
+            return Vec::new();
+        }
+        let Some(BetaNode::Predicate {
+            rule,
+            condition_index,
+            memory,
+            children,
+            ..
+        }) = self.beta.get_node(pending.node)
+        else {
+            return Vec::new();
+        };
+        if *rule != pending.rule || *condition_index != pending.condition_index {
+            return Vec::new();
+        }
+
+        let memory = *memory;
+        let children = children.clone();
+        if !passed {
+            return Vec::new();
+        }
+
+        let token = Token {
+            fact: None,
+            bindings: parent_token.bindings,
+            parent: Some(pending.parent_token),
+            owner_node: pending.node,
+        };
+        let token_id = self.token_store.insert(token);
+        let bindings = &self
+            .token_store
+            .get(token_id)
+            .expect("new predicate token must exist")
+            .bindings;
+        self.beta
+            .get_memory_mut(memory)
+            .expect("predicate beta memory must exist")
+            .insert_indexed(token_id, bindings);
+
+        let mut new_activations = Vec::new();
+        self.propagate_token(token_id, &children, fact_base, &mut new_activations);
+        new_activations
     }
 
     /// Perform a right activation on a join node.
@@ -1329,6 +1427,19 @@ impl ReteNetwork {
                     // Perform left activation: token enters as parent for this join
                     self.left_activate(child_id, token_id, fact_base, new_activations);
                 }
+                BetaNode::Predicate {
+                    rule,
+                    condition_index,
+                    ..
+                } => {
+                    self.pending_predicate_matches
+                        .push_back(PendingPredicateMatch {
+                            node: child_id,
+                            parent_token: token_id,
+                            rule: *rule,
+                            condition_index: *condition_index,
+                        });
+                }
                 BetaNode::Negative { .. } => {
                     // Perform negative left activation: token enters as parent for
                     // this negative node. It will be blocked or allowed through.
@@ -1786,6 +1897,86 @@ mod tests {
 
         let act = rete.agenda.pop().expect("Should have activation");
         assert_eq!(act.rule, rule_id);
+    }
+
+    #[test]
+    fn predicate_node_filters_before_terminal_and_tracks_parent_lifecycle() {
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut symbol_table = SymbolTable::new();
+        let candidate = make_symbol(&mut symbol_table, "candidate");
+
+        let entry = rete
+            .alpha
+            .create_entry_node(AlphaEntryType::OrderedRelation(candidate));
+        let alpha_memory = rete.alpha.create_memory(entry);
+        let root = rete.beta.root_id();
+        let (join, _) = rete
+            .beta
+            .create_join_node(root, alpha_memory, vec![], vec![]);
+        let rule = RuleId(1);
+        let (predicate, predicate_memory) = rete.beta.create_predicate_node(join, rule, 0);
+        rete.beta
+            .create_terminal_node(predicate, rule, Salience::DEFAULT);
+
+        let rejected_id = fact_base.assert_ordered(candidate, SmallVec::new());
+        let rejected_fact = fact_base
+            .get(rejected_id)
+            .expect("rejected fact should exist")
+            .fact
+            .clone();
+        let immediate = rete.assert_fact(rejected_id, &rejected_fact, &fact_base);
+        assert!(immediate.is_empty());
+        assert!(rete.agenda.is_empty());
+
+        let rejected = rete
+            .pop_pending_predicate_match()
+            .expect("partial match should request predicate evaluation");
+        let failed = rete.resolve_predicate_match(rejected, false, &fact_base);
+        assert!(failed.is_empty());
+        assert!(rete.agenda.is_empty());
+        assert!(
+            rete.beta
+                .get_memory(predicate_memory)
+                .expect("predicate memory should exist")
+                .is_empty(),
+            "a failing predicate must not retain a token"
+        );
+
+        rete.retract_fact(rejected_id, &rejected_fact, &fact_base);
+        fact_base
+            .retract(rejected_id)
+            .expect("rejected fact should retract");
+        assert_only_root_token(&rete);
+
+        let accepted_id = fact_base.assert_ordered(candidate, SmallVec::new());
+        let accepted_fact = fact_base
+            .get(accepted_id)
+            .expect("accepted fact should exist")
+            .fact
+            .clone();
+        let immediate = rete.assert_fact(accepted_id, &accepted_fact, &fact_base);
+        assert!(immediate.is_empty());
+        let accepted = rete
+            .pop_pending_predicate_match()
+            .expect("new partial match should reevaluate the predicate");
+        let activations = rete.resolve_predicate_match(accepted, true, &fact_base);
+        assert_eq!(activations.len(), 1);
+        assert_eq!(rete.agenda.len(), 1);
+        assert_eq!(
+            rete.beta
+                .get_memory(predicate_memory)
+                .expect("predicate memory should exist")
+                .len(),
+            1
+        );
+
+        rete.retract_fact(accepted_id, &accepted_fact, &fact_base);
+        fact_base
+            .retract(accepted_id)
+            .expect("accepted fact should retract");
+        assert!(rete.agenda.is_empty());
+        assert_only_root_token(&rete);
     }
 
     #[test]

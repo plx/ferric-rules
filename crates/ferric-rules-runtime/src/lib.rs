@@ -18,7 +18,7 @@
 //! ## Phase 3 complete
 //!
 //! - Shared expression evaluator for RHS actions and `test` CEs (Pass 002).
-//! - `test` CEs compile and evaluate at firing time (Pass 002).
+//! - `test` CEs compile into predicate nodes and evaluate during matching.
 //! - Nested function calls in RHS (arithmetic, comparison, boolean, type predicates).
 //! - Template-aware `modify`/`duplicate` (Pass 003).
 //! - `printout` with per-channel output capture via `OutputRouter` (Pass 004).

@@ -39,9 +39,7 @@ use ferric_rules_parser::{
     Span, TemplateConstruct, TemplateFactBody, TemplatePattern,
 };
 
-use crate::actions::{
-    CompiledRuleInfo, CompiledTestCondition, MultifieldTailBindingHint, NegatedPatternRuntimeCheck,
-};
+use crate::actions::{CompiledRuleInfo, CompiledTestCondition, MultifieldTailBindingHint};
 use crate::engine::{Engine, EngineError};
 use crate::functions::{get_or_insert_module_entry_with, insert_module_entry, UserFunction};
 use crate::templates::RegisteredTemplate;
@@ -53,7 +51,7 @@ struct TranslatedRule {
     salience: Salience,
     conditions: Vec<CompilableCondition>,
     fact_address_vars: HashMap<String, usize>,
-    /// Test conditions (not compiled into Rete; evaluated at firing time).
+    /// Test conditions referenced by match-time predicate nodes.
     test_conditions: Vec<CompiledTestCondition>,
     /// Action-time hints for trailing ordered multifield captures.
     multifield_tail_bindings: Vec<MultifieldTailBindingHint>,
@@ -1859,8 +1857,21 @@ impl Engine {
             compile_result.rule_id,
             self.module_registry.current_module(),
         );
+        self.drain_pending_predicate_matches();
 
         Ok(compile_result)
+    }
+
+    fn push_test_predicate(
+        conditions: &mut Vec<CompilableCondition>,
+        test_conditions: &mut Vec<CompiledTestCondition>,
+        test_condition: CompiledTestCondition,
+    ) -> Result<(), LoadError> {
+        let condition_index = u32::try_from(test_conditions.len())
+            .map_err(|_| LoadError::Compile("too many test CEs in one rule".to_string()))?;
+        test_conditions.push(test_condition);
+        conditions.push(CompilableCondition::Predicate { condition_index });
+        Ok(())
     }
 
     /// Recursively flatten a pattern for top-level condition processing.
@@ -2063,28 +2074,19 @@ impl Engine {
         }
     }
 
-    /// Build a runtime negated-pattern check for complex ordered constraints.
-    ///
-    /// This is a fallback for negated ordered patterns where predicate/return
-    /// expressions are too rich to lower into join/alpha tests.
-    fn try_build_negated_runtime_check(pattern: &Pattern) -> Option<NegatedPatternRuntimeCheck> {
+    /// Whether a negated ordered pattern contains an expression that cannot
+    /// currently be represented by the negative network.
+    fn has_complex_negated_expression(pattern: &Pattern) -> bool {
         match pattern {
-            Pattern::Assigned { pattern, .. } => Self::try_build_negated_runtime_check(pattern),
+            Pattern::Assigned { pattern, .. } => Self::has_complex_negated_expression(pattern),
             Pattern::Not(inner, _) => {
                 let Pattern::Ordered(ordered) = inner.as_ref() else {
-                    return None;
+                    return false;
                 };
 
-                if !Self::ordered_pattern_has_complex_negated_expression(ordered) {
-                    return None;
-                }
-
-                Some(NegatedPatternRuntimeCheck {
-                    relation: ordered.relation.clone(),
-                    constraints: ordered.constraints.clone(),
-                })
+                Self::ordered_pattern_has_complex_negated_expression(ordered)
             }
-            _ => None,
+            _ => false,
         }
     }
 
@@ -2541,6 +2543,7 @@ impl Engine {
     }
 
     /// Translate a `RuleConstruct` (parser types) into a `CompilableRule` (core types).
+    #[allow(clippy::too_many_lines)] // Preserves source-order CE translation in one pass.
     fn translate_rule_construct(
         &mut self,
         rule: &RuleConstruct,
@@ -2580,30 +2583,44 @@ impl Engine {
         let pattern_refs: Vec<&Pattern> = desugared_patterns.iter().collect();
 
         for pattern in &pattern_refs {
-            // Test CEs are handled separately: they do not generate alpha/beta
-            // nodes in the Rete network, and they do not consume a fact index.
-            // Instead they are collected and evaluated at rule-firing time.
+            // Test CEs do not consume a fact index. Their expressions are
+            // retained in rule metadata and referenced by predicate nodes at
+            // their source position in the beta network.
             if let Pattern::Test(sexpr, _span) = pattern {
                 let runtime_expr =
                     crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
                         .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
-                test_conditions.push(CompiledTestCondition::Expr(runtime_expr));
+                Self::push_test_predicate(
+                    &mut conditions,
+                    &mut test_conditions,
+                    CompiledTestCondition::Expr(runtime_expr),
+                )?;
                 continue;
             }
 
             // Handle test CEs inside negation and NCC contexts by extracting
-            // them as rule-level test conditions.
+            // them as predicate nodes at their source position.
+            let previous_test_count = test_conditions.len();
             if self.try_extract_nested_test_ce(pattern, &mut test_conditions)? {
+                for condition_index in previous_test_count..test_conditions.len() {
+                    let condition_index = u32::try_from(condition_index).map_err(|_| {
+                        LoadError::Compile("too many test CEs in one rule".to_string())
+                    })?;
+                    conditions.push(CompilableCondition::Predicate { condition_index });
+                }
                 continue;
             }
 
             // Fallback path for complex negated ordered constraints that cannot
-            // be lowered to join/alpha tests in the negative network.
-            if let Some(runtime_check) = Self::try_build_negated_runtime_check(pattern) {
-                test_conditions.push(CompiledTestCondition::NegatedPatternRuntimeCheck(
-                    runtime_check,
+            // be lowered to join/alpha tests cannot remain a firing-time check:
+            // it would expose an invalid terminal activation and could not react
+            // to right-side assertion/retraction. Reject it until it has a real
+            // negative-network representation.
+            if Self::has_complex_negated_expression(pattern) {
+                return Err(LoadError::Compile(
+                    "complex constraints inside negated patterns are not supported at match time"
+                        .to_string(),
                 ));
-                continue;
             }
 
             // Check for Pattern::Assigned to track fact-address variables
@@ -2627,7 +2644,12 @@ impl Engine {
                 &mut generated_tests,
                 &mut internal_slot_var_seed,
             )?;
-            test_conditions.extend(generated_tests.into_iter().map(CompiledTestCondition::Expr));
+            if matches!(condition, CompilableCondition::Ncc(_)) && !generated_tests.is_empty() {
+                return Err(LoadError::Compile(
+                    "test CEs inside mixed negated conjunctions are not supported at match time"
+                        .to_string(),
+                ));
+            }
             if let Some(name) = var_name {
                 if !is_negated && Self::condition_has_fact_address(&condition) {
                     fact_address_vars.insert(name, fact_index);
@@ -2642,6 +2664,13 @@ impl Engine {
                 fact_index += 1;
             }
             conditions.push(condition);
+            for generated_test in generated_tests {
+                Self::push_test_predicate(
+                    &mut conditions,
+                    &mut test_conditions,
+                    CompiledTestCondition::Expr(generated_test),
+                )?;
+            }
         }
 
         // Empty-LHS and test-only rules use CLIPS' built-in (initial-fact)
@@ -2675,7 +2704,7 @@ impl Engine {
     fn condition_has_fact_address(condition: &CompilableCondition) -> bool {
         match condition {
             CompilableCondition::Pattern(pattern) => !pattern.negated && !pattern.exists,
-            CompilableCondition::Ncc(_) => false,
+            CompilableCondition::Predicate { .. } | CompilableCondition::Ncc(_) => false,
         }
     }
 
@@ -3188,7 +3217,7 @@ impl Engine {
             }
             Constraint::Predicate(expr, span) => {
                 if in_negated_pattern {
-                    if self.try_lower_negated_predicate_constraint(
+                    if self.try_lower_simple_predicate_constraint(
                         expr,
                         slot,
                         constant_tests,
@@ -3203,6 +3232,16 @@ impl Engine {
                         span,
                         "predicate constraints inside negated patterns currently require a simple binary comparison involving the current slot variable",
                     ));
+                }
+                if self.try_lower_simple_predicate_constraint(
+                    expr,
+                    slot,
+                    constant_tests,
+                    variable_slots,
+                    negated_variable_slots,
+                    seen_variable_slots,
+                )? {
+                    return Ok(());
                 }
                 let runtime_expr =
                     crate::evaluator::from_sexpr(expr, &mut self.symbol_table, &self.config)
@@ -3257,7 +3296,7 @@ impl Engine {
         Ok(())
     }
 
-    fn try_lower_negated_predicate_constraint(
+    fn try_lower_simple_predicate_constraint(
         &mut self,
         expr: &SExpr,
         slot: SlotIndex,
@@ -4510,6 +4549,17 @@ mod tests {
             ",
         );
 
+        let rule_info = engine
+            .rule_info
+            .iter()
+            .flatten()
+            .find(|info| info.name == "gt-two")
+            .expect("compiled rule metadata");
+        assert!(
+            rule_info.test_conditions.is_empty(),
+            "simple slot comparisons should lower into alpha tests"
+        );
+
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 2);
         assert_eq!(find_facts_by_relation(&engine, "gt2").len(), 2);
@@ -4723,36 +4773,25 @@ mod tests {
     }
 
     #[test]
-    fn negated_predicate_constraint_falls_back_for_non_linear_expression() {
+    fn negated_predicate_constraint_rejects_non_linear_expression() {
         let mut engine = new_utf8_engine();
-        load_ok(
-            &mut engine,
-            r"
-            (deffacts startup
-              (anchor 1)
-              (anchor 3)
-              (data 1)
-              (data 2))
+        let errors = engine
+            .load_str(
+                r"
             (defrule no-square-greater
               (anchor ?min)
               (not (data ?x&:(> (* ?x ?x) (* ?min ?min))))
               =>
               (assert (safe-square ?min)))
             ",
-        );
+            )
+            .expect_err("non-linear negated predicate must be rejected");
 
-        let run = run_to_completion(&mut engine);
-        assert_eq!(run.rules_fired, 1);
-        let safe = find_facts_by_relation(&engine, "safe-square");
-        assert_eq!(safe.len(), 1);
-        let Some(entry) = engine.fact_base.get(safe[0]) else {
-            panic!("safe-square fact should exist");
-        };
-        let Fact::Ordered(ordered) = &entry.fact else {
-            panic!("safe-square should be an ordered fact");
-        };
-        assert_eq!(ordered.fields.len(), 1);
-        assert!(matches!(ordered.fields[0], Value::Integer(3)));
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            LoadError::Compile(message)
+                if message.contains("complex constraints inside negated patterns")
+        )));
     }
 
     #[test]
@@ -4806,24 +4845,24 @@ mod tests {
     }
 
     #[test]
-    fn negated_return_value_constraint_falls_back_for_non_linear_expression() {
+    fn negated_return_value_constraint_rejects_non_linear_expression() {
         let mut engine = new_utf8_engine();
-        load_ok(
-            &mut engine,
-            r"
-            (deffacts startup
-              (pair 2)
-              (pair 3))
+        let errors = engine
+            .load_str(
+                r"
             (defrule no-self-square
               (not (pair ?x&=(* ?x ?x)))
               =>
               (assert (safe-return)))
             ",
-        );
+            )
+            .expect_err("non-linear negated return value must be rejected");
 
-        let run = run_to_completion(&mut engine);
-        assert_eq!(run.rules_fired, 1);
-        assert_eq!(find_facts_by_relation(&engine, "safe-return").len(), 1);
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            LoadError::Compile(message)
+                if message.contains("complex constraints inside negated patterns")
+        )));
     }
 
     #[test]
