@@ -425,6 +425,52 @@ impl AlphaNetwork {
         memory_id
     }
 
+    /// Populate a newly created alpha memory from the current working memory.
+    ///
+    /// This is used when rules are compiled after facts have already been
+    /// asserted. It updates both the memory and the fact-to-memory reverse
+    /// index without replaying facts through pre-existing alpha descendants.
+    pub(crate) fn backfill_memory(
+        &mut self,
+        memory_id: AlphaMemoryId,
+        entry_type: &AlphaEntryType,
+        tests: &[ConstantTest],
+        fact_base: &FactBase,
+    ) {
+        debug_assert!(
+            self.memory(memory_id).is_some_and(AlphaMemory::is_empty),
+            "only newly created alpha memories may be backfilled"
+        );
+
+        let mut matching_facts: Vec<(FactId, crate::fact::Timestamp)> = fact_base
+            .iter()
+            .filter(|(_, entry)| {
+                fact_matches_entry_type(&entry.fact, entry_type)
+                    && tests.iter().all(|test| evaluate_test(&entry.fact, test))
+            })
+            .map(|(fact_id, entry)| (fact_id, entry.timestamp))
+            .collect();
+        matching_facts.sort_unstable_by_key(|(_, timestamp)| *timestamp);
+
+        for (fact_id, _) in matching_facts {
+            let entry = fact_base
+                .get(fact_id)
+                .expect("backfill candidate must remain in the fact base");
+            self.memory_mut(memory_id)
+                .expect("new alpha memory must exist")
+                .insert(fact_id, &entry.fact);
+
+            if let Some(memories) = self.fact_to_memories.get_mut(fact_id) {
+                if !memories.contains(&memory_id) {
+                    memories.push(memory_id);
+                }
+            } else {
+                self.fact_to_memories
+                    .insert(fact_id, SmallVec::from_slice(&[memory_id]));
+            }
+        }
+    }
+
     /// Get a reference to a memory.
     #[must_use]
     pub fn get_memory(&self, id: AlphaMemoryId) -> Option<&AlphaMemory> {
@@ -643,6 +689,18 @@ impl Default for AlphaNetwork {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn fact_matches_entry_type(fact: &Fact, entry_type: &AlphaEntryType) -> bool {
+    matches!(
+        (fact, entry_type),
+        (Fact::Ordered(ordered), AlphaEntryType::OrderedRelation(relation))
+            if ordered.relation == *relation
+    ) || matches!(
+        (fact, entry_type),
+        (Fact::Template(template), AlphaEntryType::Template(template_id))
+            if template.template_id == *template_id
+    )
 }
 
 /// Evaluate a constant test against a fact.

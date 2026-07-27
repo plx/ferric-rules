@@ -779,6 +779,32 @@ fn test_compat_negation_forall_fail() {
 // Core domain — deeper coverage
 // ===========================================================================
 
+#[test]
+fn fr_rete_003_clips_staged_late_rule_backfill_fixture() {
+    // These two files are also run sequentially against the pinned CLIPS 6.30
+    // image. Keeping assertion and rule-definition stages separate is essential:
+    // a single load would compile all Ferric rules before processing assertions.
+    let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("core");
+    let prelude = std::fs::read_to_string(fixture_root.join("late_rule_backfill_prelude.clp"))
+        .expect("read staged backfill prelude");
+    let rules = std::fs::read_to_string(fixture_root.join("late_rule_backfill_rules.clp"))
+        .expect("read staged backfill rules");
+
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine.load_str(&prelude).expect("load pre-existing WMEs");
+    engine.load_str(&rules).expect("load late rules");
+    let rules_fired = run_compat_with_guard(&mut engine, "FR-RETE-003 staged fixture");
+
+    assert_eq!(rules_fired, 3);
+    assert_eq!(
+        engine.get_output("t"),
+        Some("single\njoin 1\nstate alice\n")
+    );
+}
+
 /// Multi-pattern join: a rule with two patterns joined by a shared variable.
 #[test]
 fn test_compat_core_multi_pattern_join() {

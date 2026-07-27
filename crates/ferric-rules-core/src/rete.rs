@@ -242,6 +242,41 @@ impl ReteNetwork {
         self.propagate_token(root_token, children, fact_base, &mut new_activations);
     }
 
+    /// Populate the beta frontier added by an online rule installation.
+    ///
+    /// Each frontier edge has a parent that existed before compilation and a
+    /// child created by this installation. Left-activating those children from
+    /// the parent's current tokens recursively fills every new descendant
+    /// without replaying into old siblings or terminals.
+    pub(crate) fn initialize_beta_frontier(
+        &mut self,
+        first_new_node: NodeId,
+        fact_base: &FactBase,
+    ) {
+        let root_id = self.beta.root_id();
+        let mut new_activations = Vec::new();
+
+        for (parent_id, new_child) in self.beta.installation_frontier(first_new_node) {
+            if parent_id == root_id {
+                self.activate_root_children(&[new_child], fact_base);
+                continue;
+            }
+
+            let Some(parent_memory_id) = self.beta.memory_id_for_node(parent_id) else {
+                continue;
+            };
+            let parent_tokens: SmallVec<[TokenId; 8]> = self
+                .beta
+                .get_memory(parent_memory_id)
+                .map(|memory| memory.iter().collect())
+                .unwrap_or_default();
+
+            for parent_token in parent_tokens {
+                self.propagate_token(parent_token, &[new_child], fact_base, &mut new_activations);
+            }
+        }
+    }
+
     /// Ensure the root beta memory contains its single empty-prefix token.
     fn seed_root_token(&mut self) -> TokenId {
         let root_id = self.beta.root_id();
@@ -3993,7 +4028,7 @@ mod tests {
             // Request var index on join1's memory for var_x
             // (this simulates what the compiler does for the child join's equality test)
             if let Some(mem) = rete.beta.get_memory_mut(join1_mem_id) {
-                mem.request_var_index(var_x);
+                mem.request_var_index_empty(var_x);
             }
 
             // Request alpha memory indexing

@@ -1768,6 +1768,211 @@ mod tests {
         assert_single_root_prefix_token(&engine);
     }
 
+    fn activation_count_for_rule(engine: &Engine, rule_name: &str) -> usize {
+        engine
+            .rete
+            .agenda
+            .iter_activations()
+            .filter(|activation| engine.rule_name(activation.rule) == Some(rule_name))
+            .count()
+    }
+
+    #[test]
+    fn fr_rete_003_late_single_pattern_rule_backfills() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine.assert_ordered("foo", vec![]).unwrap();
+
+        engine
+            .load_str(
+                r#"
+                (defrule late
+                    (foo)
+                    =>
+                    (printout t "late" crlf))
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(engine.agenda_len(), 1);
+        assert_eq!(activation_count_for_rule(&engine, "late"), 1);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("late\n"));
+    }
+
+    #[test]
+    fn fr_rete_003_late_join_backfills() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine.load_str("(defrule prefix (left ?x) =>)").unwrap();
+        engine.load_str("(assert (left 1) (right 1 old))").unwrap();
+        assert_eq!(activation_count_for_rule(&engine, "prefix"), 1);
+
+        engine
+            .load_str(
+                r#"
+                (defrule late-join
+                    (left ?x)
+                    (right ?x ?tag)
+                    =>
+                    (printout t "late " ?tag crlf))
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            activation_count_for_rule(&engine, "prefix"),
+            1,
+            "initialization must not replay into the old terminal"
+        );
+        assert_eq!(activation_count_for_rule(&engine, "late-join"), 1);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        assert_eq!(engine.get_output("t"), Some("late old\n"));
+
+        engine.load_str("(assert (right 1 new))").unwrap();
+        assert_eq!(
+            activation_count_for_rule(&engine, "late-join"),
+            1,
+            "the populated parent memory's equality index must serve future facts"
+        );
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("late old\nlate new\n"));
+    }
+
+    #[test]
+    fn fr_rete_003_late_negative_and_exists_backfill() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let blocker = engine.assert_ordered("blocked", vec![]).unwrap();
+        engine.assert_ordered("seed", vec![]).unwrap();
+        engine.assert_ordered("ready", vec![]).unwrap();
+
+        engine
+            .load_str(
+                r#"
+                (defrule late-negative
+                    (seed)
+                    (not (blocked))
+                    =>
+                    (printout t "negative" crlf))
+                (defrule late-exists
+                    (seed)
+                    (exists (ready))
+                    =>
+                    (printout t "exists" crlf))
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(activation_count_for_rule(&engine, "late-negative"), 0);
+        assert_eq!(activation_count_for_rule(&engine, "late-exists"), 1);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("exists\n"));
+
+        engine.retract(blocker).unwrap();
+        assert_eq!(activation_count_for_rule(&engine, "late-negative"), 1);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("exists\nnegative\n"));
+    }
+
+    #[test]
+    fn fr_rete_003_backfill_does_not_duplicate_old_activations() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine.load_str("(defrule old-rule (item ?x) =>)").unwrap();
+        engine.load_str("(assert (item 1))").unwrap();
+        assert_eq!(activation_count_for_rule(&engine, "old-rule"), 1);
+
+        engine.load_str("(defrule new-rule (item ?x) =>)").unwrap();
+
+        assert_eq!(activation_count_for_rule(&engine, "old-rule"), 1);
+        assert_eq!(activation_count_for_rule(&engine, "new-rule"), 1);
+        assert_eq!(engine.agenda_len(), 2);
+    }
+
+    #[test]
+    fn fr_rete_003_rule_loaded_after_retractions_sees_current_state() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let stale = engine.assert_ordered_symbol("item", "stale").unwrap();
+        engine.assert_ordered_symbol("item", "current").unwrap();
+        engine.retract(stale).unwrap();
+
+        engine
+            .load_str(
+                r"
+                (defrule late-current
+                    (item ?value)
+                    =>
+                    (printout t ?value crlf))
+                ",
+            )
+            .unwrap();
+
+        assert_eq!(activation_count_for_rule(&engine, "late-current"), 1);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("current\n"));
+    }
+
+    #[test]
+    fn fr_rete_003_late_ncc_and_empty_prefix_rules_backfill() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str("(assert (item 1) (block 1) (reason 1) (item 2))")
+            .unwrap();
+
+        engine
+            .load_str(
+                r#"
+                (defrule late-ncc
+                    (item ?x)
+                    (not (and (block ?x) (reason ?x)))
+                    =>
+                    (printout t "item " ?x crlf))
+                (defrule late-empty
+                    =>
+                    (printout t "empty" crlf))
+                (defrule late-test-only
+                    (test (> 2 1))
+                    =>
+                    (printout t "test" crlf))
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(activation_count_for_rule(&engine, "late-ncc"), 1);
+        assert_eq!(activation_count_for_rule(&engine, "late-empty"), 1);
+        assert_eq!(activation_count_for_rule(&engine, "late-test-only"), 1);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 3);
+        let output = engine.get_output("t").unwrap_or_default();
+        assert!(output.contains("item 2\n"));
+        assert!(output.contains("empty\n"));
+        assert!(output.contains("test\n"));
+    }
+
+    #[test]
+    fn fr_rete_003_failed_installation_leaves_no_terminal_or_activation() {
+        let mut engine = Engine::new(EngineConfig::ascii());
+        engine.load_str("(assert (foo 1))").unwrap();
+        let baseline_tokens = engine.rete.token_store.len();
+
+        let result = engine.load_str(
+            r#"
+            (defrule broken
+                (foo ?x)
+                =>
+                (printout t "é" crlf))
+            "#,
+        );
+        assert!(result.is_err(), "non-ASCII RHS must fail in ASCII mode");
+        assert!(engine.rules().is_empty());
+        assert_eq!(engine.agenda_len(), 0);
+        assert_eq!(engine.rete.token_store.len(), baseline_tokens);
+
+        engine.load_str("(assert (foo 2))").unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            0,
+            "future facts must not reach a failed rule installation"
+        );
+        assert_eq!(engine.rete.token_store.len(), baseline_tokens);
+    }
+
     #[test]
     fn retract_fact() {
         let mut engine = Engine::new(EngineConfig::utf8());

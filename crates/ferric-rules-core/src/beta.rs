@@ -12,8 +12,7 @@ use crate::binding::{BindingSet, VarId};
 use crate::exists::{ExistsMemory, ExistsMemoryId};
 use crate::ncc::{NccMemory, NccMemoryId};
 use crate::negative::{NegativeMemory, NegativeMemoryId};
-use crate::token::NodeId;
-use crate::token::TokenId;
+use crate::token::{NodeId, TokenId, TokenStore};
 use crate::value::AtomKey;
 
 type FanoutNodes = SmallVec<[NodeId; 4]>;
@@ -127,12 +126,43 @@ impl BetaMemory {
         }
     }
 
-    /// Request indexing on a particular variable binding.
+    /// Request indexing on a particular variable binding and backfill existing tokens.
     ///
-    /// Called during compilation when a child join node has an equality test on
-    /// `var_id`. Idempotent — duplicate requests are ignored. No backfill is needed
-    /// because beta memories are always empty at compile time.
-    pub fn request_var_index(&mut self, var_id: VarId) {
+    /// Called during online rule compilation when a new child join may be
+    /// attached to an already-populated beta memory. Idempotent — duplicate
+    /// requests are ignored.
+    pub fn request_var_index(&mut self, var_id: VarId, token_store: &TokenStore) {
+        if self.indexed_vars.contains(&var_id) {
+            return;
+        }
+
+        self.indexed_vars.push(var_id);
+
+        for token_id in self.tokens.iter().copied() {
+            let Some(value) = token_store
+                .get(token_id)
+                .and_then(|token| token.bindings.get(var_id))
+            else {
+                continue;
+            };
+            let Some(key) = AtomKey::from_value(value) else {
+                continue;
+            };
+            self.var_indices
+                .entry(var_id)
+                .or_default()
+                .entry(key)
+                .or_default()
+                .push(token_id);
+        }
+    }
+
+    /// Request indexing when the beta memory is known to be empty.
+    pub fn request_var_index_empty(&mut self, var_id: VarId) {
+        assert!(
+            self.tokens.is_empty(),
+            "request_var_index_empty called on non-empty beta memory; use request_var_index() to backfill"
+        );
         if !self.indexed_vars.contains(&var_id) {
             self.indexed_vars.push(var_id);
         }
@@ -655,6 +685,43 @@ impl BetaNetwork {
         self.root_id
     }
 
+    /// Return the first node ID that has not yet been allocated.
+    ///
+    /// The compiler records this boundary before installing a rule so the
+    /// initialization phase can identify only edges added by that installation.
+    #[must_use]
+    pub(crate) fn next_node_id(&self) -> NodeId {
+        NodeId(self.next_node_id)
+    }
+
+    /// Find newly attached children whose parents predate an installation boundary.
+    ///
+    /// Initializing only this frontier populates every new descendant through
+    /// normal propagation while leaving pre-existing children and terminals
+    /// untouched.
+    pub(crate) fn installation_frontier(&self, first_new_node: NodeId) -> Vec<(NodeId, NodeId)> {
+        // Node IDs are allocated monotonically, so inspect only nodes created by
+        // this installation. Reading each new node's parent avoids an O(total
+        // network size) scan after every rule in a cold-start rule set. Direct
+        // edges also preserve allocation order without a temporary hash map.
+        (first_new_node.0..self.next_node_id)
+            .filter_map(|raw_node_id| {
+                let child_id = NodeId(raw_node_id);
+                let child = self.nodes.get(&child_id)?;
+                let parent_id = match child {
+                    BetaNode::Join { parent, .. }
+                    | BetaNode::Terminal { parent, .. }
+                    | BetaNode::Negative { parent, .. }
+                    | BetaNode::Ncc { parent, .. }
+                    | BetaNode::NccPartner { parent, .. }
+                    | BetaNode::Exists { parent, .. } => *parent,
+                    BetaNode::Root { .. } => return None,
+                };
+                (parent_id.0 < first_new_node.0).then_some((parent_id, child_id))
+            })
+            .collect()
+    }
+
     /// Get the beta memory ID associated with a node.
     ///
     /// Returns `None` for nodes without a beta memory.
@@ -1173,6 +1240,24 @@ mod tests {
             panic!("Expected Join node");
         }
     }
+
+    #[test]
+    fn installation_frontier_contains_only_new_children_of_old_parents() {
+        let root = NodeId(100);
+        let mut net = BetaNetwork::new(root);
+        let (old_join, _) = net.create_join_node(root, AlphaMemoryId(1), Vec::new(), Vec::new());
+        net.create_terminal_node(old_join, RuleId(1), Salience::DEFAULT);
+
+        let first_new_node = net.next_node_id();
+        let new_terminal = net.create_terminal_node(old_join, RuleId(2), Salience::DEFAULT);
+        let (new_join, _) = net.create_join_node(root, AlphaMemoryId(2), Vec::new(), Vec::new());
+        net.create_terminal_node(new_join, RuleId(3), Salience::DEFAULT);
+
+        assert_eq!(
+            net.installation_frontier(first_new_node),
+            vec![(old_join, new_terminal), (root, new_join)]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1422,7 +1507,7 @@ mod proptests {
 
             let indexed_var = VarId(0);
             let mut mem = BetaMemory::new(BetaMemoryId(0));
-            mem.request_var_index(indexed_var);
+            mem.request_var_index_empty(indexed_var);
 
             let mut model = IndexedBetaModel::default();
 
@@ -1501,7 +1586,7 @@ mod proptests {
 
             let indexed_var = VarId(0);
             let mut mem = BetaMemory::new(BetaMemoryId(0));
-            mem.request_var_index(indexed_var);
+            mem.request_var_index_empty(indexed_var);
 
             // Build a map from TokenId -> key_val for brute-force scanning
             let mut tid_to_key: std::collections::HashMap<TokenId, i64> =
@@ -1548,7 +1633,7 @@ mod proptests {
 
             let indexed_var = VarId(0);
             let mut mem = BetaMemory::new(BetaMemoryId(0));
-            mem.request_var_index(indexed_var);
+            mem.request_var_index_empty(indexed_var);
 
             for (i, &kv) in key_vals.iter().enumerate() {
                 let bindings = make_bindings(0, kv);
@@ -1579,10 +1664,10 @@ mod proptests {
             let mut mem = BetaMemory::new(BetaMemoryId(0));
             let vid = VarId(var_id);
 
-            mem.request_var_index(vid);
+            mem.request_var_index_empty(vid);
             prop_assert!(mem.is_var_indexed(vid));
 
-            mem.request_var_index(vid);
+            mem.request_var_index_empty(vid);
             prop_assert!(mem.is_var_indexed(vid));
 
             // indexed_vars should have exactly one entry for this var
