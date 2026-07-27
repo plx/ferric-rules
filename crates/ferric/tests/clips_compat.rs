@@ -5,7 +5,8 @@
 //! validate the harness itself before compatibility fixtures are added.
 
 use ferric::core::Fact;
-use ferric::runtime::{Engine, EngineConfig, HaltReason, LoadError, RunLimit};
+use ferric::runtime::evaluator::EvalError;
+use ferric::runtime::{ActionError, Engine, EngineConfig, HaltReason, LoadError, RunLimit};
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -450,6 +451,141 @@ fn test_compat_generics_basic_dispatch() {
 #[test]
 fn test_compat_generics_specificity() {
     let _ = assert_fixture_output("generics/specificity.clp", 1, "integer\n");
+}
+
+// ===========================================================================
+// Callable return compatibility tests
+// ===========================================================================
+
+#[test]
+fn test_compat_return_unwinds_only_the_current_callable() {
+    // Pinned against the repository's CLIPS 6.30 reference image. This covers
+    // deffunction and defmethod callables, nested calls, structured control
+    // forms, every source-constructible Ferric value kind, and side effects
+    // after a taken return.
+    let source = r#"
+(deffunction return-early ()
+    (printout t "function-before|" crlf)
+    (return 1)
+    (printout t "function-after|" crlf)
+    2)
+
+(deffunction return-if ()
+    (if TRUE
+        then (return if-value)
+        else wrong)
+    after-if)
+
+(deffunction return-while ()
+    (while TRUE do
+        (return while-value)
+        (printout t "while-after|" crlf))
+    after-while)
+
+(deffunction return-count ()
+    (loop-for-count (?i 1 3) do
+        (return ?i)
+        (printout t "count-after|" crlf))
+    after-count)
+
+(deffunction return-inner ()
+    (return 7)
+    9)
+
+(deffunction return-outer ()
+    (printout t "inner=" (return-inner) crlf)
+    8)
+
+(deffunction return-void () (return) 99)
+(deffunction return-int () (return 42) 99)
+(deffunction return-float () (return 3.5) 99)
+(deffunction return-symbol () (return alpha) omega)
+(deffunction return-string () (return "hello") "after")
+(deffunction return-multifield ()
+    (return (create$ alpha 2 3.5))
+    omega)
+
+(defmethod return-method ((?x INTEGER))
+    (return (+ ?x 1))
+    999)
+
+(defrule exercise-return
+    =>
+    (printout t "early=")
+    (printout t (return-early) crlf)
+    (printout t "if=")
+    (printout t (return-if) crlf)
+    (printout t "while=")
+    (printout t (return-while) crlf)
+    (printout t "count=")
+    (printout t (return-count) crlf)
+    (printout t "outer=")
+    (printout t (return-outer) crlf)
+    (printout t "void=" (return-void) "|" crlf)
+    (printout t "int=" (return-int) crlf)
+    (printout t "float=" (return-float) crlf)
+    (printout t "symbol=" (return-symbol) crlf)
+    (printout t "string=" (return-string) crlf)
+    (printout t "multifield=" (return-multifield) crlf)
+    (printout t "method=" (return-method 4) crlf))
+"#;
+
+    let expected = concat!(
+        "early=function-before|\n",
+        "1\n",
+        "if=if-value\n",
+        "while=while-value\n",
+        "count=1\n",
+        "outer=inner=7\n",
+        "8\n",
+        "void=|\n",
+        "int=42\n",
+        "float=3.5\n",
+        "symbol=alpha\n",
+        "string=hello\n",
+        "multifield=(alpha 2 3.5)\n",
+        "method=5\n",
+    );
+    let result = assert_clips_compat_returns(source, expected);
+    assert_eq!(result.rules_fired, 1);
+}
+
+#[test]
+fn test_compat_return_stops_the_current_rule_rhs() {
+    // CLIPS permits `return` in a rule RHS and uses it to stop the remaining
+    // action sequence. Its value is discarded; it does not assert the sentinel
+    // or emit an error.
+    let source = r#"
+(defrule return-from-rhs
+    =>
+    (printout t "rhs-before|" crlf)
+    (return 42)
+    (printout t "rhs-after|" crlf)
+    (assert (rhs-after)))
+"#;
+    let result = run_clips_compat_full(source);
+    assert_eq!(result.output, "rhs-before|\n");
+    assert_eq!(result.rules_fired, 1);
+    assert!(!result.has_fact("rhs-after"));
+}
+
+#[test]
+fn test_compat_return_argument_error_preserves_diagnostic_class() {
+    let source = r#"
+(deffunction return-error ()
+    (return (/ 1 0))
+    (printout t "function-after-error|" crlf))
+
+(defrule exercise-return-error
+    =>
+    (printout t (return-error) crlf))
+"#;
+    let result = run_clips_compat_full(source);
+    assert_eq!(result.output, "");
+    assert!(matches!(
+        result.engine().action_diagnostics(),
+        [ActionError::Evaluator(EvalError::DivisionByZero { .. })]
+    ));
 }
 
 // ===========================================================================

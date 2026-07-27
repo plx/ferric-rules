@@ -419,6 +419,10 @@ pub enum ActionError {
     EvalError(String),
     #[error("expression evaluation error: {0}")]
     Evaluator(#[from] crate::evaluator::EvalError),
+    /// Internal non-error signal used to unwind the current rule RHS.
+    #[doc(hidden)]
+    #[error("internal rule return control escaped the action sequence")]
+    RuleReturn,
 }
 
 /// Execute actions for a fired rule.
@@ -518,7 +522,7 @@ pub(crate) fn execute_actions(
             .runtime_actions
             .get(index)
             .and_then(Option::as_ref);
-        if let Err(e) = execute_single_action(
+        let action_result = execute_single_action(
             &mut reset_requested,
             &mut clear_requested,
             token,
@@ -528,16 +532,30 @@ pub(crate) fn execute_actions(
             context,
             &mut eval_env,
             collected_facts,
-        ) {
-            ferric_event!(
-                warn,
-                rule = %rule_info.name,
-                action_index = index,
-                action_name = %action.call.name,
-                error = %e,
-                "rule_action_error"
-            );
-            errors.push(e);
+        );
+        match action_result {
+            Ok(()) => {}
+            Err(ActionError::RuleReturn) => {
+                ferric_event!(
+                    debug,
+                    rule = %rule_info.name,
+                    action_index = index,
+                    "rule_action_return"
+                );
+                flush_deferred_printout(context);
+                break;
+            }
+            Err(e) => {
+                ferric_event!(
+                    warn,
+                    rule = %rule_info.name,
+                    action_index = index,
+                    action_name = %action.call.name,
+                    error = %e,
+                    "rule_action_error"
+                );
+                errors.push(e);
+            }
         }
         flush_deferred_printout(context);
         // Stop executing further actions if clear/reset was requested.
@@ -1022,6 +1040,25 @@ fn execute_single_action(
             // CLIPS allows this but it's unusual. We silently ignore it.
             Ok(())
         }
+        "return" => match call.args.as_slice() {
+            [] => Err(ActionError::RuleReturn),
+            [value_expr] => {
+                let _ =
+                    eval_env.eval_expr(token, rule_info, value_expr, context, collected_facts)?;
+                Err(ActionError::RuleReturn)
+            }
+            _ => Err(ActionError::Evaluator(
+                crate::evaluator::EvalError::ArityMismatch {
+                    name: "return".to_string(),
+                    expected: "0 or 1".to_string(),
+                    actual: call.args.len(),
+                    span: Some(crate::evaluator::SourceSpan {
+                        line: call.span.start.line,
+                        column: call.span.start.column,
+                    }),
+                },
+            )),
+        },
         "bind" => {
             if let [ActionExpr::Variable(name, _), value_expr] = call.args.as_slice() {
                 let value =

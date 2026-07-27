@@ -119,6 +119,19 @@ pub enum EvalError {
         owning_module: String,
         span: Option<SourceSpan>,
     },
+
+    #[error("`return` is not valid outside a callable at {}", format_span(.span.as_ref()))]
+    ReturnOutsideCallable { span: Option<SourceSpan> },
+
+    /// Internal non-local control signal. Callable boundaries consume this
+    /// variant, and the public evaluator converts an escaped signal into
+    /// [`EvalError::ReturnOutsideCallable`].
+    #[doc(hidden)]
+    #[error("internal return control escaped its callable at {}", format_span(.span.as_ref()))]
+    ReturnControl {
+        value: Value,
+        span: Option<SourceSpan>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -450,17 +463,26 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
     #[cfg(feature = "tracing")]
     {
         if EvalRunGuard::is_active() {
-            return eval_inner(ctx, expr);
+            return finish_root_evaluation(eval_inner(ctx, expr));
         }
 
         let _run_guard = EvalRunGuard::enter_root();
         ferric_span!(debug_span, "eval_root", call_depth = ctx.call_depth);
-        return eval_inner(ctx, expr);
+        finish_root_evaluation(eval_inner(ctx, expr))
     }
 
     #[cfg(not(feature = "tracing"))]
     {
-        eval_inner(ctx, expr)
+        finish_root_evaluation(eval_inner(ctx, expr))
+    }
+}
+
+fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, EvalError> {
+    match result {
+        Err(EvalError::ReturnControl { span, .. }) => {
+            Err(EvalError::ReturnOutsideCallable { span })
+        }
+        other => other,
     }
 }
 
@@ -1132,7 +1154,11 @@ fn execute_callable_body(
 
     let mut result = Value::Void;
     for body_expr in &body_exprs {
-        result = eval_inner(&mut inner_ctx, body_expr)?;
+        match eval_inner(&mut inner_ctx, body_expr) {
+            Ok(value) => result = value,
+            Err(EvalError::ReturnControl { value, .. }) => return Ok(value),
+            Err(error) => return Err(error),
+        }
     }
     Ok(result)
 }
@@ -4826,22 +4852,28 @@ fn builtin_close(
     Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
 }
 
-/// `return` — compatibility fallback returning its argument (or VOID).
+/// `return` — unwind the current callable with its argument (or VOID).
 fn builtin_return(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    match args {
-        [] => Ok(Value::Void),
-        [expr] => eval_inner(ctx, expr),
-        _ => Err(EvalError::ArityMismatch {
-            name: "return".to_string(),
-            expected: "0 or 1".to_string(),
-            actual: args.len(),
-            span: span.cloned(),
-        }),
-    }
+    let value = match args {
+        [] => Value::Void,
+        [expr] => eval_inner(ctx, expr)?,
+        _ => {
+            return Err(EvalError::ArityMismatch {
+                name: "return".to_string(),
+                expected: "0 or 1".to_string(),
+                actual: args.len(),
+                span: span.cloned(),
+            });
+        }
+    };
+    Err(EvalError::ReturnControl {
+        value,
+        span: span.cloned(),
+    })
 }
 
 /// `load` — runtime load command placeholder (currently non-mutating).
@@ -8413,15 +8445,30 @@ mod tests {
     }
 
     #[test]
-    fn return_without_argument_returns_void() {
-        let result = eval_expr(&call("return", vec![])).unwrap();
-        assert!(matches!(result, Value::Void));
+    fn return_without_argument_is_invalid_outside_callable() {
+        let error = eval_expr(&call("return", vec![]))
+            .expect_err("top-level return must not escape as an ordinary value");
+        assert!(
+            error.to_string().contains("not valid outside a callable"),
+            "unexpected diagnostic: {error}"
+        );
     }
 
     #[test]
-    fn return_with_argument_returns_value() {
-        let result = eval_expr(&call("return", vec![int(123)])).unwrap();
-        assert!(result.structural_eq(&Value::Integer(123)));
+    fn return_with_argument_is_invalid_outside_callable() {
+        let error = eval_expr(&call("return", vec![int(123)]))
+            .expect_err("top-level return must not escape as an ordinary value");
+        assert!(
+            error.to_string().contains("not valid outside a callable"),
+            "unexpected diagnostic: {error}"
+        );
+    }
+
+    #[test]
+    fn return_argument_error_preserves_original_diagnostic() {
+        let division = call("/", vec![int(1), int(0)]);
+        let result = eval_expr(&call("return", vec![division]));
+        assert!(matches!(result, Err(EvalError::DivisionByZero { .. })));
     }
 
     #[test]

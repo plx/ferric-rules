@@ -429,6 +429,7 @@ fn action_error_diagnostic(error: &ActionError) -> Diagnostic {
         ActionError::InvalidRetract => "invalid-retract",
         ActionError::Encoding(_) => "encoding-error",
         ActionError::EvalError(_) | ActionError::Evaluator(_) => "evaluation-error",
+        ActionError::RuleReturn => "control-flow",
     };
     Diagnostic::warning(Phase::Run, category, error.to_string())
 }
