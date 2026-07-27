@@ -1096,7 +1096,7 @@ mod tests {
                 r"
             (defrule r1 (a ?x) => (printout t ?x))
             (defrule r2 (b ?x) (not (c ?x)) => (printout t ?x))
-            (defrule r3 (d) (exists (e ?x)) => (printout t ?x))
+            (defrule r3 (d) (exists (e ?x)) => (printout t exists))
         ",
             )
             .unwrap();

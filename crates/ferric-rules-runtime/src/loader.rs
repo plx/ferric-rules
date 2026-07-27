@@ -1876,7 +1876,7 @@ impl Engine {
 
     /// Recursively flatten a pattern for top-level condition processing.
     /// - `And`/`Logical`: flatten children.
-    /// - `Not(Not(X))`: strip double negation (exists ≈ positive), then flatten X.
+    /// - Double negation remains intact so translation can compile it as exists.
     /// - Everything else: push as-is.
     fn flatten_pattern<'a>(pattern: &'a Pattern, out: &mut Vec<&'a Pattern>) {
         match pattern {
@@ -1885,15 +1885,365 @@ impl Engine {
                     Self::flatten_pattern(sub, out);
                 }
             }
-            Pattern::Not(inner, _) => {
-                if let Pattern::Not(doubly_inner, _) = inner.as_ref() {
-                    // (not (not X)) ≡ (exists X): strip double negation
-                    Self::flatten_pattern(doubly_inner, out);
-                } else {
-                    out.push(pattern);
+            _ => out.push(pattern),
+        }
+    }
+
+    fn collect_pattern_binding_variables(pattern: &Pattern, variables: &mut HashSet<String>) {
+        match pattern {
+            Pattern::Ordered(ordered) => {
+                for constraint in &ordered.constraints {
+                    Self::collect_constraint_binding_variables(constraint, variables);
                 }
             }
-            _ => out.push(pattern),
+            Pattern::Template(template) => {
+                for slot in &template.slot_constraints {
+                    Self::collect_constraint_binding_variables(&slot.constraint, variables);
+                }
+            }
+            Pattern::Assigned {
+                variable, pattern, ..
+            } => {
+                variables.insert(variable.clone());
+                Self::collect_pattern_binding_variables(pattern, variables);
+            }
+            Pattern::And(children, _)
+            | Pattern::Logical(children, _)
+            | Pattern::Or(children, _)
+            | Pattern::Exists(children, _)
+            | Pattern::Forall(children, _) => {
+                for child in children {
+                    Self::collect_pattern_binding_variables(child, variables);
+                }
+            }
+            Pattern::Not(inner, _) => {
+                Self::collect_pattern_binding_variables(inner, variables);
+            }
+            Pattern::Test(_, _) => {}
+        }
+    }
+
+    fn collect_constraint_binding_variables(
+        constraint: &Constraint,
+        variables: &mut HashSet<String>,
+    ) {
+        match constraint {
+            Constraint::Variable(name, _) | Constraint::MultiVariable(name, _) => {
+                variables.insert(name.clone());
+            }
+            Constraint::And(parts, _) | Constraint::Or(parts, _) => {
+                for part in parts {
+                    Self::collect_constraint_binding_variables(part, variables);
+                }
+            }
+            Constraint::Literal(_)
+            | Constraint::Wildcard(_)
+            | Constraint::MultiWildcard(_)
+            | Constraint::Predicate(_, _)
+            | Constraint::ReturnValue(_, _)
+            | Constraint::Not(_, _) => {}
+        }
+    }
+
+    fn collect_existential_local_variables(pattern: &Pattern, variables: &mut HashSet<String>) {
+        match pattern {
+            Pattern::Exists(children, _) => {
+                for child in children {
+                    Self::collect_pattern_binding_variables(child, variables);
+                }
+            }
+            Pattern::Not(inner, _) => {
+                if let Pattern::Not(existential, _) = inner.as_ref() {
+                    Self::collect_pattern_binding_variables(existential, variables);
+                } else {
+                    Self::collect_existential_local_variables(inner, variables);
+                }
+            }
+            Pattern::Assigned { pattern, .. } => {
+                Self::collect_existential_local_variables(pattern, variables);
+            }
+            Pattern::And(children, _)
+            | Pattern::Logical(children, _)
+            | Pattern::Or(children, _)
+            | Pattern::Forall(children, _) => {
+                for child in children {
+                    Self::collect_existential_local_variables(child, variables);
+                }
+            }
+            Pattern::Ordered(_) | Pattern::Template(_) | Pattern::Test(_, _) => {}
+        }
+    }
+
+    fn first_restricted_sexpr_variable(
+        expr: &SExpr,
+        restricted: &HashSet<String>,
+    ) -> Option<String> {
+        match expr {
+            SExpr::Atom(Atom::SingleVar(name) | Atom::MultiVar(name), _) => {
+                restricted.contains(name).then(|| name.clone())
+            }
+            SExpr::Atom(_, _) => None,
+            SExpr::List(items, _) => items
+                .iter()
+                .find_map(|item| Self::first_restricted_sexpr_variable(item, restricted)),
+        }
+    }
+
+    fn validate_existential_test_scope(
+        rule_name: &str,
+        expr: &SExpr,
+        existential_locals: &HashSet<String>,
+        exported_variables: &HashSet<String>,
+    ) -> Result<(), LoadError> {
+        let restricted: HashSet<String> = existential_locals
+            .difference(exported_variables)
+            .cloned()
+            .collect();
+        if let Some(variable) = Self::first_restricted_sexpr_variable(expr, &restricted) {
+            return Err(LoadError::Compile(format!(
+                "rule `{rule_name}` variable ?{variable} is not exported by existential conditional element"
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_existential_rhs_scope(
+        rule: &RuleConstruct,
+        existential_locals: &HashSet<String>,
+        exported_variables: &HashSet<String>,
+    ) -> Result<(), LoadError> {
+        let restricted: HashSet<String> = existential_locals
+            .difference(exported_variables)
+            .cloned()
+            .collect();
+        if restricted.is_empty() {
+            return Ok(());
+        }
+
+        let mut rhs_locals = HashSet::new();
+        for action in &rule.actions {
+            Self::validate_existential_rhs_call(
+                &rule.name,
+                &action.call,
+                &restricted,
+                &mut rhs_locals,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn existential_scope_variable_name(name: &str) -> &str {
+        name.strip_prefix("$?").unwrap_or(name)
+    }
+
+    fn validate_existential_rhs_call(
+        rule_name: &str,
+        call: &FunctionCall,
+        restricted: &HashSet<String>,
+        rhs_locals: &mut HashSet<String>,
+    ) -> Result<(), LoadError> {
+        if call.name == "bind" {
+            if let Some(ActionExpr::Variable(name, _)) = call.args.first() {
+                for value in call.args.iter().skip(1) {
+                    Self::validate_existential_rhs_expr(rule_name, value, restricted, rhs_locals)?;
+                }
+                rhs_locals.insert(Self::existential_scope_variable_name(name).to_string());
+                return Ok(());
+            }
+        }
+
+        for arg in &call.args {
+            Self::validate_existential_rhs_expr(rule_name, arg, restricted, rhs_locals)?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)] // Mirrors every structured RHS scope in ActionExpr.
+    fn validate_existential_rhs_expr(
+        rule_name: &str,
+        expr: &ActionExpr,
+        restricted: &HashSet<String>,
+        rhs_locals: &mut HashSet<String>,
+    ) -> Result<(), LoadError> {
+        match expr {
+            ActionExpr::Variable(name, span) => {
+                let scope_name = Self::existential_scope_variable_name(name);
+                if restricted.contains(scope_name) && !rhs_locals.contains(scope_name) {
+                    let display_name = if name.starts_with("$?") {
+                        name.clone()
+                    } else {
+                        format!("?{name}")
+                    };
+                    return Err(LoadError::Compile(format!(
+                        "rule `{rule_name}` variable {display_name} at line {} is not exported by existential conditional element",
+                        span.start.line
+                    )));
+                }
+                Ok(())
+            }
+            ActionExpr::FunctionCall(call) => {
+                Self::validate_existential_rhs_call(rule_name, call, restricted, rhs_locals)
+            }
+            ActionExpr::If {
+                condition,
+                then_actions,
+                else_actions,
+                ..
+            } => {
+                Self::validate_existential_rhs_expr(rule_name, condition, restricted, rhs_locals)?;
+                let mut then_locals = rhs_locals.clone();
+                for action in then_actions {
+                    Self::validate_existential_rhs_expr(
+                        rule_name,
+                        action,
+                        restricted,
+                        &mut then_locals,
+                    )?;
+                }
+                let mut else_locals = rhs_locals.clone();
+                for action in else_actions {
+                    Self::validate_existential_rhs_expr(
+                        rule_name,
+                        action,
+                        restricted,
+                        &mut else_locals,
+                    )?;
+                }
+                rhs_locals.extend(then_locals);
+                rhs_locals.extend(else_locals);
+                Ok(())
+            }
+            ActionExpr::While {
+                condition, body, ..
+            } => {
+                Self::validate_existential_rhs_expr(rule_name, condition, restricted, rhs_locals)?;
+                let mut body_locals = rhs_locals.clone();
+                for action in body {
+                    Self::validate_existential_rhs_expr(
+                        rule_name,
+                        action,
+                        restricted,
+                        &mut body_locals,
+                    )?;
+                }
+                rhs_locals.extend(body_locals);
+                Ok(())
+            }
+            ActionExpr::LoopForCount {
+                var_name,
+                start,
+                end,
+                body,
+                ..
+            } => {
+                Self::validate_existential_rhs_expr(rule_name, start, restricted, rhs_locals)?;
+                Self::validate_existential_rhs_expr(rule_name, end, restricted, rhs_locals)?;
+                let mut body_locals = rhs_locals.clone();
+                if let Some(name) = var_name {
+                    body_locals.insert(name.clone());
+                }
+                for action in body {
+                    Self::validate_existential_rhs_expr(
+                        rule_name,
+                        action,
+                        restricted,
+                        &mut body_locals,
+                    )?;
+                }
+                if let Some(name) = var_name {
+                    body_locals.remove(name);
+                }
+                rhs_locals.extend(body_locals);
+                Ok(())
+            }
+            ActionExpr::Progn {
+                var_name,
+                list_expr,
+                body,
+                ..
+            } => {
+                Self::validate_existential_rhs_expr(rule_name, list_expr, restricted, rhs_locals)?;
+                let mut body_locals = rhs_locals.clone();
+                body_locals.insert(var_name.clone());
+                body_locals.insert(format!("{var_name}-index"));
+                for action in body {
+                    Self::validate_existential_rhs_expr(
+                        rule_name,
+                        action,
+                        restricted,
+                        &mut body_locals,
+                    )?;
+                }
+                body_locals.remove(var_name);
+                body_locals.remove(&format!("{var_name}-index"));
+                rhs_locals.extend(body_locals);
+                Ok(())
+            }
+            ActionExpr::QueryAction {
+                bindings,
+                query,
+                body,
+                ..
+            } => {
+                let mut query_locals = rhs_locals.clone();
+                query_locals.extend(bindings.iter().map(|(name, _)| name.clone()));
+                Self::validate_existential_rhs_expr(
+                    rule_name,
+                    query,
+                    restricted,
+                    &mut query_locals,
+                )?;
+                for action in body {
+                    Self::validate_existential_rhs_expr(
+                        rule_name,
+                        action,
+                        restricted,
+                        &mut query_locals,
+                    )?;
+                }
+                for (name, _) in bindings {
+                    query_locals.remove(name);
+                }
+                rhs_locals.extend(query_locals);
+                Ok(())
+            }
+            ActionExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                Self::validate_existential_rhs_expr(rule_name, expr, restricted, rhs_locals)?;
+                for (case_expr, actions) in cases {
+                    Self::validate_existential_rhs_expr(
+                        rule_name, case_expr, restricted, rhs_locals,
+                    )?;
+                    let mut case_locals = rhs_locals.clone();
+                    for action in actions {
+                        Self::validate_existential_rhs_expr(
+                            rule_name,
+                            action,
+                            restricted,
+                            &mut case_locals,
+                        )?;
+                    }
+                    rhs_locals.extend(case_locals);
+                }
+                if let Some(actions) = default {
+                    let mut default_locals = rhs_locals.clone();
+                    for action in actions {
+                        Self::validate_existential_rhs_expr(
+                            rule_name,
+                            action,
+                            restricted,
+                            &mut default_locals,
+                        )?;
+                    }
+                    rhs_locals.extend(default_locals);
+                }
+                Ok(())
+            }
+            ActionExpr::Literal(_) | ActionExpr::GlobalVariable(_, _) => Ok(()),
         }
     }
 
@@ -2554,12 +2904,14 @@ impl Engine {
         let mut multifield_tail_bindings = Vec::new();
         let mut fact_index = 0usize;
         let mut internal_slot_var_seed = 0usize;
+        let mut exported_variables = HashSet::new();
+        let mut existential_locals = HashSet::new();
 
         // Flatten top-level Pattern::And and Pattern::Logical into their children.
         // CLIPS treats (and ...) as a grouping CE equivalent to listing sub-patterns directly.
         // (logical ...) is a truth-maintenance wrapper; we strip it (no TMS yet) and treat
         // children as top-level conditions.
-        // Also flatten (not (not X)) → X (double negation = exists, approximated as positive).
+        // Double negation stays intact and is translated through an exists node.
         let mut flat_patterns: Vec<&Pattern> = Vec::new();
         for pattern in &rule.patterns {
             Self::flatten_pattern(pattern, &mut flat_patterns);
@@ -2587,6 +2939,12 @@ impl Engine {
             // retained in rule metadata and referenced by predicate nodes at
             // their source position in the beta network.
             if let Pattern::Test(sexpr, _span) = pattern {
+                Self::validate_existential_test_scope(
+                    &rule.name,
+                    sexpr,
+                    &existential_locals,
+                    &exported_variables,
+                )?;
                 let runtime_expr =
                     crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
                         .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
@@ -2597,6 +2955,8 @@ impl Engine {
                 )?;
                 continue;
             }
+
+            Self::collect_existential_local_variables(pattern, &mut existential_locals);
 
             // Handle test CEs inside negation and NCC contexts by extracting
             // them as predicate nodes at their source position.
@@ -2644,6 +3004,16 @@ impl Engine {
                 &mut generated_tests,
                 &mut internal_slot_var_seed,
             )?;
+            if matches!(
+                &condition,
+                CompilableCondition::Pattern(compilable) if compilable.exists
+            ) && !generated_tests.is_empty()
+            {
+                return Err(LoadError::Compile(
+                    "complex constraints inside existential patterns are not supported at match time"
+                        .to_string(),
+                ));
+            }
             if matches!(condition, CompilableCondition::Ncc(_)) && !generated_tests.is_empty() {
                 return Err(LoadError::Compile(
                     "test CEs inside mixed negated conjunctions are not supported at match time"
@@ -2656,6 +3026,7 @@ impl Engine {
                 }
             }
             if Self::condition_has_fact_address(&condition) {
+                Self::collect_pattern_binding_variables(pattern, &mut exported_variables);
                 Self::collect_multifield_tail_bindings(
                     pattern,
                     fact_index,
@@ -2691,6 +3062,8 @@ impl Engine {
             };
             conditions.insert(0, CompilableCondition::Pattern(initial_pattern));
         }
+
+        Self::validate_existential_rhs_scope(rule, &existential_locals, &exported_variables)?;
 
         Ok(TranslatedRule {
             salience: Salience::new(rule.salience),
@@ -2769,12 +3142,25 @@ impl Engine {
                     }
                     Pattern::Not(doubly_inner, _) => {
                         // (not (not X)) ≡ (exists X) in CLIPS.
-                        // Strip double negation and translate as a positive condition.
-                        self.translate_condition(
-                            doubly_inner,
-                            generated_tests,
-                            internal_slot_var_seed,
-                        )
+                        // Preserve further nested negation parity, but compile
+                        // an ordinary doubly-negated fact pattern through the
+                        // support-counted exists node.
+                        if matches!(doubly_inner.as_ref(), Pattern::Not(..)) {
+                            self.translate_condition(
+                                doubly_inner,
+                                generated_tests,
+                                internal_slot_var_seed,
+                            )
+                        } else {
+                            let mut compilable = self.translate_pattern(
+                                doubly_inner,
+                                generated_tests,
+                                internal_slot_var_seed,
+                                false,
+                            )?;
+                            compilable.exists = true;
+                            Ok(CompilableCondition::Pattern(compilable))
+                        }
                     }
                     _ => {
                         let mut compilable = self.translate_pattern(

@@ -817,6 +817,18 @@ fn fr_rete_004_clips_match_time_transition_fixture() {
     );
 }
 
+#[test]
+fn fr_rete_005_clips_double_not_existential_transition_fixture() {
+    // Pinned against the repository's CLIPS 6.30 reference image. The single
+    // "one" line is significant: a second support does not create a second
+    // activation, and retracting only the first support keeps the match true.
+    let _ = assert_fixture_output(
+        "core/double_not_existential_transitions.clp",
+        5,
+        "zero\none\ntwo\npartial\nzero-again\n",
+    );
+}
+
 /// Multi-pattern join: a rule with two patterns joined by a shared variable.
 #[test]
 fn test_compat_core_multi_pattern_join() {
