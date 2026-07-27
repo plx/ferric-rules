@@ -2913,8 +2913,6 @@ mod tests {
     fn build_negative_with_variable_binding(
         symbol_table: &mut SymbolTable,
     ) -> (ReteNetwork, AlphaMemoryId, AlphaMemoryId, RuleId) {
-        use crate::binding::VarId;
-
         let mut rete = ReteNetwork::new();
 
         let item_sym = make_symbol(symbol_table, "item");
@@ -4143,8 +4141,6 @@ mod tests {
         symbol_table: &mut SymbolTable,
         test_type: JoinTestType,
     ) -> (ReteNetwork, FactBase, Symbol, Symbol) {
-        use crate::binding::VarId;
-
         let mut rete = ReteNetwork::new();
         let fact_base = FactBase::new();
 

@@ -18,6 +18,8 @@ ferric-runtime = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [[bench]]
 name = "engine_bench"

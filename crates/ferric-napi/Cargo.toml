@@ -2,8 +2,7 @@
 name = "ferric-napi"
 version.workspace = true
 edition.workspace = true
-# napi-build 2.3.x requires cargo:: build script syntax (Rust 1.77+)
-rust-version = "1.77"
+rust-version.workspace = true
 license.workspace = true
 
 [lib]
@@ -21,7 +20,7 @@ default = ["serde"]
 serde = ["ferric-runtime/serde"]
 
 [build-dependencies]
-napi-build = "2"
+napi-build = { workspace = true }
 
 [lints.rust]
 # napi-rs proc macros generate unsafe code in expanded output
