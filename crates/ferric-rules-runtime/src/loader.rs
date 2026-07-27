@@ -2247,69 +2247,6 @@ impl Engine {
         }
     }
 
-    /// Desugar multi-pattern exists into individual patterns.
-    ///
-    /// `exists(P1, P2, ..., Pn)` is desugared to `P1, P2, ..., Pn-1, exists(Pn)`.
-    /// The inner patterns become regular joins and only the last is an exists join.
-    /// Single-element `And` wrappers inside exists are flattened: `And([P])` → `P`.
-    fn desugar_multi_pattern_exists(patterns: &[&Pattern]) -> Vec<Pattern> {
-        let mut result = Vec::new();
-        for pattern in patterns {
-            if let Pattern::Exists(sub_patterns, span) = pattern {
-                if sub_patterns.len() > 1 {
-                    // Flatten single-element Ands within the exists sub-patterns
-                    let flattened: Vec<Pattern> = sub_patterns
-                        .iter()
-                        .map(|p| {
-                            if let Pattern::And(children, _) = p {
-                                if children.len() == 1 {
-                                    return children[0].clone();
-                                }
-                            }
-                            p.clone()
-                        })
-                        .collect();
-
-                    // Choose a non-negated anchor for the existential join when
-                    // possible; this avoids constructing `exists(not(...))`
-                    // artifacts for mixed forms like:
-                    //   (exists A B (not ...))
-                    // which are better approximated as:
-                    //   A (not ...) (exists B)
-                    let anchor_idx = flattened
-                        .iter()
-                        .rposition(|p| !matches!(p, Pattern::Not(..)))
-                        .unwrap_or(flattened.len() - 1);
-
-                    for (idx, p) in flattened.iter().enumerate() {
-                        if idx != anchor_idx {
-                            result.push(p.clone());
-                        }
-                    }
-                    // Wrap the anchor in exists
-                    let anchor = flattened[anchor_idx].clone();
-                    result.push(Pattern::Exists(vec![anchor], *span));
-                    continue;
-                }
-
-                if let Some(Pattern::Exists(inner, inner_span)) = sub_patterns.first() {
-                    // Collapse redundant nesting so fixed-point passes can desugar
-                    // cases like (exists (exists A B C)).
-                    result.push(Pattern::Exists(inner.clone(), *inner_span));
-                    continue;
-                }
-            }
-            result.push((*pattern).clone());
-        }
-        result
-    }
-
-    fn has_top_level_multi_pattern_exists(patterns: &[Pattern]) -> bool {
-        patterns
-            .iter()
-            .any(|pattern| matches!(pattern, Pattern::Exists(sub, _) if sub.len() > 1))
-    }
-
     /// Try to extract test CEs from nested contexts (negation, NCC, exists)
     /// and add them as rule-level test conditions.
     ///
@@ -2917,24 +2854,7 @@ impl Engine {
             Self::flatten_pattern(pattern, &mut flat_patterns);
         }
 
-        // Desugar multi-pattern exists into individual patterns:
-        // exists(P1, P2, ..., Pn) → P1, P2, ..., Pn-1, exists(Pn)
-        // This makes the inner patterns regular joins and only the last is exists,
-        // approximating CLIPS' "at most one activation" semantics.
-        let mut desugared_patterns: Vec<Pattern> =
-            Self::desugar_multi_pattern_exists(&flat_patterns);
-        // Nested exists normalizations can leave multi-pattern `exists` CEs as
-        // newly emitted top-level patterns. Re-run the pass to fixed-point.
-        for _ in 0..32 {
-            if !Self::has_top_level_multi_pattern_exists(&desugared_patterns) {
-                break;
-            }
-            let refs: Vec<&Pattern> = desugared_patterns.iter().collect();
-            desugared_patterns = Self::desugar_multi_pattern_exists(&refs);
-        }
-        let pattern_refs: Vec<&Pattern> = desugared_patterns.iter().collect();
-
-        for pattern in &pattern_refs {
+        for pattern in &flat_patterns {
             // Test CEs do not consume a fact index. Their expressions are
             // retained in rule metadata and referenced by predicate nodes at
             // their source position in the beta network.
@@ -2999,10 +2919,13 @@ impl Engine {
             };
 
             let mut generated_tests = Vec::new();
+            let mut embedded_generated_tests = HashSet::new();
             let condition = self.translate_condition(
                 pattern,
                 &mut generated_tests,
                 &mut internal_slot_var_seed,
+                test_conditions.len(),
+                &mut embedded_generated_tests,
             )?;
             if matches!(
                 &condition,
@@ -3014,9 +2937,11 @@ impl Engine {
                         .to_string(),
                 ));
             }
-            if matches!(condition, CompilableCondition::Ncc(_)) && !generated_tests.is_empty() {
+            if matches!(condition, CompilableCondition::Ncc(_))
+                && generated_tests.len() != embedded_generated_tests.len()
+            {
                 return Err(LoadError::Compile(
-                    "test CEs inside mixed negated conjunctions are not supported at match time"
+                    "complex constraints inside NCC patterns are not supported at match time"
                         .to_string(),
                 ));
             }
@@ -3035,12 +2960,16 @@ impl Engine {
                 fact_index += 1;
             }
             conditions.push(condition);
-            for generated_test in generated_tests {
-                Self::push_test_predicate(
-                    &mut conditions,
-                    &mut test_conditions,
-                    CompiledTestCondition::Expr(generated_test),
-                )?;
+            for (generated_index, generated_test) in generated_tests.into_iter().enumerate() {
+                if embedded_generated_tests.contains(&generated_index) {
+                    test_conditions.push(CompiledTestCondition::Expr(generated_test));
+                } else {
+                    Self::push_test_predicate(
+                        &mut conditions,
+                        &mut test_conditions,
+                        CompiledTestCondition::Expr(generated_test),
+                    )?;
+                }
             }
         }
 
@@ -3113,11 +3042,17 @@ impl Engine {
         pattern: &Pattern,
         generated_tests: &mut Vec<crate::evaluator::RuntimeExpr>,
         internal_slot_var_seed: &mut usize,
+        test_condition_base: usize,
+        embedded_generated_tests: &mut HashSet<usize>,
     ) -> Result<CompilableCondition, LoadError> {
         match pattern {
-            Pattern::Assigned { pattern, .. } => {
-                self.translate_condition(pattern, generated_tests, internal_slot_var_seed)
-            }
+            Pattern::Assigned { pattern, .. } => self.translate_condition(
+                pattern,
+                generated_tests,
+                internal_slot_var_seed,
+                test_condition_base,
+                embedded_generated_tests,
+            ),
             Pattern::Not(inner, span) => {
                 match inner.as_ref() {
                     Pattern::And(inner_patterns, _) => {
@@ -3135,6 +3070,8 @@ impl Engine {
                                 sub,
                                 generated_tests,
                                 internal_slot_var_seed,
+                                test_condition_base,
+                                embedded_generated_tests,
                             )?;
                             subconditions.push(condition);
                         }
@@ -3150,6 +3087,8 @@ impl Engine {
                                 doubly_inner,
                                 generated_tests,
                                 internal_slot_var_seed,
+                                test_condition_base,
+                                embedded_generated_tests,
                             )
                         } else {
                             let mut compilable = self.translate_pattern(
@@ -3173,6 +3112,79 @@ impl Engine {
                         Ok(CompilableCondition::Pattern(compilable))
                     }
                 }
+            }
+            Pattern::Exists(sub_patterns, span) => {
+                if sub_patterns.is_empty() {
+                    return Err(Self::unsupported_pattern(
+                        "exists",
+                        span,
+                        "exists requires at least one inner pattern",
+                    ));
+                }
+
+                if sub_patterns.len() == 1
+                    && matches!(
+                        &sub_patterns[0],
+                        Pattern::Ordered(_) | Pattern::Template(_) | Pattern::Assigned { .. }
+                    )
+                {
+                    let mut compilable = self.translate_pattern(
+                        &sub_patterns[0],
+                        generated_tests,
+                        internal_slot_var_seed,
+                        false,
+                    )?;
+                    compilable.exists = true;
+                    return Ok(CompilableCondition::Pattern(compilable));
+                }
+
+                let mut tuple_conditions = Vec::new();
+                for sub_pattern in sub_patterns {
+                    match sub_pattern {
+                        Pattern::And(children, _) | Pattern::Logical(children, _) => {
+                            for child in children {
+                                tuple_conditions.push(self.translate_condition(
+                                    child,
+                                    generated_tests,
+                                    internal_slot_var_seed,
+                                    test_condition_base,
+                                    embedded_generated_tests,
+                                )?);
+                            }
+                        }
+                        _ => tuple_conditions.push(self.translate_condition(
+                            sub_pattern,
+                            generated_tests,
+                            internal_slot_var_seed,
+                            test_condition_base,
+                            embedded_generated_tests,
+                        )?),
+                    }
+                }
+
+                // An NCC emits one pass-through only while its tuple subnetwork
+                // has no complete results. Watching that NCC with a second NCC
+                // complements the condition: the outer token propagates exactly
+                // while one or more complete tuples exist. Both NCC memories are
+                // keyed by their owner token, so tuple support stays isolated per
+                // outer match and follows only zero/nonzero transitions.
+                Ok(CompilableCondition::Ncc(vec![
+                    CompilableCondition::Ncc(tuple_conditions),
+                ]))
+            }
+            Pattern::Test(sexpr, _) => {
+                let condition_index = test_condition_base
+                    .checked_add(generated_tests.len())
+                    .and_then(|index| u32::try_from(index).ok())
+                    .ok_or_else(|| {
+                        LoadError::Compile("too many test CEs in one rule".to_string())
+                    })?;
+                let runtime_expr =
+                    crate::evaluator::from_sexpr(sexpr, &mut self.symbol_table, &self.config)
+                        .map_err(|e| LoadError::Compile(format!("test CE translation: {e}")))?;
+                embedded_generated_tests.insert(generated_tests.len());
+                generated_tests.push(runtime_expr);
+                Ok(CompilableCondition::Predicate { condition_index })
             }
             Pattern::Forall(sub_patterns, span) => {
                 // Phase 3 restriction: exactly 2 sub-patterns (condition + then-clause).
@@ -4410,8 +4422,8 @@ fn validate_pattern_recursive(
             }
 
             // Check for unsupported combination: single-pattern exists containing not.
-            // Multi-pattern exists forms are desugared later, and mixed branches
-            // like `(exists A (not B))` are handled by that pass.
+            // Multi-pattern exists groups compile as a tuple subnetwork, where
+            // mixed branches like `(exists A (not B))` are supported.
             let enforce_exists_not_guard = inner_patterns.len() == 1;
             for inner in inner_patterns {
                 if enforce_exists_not_guard && matches!(inner, Pattern::Not(..)) {

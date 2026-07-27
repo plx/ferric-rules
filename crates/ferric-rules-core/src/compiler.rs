@@ -328,6 +328,7 @@ impl ReteCompiler {
                     current_parent = self.compile_ncc_condition(
                         rete,
                         fact_base,
+                        rule_id,
                         current_parent,
                         subpatterns,
                         &mut var_map,
@@ -426,15 +427,7 @@ impl ReteCompiler {
                         false, errors,
                     );
                 }
-                CompilableCondition::Predicate { .. } => {
-                    Self::push_unsupported_structure_error(
-                        errors,
-                        format!(
-                            "{prefix} NCC subpattern {idx} contains a runtime predicate; \
-                             test CEs inside mixed negated conjunctions are not supported"
-                        ),
-                    );
-                }
+                CompilableCondition::Predicate { .. } => {}
                 CompilableCondition::Ncc(inner) => {
                     if inner.is_empty() {
                         Self::push_unsupported_structure_error(
@@ -681,6 +674,7 @@ impl ReteCompiler {
         &mut self,
         rete: &mut ReteNetwork,
         fact_base: &FactBase,
+        rule_id: RuleId,
         current_parent: NodeId,
         subconditions: &[CompilableCondition],
         var_map: &mut VarMap,
@@ -715,13 +709,17 @@ impl ReteCompiler {
                         alpha_memories,
                     );
                 }
-                CompilableCondition::Predicate { .. } => {
-                    unreachable!("predicate nodes inside NCC must fail validation")
+                CompilableCondition::Predicate { condition_index } => {
+                    let (predicate, _) =
+                        rete.beta
+                            .create_predicate_node(sub_parent, rule_id, *condition_index);
+                    sub_parent = predicate;
                 }
                 CompilableCondition::Ncc(inner_conditions) => {
                     sub_parent = self.compile_ncc_condition(
                         rete,
                         fact_base,
+                        rule_id,
                         sub_parent,
                         inner_conditions,
                         var_map,
@@ -1980,6 +1978,57 @@ mod tests {
             matches!(partner, BetaNode::NccPartner { .. }),
             "NCC partner should exist"
         );
+    }
+
+    #[test]
+    fn test_ncc_condition_compiles_runtime_predicate_in_subnetwork() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
+        let mut table = new_table();
+        let rule_id = compiler.allocate_rule_id();
+        let pattern = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(intern(&mut table, "item")),
+            constant_tests: vec![],
+            variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
+            negated: false,
+            exists: false,
+        };
+
+        let result = compiler
+            .compile_conditions(
+                &mut rete,
+                &fact_base,
+                rule_id,
+                Salience::DEFAULT,
+                &[CompilableCondition::Ncc(vec![
+                    CompilableCondition::Pattern(pattern),
+                    CompilableCondition::Predicate { condition_index: 3 },
+                ])],
+            )
+            .unwrap();
+
+        let ncc_id = match rete.beta.get_node(result.terminal_node).unwrap() {
+            BetaNode::Terminal { parent, .. } => *parent,
+            other => panic!("expected terminal node, got {other:?}"),
+        };
+        let partner_id = match rete.beta.get_node(ncc_id).unwrap() {
+            BetaNode::Ncc { partner, .. } => *partner,
+            other => panic!("expected NCC node, got {other:?}"),
+        };
+        let predicate_id = match rete.beta.get_node(partner_id).unwrap() {
+            BetaNode::NccPartner { parent, .. } => *parent,
+            other => panic!("expected NCC partner, got {other:?}"),
+        };
+        assert!(matches!(
+            rete.beta.get_node(predicate_id),
+            Some(BetaNode::Predicate {
+                rule,
+                condition_index: 3,
+                ..
+            }) if *rule == rule_id
+        ));
     }
 
     #[test]

@@ -33,6 +33,8 @@ tests/fixtures/core/halt_stops_execution.clp
 tests/fixtures/core/late_rule_backfill_prelude.clp
 tests/fixtures/core/late_rule_backfill_rules.clp
 tests/fixtures/core/modify_duplicate.clp
+tests/fixtures/core/multi_pattern_exists_nested_join.clp
+tests/fixtures/core/multi_pattern_exists_transitions.clp
 tests/fixtures/core/multi_pattern_join.clp
 tests/fixtures/core/multiple_activations_depth.clp
 tests/fixtures/core/refraction.clp
