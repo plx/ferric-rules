@@ -10,6 +10,7 @@ import {
   nativeCrateDirectory,
   packPackage,
   runCommand,
+  runNpmCommand,
   stagePlatformPackage,
   validateNodePackage,
 } from "./node-package-lib.mjs";
@@ -120,9 +121,7 @@ try {
     "utf8",
   );
 
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  runCommand(
-    npm,
+  runNpmCommand(
     [
       "install",
       "--offline",

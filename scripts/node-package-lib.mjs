@@ -11,6 +11,8 @@ import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { npmInvocation } from "./npm-command.mjs";
+
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 
 export const repositoryRoot = resolve(scriptDirectory, "..");
@@ -219,10 +221,6 @@ export async function stagePlatformPackage({
   return { target, platformManifest };
 }
 
-function npmCommand() {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
-}
-
 export function runCommand(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
@@ -240,6 +238,14 @@ export function runCommand(command, args, options = {}) {
     );
   }
   return result;
+}
+
+export function runNpmCommand(args, options = {}) {
+  const { command, shell } = npmInvocation();
+  return runCommand(command, args, {
+    ...options,
+    shell,
+  });
 }
 
 function parsePackOutput(stdout) {
@@ -263,7 +269,7 @@ export async function packPackage({
   const args = ["pack", "--json", "--pack-destination", artifactsDirectory];
   if (!runScripts) args.push("--ignore-scripts");
 
-  const result = runCommand(npmCommand(), args, {
+  const result = runNpmCommand(args, {
     cwd: packageDirectory,
     env: { npm_config_loglevel: "silent" },
   });
