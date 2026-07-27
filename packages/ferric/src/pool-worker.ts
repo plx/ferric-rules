@@ -40,13 +40,7 @@ function loadNative(): Record<string, unknown> {
   const thisDir = __dirname;
   // bundledPath: packages/ferric/dist/ -> packages/ferric/native/
   const bundledPath = resolve(thisDir, "..", "native", "index.js");
-  // developmentPath: packages/ferric/dist/ -> workspace root -> crates/ferric-napi/
-  const developmentPath = resolve(thisDir, "..", "..", "..", "crates", "ferric-napi", "index.js");
-  try {
-    return require(bundledPath) as Record<string, unknown>;
-  } catch {
-    return require(developmentPath) as Record<string, unknown>;
-  }
+  return require(bundledPath) as Record<string, unknown>;
 }
 
 const native = loadNative();

@@ -181,6 +181,19 @@ interface WorkerResponse {
 1. Missing native binaries at runtime `MUST` fail fast for value imports (`Engine`, `FerricSymbol`), not expose optional undefined runtime API.
 2. Package `npm test` `MUST` execute non-zero binding tests.
 3. CI `MUST` fail if binding test count is zero.
+4. The main package `MUST` ship its platform-neutral native loader and declare
+   every native payload package as an optional dependency at the exact same
+   version as the main package.
+5. Every native addon `MUST` embed its Ferric package version. The loader
+   `MUST` reject mismatched main-package metadata, native-package metadata, or
+   embedded addon versions before exposing an engine.
+6. Unsupported targets and missing optional packages `MUST` fail with an
+   actionable error that names the detected target and expected package.
+7. CI `MUST` pack, install, and execute the exact main and native tarballs from
+   a clean consumer directory without a source checkout or native build.
+8. The declared target set is the versioned `native/targets.json` file.
+   Extending the platform, architecture, or libc matrix requires the
+   FR-DIST-002 contract and its validation.
 
 ## 10. Required Test Gating
 

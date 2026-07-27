@@ -14,6 +14,8 @@
 import "./package/additional.test.ts";
 import "./package/coverage-entrypoint-manifest.test.ts";
 import "./package/loader-paths.test.ts";
+import "./package/node-package-text.test.ts";
+import "./package/npm-command.test.ts";
 import "./package/package-smoke.test.ts";
 import "./package/public-api-property.test.ts";
 import "./package/wire-property.test.ts";

@@ -1,14 +1,9 @@
 /**
  * Loads the native napi-rs addon and re-exports its public surface.
  *
- * The native addon is built by napi-rs into one of two locations:
- *
- * 1. Development (monorepo): `crates/ferric-napi/` after running `napi build`.
- * 2. Installed package: `native/` directory bundled in `packages/ferric/`.
- *
- * We attempt the bundled path first, then fall back to the monorepo development
- * path. This lets the package work correctly both when installed from npm and
- * when used locally within the workspace.
+ * The version-checking loader is bundled in `native/`. In a source checkout it
+ * resolves the locally built addon; in an npm install it resolves the exact
+ * platform-specific optional dependency declared by this package.
  *
  * The native module must be loaded via `require()` because napi-rs produces
  * a CommonJS module that binds a `.node` native addon.
@@ -94,31 +89,18 @@ const requireFn: NodeRequire = require;
 function loadNativeModule(): Record<string, unknown> {
   const thisDir = __dirname;
 
-  // Path 1: bundled native directory (installed package).
   // __dirname is packages/ferric/dist/, so ".." goes to packages/ferric/.
   const bundledPath = resolve(thisDir, "..", "native", "index.js");
-  // Path 2: monorepo development build output.
-  // __dirname is packages/ferric/dist/, so "../../.." goes to the workspace root.
-  const developmentPath = resolve(thisDir, "..", "..", "..", "crates", "ferric-napi", "index.js");
 
-  const attempts: string[] = [bundledPath, developmentPath];
-
-  let lastError: unknown;
-  for (const path of attempts) {
-    try {
-      return requireFn(path) as Record<string, unknown>;
-    } catch (err) {
-      lastError = err;
-    }
+  try {
+    return requireFn(bundledPath) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(
+      `[ferric] Could not load native addon through ${bundledPath}. ` +
+      `Cause: ${String(error)}`,
+      { cause: error },
+    );
   }
-
-  // Both paths failed. Throw immediately — the package cannot function
-  // without the native addon and must not expose undefined class values.
-  throw new Error(
-    `[ferric] Could not load native addon. ` +
-    `Tried: ${attempts.join(", ")}. ` +
-    `Last error: ${String(lastError)}`
-  );
 }
 
 const nativeModule = loadNativeModule();

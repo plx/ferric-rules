@@ -63,9 +63,21 @@ packages/ferric/
 │   └── types.ts
 ├── native/
 │   ├── index.js
-│   └── index.d.ts
+│   └── targets.json
 └── dist/
 ```
+
+`native/index.js` is a platform-neutral loader shipped in the main package.
+The release pipeline generates one optional npm package per entry in
+`native/targets.json`; each generated package contains exactly one `.node`
+addon. The main package pins every optional package to its own exact version,
+and the loader verifies both package metadata and the version embedded in the
+Rust addon before exposing it. No host-specific binary is committed to or
+packed inside the main package.
+
+The currently declared targets are macOS arm64, macOS x64, Linux x64 with
+glibc, and Windows x64 with MSVC. Expanding and refining this matrix is owned
+by FR-DIST-002 rather than by the base packaging mechanism.
 
 ## Ownership Boundaries
 - Rust owns engine correctness and low-level conversion primitives.
@@ -84,6 +96,7 @@ packages/ferric/
 3. Cancellation semantics for queued vs in-flight operations.
 4. `EnginePool.close()` behavior under concurrency.
 5. Public TS API shape drift (`undefined` exports, mismatched unions).
+6. JavaScript/native package version skew or a missing optional native package.
 
 ## Delivery Model
 Reimplementation should be staged and gated:
