@@ -87,7 +87,7 @@ pub use ferric_rules_core::{
 // Re-export primary types at crate root for convenience.
 pub use actions::ActionError;
 pub use config::EngineConfig;
-pub use engine::{Engine, EngineError, InitError};
+pub use engine::{Engine, EngineError, FactAssertionResult, InitError};
 pub use execution::{FiredRule, HaltReason, RunLimit, RunResult};
 pub use functions::{FunctionEnv, GenericRegistry, GlobalStore};
 pub use loader::{LoadError, LoadResult, RuleDef};

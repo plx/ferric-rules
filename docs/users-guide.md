@@ -147,6 +147,25 @@ Unspecified slots pick up their declared defaults (or an empty multifield
 for `multislot`). The `person` template above will assert with
 `(age 0)` if you leave `age` out.
 
+Fact duplication is disabled by default, matching CLIPS. Reasserting the same
+ordered relation and fields—or the same template and fully resolved slot
+values—returns the existing fact ID through the convenience assertion APIs and
+does not create another activation. Use the detailed result when the
+distinction matters:
+
+```rust
+use ferric_rules::runtime::FactAssertionResult;
+
+match engine.assert_ordered_with_result("color", color_value)? {
+    FactAssertionResult::Asserted(id) => println!("created {id:?}"),
+    FactAssertionResult::Duplicate(id) => println!("already present as {id:?}"),
+}
+```
+
+You can opt into duplicates with `engine.set_fact_duplication(true)` or
+`(set-fact-duplication TRUE)`. The setter returns the previous setting, and
+the policy survives reset and serialization.
+
 > **Heads up:** the CLIPS literal form `(assert (person (name Alice) (age 30)))`
 > is currently rejected by ferric's RHS evaluator (it parses the slot specs as
 > function calls). Build template facts from Rust via `assert_template`, or use

@@ -53,5 +53,9 @@ name = "serialization_bench"
 harness = false
 required-features = ["serde"]
 
+[[bench]]
+name = "fact_duplication_bench"
+harness = false
+
 [lints]
 workspace = true

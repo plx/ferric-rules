@@ -10,6 +10,8 @@ fn main() -> anyhow::Result<()> {
     let mut engine = Engine::with_rules(rules)?;
 
     engine.assert_template("counter", &[], vec![])?;
+    // This workload intentionally queues multiple structurally identical facts.
+    engine.set_fact_duplication(true);
     for _ in 0..5 {
         engine.assert_ordered("tick", vec![])?;
     }

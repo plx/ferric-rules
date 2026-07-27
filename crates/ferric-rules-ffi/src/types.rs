@@ -133,11 +133,11 @@ impl TryFrom<&FerricConfig> for EngineConfig {
         let string_encoding = FerricStringEncoding::try_from(config.string_encoding)?;
         let strategy = FerricConflictStrategy::try_from(config.strategy)?;
 
-        Ok(Self {
-            string_encoding: string_encoding.into(),
-            strategy: strategy.into(),
-            max_call_depth: config.max_call_depth,
-        })
+        let mut runtime_config =
+            Self::from(ferric_rules_core::StringEncoding::from(string_encoding))
+                .with_strategy(strategy.into());
+        runtime_config.max_call_depth = config.max_call_depth;
+        Ok(runtime_config)
     }
 }
 

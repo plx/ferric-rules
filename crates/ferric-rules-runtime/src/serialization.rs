@@ -520,6 +520,32 @@ mod tests {
     }
 
     #[test]
+    fn fr_rete_001_snapshot_preserves_policy_and_duplicate_index() {
+        for &format in SerializationFormat::ALL {
+            let mut engine = Engine::new(EngineConfig::default());
+            engine.set_fact_duplication(true);
+            let first = engine.assert_ordered("item", 1_i64).unwrap();
+            let second = engine.assert_ordered("item", 1_i64).unwrap();
+            assert_ne!(first, second);
+
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            assert!(
+                restored.fact_duplication(),
+                "format {format:?} lost duplication policy"
+            );
+
+            assert!(restored.set_fact_duplication(false));
+            let rejected = restored.assert_ordered_with_result("item", 1_i64).unwrap();
+            assert!(
+                matches!(rejected, crate::FactAssertionResult::Duplicate(_)),
+                "format {format:?} lost the structural duplicate index"
+            );
+            assert_eq!(restored.facts().unwrap().count(), 2);
+        }
+    }
+
+    #[test]
     fn format_name() {
         assert_eq!(SerializationFormat::Bincode.name(), "bincode");
         assert_eq!(SerializationFormat::Json.name(), "json");

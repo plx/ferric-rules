@@ -1,5 +1,7 @@
 //! Engine configuration types.
 
+use std::cell::Cell;
+
 use ferric_rules_core::{ConflictResolutionStrategy, StringEncoding};
 
 /// Engine configuration.
@@ -15,6 +17,12 @@ pub struct EngineConfig {
     /// Calls that exceed this depth return a `RecursionLimit` error rather than
     /// overflowing the stack.
     pub max_call_depth: usize,
+    /// Whether structurally equivalent facts may coexist in working memory.
+    ///
+    /// This is interior-mutable because evaluator contexts already borrow the
+    /// engine configuration immutably. `Engine` is thread-affine, so mutation
+    /// through `Cell` does not weaken its concurrency contract.
+    fact_duplication: Cell<bool>,
 }
 
 impl EngineConfig {
@@ -25,6 +33,7 @@ impl EngineConfig {
             string_encoding: StringEncoding::Ascii,
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
+            fact_duplication: Cell::new(false),
         }
     }
 
@@ -35,6 +44,7 @@ impl EngineConfig {
             string_encoding: StringEncoding::Utf8,
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
+            fact_duplication: Cell::new(false),
         }
     }
 
@@ -45,6 +55,7 @@ impl EngineConfig {
             string_encoding: StringEncoding::AsciiSymbolsUtf8Strings,
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
+            fact_duplication: Cell::new(false),
         }
     }
 
@@ -53,6 +64,26 @@ impl EngineConfig {
     pub fn with_strategy(mut self, strategy: ConflictResolutionStrategy) -> Self {
         self.strategy = strategy;
         self
+    }
+
+    /// Set the initial fact-duplication policy.
+    ///
+    /// CLIPS defaults this policy to disabled.
+    #[must_use]
+    pub fn with_fact_duplication(self, enabled: bool) -> Self {
+        self.fact_duplication.set(enabled);
+        self
+    }
+
+    /// Return whether structurally equivalent facts may coexist.
+    #[must_use]
+    pub(crate) fn fact_duplication(&self) -> bool {
+        self.fact_duplication.get()
+    }
+
+    /// Change the fact-duplication policy and return its previous value.
+    pub(crate) fn set_fact_duplication(&self, enabled: bool) -> bool {
+        self.fact_duplication.replace(enabled)
     }
 }
 
@@ -68,6 +99,7 @@ impl From<StringEncoding> for EngineConfig {
             string_encoding,
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
+            fact_duplication: Cell::new(false),
         }
     }
 }

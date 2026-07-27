@@ -2709,12 +2709,7 @@ fn execute_assert(
                     }
                 }
 
-                assert_ordered_and_propagate(
-                    &mut context.engine.fact_base,
-                    &mut context.engine.rete,
-                    relation_sym,
-                    fields,
-                );
+                assert_ordered_and_propagate(context.engine, relation_sym, fields);
             }
             _ => return Err(ActionError::InvalidAssert),
         }
@@ -2829,12 +2824,7 @@ fn execute_fact_mutation(
                     &original_fact,
                 );
             }
-            assert_ordered_and_propagate(
-                &mut context.engine.fact_base,
-                &mut context.engine.rete,
-                relation,
-                fields,
-            );
+            assert_ordered_and_propagate(context.engine, relation, fields);
         }
         Fact::Template(template) => {
             let registered = context
@@ -2868,8 +2858,7 @@ fn execute_fact_mutation(
                 );
             }
             assert_template_and_propagate(
-                &mut context.engine.fact_base,
-                &mut context.engine.rete,
+                context.engine,
                 template.template_id,
                 slots.into_boxed_slice(),
             );
@@ -2880,33 +2869,22 @@ fn execute_fact_mutation(
 }
 
 fn assert_ordered_and_propagate(
-    fact_base: &mut FactBase,
-    rete: &mut ReteNetwork,
+    engine: &mut Engine,
     relation: Symbol,
     fields: OrderedFields,
-) -> FactId {
-    let fact_id = fact_base.assert_ordered(relation, fields);
-    let fact = &fact_base
-        .get(fact_id)
-        .expect("asserted fact should be present in fact base")
-        .fact;
-    rete.assert_fact(fact_id, fact, fact_base);
-    fact_id
+) -> crate::FactAssertionResult {
+    engine.assert_fact_internal(Fact::Ordered(OrderedFact { relation, fields }))
 }
 
 fn assert_template_and_propagate(
-    fact_base: &mut FactBase,
-    rete: &mut ReteNetwork,
+    engine: &mut Engine,
     template_id: TemplateId,
     slots: Box<[Value]>,
-) -> FactId {
-    let fact_id = fact_base.assert_template(template_id, slots);
-    let fact = &fact_base
-        .get(fact_id)
-        .expect("asserted fact should be present in fact base")
-        .fact;
-    rete.assert_fact(fact_id, fact, fact_base);
-    fact_id
+) -> crate::FactAssertionResult {
+    engine.assert_fact_internal(Fact::Template(ferric_rules_core::TemplateFact {
+        template_id,
+        slots,
+    }))
 }
 
 fn retract_original_fact(

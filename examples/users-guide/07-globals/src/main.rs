@@ -13,6 +13,8 @@ fn main() -> anyhow::Result<()> {
     let rules = include_str!("../rules/sessions.clp");
     let mut engine = Engine::with_rules(rules)?;
 
+    // Each identical fact represents a distinct session event in this example.
+    engine.set_fact_duplication(true);
     for _ in 0..3 {
         engine.assert_ordered("session-start", vec![])?;
         engine.run(RunLimit::Unlimited)?;

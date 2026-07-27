@@ -15,8 +15,6 @@ const SOURCE: &str = r#"
 
 (deffacts seed
   (person (name "Ada") (tags))
-  (signal "ready" 7)
-  (signal "ready" 7)
   (go))
 
 (defrule report-person
@@ -25,6 +23,9 @@ const SOURCE: &str = r#"
   =>
   (retract ?g)
   (modify ?p (tags (create$ alpha 2 3.5)))
+  (set-fact-duplication TRUE)
+  (assert (signal "ready" 7))
+  (assert (signal "ready" 7))
   (printout t "hello" crlf)
   (printout stderr "problem" crlf))
 "#;
