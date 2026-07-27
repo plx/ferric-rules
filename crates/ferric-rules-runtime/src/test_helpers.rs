@@ -255,9 +255,19 @@ pub fn assert_engine_consistent(engine: &Engine) {
     engine.debug_assert_consistency();
 }
 
-/// Assert that the rete network is fully clean (no tokens, no activations).
+/// Assert that the rete network is fully clean (only its root token, no activations).
 pub fn assert_rete_clean(rete: &ReteNetwork) {
-    assert!(rete.token_store.is_empty(), "token store should be empty");
+    let root_memory = rete
+        .beta
+        .memory_id_for_node(rete.beta.root_id())
+        .and_then(|memory_id| rete.beta.get_memory(memory_id))
+        .expect("root beta memory should exist");
+    assert_eq!(root_memory.len(), 1, "root memory should have one token");
+    assert_eq!(
+        rete.token_store.len(),
+        1,
+        "only the root token should remain"
+    );
     assert!(rete.agenda.is_empty(), "agenda should be empty");
 }
 

@@ -3,7 +3,6 @@
 //! The Rete network combines all components of the pattern matcher to efficiently
 //! propagate facts through the network and produce rule activations.
 
-use slotmap::Key;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 
@@ -53,13 +52,15 @@ impl ReteNetwork {
         let token_store = TokenStore::new();
         let agenda = Agenda::with_strategy(strategy);
 
-        Self {
+        let mut rete = Self {
             alpha,
             beta,
             token_store,
             agenda,
             disabled_rules: std::collections::HashSet::new(),
-        }
+        };
+        rete.seed_root_token();
+        rete
     }
 
     /// Assert a fact into the Rete network.
@@ -214,6 +215,68 @@ impl ReteNetwork {
         self.beta.clear_all_runtime();
         let strategy = self.agenda.strategy();
         self.agenda = Agenda::with_strategy(strategy);
+
+        let root_token = self.seed_root_token();
+        let root_children = match self.beta.get_node(self.beta.root_id()) {
+            Some(BetaNode::Root { children, .. }) => children.clone(),
+            _ => return,
+        };
+        let mut new_activations = Vec::new();
+        self.propagate_token(
+            root_token,
+            &root_children,
+            &FactBase::new(),
+            &mut new_activations,
+        );
+    }
+
+    /// Activate newly compiled children of the beta root from the empty LHS
+    /// prefix token.
+    pub(crate) fn activate_root_children(&mut self, children: &[NodeId], fact_base: &FactBase) {
+        if children.is_empty() {
+            return;
+        }
+
+        let root_token = self.seed_root_token();
+        let mut new_activations = Vec::new();
+        self.propagate_token(root_token, children, fact_base, &mut new_activations);
+    }
+
+    /// Ensure the root beta memory contains its single empty-prefix token.
+    fn seed_root_token(&mut self) -> TokenId {
+        let root_id = self.beta.root_id();
+        let root_memory_id = self
+            .beta
+            .memory_id_for_node(root_id)
+            .expect("beta root must own a memory");
+
+        if let Some(token_id) = self
+            .beta
+            .get_memory(root_memory_id)
+            .and_then(|memory| memory.iter().next())
+        {
+            debug_assert_eq!(
+                self.beta
+                    .get_memory(root_memory_id)
+                    .map_or(0, BetaMemory::len),
+                1,
+                "beta root memory must contain exactly one token"
+            );
+            return token_id;
+        }
+
+        let root_token = Token {
+            fact: None,
+            bindings: BindingSet::new(),
+            parent: None,
+            owner_node: root_id,
+        };
+        let token_id = self.token_store.insert(root_token);
+        self.beta
+            .get_memory_mut(root_memory_id)
+            .expect("beta root memory must exist")
+            .insert(token_id);
+        token_id
     }
 
     /// Disable a compiled rule at runtime.
@@ -262,23 +325,22 @@ impl ReteNetwork {
             _ => return,
         };
 
-        // Get parent tokens (indexed when possible for O(1) lookup)
-        let parent_tokens: SmallVec<[TokenId; 8]> = if parent_id == self.beta.root_id() {
-            // Special case: root node has no memory, create dummy token
-            SmallVec::new()
-        } else {
-            self.find_memory_for_node(parent_id)
-                .and_then(|mem_id| self.beta.get_memory(mem_id))
-                .map(|mem| collect_candidate_parent_tokens(mem, &tests, fact))
-                .unwrap_or_default()
-        };
+        // Get parent tokens (indexed when possible for O(1) lookup). The root
+        // participates through its real one-token beta memory, so the same path
+        // handles the first join and every later join.
+        let parent_tokens: SmallVec<[TokenId; 8]> = self
+            .find_memory_for_node(parent_id)
+            .and_then(|mem_id| self.beta.get_memory(mem_id))
+            .map(|mem| collect_candidate_parent_tokens(mem, &tests, fact))
+            .unwrap_or_default();
 
-        // If parent is root, we need to handle specially (no parent tokens)
-        if parent_id == self.beta.root_id() {
-            // For root parent, create a token with just this fact
-            if evaluate_join(fact, None, &tests) {
-                // Extract bindings from the fact
-                let mut new_bindings = BindingSet::new();
+        for parent_token_id in parent_tokens {
+            let Some(parent_token) = self.token_store.get(parent_token_id) else {
+                continue;
+            };
+
+            if evaluate_join(fact, Some(parent_token), &tests) {
+                let mut new_bindings = parent_token.bindings.clone();
                 for &(slot, var_id) in bindings.iter() {
                     if let Some(value) = get_slot_value(fact, slot) {
                         new_bindings.set(var_id, ValueRef::new(value.clone()));
@@ -288,55 +350,18 @@ impl ReteNetwork {
                 let new_token = Token {
                     fact: Some(fact_id),
                     bindings: new_bindings,
-                    parent: None,
+                    parent: Some(parent_token_id),
                     owner_node: join_node_id,
                 };
 
                 let token_id = self.token_store.insert(new_token);
 
-                // Add to join's beta memory (with index maintenance)
                 if let Some(memory) = self.beta.get_memory_mut(join_memory_id) {
                     let bindings = &self.token_store.get(token_id).unwrap().bindings;
                     memory.insert_indexed(token_id, bindings);
                 }
 
-                // Propagate to children
                 self.propagate_token(token_id, &children, fact_base, new_activations);
-            }
-        } else {
-            // For non-root parent, iterate through parent tokens
-            for parent_token_id in parent_tokens {
-                let Some(parent_token) = self.token_store.get(parent_token_id) else {
-                    continue;
-                };
-
-                if evaluate_join(fact, Some(parent_token), &tests) {
-                    // Clone parent bindings and add new bindings from this fact
-                    let mut new_bindings = parent_token.bindings.clone();
-                    for &(slot, var_id) in bindings.iter() {
-                        if let Some(value) = get_slot_value(fact, slot) {
-                            new_bindings.set(var_id, ValueRef::new(value.clone()));
-                        }
-                    }
-
-                    let new_token = Token {
-                        fact: Some(fact_id),
-                        bindings: new_bindings,
-                        parent: Some(parent_token_id),
-                        owner_node: join_node_id,
-                    };
-
-                    let token_id = self.token_store.insert(new_token);
-
-                    // Add to join's beta memory (with index maintenance)
-                    if let Some(memory) = self.beta.get_memory_mut(join_memory_id) {
-                        let bindings = &self.token_store.get(token_id).unwrap().bindings;
-                        memory.insert_indexed(token_id, bindings);
-                    }
-
-                    // Propagate to children
-                    self.propagate_token(token_id, &children, fact_base, new_activations);
-                }
             }
         }
     }
@@ -1093,28 +1118,17 @@ impl ReteNetwork {
             _ => return,
         };
 
-        let root_parent = parent_id == self.beta.root_id();
-
-        // Get parent tokens.
-        // Root-parent exists nodes use a synthetic parent key for support tracking.
-        let parent_tokens: Vec<TokenId> = if root_parent {
-            vec![TokenId::null()]
-        } else {
-            self.find_memory_for_node(parent_id)
-                .and_then(|mem_id| self.beta.get_memory(mem_id))
-                .map(|mem| mem.iter().collect())
-                .unwrap_or_default()
-        };
+        let parent_tokens: Vec<TokenId> = self
+            .find_memory_for_node(parent_id)
+            .and_then(|mem_id| self.beta.get_memory(mem_id))
+            .map(|mem| mem.iter().collect())
+            .unwrap_or_default();
 
         for parent_token_id in parent_tokens {
-            let is_supported = if root_parent {
-                evaluate_join(fact, None, &tests)
-            } else {
-                let Some(parent_token) = self.token_store.get(parent_token_id) else {
-                    continue;
-                };
-                evaluate_join(fact, Some(parent_token), &tests)
+            let Some(parent_token) = self.token_store.get(parent_token_id) else {
+                continue;
             };
+            let is_supported = evaluate_join(fact, Some(parent_token), &tests);
 
             if is_supported {
                 // This fact supports this parent token
@@ -1127,19 +1141,14 @@ impl ReteNetwork {
 
                 if old_count == 0 && new_count > 0 {
                     // Support count went 0→1: create pass-through and propagate
-                    let (parent_bindings, parent_ref) = if root_parent {
-                        (BindingSet::new(), None)
-                    } else {
-                        let Some(parent_token) = self.token_store.get(parent_token_id) else {
-                            continue;
-                        };
-                        (parent_token.bindings.clone(), Some(parent_token_id))
+                    let Some(parent_token) = self.token_store.get(parent_token_id) else {
+                        continue;
                     };
 
                     let passthrough_token = Token {
                         fact: None,
-                        bindings: parent_bindings,
-                        parent: parent_ref,
+                        bindings: parent_token.bindings.clone(),
+                        parent: Some(parent_token_id),
                         owner_node: exists_node_id,
                     };
 
@@ -1225,16 +1234,9 @@ impl ReteNetwork {
 
     /// Find the beta memory associated with a node.
     ///
-    /// For join and negative nodes, returns the node's own beta memory.
-    /// For other node types, returns None.
+    /// Returns the node's own beta memory, including the root memory.
     fn find_memory_for_node(&self, node_id: NodeId) -> Option<BetaMemoryId> {
-        match self.beta.get_node(node_id)? {
-            BetaNode::Join { memory, .. }
-            | BetaNode::Negative { memory, .. }
-            | BetaNode::Ncc { memory, .. }
-            | BetaNode::Exists { memory, .. } => Some(*memory),
-            _ => None,
-        }
+        self.beta.memory_id_for_node(node_id)
     }
 
     /// Propagate a token to child nodes.
@@ -1344,6 +1346,33 @@ impl ReteNetwork {
                 }
             }
         }
+
+        // The root memory is the canonical empty LHS prefix and must contain
+        // exactly one factless, parentless token.
+        let root_id = self.beta.root_id();
+        let root_memory = self
+            .beta
+            .memory_id_for_node(root_id)
+            .and_then(|memory_id| self.beta.get_memory(memory_id))
+            .expect("beta root memory must exist");
+        assert_eq!(
+            root_memory.len(),
+            1,
+            "beta root memory must contain exactly one token"
+        );
+        let root_token = self
+            .token_store
+            .get(
+                root_memory
+                    .iter()
+                    .next()
+                    .expect("beta root token must exist"),
+            )
+            .expect("beta root token must be present in the token store");
+        assert_eq!(root_token.owner_node, root_id);
+        assert!(root_token.fact.is_none());
+        assert!(root_token.parent.is_none());
+        assert_eq!(root_token.bindings.bound_count(), 0);
 
         // Cross-check: every token referenced by an agenda activation exists.
         for activation in self.agenda.iter_activations() {
@@ -1645,6 +1674,29 @@ mod tests {
         table
             .intern_symbol(s, StringEncoding::Ascii)
             .expect("Failed to intern symbol")
+    }
+
+    fn assert_only_root_token(rete: &ReteNetwork) {
+        let root = rete.beta.root_id();
+        let root_memory = rete
+            .beta
+            .memory_id_for_node(root)
+            .and_then(|memory_id| rete.beta.get_memory(memory_id))
+            .expect("root beta memory must exist");
+        assert_eq!(root_memory.len(), 1, "root memory must have one token");
+        assert_eq!(
+            rete.token_store.len(),
+            1,
+            "only the root token should remain"
+        );
+        let root_token = rete
+            .token_store
+            .get(root_memory.iter().next().expect("root token must exist"))
+            .expect("root memory token must be stored");
+        assert_eq!(root_token.owner_node, root);
+        assert!(root_token.fact.is_none());
+        assert!(root_token.parent.is_none());
+        assert_eq!(root_token.bindings.bound_count(), 0);
     }
 
     #[test]
@@ -1991,7 +2043,7 @@ mod tests {
         // Verify everything is clean
         rete.debug_assert_consistency();
         assert!(rete.agenda.is_empty());
-        assert!(rete.token_store.is_empty());
+        assert_only_root_token(&rete);
     }
 
     #[test]
@@ -2067,7 +2119,7 @@ mod tests {
 
         // Verify clean state
         assert!(rete.agenda.is_empty());
-        assert!(rete.token_store.is_empty());
+        assert_only_root_token(&rete);
     }
 
     #[test]
@@ -2585,7 +2637,7 @@ mod tests {
         let removed = rete.retract_fact(person_fact_id, &person_fact, &fact_base);
         assert_eq!(removed.len(), 1, "Should remove one activation");
         assert!(rete.agenda.is_empty());
-        assert!(rete.token_store.is_empty());
+        assert_only_root_token(&rete);
         rete.debug_assert_consistency();
     }
 
@@ -2863,10 +2915,7 @@ mod tests {
         rete.retract_fact(item_id, &item_fact, &fact_base);
 
         assert_eq!(rete.agenda.len(), 0);
-        assert!(
-            rete.token_store.is_empty(),
-            "All tokens should be cleaned up"
-        );
+        assert_only_root_token(&rete);
         rete.debug_assert_consistency();
     }
 
@@ -3064,7 +3113,7 @@ mod tests {
         rete.retract_fact(block_id, &block_fact, &fact_base);
 
         assert_eq!(rete.agenda.len(), 0);
-        assert!(rete.token_store.is_empty());
+        assert_only_root_token(&rete);
         rete.debug_assert_consistency();
     }
 
@@ -3534,10 +3583,7 @@ mod tests {
         rete.retract_fact(item_id, &item_fact, &fact_base);
 
         assert_eq!(rete.agenda.len(), 0);
-        assert!(
-            rete.token_store.is_empty(),
-            "all descendant tokens should be removed"
-        );
+        assert_only_root_token(&rete);
         rete.debug_assert_consistency();
     }
 
@@ -3706,11 +3752,11 @@ mod tests {
                 rete.retract_fact(fid, &fact, &fact_base);
             }
 
-            // Postcondition: network is completely clean
+            // Postcondition: only the permanent empty-prefix token remains.
             prop_assert!(rete.agenda.is_empty(),
                 "agenda must be empty after all facts retracted");
-            prop_assert!(rete.token_store.is_empty(),
-                "token store must be empty after all facts retracted");
+            prop_assert_eq!(rete.token_store.len(), 1,
+                "only the root token may remain after all facts are retracted");
 
             // Structural oracle must still pass
             rete.debug_assert_consistency();
@@ -3995,9 +4041,10 @@ mod tests {
                 fact_base.retract(*fid);
             }
 
-            // After full retraction: agenda empty, token store empty
+            // After full retraction: agenda empty, only root token remains.
             prop_assert!(rete.agenda.is_empty(), "agenda must be empty after full retraction");
-            prop_assert!(rete.token_store.is_empty(), "token store must be empty after full retraction");
+            prop_assert_eq!(rete.token_store.len(), 1,
+                "only the root token may remain after full retraction");
 
             // Beta memory var indices must also be empty
             if let Some(mem) = rete.beta.get_memory(join1_mem_id) {

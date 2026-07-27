@@ -126,7 +126,7 @@ impl FactAssertionResult {
 /// - `defgeneric`/`defmethod` runtime: type-based method dispatch with
 ///   index ordering and auto-index assignment.
 /// - `forall` CE (limited): single condition + single then-clause,
-///   desugared to NCC, with vacuous truth and initial-fact support.
+///   desugared to NCC, with vacuous truth and empty-prefix support.
 ///
 /// ## Phase 4 complete
 ///
@@ -176,9 +176,9 @@ pub struct Engine {
     pub(crate) generic_modules: ModuleNameMap<ModuleId>,
     /// The `FactId` of the synthetic `(initial-fact)` in working memory, if present.
     ///
-    /// `(initial-fact)` is asserted by the engine to provide a root token for
-    /// top-level NCC/negation/forall CEs (mirroring CLIPS' built-in mechanism).
-    /// It is tracked here so that `facts()` can exclude it from user-visible results.
+    /// `(initial-fact)` mirrors CLIPS' built-in fact and backs the implicit
+    /// condition used for empty-LHS and test-only rules. It is tracked here so
+    /// that `facts()` can exclude it from user-visible results.
     pub(crate) initial_fact_id: Option<FactId>,
     /// Non-fatal action diagnostics captured during execution.
     pub(crate) action_diagnostics: Vec<ActionError>,
@@ -529,8 +529,8 @@ impl Engine {
     /// Iterate over all user-visible facts in working memory.
     ///
     /// Returns an iterator of `(FactId, &Fact)` pairs. The synthetic
-    /// `(initial-fact)` inserted by the engine for internal NCC/forall support
-    /// is excluded from the results.
+    /// `(initial-fact)` inserted for CLIPS empty-LHS compatibility is excluded
+    /// from the results.
     ///
     /// # Errors
     ///
@@ -1103,8 +1103,8 @@ impl Engine {
             }
         }
 
-        // Re-assert (initial-fact) to restore the root token needed by NCC/forall CEs.
-        // Update initial_fact_id so that facts() continues to exclude it.
+        // Re-assert (initial-fact) for empty-LHS and test-only rules. Update
+        // initial_fact_id so that facts() continues to exclude it.
         if self.initial_fact_id.is_some() {
             let initial_sym = self
                 .symbol_table
@@ -1642,6 +1642,130 @@ mod tests {
         engine.set_fact_duplication(false);
         engine.clear();
         assert!(!engine.fact_duplication());
+    }
+
+    fn assert_single_root_prefix_token(engine: &Engine) {
+        let root = engine.rete.beta.root_id();
+        let root_memory = engine
+            .rete
+            .beta
+            .memory_id_for_node(root)
+            .and_then(|memory_id| engine.rete.beta.get_memory(memory_id))
+            .expect("root beta memory");
+        assert_eq!(
+            root_memory.len(),
+            1,
+            "root memory must contain exactly one empty-prefix token"
+        );
+        let root_token = engine
+            .rete
+            .token_store
+            .get(root_memory.iter().next().expect("root token"))
+            .expect("stored root token");
+        assert_eq!(root_token.owner_node, root);
+        assert!(root_token.fact.is_none());
+        assert!(root_token.parent.is_none());
+    }
+
+    #[test]
+    fn fr_rete_002_leading_not_activates_when_empty() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(
+                r#"
+                (defrule absent
+                    (not (blocked))
+                    =>
+                    (printout t "unblocked" crlf))
+                "#,
+            )
+            .unwrap();
+        engine.reset().unwrap();
+
+        assert_eq!(engine.agenda_len(), 1);
+        assert_single_root_prefix_token(&engine);
+        let result = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("unblocked\n"));
+    }
+
+    #[test]
+    fn fr_rete_002_leading_not_blocks_on_assert() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str("(defrule absent (not (blocked)) => (assert (unexpected)))")
+            .unwrap();
+        engine.reset().unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+
+        engine.assert_ordered("blocked", vec![]).unwrap();
+
+        assert_eq!(engine.agenda_len(), 0);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        assert!(engine.find_facts("unexpected").unwrap().is_empty());
+        assert_single_root_prefix_token(&engine);
+    }
+
+    #[test]
+    fn fr_rete_002_leading_not_reactivates_on_retract() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(
+                r#"
+                (defrule absent
+                    (not (blocked))
+                    =>
+                    (printout t "unblocked" crlf))
+                "#,
+            )
+            .unwrap();
+        engine.reset().unwrap();
+
+        let blocker = engine.assert_ordered("blocked", vec![]).unwrap();
+        assert_eq!(engine.agenda_len(), 0);
+        engine.retract(blocker).unwrap();
+
+        assert_eq!(engine.agenda_len(), 1);
+        let result = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("unblocked\n"));
+        assert_single_root_prefix_token(&engine);
+    }
+
+    #[test]
+    fn fr_rete_002_leading_not_two_rule_isolation_and_reset() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(
+                r#"
+                (defrule absent-a
+                    (not (blocked-a))
+                    =>
+                    (printout t "A" crlf))
+                (defrule absent-b
+                    (not (blocked-b))
+                    =>
+                    (printout t "B" crlf))
+                "#,
+            )
+            .unwrap();
+
+        for _ in 0..3 {
+            engine.reset().unwrap();
+            assert_eq!(engine.agenda_len(), 2);
+            assert_single_root_prefix_token(&engine);
+        }
+
+        let blocker_a = engine.assert_ordered("blocked-a", vec![]).unwrap();
+        assert_eq!(engine.agenda_len(), 1, "rule B remains independent");
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("B\n"));
+
+        engine.retract(blocker_a).unwrap();
+        assert_eq!(engine.agenda_len(), 1, "rule A reactivates alone");
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("B\nA\n"));
+        assert_single_root_prefix_token(&engine);
     }
 
     #[test]

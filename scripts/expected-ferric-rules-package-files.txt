@@ -61,6 +61,7 @@ tests/fixtures/negation/forall_basic.clp
 tests/fixtures/negation/forall_fail.clp
 tests/fixtures/negation/forall_retract_invalidation.clp
 tests/fixtures/negation/forall_vacuous_truth.clp
+tests/fixtures/negation/leading_not_transitions.clp
 tests/fixtures/negation/ncc_basic.clp
 tests/fixtures/negation/not_multiple_patterns.clp
 tests/fixtures/negation/not_retract.clp

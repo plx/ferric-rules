@@ -31,7 +31,7 @@
 //! - `defgeneric`/`defmethod` runtime: type-based method dispatch with
 //!   index ordering and auto-index assignment (Pass 009).
 //! - `forall` CE: limited subset (single condition + single then-clause),
-//!   desugared to NCC, vacuous truth, initial-fact support (Pass 010).
+//!   desugared to NCC, vacuous truth, and empty-prefix support (Pass 010).
 //!
 //! ## Phase 4 complete
 //!

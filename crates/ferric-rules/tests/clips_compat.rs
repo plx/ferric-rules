@@ -751,6 +751,16 @@ fn test_compat_negation_not_retract() {
 }
 
 #[test]
+fn fr_rete_002_clips_leading_not_transition_fixture() {
+    // Pinned against the repository's CLIPS 6.30 reference image.
+    let _ = assert_fixture_output(
+        "negation/leading_not_transitions.clp",
+        5,
+        "empty\nassert-blocker\nblocked\nretract-blocker\nreactivated\n",
+    );
+}
+
+#[test]
 fn test_compat_negation_exists() {
     let _ = assert_fixture_output("negation/exists_ce.clp", 1, "signal detected\n");
 }
