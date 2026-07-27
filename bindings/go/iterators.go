@@ -2,24 +2,18 @@ package ferric
 
 import (
 	"iter"
-
-	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
 )
 
 // FactIter returns an iterator over all user-visible facts.
 // Each iteration yields a Fact snapshot. Stops early on error.
 func (e *Engine) FactIter() iter.Seq[Fact] {
 	return func(yield func(Fact) bool) {
-		ids, rc := ffiEngineFactIDs(e.handle)
-		if rc != ffi.ErrOK {
+		facts, err := e.Facts()
+		if err != nil {
 			return
 		}
-		for _, id := range ids {
-			f, err := e.buildFact(id)
-			if err != nil {
-				return
-			}
-			if !yield(*f) {
+		for _, fact := range facts {
+			if !yield(fact) {
 				return
 			}
 		}
@@ -29,16 +23,9 @@ func (e *Engine) FactIter() iter.Seq[Fact] {
 // RuleIter returns an iterator over all registered rules.
 func (e *Engine) RuleIter() iter.Seq[RuleInfo] {
 	return func(yield func(RuleInfo) bool) {
-		count, rc := ffiEngineRuleCount(e.handle)
-		if rc != ffi.ErrOK {
-			return
-		}
-		for i := range count {
-			name, salience, rc := ffiEngineRuleInfo(e.handle, i)
-			if rc != ffi.ErrOK {
-				return
-			}
-			if !yield(RuleInfo{Name: name, Salience: int(salience)}) {
+		rules := e.Rules()
+		for _, rule := range rules {
+			if !yield(rule) {
 				return
 			}
 		}
@@ -48,15 +35,8 @@ func (e *Engine) RuleIter() iter.Seq[RuleInfo] {
 // TemplateIter returns an iterator over all registered template names.
 func (e *Engine) TemplateIter() iter.Seq[string] {
 	return func(yield func(string) bool) {
-		count, rc := ffiEngineTemplateCount(e.handle)
-		if rc != ffi.ErrOK {
-			return
-		}
-		for i := range count {
-			name, rc := ffiEngineTemplateName(e.handle, i)
-			if rc != ffi.ErrOK {
-				return
-			}
+		names := e.Templates()
+		for _, name := range names {
 			if !yield(name) {
 				return
 			}
@@ -67,15 +47,8 @@ func (e *Engine) TemplateIter() iter.Seq[string] {
 // DiagnosticIter returns an iterator over action diagnostic messages.
 func (e *Engine) DiagnosticIter() iter.Seq[string] {
 	return func(yield func(string) bool) {
-		count, rc := ffiEngineActionDiagnosticCount(e.handle)
-		if rc != ffi.ErrOK {
-			return
-		}
-		for i := range count {
-			msg, rc := ffiEngineActionDiagnosticCopy(e.handle, i)
-			if rc != ffi.ErrOK {
-				return
-			}
+		diagnostics := e.Diagnostics()
+		for _, msg := range diagnostics {
 			if !yield(msg) {
 				return
 			}
@@ -92,18 +65,13 @@ func (e *Engine) DiagnosticIter() iter.Seq[string] {
 // a final (Fact{}, err) is yielded and iteration stops.
 func (e *Engine) FactIterE() iter.Seq2[Fact, error] {
 	return func(yield func(Fact, error) bool) {
-		ids, rc := ffiEngineFactIDs(e.handle)
-		if rc != ffi.ErrOK {
-			yield(Fact{}, errorFromFFI(rc, e.handle))
+		facts, err := e.Facts()
+		if err != nil {
+			yield(Fact{}, err)
 			return
 		}
-		for _, id := range ids {
-			f, err := e.buildFact(id)
-			if err != nil {
-				yield(Fact{}, err)
-				return
-			}
-			if !yield(*f, nil) {
+		for _, fact := range facts {
+			if !yield(fact, nil) {
 				return
 			}
 		}
@@ -115,18 +83,13 @@ func (e *Engine) FactIterE() iter.Seq2[Fact, error] {
 // a final (RuleInfo{}, err) is yielded and iteration stops.
 func (e *Engine) RuleIterE() iter.Seq2[RuleInfo, error] {
 	return func(yield func(RuleInfo, error) bool) {
-		count, rc := ffiEngineRuleCount(e.handle)
-		if rc != ffi.ErrOK {
-			yield(RuleInfo{}, errorFromFFI(rc, e.handle))
+		rules, err := e.RulesE()
+		if err != nil {
+			yield(RuleInfo{}, err)
 			return
 		}
-		for i := range count {
-			name, salience, rc := ffiEngineRuleInfo(e.handle, i)
-			if rc != ffi.ErrOK {
-				yield(RuleInfo{}, errorFromFFI(rc, e.handle))
-				return
-			}
-			if !yield(RuleInfo{Name: name, Salience: int(salience)}, nil) {
+		for _, rule := range rules {
+			if !yield(rule, nil) {
 				return
 			}
 		}
@@ -138,17 +101,12 @@ func (e *Engine) RuleIterE() iter.Seq2[RuleInfo, error] {
 // error occurs, a final ("", err) is yielded and iteration stops.
 func (e *Engine) TemplateIterE() iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
-		count, rc := ffiEngineTemplateCount(e.handle)
-		if rc != ffi.ErrOK {
-			yield("", errorFromFFI(rc, e.handle))
+		names, err := e.TemplatesE()
+		if err != nil {
+			yield("", err)
 			return
 		}
-		for i := range count {
-			name, rc := ffiEngineTemplateName(e.handle, i)
-			if rc != ffi.ErrOK {
-				yield("", errorFromFFI(rc, e.handle))
-				return
-			}
+		for _, name := range names {
 			if !yield(name, nil) {
 				return
 			}
@@ -161,17 +119,12 @@ func (e *Engine) TemplateIterE() iter.Seq2[string, error] {
 // occurs, a final ("", err) is yielded and iteration stops.
 func (e *Engine) DiagnosticIterE() iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
-		count, rc := ffiEngineActionDiagnosticCount(e.handle)
-		if rc != ffi.ErrOK {
-			yield("", errorFromFFI(rc, e.handle))
+		diagnostics, err := e.DiagnosticsE()
+		if err != nil {
+			yield("", err)
 			return
 		}
-		for i := range count {
-			msg, rc := ffiEngineActionDiagnosticCopy(e.handle, i)
-			if rc != ffi.ErrOK {
-				yield("", errorFromFFI(rc, e.handle))
-				return
-			}
+		for _, msg := range diagnostics {
 			if !yield(msg, nil) {
 				return
 			}

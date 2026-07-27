@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 
 	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
 )
@@ -19,9 +20,11 @@ var errIntOverflow = fmt.Errorf("ferric: integer overflow")
 // use, use Coordinator and Manager instead.
 //
 // Engine implements io.Closer. Always defer Close() after creation.
+// An Engine must not be copied after first use.
 type Engine struct {
-	handle ffi.EngineHandle
-	closed bool
+	lifecycle sync.RWMutex
+	handle    ffi.EngineHandle
+	closed    bool
 }
 
 // NewEngine creates a new engine on the current OS thread.
@@ -88,9 +91,7 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 }
 
 func finalizeEngine(e *Engine) {
-	if !e.closed {
-		ffiEngineFreeUnchecked(e.handle)
-	}
+	_, _ = e.closeWith(ffiEngineFreeUnchecked)
 }
 
 // NewEngineFromFile creates a new engine by deserializing a snapshot from the
@@ -183,27 +184,60 @@ func clampUintptrToInt(n uintptr) int {
 
 // Close frees the engine. Implements io.Closer.
 func (e *Engine) Close() error {
-	if e.closed {
-		return nil
+	closed, err := e.closeWith(ffiEngineFree)
+	if err != nil {
+		return err
 	}
-	rc := ffiEngineFree(e.handle)
-	if rc != ffi.ErrOK {
-		// Leave closed=false and finalizer intact so the caller
-		// can retry or the finalizer can still clean up.
-		return errorFromFFI(rc, e.handle)
+	if closed {
+		runtime.SetFinalizer(e, nil)
 	}
-	e.closed = true
-	runtime.SetFinalizer(e, nil)
 	return nil
+}
+
+// closeWith serializes explicit and finalizer cleanup. The handle becomes nil
+// only after the native free succeeds, so a failed thread-affine Close remains
+// retryable while successful cleanup is published exactly once.
+func (e *Engine) closeWith(free func(ffi.EngineHandle) ffi.ErrorCode) (bool, error) {
+	e.lifecycle.Lock()
+	defer e.lifecycle.Unlock()
+
+	if e.closed {
+		return false, nil
+	}
+	rc := free(e.handle)
+	if rc != ffi.ErrOK {
+		return false, errorFromFFI(rc, e.handle)
+	}
+	e.handle = nil
+	e.closed = true
+	return true, nil
+}
+
+// leaseHandle prevents Close from freeing the native engine until release is
+// called. Every native operation must hold this lease for its complete FFI
+// interaction, including error-message retrieval.
+func (e *Engine) leaseHandle() (ffi.EngineHandle, func(), error) {
+	e.lifecycle.RLock()
+	if e.closed {
+		e.lifecycle.RUnlock()
+		return nil, nil, ErrEngineClosed
+	}
+	return e.handle, e.lifecycle.RUnlock, nil
 }
 
 // --- Loading ---
 
 // Load loads CLIPS source into the engine.
 func (e *Engine) Load(source string) error {
-	rc := ffiEngineLoadString(e.handle, source)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	rc := ffiEngineLoadString(handle, source)
 	if rc != ffi.ErrOK {
-		return errorFromFFI(rc, e.handle)
+		return errorFromFFI(rc, handle)
 	}
 	return nil
 }
@@ -213,15 +247,27 @@ func (e *Engine) Load(source string) error {
 // AssertString asserts a fact from a CLIPS source string
 // (e.g., "(assert (color red))").
 func (e *Engine) AssertString(source string) (uint64, error) {
-	id, rc := ffiEngineAssertString(e.handle, source)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+
+	id, rc := ffiEngineAssertString(handle, source)
 	if rc != ffi.ErrOK {
-		return 0, errorFromFFI(rc, e.handle)
+		return 0, errorFromFFI(rc, handle)
 	}
 	return id, nil
 }
 
 // AssertFact asserts an ordered fact with the given relation and fields.
 func (e *Engine) AssertFact(relation string, fields ...any) (uint64, error) {
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+
 	vals := make([]ffi.Value, len(fields))
 	defer func() {
 		for i := range vals {
@@ -229,22 +275,28 @@ func (e *Engine) AssertFact(relation string, fields ...any) (uint64, error) {
 		}
 	}()
 	for i, f := range fields {
-		v, err := goToFFIValue(f)
-		if err != nil {
-			return 0, err
+		v, conversionErr := goToFFIValue(f)
+		if conversionErr != nil {
+			return 0, conversionErr
 		}
 		vals[i] = v
 	}
 
-	id, rc := ffiEngineAssertOrdered(e.handle, relation, vals)
+	id, rc := ffiEngineAssertOrdered(handle, relation, vals)
 	if rc != ffi.ErrOK {
-		return 0, errorFromFFI(rc, e.handle)
+		return 0, errorFromFFI(rc, handle)
 	}
 	return id, nil
 }
 
 // AssertTemplate asserts a template fact with named slot values.
 func (e *Engine) AssertTemplate(templateName string, slots map[string]any) (uint64, error) {
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+
 	names := make([]string, 0, len(slots))
 	vals := make([]ffi.Value, 0, len(slots))
 	defer func() {
@@ -253,48 +305,66 @@ func (e *Engine) AssertTemplate(templateName string, slots map[string]any) (uint
 		}
 	}()
 	for k, v := range slots {
-		fv, err := goToFFIValue(v)
-		if err != nil {
-			return 0, err
+		fv, conversionErr := goToFFIValue(v)
+		if conversionErr != nil {
+			return 0, conversionErr
 		}
 		names = append(names, k)
 		vals = append(vals, fv)
 	}
 
-	id, rc := ffiEngineAssertTemplate(e.handle, templateName, names, vals)
+	id, rc := ffiEngineAssertTemplate(handle, templateName, names, vals)
 	if rc != ffi.ErrOK {
-		return 0, errorFromFFI(rc, e.handle)
+		return 0, errorFromFFI(rc, handle)
 	}
 	return id, nil
 }
 
 // Retract removes a fact by its ID.
 func (e *Engine) Retract(factID uint64) error {
-	rc := ffiEngineRetract(e.handle, factID)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	rc := ffiEngineRetract(handle, factID)
 	if rc != ffi.ErrOK {
-		return errorFromFFI(rc, e.handle)
+		return errorFromFFI(rc, handle)
 	}
 	return nil
 }
 
 // GetFact returns a snapshot of a single fact.
 func (e *Engine) GetFact(factID uint64) (*Fact, error) {
-	return e.buildFact(factID)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	return e.buildFact(handle, factID)
 }
 
 // Facts returns snapshots of all user-visible facts.
 func (e *Engine) Facts() ([]Fact, error) {
-	ids, rc := ffiEngineFactIDs(e.handle)
-	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
 	}
-	return e.buildFacts(ids)
+	defer release()
+
+	ids, rc := ffiEngineFactIDs(handle)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, handle)
+	}
+	return e.buildFacts(handle, ids)
 }
 
-func (e *Engine) buildFacts(ids []uint64) ([]Fact, error) {
+func (e *Engine) buildFacts(handle ffi.EngineHandle, ids []uint64) ([]Fact, error) {
 	facts := make([]Fact, 0, len(ids))
 	for _, id := range ids {
-		f, err := e.buildFact(id)
+		f, err := e.buildFact(handle, id)
 		if err != nil {
 			return nil, err
 		}
@@ -305,18 +375,30 @@ func (e *Engine) buildFacts(ids []uint64) ([]Fact, error) {
 
 // FindFacts returns snapshots of facts matching the given relation name.
 func (e *Engine) FindFacts(relation string) ([]Fact, error) {
-	ids, rc := ffiEngineFindFactIDs(e.handle, relation)
-	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
 	}
-	return e.buildFacts(ids)
+	defer release()
+
+	ids, rc := ffiEngineFindFactIDs(handle, relation)
+	if rc != ffi.ErrOK {
+		return nil, errorFromFFI(rc, handle)
+	}
+	return e.buildFacts(handle, ids)
 }
 
 // FactCount returns the number of user-visible facts.
 func (e *Engine) FactCount() (int, error) {
-	count, rc := ffiEngineFactCount(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+
+	count, rc := ffiEngineFactCount(handle)
 	if rc != ffi.ErrOK {
-		return 0, errorFromFFI(rc, e.handle)
+		return 0, errorFromFFI(rc, handle)
 	}
 	return uintptrToInt(count)
 }
@@ -332,6 +414,12 @@ func (e *Engine) Run(ctx context.Context) (*RunResult, error) {
 // A limit of 0 means unlimited. Checks context for cancellation between
 // batches of rule firings.
 func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error) {
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	if ctx == nil {
 		return nil, errNilContext
 	}
@@ -342,7 +430,7 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 		if limit > 0 {
 			ffiLimit = int64(limit)
 		}
-		return e.runDirect(ffiLimit)
+		return e.runDirect(handle, ffiLimit)
 	}
 
 	// For cancelable contexts, run in small batches and check context.
@@ -365,9 +453,9 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 			}
 		}
 
-		fired, reason, rc := ffiEngineRunEx(e.handle, batch)
+		fired, reason, rc := ffiEngineRunEx(handle, batch)
 		if rc != ffi.ErrOK {
-			return &RunResult{RulesFired: totalFired}, errorFromFFI(rc, e.handle)
+			return &RunResult{RulesFired: totalFired}, errorFromFFI(rc, handle)
 		}
 		firedCount, err := uint64ToInt(fired)
 		if err != nil {
@@ -390,10 +478,10 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 	}
 }
 
-func (e *Engine) runDirect(limit int64) (*RunResult, error) {
-	fired, reason, rc := ffiEngineRunEx(e.handle, limit)
+func (e *Engine) runDirect(handle ffi.EngineHandle, limit int64) (*RunResult, error) {
+	fired, reason, rc := ffiEngineRunEx(handle, limit)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+		return nil, errorFromFFI(rc, handle)
 	}
 	var hr HaltReason
 	switch reason {
@@ -414,9 +502,15 @@ func (e *Engine) runDirect(limit int64) (*RunResult, error) {
 // Step executes a single rule firing.
 // Returns nil if the agenda is empty.
 func (e *Engine) Step() (*FiredRule, error) {
-	status, rc := ffiEngineStep(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	status, rc := ffiEngineStep(handle)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+		return nil, errorFromFFI(rc, handle)
 	}
 	if status != 1 {
 		return nil, nil //nolint:nilnil // nil indicates agenda empty and is part of Step's public contract.
@@ -425,36 +519,61 @@ func (e *Engine) Step() (*FiredRule, error) {
 	return &FiredRule{}, nil
 }
 
-// Halt requests the engine to halt.
+// Halt requests the engine to halt. It is a no-op after Close.
 func (e *Engine) Halt() {
-	ffiEngineHalt(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return
+	}
+	defer release()
+
+	ffiEngineHalt(handle)
 }
 
 // Reset resets the engine to its initial state (facts cleared, rules kept).
 func (e *Engine) Reset() error {
-	rc := ffiEngineReset(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	rc := ffiEngineReset(handle)
 	if rc != ffi.ErrOK {
-		return errorFromFFI(rc, e.handle)
+		return errorFromFFI(rc, handle)
 	}
 	return nil
 }
 
-// Clear removes all rules, facts, templates, etc. from the engine.
+// Clear removes all rules, facts, templates, etc. from the engine. It is a
+// no-op after Close.
 func (e *Engine) Clear() {
-	ffiEngineClear(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return
+	}
+	defer release()
+
+	ffiEngineClear(handle)
 }
 
 // Serialize produces a snapshot of the engine's current state using the
 // specified format. The snapshot can be used with WithSnapshot to create
 // new engines that skip the parse/compile pipeline.
 func (e *Engine) Serialize(format Format) ([]byte, error) {
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	ffiFormat, err := formatToFFI(format)
 	if err != nil {
 		return nil, err
 	}
-	data, rc := ffiEngineSerializeAs(e.handle, ffiFormat)
+	data, rc := ffiEngineSerializeAs(handle, ffiFormat)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+		return nil, errorFromFFI(rc, handle)
 	}
 	return data, nil
 }
@@ -474,15 +593,22 @@ func (e *Engine) SerializeToFile(path string, format Format) error {
 
 // --- Introspection ---
 
-// Rules returns information about all registered rules.
+// Rules returns information about all registered rules. It returns nil after
+// Close; use RulesE to distinguish a closed engine from an empty rule set.
 func (e *Engine) Rules() []RuleInfo {
-	count, rc := ffiEngineRuleCount(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil
+	}
+	defer release()
+
+	count, rc := ffiEngineRuleCount(handle)
 	if rc != ffi.ErrOK {
 		return nil
 	}
 	rules := make([]RuleInfo, 0, count)
 	for i := range count {
-		name, salience, rc := ffiEngineRuleInfo(e.handle, i)
+		name, salience, rc := ffiEngineRuleInfo(handle, i)
 		if rc != ffi.ErrOK {
 			break
 		}
@@ -491,15 +617,22 @@ func (e *Engine) Rules() []RuleInfo {
 	return rules
 }
 
-// Templates returns the names of all registered templates.
+// Templates returns the names of all registered templates. It returns nil
+// after Close; use TemplatesE to distinguish a closed engine from no templates.
 func (e *Engine) Templates() []string {
-	count, rc := ffiEngineTemplateCount(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil
+	}
+	defer release()
+
+	count, rc := ffiEngineTemplateCount(handle)
 	if rc != ffi.ErrOK {
 		return nil
 	}
 	names := make([]string, 0, count)
 	for i := range count {
-		name, rc := ffiEngineTemplateName(e.handle, i)
+		name, rc := ffiEngineTemplateName(handle, i)
 		if rc != ffi.ErrOK {
 			break
 		}
@@ -511,42 +644,51 @@ func (e *Engine) Templates() []string {
 // GetGlobal retrieves a global variable's value by name.
 // The name should not include the ?* prefix/suffix.
 func (e *Engine) GetGlobal(name string) (any, error) {
-	val, rc := ffiEngineGetGlobal(e.handle, name)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	val, rc := ffiEngineGetGlobal(handle, name)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+		return nil, errorFromFFI(rc, handle)
 	}
 	result := ffiValueToGoAndFree(&val)
 	return result, nil
 }
 
-// CurrentModule returns the name of the current module.
+// CurrentModule returns the name of the current module, or an empty string
+// after Close. Use CurrentModuleE to distinguish that state from an empty name.
 func (e *Engine) CurrentModule() string {
-	name, rc := ffiEngineCurrentModule(e.handle)
-	if rc != ffi.ErrOK {
-		return ""
-	}
+	name, _ := e.CurrentModuleE()
 	return name
 }
 
 // Focus returns the module at the top of the focus stack.
-// Returns empty string and false if the focus stack is empty.
+// Returns empty string and false if the focus stack is empty or the engine is
+// closed. Use FocusE to distinguish an error.
 func (e *Engine) Focus() (string, bool) {
-	name, rc := ffiEngineGetFocus(e.handle)
-	if rc != ffi.ErrOK {
-		return "", false
-	}
-	return name, true
+	name, ok, _ := e.FocusE()
+	return name, ok
 }
 
-// FocusStack returns the focus stack entries from bottom to top.
+// FocusStack returns the focus stack entries from bottom to top, or nil after
+// Close. Use FocusStackE to distinguish an error.
 func (e *Engine) FocusStack() []string {
-	depth, rc := ffiEngineFocusStackDepth(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil
+	}
+	defer release()
+
+	depth, rc := ffiEngineFocusStackDepth(handle)
 	if rc != ffi.ErrOK {
 		return nil
 	}
 	stack := make([]string, 0, depth)
 	for i := range depth {
-		name, rc := ffiEngineFocusStackEntry(e.handle, i)
+		name, rc := ffiEngineFocusStackEntry(handle, i)
 		if rc != ffi.ErrOK {
 			break
 		}
@@ -555,21 +697,17 @@ func (e *Engine) FocusStack() []string {
 	return stack
 }
 
-// AgendaSize returns the number of activations on the agenda.
+// AgendaSize returns the number of activations on the agenda, or zero after
+// Close. Use AgendaSizeE to distinguish an error.
 func (e *Engine) AgendaSize() int {
-	count, rc := ffiEngineAgendaCount(e.handle)
-	if rc != ffi.ErrOK {
-		return 0
-	}
-	return clampUintptrToInt(count)
+	count, _ := e.AgendaSizeE()
+	return count
 }
 
-// IsHalted returns true if the engine is halted.
+// IsHalted returns true if the engine is halted and false after Close. Use
+// IsHaltedE to distinguish an error.
 func (e *Engine) IsHalted() bool {
-	halted, rc := ffiEngineIsHalted(e.handle)
-	if rc != ffi.ErrOK {
-		return false
-	}
+	halted, _ := e.IsHaltedE()
 	return halted
 }
 
@@ -578,30 +716,55 @@ func (e *Engine) IsHalted() bool {
 // GetOutput retrieves captured output for a named channel.
 // Returns the output string and true, or empty string and false if no output.
 func (e *Engine) GetOutput(channel string) (string, bool) {
-	return ffiEngineGetOutput(e.handle, channel)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return "", false
+	}
+	defer release()
+
+	return ffiEngineGetOutput(handle, channel)
 }
 
-// ClearOutput clears a specific output channel.
+// ClearOutput clears a specific output channel. It is a no-op after Close.
 func (e *Engine) ClearOutput(channel string) {
-	ffiEngineClearOutput(e.handle, channel)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return
+	}
+	defer release()
+
+	ffiEngineClearOutput(handle, channel)
 }
 
-// PushInput pushes an input line for read/readline.
+// PushInput pushes an input line for read/readline. It is a no-op after Close.
 func (e *Engine) PushInput(line string) {
-	ffiEnginePushInput(e.handle, line)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return
+	}
+	defer release()
+
+	ffiEnginePushInput(handle, line)
 }
 
 // --- Diagnostics ---
 
-// Diagnostics returns all action diagnostic messages from recent execution.
+// Diagnostics returns all action diagnostic messages from recent execution. It
+// returns nil after Close; use DiagnosticsE to distinguish an error.
 func (e *Engine) Diagnostics() []string {
-	count, rc := ffiEngineActionDiagnosticCount(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil
+	}
+	defer release()
+
+	count, rc := ffiEngineActionDiagnosticCount(handle)
 	if rc != ffi.ErrOK {
 		return nil
 	}
 	diags := make([]string, 0, count)
 	for i := range count {
-		msg, rc := ffiEngineActionDiagnosticCopy(e.handle, i)
+		msg, rc := ffiEngineActionDiagnosticCopy(handle, i)
 		if rc != ffi.ErrOK {
 			break
 		}
@@ -610,9 +773,16 @@ func (e *Engine) Diagnostics() []string {
 	return diags
 }
 
-// ClearDiagnostics clears all stored action diagnostics.
+// ClearDiagnostics clears all stored action diagnostics. It is a no-op after
+// Close.
 func (e *Engine) ClearDiagnostics() {
-	ffiEngineClearActionDiagnostics(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return
+	}
+	defer release()
+
+	ffiEngineClearActionDiagnostics(handle)
 }
 
 // ---------------------------------------------------------------------------
@@ -621,15 +791,21 @@ func (e *Engine) ClearDiagnostics() {
 
 // RulesE returns information about all registered rules, or an error.
 func (e *Engine) RulesE() ([]RuleInfo, error) {
-	count, rc := ffiEngineRuleCount(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	count, rc := ffiEngineRuleCount(handle)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+		return nil, errorFromFFI(rc, handle)
 	}
 	rules := make([]RuleInfo, 0, count)
 	for i := range count {
-		name, salience, rc := ffiEngineRuleInfo(e.handle, i)
+		name, salience, rc := ffiEngineRuleInfo(handle, i)
 		if rc != ffi.ErrOK {
-			return nil, errorFromFFI(rc, e.handle)
+			return nil, errorFromFFI(rc, handle)
 		}
 		rules = append(rules, RuleInfo{Name: name, Salience: int(salience)})
 	}
@@ -638,15 +814,21 @@ func (e *Engine) RulesE() ([]RuleInfo, error) {
 
 // TemplatesE returns the names of all registered templates, or an error.
 func (e *Engine) TemplatesE() ([]string, error) {
-	count, rc := ffiEngineTemplateCount(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	count, rc := ffiEngineTemplateCount(handle)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+		return nil, errorFromFFI(rc, handle)
 	}
 	names := make([]string, 0, count)
 	for i := range count {
-		name, rc := ffiEngineTemplateName(e.handle, i)
+		name, rc := ffiEngineTemplateName(handle, i)
 		if rc != ffi.ErrOK {
-			return nil, errorFromFFI(rc, e.handle)
+			return nil, errorFromFFI(rc, handle)
 		}
 		names = append(names, name)
 	}
@@ -655,15 +837,21 @@ func (e *Engine) TemplatesE() ([]string, error) {
 
 // DiagnosticsE returns all action diagnostic messages, or an error.
 func (e *Engine) DiagnosticsE() ([]string, error) {
-	count, rc := ffiEngineActionDiagnosticCount(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	count, rc := ffiEngineActionDiagnosticCount(handle)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+		return nil, errorFromFFI(rc, handle)
 	}
 	diags := make([]string, 0, count)
 	for i := range count {
-		msg, rc := ffiEngineActionDiagnosticCopy(e.handle, i)
+		msg, rc := ffiEngineActionDiagnosticCopy(handle, i)
 		if rc != ffi.ErrOK {
-			return nil, errorFromFFI(rc, e.handle)
+			return nil, errorFromFFI(rc, handle)
 		}
 		diags = append(diags, msg)
 	}
@@ -672,9 +860,15 @@ func (e *Engine) DiagnosticsE() ([]string, error) {
 
 // CurrentModuleE returns the name of the current module, or an error.
 func (e *Engine) CurrentModuleE() (string, error) {
-	name, rc := ffiEngineCurrentModule(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
+	name, rc := ffiEngineCurrentModule(handle)
 	if rc != ffi.ErrOK {
-		return "", errorFromFFI(rc, e.handle)
+		return "", errorFromFFI(rc, handle)
 	}
 	return name, nil
 }
@@ -683,24 +877,36 @@ func (e *Engine) CurrentModuleE() (string, error) {
 // Returns ("", false, nil) when the result cannot be distinguished from
 // an empty stack without an error; callers should check the bool first.
 func (e *Engine) FocusE() (string, bool, error) {
-	name, rc := ffiEngineGetFocus(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return "", false, err
+	}
+	defer release()
+
+	name, rc := ffiEngineGetFocus(handle)
 	if rc != ffi.ErrOK {
-		return "", false, errorFromFFI(rc, e.handle)
+		return "", false, errorFromFFI(rc, handle)
 	}
 	return name, true, nil
 }
 
 // FocusStackE returns the focus stack entries from bottom to top, or an error.
 func (e *Engine) FocusStackE() ([]string, error) {
-	depth, rc := ffiEngineFocusStackDepth(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	depth, rc := ffiEngineFocusStackDepth(handle)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+		return nil, errorFromFFI(rc, handle)
 	}
 	stack := make([]string, 0, depth)
 	for i := range depth {
-		name, rc := ffiEngineFocusStackEntry(e.handle, i)
+		name, rc := ffiEngineFocusStackEntry(handle, i)
 		if rc != ffi.ErrOK {
-			return nil, errorFromFFI(rc, e.handle)
+			return nil, errorFromFFI(rc, handle)
 		}
 		stack = append(stack, name)
 	}
@@ -709,40 +915,52 @@ func (e *Engine) FocusStackE() ([]string, error) {
 
 // AgendaSizeE returns the number of activations on the agenda, or an error.
 func (e *Engine) AgendaSizeE() (int, error) {
-	count, rc := ffiEngineAgendaCount(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+
+	count, rc := ffiEngineAgendaCount(handle)
 	if rc != ffi.ErrOK {
-		return 0, errorFromFFI(rc, e.handle)
+		return 0, errorFromFFI(rc, handle)
 	}
 	return clampUintptrToInt(count), nil
 }
 
 // IsHaltedE returns whether the engine is halted, or an error.
 func (e *Engine) IsHaltedE() (bool, error) {
-	halted, rc := ffiEngineIsHalted(e.handle)
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return false, err
+	}
+	defer release()
+
+	halted, rc := ffiEngineIsHalted(handle)
 	if rc != ffi.ErrOK {
-		return false, errorFromFFI(rc, e.handle)
+		return false, errorFromFFI(rc, handle)
 	}
 	return halted, nil
 }
 
 // --- Internal: fact building ---
 
-func (e *Engine) buildFact(factID uint64) (*Fact, error) {
-	ft, rc := ffiEngineGetFactType(e.handle, factID)
+func (e *Engine) buildFact(handle ffi.EngineHandle, factID uint64) (*Fact, error) {
+	ft, rc := ffiEngineGetFactType(handle, factID)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+		return nil, errorFromFFI(rc, handle)
 	}
 
-	fieldCount, rc := ffiEngineGetFactFieldCount(e.handle, factID)
+	fieldCount, rc := ffiEngineGetFactFieldCount(handle, factID)
 	if rc != ffi.ErrOK {
-		return nil, errorFromFFI(rc, e.handle)
+		return nil, errorFromFFI(rc, handle)
 	}
 
 	fields := make([]any, fieldCount)
 	for i := range fieldCount {
-		val, rc := ffiEngineGetFactField(e.handle, factID, i)
+		val, rc := ffiEngineGetFactField(handle, factID, i)
 		if rc != ffi.ErrOK {
-			return nil, errorFromFFI(rc, e.handle)
+			return nil, errorFromFFI(rc, handle)
 		}
 		fields[i] = ffiValueToGoAndFree(&val)
 	}
@@ -754,23 +972,23 @@ func (e *Engine) buildFact(factID uint64) (*Fact, error) {
 
 	if ft == ffi.FactTypeTemplate {
 		fact.Type = FactTemplate
-		name, rc := ffiEngineGetFactTemplateName(e.handle, factID)
+		name, rc := ffiEngineGetFactTemplateName(handle, factID)
 		if rc != ffi.ErrOK {
-			return nil, errorFromFFI(rc, e.handle)
+			return nil, errorFromFFI(rc, handle)
 		}
 		fact.TemplateName = name
 
 		// Build slot map by querying template slot names.
-		slotCount, rc := ffiEngineTemplateSlotCount(e.handle, name)
+		slotCount, rc := ffiEngineTemplateSlotCount(handle, name)
 		if rc != ffi.ErrOK {
-			return nil, fmt.Errorf("ferric: failed to get slot count for template %q: %w", name, errorFromFFI(rc, e.handle))
+			return nil, fmt.Errorf("ferric: failed to get slot count for template %q: %w", name, errorFromFFI(rc, handle))
 		}
 		if slotCount > 0 {
 			fact.Slots = make(map[string]any, slotCount)
 			for i := range slotCount {
-				slotName, rc := ffiEngineTemplateSlotName(e.handle, name, i)
+				slotName, rc := ffiEngineTemplateSlotName(handle, name, i)
 				if rc != ffi.ErrOK {
-					return nil, fmt.Errorf("ferric: failed to get slot name %d for template %q: %w", i, name, errorFromFFI(rc, e.handle))
+					return nil, fmt.Errorf("ferric: failed to get slot name %d for template %q: %w", i, name, errorFromFFI(rc, handle))
 				}
 				if i < fieldCount {
 					fact.Slots[slotName] = fields[i]
@@ -779,9 +997,9 @@ func (e *Engine) buildFact(factID uint64) (*Fact, error) {
 		}
 	} else {
 		fact.Type = FactOrdered
-		rel, rc := ffiEngineGetFactRelation(e.handle, factID)
+		rel, rc := ffiEngineGetFactRelation(handle, factID)
 		if rc != ffi.ErrOK {
-			return nil, fmt.Errorf("ferric: failed to get relation for fact %d: %w", factID, errorFromFFI(rc, e.handle))
+			return nil, fmt.Errorf("ferric: failed to get relation for fact %d: %w", factID, errorFromFFI(rc, handle))
 		}
 		fact.Relation = rel
 	}

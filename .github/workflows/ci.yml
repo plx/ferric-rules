@@ -84,6 +84,24 @@ jobs:
           CC: clang
           FERRIC_TSAN_TOOLCHAIN: nightly-2025-11-04
 
+  ffi-go-asan:
+    name: Go/C Lifecycle (AddressSanitizer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2025-11-04
+          components: rust-src
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bindings/go/go.mod
+      - run: just ffi-go-asan-harness
+        env:
+          FERRIC_ASAN_TOOLCHAIN: nightly-2025-11-04
+
   go-lint:
     name: Go Lint
     runs-on: ubuntu-latest
