@@ -216,6 +216,121 @@ mod tests {
     }
 
     #[test]
+    fn fr_rete_004_false_test_never_enters_agenda() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule positive
+                (value ?x)
+                (test (> ?x 0))
+                =>
+                (assert (positive ?x)))
+        ",
+        );
+
+        engine.assert_ordered("value", -1_i64).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            0,
+            "a failing test CE must prevent terminal activation"
+        );
+    }
+
+    #[test]
+    fn fr_rete_004_test_uses_match_time_state() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defglobal ?*open* = FALSE)
+
+            (defrule candidate
+                (declare (salience 10))
+                (candidate)
+                (test (eq ?*open* TRUE))
+                =>
+                (assert (candidate-fired)))
+
+            (defrule opener
+                (declare (salience 100))
+                (open)
+                =>
+                (bind ?*open* TRUE))
+        ",
+        );
+
+        engine.assert_ordered("candidate", []).unwrap();
+        engine.assert_ordered("open", []).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "only the opener should match while the global guard is false"
+        );
+        let run = run_to_completion(&mut engine);
+        assert_eq!(run.rules_fired, 1);
+        assert_no_fact_with_relation(&engine, "candidate-fired");
+    }
+
+    #[test]
+    fn fr_rete_004_test_retracts_and_reactivates_correctly() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule positive
+                (value ?x)
+                (test (> ?x 0))
+                =>
+                (assert (positive ?x)))
+        ",
+        );
+
+        let rejected = engine.assert_ordered("value", -1_i64).unwrap();
+        assert_eq!(engine.agenda_len(), 0);
+        engine.retract(rejected).unwrap();
+
+        let accepted = engine.assert_ordered("value", 1_i64).unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+        engine.retract(accepted).unwrap();
+        assert_eq!(engine.agenda_len(), 0);
+
+        engine.assert_ordered("value", 1_i64).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "a new partial match must reevaluate and reactivate the test CE"
+        );
+    }
+
+    #[test]
+    fn fr_rete_004_complex_negation_not_deferred_to_fire() {
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defrule no-square-greater
+                    (anchor ?min)
+                    (not (data ?x&:(> (* ?x ?x) (* ?min ?min))))
+                    =>
+                    (assert (safe-square ?min)))
+            ",
+            )
+            .expect_err("unsupported complex negation must fail during load");
+
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                crate::loader::LoadError::Compile(message)
+                    if message.contains("complex constraints inside negated patterns")
+            )),
+            "expected an explicit match-time support error, got {errors:?}"
+        );
+    }
+
+    #[test]
     fn nested_function_call_in_rhs_evaluates() {
         let mut engine = new_utf8_engine();
         load_ok(

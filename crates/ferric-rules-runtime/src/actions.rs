@@ -16,10 +16,10 @@ use ferric_rules_core::beta::{RuleId, Salience};
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarId, VarMap};
 use ferric_rules_core::token::Token;
 use ferric_rules_core::{
-    AtomKey, EncodingError, Fact, FactBase, FactId, OrderedFact, ReteNetwork, Symbol, SymbolTable,
+    EncodingError, Fact, FactBase, FactId, OrderedFact, ReteNetwork, Symbol, SymbolTable,
     TemplateId, Value,
 };
-use ferric_rules_parser::{Action, ActionExpr, Constraint, FunctionCall, LiteralKind};
+use ferric_rules_parser::{Action, ActionExpr, FunctionCall, LiteralKind};
 use slotmap::Key as _;
 
 use crate::modules::ModuleRegistry;
@@ -341,22 +341,11 @@ fn eval_fact_slot_ref_call(
     }
 }
 
-/// A compiled test condition evaluated before RHS actions.
+/// A compiled condition evaluated when a partial match reaches its predicate node.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum CompiledTestCondition {
     Expr(crate::evaluator::RuntimeExpr),
-    NegatedPatternRuntimeCheck(NegatedPatternRuntimeCheck),
-}
-
-/// Runtime fallback for negated ordered patterns with complex constraints.
-///
-/// This is used when compile-time lowering to join/alpha tests is not possible.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct NegatedPatternRuntimeCheck {
-    pub relation: String,
-    pub constraints: Vec<Constraint>,
 }
 
 /// Runtime hint for trailing ordered multi-variable captures (`$?var`).
@@ -391,7 +380,7 @@ pub(crate) struct CompiledRuleInfo {
     /// Rule salience (stored for informational purposes).
     #[allow(dead_code)] // May be used in future for debugging/logging
     pub salience: Salience,
-    /// Pre-translated test conditions, evaluated at firing time.
+    /// Pre-translated match conditions referenced by predicate-node indexes.
     pub test_conditions: Vec<CompiledTestCondition>,
     /// Pre-translated RHS action call expressions.
     pub runtime_actions: Vec<Option<crate::evaluator::RuntimeExpr>>,
@@ -430,9 +419,7 @@ pub enum ActionError {
 /// This is called with all the data needed pre-extracted to avoid borrow issues.
 ///
 /// Returns `(fired, reset_requested, clear_requested, errors)` where:
-/// - `fired` is `true` if test CE conditions all passed and actions were executed,
-///   `false` if a test CE was falsy (actions are skipped and the rule is not
-///   counted as having fired).
+/// - `fired` is `true` once the already-matched activation reaches execution.
 /// - `reset_requested` is `true` if a `(reset)` action was executed.
 /// - `clear_requested` is `true` if a `(clear)` action was executed.
 /// - `errors` is a list of non-fatal action errors that occurred during execution.
@@ -465,57 +452,6 @@ pub(crate) fn execute_actions(
         &rule_info.multifield_tail_bindings,
         &mut eval_env.runtime_bindings,
     );
-
-    // Evaluate test conditions first — if any is falsy, skip all actions and
-    // signal to the caller that the rule did NOT logically fire.
-    for test_condition in &rule_info.test_conditions {
-        let condition_passed = match test_condition {
-            CompiledTestCondition::Expr(test_expr) => {
-                match eval_env.eval_runtime_expr(token, rule_info, test_expr, context) {
-                    Ok(value) => crate::evaluator::is_truthy(&value, &context.engine.symbol_table),
-                    Err(e) => {
-                        ferric_event!(
-                            warn,
-                            rule = %rule_info.name,
-                            error = %e,
-                            "test_condition_eval_error"
-                        );
-                        flush_deferred_printout(context);
-                        errors.push(e);
-                        return (false, false, false, errors);
-                    }
-                }
-            }
-            CompiledTestCondition::NegatedPatternRuntimeCheck(check) => {
-                match evaluate_negated_pattern_runtime_check(
-                    token,
-                    rule_info,
-                    check,
-                    &mut eval_env,
-                    context,
-                ) {
-                    Ok(passed) => passed,
-                    Err(e) => {
-                        ferric_event!(
-                            warn,
-                            rule = %rule_info.name,
-                            error = %e,
-                            "test_condition_eval_error"
-                        );
-                        flush_deferred_printout(context);
-                        errors.push(e);
-                        return (false, false, false, errors);
-                    }
-                }
-            }
-        };
-        flush_deferred_printout(context);
-
-        if !condition_passed {
-            ferric_event!(debug, rule = %rule_info.name, "rule_skipped_by_test_condition");
-            return (false, false, false, errors); // Test CE falsy — rule did not fire
-        }
-    }
 
     for (index, action) in rule_info.actions.iter().enumerate() {
         let runtime_call = rule_info
@@ -585,51 +521,30 @@ pub(crate) fn execute_actions(
     (true, reset_requested, clear_requested, errors)
 }
 
-fn evaluate_negated_pattern_runtime_check(
+/// Evaluate one rule-local predicate for an incoming partial match.
+pub(crate) fn evaluate_test_condition(
     token: &Token,
     rule_info: &CompiledRuleInfo,
-    check: &NegatedPatternRuntimeCheck,
-    eval_env: &mut ActionEvalEnv,
+    test_condition: &CompiledTestCondition,
+    collected_facts: &[FactId],
     context: &mut ActionExecutionContext<'_>,
 ) -> Result<bool, ActionError> {
-    let Ok(relation) = context
-        .engine
-        .symbol_table
-        .intern_symbol(&check.relation, context.engine.config.string_encoding)
-    else {
-        return Ok(true);
+    let mut eval_env = ActionEvalEnv {
+        runtime_bindings: RuntimeBindingEnv::new(),
     };
+    seed_multifield_tail_bindings(
+        &context.engine.fact_base,
+        collected_facts,
+        &rule_info.multifield_tail_bindings,
+        &mut eval_env.runtime_bindings,
+    );
 
-    let base_env = collect_outer_runtime_bindings(token, rule_info, &context.engine.symbol_table);
-
-    let candidate_ids: Vec<_> = context
-        .engine
-        .fact_base
-        .facts_by_relation(relation)
-        .collect();
-
-    for fact_id in candidate_ids {
-        let Some(entry) = context.engine.fact_base.get(fact_id) else {
-            continue;
-        };
-        let Fact::Ordered(ordered) = &entry.fact else {
-            continue;
-        };
-        let ordered = ordered.clone();
-
-        if ordered_fact_matches_runtime_constraints(
-            &ordered,
-            &check.constraints,
-            &base_env,
-            eval_env,
-            context,
-        )? {
-            // Matching fact exists, so the negated condition fails.
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
+    let CompiledTestCondition::Expr(test_expr) = test_condition;
+    let result = eval_env
+        .eval_runtime_expr(token, rule_info, test_expr, context)
+        .map(|value| crate::evaluator::is_truthy(&value, &context.engine.symbol_table));
+    flush_deferred_printout(context);
+    result
 }
 
 fn collect_outer_runtime_bindings(
@@ -683,174 +598,6 @@ fn seed_multifield_tail_bindings(
     }
 }
 
-fn ordered_fact_matches_runtime_constraints(
-    fact: &OrderedFact,
-    constraints: &[Constraint],
-    base_env: &RuntimeBindingEnv,
-    eval_env: &mut ActionEvalEnv,
-    context: &mut ActionExecutionContext<'_>,
-) -> Result<bool, ActionError> {
-    if fact.fields.len() < constraints.len() {
-        return Ok(false);
-    }
-
-    let mut envs = vec![base_env.clone()];
-    for (slot_index, constraint) in constraints.iter().enumerate() {
-        let Some(slot_value) = fact.fields.get(slot_index) else {
-            return Ok(false);
-        };
-
-        let mut next_envs = Vec::new();
-        for env in &envs {
-            let mut matched =
-                runtime_constraint_matches_envs(constraint, slot_value, env, eval_env, context)?;
-            next_envs.append(&mut matched);
-        }
-
-        if next_envs.is_empty() {
-            return Ok(false);
-        }
-
-        envs = next_envs;
-    }
-
-    Ok(!envs.is_empty())
-}
-
-fn runtime_constraint_matches_envs(
-    constraint: &Constraint,
-    slot_value: &Value,
-    env: &RuntimeBindingEnv,
-    eval_env: &mut ActionEvalEnv,
-    context: &mut ActionExecutionContext<'_>,
-) -> Result<Vec<RuntimeBindingEnv>, ActionError> {
-    match constraint {
-        Constraint::Literal(lit) => {
-            if value_equals_literal(slot_value, &lit.value, &context.engine.symbol_table) {
-                Ok(vec![env.clone()])
-            } else {
-                Ok(Vec::new())
-            }
-        }
-        Constraint::Variable(name, _) | Constraint::MultiVariable(name, _) => {
-            if let Some(existing) = env.get(name) {
-                if values_equal(existing, slot_value) {
-                    Ok(vec![env.clone()])
-                } else {
-                    Ok(Vec::new())
-                }
-            } else {
-                let mut bound = env.clone();
-                insert_runtime_binding(&mut bound, name, slot_value.clone());
-                Ok(vec![bound])
-            }
-        }
-        Constraint::Wildcard(_) | Constraint::MultiWildcard(_) => Ok(vec![env.clone()]),
-        Constraint::Not(inner, _) => match inner.as_ref() {
-            Constraint::Literal(lit) => {
-                if value_equals_literal(slot_value, &lit.value, &context.engine.symbol_table) {
-                    Ok(Vec::new())
-                } else {
-                    Ok(vec![env.clone()])
-                }
-            }
-            Constraint::Variable(name, _) | Constraint::MultiVariable(name, _) => {
-                let Some(existing) = env.get(name) else {
-                    return Ok(Vec::new());
-                };
-                if values_equal(existing, slot_value) {
-                    Ok(Vec::new())
-                } else {
-                    Ok(vec![env.clone()])
-                }
-            }
-            Constraint::Wildcard(_) | Constraint::MultiWildcard(_) => Ok(vec![env.clone()]),
-            other => {
-                let inner =
-                    runtime_constraint_matches_envs(other, slot_value, env, eval_env, context)?;
-                if inner.is_empty() {
-                    Ok(vec![env.clone()])
-                } else {
-                    Ok(Vec::new())
-                }
-            }
-        },
-        Constraint::And(parts, _) => {
-            let mut envs = vec![env.clone()];
-            for part in parts {
-                let mut next = Vec::new();
-                for candidate in &envs {
-                    let mut matched = runtime_constraint_matches_envs(
-                        part, slot_value, candidate, eval_env, context,
-                    )?;
-                    next.append(&mut matched);
-                }
-                if next.is_empty() {
-                    return Ok(Vec::new());
-                }
-                envs = next;
-            }
-            Ok(envs)
-        }
-        Constraint::Or(parts, _) => {
-            let mut results = Vec::new();
-            for part in parts {
-                let mut matched =
-                    runtime_constraint_matches_envs(part, slot_value, env, eval_env, context)?;
-                results.append(&mut matched);
-            }
-            Ok(results)
-        }
-        Constraint::Predicate(expr, _) => {
-            let Some(value) = runtime_constraint_expr_value(expr, env, eval_env, context)? else {
-                return Ok(Vec::new());
-            };
-            if crate::evaluator::is_truthy(&value, &context.engine.symbol_table) {
-                Ok(vec![env.clone()])
-            } else {
-                Ok(Vec::new())
-            }
-        }
-        Constraint::ReturnValue(expr, _) => {
-            let Some(value) = runtime_constraint_expr_value(expr, env, eval_env, context)? else {
-                return Ok(Vec::new());
-            };
-            if values_equal(&value, slot_value) {
-                Ok(vec![env.clone()])
-            } else {
-                Ok(Vec::new())
-            }
-        }
-    }
-}
-
-fn runtime_constraint_expr_value(
-    expr: &ferric_rules_parser::SExpr,
-    env: &RuntimeBindingEnv,
-    _eval_env: &mut ActionEvalEnv,
-    context: &mut ActionExecutionContext<'_>,
-) -> Result<Option<Value>, ActionError> {
-    let Ok(runtime_expr) = crate::evaluator::from_sexpr(
-        expr,
-        &mut context.engine.symbol_table,
-        &context.engine.config,
-    ) else {
-        return Ok(None);
-    };
-
-    let (bindings, var_map) = build_runtime_eval_bindings(env, context)?;
-    match ActionEvalEnv::eval_runtime_expr_with_bindings(
-        &runtime_expr,
-        &bindings,
-        &var_map,
-        context,
-    ) {
-        Ok(value) => Ok(Some(value)),
-        Err(ActionError::Evaluator(_) | ActionError::EvalError(_)) => Ok(None),
-        Err(other) => Err(other),
-    }
-}
-
 fn build_runtime_eval_bindings(
     env: &RuntimeBindingEnv,
     context: &mut ActionExecutionContext<'_>,
@@ -871,33 +618,6 @@ fn build_runtime_eval_bindings(
     }
 
     Ok((bindings, var_map))
-}
-
-fn value_equals_literal(value: &Value, literal: &LiteralKind, symbol_table: &SymbolTable) -> bool {
-    match literal {
-        LiteralKind::Integer(expected) => {
-            matches!(value, Value::Integer(actual) if actual == expected)
-        }
-        LiteralKind::Float(expected) => {
-            matches!(value, Value::Float(actual) if actual.to_bits() == expected.to_bits())
-        }
-        LiteralKind::String(expected) => {
-            matches!(value, Value::String(actual) if actual.as_str() == expected)
-        }
-        LiteralKind::Symbol(expected) => match value {
-            Value::Symbol(symbol) => {
-                symbol_table.resolve_symbol_str(*symbol) == Some(expected.as_str())
-            }
-            _ => false,
-        },
-    }
-}
-
-fn values_equal(lhs: &Value, rhs: &Value) -> bool {
-    match (AtomKey::from_value(lhs), AtomKey::from_value(rhs)) {
-        (Some(lhs_key), Some(rhs_key)) => lhs_key == rhs_key,
-        _ => lhs.structural_eq(rhs),
-    }
 }
 
 #[allow(clippy::too_many_arguments)] // Action dispatch needs full mutable engine/action context.

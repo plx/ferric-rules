@@ -38,6 +38,7 @@ tests/fixtures/core/refraction.clp
 tests/fixtures/core/retract_chain.clp
 tests/fixtures/core/retract_cycle.clp
 tests/fixtures/core/salience_order.clp
+tests/fixtures/core/test_ce_match_time_transitions.clp
 tests/fixtures/examples/mobile_engagement.clp
 tests/fixtures/generics/.gitkeep
 tests/fixtures/generics/basic_dispatch.clp

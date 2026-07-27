@@ -805,6 +805,18 @@ fn fr_rete_003_clips_staged_late_rule_backfill_fixture() {
     );
 }
 
+#[test]
+fn fr_rete_004_clips_match_time_transition_fixture() {
+    // Pinned against the repository's CLIPS 6.30 reference image. The absent
+    // "historical-fired" line is significant: changing a global does not
+    // retroactively admit a partial match that failed its test CE.
+    let _ = assert_fixture_output(
+        "core/test_ce_match_time_transitions.clp",
+        5,
+        "open\nfresh\nretract\nreassert\npositive 2\n",
+    );
+}
+
 /// Multi-pattern join: a rule with two patterns joined by a shared variable.
 #[test]
 fn test_compat_core_multi_pattern_join() {

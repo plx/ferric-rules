@@ -105,6 +105,29 @@ fn generate_string_source(n: usize) -> String {
     source
 }
 
+/// Match-time `test` CE throughput with an even split of accepted and rejected
+/// partial matches.
+fn generate_test_ce_source(n: usize) -> String {
+    let mut source = String::from(
+        "\
+(deffacts candidates\n",
+    );
+    for value in 0..n {
+        writeln!(source, "    (candidate {value})").unwrap();
+    }
+    source.push_str(
+        ")
+
+(defrule accept-even-positive
+    (candidate ?value)
+    (test (and (> ?value 0) (= (mod ?value 2) 0)))
+    =>
+    (assert (accepted ?value)))
+",
+    );
+    source
+}
+
 fn bench_evaluator_arithmetic(c: &mut Criterion) {
     let mut group = c.benchmark_group("eval_arithmetic");
 
@@ -263,11 +286,39 @@ fn bench_evaluator_string(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_test_ce_matching(c: &mut Criterion) {
+    let mut group = c.benchmark_group("test_ce_matching");
+
+    let source_100 = generate_test_ce_source(100);
+    group.bench_function("test_ce_100", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source_100).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+
+    let source_1000 = generate_test_ce_source(1000);
+    group.sample_size(10);
+    group.bench_function("test_ce_1000", |b| {
+        b.iter(|| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source_1000).unwrap();
+            engine.reset().unwrap();
+            engine.run(RunLimit::Unlimited).unwrap()
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_evaluator_arithmetic,
     bench_evaluator_deffunction,
     bench_evaluator_loop,
     bench_evaluator_string,
+    bench_test_ce_matching,
 );
 criterion_main!(benches);

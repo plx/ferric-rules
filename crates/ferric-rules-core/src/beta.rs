@@ -302,6 +302,18 @@ pub enum BetaNode {
         memory: BetaMemoryId,
         children: Rc<[NodeId]>,
     },
+    /// Predicate node: filters a partial match using a runtime-owned condition.
+    ///
+    /// Core stores only the condition's rule-local index. The runtime evaluates
+    /// the expression when the parent token arrives, then tells the network
+    /// whether to create this node's pass-through token.
+    Predicate {
+        parent: NodeId,
+        rule: RuleId,
+        condition_index: u32,
+        memory: BetaMemoryId,
+        children: Rc<[NodeId]>,
+    },
     /// Terminal node: produces activations for a rule.
     Terminal {
         parent: NodeId,
@@ -448,6 +460,38 @@ impl BetaNetwork {
             .entry(alpha_memory)
             .or_default()
             .push(node_id);
+
+        (node_id, memory_id)
+    }
+
+    /// Create a predicate node as a child of the given parent.
+    ///
+    /// Returns the new node and its pass-through beta memory.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn create_predicate_node(
+        &mut self,
+        parent: NodeId,
+        rule: RuleId,
+        condition_index: u32,
+    ) -> (NodeId, BetaMemoryId) {
+        let node_id = NodeId(self.next_node_id);
+        self.next_node_id += 1;
+
+        let memory_id = BetaMemoryId(self.next_memory_id);
+        self.next_memory_id += 1;
+
+        let node = BetaNode::Predicate {
+            parent,
+            rule,
+            condition_index,
+            memory: memory_id,
+            children: Rc::from([]),
+        };
+
+        self.nodes.insert(node_id, node);
+        debug_assert_eq!(self.memories.len(), memory_id.0 as usize);
+        self.memories.push(BetaMemory::new(memory_id));
+        self.attach_child_to_parent(parent, node_id);
 
         (node_id, memory_id)
     }
@@ -710,6 +754,7 @@ impl BetaNetwork {
                 let child = self.nodes.get(&child_id)?;
                 let parent_id = match child {
                     BetaNode::Join { parent, .. }
+                    | BetaNode::Predicate { parent, .. }
                     | BetaNode::Terminal { parent, .. }
                     | BetaNode::Negative { parent, .. }
                     | BetaNode::Ncc { parent, .. }
@@ -730,6 +775,7 @@ impl BetaNetwork {
         match self.get_node(node_id)? {
             BetaNode::Root { memory, .. }
             | BetaNode::Join { memory, .. }
+            | BetaNode::Predicate { memory, .. }
             | BetaNode::Negative { memory, .. }
             | BetaNode::Ncc { memory, .. }
             | BetaNode::Exists { memory, .. } => Some(*memory),
@@ -854,6 +900,7 @@ impl BetaNetwork {
             match parent_node {
                 BetaNode::Root { children, .. }
                 | BetaNode::Join { children, .. }
+                | BetaNode::Predicate { children, .. }
                 | BetaNode::Negative { children, .. }
                 | BetaNode::Ncc { children, .. }
                 | BetaNode::Exists { children, .. } => {
@@ -880,6 +927,7 @@ impl BetaNetwork {
             let children = match node {
                 BetaNode::Root { children, .. }
                 | BetaNode::Join { children, .. }
+                | BetaNode::Predicate { children, .. }
                 | BetaNode::Negative { children, .. }
                 | BetaNode::Ncc { children, .. }
                 | BetaNode::Exists { children, .. } => children,
@@ -898,6 +946,7 @@ impl BetaNetwork {
         for (node_id, node) in &self.nodes {
             let parent = match node {
                 BetaNode::Join { parent, .. }
+                | BetaNode::Predicate { parent, .. }
                 | BetaNode::Terminal { parent, .. }
                 | BetaNode::Negative { parent, .. }
                 | BetaNode::Ncc { parent, .. }
@@ -912,13 +961,19 @@ impl BetaNetwork {
             );
         }
 
-        // Check 3: All memory IDs in join/negative/ncc/exists nodes exist in memories map
+        // Check 3: All node-owned memory IDs exist.
         for (node_id, node) in &self.nodes {
             match node {
                 BetaNode::Join { memory, .. } => {
                     assert!(
                         self.memory(*memory).is_some(),
                         "Join node {node_id:?} references non-existent memory {memory:?}"
+                    );
+                }
+                BetaNode::Predicate { memory, .. } => {
+                    assert!(
+                        self.memory(*memory).is_some(),
+                        "Predicate node {node_id:?} references non-existent memory {memory:?}"
                     );
                 }
                 BetaNode::Negative {
@@ -1984,7 +2039,8 @@ mod proptests {
                             | BetaNode::Join { children, .. }
                             | BetaNode::Negative { children, .. }
                             | BetaNode::Ncc { children, .. }
-                            | BetaNode::Exists { children, .. } => Some(children),
+                            | BetaNode::Exists { children, .. }
+                            | BetaNode::Predicate { children, .. } => Some(children),
                             BetaNode::Terminal { .. } | BetaNode::NccPartner { .. } => None,
                         };
                         if let Some(children) = children {

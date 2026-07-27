@@ -180,6 +180,7 @@ impl EngineSnapshotOwned {
             generic_modules: self.generic_modules,
             initial_fact_id: self.initial_fact_id,
             action_diagnostics: self.action_diagnostics,
+            processing_predicates: false,
             halted: self.halted,
             input_buffer: self.input_buffer,
             creator_thread: std::thread::current().id(),
@@ -542,6 +543,36 @@ mod tests {
                 "format {format:?} lost the structural duplicate index"
             );
             assert_eq!(restored.facts().unwrap().count(), 2);
+        }
+    }
+
+    #[test]
+    fn fr_rete_004_snapshot_preserves_predicate_nodes() {
+        let source = r"
+            (defrule positive
+                (value ?x)
+                (test (> ?x 0))
+                =>
+                (printout t ?x crlf))
+        ";
+
+        for &format in SerializationFormat::ALL {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(source).unwrap();
+            engine.reset().unwrap();
+            engine.assert_ordered("value", -1_i64).unwrap();
+            engine.assert_ordered("value", 1_i64).unwrap();
+            assert_eq!(engine.agenda_len(), 1);
+
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            let result = restored.run(RunLimit::Unlimited).unwrap();
+
+            assert_eq!(
+                result.rules_fired, 1,
+                "format {format:?} lost the passing predicate token"
+            );
+            assert_eq!(restored.get_output("t"), Some("1\n"));
         }
     }
 
