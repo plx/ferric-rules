@@ -102,7 +102,7 @@ migration. Undeclared fixtures remain pending instead of preserving legacy
 Run the assessment from the repository root:
 
 ```console
-cargo build --release -p ferric-cli
+cargo build --release -p ferric-rules-cli
 just compat-scan
 just compat-run
 just compat-report

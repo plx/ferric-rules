@@ -2,8 +2,8 @@
 //!
 //! Source: docs/users-guide.md §3.
 
-use ferric::core::Value;
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::core::Value;
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn assert_person(engine: &mut Engine, name: &str, age: i64) -> anyhow::Result<()> {
     let name_sym = engine.symbol_value(name)?;

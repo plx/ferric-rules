@@ -21,9 +21,9 @@ export const mainPackageDirectory = join(repositoryRoot, "packages", "ferric");
 export const nativeCrateDirectory = join(
   repositoryRoot,
   "crates",
-  "ferric-napi",
+  "ferric-rules-napi",
 );
-export const nativeBinaryName = "ferric-napi.node";
+export const nativeBinaryName = "ferric-rules-napi.node";
 
 const targetsPath = join(mainPackageDirectory, "native", "targets.json");
 
@@ -85,7 +85,7 @@ export async function validateNodePackage() {
 
   if (nativePackage.version !== version) {
     errors.push(
-      `crates/ferric-napi/package.json is ${nativePackage.version}, expected ${version}`,
+      `crates/ferric-rules-napi/package.json is ${nativePackage.version}, expected ${version}`,
     );
   }
   if (cargoVersion !== version) {
@@ -95,7 +95,7 @@ export async function validateNodePackage() {
   }
   if (nativePackage.private !== true) {
     errors.push(
-      "crates/ferric-napi/package.json must stay private; release payloads use generated platform packages",
+      "crates/ferric-rules-napi/package.json must stay private; release payloads use generated platform packages",
     );
   }
   if (

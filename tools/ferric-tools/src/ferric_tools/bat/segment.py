@@ -127,7 +127,7 @@ def main(
         if debug_bin.exists():
             ferric_cmd = [str(debug_bin), "check"]
         else:
-            ferric_cmd = ["cargo", "run", "-q", "-p", "ferric-cli", "--", "check"]
+            ferric_cmd = ["cargo", "run", "-q", "-p", "ferric-rules-cli", "--", "check"]
 
     files = sorted(seg_dir.glob("*.clp"))
     if not files:

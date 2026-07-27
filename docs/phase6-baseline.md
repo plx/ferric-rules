@@ -88,7 +88,7 @@ Four strategies are implemented and configurable: **Depth**, **Breadth**, **LEX*
 **Agenda / Focus:**
 `get-focus`, `get-focus-stack`
 
-### FFI Surface (ferric-ffi)
+### FFI Surface (ferric-rules-ffi)
 
 C-ABI functions with opaque `FerricEngine*` handle:
 
@@ -165,7 +165,7 @@ caller-owned.
 - Too-small buffers truncate to `buf_len - 1` bytes + NUL, return `FERRIC_ERROR_BUFFER_TOO_SMALL`.
 - No error present: returns `FERRIC_ERROR_NOT_FOUND` before inspecting `buf`/`buf_len`.
 
-### CLI Surface (ferric-cli)
+### CLI Surface (ferric-rules-cli)
 
 - `ferric run [--json] <file>` -- load, reset, run, print output
 - `ferric check [--json] <file>` -- load and validate without executing
@@ -231,12 +231,12 @@ Total tests passing: **1223** across the workspace (1220 unit/integration + 3 do
 | Crate | Tests |
 |-------|-------|
 | ferric (facade) | 1 |
-| ferric-cli | 4 |
-| ferric-core | 10 |
-| ferric-ffi | 27 |
-| ferric-parser | 273 |
-| ferric-runtime (lib) | 127 (+4 ignored) |
-| ferric-runtime (integration) | 176 |
+| ferric-rules-cli | 4 |
+| ferric-rules-core | 10 |
+| ferric-rules-ffi | 27 |
+| ferric-rules-parser | 273 |
+| ferric-rules-runtime (lib) | 127 (+4 ignored) |
+| ferric-rules-runtime (integration) | 176 |
 | ferric (integration) | 602 |
 | Doc-tests | 3 |
 
@@ -250,7 +250,7 @@ Total tests passing: **1223** across the workspace (1220 unit/integration + 3 do
 | `cargo check --workspace --all-targets` | Compilation check | Blocking |
 | `cargo fmt --all -- --check` | Formatting | Blocking |
 | `cargo clippy --workspace --all-targets -D warnings` | Lint | Blocking |
-| `cargo test -p ferric --test clips_compat` | Compatibility suite | Blocking (Phase 6) |
+| `cargo test -p ferric-rules --test clips_compat` | Compatibility suite | Blocking (Phase 6) |
 | `cargo bench -p ferric` | Benchmark suite | Advisory -> Blocking |
 
 ---

@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-ferric = { workspace = true, features = ["serde"] }
+ferric-rules = { workspace = true, features = ["serde"] }
 anyhow = { workspace = true }
 
 [lints]

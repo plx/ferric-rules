@@ -15,10 +15,10 @@ what it contains, not how to use it. Per-area reference docs belong under
 Four-crate core plus facade, FFI, CLI, Python binding crate, and a bench-data
 generator.
 
-### `ferric-core`
+### `ferric-rules-core`
 
 Rete network internals and low-level engine data structures. Not for end-user
-use; re-exported via `ferric::core`.
+use; re-exported via `ferric_rules::core`.
 
 - `value.rs`, `symbol.rs`, `string.rs`, `encoding.rs` — value primitives,
   interned symbols, CLIPS string/encoding rules.
@@ -36,7 +36,7 @@ use; re-exported via `ferric::core`.
 - `serde_helpers.rs` (feature `serde`) — `FxHashMap`/`FxHashSet` serde adapters.
 - `tracing_support.rs` — optional tracing spans.
 
-### `ferric-parser`
+### `ferric-rules-parser`
 
 Three-stage parser: Lexer → S-expression → Stage 2 AST.
 
@@ -49,7 +49,7 @@ Three-stage parser: Lexer → S-expression → Stage 2 AST.
 - `qualified_name.rs` — `MODULE::name` parsing helpers.
 - `span.rs`, `error.rs` — source spans, lex/parse error types.
 
-### `ferric-runtime`
+### `ferric-rules-runtime`
 
 Engine, loader, execution loop, evaluator, modules, I/O.
 
@@ -79,7 +79,7 @@ Engine, loader, execution loop, evaluator, modules, I/O.
 
 ### `ferric` (facade)
 
-Thin re-export crate: `ferric::core`, `ferric::parser`, `ferric::runtime`.
+Thin re-export crate: `ferric_rules::core`, `ferric_rules::parser`, `ferric_rules::runtime`.
 
 - `tests/clips_compat.rs` — CLIPS-compat suite (engagement scenarios, etc.).
 - `tests/scaling_tests.rs` — `#[ignore]` asymptotic scaling regression tests
@@ -87,9 +87,9 @@ Thin re-export crate: `ferric::core`, `ferric::parser`, `ferric::runtime`.
   run via `just scaling-check`.
 - `benches/` — Criterion suite (see §5).
 
-### `ferric-ffi`
+### `ferric-rules-ffi`
 
-C-ABI wrapper over the runtime. Produces `libferric_ffi.{a,dylib,so}` plus
+C-ABI wrapper over the runtime. Produces `libferric_rules_ffi.{a,dylib,so}` plus
 auto-generated `ferric.h` via `cbindgen`. Dedicated `ffi-dev`/`ffi-release`
 profiles with `panic = abort`.
 
@@ -108,7 +108,7 @@ profiles with `panic = abort`.
   pointer use must not overlap other borrowed reads or destruction. The
   destruction-only unchecked free skips affinity but must not overlap access.
 
-### `ferric-cli`
+### `ferric-rules-cli`
 
 `ferric` binary: batch + interactive driver.
 
@@ -117,10 +117,10 @@ profiles with `panic = abort`.
   `session.rs` (rustyline-based REPL).
 - Exit codes: 0 success, 1 runtime error, 2 usage error.
 
-### `ferric-python`
+### `ferric-rules-python`
 
 PyO3 extension module (`ferric`) built via `maturin`. Located in
-`crates/ferric-python/`; tests in `tests/*.py`.
+`crates/ferric-rules-python/`; tests in `tests/*.py`.
 
 - `engine.rs` — `PyEngine`.
 - `fact.rs` — `Fact`, `FactType`.
@@ -130,7 +130,7 @@ PyO3 extension module (`ferric`) built via `maturin`. Located in
 - `error.rs` — exception hierarchy registered on module init.
 - `testing` feature — `engine_instance_count` for test harness.
 
-### `ferric-bench-gen`
+### `ferric-rules-bench-gen`
 
 Standalone binary generating benchmark inputs (for the `benches/` + scaling
 tests). Single `main.rs`.
@@ -139,7 +139,7 @@ tests). Single `main.rs`.
 
 ## 2. Language bindings (`bindings/`)
 
-### `bindings/go` — Go binding on top of `ferric-ffi`
+### `bindings/go` — Go binding on top of `ferric-rules-ffi`
 
 - `engine.go`, `engine_options.go`, `pinned_engine.go` — engine façade;
   pinned-goroutine variant for Go's movable goroutines vs. FFI thread affinity.
@@ -151,7 +151,7 @@ tests). Single `main.rs`.
 - `observability.go`, `errors.go`, `example_test.go`.
 - `internal/ffi/` — cgo wrapper:
   - `ffi.go`, `accessors.go`, `types.go`, `serialization.go`
-  - `lib/` — vendored `libferric_ffi.a` + `ferric.h` (copied by
+  - `lib/` — vendored `libferric_rules_ffi.a` + `ferric.h` (copied by
     `just build-go-ffi`).
 - `temporal/` — Temporal.io activity wrappers (`activity.go`,
   `activity_options.go`).
@@ -181,7 +181,7 @@ Planned bindings (not present): C++, Swift.
   `test-suite-segments/`, `segment-check-expectations.json`).
 
 Crate-local tests live under each crate's `tests/` (`ferric/tests/`,
-`ferric-ffi/src/tests/`, `ferric-python/tests/`, `ferric-cli/tests/`).
+`ferric-rules-ffi/src/tests/`, `ferric-rules-python/tests/`, `ferric-rules-cli/tests/`).
 
 ---
 
@@ -202,7 +202,7 @@ helpers: `_clips_parser.py`, `_manifest.py`, `_subprocess.py`, `_formatting.py`,
 
 ---
 
-## 5. Benchmarks (`crates/ferric/benches/` + `benches/`)
+## 5. Benchmarks (`crates/ferric-rules/benches/` + `benches/`)
 
 Top-level `benches/` is documentation-only (`README.md`, `PROTOCOL.md`); the
 actual Criterion benches live in the facade crate.
@@ -215,7 +215,7 @@ actual Criterion benches live in the facade crate.
   throughput microbenches.
 - `constraint_bench.rs`, `strategy_bench.rs`, `module_bench.rs`,
   `query_bench.rs`.
-- `serialization_bench.rs` — in `ferric-runtime` (requires `serde` feature).
+- `serialization_bench.rs` — in `ferric-rules-runtime` (requires `serde` feature).
 
 CI gates: `bench-smoke` (compile-only), `bench-thresholds` (absolute ns
 thresholds). Scaling regression: `just scaling-check` runs facade-crate
@@ -297,7 +297,7 @@ thresholds). Scaling regression: `just scaling-check` runs facade-crate
   CLI snapshot commands. `slotmap`/`smallvec` serde features always on.
 - `tracing` — optional tracing spans (runtime + core); validated by
   `just check-tracing`.
-- `testing` (ferric-python only) — exposes `engine_instance_count` for
+- `testing` (ferric-rules-python only) — exposes `engine_instance_count` for
   teardown-leak tests.
 
 Workspace lints: `unsafe_code = deny`; clippy `all = deny`, `pedantic = warn`

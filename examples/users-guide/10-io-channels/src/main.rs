@@ -2,7 +2,7 @@
 //!
 //! Source: docs/users-guide.md §11.
 
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn main() -> anyhow::Result<()> {
     let rules = include_str!("../rules/io.clp");

@@ -5,8 +5,8 @@
 //! Each scenario asserts a different mix of facts so that the printouts
 //! show which rule fired. Reset between scenarios keeps them independent.
 
-use ferric::core::Value;
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::core::Value;
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn run_scenario(
     engine: &mut Engine,

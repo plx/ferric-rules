@@ -15,7 +15,7 @@ Concept source: `.maquette/pages/landing/concept.png`
 | Hero title and value proposition | Yes | implemented | H1 is `ferric-rules`; supporting copy emphasizes CLIPS-style rules and modern Rust embedding. |
 | Hero badges | Yes | implemented | Use existing badge component for Rust crate, CLIPS syntax, and independent engines. |
 | Hero CTAs | Yes | implemented | Use approved primary and ghost/secondary button styles. |
-| Install command strip | Yes | implemented | Normalize command to `cargo add ferric` because the public facade crate is `ferric`; include copy affordance. |
+| Install command strip | Yes | implemented | Normalize command to `cargo add ferric-rules` because the public facade package is `ferric-rules`; include copy affordance. |
 | Drafting/girder/Rete hero visual | Yes | implemented differently with reason | Implement as page-local CSS/SVG vector composition so no additional raster asset is required; preserve girder, protractor arcs, grid, and abstract Rete network. |
 | First viewport marker | Yes | intentionally omitted with reason | Concept marker is a design annotation, not user-facing product content. |
 | Why ferric-rules section | Yes | implemented | Three equal-height feature cards for compatibility, embedding, and rigor. |

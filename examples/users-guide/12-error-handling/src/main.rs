@@ -9,7 +9,7 @@
 //! 2. Non-fatal action diagnostics — surface as warnings after a `run`,
 //!    then clear on the next `run`, `step`, `reset`, or explicit clear.
 
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn demo_init_error() {
     let bogus = "(defrule oops "; // unbalanced — parser should reject

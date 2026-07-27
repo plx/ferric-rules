@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the ferric-ffi static library and run the C ABI regression harnesses
-# (crates/ferric-ffi/tests/c/) as real C subprocesses.
+# Build the ferric-rules-ffi static library and run the C ABI regression harnesses
+# (crates/ferric-rules-ffi/tests/c/) as real C subprocesses.
 #
 # The harness is compiled with AddressSanitizer + UndefinedBehaviorSanitizer
 # when the local C compiler supports them (falls back to plain compilation
@@ -11,13 +11,13 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
-cargo build -p ferric-ffi --profile ffi-dev
+cargo build -p ferric-rules-ffi --profile ffi-dev
 
 CC="${CC:-cc}"
 CXX="${CXX:-c++}"
 harness_sources=(
-    "crates/ferric-ffi/tests/c/discriminant_abuse.c"
-    "crates/ferric-ffi/tests/c/multifield_copy.c"
+    "crates/ferric-rules-ffi/tests/c/discriminant_abuse.c"
+    "crates/ferric-rules-ffi/tests/c/multifield_copy.c"
 )
 outdir="target/c-harness"
 mkdir -p "$outdir"
@@ -60,7 +60,7 @@ if echo 'int main(void){return 0;}' |
     "$CC" -std=c11 -fshort-enums -x c -o "$outdir/short-enum-probe" - 2>/dev/null; then
     rm -f "$outdir/short-enum-probe"
     if printf '#include "ferric.h"\nint main(void){return 0;}\n' |
-        "$CC" -std=c11 -fshort-enums -fsyntax-only -I crates/ferric-ffi -x c - 2>/dev/null; then
+        "$CC" -std=c11 -fshort-enums -fsyntax-only -I crates/ferric-rules-ffi -x c - 2>/dev/null; then
         echo "ffi-c-harness: ERROR: ferric.h compiled under -fshort-enums;" \
             "enum ABI static assertions failed to fire" >&2
         exit 1
@@ -76,7 +76,7 @@ fi
 for cxx_std in c++98 c++03; do
     printf '#include "ferric.h"\nint main(){return 0;}\n' |
         "$CXX" -std="$cxx_std" -pedantic-errors -Wall -Wextra -Werror \
-            -DFERRIC_SERDE -fsyntax-only -I crates/ferric-ffi -x c++ -
+            -DFERRIC_SERDE -fsyntax-only -I crates/ferric-rules-ffi -x c++ -
 done
 
 # The typedef fallback must itself reject packed-enum ABIs: probe for
@@ -87,7 +87,7 @@ if echo 'int main(){return 0;}' |
     rm -f "$outdir/cxx98-short-enum-probe"
     if printf '#include "ferric.h"\nint main(){return 0;}\n' |
         "$CXX" -std=c++98 -fshort-enums -DFERRIC_SERDE \
-            -fsyntax-only -I crates/ferric-ffi -x c++ - 2>/dev/null; then
+            -fsyntax-only -I crates/ferric-rules-ffi -x c++ - 2>/dev/null; then
         echo "ffi-c-harness: ERROR: ferric.h compiled under C++98 -fshort-enums;" \
             "typedef-fallback ABI assertions failed to fire" >&2
         exit 1
@@ -100,10 +100,10 @@ fi
 for harness_src in "${harness_sources[@]}"; do
     harness_name="$(basename "$harness_src" .c)"
     "$CC" -std=c11 -Wall -Wextra -Werror "${san_flags[@]}" \
-        -I crates/ferric-ffi \
+        -I crates/ferric-rules-ffi \
         -o "$outdir/$harness_name" \
         "$harness_src" \
-        target/ffi-dev/libferric_ffi.a \
+        target/ffi-dev/libferric_rules_ffi.a \
         "${platform_libs[@]}"
     "$outdir/$harness_name"
 done

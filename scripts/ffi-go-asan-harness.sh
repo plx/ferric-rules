@@ -26,14 +26,14 @@ aarch64 | arm64)
     ;;
 esac
 outdir="$root/target/ffi-go-asan"
-staticlib="$outdir/$asan_target/ffi-dev/libferric_ffi.a"
-go_staticlib="$root/bindings/go/internal/ffi/lib/libferric_ffi.a"
+staticlib="$outdir/$asan_target/ffi-dev/libferric_rules_ffi.a"
+go_staticlib="$root/bindings/go/internal/ffi/lib/libferric_rules_ffi.a"
 backup_dir="$(mktemp -d)"
 had_staticlib=0
 
 restore_staticlib() {
     if ((had_staticlib)); then
-        cp "$backup_dir/libferric_ffi.a" "$go_staticlib"
+        cp "$backup_dir/libferric_rules_ffi.a" "$go_staticlib"
     else
         rm -f "$go_staticlib"
     fi
@@ -49,7 +49,7 @@ for command in go nm; do
 done
 
 if [[ -f "$go_staticlib" ]]; then
-    cp "$go_staticlib" "$backup_dir/libferric_ffi.a"
+    cp "$go_staticlib" "$backup_dir/libferric_rules_ffi.a"
     had_staticlib=1
 fi
 
@@ -60,7 +60,7 @@ RUSTFLAGS="-Zsanitizer=address -Zexternal-clangrt -Cforce-frame-pointers=yes" \
         --locked \
         -Zbuild-std=std,panic_abort \
         --target "$asan_target" \
-        -p ferric-ffi \
+        -p ferric-rules-ffi \
         --profile ffi-dev \
         --features serde \
         --crate-type staticlib

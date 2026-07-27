@@ -5,7 +5,7 @@
 //! Compile a small ruleset once, freeze the engine to bytes, then thaw
 //! a fresh engine from the bytes and run it without re-parsing.
 
-use ferric::runtime::{Engine, RunLimit, SerializationFormat};
+use ferric_rules::runtime::{Engine, RunLimit, SerializationFormat};
 
 fn main() -> anyhow::Result<()> {
     let rules = include_str!("../rules/rules.clp");

@@ -21,7 +21,7 @@ reimplement the same thread-management machinery.
 
 Runtime:
 
-- `ferric_runtime::Engine` stores a creator `ThreadId` and checks it in most
+- `ferric_rules_runtime::Engine` stores a creator `ThreadId` and checks it in most
   public operations.
 - `Engine` is intentionally `!Send + !Sync`, currently via `Rc` internals and
   an explicit `PhantomData<*mut ()>` marker.
@@ -30,7 +30,7 @@ Runtime:
 
 FFI:
 
-- `ferric-ffi` exposes raw `FerricEngine *` handles.
+- `ferric-rules-ffi` exposes raw `FerricEngine *` handles.
 - Each `ferric_engine_*` operation checks thread affinity before taking mutable
   access.
 - Wrong-thread calls return `FERRIC_ERROR_THREAD_VIOLATION`.
@@ -90,7 +90,7 @@ Preferred structure:
 
 ```text
 crates/
-  ferric-pinned/
+  ferric-rules-pinned/
     src/
       lib.rs
       engine.rs
@@ -101,11 +101,11 @@ crates/
       result.rs
 ```
 
-Then expose the C ABI from `ferric-ffi` by depending on `ferric-pinned`.
+Then expose the C ABI from `ferric-rules-ffi` by depending on `ferric-rules-pinned`.
 
 Alternative:
 
-- Put the Rust pinned implementation directly in `ferric-ffi`.
+- Put the Rust pinned implementation directly in `ferric-rules-ffi`.
 
 The separate crate is preferable because NAPI/PyO3 bindings can use the Rust
 API directly if useful, while C/Swift/Go/C++ use the C ABI.
@@ -650,7 +650,7 @@ Phase 0: Design lock
 
 Phase 1: Rust pinned engine
 
-- Implement `ferric-pinned::PinnedEngine`.
+- Implement `ferric-rules-pinned::PinnedEngine`.
 - Implement queue, batching, shutdown, cancellation token.
 - Add Apple autorelease abstraction with test hooks.
 
@@ -686,7 +686,7 @@ Phase 6: Optional binding cleanup
 
 ## Open Questions
 
-1. Should the pinned layer live in a new crate or directly in `ferric-ffi`?
+1. Should the pinned layer live in a new crate or directly in `ferric-rules-ffi`?
 2. Should async C API results be retrieved by request ID, passed as owned result
    handles, or copied into caller-provided buffers?
 3. Should `close` always drain, or should immediate shutdown be configurable in
@@ -699,8 +699,8 @@ Phase 6: Optional binding cleanup
 
 ## Recommended Initial Decisions
 
-1. Create a new `ferric-pinned` crate.
-2. Expose pinned handles through `ferric-ffi`.
+1. Create a new `ferric-rules-pinned` crate.
+2. Expose pinned handles through `ferric-rules-ffi`.
 3. Keep raw `FerricEngine *` unchanged.
 4. Use deterministic batch draining with configurable `max_batch_size`.
 5. Default Apple autorelease policy to `PER_ITEM` in Swift-facing helpers.

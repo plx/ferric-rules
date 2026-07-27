@@ -6,8 +6,8 @@
 //! them and asserts the configuration that came back, since the only point
 //! is to demonstrate the factory shape.
 
-use ferric::core::ConflictResolutionStrategy;
-use ferric::runtime::{Engine, EngineConfig};
+use ferric_rules::core::ConflictResolutionStrategy;
+use ferric_rules::runtime::{Engine, EngineConfig};
 
 fn main() -> anyhow::Result<()> {
     // UTF-8 symbols and strings, Depth strategy, 64-frame recursion limit.
@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
         utf8_lex,
     )?;
     engine.assert_ordered("start", vec![])?;
-    engine.run(ferric::runtime::RunLimit::Unlimited)?;
+    engine.run(ferric_rules::runtime::RunLimit::Unlimited)?;
     println!("output = {:?}", engine.get_output("t").unwrap_or(""));
     Ok(())
 }

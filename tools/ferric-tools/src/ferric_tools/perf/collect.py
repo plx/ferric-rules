@@ -529,6 +529,18 @@ CLIPS_WORKLOADS = {
 }
 
 
+def _benchmark_crate(root: Path) -> tuple[str, Path]:
+    """Return the facade package and benchmark directory for this checkout."""
+    for package in ("ferric-rules", "ferric"):
+        bench_dir = root / "crates" / package / "benches"
+        if bench_dir.is_dir():
+            return package, bench_dir
+
+    raise FileNotFoundError(
+        "could not find facade benchmarks under crates/ferric-rules or crates/ferric"
+    )
+
+
 def run_benchmarks(sample_size: int, warm_up_time: int, measurement_time: int) -> None:
     """Run Criterion benchmark suites."""
     base_flags = [
@@ -542,16 +554,17 @@ def run_benchmarks(sample_size: int, warm_up_time: int, measurement_time: int) -
     ]
 
     root = repo_root()
+    package, bench_dir = _benchmark_crate(root)
     for entry in SUITES:
         suite, filter_regex = entry[0], entry[1]
         features = entry[2] if len(entry) > 2 else None
 
-        bench_source = root / "crates" / "ferric" / "benches" / f"{suite}.rs"
+        bench_source = bench_dir / f"{suite}.rs"
         if not bench_source.exists():
             print(f"==> Skipping {suite} (not present at current checkout)", flush=True)
             continue
 
-        cmd = ["cargo", "bench", "-p", "ferric"]
+        cmd = ["cargo", "bench", "-p", package]
         if features:
             cmd.extend(["--features", ",".join(features)])
         cmd.extend(["--bench", suite, "--"])
@@ -717,14 +730,14 @@ def generate_workloads(root: str, workload_dir: str) -> None:
         "run",
         "--release",
         "-p",
-        "ferric-bench-gen",
+        "ferric-rules-bench-gen",
         "--",
         "--output-dir",
         workload_dir,
     ]
     result = subprocess.run(cmd, capture_output=False, cwd=root)
     if result.returncode != 0:
-        console.print(f"[red]error:[/] ferric-bench-gen failed with code {result.returncode}")
+        console.print(f"[red]error:[/] ferric-rules-bench-gen failed with code {result.returncode}")
         raise typer.Exit(1)
 
 
@@ -856,7 +869,9 @@ def main(
     workload_dir: Annotated[
         str | None, typer.Option(help="Directory for .clp workload files")
     ] = None,
-    skip_workload_gen: Annotated[bool, typer.Option(help="Skip running ferric-bench-gen")] = False,
+    skip_workload_gen: Annotated[
+        bool, typer.Option(help="Skip running ferric-rules-bench-gen")
+    ] = False,
 ) -> None:
     """Collect Criterion benchmark results into a performance manifest."""
     root = repo_root()

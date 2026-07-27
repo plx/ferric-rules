@@ -2,8 +2,8 @@
 //!
 //! Source: docs/users-guide.md §6.
 
-use ferric::core::{Fact, Value};
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::core::{Fact, Value};
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn main() -> anyhow::Result<()> {
     let rules = include_str!("../rules/counter.clp");

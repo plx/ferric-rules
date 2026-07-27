@@ -246,12 +246,12 @@ echo "    runs: $HYPERFINE_RUNS, warmup: $HYPERFINE_WARMUP"
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
     echo "==> Building ferric (release)..."
-    cargo build --release -p ferric-cli -p ferric-bench-gen 2>&1 | tail -1
+    cargo build --release -p ferric-rules-cli -p ferric-rules-bench-gen 2>&1 | tail -1
 fi
 
 if [[ ! -x "$FERRIC_BIN" ]]; then
     echo "error: ferric binary not found at $FERRIC_BIN" >&2
-    echo "  hint: run without --skip-build, or cargo build --release -p ferric-cli" >&2
+    echo "  hint: run without --skip-build, or cargo build --release -p ferric-rules-cli" >&2
     exit 1
 fi
 
@@ -259,7 +259,7 @@ fi
 
 if [[ "$SKIP_GENERATE" -eq 0 ]]; then
     echo "==> Generating workloads..."
-    "${REPO_ROOT}/target/release/ferric-bench-gen" --output-dir "$WORKLOAD_DIR"
+    "${REPO_ROOT}/target/release/ferric-rules-bench-gen" --output-dir "$WORKLOAD_DIR"
 fi
 
 # ── Step 3: Run hyperfine benchmarks ────────────────────────────────────────
