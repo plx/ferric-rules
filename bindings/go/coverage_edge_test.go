@@ -341,9 +341,6 @@ func TestManualNilEngineErrorBranches(t *testing.T) {
 		}
 	}
 
-	if err := e.Close(); err != nil {
-		t.Fatalf("Close on a nil handle should remain idempotent, got %v", err)
-	}
 	// Representative check that the nil-handle path surfaces the native
 	// null-pointer code as a typed *FerricError, not just "some error".
 	var fe *FerricError
@@ -444,6 +441,9 @@ func TestManualNilEngineErrorBranches(t *testing.T) {
 	}
 	if got := e.Diagnostics(); got != nil {
 		t.Fatalf("Diagnostics nil handle = %#v, want nil", got)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close on a nil handle should remain idempotent, got %v", err)
 	}
 }
 
@@ -824,7 +824,7 @@ func TestManualFinalizerAndBuildFactsHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mustClose(t, e)
-	if _, err := e.buildFacts([]uint64{999}); err == nil {
+	if _, err := e.buildFacts(e.handle, []uint64{999}); err == nil {
 		t.Fatal("buildFacts should fail when an ID cannot be resolved")
 	}
 }
@@ -1177,7 +1177,7 @@ func TestManualHookedBuildFactErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			withFFIHooks(t)
 			tc.setup()
-			_, err := (&Engine{}).buildFact(1)
+			_, err := (&Engine{}).buildFact(nil, 1)
 			// Every lookup failure must preserve the underlying native code
 			// (ErrRuntime) through any fmt.Errorf wrapping buildFact adds.
 			if !errors.Is(err, ErrRuntime) {
@@ -1222,6 +1222,7 @@ func TestManualHookedEvaluateAndPinnedEdges(t *testing.T) {
 	})
 
 	t.Run("wire conversion failure", func(t *testing.T) {
+		lockThread(t)
 		withFFIHooks(t)
 		factsToWire = func([]Fact) ([]WireFact, error) { return nil, errUnsupportedWireConversionType }
 		e, err := NewEngine()

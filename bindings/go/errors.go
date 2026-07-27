@@ -39,6 +39,7 @@ var (
 	ErrThreadViolation = errors.New("ferric: thread violation")
 	ErrInvalidArgument = errors.New("ferric: invalid argument")
 	ErrSerialization   = errors.New("ferric: serialization error")
+	ErrEngineClosed    = errors.New("ferric: engine closed")
 )
 
 // ---------------------------------------------------------------------------

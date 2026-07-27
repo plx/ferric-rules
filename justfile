@@ -80,6 +80,11 @@ ffi-c-harness:
 ffi-tsan-harness:
     ./scripts/ffi-tsan-harness.sh
 
+# Build the Rust static library and Go cgo binding with AddressSanitizer, then
+# run the real-handle post-Close lifecycle regression (Linux amd64/arm64)
+ffi-go-asan-harness:
+    ./scripts/ffi-go-asan-harness.sh
+
 # Run tests for the facade crate
 test-ferric:
     cargo test -p ferric
