@@ -583,24 +583,23 @@ func ValueVoid() Value {
 	return Value(C.ferric_value_void())
 }
 
-// ValueMultifield creates a multifield FerricValue from a slice of elements.
-// The returned Value owns the heap-allocated element array; callers must
-// free it with ValueFree (which handles recursive cleanup).
-func ValueMultifield(elements []Value) Value {
-	var v C.struct_FerricValue
-	v.value_type = C.FERRIC_VALUE_TYPE_MULTIFIELD
-	if len(elements) == 0 {
-		return Value(v)
+// ValueMultifieldCopy deep-copies borrowed elements into a Ferric-owned
+// multifield. The input slice and every value reachable from it remain owned
+// by the caller and must be released separately. On success, callers must
+// release the returned Value with ValueFree.
+func ValueMultifieldCopy(elements []Value) (Value, ErrorCode) {
+	var elementsPtr *C.struct_FerricValue
+	if len(elements) > 0 {
+		elementsPtr = &elements[0]
 	}
-	size := C.size_t(len(elements)) * C.size_t(unsafe.Sizeof(C.struct_FerricValue{}))
-	ptr := (*C.struct_FerricValue)(C.malloc(size))
-	arr := unsafe.Slice(ptr, len(elements))
-	for i, elem := range elements {
-		arr[i] = C.struct_FerricValue(elem)
-	}
-	v.multifield_ptr = ptr
-	v.multifield_len = C.uintptr_t(len(elements))
-	return Value(v)
+
+	var result C.struct_FerricValue
+	rc := ErrorCode(C.ferric_value_multifield_copy(
+		elementsPtr,
+		C.uintptr_t(len(elements)),
+		&result, //nolint:gocritic // dupSubExpr false positive in cgo-generated code
+	))
+	return Value(result), rc
 }
 
 // ---------------------------------------------------------------------------

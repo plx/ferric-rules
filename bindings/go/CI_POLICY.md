@@ -40,3 +40,22 @@ Stress-test failures typically indicate:
 
 If a stress-test failure is not reproducible locally, increase the count
 (`-count=50` or higher) or try running on a Linux VM to match CI conditions.
+
+## Native ownership sanitizer
+
+The **Go/C Lifecycle (AddressSanitizer)** job builds the Rust static library
+and the cgo test binaries with AddressSanitizer on Linux. Its focused
+regressions cover post-`Close` calls plus empty, mixed, deeply nested, large,
+and failed multifield construction. LeakSanitizer is enabled so both successful
+copy/free cycles and partial conversion failures must release every
+Ferric-owned allocation.
+
+Go slices passed to `AssertFact` or `AssertTemplate` remain caller-owned.
+The binding borrows their converted elements only while calling
+`ferric_value_multifield_copy`; the returned recursive tree is entirely
+Ferric-owned and is released through `ferric_value_free`. No Go or C allocator
+storage is transferred to Rust's value cleanup.
+
+Run `just ffi-go-asan-harness` on a native Linux host to reproduce this job.
+The broader operating-system and clean-consumer binding matrix is tracked
+separately by FR-DIST-008.

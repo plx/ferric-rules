@@ -53,10 +53,17 @@ func TestManualValueAccessorsAndConstructors(t *testing.T) {
 	}
 	ValueFree(&str)
 
-	multifield := ValueMultifield([]Value{
+	multifieldElements := []Value{
 		ValueInteger(1),
 		ValueString("nested"),
-	})
+	}
+	multifield, rc := ValueMultifieldCopy(multifieldElements)
+	for i := range multifieldElements {
+		ValueFree(&multifieldElements[i])
+	}
+	if rc != ErrOK {
+		t.Fatalf("ValueMultifieldCopy returned %d", rc)
+	}
 	if ValueGetType(&multifield) != ValueTypeMultifield {
 		t.Fatalf("multifield type mismatch")
 	}
@@ -68,7 +75,10 @@ func TestManualValueAccessorsAndConstructors(t *testing.T) {
 	}
 	ValueFree(&multifield)
 
-	emptyMultifield := ValueMultifield(nil)
+	emptyMultifield, rc := ValueMultifieldCopy(nil)
+	if rc != ErrOK {
+		t.Fatalf("empty ValueMultifieldCopy returned %d", rc)
+	}
 	if ValueGetType(&emptyMultifield) != ValueTypeMultifield || ValueGetMultifieldLen(&emptyMultifield) != 0 {
 		t.Fatalf("empty multifield accessor mismatch")
 	}
@@ -847,7 +857,10 @@ func TestPropertyNativeFFISurfaceSweep(t *testing.T) {
 			rt.Fatalf("void string ptr = %q, want empty", got)
 		}
 		_ = ValueGetExternalPointer(&void)
-		emptyMulti := ValueMultifield(nil)
+		emptyMulti, rc := ValueMultifieldCopy(nil)
+		if rc != ErrOK {
+			rt.Fatalf("empty ValueMultifieldCopy returned %d", rc)
+		}
 		if ValueGetMultifieldLen(&emptyMulti) != 0 {
 			rt.Fatal("empty multifield length mismatch")
 		}
@@ -856,7 +869,14 @@ func TestPropertyNativeFFISurfaceSweep(t *testing.T) {
 			rt.Fatal("symbol accessor mismatch")
 		}
 		ValueFree(&symbol)
-		multi := ValueMultifield([]Value{ValueString("nested")})
+		multiElements := []Value{ValueString("nested")}
+		multi, rc := ValueMultifieldCopy(multiElements)
+		for i := range multiElements {
+			ValueFree(&multiElements[i])
+		}
+		if rc != ErrOK {
+			rt.Fatalf("ValueMultifieldCopy returned %d", rc)
+		}
 		if ValueGetMultifieldLen(&multi) != 1 {
 			rt.Fatal("multifield length mismatch")
 		}

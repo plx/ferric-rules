@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Rust static library with AddressSanitizer instrumentation, link it
 # into Go's cgo binding under Go's ASan mode, and run the real-handle
-# post-Close regression test.
+# lifecycle and recursive multifield-ownership regressions.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -74,4 +74,6 @@ cp "$staticlib" "$go_staticlib"
 
 cd bindings/go
 ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=1}" \
-    go test -asan -count=1 -run '^TestEngineRealFFIPostClose$' .
+    go test -asan -count=1 \
+        -run '^(TestEngineRealFFIPostClose|TestManualFFIValueConversionEdges|TestMultifieldAllocatorProvenanceRoundTrip|TestMultifieldCopyDepthBoundaryCleansUp|TestValueMultifieldCopy.*)$' \
+        . ./internal/ffi
