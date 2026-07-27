@@ -28,8 +28,8 @@ use crate::qualified_name::{parse_qualified_name, QualifiedName};
 
 use ferric_rules_core::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult, ConstantTest,
-    ConstantTestType, Fact, FactId, FerricString, JoinTestType, RuleId, Salience, SlotIndex,
-    TemplateFact, Value,
+    ConstantTestType, Fact, FactId, FerricString, JoinTestType, Salience, SlotIndex, TemplateFact,
+    Value,
 };
 use ferric_rules_parser::{
     interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
@@ -50,7 +50,6 @@ use crate::tracing_support::{ferric_event, ferric_span};
 
 /// Translated rule data including fact-address variable bindings.
 struct TranslatedRule {
-    rule_id: RuleId,
     salience: Salience,
     conditions: Vec<CompilableCondition>,
     fact_address_vars: HashMap<String, usize>,
@@ -1798,9 +1797,13 @@ impl Engine {
     ) -> Result<CompileResult, LoadError> {
         self.validate_rule_action_callables(rule, self.module_registry.current_module())?;
 
-        // Complete every fallible RHS translation before exposing any LHS
-        // nodes. Once core compilation begins, a load error cannot leave a
-        // terminal or activation without executable rule metadata.
+        // Translate the LHS first to preserve source-order symbol interning, but
+        // do not expose any Rete nodes or consume a rule ID until every fallible
+        // RHS translation has also completed.
+        let translated = self
+            .translate_rule_construct(rule)
+            .map_err(|e| LoadError::Compile(format!("{e}")))?;
+
         let mut runtime_actions = Vec::with_capacity(rule.actions.len());
         for action in &rule.actions {
             let expr = ActionExpr::FunctionCall(action.call.clone());
@@ -1815,16 +1818,14 @@ impl Engine {
             runtime_actions.push(Some(runtime_expr));
         }
 
-        let translated = self
-            .translate_rule_construct(rule)
-            .map_err(|e| LoadError::Compile(format!("{e}")))?;
+        let rule_id = self.compiler.allocate_rule_id();
 
         let compile_result = self
             .compiler
             .compile_conditions(
                 &mut self.rete,
                 &self.fact_base,
-                translated.rule_id,
+                rule_id,
                 translated.salience,
                 &translated.conditions,
             )
@@ -2663,7 +2664,6 @@ impl Engine {
         }
 
         Ok(TranslatedRule {
-            rule_id: self.compiler.allocate_rule_id(),
             salience: Salience::new(rule.salience),
             conditions,
             fact_address_vars,

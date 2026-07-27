@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap as HashMap;
 use smallvec::SmallVec;
 
 use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
-use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId, Salience};
+use crate::beta::{BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
 use crate::fact::FactBase;
 use crate::rete::ReteNetwork;
@@ -94,12 +94,6 @@ struct JoinNodeKey {
     alpha_memory: AlphaMemoryId,
     tests: Vec<JoinTest>,
     bindings: Vec<(SlotIndex, VarId)>,
-}
-
-struct NewAlphaMemory {
-    id: AlphaMemoryId,
-    entry_type: AlphaEntryType,
-    tests: Vec<ConstantTest>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -292,10 +286,18 @@ impl ReteCompiler {
         mut var_map: VarMap,
     ) -> CompileResult {
         let mut alpha_memories = Vec::new();
-        let mut new_alpha_memories = Vec::new();
         let mut bound_vars = SymbolSet::new();
         let mut current_parent = rete.beta.root_id();
         let first_new_beta_node = rete.beta.next_node_id();
+        let root_only_runtime = fact_base.is_empty() && rete.token_store.len() == 1;
+        let existing_root_children = if root_only_runtime {
+            match rete.beta.get_node(rete.beta.root_id()) {
+                Some(BetaNode::Root { children, .. }) => children.len(),
+                _ => 0,
+            }
+        } else {
+            0
+        };
 
         for condition in conditions {
             match condition {
@@ -308,7 +310,6 @@ impl ReteCompiler {
                         &mut var_map,
                         &mut bound_vars,
                         &mut alpha_memories,
-                        &mut new_alpha_memories,
                     );
                 }
                 CompilableCondition::Ncc(subpatterns) => {
@@ -320,7 +321,6 @@ impl ReteCompiler {
                         &mut var_map,
                         &bound_vars,
                         &mut alpha_memories,
-                        &mut new_alpha_memories,
                     );
                 }
             }
@@ -330,15 +330,22 @@ impl ReteCompiler {
             .beta
             .create_terminal_node(current_parent, rule_id, salience);
 
-        // Initialize only structures added by this installation. New alpha
-        // memories receive current WMEs directly; then the new beta frontier is
-        // left-activated from existing parent tokens. Old descendants never see
-        // replayed facts or tokens.
-        for memory in new_alpha_memories {
-            rete.alpha
-                .backfill_memory(memory.id, &memory.entry_type, &memory.tests, fact_base);
+        // Cold-start compilation has no existing partial matches beyond the
+        // root token, so retain the direct root-child path. Online installation
+        // uses the wider frontier to seed descendants of populated old nodes.
+        if root_only_runtime {
+            let new_root_children: Vec<NodeId> = match rete.beta.get_node(rete.beta.root_id()) {
+                Some(BetaNode::Root { children, .. }) => children
+                    .iter()
+                    .skip(existing_root_children)
+                    .copied()
+                    .collect(),
+                _ => Vec::new(),
+            };
+            rete.activate_root_children(&new_root_children, fact_base);
+        } else {
+            rete.initialize_beta_frontier(first_new_beta_node, fact_base);
         }
-        rete.initialize_beta_frontier(first_new_beta_node, fact_base);
 
         CompileResult {
             rule_id,
@@ -555,16 +562,16 @@ impl ReteCompiler {
         var_map: &mut VarMap,
         bound_vars: &mut SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
-        new_alpha_memories: &mut Vec<NewAlphaMemory>,
     ) -> NodeId {
         let (alpha_mem, alpha_created) = self.ensure_alpha_path(&mut rete.alpha, pattern);
         alpha_memories.push(alpha_mem);
-        if alpha_created {
-            new_alpha_memories.push(NewAlphaMemory {
-                id: alpha_mem,
-                entry_type: pattern.entry_type.clone(),
-                tests: pattern.constant_tests.clone(),
-            });
+        if alpha_created && !fact_base.is_empty() {
+            rete.alpha.backfill_memory(
+                alpha_mem,
+                &pattern.entry_type,
+                &pattern.constant_tests,
+                fact_base,
+            );
         }
 
         let mut join_tests = SmallVec::<[JoinTest; 8]>::new();
@@ -657,7 +664,6 @@ impl ReteCompiler {
         var_map: &mut VarMap,
         bound_vars: &SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
-        new_alpha_memories: &mut Vec<NewAlphaMemory>,
     ) -> NodeId {
         debug_assert!(
             !subconditions.is_empty(),
@@ -685,7 +691,6 @@ impl ReteCompiler {
                         var_map,
                         &mut sub_bound_vars,
                         alpha_memories,
-                        new_alpha_memories,
                     );
                 }
                 CompilableCondition::Ncc(inner_conditions) => {
@@ -697,7 +702,6 @@ impl ReteCompiler {
                         var_map,
                         &sub_bound_vars,
                         alpha_memories,
-                        new_alpha_memories,
                     );
                 }
             }

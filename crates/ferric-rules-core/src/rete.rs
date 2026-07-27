@@ -230,6 +230,18 @@ impl ReteNetwork {
         );
     }
 
+    /// Activate newly compiled children of the beta root from the empty LHS
+    /// prefix token.
+    pub(crate) fn activate_root_children(&mut self, children: &[NodeId], fact_base: &FactBase) {
+        if children.is_empty() {
+            return;
+        }
+
+        let root_token = self.seed_root_token();
+        let mut new_activations = Vec::new();
+        self.propagate_token(root_token, children, fact_base, &mut new_activations);
+    }
+
     /// Populate the beta frontier added by an online rule installation.
     ///
     /// Each frontier edge has a parent that existed before compilation and a
@@ -241,9 +253,15 @@ impl ReteNetwork {
         first_new_node: NodeId,
         fact_base: &FactBase,
     ) {
-        self.seed_root_token();
+        let root_id = self.beta.root_id();
+        let mut new_activations = Vec::new();
 
-        for (parent_id, new_children) in self.beta.installation_frontier(first_new_node) {
+        for (parent_id, new_child) in self.beta.installation_frontier(first_new_node) {
+            if parent_id == root_id {
+                self.activate_root_children(&[new_child], fact_base);
+                continue;
+            }
+
             let Some(parent_memory_id) = self.beta.memory_id_for_node(parent_id) else {
                 continue;
             };
@@ -254,8 +272,7 @@ impl ReteNetwork {
                 .unwrap_or_default();
 
             for parent_token in parent_tokens {
-                let mut new_activations = Vec::new();
-                self.propagate_token(parent_token, &new_children, fact_base, &mut new_activations);
+                self.propagate_token(parent_token, &[new_child], fact_base, &mut new_activations);
             }
         }
     }
