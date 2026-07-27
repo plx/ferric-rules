@@ -3217,7 +3217,7 @@ impl Engine {
             }
             Constraint::Predicate(expr, span) => {
                 if in_negated_pattern {
-                    if self.try_lower_negated_predicate_constraint(
+                    if self.try_lower_simple_predicate_constraint(
                         expr,
                         slot,
                         constant_tests,
@@ -3232,6 +3232,16 @@ impl Engine {
                         span,
                         "predicate constraints inside negated patterns currently require a simple binary comparison involving the current slot variable",
                     ));
+                }
+                if self.try_lower_simple_predicate_constraint(
+                    expr,
+                    slot,
+                    constant_tests,
+                    variable_slots,
+                    negated_variable_slots,
+                    seen_variable_slots,
+                )? {
+                    return Ok(());
                 }
                 let runtime_expr =
                     crate::evaluator::from_sexpr(expr, &mut self.symbol_table, &self.config)
@@ -3286,7 +3296,7 @@ impl Engine {
         Ok(())
     }
 
-    fn try_lower_negated_predicate_constraint(
+    fn try_lower_simple_predicate_constraint(
         &mut self,
         expr: &SExpr,
         slot: SlotIndex,
@@ -4537,6 +4547,17 @@ mod tests {
               =>
               (assert (gt2 ?x)))
             ",
+        );
+
+        let rule_info = engine
+            .rule_info
+            .iter()
+            .flatten()
+            .find(|info| info.name == "gt-two")
+            .expect("compiled rule metadata");
+        assert!(
+            rule_info.test_conditions.is_empty(),
+            "simple slot comparisons should lower into alpha tests"
         );
 
         let run = run_to_completion(&mut engine);
