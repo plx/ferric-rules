@@ -306,6 +306,45 @@ mod tests {
     }
 
     #[test]
+    fn fr_rete_004_rhs_retraction_uses_state_at_action_boundary() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defglobal ?*gate* = TRUE)
+
+            (defrule candidate
+                (anchor)
+                (not (blocker))
+                (test (eq ?*gate* TRUE))
+                =>
+                (assert (candidate-fired)))
+
+            (defrule unblocker
+                (declare (salience 100))
+                ?blocker <- (blocker)
+                (go)
+                =>
+                (retract ?blocker)
+                (bind ?*gate* FALSE))
+
+            (deffacts startup
+                (anchor)
+                (blocker)
+                (go))
+        ",
+        );
+
+        let run = run_to_completion(&mut engine);
+
+        assert_eq!(
+            run.rules_fired, 2,
+            "the candidate created by retract must be matched before the later bind"
+        );
+        assert_has_fact_with_relation(&engine, "candidate-fired");
+    }
+
+    #[test]
     fn fr_rete_004_complex_negation_not_deferred_to_fire() {
         let mut engine = new_utf8_engine();
         let errors = engine

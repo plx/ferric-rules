@@ -642,13 +642,7 @@ fn execute_single_action(
             eval_env,
             collected_facts,
         ),
-        "retract" => execute_retract(
-            &mut context.engine.fact_base,
-            &mut context.engine.rete,
-            collected_facts,
-            rule_info,
-            &call.args,
-        ),
+        "retract" => execute_retract(context, collected_facts, rule_info, &call.args),
         "modify" => execute_modify(
             token,
             rule_info,
@@ -2438,8 +2432,7 @@ fn execute_assert(
 }
 
 fn execute_retract(
-    fact_base: &mut FactBase,
-    rete: &mut ReteNetwork,
+    context: &mut ActionExecutionContext<'_>,
     collected_facts: &[FactId],
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
@@ -2448,13 +2441,19 @@ fn execute_retract(
         match arg {
             ActionExpr::Variable(var_name, _) => {
                 let fact_id = resolve_fact_address(collected_facts, rule_info, var_name)?;
-                let fact = get_fact_or_error(fact_base, fact_id)?;
-                rete.retract_fact(fact_id, &fact, fact_base);
-                fact_base.retract(fact_id);
+                let fact = get_fact_or_error(&context.engine.fact_base, fact_id)?;
+                context
+                    .engine
+                    .rete
+                    .retract_fact(fact_id, &fact, &context.engine.fact_base);
+                context.engine.fact_base.retract(fact_id);
             }
             _ => return Err(ActionError::InvalidRetract),
         }
     }
+    // A retract action is a matching boundary: evaluate any candidates it
+    // unblocked before a later RHS action can mutate globals or working memory.
+    context.engine.drain_pending_predicate_matches();
     Ok(())
 }
 
