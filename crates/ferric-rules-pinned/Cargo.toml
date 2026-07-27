@@ -1,0 +1,27 @@
+[package]
+name = "ferric-rules-pinned"
+description = "Rust-owned pinned execution layer for Ferric: worker-thread engine with serialized request queue, batching, autorelease management, and cooperative cancellation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[features]
+serde = ["ferric-rules-runtime/serde"]
+tracing = ["dep:tracing", "ferric-rules-runtime/tracing"]
+
+[dependencies]
+crossbeam-channel = { workspace = true }
+ferric-rules-runtime = { workspace = true }
+tracing = { workspace = true, optional = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = { workspace = true }
+
+[dev-dependencies]
+ferric-rules-runtime = { workspace = true, features = ["serde"] }
+
+[lints]
+workspace = true

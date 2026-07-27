@@ -360,7 +360,7 @@ surface-specific checks when the issue body is less explicit.
 For performance claims, run the applicable release-profile benchmark:
 
 ```sh
-cargo bench -p ferric
+cargo bench -p ferric-rules
 # or the focused `just bench-*` recipe named by the ticket
 ```
 

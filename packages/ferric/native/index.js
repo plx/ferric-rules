@@ -49,7 +49,7 @@ function loadNativeBinding() {
     );
   }
 
-  // A source checkout keeps the development binary in crates/ferric-napi.
+  // A source checkout keeps the development binary in crates/ferric-rules-napi.
   // This path cannot exist in a normal npm consumer install.
   const developmentBinary = resolve(
     __dirname,
@@ -57,8 +57,8 @@ function loadNativeBinding() {
     "..",
     "..",
     "crates",
-    "ferric-napi",
-    "ferric-napi.node",
+    "ferric-rules-napi",
+    "ferric-rules-napi.node",
   );
   let developmentError;
   if (existsSync(developmentBinary)) {

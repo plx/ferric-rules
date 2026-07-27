@@ -2270,16 +2270,16 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 Used by:
 
-- ferric 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/prb/ferric-rules
-- ferric-bench-gen 0.1.0 (`MIT OR Apache-2.0`)
-- ferric-cli 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/prb/ferric-rules
-- ferric-core 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/prb/ferric-rules
-- ferric-ffi 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/prb/ferric-rules
-- ferric-napi 0.1.0 (`MIT OR Apache-2.0`)
-- ferric-parser 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/prb/ferric-rules
-- ferric-pinned 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/prb/ferric-rules
-- ferric-python 0.1.0 (`MIT OR Apache-2.0`)
-- ferric-runtime 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/prb/ferric-rules
+- ferric-rules 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
+- ferric-rules-bench-gen 0.1.0 (`MIT OR Apache-2.0`)
+- ferric-rules-cli 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
+- ferric-rules-core 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
+- ferric-rules-ffi 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
+- ferric-rules-napi 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
+- ferric-rules-parser 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
+- ferric-rules-pinned 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
+- ferric-rules-python 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
+- ferric-rules-runtime 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - users-guide-01-minimal-embedding 0.1.0 (`MIT OR Apache-2.0`)
 - users-guide-02-ordered-vs-template 0.1.0 (`MIT OR Apache-2.0`)
 - users-guide-03-salience-and-guards 0.1.0 (`MIT OR Apache-2.0`)

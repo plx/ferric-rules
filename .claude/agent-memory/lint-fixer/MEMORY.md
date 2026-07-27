@@ -2,7 +2,7 @@
 
 ## Project Overview
 - Rust project: CLIPS rules engine implementation (ferric-rules)
-- Workspace structure with multiple crates (ferric-runtime, ferric, ferric-core, ferric-parser)
+- Workspace structure with multiple crates (ferric-rules-runtime, ferric, ferric-rules-core, ferric-rules-parser)
 - Uses `cargo clippy` for linting
 
 ## Lint Patterns

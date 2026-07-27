@@ -8,10 +8,10 @@ Ferric is built around an `Engine`. Load CLIPS source once, assert facts that de
 ## Install
 
 ```sh
-cargo add ferric
+cargo add ferric-rules
 ```
 
-The public facade crate is `ferric`; the project and repository are named `ferric-rules`.
+The public facade package is `ferric-rules`, imported in Rust as `ferric_rules`.
 
 ## Minimal Rule Set
 
@@ -27,7 +27,7 @@ The public facade crate is `ferric`; the project and repository are named `ferri
 ## Rust Host Code
 
 ```rust
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = Engine::with_rules(r#"

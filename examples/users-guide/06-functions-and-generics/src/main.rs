@@ -2,8 +2,8 @@
 //!
 //! Source: docs/users-guide.md §7.
 
-use ferric::core::Value;
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::core::Value;
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn run_temp() -> anyhow::Result<()> {
     let rules = include_str!("../rules/temp.clp");

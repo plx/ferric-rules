@@ -41,9 +41,9 @@ jobs:
       - name: Check all workspace features
         run: cargo check --workspace --all-features --locked
       - name: Check serialization feature set
-        run: cargo check -p ferric-runtime --features serde --locked
+        run: cargo check -p ferric-rules-runtime --features serde --locked
       - name: Check CLI feature set
-        run: cargo check -p ferric-cli --locked
+        run: cargo check -p ferric-rules-cli --locked
       - name: Test workspace and MSRV metadata
         run: cargo test --workspace --locked
 
@@ -78,6 +78,16 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: ./scripts/preflight.sh test
+
+  rust-package-artifact:
+    name: Rust Package Artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: ./scripts/verify-rust-packages.sh
 
   ffi-c-harness:
     name: FFI C Harness (ASan/UBSan)
@@ -141,7 +151,7 @@ jobs:
           go-version-file: bindings/go/go.mod
       - run: just build-go-ffi
       - name: Verify committed FFI headers
-        run: git diff --exit-code -- crates/ferric-ffi/ferric.h bindings/go/internal/ffi/lib/ferric.h
+        run: git diff --exit-code -- crates/ferric-rules-ffi/ferric.h bindings/go/internal/ffi/lib/ferric.h
       - uses: golangci/golangci-lint-action@v7
         with:
           # Keep in sync with golangci_lint_version in the justfile. v2.12.x is
@@ -178,7 +188,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Build and test Python bindings
-        working-directory: crates/ferric-python
+        working-directory: crates/ferric-rules-python
         run: |
           uv sync
           uv run pytest tests/ -v
@@ -197,7 +207,7 @@ jobs:
       - name: Install napi-rs CLI
         run: npm install -g @napi-rs/cli
       - name: Build native addon
-        working-directory: crates/ferric-napi
+        working-directory: crates/ferric-rules-napi
         run: |
           npm install
           napi build --release
@@ -236,7 +246,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo test -p ferric --test clips_compat
+      - run: cargo test -p ferric-rules --test clips_compat
 
   users-guide-examples:
     name: Users Guide Examples
@@ -271,7 +281,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo bench -p ferric -- --test
+      - run: cargo bench -p ferric-rules -- --test
 
   bench-thresholds:
     name: Bench Thresholds

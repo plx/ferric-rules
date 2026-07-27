@@ -20,25 +20,25 @@ build-release:
 
 # ── Per-crate builds ─────────────────────────────────────────────────────────
 
-# Build a single crate by name (e.g. `just build-crate ferric-parser`)
+# Build a single crate by name (e.g. `just build-crate ferric-rules-parser`)
 build-crate crate:
     cargo build -p {{crate}}
 
 # Build the FFI crate with panic=abort (dev)
 build-ffi:
-    cargo build -p ferric-ffi --profile ffi-dev
+    cargo build -p ferric-rules-ffi --profile ffi-dev
 
 # Build the FFI crate with panic=abort (release)
 build-ffi-release:
-    cargo build -p ferric-ffi --profile ffi-release
+    cargo build -p ferric-rules-ffi --profile ffi-release
 
 # Build the CLI
 build-cli:
-    cargo build -p ferric-cli
+    cargo build -p ferric-rules-cli
 
 # Build the CLI (release)
 build-cli-release:
-    cargo build -p ferric-cli --release
+    cargo build -p ferric-rules-cli --release
 
 # ── Testing ──────────────────────────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ build-cli-release:
 test:
     cargo test --workspace
 
-# Run tests for a single crate (e.g. `just test-crate ferric-core`)
+# Run tests for a single crate (e.g. `just test-crate ferric-rules-core`)
 test-crate crate:
     cargo test -p {{crate}}
 
@@ -56,19 +56,19 @@ test-filter filter:
 
 # Run tests for the core crate
 test-core:
-    cargo test -p ferric-core
+    cargo test -p ferric-rules-core
 
 # Run tests for the parser crate
 test-parser:
-    cargo test -p ferric-parser
+    cargo test -p ferric-rules-parser
 
 # Run tests for the runtime crate
 test-runtime:
-    cargo test -p ferric-runtime
+    cargo test -p ferric-rules-runtime
 
 # Run tests for the FFI crate
 test-ffi:
-    cargo test -p ferric-ffi
+    cargo test -p ferric-rules-ffi
 
 # Build the FFI staticlib and run the C ABI regression harnesses as real C
 # subprocesses under ASan/UBSan (when the compiler supports them)
@@ -87,11 +87,11 @@ ffi-go-asan-harness:
 
 # Run tests for the facade crate
 test-ferric:
-    cargo test -p ferric
+    cargo test -p ferric-rules
 
 # Run tests for the CLI crate
 test-cli:
-    cargo test -p ferric-cli
+    cargo test -p ferric-rules-cli
 
 # ── Linting & formatting ────────────────────────────────────────────────────
 
@@ -139,7 +139,7 @@ py-test:
 
 # Build and test Python bindings
 py-bindings-test:
-    cd crates/ferric-python && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv run maturin develop --quiet && .venv/bin/python -m pytest tests/
+    cd crates/ferric-rules-python && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv run maturin develop --quiet && .venv/bin/python -m pytest tests/
 
 # ── Composite checks ────────────────────────────────────────────────────────
 
@@ -188,43 +188,43 @@ check-examples-sync:
 
 # Check that tracing feature compiles and passes clippy + tests
 check-tracing:
-    cargo check --workspace --exclude ferric-python --features tracing
-    cargo clippy --workspace --exclude ferric-python --features tracing --all-targets -- -D warnings
-    cargo test --workspace --exclude ferric-python --features tracing
+    cargo check --workspace --exclude ferric-rules-python --features tracing
+    cargo clippy --workspace --exclude ferric-rules-python --features tracing --all-targets -- -D warnings
+    cargo test --workspace --exclude ferric-rules-python --features tracing
 
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 
 # Run all Criterion benchmarks
 bench:
-    cargo bench -p ferric
+    cargo bench -p ferric-rules
 
 # Run the engine benchmark suite
 bench-engine:
-    cargo bench -p ferric --bench engine_bench
+    cargo bench -p ferric-rules --bench engine_bench
 
 # Run the waltz benchmark suite
 bench-waltz:
-    cargo bench -p ferric --bench waltz_bench
+    cargo bench -p ferric-rules --bench waltz_bench
 
 # Run serialization format comparison benchmarks
 bench-serde:
-    cargo bench -p ferric-runtime --features serde --bench serialization_bench
+    cargo bench -p ferric-rules-runtime --features serde --bench serialization_bench
 
 # Run the manners benchmark suite
 bench-manners:
-    cargo bench -p ferric --bench manners_bench
+    cargo bench -p ferric-rules --bench manners_bench
 
 # Run the join benchmark suite
 bench-join:
-    cargo bench -p ferric --bench join_bench
+    cargo bench -p ferric-rules --bench join_bench
 
 # Run the churn benchmark suite
 bench-churn:
-    cargo bench -p ferric --bench churn_bench
+    cargo bench -p ferric-rules --bench churn_bench
 
 # Run the negation benchmark suite
 bench-negation:
-    cargo bench -p ferric --bench negation_bench
+    cargo bench -p ferric-rules --bench negation_bench
 
 # Run benchmark threshold evaluation
 bench-thresholds:
@@ -236,7 +236,7 @@ bench-compare *args:
 
 # Run scaling regression checks (catches accidentally-quadratic behavior)
 scaling-check:
-    cargo test -p ferric --test scaling_tests --release -- --ignored --nocapture --test-threads=1
+    cargo test -p ferric-rules --test scaling_tests --release -- --ignored --nocapture --test-threads=1
 
 # ── Compatibility assessment ─────────────────────────────────────────────────
 
@@ -320,6 +320,10 @@ doc:
 doc-open:
     cargo doc --workspace --no-deps --open
 
+# Package the public Rust facade and test its extracted contents offline
+verify-rust-packages:
+    ./scripts/verify-rust-packages.sh
+
 # ── Licensing ────────────────────────────────────────────────────────────────
 
 # Regenerate Rust third-party license notices from the locked Cargo graph
@@ -334,9 +338,9 @@ license-notices-check:
 
 # Build the Rust static library for Go bindings (includes serde for serialization)
 build-go-ffi:
-    cargo build -p ferric-ffi --release --features serde
-    cp target/release/libferric_ffi.a bindings/go/internal/ffi/lib/
-    cp crates/ferric-ffi/ferric.h bindings/go/internal/ffi/lib/
+    cargo build -p ferric-rules-ffi --release --features serde
+    cp target/release/libferric_rules_ffi.a bindings/go/internal/ffi/lib/
+    cp crates/ferric-rules-ffi/ferric.h bindings/go/internal/ffi/lib/
 
 # Run Go binding tests
 test-go:
@@ -388,7 +392,7 @@ go-full: build-go-ffi test-go-race
 
 # Build the napi-rs native addon for Node.js bindings
 build-napi:
-    cd crates/ferric-napi && npm ci && npm run build
+    cd crates/ferric-rules-napi && npm ci && npm run build
 
 # Install TypeScript package dependencies
 ts-install:

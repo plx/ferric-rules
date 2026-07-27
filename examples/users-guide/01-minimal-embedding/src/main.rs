@@ -2,7 +2,7 @@
 //!
 //! Source: docs/users-guide.md §2.
 
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = Engine::with_rules(

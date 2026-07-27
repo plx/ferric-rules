@@ -82,7 +82,7 @@ Relevant code:
 
 - [`bindings/go/engine.go`](../../bindings/go/engine.go), `Close` and ordinary
   engine methods
-- [`crates/ferric-ffi/src/engine.rs`](../../crates/ferric-ffi/src/engine.rs),
+- [`crates/ferric-rules-ffi/src/engine.rs`](../../crates/ferric-rules-ffi/src/engine.rs),
   native engine destruction
 
 Any successful method call after `Close` can construct a Rust reference from
@@ -98,7 +98,7 @@ Relevant code:
 
 - [`bindings/go/internal/ffi/ffi.go`](../../bindings/go/internal/ffi/ffi.go),
   multifield construction
-- [`crates/ferric-ffi/src/types.rs`](../../crates/ferric-ffi/src/types.rs),
+- [`crates/ferric-rules-ffi/src/types.rs`](../../crates/ferric-rules-ffi/src/types.rs),
   `FerricValue` destruction
 
 `Box::from_raw` requires an allocation produced with the corresponding Rust
@@ -113,9 +113,9 @@ discriminants is undefined behavior in Rust before a `match` can reject it.
 
 Relevant code:
 
-- [`crates/ferric-ffi/src/types.rs`](../../crates/ferric-ffi/src/types.rs),
+- [`crates/ferric-rules-ffi/src/types.rs`](../../crates/ferric-rules-ffi/src/types.rs),
   `FerricValueType`, `FerricValue`, conversion, and destruction
-- [`crates/ferric-ffi/src/engine.rs`](../../crates/ferric-ffi/src/engine.rs),
+- [`crates/ferric-rules-ffi/src/engine.rs`](../../crates/ferric-rules-ffi/src/engine.rs),
   structured assertions
 
 The ABI should expose a fixed-width integer tag and perform checked conversion
@@ -131,11 +131,11 @@ read.
 
 Relevant code:
 
-- [`crates/ferric-ffi/src/engine.rs`](../../crates/ferric-ffi/src/engine.rs),
+- [`crates/ferric-rules-ffi/src/engine.rs`](../../crates/ferric-rules-ffi/src/engine.rs),
   `FerricEngine` state and last-error functions
-- [`crates/ferric-ffi/src/error.rs`](../../crates/ferric-ffi/src/error.rs),
+- [`crates/ferric-rules-ffi/src/error.rs`](../../crates/ferric-rules-ffi/src/error.rs),
   error-state implementation
-- [`crates/ferric-ffi/ferric.h`](../../crates/ferric-ffi/ferric.h),
+- [`crates/ferric-rules-ffi/ferric.h`](../../crates/ferric-rules-ffi/ferric.h),
   threading contract
 
 This can cause data races, `RefCell` panics, and invalid Rust aliasing. The state
@@ -159,9 +159,9 @@ has no left token and can never form its otherwise-valid activation.
 
 Relevant code:
 
-- [`crates/ferric-runtime/src/loader.rs`](../../crates/ferric-runtime/src/loader.rs),
+- [`crates/ferric-rules-runtime/src/loader.rs`](../../crates/ferric-rules-runtime/src/loader.rs),
   terminal initial-token propagation
-- [`crates/ferric-core/src/rete.rs`](../../crates/ferric-core/src/rete.rs),
+- [`crates/ferric-rules-core/src/rete.rs`](../../crates/ferric-rules-core/src/rete.rs),
   negative-node activation
 
 The audit probe produced zero Ferric activations where CLIPS produced one.
@@ -175,9 +175,9 @@ CLIPS produced one.
 
 Relevant code:
 
-- [`crates/ferric-runtime/src/loader.rs`](../../crates/ferric-runtime/src/loader.rs),
+- [`crates/ferric-rules-runtime/src/loader.rs`](../../crates/ferric-rules-runtime/src/loader.rs),
   existential lowering and beta compilation
-- [`crates/ferric-core/src/rete.rs`](../../crates/ferric-core/src/rete.rs),
+- [`crates/ferric-rules-core/src/rete.rs`](../../crates/ferric-rules-core/src/rete.rs),
   existential memory propagation
 
 #### `test` CEs are evaluated at firing time
@@ -189,11 +189,11 @@ activation was placed on the agenda.
 
 Relevant code:
 
-- [`crates/ferric-runtime/src/loader.rs`](../../crates/ferric-runtime/src/loader.rs),
+- [`crates/ferric-rules-runtime/src/loader.rs`](../../crates/ferric-rules-runtime/src/loader.rs),
   test-CE compilation
-- [`crates/ferric-runtime/src/actions.rs`](../../crates/ferric-runtime/src/actions.rs),
+- [`crates/ferric-rules-runtime/src/actions.rs`](../../crates/ferric-rules-runtime/src/actions.rs),
   firing-time predicate evaluation
-- [`crates/ferric-runtime/src/engine.rs`](../../crates/ferric-runtime/src/engine.rs),
+- [`crates/ferric-rules-runtime/src/engine.rs`](../../crates/ferric-rules-runtime/src/engine.rs),
   step/run reporting
 
 A differential probe with a false global guard fired only the higher-salience
@@ -207,9 +207,9 @@ does not activate. CLIPS activates the equivalent late-loaded rule.
 
 Relevant code:
 
-- [`crates/ferric-core/src/compiler.rs`](../../crates/ferric-core/src/compiler.rs),
+- [`crates/ferric-rules-core/src/compiler.rs`](../../crates/ferric-rules-core/src/compiler.rs),
   network construction
-- [`crates/ferric-core/src/beta.rs`](../../crates/ferric-core/src/beta.rs),
+- [`crates/ferric-rules-core/src/beta.rs`](../../crates/ferric-rules-core/src/beta.rs),
   beta request/index assumptions
 
 The API must either support dynamic loading correctly or reject it explicitly
@@ -224,9 +224,9 @@ entry that cannot fire or be removed normally.
 
 Relevant code:
 
-- [`crates/ferric-runtime/src/loader.rs`](../../crates/ferric-runtime/src/loader.rs),
+- [`crates/ferric-rules-runtime/src/loader.rs`](../../crates/ferric-rules-runtime/src/loader.rs),
   rule compilation sequence
-- [`crates/ferric-runtime/src/engine.rs`](../../crates/ferric-runtime/src/engine.rs),
+- [`crates/ferric-rules-runtime/src/engine.rs`](../../crates/ferric-rules-runtime/src/engine.rs),
   agenda/focus processing
 
 This is one instance of the broader need for staged, transactional loading.
@@ -239,11 +239,11 @@ where CLIPS returns the previous value.
 
 Relevant code:
 
-- [`crates/ferric-core/src/fact.rs`](../../crates/ferric-core/src/fact.rs),
+- [`crates/ferric-rules-core/src/fact.rs`](../../crates/ferric-rules-core/src/fact.rs),
   fact insertion policy
-- [`crates/ferric-runtime/src/engine.rs`](../../crates/ferric-runtime/src/engine.rs),
+- [`crates/ferric-rules-runtime/src/engine.rs`](../../crates/ferric-rules-runtime/src/engine.rs),
   assertion
-- [`crates/ferric-runtime/src/evaluator.rs`](../../crates/ferric-runtime/src/evaluator.rs),
+- [`crates/ferric-rules-runtime/src/evaluator.rs`](../../crates/ferric-rules-runtime/src/evaluator.rs),
   builtin behavior
 
 #### Conflict strategies do not match CLIPS
@@ -254,9 +254,9 @@ reverse order from CLIPS.
 
 Relevant code:
 
-- [`crates/ferric-core/src/rete.rs`](../../crates/ferric-core/src/rete.rs),
+- [`crates/ferric-rules-core/src/rete.rs`](../../crates/ferric-rules-core/src/rete.rs),
   activation construction and recency
-- [`crates/ferric-core/src/agenda.rs`](../../crates/ferric-core/src/agenda.rs),
+- [`crates/ferric-rules-core/src/agenda.rs`](../../crates/ferric-rules-core/src/agenda.rs),
   conflict ordering
 
 Each public conflict strategy requires a differential conformance suite,
@@ -281,9 +281,9 @@ the ordering between the initial fact and user deffacts.
 
 Relevant code:
 
-- [`crates/ferric-runtime/src/loader.rs`](../../crates/ferric-runtime/src/loader.rs),
+- [`crates/ferric-rules-runtime/src/loader.rs`](../../crates/ferric-rules-runtime/src/loader.rs),
   deffacts loading
-- [`crates/ferric-runtime/src/engine.rs`](../../crates/ferric-runtime/src/engine.rs),
+- [`crates/ferric-rules-runtime/src/engine.rs`](../../crates/ferric-rules-runtime/src/engine.rs),
   reset order
 
 ### Redefinition and undefinition retain stale state
@@ -302,7 +302,7 @@ and `1` in CLIPS.
 
 Relevant code:
 
-- [`crates/ferric-runtime/src/evaluator.rs`](../../crates/ferric-runtime/src/evaluator.rs),
+- [`crates/ferric-rules-runtime/src/evaluator.rs`](../../crates/ferric-rules-runtime/src/evaluator.rs),
   callable-body execution and the return builtin
 
 ### RHS errors do not stop the current action sequence
@@ -313,7 +313,7 @@ actions have external side effects.
 
 Relevant code:
 
-- [`crates/ferric-runtime/src/actions.rs`](../../crates/ferric-runtime/src/actions.rs),
+- [`crates/ferric-rules-runtime/src/actions.rs`](../../crates/ferric-rules-runtime/src/actions.rs),
   action-sequence evaluation
 
 ### Focus/module semantics diverge
@@ -338,8 +338,8 @@ addon returned `9007203549708288` and then rejected that same ID.
 
 Relevant code:
 
-- [`crates/ferric-napi/src/fact.rs`](../../crates/ferric-napi/src/fact.rs)
-- [`crates/ferric-napi/src/engine.rs`](../../crates/ferric-napi/src/engine.rs)
+- [`crates/ferric-rules-napi/src/fact.rs`](../../crates/ferric-rules-napi/src/fact.rs)
+- [`crates/ferric-rules-napi/src/engine.rs`](../../crates/ferric-rules-napi/src/engine.rs)
 
 Fact IDs must be lossless JavaScript `bigint`, strings, or opaque objects.
 
@@ -354,12 +354,12 @@ Relevant code:
 - [`packages/ferric/src/worker.ts`](../../packages/ferric/src/worker.ts)
 - [`packages/ferric/src/pool-worker.ts`](../../packages/ferric/src/pool-worker.ts)
 - [`bindings/go/engine.go`](../../bindings/go/engine.go)
-- [`crates/ferric-runtime/src/engine.rs`](../../crates/ferric-runtime/src/engine.rs)
+- [`crates/ferric-rules-runtime/src/engine.rs`](../../crates/ferric-rules-runtime/src/engine.rs)
 
 A 101-rule probe with a halt at rule 100 stopped correctly in the direct native
 API and fired rule 101 through the batched wrappers. The Rust pinned worker
 already demonstrates the intended `continue_run` and `is_halted` behavior:
-[`crates/ferric-pinned/src/worker.rs`](../../crates/ferric-pinned/src/worker.rs).
+[`crates/ferric-rules-pinned/src/worker.rs`](../../crates/ferric-rules-pinned/src/worker.rs).
 
 ### `EnginePool.do` is not a transaction
 
@@ -396,7 +396,7 @@ the earlier parse diagnostic rather than fact-not-found.
 Relevant code:
 
 - [`bindings/go/errors.go`](../../bindings/go/errors.go)
-- [`crates/ferric-ffi/src/engine.rs`](../../crates/ferric-ffi/src/engine.rs)
+- [`crates/ferric-rules-ffi/src/engine.rs`](../../crates/ferric-rules-ffi/src/engine.rs)
 
 ### Python can retain unreachable foreign-thread engines
 
@@ -406,8 +406,8 @@ thread leaves the native engine alive until the creator thread exits.
 
 Relevant code:
 
-- [`crates/ferric-python/src/engine.rs`](../../crates/ferric-python/src/engine.rs)
-- [`crates/ferric-python/tests/test_threading.py`](../../crates/ferric-python/tests/test_threading.py)
+- [`crates/ferric-rules-python/src/engine.rs`](../../crates/ferric-rules-python/src/engine.rs)
+- [`crates/ferric-rules-python/tests/test_threading.py`](../../crates/ferric-rules-python/tests/test_threading.py)
 
 The existing test checks only that no panic or stderr is produced and does not
 check reclamation.
@@ -448,7 +448,7 @@ much lower depth.
 
 Relevant code:
 
-- [`crates/ferric-parser/src/sexpr.rs`](../../crates/ferric-parser/src/sexpr.rs)
+- [`crates/ferric-rules-parser/src/sexpr.rs`](../../crates/ferric-rules-parser/src/sexpr.rs)
 
 The parser needs an explicit nesting budget or an iterative representation, and
 property/fuzz tests must exercise depths well beyond the current generator.
@@ -462,8 +462,8 @@ available limits.
 
 Relevant code:
 
-- [`crates/ferric-runtime/src/actions.rs`](../../crates/ferric-runtime/src/actions.rs)
-- [`crates/ferric-runtime/src/evaluator.rs`](../../crates/ferric-runtime/src/evaluator.rs)
+- [`crates/ferric-rules-runtime/src/actions.rs`](../../crates/ferric-rules-runtime/src/actions.rs)
+- [`crates/ferric-rules-runtime/src/evaluator.rs`](../../crates/ferric-rules-runtime/src/evaluator.rs)
 
 ### Snapshot decoding is effectively trusted-only
 
@@ -472,7 +472,7 @@ and little post-decode invariant validation.
 
 Relevant code:
 
-- [`crates/ferric-runtime/src/serialization.rs`](../../crates/ferric-runtime/src/serialization.rs)
+- [`crates/ferric-rules-runtime/src/serialization.rs`](../../crates/ferric-rules-runtime/src/serialization.rs)
 
 Until hardened, snapshots must be described and treated as trusted cache data,
 not as a general interchange or remotely supplied format.

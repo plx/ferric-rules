@@ -16,7 +16,7 @@ EOF
 }
 
 run_check() {
-    cargo check --workspace --exclude ferric-python --exclude ferric-napi
+    cargo check --workspace --exclude ferric-rules-python --exclude ferric-rules-napi
 }
 
 run_fmt() {
@@ -24,12 +24,12 @@ run_fmt() {
 }
 
 run_clippy() {
-    cargo clippy --workspace --all-targets --exclude ferric-python --exclude ferric-napi -- -D warnings
+    cargo clippy --workspace --all-targets --exclude ferric-rules-python --exclude ferric-rules-napi -- -D warnings
 }
 
 run_test() {
-    cargo test --workspace --exclude ferric-python --exclude ferric-napi
-    cargo test -p ferric-ffi --features serde
+    cargo test --workspace --exclude ferric-rules-python --exclude ferric-rules-napi
+    cargo test -p ferric-rules-ffi --features serde
 }
 
 command="${1:-all}"

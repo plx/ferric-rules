@@ -1167,7 +1167,7 @@ def main(
 
     if not Path(ferric).exists():
         console.print(f"[red]error:[/] ferric binary not found: {ferric}")
-        console.print("Run: cargo build --release -p ferric-cli")
+        console.print("Run: cargo build --release -p ferric-rules-cli")
         raise typer.Exit(1)
     if skip_clips:
         console.print(

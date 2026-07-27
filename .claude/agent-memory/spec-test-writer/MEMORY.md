@@ -1,10 +1,10 @@
 # ferric-rules spec-test-writer memory
 
 ## Project Overview
-`ferric-rules` is a Rust CLIPS rules engine. Tests live in `crates/ferric-ffi/src/tests/`.
+`ferric-rules` is a Rust CLIPS rules engine. Tests live in `crates/ferric-rules-ffi/src/tests/`.
 All tests are inside the crate as `#[cfg(test)] mod` modules registered in `tests.rs`.
 
-## Test Patterns (ferric-ffi crate)
+## Test Patterns (ferric-rules-ffi crate)
 
 ### Standard test structure
 - All FFI tests use `unsafe { }` blocks
@@ -80,7 +80,7 @@ Then enumerate fact IDs with `ferric_engine_fact_ids` to obtain the fact ID.
 - `AgendaEmpty = 0`, `LimitReached = 1`, `HaltRequested = 2`
 
 ## Module Registration
-New test modules must be added to `crates/ferric-ffi/src/tests.rs`:
+New test modules must be added to `crates/ferric-rules-ffi/src/tests.rs`:
 ```rust
 #[cfg(test)]
 mod ffi_expansion;

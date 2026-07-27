@@ -6,8 +6,8 @@
 //! types. This example fills them in with concrete shapes so the whole
 //! thing compiles and runs end-to-end.
 
-use ferric::core::Value;
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::core::Value;
+use ferric_rules::runtime::{Engine, RunLimit};
 
 #[derive(Debug)]
 pub struct Request {
@@ -68,7 +68,7 @@ impl Classifier {
 
     fn read_decision(&self) -> anyhow::Result<Decision> {
         for (_, fact) in self.engine.find_facts("decision")? {
-            if let ferric::core::Fact::Ordered(of) = fact {
+            if let ferric_rules::core::Fact::Ordered(of) = fact {
                 if let Some(Value::Symbol(sym)) = of.fields.first() {
                     if let Some(name) = self.engine.resolve_symbol(*sym) {
                         return Ok(match name {

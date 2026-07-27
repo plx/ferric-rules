@@ -31,7 +31,7 @@ This document is intentionally descriptive. If this document conflicts with the 
 ## Layered Design
 
 ### Layer 1: Native `Engine` (napi-rs)
-- Rust crate: `crates/ferric-napi`
+- Rust crate: `crates/ferric-rules-napi`
 - Exposes synchronous API directly backed by Ferric runtime.
 - Holds engine ownership and performs core value conversion.
 - No pooling/orchestration logic in Rust.

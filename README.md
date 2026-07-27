@@ -8,7 +8,7 @@ modern applications. ferric-rules keeps the language and semantics — deffacts,
 defrule, salience, the Rete algorithm — and drops the parts that don't fit:
 no global state, no thread-unsafe singletons, no C build headaches.
 Each `Engine` instance is fully independent, and the whole thing compiles
-as a normal Rust crate (or as a C library via `ferric-ffi`).
+as a normal Rust crate (or as a C library via `ferric-rules-ffi`).
 
 The engine is early but functional: ordered and template facts, negative and
 existential patterns, the full Rete join network, modules with focus stacks,
@@ -20,6 +20,25 @@ deffunction/defgeneric, globals, and the core CLIPS standard library
 - idiomatic wrappers/bindings (C++, Swift, python, etc.)
 
 We have no plans to support the object system (COOL).
+
+## Using ferric-rules from Rust
+
+Add the public facade package:
+
+```toml
+[dependencies]
+ferric-rules = "0.1.0"
+```
+
+Cargo package names use hyphens, while Rust imports use underscores:
+
+```rust
+use ferric_rules::runtime::{Engine, RunLimit};
+```
+
+The lower-level packages follow the same convention (`ferric-rules-core`
+becomes `ferric_rules_core`, for example). Most applications should depend
+only on the facade.
 
 ## Example: in-app engagement rules
 
@@ -145,7 +164,7 @@ run the engine. The highest-priority matching rule fires and the `(show ...)`
 fact tells you what to do.
 
 ```rust
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rules = include_str!("rules/engagement.clp");
@@ -193,7 +212,7 @@ user's state:
 | Free, 8 sessions, has rated, low usage, 0 shares | `share-credit` | Nothing else matches |
 
 These scenarios are verified as tests in
-[`crates/ferric/tests/clips_compat.rs`](crates/ferric/tests/clips_compat.rs)
+[`crates/ferric-rules/tests/clips_compat.rs`](crates/ferric-rules/tests/clips_compat.rs)
 (look for `test_engagement_*`), so they won't silently go stale.
 
 ## Rust version support
@@ -211,8 +230,8 @@ cargo update --config 'resolver.incompatible-rust-versions="fallback"'
 cargo +1.75 check --workspace --locked
 cargo +1.75 check --workspace --all-features --locked
 cargo +1.75 test --workspace --locked
-cargo +1.75 check -p ferric-runtime --features serde --locked
-cargo +1.75 check -p ferric-cli --locked
+cargo +1.75 check -p ferric-rules-runtime --features serde --locked
+cargo +1.75 check -p ferric-rules-cli --locked
 ```
 
 ## License

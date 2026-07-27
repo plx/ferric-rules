@@ -1,0 +1,8 @@
+# Resolve the synchronized internal versions during first-release package
+# verification, before crates.io contains them. Cargo configuration is not
+# included in package archives; normalized manifests retain only registry
+# versions.
+[patch.crates-io]
+ferric-rules-core = { path = "crates/ferric-rules-core" }
+ferric-rules-parser = { path = "crates/ferric-rules-parser" }
+ferric-rules-runtime = { path = "crates/ferric-rules-runtime" }

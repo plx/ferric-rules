@@ -1,0 +1,79 @@
+//! Result types for Python bindings.
+
+use pyo3::prelude::*;
+
+/// Why execution stopped.
+#[pyclass(eq, eq_int, module = "ferric")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HaltReason {
+    /// The agenda was empty.
+    #[pyo3(name = "AGENDA_EMPTY")]
+    AgendaEmpty = 0,
+    /// The run limit was reached.
+    #[pyo3(name = "LIMIT_REACHED")]
+    LimitReached = 1,
+    /// A halt was requested.
+    #[pyo3(name = "HALT_REQUESTED")]
+    HaltRequested = 2,
+    /// Evaluation of the current activation's actions failed.
+    #[pyo3(name = "ACTION_ERROR")]
+    ActionError = 3,
+}
+
+impl From<ferric_rules_runtime::HaltReason> for HaltReason {
+    fn from(hr: ferric_rules_runtime::HaltReason) -> Self {
+        match hr {
+            ferric_rules_runtime::HaltReason::AgendaEmpty => Self::AgendaEmpty,
+            ferric_rules_runtime::HaltReason::LimitReached => Self::LimitReached,
+            ferric_rules_runtime::HaltReason::HaltRequested => Self::HaltRequested,
+            ferric_rules_runtime::HaltReason::ActionError => Self::ActionError,
+        }
+    }
+}
+
+/// Result of an execution run.
+#[pyclass(module = "ferric")]
+#[derive(Clone, Debug)]
+pub struct RunResult {
+    /// Number of rules fired.
+    #[pyo3(get)]
+    pub rules_fired: usize,
+    /// Why execution stopped.
+    #[pyo3(get)]
+    pub halt_reason: HaltReason,
+}
+
+#[pymethods]
+impl RunResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "RunResult(rules_fired={}, halt_reason={:?})",
+            self.rules_fired, self.halt_reason
+        )
+    }
+}
+
+impl From<ferric_rules_runtime::RunResult> for RunResult {
+    fn from(rr: ferric_rules_runtime::RunResult) -> Self {
+        Self {
+            rules_fired: rr.rules_fired,
+            halt_reason: rr.halt_reason.into(),
+        }
+    }
+}
+
+/// Information about a fired rule.
+#[pyclass(module = "ferric")]
+#[derive(Clone, Debug)]
+pub struct FiredRule {
+    /// Name of the rule that fired.
+    #[pyo3(get)]
+    pub rule_name: String,
+}
+
+#[pymethods]
+impl FiredRule {
+    fn __repr__(&self) -> String {
+        format!("FiredRule(rule_name={:?})", self.rule_name)
+    }
+}

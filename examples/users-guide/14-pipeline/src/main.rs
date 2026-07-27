@@ -2,8 +2,8 @@
 //!
 //! Source: docs/users-guide.md §15.
 
-use ferric::core::{Fact, Value};
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::core::{Fact, Value};
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn run(engine: &mut Engine, inputs: &[(i64, &str, f64)]) -> anyhow::Result<()> {
     engine.reset()?;

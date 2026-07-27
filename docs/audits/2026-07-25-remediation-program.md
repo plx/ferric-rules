@@ -76,18 +76,18 @@ Every program issue carries `program:production-readiness`, exactly one `priorit
 
 | Label | Meaning |
 |---|---|
-| `component:c-abi` | ferric-ffi C ABI |
+| `component:c-abi` | ferric-rules-ffi C ABI |
 | `component:ci` | Continuous integration workflows |
 | `component:compat-tool` | Compatibility scanner, harness, and runner |
-| `component:core` | ferric-core and shared model types |
+| `component:core` | ferric-rules-core and shared model types |
 | `component:cross-cutting` | Program-wide work spanning multiple implementation components |
 | `component:go` | Go binding |
 | `component:node` | N-API addon and TypeScript binding |
 | `component:packaging` | Published package and native artifact assembly |
-| `component:parser` | ferric-parser |
-| `component:pinned` | ferric-pinned worker layer |
+| `component:parser` | ferric-rules-parser |
+| `component:pinned` | ferric-rules-pinned worker layer |
 | `component:python` | Python/PyO3 binding |
-| `component:runtime` | ferric-runtime and facade behavior |
+| `component:runtime` | ferric-rules-runtime and facade behavior |
 
 ### Risk labels
 

@@ -14,7 +14,7 @@ Recommended commands:
 ```sh
 just bench-join
 just bench-waltz
-cargo bench -p ferric
+cargo bench -p ferric-rules
 ```
 
 When claiming an improvement:

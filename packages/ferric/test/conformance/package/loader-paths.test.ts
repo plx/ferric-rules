@@ -201,12 +201,12 @@ test("G-002 package native wrapper converts mocked constructor and static errors
 // G-002 manual napi loader: dev failure falls back to platform package
 // ---------------------------------------------------------------------------
 test("G-002 napi loader falls back from local node file to platform package", () => {
-  const napiPath = resolve(__dirname, "../../../../../crates/ferric-napi/index.js");
+  const napiPath = resolve(__dirname, "../../../../../crates/ferric-rules-napi/index.js");
   const releaseLoaderPath = resolve(
     __dirname,
     "../../../native/index.js",
   );
-  const devPath = join(dirname(napiPath), "ferric-napi.node");
+  const devPath = join(dirname(napiPath), "ferric-rules-napi.node");
   const targets = requireFromHere("../../../native/targets.json") as Array<{
     platform: string;
     arch: string;
@@ -263,7 +263,7 @@ test("G-002 napi loader falls back from local node file to platform package", ()
 // G-002 table-driven napi loader: package and binary versions must match
 // ---------------------------------------------------------------------------
 test("G-002 napi loader rejects native package version skew", () => {
-  const napiPath = resolve(__dirname, "../../../../../crates/ferric-napi/index.js");
+  const napiPath = resolve(__dirname, "../../../../../crates/ferric-rules-napi/index.js");
   const releaseLoaderPath = resolve(__dirname, "../../../native/index.js");
   const platformPackage = "@ferric-rules/napi-darwin-arm64";
   const fs = requireFromHere("node:fs") as typeof import("node:fs");
@@ -331,7 +331,7 @@ test("G-002 napi loader rejects native package version skew", () => {
 // G-002 table-driven napi loader failures produce deterministic messages
 // ---------------------------------------------------------------------------
 test("G-002 table-driven napi loader failure cases are explicit", () => {
-  const napiPath = resolve(__dirname, "../../../../../crates/ferric-napi/index.js");
+  const napiPath = resolve(__dirname, "../../../../../crates/ferric-rules-napi/index.js");
   const releaseLoaderPath = resolve(
     __dirname,
     "../../../native/index.js",
@@ -373,7 +373,7 @@ test("G-002 table-driven napi loader failure cases are explicit", () => {
     try {
       withModuleLoad(
         (request, parent, isMain, originalLoad) => {
-          if (item.devReturnsNull && request === join(dirname(napiPath), "ferric-napi.node")) {
+          if (item.devReturnsNull && request === join(dirname(napiPath), "ferric-rules-napi.node")) {
             return null;
           }
           return originalLoad(request, parent, isMain);

@@ -67,10 +67,10 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: |
-            crates/ferric-napi/package-lock.json
+            crates/ferric-rules-napi/package-lock.json
             packages/ferric/package-lock.json
       - name: Build native addon
-        working-directory: crates/ferric-napi
+        working-directory: crates/ferric-rules-napi
         run: |
           npm ci
           npm run build
@@ -83,7 +83,7 @@ jobs:
         run: >-
           node scripts/test-node-package-artifact.mjs
           --target ${{ matrix.target }}
-          --binary crates/ferric-napi/ferric-napi.node
+          --binary crates/ferric-rules-napi/ferric-rules-napi.node
           --artifacts-dir node-release-artifacts
       - uses: actions/upload-artifact@v4
         with:

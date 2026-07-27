@@ -17,7 +17,7 @@ CC="${CC:-clang}"
 tsan_toolchain="${FERRIC_TSAN_TOOLCHAIN:-nightly-2025-11-04}"
 tsan_target="x86_64-unknown-linux-gnu"
 outdir="$root/target/ffi-tsan"
-staticlib="$outdir/$tsan_target/ffi-dev/libferric_ffi.a"
+staticlib="$outdir/$tsan_target/ffi-dev/libferric_rules_ffi.a"
 binary="$outdir/diagnostic_concurrency"
 
 for command in "$CC" nm timeout; do
@@ -33,7 +33,7 @@ RUSTFLAGS="-Zsanitizer=thread -Zexternal-clangrt -Cforce-frame-pointers=yes" \
         --locked \
         -Zbuild-std=std,panic_abort \
         --target "$tsan_target" \
-        -p ferric-ffi \
+        -p ferric-rules-ffi \
         --profile ffi-dev \
         --crate-type staticlib
 
@@ -44,8 +44,8 @@ fi
 
 "$CC" -std=c11 -O1 -g -Wall -Wextra -Werror \
     -fsanitize=thread -fno-omit-frame-pointer -pthread \
-    -I crates/ferric-ffi \
-    crates/ferric-ffi/tests/c/diagnostic_concurrency.c \
+    -I crates/ferric-rules-ffi \
+    crates/ferric-rules-ffi/tests/c/diagnostic_concurrency.c \
     "$staticlib" \
     -ldl -lm \
     -o "$binary"

@@ -11,12 +11,12 @@ fi
 CRITERION_FLAGS=(--noplot --sample-size 20 --warm-up-time 1 --measurement-time 1)
 
 echo "==> Running benchmark suites for threshold evaluation"
-cargo bench -p ferric --bench engine_bench -- "${CRITERION_FLAGS[@]}"
-cargo bench -p ferric --bench waltz_bench -- "${CRITERION_FLAGS[@]}"
-cargo bench -p ferric --bench manners_bench -- "${CRITERION_FLAGS[@]}"
-cargo bench -p ferric --bench join_bench -- "${CRITERION_FLAGS[@]}"
-cargo bench -p ferric --bench churn_bench -- "${CRITERION_FLAGS[@]}"
-cargo bench -p ferric --bench negation_bench -- "${CRITERION_FLAGS[@]}"
+cargo bench -p ferric-rules --bench engine_bench -- "${CRITERION_FLAGS[@]}"
+cargo bench -p ferric-rules --bench waltz_bench -- "${CRITERION_FLAGS[@]}"
+cargo bench -p ferric-rules --bench manners_bench -- "${CRITERION_FLAGS[@]}"
+cargo bench -p ferric-rules --bench join_bench -- "${CRITERION_FLAGS[@]}"
+cargo bench -p ferric-rules --bench churn_bench -- "${CRITERION_FLAGS[@]}"
+cargo bench -p ferric-rules --bench negation_bench -- "${CRITERION_FLAGS[@]}"
 
 report_dir="target"
 report_json="${report_dir}/bench-threshold-report.json"

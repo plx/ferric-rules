@@ -52,7 +52,7 @@ jobs:
           done
 
       - name: Build ferric
-        run: cargo build --release -p ferric-cli
+        run: cargo build --release -p ferric-rules-cli
 
       - name: Run compat scan
         run: uv run --project tools/ferric-tools ferric-compat-scan

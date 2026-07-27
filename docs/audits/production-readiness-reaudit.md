@@ -219,7 +219,7 @@ Build the Go FFI and verify committed headers as CI does:
 ```sh
 just build-go-ffi
 git diff --exit-code -- \
-  crates/ferric-ffi/ferric.h \
+  crates/ferric-rules-ffi/ferric.h \
   bindings/go/internal/ffi/lib/ferric.h
 ```
 
@@ -366,7 +366,7 @@ Explicitly retain regression fixtures for:
 Run the maintained focused suite and external-example assessment:
 
 ```sh
-cargo test -p ferric --test clips_compat -- --nocapture
+cargo test -p ferric-rules --test clips_compat -- --nocapture
 just compat-scan
 just harness-gen
 just compat-run
@@ -579,7 +579,7 @@ For Python, Node, and Go, cover:
 Build wheels, install them into fresh environments, and run:
 
 ```sh
-cd crates/ferric-python
+cd crates/ferric-rules-python
 uv sync --frozen
 uv run maturin build --release
 uv run pytest tests/ -v
@@ -604,7 +604,7 @@ Inspect wheels for unintended shared-library dependencies and install each with
 Build the native addon and package using clean installs:
 
 ```sh
-cd crates/ferric-napi
+cd crates/ferric-rules-napi
 npm ci
 npm run build
 
@@ -705,10 +705,10 @@ Run Miri on crates and tests that do not require unsupported FFI operations:
 ```sh
 rustup toolchain install nightly --component miri
 cargo +nightly miri setup
-cargo +nightly miri test -p ferric-core
-cargo +nightly miri test -p ferric-parser
-cargo +nightly miri test -p ferric-runtime
-cargo +nightly miri test -p ferric-pinned
+cargo +nightly miri test -p ferric-rules-core
+cargo +nightly miri test -p ferric-rules-parser
+cargo +nightly miri test -p ferric-rules-runtime
+cargo +nightly miri test -p ferric-rules-pinned
 ```
 
 Use deterministic proptest seeds and reduced case counts only when necessary for
@@ -797,7 +797,7 @@ not `cargo test`, debug mode, or `cargo test --bench`.
 Run:
 
 ```sh
-cargo bench -p ferric
+cargo bench -p ferric-rules
 just bench-thresholds
 just scaling-check
 just bench-compare
@@ -908,7 +908,7 @@ Build release packages from the source archive in a clean environment.
 - Run `cargo package`/`cargo publish --dry-run` in dependency order.
 - Extract each `.crate`, build it without workspace-relative files, and run its
   available tests/examples.
-- Install the CLI with `cargo install --path crates/ferric-cli --locked` and
+- Install the CLI with `cargo install --path crates/ferric-rules-cli --locked` and
   smoke `version`, `check`, `run`, REPL EOF, invalid file, and JSON diagnostics.
 - Inspect stripped release binaries, dynamic dependencies, licenses, and version
   metadata.

@@ -748,7 +748,7 @@ consistent matching regardless of input source.
 
 ## 16.13 External Interface Contracts (FFI + Embedding)
 
-Ferric provides a C-compatible FFI layer (`ferric-ffi`) for embedding into
+Ferric provides a C-compatible FFI layer (`ferric-rules-ffi`) for embedding into
 C, C++, Swift, Kotlin (NDK), and other languages with C FFI support.
 
 ### Engine Lifecycle

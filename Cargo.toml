@@ -1,15 +1,15 @@
 [workspace]
 members = [
-    "crates/ferric",
-    "crates/ferric-bench-gen",
-    "crates/ferric-cli",
-    "crates/ferric-core",
-    "crates/ferric-ffi",
-    "crates/ferric-napi",
-    "crates/ferric-parser",
-    "crates/ferric-pinned",
-    "crates/ferric-runtime",
-    "crates/ferric-python",
+    "crates/ferric-rules",
+    "crates/ferric-rules-bench-gen",
+    "crates/ferric-rules-cli",
+    "crates/ferric-rules-core",
+    "crates/ferric-rules-ffi",
+    "crates/ferric-rules-napi",
+    "crates/ferric-rules-parser",
+    "crates/ferric-rules-pinned",
+    "crates/ferric-rules-runtime",
+    "crates/ferric-rules-python",
     "examples/users-guide/*",
     "tools/users-guide-sync",
 ]
@@ -20,7 +20,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/prb/ferric-rules"
+repository = "https://github.com/plx/ferric-rules"
+readme = "README.md"
 
 [workspace.dependencies]
 # Error handling
@@ -83,17 +84,18 @@ tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "registry"] }
 tracing-chrome = "0.7"
 
-# Apple Objective-C runtime (Apple targets only, used by ferric-pinned for autorelease pools)
+# Apple Objective-C runtime (Apple targets only, used by ferric-rules-pinned for autorelease pools)
 objc2 = { version = "0.6" }
 
-# Internal crates
-ferric = { path = "crates/ferric" }
-ferric-core = { path = "crates/ferric-core" }
-ferric-ffi = { path = "crates/ferric-ffi" }
-ferric-cli = { path = "crates/ferric-cli" }
-ferric-parser = { path = "crates/ferric-parser" }
-ferric-pinned = { path = "crates/ferric-pinned" }
-ferric-runtime = { path = "crates/ferric-runtime" }
+# Internal crates. Exact synchronized versions are required because Cargo
+# removes `path` when these packages are published to a registry.
+ferric-rules = { version = "=0.1.0", path = "crates/ferric-rules" }
+ferric-rules-core = { version = "=0.1.0", path = "crates/ferric-rules-core" }
+ferric-rules-ffi = { version = "=0.1.0", path = "crates/ferric-rules-ffi" }
+ferric-rules-cli = { version = "=0.1.0", path = "crates/ferric-rules-cli" }
+ferric-rules-parser = { version = "=0.1.0", path = "crates/ferric-rules-parser" }
+ferric-rules-pinned = { version = "=0.1.0", path = "crates/ferric-rules-pinned" }
+ferric-rules-runtime = { version = "=0.1.0", path = "crates/ferric-rules-runtime" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

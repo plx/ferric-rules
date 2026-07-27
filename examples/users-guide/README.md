@@ -47,7 +47,7 @@ Each example folder follows the same shape:
 
 ```
 NN-slug/
-├── Cargo.toml         # binary crate that depends on the `ferric` facade
+├── Cargo.toml         # binary crate that depends on the `ferric-rules` facade
 ├── README.md          # links back to the matching guide section
 ├── justfile           # `build-example` / `check-example` recipes
 ├── rules/             # `.clp` rule sources, loaded via include_str!

@@ -7,7 +7,7 @@ Ferric is designed for embedding. The key design constraint is that each engine 
 
 ## Runtime Shape
 
-The core host-facing type is `Engine` from `ferric-runtime`, re-exported through the public `ferric` facade crate.
+The core host-facing type is `Engine` from `ferric-rules-runtime`, re-exported through the public `ferric-rules` facade crate.
 
 An engine owns:
 
@@ -28,11 +28,11 @@ The repository includes multiple host-facing layers:
 
 | Layer                  | Purpose                                                  |
 | ---------------------- | -------------------------------------------------------- |
-| `ferric`               | Public Rust facade crate.                                |
-| `ferric-runtime`       | Engine, execution environment, value types, and routing. |
-| `ferric-ffi`           | C ABI over the runtime.                                  |
+| `ferric-rules`         | Public Rust facade crate.                                |
+| `ferric-rules-runtime`       | Engine, execution environment, value types, and routing. |
+| `ferric-rules-ffi`           | C ABI over the runtime.                                  |
 | `bindings/go`          | Go binding on top of the FFI.                            |
-| `crates/ferric-python` | PyO3 extension module.                                   |
+| `crates/ferric-rules-python` | PyO3 extension module.                                   |
 | `packages/ferric`      | TypeScript package work.                                 |
 
 Future embedding targets can reuse the same runtime and FFI boundary.
@@ -40,7 +40,7 @@ Future embedding targets can reuse the same runtime and FFI boundary.
 ## Embedding Pattern
 
 ```rust
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::runtime::{Engine, RunLimit};
 
 let mut engine = Engine::with_rules(include_str!("rules.clp"))?;
 

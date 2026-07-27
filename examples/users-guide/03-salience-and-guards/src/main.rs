@@ -2,8 +2,8 @@
 //!
 //! Source: docs/users-guide.md §4.
 
-use ferric::core::Value;
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::core::Value;
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn classify(engine: &mut Engine, smoke: &str, temperature: f64) -> anyhow::Result<Option<String>> {
     engine.reset()?;
@@ -18,7 +18,7 @@ fn classify(engine: &mut Engine, smoke: &str, temperature: f64) -> anyhow::Resul
     engine.run(RunLimit::Unlimited)?;
 
     for (_, fact) in engine.find_facts("alert")? {
-        if let ferric::core::Fact::Ordered(of) = fact {
+        if let ferric_rules::core::Fact::Ordered(of) = fact {
             if let Some(Value::Symbol(sym)) = of.fields.first() {
                 if let Some(name) = engine.resolve_symbol(*sym) {
                     return Ok(Some(name.to_string()));

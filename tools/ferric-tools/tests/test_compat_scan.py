@@ -454,7 +454,7 @@ def test_generated_verifier_executes_after_trailing_module_without_changing_feat
     composed = root / "composed.clp"
     composed.write_bytes(plan.source_bytes + b"\n" + plan.harness_bytes)
 
-    command = ["cargo", "run", "--quiet", "-p", "ferric-cli", "--", "run"]
+    command = ["cargo", "run", "--quiet", "-p", "ferric-rules-cli", "--", "run"]
     baseline = subprocess.run(
         [*command, str(source)],
         cwd=repo_root(),

@@ -34,7 +34,9 @@ The design addresses both via a two-layer architecture.
 
 A synchronous class exported from the native addon. All methods execute on the calling thread. This is the only layer that touches Rust code.
 
-Created via a new Rust crate (`ferric-napi`) that depends on the `ferric` facade crate directly — no FFI indirection. napi-rs handles the JS ↔ Rust boundary.
+Created via a Rust crate (`ferric-rules-napi`) that depends on
+`ferric-rules-core` and `ferric-rules-runtime` directly—there is no FFI
+indirection. napi-rs handles the JS ↔ Rust boundary.
 
 ### Layer 2: `EngineHandle` / `EnginePool` (pure TypeScript)
 
@@ -49,7 +51,7 @@ This separation means:
 ## Crate Structure
 
 ```
-crates/ferric-napi/
+crates/ferric-rules-napi/
 ├── Cargo.toml          # depends on ferric, napi, napi-derive
 ├── src/
 │   ├── lib.rs          # #[napi] module registration
@@ -866,12 +868,12 @@ const score = await pool.do("pricing", async (engine) => {
 
 ### Engine Ownership in napi-rs
 
-The napi-rs `Engine` class wraps a Rust `Option<ferric::Engine>`:
+The napi-rs `Engine` class wraps a Rust `Option<ferric_rules::Engine>`:
 
 ```rust
 #[napi]
 pub struct Engine {
-    inner: Option<ferric::Engine>,
+    inner: Option<ferric_rules::Engine>,
 }
 ```
 

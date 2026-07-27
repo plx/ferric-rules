@@ -19,7 +19,7 @@ packages below:
 | `win32-x64-msvc` | `@ferric-rules/napi-win32-x64-msvc` | Windows x64 |
 
 Each native package contains only its package metadata, README, and
-`ferric-napi.node`. `native/targets.json` is the source of truth used by both
+`ferric-rules-napi.node`. `native/targets.json` is the source of truth used by both
 the loader and release assembly. FR-DIST-002 owns any expansion or refinement
 of this matrix.
 

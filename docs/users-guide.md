@@ -38,17 +38,17 @@ The facade crate re-exports everything you need:
 ```toml
 # Cargo.toml
 [dependencies]
-ferric = "0.1"
+ferric-rules = "0.1"
 ```
 
 ```rust
-use ferric::runtime::{Engine, EngineConfig, RunLimit};
+use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 ```
 
 If you need engine serialization (see §13), turn on the `serde` feature:
 
 ```toml
-ferric = { version = "0.1", features = ["serde"] }
+ferric-rules = { version = "0.1", features = ["serde"] }
 ```
 
 ---
@@ -61,7 +61,7 @@ Here is the smallest useful program: one rule, one fact, one printout.
 
 <!-- example: 01-minimal-embedding/src/main.rs -->
 ```rust
-use ferric::runtime::{Engine, RunLimit};
+use ferric_rules::runtime::{Engine, RunLimit};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = Engine::with_rules(
@@ -229,7 +229,7 @@ fn classify(engine: &mut Engine, smoke: &str, temperature: f64) -> anyhow::Resul
     engine.run(RunLimit::Unlimited)?;
 
     for (_, fact) in engine.find_facts("alert")? {
-        if let ferric::core::Fact::Ordered(of) = fact {
+        if let ferric_rules::core::Fact::Ordered(of) = fact {
             if let Some(Value::Symbol(sym)) = of.fields.first() {
                 if let Some(name) = engine.resolve_symbol(*sym) {
                     return Ok(Some(name.to_string()));
@@ -820,17 +820,17 @@ A non-exhaustive list worth internalizing:
 
 ## 17. Beyond Rust: other language bindings
 
-Ferric's engine core is reachable from other languages via `ferric-ffi`
+Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
 (C ABI) and the higher-level wrappers built on it:
 
-- **C / C++ / Swift / Kotlin**: link against `libferric_ffi` and include
+- **C / C++ / Swift / Kotlin**: link against `libferric_rules_ffi` and include
   the generated `ferric.h`. See [`compatibility.md`](compatibility.md)
   §16.13 for the C contract.
 - **Go**: `bindings/go` provides an idiomatic façade (`Engine`,
   `Coordinator`, `Manager`) plus a Temporal activity wrapper.
-- **Python**: `crates/ferric-python` ships a PyO3 extension module; build
+- **Python**: `crates/ferric-rules-python` ships a PyO3 extension module; build
   it with `maturin` and `import ferric` from Python.
-- **CLI**: the `ferric` binary (`crates/ferric-cli`) runs `.clp` files
+- **CLI**: the `ferric` binary (`crates/ferric-rules-cli`) runs `.clp` files
   batch-style or drops you into a REPL. `ferric check [--json] file.clp`
   validates without running; `ferric run` executes.
 

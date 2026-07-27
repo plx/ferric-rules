@@ -717,14 +717,14 @@ def generate_workloads(root: str, workload_dir: str) -> None:
         "run",
         "--release",
         "-p",
-        "ferric-bench-gen",
+        "ferric-rules-bench-gen",
         "--",
         "--output-dir",
         workload_dir,
     ]
     result = subprocess.run(cmd, capture_output=False, cwd=root)
     if result.returncode != 0:
-        console.print(f"[red]error:[/] ferric-bench-gen failed with code {result.returncode}")
+        console.print(f"[red]error:[/] ferric-rules-bench-gen failed with code {result.returncode}")
         raise typer.Exit(1)
 
 
@@ -856,7 +856,9 @@ def main(
     workload_dir: Annotated[
         str | None, typer.Option(help="Directory for .clp workload files")
     ] = None,
-    skip_workload_gen: Annotated[bool, typer.Option(help="Skip running ferric-bench-gen")] = False,
+    skip_workload_gen: Annotated[
+        bool, typer.Option(help="Skip running ferric-rules-bench-gen")
+    ] = False,
 ) -> None:
     """Collect Criterion benchmark results into a performance manifest."""
     root = repo_root()

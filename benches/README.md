@@ -4,13 +4,13 @@ Benchmarks follow Rust conventions and live in individual crate `benches/` direc
 
 ## Main benchmark suite
 
-The `ferric` facade crate contains the primary benchmark suite covering the full
+The `ferric-rules` facade crate contains the primary benchmark suite covering the full
 engine lifecycle (create, load, run, reset).
 
 **Run the benchmarks:**
 
 ```sh
-cargo bench -p ferric
+cargo bench -p ferric-rules
 ```
 
 **Criterion HTML reports** are written to `target/criterion/` and can be opened in
@@ -23,7 +23,7 @@ open target/criterion/report/index.html
 **Test mode** (verifies benchmarks execute without running full measurement):
 
 ```sh
-cargo bench -p ferric --bench engine_bench -- --test
+cargo bench -p ferric-rules --bench engine_bench -- --test
 ```
 
 ## Benchmark inventory
@@ -73,8 +73,8 @@ retraction cycles.
 
 ## Adding new benchmarks
 
-1. Add your benchmark functions to `crates/ferric/benches/engine_bench.rs`, or
-   create a new `[[bench]]` entry in `crates/ferric/Cargo.toml` for a separate file.
+1. Add your benchmark functions to `crates/ferric-rules/benches/engine_bench.rs`, or
+   create a new `[[bench]]` entry in `crates/ferric-rules/Cargo.toml` for a separate file.
 2. Register new benchmark functions in the `criterion_group!` macro at the bottom
    of the file.
 3. Keep benchmarks focused on stable, representative workloads so regressions are

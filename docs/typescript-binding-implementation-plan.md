@@ -91,7 +91,7 @@ Unify value conversion across worker boundaries (`B-002`, `B-004`, `N-05`).
 - `packages/ferric/src/engine-pool.ts`
 - `packages/ferric/src/worker.ts`
 - `packages/ferric/src/pool-worker.ts`
-- potentially `crates/ferric-napi/src/value.rs` (if native marker compatibility needed)
+- potentially `crates/ferric-rules-napi/src/value.rs` (if native marker compatibility needed)
 
 ### Tasks
 1. Enforce canonical symbol wire shape `{ __type: "FerricSymbol", value: string }`.
@@ -117,7 +117,7 @@ Unify value conversion across worker boundaries (`B-002`, `B-004`, `N-05`).
 Make sync + worker error hierarchy deterministic (`C-001`..`C-005`).
 
 ### Files to touch
-- `crates/ferric-napi/src/error.rs`
+- `crates/ferric-rules-napi/src/error.rs`
 - `packages/ferric/src/types.ts`
 - `packages/ferric/src/worker.ts`
 - `packages/ferric/src/pool-worker.ts`
@@ -250,7 +250,7 @@ Implement `[Symbol.dispose]` support (`A-005`).
 
 ### Files to touch
 - `packages/ferric/src/native.ts` (or wrapper layer)
-- optional `crates/ferric-napi` if needed
+- optional `crates/ferric-rules-napi` if needed
 
 ### Tasks
 1. Ensure `Engine.prototype[Symbol.dispose]` exists.

@@ -45,7 +45,7 @@ Thresholds will be added once baseline measurements are established.
 
 | Job | Trigger | Mode | Blocking? |
 |-----|---------|------|-----------|
-| `bench-smoke` | Every push / PR | `cargo bench -p ferric -- --test` | Yes |
+| `bench-smoke` | Every push / PR | `cargo bench -p ferric-rules -- --test` | Yes |
 | `bench-thresholds` | Every push / PR | `./scripts/bench-thresholds.sh` | Yes |
 
 `bench-thresholds` publishes:
@@ -64,8 +64,8 @@ Run the same threshold gate locally:
 For deeper analysis of intentional performance work, use baseline comparisons:
 
 ```sh
-cargo bench -p ferric --bench engine_bench -- --save-baseline before
-cargo bench -p ferric --bench engine_bench -- --baseline before
+cargo bench -p ferric-rules --bench engine_bench -- --save-baseline before
+cargo bench -p ferric-rules --bench engine_bench -- --baseline before
 ```
 
 ## Anti-Flake Guidance
