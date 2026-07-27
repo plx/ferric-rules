@@ -16,7 +16,7 @@ acceptable license is selected for notice generation.
 
 ## License Overview
 
-- MIT License: 218
+- MIT License: 209
 - Apache License 2.0: 4
 - Boost Software License 1.0: 2
 - ISC License: 1
@@ -581,8 +581,8 @@ DEALINGS IN THE SOFTWARE.
 Used by:
 
 - lazy_static 1.5.0 (`MIT OR Apache-2.0`) - https://github.com/rust-lang-nursery/lazy-static.rs
-- rayon-core 1.13.0 (`MIT OR Apache-2.0`) - https://github.com/rayon-rs/rayon
-- rayon 1.11.0 (`MIT OR Apache-2.0`) - https://github.com/rayon-rs/rayon
+- rayon-core 1.12.1 (`MIT OR Apache-2.0`) - https://github.com/rayon-rs/rayon
+- rayon 1.10.0 (`MIT OR Apache-2.0`) - https://github.com/rayon-rs/rayon
 
 ```text
 Copyright (c) 2010 The Rust Project Developers
@@ -618,13 +618,13 @@ DEALINGS IN THE SOFTWARE.
 Used by:
 
 - cfg-if 1.0.4 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/cfg-if
-- js-sys 0.3.88 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys
+- js-sys 0.3.94 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys
 - wait-timeout 0.2.1 (`MIT OR Apache-2.0`) - https://github.com/alexcrichton/wait-timeout
-- wasm-bindgen-macro-support 0.2.111 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro-support
-- wasm-bindgen-macro 0.2.111 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
-- wasm-bindgen-shared 0.2.111 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
-- wasm-bindgen 0.2.111 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen
-- web-sys 0.3.88 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
+- wasm-bindgen-macro-support 0.2.117 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro-support
+- wasm-bindgen-macro 0.2.117 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
+- wasm-bindgen-shared 0.2.117 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
+- wasm-bindgen 0.2.117 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen
+- web-sys 0.3.94 (`MIT OR Apache-2.0`) - https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
 
 ```text
 Copyright (c) 2014 Alex Crichton
@@ -730,12 +730,12 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- bitflags 2.10.0 (`MIT OR Apache-2.0`) - https://github.com/bitflags/bitflags
-- log 0.4.29 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/log
+- bitflags 2.13.1 (`MIT OR Apache-2.0`) - https://github.com/bitflags/bitflags
+- log 0.4.33 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/log
 - num-traits 0.2.19 (`MIT OR Apache-2.0`) - https://github.com/rust-num/num-traits
-- regex-automata 0.4.14 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/regex
-- regex-syntax 0.8.9 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/regex
-- regex 1.12.3 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/regex
+- regex-automata 0.4.16 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/regex
+- regex-syntax 0.8.11 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/regex
+- regex 1.13.1 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/regex
 
 ```text
 Copyright (c) 2014 The Rust Project Developers
@@ -805,42 +805,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- libc 0.2.181 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/libc
-
-```text
-Copyright (c) 2014-2020 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-
-## MIT License (`MIT`)
-
-Used by:
-
-- either 1.15.0 (`MIT OR Apache-2.0`) - https://github.com/rayon-rs/either
+- either 1.17.0 (`MIT OR Apache-2.0`) - https://github.com/rayon-rs/either
 - itertools 0.10.5 (`MIT OR Apache-2.0`) - https://github.com/rust-itertools/itertools
 
 ```text
@@ -876,7 +841,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- tempfile 3.25.0 (`MIT OR Apache-2.0`) - https://github.com/Stebalien/tempfile
+- tempfile 3.15.0 (`MIT OR Apache-2.0`) - https://github.com/Stebalien/tempfile
 
 ```text
 Copyright (c) 2015 Steven Allen
@@ -911,9 +876,10 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
+- heck 0.4.1 (`MIT OR Apache-2.0`) - https://github.com/withoutboats/heck
 - heck 0.5.0 (`MIT OR Apache-2.0`) - https://github.com/withoutboats/heck
 - unicode-segmentation 1.12.0 (`MIT OR Apache-2.0`) - https://github.com/unicode-rs/unicode-segmentation
-- unicode-width 0.2.2 (`MIT OR Apache-2.0`) - https://github.com/unicode-rs/unicode-width
+- unicode-width 0.1.14 (`MIT OR Apache-2.0`) - https://github.com/unicode-rs/unicode-width
 
 ```text
 Copyright (c) 2015 The Rust Project Developers
@@ -1041,7 +1007,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- proptest 1.10.0 (`MIT OR Apache-2.0`) - https://github.com/proptest-rs/proptest
+- proptest 1.6.0 (`MIT OR Apache-2.0`) - https://github.com/proptest-rs/proptest
 - rusty-fork 0.3.1 (`MIT OR Apache-2.0`) - https://github.com/altsysrq/rusty-fork
 
 ```text
@@ -1114,7 +1080,7 @@ Used by:
 
 - lock_api 0.4.14 (`MIT OR Apache-2.0`) - https://github.com/Amanieu/parking_lot
 - rustc_version 0.4.1 (`MIT OR Apache-2.0`) - https://github.com/djc/rustc-version-rs
-- thread_local 1.1.9 (`MIT OR Apache-2.0`) - https://github.com/Amanieu/thread_local-rs
+- thread_local 1.1.10 (`MIT OR Apache-2.0`) - https://github.com/Amanieu/thread_local-rs
 
 ```text
 Copyright (c) 2016 The Rust Project Developers
@@ -1149,7 +1115,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- indexmap 2.13.0 (`Apache-2.0 OR MIT`) - https://github.com/indexmap-rs/indexmap
+- indexmap 2.11.4 (`Apache-2.0 OR MIT`) - https://github.com/indexmap-rs/indexmap
 
 ```text
 Copyright (c) 2016--2017
@@ -1456,7 +1422,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- autocfg 1.5.0 (`Apache-2.0 OR MIT`) - https://github.com/cuviper/autocfg
+- autocfg 1.5.1 (`Apache-2.0 OR MIT`) - https://github.com/cuviper/autocfg
 
 ```text
 Copyright (c) 2018 Josh Stone
@@ -1491,7 +1457,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- smallvec 1.15.1 (`MIT OR Apache-2.0`) - https://github.com/servo/rust-smallvec
+- smallvec 1.15.2 (`MIT OR Apache-2.0`) - https://github.com/servo/rust-smallvec
 
 ```text
 Copyright (c) 2018 The Servo Project Developers
@@ -1561,46 +1527,10 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- getrandom 0.3.4 (`MIT OR Apache-2.0`) - https://github.com/rust-random/getrandom
+- getrandom 0.2.17 (`MIT OR Apache-2.0`) - https://github.com/rust-random/getrandom
 
 ```text
-Copyright (c) 2018-2025 The rust-random Project Developers
-Copyright (c) 2014 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-```
-
-## MIT License (`MIT`)
-
-Used by:
-
-- getrandom 0.4.1 (`MIT OR Apache-2.0`) - https://github.com/rust-random/getrandom
-
-```text
-Copyright (c) 2018-2026 The rust-random Project Developers
+Copyright (c) 2018-2024 The rust-random Project Developers
 Copyright (c) 2014 The Rust Project Developers
 
 Permission is hereby granted, free of charge, to any
@@ -1761,7 +1691,7 @@ SOFTWARE.
 
 Used by:
 
-- bumpalo 3.20.2 (`MIT OR Apache-2.0`) - https://github.com/fitzgen/bumpalo
+- bumpalo 3.20.3 (`MIT OR Apache-2.0`) - https://github.com/fitzgen/bumpalo
 
 ```text
 Copyright (c) 2019 Nick Fitzgerald
@@ -1833,7 +1763,7 @@ Used by:
 
 - tracing-core 0.1.36 (`MIT`) - https://github.com/tokio-rs/tracing
 - tracing-log 0.2.0 (`MIT`) - https://github.com/tokio-rs/tracing
-- tracing-subscriber 0.3.22 (`MIT`) - https://github.com/tokio-rs/tracing
+- tracing-subscriber 0.3.23 (`MIT`) - https://github.com/tokio-rs/tracing
 - tracing 0.1.44 (`MIT`) - https://github.com/tokio-rs/tracing
 
 ```text
@@ -2084,22 +2014,23 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- anstream 0.6.21 (`MIT OR Apache-2.0`) - https://github.com/rust-cli/anstyle.git
-- anstyle-parse 0.2.7 (`MIT OR Apache-2.0`) - https://github.com/rust-cli/anstyle.git
+- anstream 1.0.0 (`MIT OR Apache-2.0`) - https://github.com/rust-cli/anstyle.git
+- anstyle-parse 1.0.0 (`MIT OR Apache-2.0`) - https://github.com/rust-cli/anstyle.git
 - anstyle-query 1.1.5 (`MIT OR Apache-2.0`) - https://github.com/rust-cli/anstyle.git
 - anstyle-wincon 3.0.11 (`MIT OR Apache-2.0`) - https://github.com/rust-cli/anstyle.git
-- anstyle 1.0.13 (`MIT OR Apache-2.0`) - https://github.com/rust-cli/anstyle.git
-- clap 4.5.60 (`MIT OR Apache-2.0`) - https://github.com/clap-rs/clap
-- clap_builder 4.5.60 (`MIT OR Apache-2.0`) - https://github.com/clap-rs/clap
-- clap_derive 4.5.55 (`MIT OR Apache-2.0`) - https://github.com/clap-rs/clap
-- clap_lex 1.0.0 (`MIT OR Apache-2.0`) - https://github.com/clap-rs/clap
-- colorchoice 1.0.4 (`MIT OR Apache-2.0`) - https://github.com/rust-cli/anstyle.git
+- anstyle 1.0.14 (`MIT OR Apache-2.0`) - https://github.com/rust-cli/anstyle.git
+- clap 4.5.61 (`MIT OR Apache-2.0`) - https://github.com/clap-rs/clap
+- clap_builder 4.5.61 (`MIT OR Apache-2.0`) - https://github.com/clap-rs/clap
+- clap_derive 4.5.61 (`MIT OR Apache-2.0`) - https://github.com/clap-rs/clap
+- clap_lex 1.0.1 (`MIT OR Apache-2.0`) - https://github.com/clap-rs/clap
+- colorchoice 1.0.5 (`MIT OR Apache-2.0`) - https://github.com/rust-cli/anstyle.git
 - is_terminal_polyfill 1.70.2 (`MIT OR Apache-2.0`) - https://github.com/polyfill-rs/is_terminal_polyfill
 - once_cell_polyfill 1.70.2 (`MIT OR Apache-2.0`) - https://github.com/polyfill-rs/once_cell_polyfill
-- serde_spanned 1.0.4 (`MIT OR Apache-2.0`) - https://github.com/toml-rs/toml
-- toml 0.9.12+spec-1.1.0 (`MIT OR Apache-2.0`) - https://github.com/toml-rs/toml
-- toml_datetime 0.7.5+spec-1.1.0 (`MIT OR Apache-2.0`) - https://github.com/toml-rs/toml
-- toml_parser 1.0.9+spec-1.1.0 (`MIT OR Apache-2.0`) - https://github.com/toml-rs/toml
+- serde_spanned 0.6.9 (`MIT OR Apache-2.0`) - https://github.com/toml-rs/toml
+- toml 0.8.23 (`MIT OR Apache-2.0`) - https://github.com/toml-rs/toml
+- toml_datetime 0.6.11 (`MIT OR Apache-2.0`) - https://github.com/toml-rs/toml
+- toml_edit 0.22.27 (`MIT OR Apache-2.0`) - https://github.com/toml-rs/toml
+- toml_write 0.1.2 (`MIT OR Apache-2.0`) - https://github.com/toml-rs/toml
 
 ```text
 Copyright (c) Individual contributors
@@ -2128,10 +2059,45 @@ SOFTWARE.
 
 Used by:
 
-- rand 0.9.2 (`MIT OR Apache-2.0`) - https://github.com/rust-random/rand
-- rand_chacha 0.9.0 (`MIT OR Apache-2.0`) - https://github.com/rust-random/rand
-- rand_core 0.9.5 (`MIT OR Apache-2.0`) - https://github.com/rust-random/rand
-- rand_xorshift 0.4.0 (`MIT OR Apache-2.0`) - https://github.com/rust-random/rngs
+- libc 0.2.189 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/libc
+
+```text
+Copyright (c) The Rust Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+```
+
+## MIT License (`MIT`)
+
+Used by:
+
+- rand 0.8.7 (`MIT OR Apache-2.0`) - https://github.com/rust-random/rand
+- rand_chacha 0.3.1 (`MIT OR Apache-2.0`) - https://github.com/rust-random/rand
+- rand_core 0.6.4 (`MIT OR Apache-2.0`) - https://github.com/rust-random/rand
+- rand_xorshift 0.3.0 (`MIT OR Apache-2.0`) - https://github.com/rust-random/rngs
 
 ```text
 Copyright 2018 Developers of the Rand project
@@ -2167,8 +2133,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- zerocopy-derive 0.8.39 (`BSD-2-Clause OR Apache-2.0 OR MIT`) - https://github.com/google/zerocopy
-- zerocopy 0.8.39 (`BSD-2-Clause OR Apache-2.0 OR MIT`) - https://github.com/google/zerocopy
+- zerocopy 0.8.55 (`BSD-2-Clause OR Apache-2.0 OR MIT`) - https://github.com/google/zerocopy
 
 ```text
 Copyright 2023 The Fuchsia Authors
@@ -2204,8 +2169,8 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- rmp-serde 1.3.1 (`MIT`) - https://github.com/3Hren/msgpack-rust
-- rmp 0.8.15 (`MIT`) - https://github.com/3Hren/msgpack-rust
+- rmp-serde 1.3.0 (`MIT`) - https://github.com/3Hren/msgpack-rust
+- rmp 0.8.14 (`MIT`) - https://github.com/3Hren/msgpack-rust
 
 ```text
 MIT License
@@ -2267,7 +2232,7 @@ SOFTWARE.
 
 Used by:
 
-- cfg_aliases 0.2.1 (`MIT`) - https://github.com/katharostech/cfg_aliases
+- cfg_aliases 0.1.1 (`MIT`) - https://github.com/katharostech/cfg_aliases
 
 ```text
 MIT License
@@ -2331,7 +2296,7 @@ Used by:
 - users-guide-14-pipeline 0.1.0 (`MIT OR Apache-2.0`)
 - users-guide-sync 0.1.0 (`MIT OR Apache-2.0`)
 - anes 0.1.6 (`MIT OR Apache-2.0`) - https://github.com/zrzka/anes-rs
-- napi-build 2.3.1 (`MIT`) - https://github.com/napi-rs/napi-rs
+- napi-build 2.1.3 (`MIT`) - https://github.com/napi-rs/napi-rs
 - napi-derive-backend 1.0.75 (`MIT`) - https://github.com/napi-rs/napi-rs
 - napi-derive 2.16.13 (`MIT`) - https://github.com/napi-rs/napi-rs
 - napi-sys 2.4.0 (`MIT`) - https://github.com/napi-rs/napi-rs
@@ -2341,31 +2306,19 @@ Used by:
 - plotters-backend 0.3.7 (`MIT`) - https://github.com/plotters-rs/plotters
 - plotters-svg 0.3.7 (`MIT`) - https://github.com/plotters-rs/plotters.git
 - plotters 0.3.7 (`MIT`) - https://github.com/plotters-rs/plotters
-- r-efi 5.3.0 (`MIT OR Apache-2.0 OR LGPL-2.1-or-later`) - https://github.com/r-efi/r-efi
-- wasip2 1.0.2+wasi-0.2.9 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/bytecodealliance/wasi-rs
-- wasip3 0.4.0+wasi-0.3.0-rc-2026-01-06 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/bytecodealliance/wasi-rs
 - windows-link 0.2.1 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
+- windows-sys 0.52.0 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows-sys 0.59.0 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
-- windows-sys 0.60.2 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows-sys 0.61.2 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows-targets 0.52.6 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
-- windows-targets 0.53.5 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows_aarch64_gnullvm 0.52.6 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
-- windows_aarch64_gnullvm 0.53.1 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows_aarch64_msvc 0.52.6 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
-- windows_aarch64_msvc 0.53.1 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows_i686_gnu 0.52.6 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
-- windows_i686_gnu 0.53.1 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows_i686_gnullvm 0.52.6 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
-- windows_i686_gnullvm 0.53.1 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows_i686_msvc 0.52.6 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
-- windows_i686_msvc 0.53.1 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows_x86_64_gnu 0.52.6 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
-- windows_x86_64_gnu 0.53.1 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows_x86_64_gnullvm 0.52.6 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
-- windows_x86_64_gnullvm 0.53.1 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 - windows_x86_64_msvc 0.52.6 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
-- windows_x86_64_msvc 0.53.1 (`MIT OR Apache-2.0`) - https://github.com/microsoft/windows-rs
 
 ```text
 MIT License
@@ -2393,30 +2346,18 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- unarray 0.1.4 (`MIT OR Apache-2.0`) - https://github.com/cameron1024/unarray
+- half 2.4.1 (`MIT OR Apache-2.0`) - https://github.com/starkat99/half-rs
 
 ```text
 MIT License
 
-Copyright (c) [year] [fullname]
+Copyright (c) <year> <copyright holders>
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ```
 
@@ -2424,10 +2365,12 @@ SOFTWARE.
 
 Used by:
 
-- half 2.7.1 (`MIT OR Apache-2.0`) - https://github.com/VoidStarKat/half-rs
+- unarray 0.1.4 (`MIT OR Apache-2.0`) - https://github.com/cameron1024/unarray
 
 ```text
 MIT License
+
+Copyright (c) [year] [fullname]
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -2485,33 +2428,36 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- anyhow 1.0.101 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/anyhow
-- fastrand 2.3.0 (`Apache-2.0 OR MIT`) - https://github.com/smol-rs/fastrand
+- anyhow 1.0.104 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/anyhow
+- fastrand 2.5.0 (`Apache-2.0 OR MIT`) - https://github.com/smol-rs/fastrand
 - hermit-abi 0.5.2 (`MIT OR Apache-2.0`) - https://github.com/hermit-os/hermit-rs
-- home 0.5.12 (`MIT OR Apache-2.0`) - https://github.com/rust-lang/cargo
 - indoc 2.0.7 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/indoc
 - is-terminal 0.4.17 (`MIT`) - https://github.com/sunfishcode/is-terminal
-- itoa 1.0.17 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/itoa
-- linux-raw-sys 0.11.0 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/sunfishcode/linux-raw-sys
-- once_cell 1.21.3 (`MIT OR Apache-2.0`) - https://github.com/matklad/once_cell
+- itoa 1.0.18 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/itoa
+- linux-raw-sys 0.12.1 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/sunfishcode/linux-raw-sys
+- linux-raw-sys 0.4.15 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/sunfishcode/linux-raw-sys
+- once_cell 1.21.4 (`MIT OR Apache-2.0`) - https://github.com/matklad/once_cell
+- paste 1.0.15 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/paste
 - pin-project-lite 0.2.17 (`Apache-2.0 OR MIT`) - https://github.com/taiki-e/pin-project-lite
-- portable-atomic 1.13.1 (`Apache-2.0 OR MIT`) - https://github.com/taiki-e/portable-atomic
-- proc-macro2 1.0.106 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/proc-macro2
-- quote 1.0.44 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/quote
-- rustix 1.1.3 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/bytecodealliance/rustix
-- rustversion 1.0.22 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/rustversion
-- semver 1.0.27 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/semver
-- serde 1.0.228 (`MIT OR Apache-2.0`) - https://github.com/serde-rs/serde
-- serde_core 1.0.228 (`MIT OR Apache-2.0`) - https://github.com/serde-rs/serde
-- serde_derive 1.0.228 (`MIT OR Apache-2.0`) - https://github.com/serde-rs/serde
-- serde_json 1.0.149 (`MIT OR Apache-2.0`) - https://github.com/serde-rs/json
-- syn 2.0.114 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/syn
-- thiserror-impl 2.0.18 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/thiserror
-- thiserror 2.0.18 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/thiserror
-- unicode-ident 1.0.23 (`(MIT OR Apache-2.0) AND Unicode-3.0`) - https://github.com/dtolnay/unicode-ident
+- portable-atomic 1.14.0 (`Apache-2.0 OR MIT`) - https://github.com/taiki-e/portable-atomic
+- proc-macro2 1.0.107 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/proc-macro2
+- quote 1.0.47 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/quote
+- rustix 0.38.44 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/bytecodealliance/rustix
+- rustix 1.1.4 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/bytecodealliance/rustix
+- rustversion 1.0.23 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/rustversion
+- semver 1.0.28 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/semver
+- serde 1.0.229 (`MIT OR Apache-2.0`) - https://github.com/serde-rs/serde
+- serde_core 1.0.229 (`MIT OR Apache-2.0`) - https://github.com/serde-rs/serde
+- serde_derive 1.0.229 (`MIT OR Apache-2.0`) - https://github.com/serde-rs/serde
+- serde_json 1.0.151 (`MIT OR Apache-2.0`) - https://github.com/serde-rs/json
+- syn 2.0.119 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/syn
+- syn 3.0.3 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/syn
+- thiserror-impl 2.0.19 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/thiserror
+- thiserror 2.0.19 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/thiserror
+- unicode-ident 1.0.24 (`(MIT OR Apache-2.0) AND Unicode-3.0`) - https://github.com/dtolnay/unicode-ident
 - unindent 0.2.4 (`MIT OR Apache-2.0`) - https://github.com/dtolnay/indoc
-- wit-bindgen 0.51.0 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/bytecodealliance/wit-bindgen
-- zmij 1.0.20 (`MIT`) - https://github.com/dtolnay/zmij
+- wasi 0.11.1+wasi-snapshot-preview1 (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`) - https://github.com/bytecodealliance/wasi
+- zmij 1.0.23 (`MIT`) - https://github.com/dtolnay/zmij
 
 ```text
 Permission is hereby granted, free of charge, to any
@@ -2544,7 +2490,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- winnow 0.7.14 (`MIT`) - https://github.com/winnow-rs/winnow
+- winnow 0.7.15 (`MIT`) - https://github.com/winnow-rs/winnow
 
 ```text
 Permission is hereby granted, free of charge, to any person obtaining
@@ -2586,7 +2532,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 Used by:
 
-- spin 0.9.8 (`MIT`) - https://github.com/mvdnes/spin-rs.git
+- spin 0.9.9 (`MIT`) - https://github.com/mvdnes/spin-rs.git
 
 ```text
 The MIT License (MIT)
@@ -2681,7 +2627,7 @@ Used by:
 
 - aho-corasick 1.1.4 (`Unlicense OR MIT`) - https://github.com/BurntSushi/aho-corasick
 - byteorder 1.5.0 (`Unlicense OR MIT`) - https://github.com/BurntSushi/byteorder
-- memchr 2.8.0 (`Unlicense OR MIT`) - https://github.com/BurntSushi/memchr
+- memchr 2.8.3 (`Unlicense OR MIT`) - https://github.com/BurntSushi/memchr
 - walkdir 2.5.0 (`Unlicense OR MIT`) - https://github.com/BurntSushi/walkdir
 
 ```text
@@ -2713,7 +2659,7 @@ THE SOFTWARE.
 
 Used by:
 
-- nix 0.30.1 (`MIT`) - https://github.com/nix-rust/nix
+- nix 0.28.0 (`MIT`) - https://github.com/nix-rust/nix
 
 ```text
 The MIT License (MIT)
@@ -2777,7 +2723,7 @@ SOFTWARE.
 
 Used by:
 
-- rustyline 17.0.2 (`MIT`) - https://github.com/kkawakam/rustyline
+- rustyline 14.0.0 (`MIT`) - https://github.com/kkawakam/rustyline
 
 ```text
 The MIT License (MIT)
@@ -2904,9 +2850,9 @@ SOFTWARE.
 Used by:
 
 - crossbeam-channel 0.5.16 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
-- crossbeam-deque 0.8.6 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
-- crossbeam-epoch 0.9.18 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
-- crossbeam-utils 0.8.21 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
+- crossbeam-deque 0.8.7 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
+- crossbeam-epoch 0.9.20 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
+- crossbeam-utils 0.8.22 (`MIT OR Apache-2.0`) - https://github.com/crossbeam-rs/crossbeam
 
 ```text
 The MIT License (MIT)
@@ -3127,7 +3073,7 @@ SOFTWARE.
 
 Used by:
 
-- cbindgen 0.29.2 (`MPL-2.0`) - https://github.com/mozilla/cbindgen
+- cbindgen 0.28.0 (`MPL-2.0`) - https://github.com/mozilla/cbindgen
 
 ```text
 Mozilla Public License Version 2.0
@@ -3510,7 +3456,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
 Used by:
 
-- unicode-ident 1.0.23 (`(MIT OR Apache-2.0) AND Unicode-3.0`) - https://github.com/dtolnay/unicode-ident
+- unicode-ident 1.0.24 (`(MIT OR Apache-2.0) AND Unicode-3.0`) - https://github.com/dtolnay/unicode-ident
 
 ```text
 UNICODE LICENSE V3

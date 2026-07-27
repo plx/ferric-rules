@@ -22,6 +22,31 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: ./scripts/preflight.sh check
 
+  msrv:
+    name: MSRV (Rust 1.75)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.75.0"
+      - name: Check workspace with locked dependencies
+        run: cargo check --workspace --locked
+      - name: Check all workspace features
+        run: cargo check --workspace --all-features --locked
+      - name: Check serialization feature set
+        run: cargo check -p ferric-runtime --features serde --locked
+      - name: Check CLI feature set
+        run: cargo check -p ferric-cli --locked
+      - name: Test workspace and MSRV metadata
+        run: cargo test --workspace --locked
+
   fmt:
     name: Format
     runs-on: ubuntu-latest

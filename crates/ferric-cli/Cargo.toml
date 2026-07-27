@@ -32,7 +32,7 @@ serde = ["ferric-runtime/serde"]
 
 [dev-dependencies]
 proptest = { workspace = true }
-tempfile = "3.8"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

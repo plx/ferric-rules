@@ -1636,7 +1636,6 @@ fn execute_loop_body(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    use ferric_parser::ActionExpr;
     for (action_expr, rt_expr) in body {
         let (branch_call, branch_runtime): (
             ferric_parser::FunctionCall,

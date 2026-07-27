@@ -163,6 +163,14 @@
 #endif
 
 
+// C-facing conflict-resolution strategy for `FerricConfig`.
+typedef enum FerricConflictStrategy {
+    FERRIC_CONFLICT_STRATEGY_DEPTH = 0,
+    FERRIC_CONFLICT_STRATEGY_BREADTH = 1,
+    FERRIC_CONFLICT_STRATEGY_LEX = 2,
+    FERRIC_CONFLICT_STRATEGY_MEA = 3
+} FerricConflictStrategy;
+
 // C-facing error codes returned by all fallible FFI entry points.
 //
 // Stable numeric values — new codes may be added but existing values
@@ -226,20 +234,39 @@ typedef enum FerricHaltReason {
     FERRIC_HALT_REASON_ACTION_ERROR = 3
 } FerricHaltReason;
 
+// Autorelease-pool installation policy used by the pinned worker.
+typedef enum FerricPinnedAutoreleasePolicy {
+    // Never install an Apple autorelease pool.
+    FERRIC_PINNED_AUTORELEASE_POLICY_NONE = 0,
+    // Install one pool per drained request.
+    FERRIC_PINNED_AUTORELEASE_POLICY_PER_ITEM = 1,
+    // Install one pool per drained batch.
+    FERRIC_PINNED_AUTORELEASE_POLICY_PER_BATCH = 2
+} FerricPinnedAutoreleasePolicy;
+
+#if defined(FERRIC_SERDE)
+// Serialization format selector for `ferric_engine_serialize_as` and
+// `ferric_engine_deserialize_as`.
+typedef enum FerricSerializationFormat {
+    // Compact binary (bincode). Fast and small.
+    FERRIC_SERIALIZATION_FORMAT_BINCODE = 0,
+    // JSON (human-readable, larger output).
+    FERRIC_SERIALIZATION_FORMAT_JSON = 1,
+    // CBOR (Concise Binary Object Representation).
+    FERRIC_SERIALIZATION_FORMAT_CBOR = 2,
+    // `MessagePack` (compact binary, JSON-like schema).
+    FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK = 3,
+    // Postcard (compact, `no_std`-friendly binary).
+    FERRIC_SERIALIZATION_FORMAT_POSTCARD = 4
+} FerricSerializationFormat;
+#endif
+
 // C-facing string-encoding configuration for `FerricConfig`.
 typedef enum FerricStringEncoding {
     FERRIC_STRING_ENCODING_ASCII = 0,
     FERRIC_STRING_ENCODING_UTF8 = 1,
     FERRIC_STRING_ENCODING_ASCII_SYMBOLS_UTF8_STRINGS = 2
 } FerricStringEncoding;
-
-// C-facing conflict-resolution strategy for `FerricConfig`.
-typedef enum FerricConflictStrategy {
-    FERRIC_CONFLICT_STRATEGY_DEPTH = 0,
-    FERRIC_CONFLICT_STRATEGY_BREADTH = 1,
-    FERRIC_CONFLICT_STRATEGY_LEX = 2,
-    FERRIC_CONFLICT_STRATEGY_MEA = 3
-} FerricConflictStrategy;
 
 // C-facing value type discriminant.
 //
@@ -259,33 +286,6 @@ typedef enum FerricValueType {
     FERRIC_VALUE_TYPE_MULTIFIELD = 5,
     FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS = 6
 } FerricValueType;
-
-#if defined(FERRIC_SERDE)
-// Serialization format selector for `ferric_engine_serialize_as` and
-// `ferric_engine_deserialize_as`.
-typedef enum FerricSerializationFormat {
-    // Compact binary (bincode). Fast and small.
-    FERRIC_SERIALIZATION_FORMAT_BINCODE = 0,
-    // JSON (human-readable, larger output).
-    FERRIC_SERIALIZATION_FORMAT_JSON = 1,
-    // CBOR (Concise Binary Object Representation).
-    FERRIC_SERIALIZATION_FORMAT_CBOR = 2,
-    // `MessagePack` (compact binary, JSON-like schema).
-    FERRIC_SERIALIZATION_FORMAT_MESSAGE_PACK = 3,
-    // Postcard (compact, `no_std`-friendly binary).
-    FERRIC_SERIALIZATION_FORMAT_POSTCARD = 4
-} FerricSerializationFormat;
-#endif
-
-// Autorelease-pool installation policy used by the pinned worker.
-typedef enum FerricPinnedAutoreleasePolicy {
-    // Never install an Apple autorelease pool.
-    FERRIC_PINNED_AUTORELEASE_POLICY_NONE = 0,
-    // Install one pool per drained request.
-    FERRIC_PINNED_AUTORELEASE_POLICY_PER_ITEM = 1,
-    // Install one pool per drained batch.
-    FERRIC_PINNED_AUTORELEASE_POLICY_PER_BATCH = 2
-} FerricPinnedAutoreleasePolicy;
 
 // Opaque engine handle exposed to C.
 //

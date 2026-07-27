@@ -28,7 +28,7 @@ tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-tempfile = "3.8"
+tempfile = { workspace = true }
 criterion = { workspace = true }
 serde_json = { workspace = true }
 ciborium = { workspace = true }

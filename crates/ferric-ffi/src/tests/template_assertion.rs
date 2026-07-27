@@ -45,7 +45,8 @@ fn assert_template_basic() {
         let slot_age_name = CString::new("age").unwrap();
 
         let slot_names = [slot_name_name.as_ptr(), slot_age_name.as_ptr()];
-        let name_val = ferric_value_string(CString::new("Alice").unwrap().as_ptr());
+        let name_string = CString::new("Alice").unwrap();
+        let name_val = ferric_value_string(name_string.as_ptr());
         let age_val = ferric_value_integer(30);
         let slot_values = [name_val, age_val];
 
@@ -101,7 +102,8 @@ fn assert_template_defaults_filled() {
         let tmpl_name = CString::new("person").unwrap();
         let slot_name_str = CString::new("name").unwrap();
         let slot_names = [slot_name_str.as_ptr()];
-        let name_val = ferric_value_string(CString::new("Bob").unwrap().as_ptr());
+        let name_string = CString::new("Bob").unwrap();
+        let name_val = ferric_value_string(name_string.as_ptr());
         let slot_values = [name_val];
 
         let mut fact_id: u64 = 0;
@@ -244,7 +246,8 @@ fn get_slot_by_name_basic() {
         let slot_name = CString::new("name").unwrap();
         let slot_age = CString::new("age").unwrap();
         let slot_names = [slot_name.as_ptr(), slot_age.as_ptr()];
-        let name_val = ferric_value_string(CString::new("Charlie").unwrap().as_ptr());
+        let name_string = CString::new("Charlie").unwrap();
+        let name_val = ferric_value_string(name_string.as_ptr());
         let age_val = ferric_value_integer(25);
         let slot_values = [name_val, age_val];
 
@@ -437,7 +440,8 @@ fn assert_template_with_float_slot() {
         let slot_unit = CString::new("unit").unwrap();
         let slot_names = [slot_value.as_ptr(), slot_unit.as_ptr()];
         let val = ferric_value_float(98.6);
-        let unit = ferric_value_symbol(CString::new("celsius").unwrap().as_ptr());
+        let unit_string = CString::new("celsius").unwrap();
+        let unit = ferric_value_symbol(unit_string.as_ptr());
         let slot_values = [val, unit];
 
         let mut fact_id: u64 = 0;
