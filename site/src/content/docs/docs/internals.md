@@ -7,12 +7,12 @@ Ferric is a Rust workspace with a small set of core crates and several host-faci
 
 ## Core Crates
 
-| Crate            | Responsibility                                                                               |
-| ---------------- | -------------------------------------------------------------------------------------------- |
+| Crate                  | Responsibility                                                                               |
+| ---------------------- | -------------------------------------------------------------------------------------------- |
 | `ferric-rules-core`    | Rete network, pattern matching, agenda, facts, values, and low-level engine data structures. |
 | `ferric-rules-parser`  | Lexer, S-expression parser, and CLIPS construct AST.                                         |
 | `ferric-rules-runtime` | Engine, loader, execution loop, evaluator, modules, functions, routers, and serialization.   |
-| `ferric-rules`   | Public facade crate that re-exports core, parser, and runtime surfaces.                      |
+| `ferric-rules`         | Public facade crate that re-exports core, parser, and runtime surfaces.                      |
 
 ## Runtime Pipeline
 
