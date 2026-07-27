@@ -794,8 +794,9 @@ pub unsafe extern "C" fn ferric_engine_get_output(
 }
 /// Get the number of action diagnostics captured during recent execution.
 ///
-/// Diagnostics are collected by `run`/`step` when non-fatal action errors occur
-/// (for example module visibility failures surfaced as warnings).
+/// Diagnostics are collected by `run`/`step` when action evaluation fails.
+/// Such a failure stops the current activation and `run`, but does not
+/// invalidate the engine.
 ///
 /// # Safety
 ///

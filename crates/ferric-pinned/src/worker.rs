@@ -177,7 +177,7 @@ pub(crate) fn run_with_cancel(
         }
         if matches!(
             r.halt_reason,
-            HaltReason::AgendaEmpty | HaltReason::HaltRequested
+            HaltReason::AgendaEmpty | HaltReason::HaltRequested | HaltReason::ActionError
         ) {
             return Ok(RunResult {
                 rules_fired: total,

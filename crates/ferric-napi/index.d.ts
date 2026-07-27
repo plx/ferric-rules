@@ -59,7 +59,9 @@ export const enum HaltReason {
   /** The run limit was reached. */
   LimitReached = 1,
   /** A halt was explicitly requested. */
-  HaltRequested = 2
+  HaltRequested = 2,
+  /** Evaluation of the current activation's actions failed. */
+  ActionError = 3
 }
 /** Result of a `run()` call. */
 export interface RunResult {
@@ -168,7 +170,7 @@ export declare class Engine {
   get focus(): string | null
   /** Full focus stack as an array of module names (bottom to top). */
   get focusStack(): Array<string>
-  /** Non-fatal action diagnostics from the most recent `run()`/`step()`. */
+  /** Action evaluation diagnostics from the most recent `run()`/`step()`. */
   get diagnostics(): Array<string>
   /** List all registered rules with their names and salience values. */
   rules(): Array<RuleInfo>

@@ -179,6 +179,24 @@ chosen conflict resolution strategy:
 | `find-fact` | Find first matching fact |
 | `find-all-facts` | Find all matching facts |
 
+### RHS evaluation errors
+
+Ferric matches CLIPS when evaluating an RHS action fails:
+
+- actions before the failure keep their effects;
+- the first failure is retained in `action_diagnostics()` with its original
+  evaluator category and cause;
+- later actions in that activation do not run;
+- the failing activation is consumed and the current `run()` returns
+  `HaltReason::ActionError`; and
+- lower-priority activations remain on the agenda. A subsequent `run()` clears
+  the previous diagnostic and continues that work. `reset()` instead rebuilds
+  the original agenda, so the failing activation can be encountered again.
+
+An action error does not set the engine's persistent halt flag. `step()` still
+returns the processed activation and exposes the diagnostic without consuming
+the next activation.
+
 **Example -- modify and retract:**
 
 ```clp
@@ -837,8 +855,9 @@ ferric_value_free(&val);
 
 ### Action Diagnostics
 
-Non-fatal warnings from rule execution (e.g., module visibility issues) are
-collected as action diagnostics, distinct from fatal errors:
+Rule-action evaluation failures are collected as action diagnostics, distinct
+from API/ABI failures. They do not invalidate the engine, but they stop the
+current activation and `run()` as described above:
 
 ```c
 size_t diag_count;

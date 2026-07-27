@@ -22,6 +22,18 @@ class TestRun:
         assert result.rules_fired == 0
         assert result.halt_reason == ferric.HaltReason.AGENDA_EMPTY
 
+    def test_run_action_error(self):
+        engine = ferric.Engine.from_source("""
+            (defrule failing
+                =>
+                (/ 1 0)
+                (assert (must-not-run)))
+        """)
+        result = engine.run()
+        assert result.rules_fired == 1
+        assert result.halt_reason == ferric.HaltReason.ACTION_ERROR
+        assert len(engine.diagnostics) == 1
+
 
 class TestRunWithLimit:
     def test_run_limit_one(self):

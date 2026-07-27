@@ -137,6 +137,7 @@ export enum HaltReason {
   AgendaEmpty = 0,
   LimitReached = 1,
   HaltRequested = 2,
+  ActionError = 3,
 }
 
 export enum FactType {
@@ -152,6 +153,10 @@ export enum Format {
   Postcard = 4,
 }
 ```
+
+`ActionError` means the failing activation was consumed, its remaining RHS
+actions were skipped, and later activations remain queued for a subsequent
+`run()`. Read `engine.diagnostics` before starting that next run.
 
 ### Result Types
 

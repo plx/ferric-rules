@@ -52,6 +52,8 @@ const (
 	HaltLimitReached
 	// HaltRequested means execution stopped because halt was requested.
 	HaltRequested
+	// HaltActionError means evaluation of the current activation's actions failed.
+	HaltActionError
 )
 
 // RunResult contains the outcome of an engine run.

@@ -555,6 +555,8 @@ pub(crate) fn execute_actions(
                     "rule_action_error"
                 );
                 errors.push(e);
+                flush_deferred_printout(context);
+                break;
             }
         }
         flush_deferred_printout(context);
@@ -1073,9 +1075,7 @@ fn execute_single_action(
                     let action_expr = ActionExpr::FunctionCall(call.clone());
                     eval_env.eval_expr(token, rule_info, &action_expr, context, collected_facts)
                 };
-                eval_result
-                    .map(|_| ())
-                    .map_err(|e| ActionError::UnknownAction(format!("bind: {e}")))
+                eval_result.map(|_| ())
             }
         }
         "if" => {
@@ -1217,7 +1217,6 @@ fn execute_single_action(
                     eval_env
                         .eval_runtime_expr(token, rule_info, runtime_expr, context)
                         .map(|_| ())
-                        .map_err(|e| ActionError::UnknownAction(format!("if: {e}")))
                 } else {
                     Ok(())
                 }
@@ -1273,7 +1272,6 @@ fn execute_single_action(
                 eval_env
                     .eval_runtime_expr(token, rule_info, runtime_expr, context)
                     .map(|_| ())
-                    .map_err(|e| ActionError::UnknownAction(format!("while: {e}")))
             } else {
                 Ok(())
             }
@@ -1359,7 +1357,6 @@ fn execute_single_action(
                 eval_env
                     .eval_runtime_expr(token, rule_info, runtime_expr, context)
                     .map(|_| ())
-                    .map_err(|e| ActionError::UnknownAction(format!("loop-for-count: {e}")))
             } else {
                 Ok(())
             }
@@ -1427,7 +1424,6 @@ fn execute_single_action(
                 eval_env
                     .eval_runtime_expr(token, rule_info, runtime_expr, context)
                     .map(|_| ())
-                    .map_err(|e| ActionError::UnknownAction(format!("switch: {e}")))
             } else {
                 Ok(())
             }
@@ -1503,7 +1499,6 @@ fn execute_single_action(
                 eval_env
                     .eval_runtime_expr(token, rule_info, runtime_expr, context)
                     .map(|_| ())
-                    .map_err(|e| ActionError::UnknownAction(format!("progn$: {e}")))
             } else {
                 Ok(())
             }
@@ -1551,7 +1546,6 @@ fn execute_single_action(
                 eval_env
                     .eval_runtime_expr(token, rule_info, runtime_expr, context)
                     .map(|_| ())
-                    .map_err(|e| ActionError::UnknownAction(format!("{}: {e}", call.name)))
             } else {
                 Ok(())
             }
@@ -1565,9 +1559,7 @@ fn execute_single_action(
                 let action_expr = ActionExpr::FunctionCall(call.clone());
                 eval_env.eval_expr(token, rule_info, &action_expr, context, collected_facts)
             };
-            eval_result
-                .map(|_| ())
-                .map_err(|e| ActionError::UnknownAction(format!("{}: {e}", call.name)))
+            eval_result.map(|_| ())
         }
     }
 }

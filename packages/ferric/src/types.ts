@@ -89,6 +89,7 @@ export enum HaltReason {
   AgendaEmpty = 0,
   LimitReached = 1,
   HaltRequested = 2,
+  ActionError = 3,
 }
 
 /** Discriminates ordered vs. template facts. */

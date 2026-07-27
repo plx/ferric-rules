@@ -348,6 +348,19 @@ def test_v1_declaration_accepts_native_observable_halt_requested_completion():
     assert evidence.status is EvidenceStatus.VALID
 
 
+def test_v1_declaration_accepts_action_error_completion():
+    declaration = _declaration()
+    declaration["expectations"]["run"]["halt_reason"] = "action-error"
+
+    evidence = validate_declaration(
+        declaration,
+        expected_source_sha256=SOURCE_DIGEST,
+        expected_composed_sha256=COMPOSED_DIGEST,
+    )
+
+    assert evidence.status is EvidenceStatus.VALID
+
+
 def test_v1_declaration_rejects_channels_the_adapters_cannot_capture():
     declaration = _declaration()
     declaration["expectations"]["channels"]["wtrace"] = ""

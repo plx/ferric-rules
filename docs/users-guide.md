@@ -559,7 +559,9 @@ A few useful patterns:
 - **Cap the run.** Even a correct rule set can loop under pathological
   inputs; `RunLimit::Count(n)` is cheap insurance. Check the
   `HaltReason` in the returned `RunResult` to distinguish normal
-  completion from reaching the cap.
+  completion from reaching the cap or an `ActionError`. An action error skips
+  the rest of the failing activation and leaves later agenda work available
+  for a subsequent `run()`; inspect `action_diagnostics()` before continuing.
 - **Step when you need to observe.** For debugging or when you want to
   interleave rule firing with external I/O, `engine.step()` fires exactly
   one activation and returns it.

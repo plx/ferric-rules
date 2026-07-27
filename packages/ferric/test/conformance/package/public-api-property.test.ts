@@ -28,6 +28,7 @@ test("A-001 A-002 A-004 A-005 A-006 G-001 G-003 N-06 table-driven public API exp
     ["Strategy.Depth", ferric.Strategy.Depth, 0],
     ["Encoding.Utf8", ferric.Encoding.Utf8, 1],
     ["HaltReason.AgendaEmpty", ferric.HaltReason.AgendaEmpty, 0],
+    ["HaltReason.ActionError", ferric.HaltReason.ActionError, 3],
     ["FactType.Ordered", ferric.FactType.Ordered, 0],
     ["Format.Bincode", ferric.Format.Bincode, 0],
   ] as const;

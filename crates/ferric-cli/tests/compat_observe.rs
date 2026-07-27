@@ -307,7 +307,7 @@ fn multiple_modules_leave_fact_ownership_explicitly_unavailable() {
 }
 
 #[test]
-fn halt_and_nonfatal_action_diagnostic_are_captured_without_output_leakage() {
+fn action_error_stops_before_halt_and_is_captured_without_output_leakage() {
     let source = r#"
 (deffacts seed (channel t))
 (defrule stop-first
@@ -328,9 +328,9 @@ fn halt_and_nonfatal_action_diagnostic_are_captured_without_output_leakage() {
 
     let observation = parse_single_observation(&output);
     assert_eq!(observation["run"]["rules_fired"], 1);
-    assert_eq!(observation["run"]["halt_reason"], "halt-requested");
+    assert_eq!(observation["run"]["halt_reason"], "action-error");
     assert_eq!(observation["run"]["agenda_size"], 1);
-    assert_eq!(observation["run"]["halted"], true);
+    assert_eq!(observation["run"]["halted"], false);
     assert_eq!(observation["diagnostics"][0]["phase"], "run");
     assert_eq!(observation["diagnostics"][0]["severity"], "warning");
     assert_eq!(

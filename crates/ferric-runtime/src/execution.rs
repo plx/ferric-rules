@@ -25,6 +25,11 @@ pub enum HaltReason {
     LimitReached,
     /// A halt was requested.
     HaltRequested,
+    /// Evaluation of the current activation's actions failed.
+    ///
+    /// The failing activation is consumed, its remaining actions are skipped,
+    /// and later activations remain on the agenda for a subsequent run.
+    ActionError,
 }
 
 /// Result of an execution run.
@@ -60,6 +65,7 @@ mod tests {
         let _ = HaltReason::AgendaEmpty;
         let _ = HaltReason::LimitReached;
         let _ = HaltReason::HaltRequested;
+        let _ = HaltReason::ActionError;
     }
 
     #[test]

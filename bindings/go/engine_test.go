@@ -446,6 +446,35 @@ func TestRunWithLimit(t *testing.T) {
 	}
 }
 
+func TestRunActionError(t *testing.T) {
+	lockThread(t)
+
+	e, err := NewEngine(WithSource(`
+		(defrule failing
+			=>
+			(/ 1 0)
+			(assert (must-not-run)))
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mustClose(t, e)
+
+	result, err := e.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RulesFired != 1 {
+		t.Fatalf("expected 1, got %d", result.RulesFired)
+	}
+	if result.HaltReason != HaltActionError {
+		t.Fatalf("expected ActionError, got %d", result.HaltReason)
+	}
+	if len(e.Diagnostics()) != 1 {
+		t.Fatalf("expected one action diagnostic, got %v", e.Diagnostics())
+	}
+}
+
 func TestRunWithLimitSmall(t *testing.T) {
 	lockThread(t)
 

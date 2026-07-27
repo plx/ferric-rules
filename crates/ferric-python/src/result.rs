@@ -15,6 +15,9 @@ pub enum HaltReason {
     /// A halt was requested.
     #[pyo3(name = "HALT_REQUESTED")]
     HaltRequested = 2,
+    /// Evaluation of the current activation's actions failed.
+    #[pyo3(name = "ACTION_ERROR")]
+    ActionError = 3,
 }
 
 impl From<ferric_runtime::HaltReason> for HaltReason {
@@ -23,6 +26,7 @@ impl From<ferric_runtime::HaltReason> for HaltReason {
             ferric_runtime::HaltReason::AgendaEmpty => Self::AgendaEmpty,
             ferric_runtime::HaltReason::LimitReached => Self::LimitReached,
             ferric_runtime::HaltReason::HaltRequested => Self::HaltRequested,
+            ferric_runtime::HaltReason::ActionError => Self::ActionError,
         }
     }
 }

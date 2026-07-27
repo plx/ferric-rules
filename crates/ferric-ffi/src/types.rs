@@ -161,6 +161,7 @@ pub enum FerricHaltReason {
     AgendaEmpty = 0,
     LimitReached = 1,
     HaltRequested = 2,
+    ActionError = 3,
 }
 
 impl From<HaltReason> for FerricHaltReason {
@@ -169,6 +170,7 @@ impl From<HaltReason> for FerricHaltReason {
             HaltReason::AgendaEmpty => Self::AgendaEmpty,
             HaltReason::LimitReached => Self::LimitReached,
             HaltReason::HaltRequested => Self::HaltRequested,
+            HaltReason::ActionError => Self::ActionError,
         }
     }
 }

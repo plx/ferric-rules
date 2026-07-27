@@ -83,6 +83,8 @@ func (h HaltReason) String() string {
 		return "limit_reached"
 	case HaltRequested:
 		return "requested"
+	case HaltActionError:
+		return "action_error"
 	default:
 		return "unknown"
 	}
