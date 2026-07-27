@@ -2175,6 +2175,7 @@ pub(crate) fn is_builtin_callable(name: &str) -> bool {
             | "gensym*"
             | "setgen"
             | "set-fact-duplication"
+            | "get-fact-duplication"
             | "refresh-agenda"
             | "watch"
             | "unwatch"
@@ -2339,6 +2340,7 @@ fn dispatch_builtin(
         "gensym*" => builtin_gensym_star(ctx, args, span_ref),
         "setgen" => builtin_setgen(ctx, args, span_ref),
         "set-fact-duplication" => builtin_set_fact_duplication(ctx, args, span_ref),
+        "get-fact-duplication" => builtin_get_fact_duplication(ctx, args, span_ref),
         "refresh-agenda" => builtin_refresh_agenda(ctx, args, span_ref),
         "watch" => builtin_watch(ctx, args, span_ref),
         "unwatch" => builtin_unwatch(ctx, args, span_ref),
@@ -3696,7 +3698,7 @@ fn builtin_setgen(
     }
 }
 
-/// `set-fact-duplication` — accepted for compatibility; current runtime keeps duplicate assertions enabled.
+/// `set-fact-duplication` — change the engine policy and return its prior value.
 fn builtin_set_fact_duplication(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -3704,8 +3706,25 @@ fn builtin_set_fact_duplication(
 ) -> Result<Value, EvalError> {
     check_arity_exact("set-fact-duplication", args, 1, span)?;
     let value = eval_inner(ctx, &args[0])?;
+    let previous = ctx
+        .config
+        .set_fact_duplication(is_truthy(&value, ctx.symbol_table));
     Ok(clips_bool(
-        is_truthy(&value, ctx.symbol_table),
+        previous,
+        ctx.symbol_table,
+        ctx.config.string_encoding,
+    ))
+}
+
+/// `get-fact-duplication` — return the engine's current duplication policy.
+fn builtin_get_fact_duplication(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    check_arity_exact("get-fact-duplication", args, 0, span)?;
+    Ok(clips_bool(
+        ctx.config.fact_duplication(),
         ctx.symbol_table,
         ctx.config.string_encoding,
     ))

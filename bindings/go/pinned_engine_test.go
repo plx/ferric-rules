@@ -531,14 +531,14 @@ func TestPinnedEngine_ConcurrentAccess(t *testing.T) {
 
 	errs := make(chan error, goroutines)
 
-	for range goroutines {
-		go func() {
+	for i := range goroutines {
+		go func(value int64) {
 			defer wg.Done()
-			_, err := p.AssertFact("color", Symbol("red"))
+			_, err := p.AssertFact("color", value)
 			if err != nil {
 				errs <- err
 			}
-		}()
+		}(int64(i))
 	}
 
 	wg.Wait()

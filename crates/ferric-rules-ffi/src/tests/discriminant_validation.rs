@@ -51,9 +51,9 @@ unsafe fn new_engine_with_template() -> *mut FerricEngine {
 }
 
 /// Assert a valid fact to prove the engine survived a rejected call.
-unsafe fn assert_engine_usable(engine: *mut FerricEngine) {
+unsafe fn assert_engine_usable(engine: *mut FerricEngine, probe_value: i64) {
     let relation = CString::new("probe").unwrap();
-    let field = ferric_value_integer(1);
+    let field = ferric_value_integer(probe_value);
     assert_eq!(
         ferric_engine_assert_ordered(engine, relation.as_ptr(), &field, 1, ptr::null_mut()),
         FerricError::Ok,
@@ -88,7 +88,7 @@ fn assert_ordered_rejects_invalid_top_level_discriminant() {
                 "discriminant {tag} must be rejected"
             );
             assert_global_diag_names_tag(tag);
-            assert_engine_usable(engine);
+            assert_engine_usable(engine, i64::from(tag));
         }
 
         // No `bad` fact must have been asserted (only the usable-probe facts).
@@ -127,7 +127,7 @@ fn assert_ordered_rejects_invalid_nested_discriminant() {
                 "nested discriminant {tag} must be rejected"
             );
             assert_global_diag_names_tag(tag);
-            assert_engine_usable(engine);
+            assert_engine_usable(engine, i64::from(tag));
         }
 
         ferric_engine_free(engine);
@@ -210,7 +210,7 @@ fn assert_template_rejects_invalid_discriminants() {
             FerricError::InvalidArgument
         );
 
-        assert_engine_usable(engine);
+        assert_engine_usable(engine, 1);
         ferric_engine_free(engine);
     }
 }

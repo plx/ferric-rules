@@ -720,6 +720,18 @@ fn test_compat_core_modify_duplicate() {
     let _ = assert_fixture_output("core/modify_duplicate.clp", 1, "Alice is now 31\n");
 }
 
+#[test]
+fn test_compat_core_fact_duplication_policy() {
+    // Pinned against CLIPS 6.30: duplicate assertions are rejected by
+    // default, allowed after enabling, and rejected immediately after
+    // disabling again. The setter reports the prior policy.
+    let _ = assert_fixture_output(
+        "core/fact_duplication_policy.clp",
+        4,
+        "default=FALSE\nenable-old=FALSE\ndisable-old=TRUE\nitem=enabled\nitem=enabled\nitem=default\n",
+    );
+}
+
 // ===========================================================================
 // Negation domain compatibility tests
 // ===========================================================================

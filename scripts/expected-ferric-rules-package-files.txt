@@ -27,6 +27,7 @@ tests/fixtures/core/.gitkeep
 tests/fixtures/core/basic_match.clp
 tests/fixtures/core/bind_in_rhs.clp
 tests/fixtures/core/chain_rules.clp
+tests/fixtures/core/fact_duplication_policy.clp
 tests/fixtures/core/halt_stops_execution.clp
 tests/fixtures/core/modify_duplicate.clp
 tests/fixtures/core/multi_pattern_join.clp

@@ -45,9 +45,30 @@ Template facts use named slots defined by `deftemplate`:
 
 ### Fact Identity
 
-Each asserted fact receives a unique fact index (monotonically increasing
-integer). Fact addresses can be captured via pattern-binding variables
-(`?f <- (pattern)`) and used in `retract`, `modify`, and `duplicate` actions.
+Each successfully asserted fact receives a unique fact index. Fact addresses
+can be captured via pattern-binding variables (`?f <- (pattern)`) and used in
+`retract`, `modify`, and `duplicate` actions.
+
+### Fact Duplication
+
+Like CLIPS, Ferric disables fact duplication by default. With duplication
+disabled, an assertion is rejected if an equivalent active fact exists; it
+creates no new fact ID, RETE token, activation, or existential support.
+
+Structural equality is defined as follows:
+
+- Ordered facts compare their relation and every positional field.
+- Template facts compare their template identity and every slot value in the
+  template's canonical slot order.
+- Nested multifields compare recursively. Floats compare by IEEE-754 bit
+  representation, including distinct signed-zero and NaN representations.
+- Fact IDs and assertion timestamps are never part of structural equality.
+
+`(get-fact-duplication)` reports the current policy.
+`(set-fact-duplication TRUE|FALSE)` changes it immediately and returns the
+previous setting. Existing duplicate facts are not collapsed when duplication
+is disabled. The setting survives `reset`, `clear`, and engine snapshot
+round-trips.
 
 ### initial-fact
 
@@ -58,7 +79,7 @@ standalone negation and `forall` patterns to activate correctly.
 ### Behavioral Notes
 
 - Duplicate fact detection: asserting an identical fact to one already in
-  working memory is silently ignored (no new fact created).
+  working memory is rejected by default (no new fact created).
 - Refraction: a rule fires at most once per unique token (set of matching
   facts). Retracting and re-asserting the same content creates a new fact
   identity, allowing re-firing.

@@ -445,6 +445,7 @@ mod tests {
     #[test]
     fn negative_rule_multiple_blockers_need_all_retracted() {
         let mut engine = new_utf8_engine();
+        engine.set_fact_duplication(true);
         load_ok(
             &mut engine,
             "(defrule safe (item ?x) (not (danger)) => (printout t safe))",

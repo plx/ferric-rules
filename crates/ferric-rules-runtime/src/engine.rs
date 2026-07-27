@@ -13,8 +13,8 @@ use thiserror::Error;
 
 use ferric_rules_core::beta::RuleId;
 use ferric_rules_core::{
-    EncodingError, Fact, FactBase, FactId, FerricString, IntoFieldValues, ReteCompiler,
-    ReteNetwork, Symbol, SymbolTable, TemplateFact, TemplateId, Value,
+    EncodingError, Fact, FactBase, FactId, FactInsertionResult, FerricString, IntoFieldValues,
+    ReteCompiler, ReteNetwork, Symbol, SymbolTable, TemplateFact, TemplateId, Value,
 };
 
 use crate::actions::{self, ActionError, CompiledRuleInfo};
@@ -68,6 +68,31 @@ fn propagate_fact_assertion(rete: &mut ReteNetwork, fact_base: &FactBase, fact_i
         .expect("asserted fact should exist in fact base")
         .fact;
     rete.assert_fact(fact_id, fact, fact_base);
+}
+
+/// Result of attempting to assert a fact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactAssertionResult {
+    /// A new fact was inserted and propagated through the RETE network.
+    Asserted(FactId),
+    /// Duplication was disabled and an equivalent active fact already existed.
+    Duplicate(FactId),
+}
+
+impl FactAssertionResult {
+    /// Return the newly asserted or existing equivalent fact ID.
+    #[must_use]
+    pub fn fact_id(self) -> FactId {
+        match self {
+            Self::Asserted(fact_id) | Self::Duplicate(fact_id) => fact_id,
+        }
+    }
+
+    /// Return whether this assertion created a new fact.
+    #[must_use]
+    pub fn was_asserted(self) -> bool {
+        matches!(self, Self::Asserted(_))
+    }
 }
 
 /// The Ferric rules engine.
@@ -235,6 +260,33 @@ impl Engine {
         Ok(engine)
     }
 
+    /// Return whether structurally equivalent facts may coexist.
+    ///
+    /// The CLIPS-compatible default is `false`.
+    #[must_use]
+    pub fn fact_duplication(&self) -> bool {
+        self.config.fact_duplication()
+    }
+
+    /// Change whether structurally equivalent facts may coexist.
+    ///
+    /// Returns the previous setting, matching CLIPS
+    /// `set-fact-duplication` semantics. Existing duplicates are not removed
+    /// when duplication is disabled.
+    pub fn set_fact_duplication(&mut self, enabled: bool) -> bool {
+        self.config.set_fact_duplication(enabled)
+    }
+
+    pub(crate) fn assert_fact_internal(&mut self, fact: Fact) -> FactAssertionResult {
+        match self.fact_base.assert_fact(fact, self.fact_duplication()) {
+            FactInsertionResult::Inserted(fact_id) => {
+                propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
+                FactAssertionResult::Asserted(fact_id)
+            }
+            FactInsertionResult::Duplicate(fact_id) => FactAssertionResult::Duplicate(fact_id),
+        }
+    }
+
     /// Assert an ordered fact into working memory.
     ///
     /// The relation name is interned as a symbol. Fields can be passed as a
@@ -260,6 +312,25 @@ impl Engine {
         relation: &str,
         fields: F,
     ) -> Result<FactId, EngineError> {
+        Ok(self.assert_ordered_with_result(relation, fields)?.fact_id())
+    }
+
+    /// Assert an ordered fact and report whether it was newly inserted.
+    ///
+    /// When fact duplication is disabled, structural equality compares the
+    /// relation and every ordered field. A rejected duplicate returns
+    /// [`FactAssertionResult::Duplicate`] with the oldest equivalent active
+    /// fact ID and creates no new working-memory or RETE state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the relation violates encoding constraints or the
+    /// engine is called from the wrong thread.
+    pub fn assert_ordered_with_result<F: IntoFieldValues>(
+        &mut self,
+        relation: &str,
+        fields: F,
+    ) -> Result<FactAssertionResult, EngineError> {
         self.check_thread_affinity()?;
         ferric_span!(info_span, "engine_assert_ordered", relation);
 
@@ -268,12 +339,12 @@ impl Engine {
             .intern_symbol(relation, self.config.string_encoding)?;
 
         let fields_small = fields.into_field_values();
-        let id = self.fact_base.assert_ordered(relation_sym, fields_small);
-
-        // Propagate through rete network
-        propagate_fact_assertion(&mut self.rete, &self.fact_base, id);
-
-        Ok(id)
+        Ok(
+            self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+                relation: relation_sym,
+                fields: fields_small,
+            })),
+        )
     }
 
     /// Assert a fully constructed fact into working memory.
@@ -282,22 +353,19 @@ impl Engine {
     ///
     /// Returns an error if the engine is called from the wrong thread.
     pub fn assert(&mut self, fact: Fact) -> Result<FactId, EngineError> {
+        Ok(self.assert_with_result(fact)?.fact_id())
+    }
+
+    /// Assert a fully constructed fact and report whether it was newly inserted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the engine is called from the wrong thread.
+    pub fn assert_with_result(&mut self, fact: Fact) -> Result<FactAssertionResult, EngineError> {
         self.check_thread_affinity()?;
         ferric_span!(info_span, "engine_assert");
 
-        let id = match fact {
-            Fact::Ordered(ordered) => self
-                .fact_base
-                .assert_ordered(ordered.relation, ordered.fields),
-            Fact::Template(template) => self
-                .fact_base
-                .assert_template(template.template_id, template.slots),
-        };
-
-        // Propagate through rete network
-        propagate_fact_assertion(&mut self.rete, &self.fact_base, id);
-
-        Ok(id)
+        Ok(self.assert_fact_internal(fact))
     }
 
     /// Assert a template fact by template name and named slot values.
@@ -321,6 +389,26 @@ impl Engine {
         slot_names: &[&str],
         slot_values: Vec<Value>,
     ) -> Result<FactId, EngineError> {
+        Ok(self
+            .assert_template_with_result(template_name, slot_names, slot_values)?
+            .fact_id())
+    }
+
+    /// Assert a template fact and report whether it was newly inserted.
+    ///
+    /// When fact duplication is disabled, structural equality compares the
+    /// template identity and every positional slot value after defaults and
+    /// named overrides have been applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown template/slot or wrong-thread access.
+    pub fn assert_template_with_result(
+        &mut self,
+        template_name: &str,
+        slot_names: &[&str],
+        slot_values: Vec<Value>,
+    ) -> Result<FactAssertionResult, EngineError> {
         self.check_thread_affinity()?;
 
         let tid = *self
@@ -352,7 +440,7 @@ impl Engine {
             slots,
         });
 
-        self.assert(fact)
+        Ok(self.assert_fact_internal(fact))
     }
 
     /// Get the value of a template fact's slot by name.
@@ -562,11 +650,12 @@ impl Engine {
             .intern_symbol(symbol_name, self.config.string_encoding)?;
 
         let fields = smallvec::smallvec![Value::Symbol(value_sym)];
-        let id = self.fact_base.assert_ordered(relation_sym, fields);
-
-        propagate_fact_assertion(&mut self.rete, &self.fact_base, id);
-
-        Ok(id)
+        Ok(self
+            .assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+                relation: relation_sym,
+                fields,
+            }))
+            .fact_id())
     }
 
     /// Return the CLIPS `TRUE` symbol as a [`Value`].
@@ -1005,19 +1094,12 @@ impl Engine {
             self.globals.set(*module_id, name, value.clone());
         }
 
-        // Re-assert registered deffacts
-        for deffacts in &self.registered_deffacts {
+        // Re-assert registered deffacts under the current duplication policy.
+        // Clone the declarations so assertion can mutably update working memory.
+        let registered_deffacts = self.registered_deffacts.clone();
+        for deffacts in &registered_deffacts {
             for fact in deffacts {
-                let fact_id = match fact {
-                    Fact::Ordered(ordered) => self
-                        .fact_base
-                        .assert_ordered(ordered.relation, ordered.fields.clone()),
-                    Fact::Template(template) => self
-                        .fact_base
-                        .assert_template(template.template_id, template.slots.clone()),
-                };
-                // Propagate through rete
-                propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
+                let _ = self.assert_fact_internal(fact.clone());
             }
         }
 
@@ -1028,11 +1110,11 @@ impl Engine {
                 .symbol_table
                 .intern_symbol("initial-fact", self.config.string_encoding)
                 .expect("initial-fact symbol interning must succeed");
-            let initial_fid = self
-                .fact_base
-                .assert_ordered(initial_sym, smallvec::SmallVec::new());
-            propagate_fact_assertion(&mut self.rete, &self.fact_base, initial_fid);
-            self.initial_fact_id = Some(initial_fid);
+            let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+                relation: initial_sym,
+                fields: smallvec::SmallVec::new(),
+            }));
+            self.initial_fact_id = Some(result.fact_id());
         }
 
         Ok(())
@@ -1401,6 +1483,168 @@ mod tests {
     }
 
     #[test]
+    fn fr_rete_001_default_rejects_duplicate_ordered_fact() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str("(defrule r (x) => (printout t fired crlf))")
+            .unwrap();
+        engine.reset().unwrap();
+
+        let first = engine.assert_ordered_with_result("x", vec![]).unwrap();
+        let duplicate = engine.assert_ordered_with_result("x", vec![]).unwrap();
+
+        assert!(matches!(first, FactAssertionResult::Asserted(_)));
+        assert_eq!(duplicate, FactAssertionResult::Duplicate(first.fact_id()));
+        assert_eq!(engine.facts().unwrap().count(), 1);
+        assert_eq!(engine.agenda_len(), 1);
+
+        let result = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("fired\n"));
+    }
+
+    #[test]
+    fn fr_rete_001_default_rejects_duplicate_template_fact() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(
+                r"
+                (deftemplate person (slot name) (slot age (default 0)))
+                (defrule r (person (name Alice)) => (printout t fired crlf))
+                ",
+            )
+            .unwrap();
+        engine.reset().unwrap();
+        let alice = engine.intern_symbol("Alice").unwrap();
+
+        let first = engine
+            .assert_template_with_result("person", &["name"], vec![Value::Symbol(alice)])
+            .unwrap();
+        let duplicate = engine
+            .assert_template_with_result(
+                "person",
+                &["age", "name"],
+                vec![Value::Integer(0), Value::Symbol(alice)],
+            )
+            .unwrap();
+
+        assert!(matches!(first, FactAssertionResult::Asserted(_)));
+        assert_eq!(duplicate, FactAssertionResult::Duplicate(first.fact_id()));
+        assert_eq!(engine.facts().unwrap().count(), 1);
+        assert_eq!(engine.agenda_len(), 1);
+
+        let result = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1);
+    }
+
+    #[test]
+    fn fr_rete_001_toggle_allows_duplicates() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+
+        let first = engine.assert_ordered_with_result("x", 1_i64).unwrap();
+        let rejected = engine.assert_ordered_with_result("x", 1_i64).unwrap();
+        assert_eq!(rejected, FactAssertionResult::Duplicate(first.fact_id()));
+
+        assert!(!engine.set_fact_duplication(true));
+        let second = engine.assert_ordered_with_result("x", 1_i64).unwrap();
+        assert!(matches!(second, FactAssertionResult::Asserted(_)));
+        assert_ne!(first.fact_id(), second.fact_id());
+        assert_eq!(
+            engine
+                .fact_base
+                .get(second.fact_id())
+                .expect("second fact exists")
+                .timestamp,
+            ferric_rules_core::Timestamp::new(1),
+            "rejected duplicates must not consume assertion timestamps"
+        );
+
+        assert!(engine.set_fact_duplication(false));
+        let rejected_again = engine.assert_ordered_with_result("x", 1_i64).unwrap();
+        assert_eq!(
+            rejected_again,
+            FactAssertionResult::Duplicate(first.fact_id())
+        );
+
+        engine.retract(first.fact_id()).unwrap();
+        let rejected_after_retract = engine.assert_ordered_with_result("x", 1_i64).unwrap();
+        assert_eq!(
+            rejected_after_retract,
+            FactAssertionResult::Duplicate(second.fact_id())
+        );
+        assert_eq!(engine.facts().unwrap().count(), 1);
+    }
+
+    #[test]
+    fn fr_rete_001_getter_setter_return_semantics() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(
+                r#"
+                (defrule observe
+                    (go)
+                    =>
+                    (printout t
+                        (get-fact-duplication) " "
+                        (set-fact-duplication TRUE) " "
+                        (get-fact-duplication) " "
+                        (set-fact-duplication FALSE) " "
+                        (get-fact-duplication)
+                        crlf))
+                "#,
+            )
+            .unwrap();
+        engine.reset().unwrap();
+        engine.assert_ordered("go", vec![]).unwrap();
+
+        let result = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(result.rules_fired, 1);
+        assert_eq!(
+            engine.get_output("t"),
+            Some("FALSE FALSE TRUE TRUE FALSE\n")
+        );
+        assert!(!engine.fact_duplication());
+    }
+
+    #[test]
+    fn fr_rete_001_reset_preserves_policy_and_duplicate_index() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine.set_fact_duplication(true);
+        engine
+            .load_str(
+                r"
+                (deffacts duplicates
+                    (item 1)
+                    (item 1))
+                ",
+            )
+            .unwrap();
+
+        engine.reset().unwrap();
+        assert!(engine.fact_duplication());
+        assert_eq!(engine.find_facts("item").unwrap().len(), 2);
+
+        engine.set_fact_duplication(false);
+        let result = engine.assert_ordered_with_result("item", 1_i64).unwrap();
+        assert!(matches!(result, FactAssertionResult::Duplicate(_)));
+        assert_eq!(engine.find_facts("item").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn fr_rete_001_clear_preserves_policy() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        assert!(!engine.fact_duplication());
+
+        engine.set_fact_duplication(true);
+        engine.clear();
+        assert!(engine.fact_duplication());
+
+        engine.set_fact_duplication(false);
+        engine.clear();
+        assert!(!engine.fact_duplication());
+    }
+
+    #[test]
     fn retract_fact() {
         let mut engine = Engine::new(EngineConfig::utf8());
         let id = engine.assert_ordered("test", vec![]).unwrap();
@@ -1475,6 +1719,7 @@ mod tests {
     #[test]
     fn iterate_facts() {
         let mut engine = Engine::new(EngineConfig::utf8());
+        engine.set_fact_duplication(true);
 
         let id1 = engine.assert_ordered("test", vec![]).unwrap();
         let id2 = engine.assert_ordered("test", vec![]).unwrap();
@@ -1845,6 +2090,7 @@ mod tests {
         #[test]
         fn fact_lifecycle_shadow_model(ops in proptest::collection::vec(arb_fact_op(), 0..40)) {
             let mut engine = Engine::new(EngineConfig::default());
+            engine.set_fact_duplication(true);
 
             // Pre-intern a small pool of relation symbols so we can refer to
             // them by index in the operation stream.
@@ -1941,6 +2187,7 @@ mod tests {
             shuffle in proptest::collection::vec(any::<usize>(), 0..20),
         ) {
             let mut engine = Engine::new(EngineConfig::default());
+            engine.set_fact_duplication(true);
 
             // Assert N ordered facts and collect their IDs.
             let mut live: Vec<FactId> = (0..n)

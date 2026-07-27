@@ -74,8 +74,7 @@ jobs:
         run: |
           git checkout ${{ inputs.base_sha }}
           git checkout ${{ inputs.head_sha }} -- tools/ferric-tools/
-          # This checkout is the pre-rename base revision.
-          cargo build --release -p ferric-cli
+          cargo build --release -p ferric-rules-cli
           uv run --project tools/ferric-tools ferric-compat-scan
           # Materialize head-format harnesses for base sources without modifying
           # the base branch's tracked harnesses.

@@ -28,7 +28,8 @@ use crate::qualified_name::{parse_qualified_name, QualifiedName};
 
 use ferric_rules_core::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult, ConstantTest,
-    ConstantTestType, FactId, FerricString, JoinTestType, RuleId, Salience, SlotIndex, Value,
+    ConstantTestType, Fact, FactId, FerricString, JoinTestType, RuleId, Salience, SlotIndex,
+    TemplateFact, Value,
 };
 use ferric_rules_parser::{
     interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
@@ -689,12 +690,11 @@ impl Engine {
             .intern_symbol("initial-fact", self.config.string_encoding)
             .map_err(|e| LoadError::Compile(format!("initial-fact symbol: {e}")))?;
 
-        let fid = self
-            .fact_base
-            .assert_ordered(initial_sym, smallvec::SmallVec::new());
-        let stored = self.fact_base.get(fid).unwrap().fact.clone();
-        self.rete.assert_fact(fid, &stored, &self.fact_base);
-        self.initial_fact_id = Some(fid);
+        let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+            relation: initial_sym,
+            fields: smallvec::SmallVec::new(),
+        }));
+        self.initial_fact_id = Some(result.fact_id());
 
         Ok(())
     }
@@ -961,20 +961,12 @@ impl Engine {
         }
 
         // Assert as a proper template fact.
-        let fact_id = self
-            .fact_base
-            .assert_template(template_id, slots.into_boxed_slice());
-
-        // Propagate through rete.
-        let fact = self
-            .fact_base
-            .get(fact_id)
-            .expect("just-asserted fact must exist")
-            .fact
-            .clone();
-        self.rete.assert_fact(fact_id, &fact, &self.fact_base);
-
-        Ok(fact_id)
+        Ok(self
+            .assert_fact_internal(Fact::Template(TemplateFact {
+                template_id,
+                slots: slots.into_boxed_slice(),
+            }))
+            .fact_id())
     }
 
     fn is_ambiguous_empty_template_fact(template: &TemplateFactBody) -> bool {
@@ -1302,20 +1294,12 @@ impl Engine {
         }
 
         // Assert as a proper template fact.
-        let fact_id = self
-            .fact_base
-            .assert_template(template_id, slots.into_boxed_slice());
-
-        // Propagate through rete.
-        let fact = self
-            .fact_base
-            .get(fact_id)
-            .expect("just-asserted fact must exist")
-            .fact
-            .clone();
-        self.rete.assert_fact(fact_id, &fact, &self.fact_base);
-
-        Ok(fact_id)
+        Ok(self
+            .assert_fact_internal(Fact::Template(TemplateFact {
+                template_id,
+                slots: slots.into_boxed_slice(),
+            }))
+            .fact_id())
     }
 
     /// Convert an S-expression atom to a Value.
@@ -1770,6 +1754,7 @@ impl Engine {
                 | "unwatch"
                 | "refresh-agenda"
                 | "set-fact-duplication"
+                | "get-fact-duplication"
                 | "undefrule"
                 | "ppdefrule"
                 | "load"

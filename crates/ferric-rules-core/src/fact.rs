@@ -3,9 +3,10 @@
 //! Facts are the working memory of the rules engine. This module provides
 //! ordered facts, template facts, and the fact base that stores and indexes them.
 
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
 use slotmap::SlotMap;
 use smallvec::SmallVec;
+use std::hash::{Hash, Hasher};
 
 use crate::symbol::{Symbol, SymbolId};
 use crate::value::Value;
@@ -51,6 +52,22 @@ where
 
     if remove_key {
         index.remove(&key);
+    }
+}
+
+fn remove_from_candidate_index(
+    index: &mut HashMap<u64, SmallVec<[FactId; 1]>>,
+    fingerprint: u64,
+    id: FactId,
+) {
+    let mut remove_fingerprint = false;
+    if let Some(candidates) = index.get_mut(&fingerprint) {
+        candidates.retain(|candidate| *candidate != id);
+        remove_fingerprint = candidates.is_empty();
+    }
+
+    if remove_fingerprint {
+        index.remove(&fingerprint);
     }
 }
 
@@ -176,6 +193,18 @@ impl AsMut<[Value]> for OrderedFact {
     }
 }
 
+impl OrderedFact {
+    /// Compare ordered facts by relation and field contents.
+    ///
+    /// Fact identity and assertion timestamp are intentionally not part of
+    /// structural equality. Float fields use their bit representation, and
+    /// multifields are compared recursively through [`Value::structural_eq`].
+    #[must_use]
+    pub fn structural_eq(&self, other: &Self) -> bool {
+        self.relation == other.relation && values_structural_eq(&self.fields, &other.fields)
+    }
+}
+
 /// A template fact: template ID + slot values.
 ///
 /// The template defines the slot names and types; this fact holds the values.
@@ -198,12 +227,102 @@ impl AsMut<[Value]> for TemplateFact {
     }
 }
 
+impl TemplateFact {
+    /// Compare template facts by template identity and positional slot values.
+    ///
+    /// Slot order is the canonical order from the template definition. Fact
+    /// identity and assertion timestamp are intentionally ignored.
+    #[must_use]
+    pub fn structural_eq(&self, other: &Self) -> bool {
+        self.template_id == other.template_id && values_structural_eq(&self.slots, &other.slots)
+    }
+}
+
 /// A fact: either ordered or template-based.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Fact {
     Ordered(OrderedFact),
     Template(TemplateFact),
+}
+
+impl Fact {
+    /// Compare facts by their CLIPS-visible structure.
+    ///
+    /// Ordered facts compare relation plus ordered fields. Template facts
+    /// compare template identity plus positional slot values. Facts of
+    /// different kinds are never structurally equal.
+    #[must_use]
+    pub fn structural_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Ordered(lhs), Self::Ordered(rhs)) => lhs.structural_eq(rhs),
+            (Self::Template(lhs), Self::Template(rhs)) => lhs.structural_eq(rhs),
+            _ => false,
+        }
+    }
+}
+
+fn values_structural_eq(lhs: &[Value], rhs: &[Value]) -> bool {
+    lhs.len() == rhs.len() && lhs.iter().zip(rhs).all(|(lhs, rhs)| lhs.structural_eq(rhs))
+}
+
+fn hash_value_structurally(value: &Value, hasher: &mut FxHasher) {
+    match value {
+        Value::Symbol(symbol) => {
+            0_u8.hash(hasher);
+            symbol.hash(hasher);
+        }
+        Value::String(string) => {
+            1_u8.hash(hasher);
+            string.hash(hasher);
+        }
+        Value::Integer(integer) => {
+            2_u8.hash(hasher);
+            integer.hash(hasher);
+        }
+        Value::Float(float) => {
+            3_u8.hash(hasher);
+            float.to_bits().hash(hasher);
+        }
+        Value::Multifield(multifield) => {
+            4_u8.hash(hasher);
+            multifield.len().hash(hasher);
+            for value in multifield.iter() {
+                hash_value_structurally(value, hasher);
+            }
+        }
+        Value::ExternalAddress(address) => {
+            5_u8.hash(hasher);
+            address.type_id.hash(hasher);
+            (address.pointer as usize).hash(hasher);
+        }
+        Value::Void => {
+            6_u8.hash(hasher);
+        }
+    }
+}
+
+fn structural_fingerprint(fact: &Fact) -> u64 {
+    let mut hasher = FxHasher::default();
+    match fact {
+        Fact::Ordered(ordered) => {
+            0_u8.hash(&mut hasher);
+            ordered.relation.hash(&mut hasher);
+            ordered.fields.len().hash(&mut hasher);
+            for value in &ordered.fields {
+                hash_value_structurally(value, &mut hasher);
+            }
+        }
+        Fact::Template(template) => {
+            1_u8.hash(&mut hasher);
+            template.template_id.hash(&mut hasher);
+            template.slots.len().hash(&mut hasher);
+            for value in &template.slots {
+                hash_value_structurally(value, &mut hasher);
+            }
+        }
+    }
+    hasher.finish()
 }
 
 /// A fact entry: the fact itself plus metadata.
@@ -213,6 +332,15 @@ pub struct FactEntry {
     pub fact: Fact,
     pub id: FactId,
     pub timestamp: Timestamp,
+}
+
+/// Result of inserting a fact through [`FactBase::assert_fact`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactInsertionResult {
+    /// A new fact was inserted.
+    Inserted(FactId),
+    /// Duplicate rejection was requested and an equivalent fact exists.
+    Duplicate(FactId),
 }
 
 /// Fact base: storage and indexing for all facts in working memory.
@@ -227,6 +355,19 @@ pub struct FactBase {
     )]
     by_template: HashMap<TemplateId, HashSet<FactId>>,
     by_relation: SymbolMap<HashSet<FactId>>,
+    /// Structural fingerprint → candidate fact IDs.
+    ///
+    /// Fingerprints are only an accelerator. Every lookup confirms the full
+    /// structural equality contract, so hash collisions cannot cause a valid
+    /// assertion to be rejected.
+    ///
+    /// The index is derived state, so snapshots omit it and rebuild it lazily.
+    /// It is also invalidated while duplicates are allowed, avoiding any
+    /// duplicate-checking cost until the policy is disabled again. The common
+    /// no-duplicate case keeps its sole candidate inline without a heap
+    /// allocation.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    by_structural_fingerprint: Option<HashMap<u64, SmallVec<[FactId; 1]>>>,
     next_timestamp: Timestamp,
 }
 
@@ -238,45 +379,143 @@ impl FactBase {
             facts: SlotMap::with_key(),
             by_template: HashMap::default(),
             by_relation: SymbolMap::new(),
+            by_structural_fingerprint: Some(HashMap::default()),
             next_timestamp: Timestamp::ZERO,
         }
     }
 
-    fn insert_fact(&mut self, fact: Fact) -> FactId {
+    fn insert_fact(&mut self, fact: Fact, fingerprint: Option<u64>) -> FactId {
         let timestamp = self.next_timestamp;
         self.next_timestamp = self.next_timestamp.next();
 
-        self.facts.insert_with_key(|id| FactEntry {
+        let id = self.facts.insert_with_key(|id| FactEntry {
             fact,
             id,
             timestamp,
-        })
+        });
+        if let (Some(index), Some(fingerprint)) = (&mut self.by_structural_fingerprint, fingerprint)
+        {
+            index.entry(fingerprint).or_default().push(id);
+        }
+        id
+    }
+
+    fn ensure_structural_index(&mut self) {
+        if self.by_structural_fingerprint.is_some() {
+            return;
+        }
+
+        let mut index: HashMap<u64, SmallVec<[FactId; 1]>> = HashMap::default();
+        for (id, entry) in &self.facts {
+            index
+                .entry(structural_fingerprint(&entry.fact))
+                .or_default()
+                .push(id);
+        }
+
+        // SlotMap iteration follows slot order, which may differ from assertion
+        // order after slot reuse. Keep candidates oldest-first so lookups remain
+        // deterministic after lazy rebuilds and snapshot restoration.
+        for candidates in index.values_mut() {
+            if candidates.len() > 1 {
+                candidates.sort_unstable_by_key(|id| {
+                    self.facts
+                        .get(*id)
+                        .expect("structural index only contains active facts")
+                        .timestamp
+                });
+            }
+        }
+
+        self.by_structural_fingerprint = Some(index);
+    }
+
+    fn find_equivalent_with_fingerprint(&self, fact: &Fact, fingerprint: u64) -> Option<FactId> {
+        self.by_structural_fingerprint
+            .as_ref()
+            .expect("structural index must be initialized before lookup")
+            .get(&fingerprint)?
+            .iter()
+            .copied()
+            .find(|id| {
+                self.facts
+                    .get(*id)
+                    .is_some_and(|entry| entry.fact.structural_eq(fact))
+            })
+    }
+
+    /// Find the oldest active fact structurally equivalent to `fact`.
+    ///
+    /// The structural fingerprint narrows candidates, then full equality
+    /// resolves collisions. Choosing the oldest assertion makes the returned
+    /// existing ID deterministic when duplicates were previously enabled.
+    #[must_use]
+    pub fn find_equivalent(&mut self, fact: &Fact) -> Option<FactId> {
+        self.ensure_structural_index();
+        let fingerprint = structural_fingerprint(fact);
+        self.find_equivalent_with_fingerprint(fact, fingerprint)
+    }
+
+    /// Insert `fact`, optionally rejecting an equivalent active fact.
+    ///
+    /// When `allow_duplicates` is `false`, lookup and insertion share one
+    /// structural fingerprint calculation. When it is `true`, the derived
+    /// duplicate index is invalidated and no structural hashing is performed.
+    pub fn assert_fact(&mut self, fact: Fact, allow_duplicates: bool) -> FactInsertionResult {
+        let fingerprint = if allow_duplicates {
+            self.by_structural_fingerprint = None;
+            None
+        } else {
+            self.ensure_structural_index();
+            let fingerprint = structural_fingerprint(&fact);
+            if let Some(existing) = self.find_equivalent_with_fingerprint(&fact, fingerprint) {
+                return FactInsertionResult::Duplicate(existing);
+            }
+            Some(fingerprint)
+        };
+
+        let id = match &fact {
+            Fact::Ordered(ordered) => {
+                let relation = ordered.relation;
+                let id = self.insert_fact(fact, fingerprint);
+                self.by_relation
+                    .get_or_insert_with(relation, HashSet::default)
+                    .insert(id);
+                id
+            }
+            Fact::Template(template) => {
+                let template_id = template.template_id;
+                let id = self.insert_fact(fact, fingerprint);
+                self.by_template.entry(template_id).or_default().insert(id);
+                id
+            }
+        };
+
+        FactInsertionResult::Inserted(id)
     }
 
     /// Assert an ordered fact into working memory.
     ///
     /// Returns the unique `FactId` assigned to the fact.
     pub fn assert_ordered(&mut self, relation: Symbol, fields: SmallVec<[Value; 8]>) -> FactId {
-        let id = self.insert_fact(Fact::Ordered(OrderedFact { relation, fields }));
-
-        // Update relation index
-        self.by_relation
-            .get_or_insert_with(relation, HashSet::default)
-            .insert(id);
-
-        id
+        match self.assert_fact(Fact::Ordered(OrderedFact { relation, fields }), true) {
+            FactInsertionResult::Inserted(id) => id,
+            FactInsertionResult::Duplicate(_) => {
+                unreachable!("allowing duplicates always inserts the fact")
+            }
+        }
     }
 
     /// Assert a template fact into working memory.
     ///
     /// Returns the unique `FactId` assigned to the fact.
     pub fn assert_template(&mut self, template_id: TemplateId, slots: Box<[Value]>) -> FactId {
-        let id = self.insert_fact(Fact::Template(TemplateFact { template_id, slots }));
-
-        // Update template index
-        self.by_template.entry(template_id).or_default().insert(id);
-
-        id
+        match self.assert_fact(Fact::Template(TemplateFact { template_id, slots }), true) {
+            FactInsertionResult::Inserted(id) => id,
+            FactInsertionResult::Duplicate(_) => {
+                unreachable!("allowing duplicates always inserts the fact")
+            }
+        }
     }
 
     /// Retract a fact from working memory.
@@ -284,6 +523,10 @@ impl FactBase {
     /// Returns the removed fact entry if it existed, or `None` if not found.
     pub fn retract(&mut self, id: FactId) -> Option<FactEntry> {
         let entry = self.facts.remove(id)?;
+        let fingerprint = self
+            .by_structural_fingerprint
+            .as_ref()
+            .map(|_| structural_fingerprint(&entry.fact));
 
         // Clean up indices
         match &entry.fact {
@@ -293,6 +536,10 @@ impl FactBase {
             Fact::Template(template) => {
                 remove_from_set_index(&mut self.by_template, template.template_id, id);
             }
+        }
+        if let (Some(index), Some(fingerprint)) = (&mut self.by_structural_fingerprint, fingerprint)
+        {
+            remove_from_candidate_index(index, fingerprint, id);
         }
 
         Some(entry)
@@ -392,6 +639,60 @@ mod tests {
 
         assert_eq!(fb.get(id1).unwrap().timestamp, Timestamp::new(0));
         assert_eq!(fb.get(id2).unwrap().timestamp, Timestamp::new(1));
+    }
+
+    #[test]
+    fn structural_lookup_distinguishes_ordered_field_contents() {
+        let mut table = SymbolTable::new();
+        let mut fb = FactBase::new();
+        let relation = table.intern_symbol("item", StringEncoding::Ascii).unwrap();
+        let first = fb.assert_ordered(relation, smallvec::smallvec![Value::Integer(1)]);
+        let equivalent = Fact::Ordered(OrderedFact {
+            relation,
+            fields: smallvec::smallvec![Value::Integer(1)],
+        });
+        let different = Fact::Ordered(OrderedFact {
+            relation,
+            fields: smallvec::smallvec![Value::Integer(2)],
+        });
+
+        assert_eq!(fb.find_equivalent(&equivalent), Some(first));
+        assert_eq!(fb.find_equivalent(&different), None);
+    }
+
+    #[test]
+    fn structural_lookup_tracks_duplicate_retraction() {
+        let mut table = SymbolTable::new();
+        let mut fb = FactBase::new();
+        let relation = table.intern_symbol("item", StringEncoding::Ascii).unwrap();
+        let fields = smallvec::smallvec![Value::Integer(1)];
+        let first = fb.assert_ordered(relation, fields.clone());
+        let second = fb.assert_ordered(relation, fields.clone());
+        let equivalent = Fact::Ordered(OrderedFact { relation, fields });
+
+        assert_eq!(fb.find_equivalent(&equivalent), Some(first));
+        fb.retract(first).unwrap();
+        assert_eq!(fb.find_equivalent(&equivalent), Some(second));
+        fb.retract(second).unwrap();
+        assert_eq!(fb.find_equivalent(&equivalent), None);
+    }
+
+    #[test]
+    fn structural_lookup_rebuild_keeps_oldest_duplicate_after_slot_reuse() {
+        let mut table = SymbolTable::new();
+        let mut fb = FactBase::new();
+        let relation = table.intern_symbol("item", StringEncoding::Ascii).unwrap();
+        let filler = fb.assert_ordered(relation, smallvec::smallvec![Value::Integer(0)]);
+        let oldest = fb.assert_ordered(relation, smallvec::smallvec![Value::Integer(1)]);
+        fb.retract(filler).unwrap();
+        let newest = fb.assert_ordered(relation, smallvec::smallvec![Value::Integer(1)]);
+        let equivalent = Fact::Ordered(OrderedFact {
+            relation,
+            fields: smallvec::smallvec![Value::Integer(1)],
+        });
+
+        assert_ne!(oldest, newest);
+        assert_eq!(fb.find_equivalent(&equivalent), Some(oldest));
     }
 
     #[test]
