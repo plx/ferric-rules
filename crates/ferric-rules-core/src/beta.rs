@@ -254,7 +254,15 @@ pub struct RuleId(pub u32);
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BetaNode {
     /// Root node: entry point for all matches.
-    Root { children: Rc<[NodeId]> },
+    ///
+    /// Its memory contains exactly one dummy token representing the empty LHS
+    /// prefix. Every first conditional element is left-activated from that
+    /// token, just like later conditional elements are activated from their
+    /// parent beta memories.
+    Root {
+        memory: BetaMemoryId,
+        children: Rc<[NodeId]>,
+    },
     /// Join node: combines left (parent beta memory) with right (alpha memory).
     Join {
         parent: NodeId,
@@ -343,9 +351,11 @@ impl BetaNetwork {
     #[must_use]
     pub fn new(root_node_id: NodeId) -> Self {
         let mut nodes = HashMap::default();
+        let root_memory_id = BetaMemoryId(0);
         nodes.insert(
             root_node_id,
             BetaNode::Root {
+                memory: root_memory_id,
                 children: Rc::from([]),
             },
         );
@@ -355,13 +365,13 @@ impl BetaNetwork {
 
         Self {
             nodes,
-            memories: Vec::new(),
+            memories: vec![BetaMemory::new(root_memory_id)],
             neg_memories: Vec::new(),
             ncc_memories: Vec::new(),
             exists_memories: Vec::new(),
             root_id: root_node_id,
             next_node_id,
-            next_memory_id: 0,
+            next_memory_id: 1,
             next_neg_memory_id: 0,
             next_ncc_memory_id: 0,
             next_exists_memory_id: 0,
@@ -647,11 +657,12 @@ impl BetaNetwork {
 
     /// Get the beta memory ID associated with a node.
     ///
-    /// Returns `None` for root nodes or nodes without a beta memory.
+    /// Returns `None` for nodes without a beta memory.
     #[must_use]
     pub fn memory_id_for_node(&self, node_id: NodeId) -> Option<BetaMemoryId> {
         match self.get_node(node_id)? {
-            BetaNode::Join { memory, .. }
+            BetaNode::Root { memory, .. }
+            | BetaNode::Join { memory, .. }
             | BetaNode::Negative { memory, .. }
             | BetaNode::Ncc { memory, .. }
             | BetaNode::Exists { memory, .. } => Some(*memory),
@@ -774,7 +785,7 @@ impl BetaNetwork {
     fn attach_child_to_parent(&mut self, parent: NodeId, child_id: NodeId) {
         if let Some(parent_node) = self.nodes.get_mut(&parent) {
             match parent_node {
-                BetaNode::Root { children }
+                BetaNode::Root { children, .. }
                 | BetaNode::Join { children, .. }
                 | BetaNode::Negative { children, .. }
                 | BetaNode::Ncc { children, .. }
@@ -800,7 +811,7 @@ impl BetaNetwork {
         // Check 1: All node IDs in children fields exist in nodes map
         for (node_id, node) in &self.nodes {
             let children = match node {
-                BetaNode::Root { children }
+                BetaNode::Root { children, .. }
                 | BetaNode::Join { children, .. }
                 | BetaNode::Negative { children, .. }
                 | BetaNode::Ncc { children, .. }
@@ -964,9 +975,12 @@ impl BetaNetwork {
             self.root_id
         );
 
+        let Some(BetaNode::Root { memory, .. }) = self.nodes.get(&self.root_id) else {
+            panic!("Root node {:?} is not a Root variant", self.root_id);
+        };
         assert!(
-            matches!(self.nodes.get(&self.root_id), Some(BetaNode::Root { .. })),
-            "Root node {:?} is not a Root variant",
+            self.memory(*memory).is_some(),
+            "Root node {:?} references non-existent beta memory {memory:?}",
             self.root_id
         );
 
@@ -1119,7 +1133,7 @@ mod tests {
         assert_eq!(memory.id, mem_id);
 
         // Verify root has join as child
-        if let Some(BetaNode::Root { children }) = net.get_node(root) {
+        if let Some(BetaNode::Root { children, .. }) = net.get_node(root) {
             assert_eq!(children.len(), 1);
             assert_eq!(children[0], join_id);
         } else {
@@ -1881,7 +1895,7 @@ mod proptests {
                 if let Some(node_id) = node_id_opt {
                     if let Some(parent_node) = net.get_node(parent_id) {
                         let children: Option<&Rc<[NodeId]>> = match parent_node {
-                            BetaNode::Root { children }
+                            BetaNode::Root { children, .. }
                             | BetaNode::Join { children, .. }
                             | BetaNode::Negative { children, .. }
                             | BetaNode::Ncc { children, .. }

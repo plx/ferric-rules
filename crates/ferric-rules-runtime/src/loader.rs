@@ -624,11 +624,10 @@ impl Engine {
             }
             self.module_registry.set_current_module(saved_module);
 
-            // Ensure (initial-fact) is present AFTER rules are compiled but BEFORE
-            // deffacts are asserted.  This mirrors CLIPS' built-in (initial-fact)
-            // mechanism: it provides the root token required by top-level NCC/forall
-            // subnetworks so that items asserted through deffacts are properly evaluated.
-            // Asserted only once; subsequent load_str calls skip if already present.
+            // Ensure (initial-fact) is present AFTER rules are compiled but
+            // BEFORE deffacts are asserted. This mirrors CLIPS' built-in fact
+            // and satisfies the implicit condition used for empty-LHS and
+            // test-only rules. It is asserted only once.
             if let Err(e) = self.ensure_initial_fact() {
                 errors.push(e);
             }
@@ -673,9 +672,9 @@ impl Engine {
 
     /// Ensure `(initial-fact)` is present in working memory.
     ///
-    /// `(initial-fact)` provides the root token for top-level NCC/negation/forall CEs,
-    /// mirroring CLIPS' built-in `(initial-fact)` mechanism.  It is asserted once;
-    /// subsequent calls are no-ops if it is already present.
+    /// `(initial-fact)` mirrors CLIPS' built-in fact and satisfies the implicit
+    /// condition used for empty-LHS and test-only rules. It is asserted once;
+    /// subsequent calls are no-ops.
     ///
     /// The `FactId` is stored in `self.initial_fact_id` so that `facts()` can
     /// exclude it from user-visible results.
@@ -2642,13 +2641,10 @@ impl Engine {
             conditions.push(condition);
         }
 
-        // If the condition list is empty (empty-LHS rule or test-only rule), or if the
-        // first condition is an NCC (e.g., forall or not/and as the leading CE), inject
-        // an implicit (initial-fact) join as the first condition, mirroring CLIPS' built-in
-        // (initial-fact) mechanism. Empty-LHS rules implicitly match (initial-fact) after
-        // (reset) in CLIPS.
-        if conditions.is_empty() || matches!(conditions.first(), Some(CompilableCondition::Ncc(_)))
-        {
+        // Empty-LHS and test-only rules use CLIPS' built-in (initial-fact)
+        // mechanism. Conditional elements, including a leading NCC, are seeded
+        // uniformly by the beta root's empty-prefix token.
+        if conditions.is_empty() {
             let initial_sym = self
                 .symbol_table
                 .intern_symbol("initial-fact", self.config.string_encoding)

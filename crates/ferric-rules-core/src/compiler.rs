@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap as HashMap;
 use smallvec::SmallVec;
 
 use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
-use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId, Salience};
+use crate::beta::{BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
 use crate::fact::FactBase;
 use crate::rete::ReteNetwork;
@@ -239,6 +239,10 @@ impl ReteCompiler {
         let mut var_map = VarMap::new();
         let mut bound_vars = SymbolSet::new();
         let mut current_parent = rete.beta.root_id();
+        let existing_root_children = match rete.beta.get_node(rete.beta.root_id()) {
+            Some(BetaNode::Root { children, .. }) => children.len(),
+            _ => 0,
+        };
 
         for condition in conditions {
             match condition {
@@ -270,6 +274,20 @@ impl ReteCompiler {
         let terminal = rete
             .beta
             .create_terminal_node(current_parent, rule_id, salience);
+
+        // The beta root's dummy token predates compilation. Left-activate only
+        // children added while compiling this rule so leading negative, exists,
+        // and NCC CEs observe the empty prefix immediately without replaying
+        // already-compiled rules.
+        let new_root_children: Vec<NodeId> = match rete.beta.get_node(rete.beta.root_id()) {
+            Some(BetaNode::Root { children, .. }) => children
+                .iter()
+                .skip(existing_root_children)
+                .copied()
+                .collect(),
+            _ => Vec::new(),
+        };
+        rete.activate_root_children(&new_root_children, fact_base);
 
         Ok(CompileResult {
             rule_id,
@@ -694,6 +712,62 @@ mod tests {
     }
 
     #[test]
+    fn fr_rete_002_leading_negative_uses_empty_root_prefix() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut table = new_table();
+        let blocked_relation = intern(&mut table, "blocked");
+
+        let rule = CompilableRule {
+            rule_id: compiler.allocate_rule_id(),
+            salience: Salience::DEFAULT,
+            patterns: vec![CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(blocked_relation),
+                constant_tests: vec![],
+                variable_slots: vec![],
+                negated_variable_slots: vec![],
+                negated: true,
+                exists: false,
+            }],
+        };
+
+        compiler
+            .compile_rule(&mut rete, &fact_base, &rule)
+            .expect("compile leading negative rule");
+        assert_eq!(
+            rete.agenda.len(),
+            1,
+            "absence should activate the leading negative"
+        );
+
+        let root_memory = rete
+            .beta
+            .memory_id_for_node(rete.beta.root_id())
+            .and_then(|memory_id| rete.beta.get_memory(memory_id))
+            .expect("root memory");
+        assert_eq!(root_memory.len(), 1, "one empty-prefix token");
+
+        let blocker_id = fact_base.assert_ordered(blocked_relation, SmallVec::new());
+        let blocking_fact = fact_base
+            .get(blocker_id)
+            .expect("blocking fact")
+            .fact
+            .clone();
+        rete.assert_fact(blocker_id, &blocking_fact, &fact_base);
+        assert!(rete.agenda.is_empty(), "matching fact should block");
+
+        fact_base.retract(blocker_id);
+        rete.retract_fact(blocker_id, &blocking_fact, &fact_base);
+        assert_eq!(
+            rete.agenda.len(),
+            1,
+            "retracting the last blocker should reactivate"
+        );
+        rete.debug_assert_consistency();
+    }
+
+    #[test]
     fn test_compile_empty_rule_error() {
         let mut compiler = ReteCompiler::new();
         let mut rete = ReteNetwork::new();
@@ -1082,7 +1156,7 @@ mod tests {
             other => panic!("Expected join node, got {other:?}"),
         };
 
-        if let Some(BetaNode::Root { children }) = rete.beta.get_node(rete.beta.root_id()) {
+        if let Some(BetaNode::Root { children, .. }) = rete.beta.get_node(rete.beta.root_id()) {
             assert_eq!(children.len(), 1);
             assert_eq!(children[0], join1_id);
         } else {
