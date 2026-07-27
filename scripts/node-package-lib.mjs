@@ -12,6 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { npmInvocation } from "./npm-command.mjs";
+import { findNonLfTextFiles } from "./node-package-text.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 
@@ -60,6 +61,9 @@ export async function validateNodePackage() {
     cargoManifest,
     targets,
     nativeEntries,
+    mainPackageText,
+    nativeLoaderText,
+    targetsText,
   ] = await Promise.all([
     readJson(join(mainPackageDirectory, "package.json")),
     readJson(join(mainPackageDirectory, "package-lock.json")),
@@ -67,6 +71,9 @@ export async function validateNodePackage() {
     readFile(join(repositoryRoot, "Cargo.toml"), "utf8"),
     loadTargets(),
     readdir(join(mainPackageDirectory, "native")),
+    readFile(join(mainPackageDirectory, "package.json"), "utf8"),
+    readFile(join(mainPackageDirectory, "native", "index.js"), "utf8"),
+    readFile(targetsPath, "utf8"),
   ]);
 
   const errors = [];
@@ -95,6 +102,26 @@ export async function validateNodePackage() {
     !mainPackage.files?.some((entry) => entry.replace(/\/$/, "") === "native")
   ) {
     errors.push("packages/ferric/package.json must include native/ in files");
+  }
+
+  const nonLfTextFiles = findNonLfTextFiles([
+    {
+      path: "packages/ferric/package.json",
+      contents: mainPackageText,
+    },
+    {
+      path: "packages/ferric/native/index.js",
+      contents: nativeLoaderText,
+    },
+    {
+      path: "packages/ferric/native/targets.json",
+      contents: targetsText,
+    },
+  ]);
+  if (nonLfTextFiles.length !== 0) {
+    errors.push(
+      `release package text files must use LF line endings: ${nonLfTextFiles.join(", ")}`,
+    );
   }
 
   const looseNativeBinaries = nativeEntries.filter((entry) =>
