@@ -370,6 +370,354 @@ mod tests {
     }
 
     #[test]
+    fn fr_rete_005_double_not_has_one_activation() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule any-foo
+                (not (not (foo ?x)))
+                =>
+                (assert (found-foo)))
+        ",
+        );
+
+        engine.assert_ordered("foo", 1_i64).unwrap();
+        engine.assert_ordered("foo", 2_i64).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "double negation must contribute one Boolean activation"
+        );
+    }
+
+    #[test]
+    fn fr_rete_005_double_not_survives_partial_support_retract() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule any-foo
+                (not (not (foo ?x)))
+                =>
+                (assert (found-foo)))
+        ",
+        );
+
+        let first = engine.assert_ordered("foo", 1_i64).unwrap();
+        engine.assert_ordered("foo", 2_i64).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "two supports must still produce one existential activation"
+        );
+        engine.retract(first).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "one remaining support must keep the existential activation alive"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn fr_rete_005_double_not_retracts_after_last_support() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule any-foo
+                (not (not (foo ?x)))
+                =>
+                (assert (found-foo)))
+        ",
+        );
+
+        let first = engine.assert_ordered("foo", 1_i64).unwrap();
+        let second = engine.assert_ordered("foo", 2_i64).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "two supports must still produce one existential activation"
+        );
+        engine.retract(first).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "the activation must survive until the final support is removed"
+        );
+        engine.retract(second).unwrap();
+
+        assert_eq!(
+            engine.agenda_len(),
+            0,
+            "the existential activation must retract with its final support"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
+    fn fr_rete_005_double_not_rejects_escaped_binding() {
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defrule invalid
+                    (not (not (foo ?x)))
+                    =>
+                    (printout t ?x crlf))
+            ",
+            )
+            .expect_err("an existential-local variable must not escape to the RHS");
+
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                crate::loader::LoadError::Compile(message)
+                    if message.contains("not exported by existential")
+            )),
+            "expected an existential binding-scope diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn fr_rete_005_double_not_rejects_escaped_multifield_binding() {
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defrule invalid
+                    (not (not (foo $?items)))
+                    =>
+                    (printout t $?items crlf))
+            ",
+            )
+            .expect_err("an existential-local multifield variable must not escape to the RHS");
+
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                crate::loader::LoadError::Compile(message)
+                    if message.contains("not exported by existential")
+            )),
+            "expected an existential multifield binding-scope diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn fr_rete_005_double_not_rejects_local_binding_in_later_test() {
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defrule invalid
+                    (not (not (foo ?x)))
+                    (test (> ?x 0))
+                    =>
+                    (assert (unexpected)))
+            ",
+            )
+            .expect_err("an existential-local variable must not escape to a later test CE");
+
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                crate::loader::LoadError::Compile(message)
+                    if message.contains("not exported by existential")
+            )),
+            "expected an existential test-scope diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn fr_rete_005_explicit_exists_rejects_the_same_escaped_binding() {
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defrule invalid
+                    (exists (foo ?x))
+                    =>
+                    (printout t ?x crlf))
+            ",
+            )
+            .expect_err("explicit exists and double negation must share binding scope");
+
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                crate::loader::LoadError::Compile(message)
+                    if message.contains("not exported by existential")
+            )),
+            "expected an existential binding-scope diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn fr_rete_005_complex_existential_constraint_fails_during_load() {
+        let mut engine = new_utf8_engine();
+        let errors = engine
+            .load_str(
+                r"
+                (defrule invalid
+                    (not (not (foo ?x&:(> (* ?x ?x) 4))))
+                    =>
+                    (assert (unexpected)))
+            ",
+            )
+            .expect_err("an existential-local runtime predicate must not fail silently");
+
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                crate::loader::LoadError::Compile(message)
+                    if message.contains("complex constraints inside existential patterns")
+            )),
+            "expected an explicit existential match-time diagnostic, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn fr_rete_005_rhs_can_rebind_existential_local_name() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule valid
+                (not (not (foo ?x)))
+                =>
+                (bind ?x rebound)
+                (assert (rebound-value ?x)))
+        ",
+        );
+
+        engine.assert_ordered("foo", 1_i64).unwrap();
+        let run = run_to_completion(&mut engine);
+        assert_eq!(run.rules_fired, 1);
+        assert_has_fact_with_relation(&engine, "rebound-value");
+    }
+
+    #[test]
+    fn fr_rete_005_rhs_can_rebind_existential_local_multifield_name() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule valid
+                (not (not (foo $?items)))
+                =>
+                (bind $?items (create$ rebound values))
+                (assert (rebound-value $?items)))
+        ",
+        );
+
+        engine.assert_ordered("foo", 1_i64).unwrap();
+        let run = run_to_completion(&mut engine);
+        assert_eq!(run.rules_fired, 1);
+        assert_has_fact_with_relation(&engine, "rebound-value");
+    }
+
+    #[test]
+    fn fr_rete_005_rhs_branch_bind_can_rebind_existential_local_name() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule valid
+                (not (not (foo ?x)))
+                =>
+                (if TRUE then (bind ?x rebound))
+                (assert (rebound-value ?x)))
+        ",
+        );
+
+        engine.assert_ordered("foo", 1_i64).unwrap();
+        let run = run_to_completion(&mut engine);
+        assert_eq!(run.rules_fired, 1);
+        assert_has_fact_with_relation(&engine, "rebound-value");
+    }
+
+    #[test]
+    fn fr_rete_005_later_positive_pattern_exports_its_own_binding() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule valid
+                (not (not (foo ?x)))
+                (bar ?x)
+                =>
+                (assert (matched ?x)))
+        ",
+        );
+
+        engine.assert_ordered("foo", 1_i64).unwrap();
+        engine.assert_ordered("bar", 2_i64).unwrap();
+        let run = run_to_completion(&mut engine);
+        assert_eq!(run.rules_fired, 1);
+        assert_has_fact_with_relation(&engine, "matched");
+    }
+
+    #[test]
+    fn fr_rete_005_double_not_correlates_previously_bound_variable() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defrule matching-foo
+                (key ?x)
+                (not (not (foo ?x)))
+                =>
+                (assert (matched ?x)))
+        ",
+        );
+
+        engine.assert_ordered("key", 1_i64).unwrap();
+        engine.assert_ordered("key", 2_i64).unwrap();
+        engine.assert_ordered("foo", 2_i64).unwrap();
+
+        assert_eq!(engine.agenda_len(), 1);
+        let run = run_to_completion(&mut engine);
+        assert_eq!(run.rules_fired, 1);
+        assert_has_fact_with_relation(&engine, "matched");
+    }
+
+    #[test]
+    fn fr_rete_005_double_not_handles_online_compile_and_reset() {
+        let mut engine = new_utf8_engine();
+        engine.assert_ordered("foo", 1_i64).unwrap();
+        engine.assert_ordered("foo", 2_i64).unwrap();
+
+        load_ok(
+            &mut engine,
+            r"
+            (defrule any-foo
+                (not (not (foo ?x)))
+                =>
+                (assert (found-foo)))
+        ",
+        );
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "online compilation must backfill one existential activation"
+        );
+
+        engine.reset().unwrap();
+        assert_eq!(engine.agenda_len(), 0);
+        engine.assert_ordered("foo", 3_i64).unwrap();
+        engine.assert_ordered("foo", 4_i64).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "reset must preserve existential cardinality for new supports"
+        );
+        assert_rete_consistent(engine.rete());
+    }
+
+    #[test]
     fn nested_function_call_in_rhs_evaluates() {
         let mut engine = new_utf8_engine();
         load_ok(
