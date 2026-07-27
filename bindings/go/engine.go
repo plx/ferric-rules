@@ -261,6 +261,9 @@ func (e *Engine) AssertString(source string) (uint64, error) {
 }
 
 // AssertFact asserts an ordered fact with the given relation and fields.
+// Slice values are recursively copied into temporary Ferric-owned multifields;
+// the Go inputs remain caller-owned and are not retained by Ferric. Nested
+// slices deeper than 128 levels return ErrInvalidArgument.
 func (e *Engine) AssertFact(relation string, fields ...any) (uint64, error) {
 	handle, release, err := e.leaseHandle()
 	if err != nil {
@@ -290,6 +293,9 @@ func (e *Engine) AssertFact(relation string, fields ...any) (uint64, error) {
 }
 
 // AssertTemplate asserts a template fact with named slot values.
+// Slice values are recursively copied into temporary Ferric-owned multifields;
+// the Go inputs remain caller-owned and are not retained by Ferric. Nested
+// slices deeper than 128 levels return ErrInvalidArgument.
 func (e *Engine) AssertTemplate(templateName string, slots map[string]any) (uint64, error) {
 	handle, release, err := e.leaseHandle()
 	if err != nil {

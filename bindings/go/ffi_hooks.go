@@ -50,6 +50,7 @@ var (
 	ffiEngineTemplateSlotCount      = ffi.EngineTemplateSlotCount
 	ffiEngineTemplateSlotName       = ffi.EngineTemplateSlotName
 	ffiEngineGetFactRelation        = ffi.EngineGetFactRelation
+	ffiValueMultifieldCopy          = ffi.ValueMultifieldCopy
 	ffiValueFree                    = ffi.ValueFree
 )
 

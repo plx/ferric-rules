@@ -65,6 +65,7 @@ func resetFFIHooks() {
 	ffiEngineTemplateSlotCount = ffi.EngineTemplateSlotCount
 	ffiEngineTemplateSlotName = ffi.EngineTemplateSlotName
 	ffiEngineGetFactRelation = ffi.EngineGetFactRelation
+	ffiValueMultifieldCopy = ffi.ValueMultifieldCopy
 	ffiValueFree = ffi.ValueFree
 	factsToWire = FactsToWire
 }
@@ -308,12 +309,42 @@ func TestManualFFIValueConversionEdges(t *testing.T) {
 	t.Run("multifield error frees converted elements", func(t *testing.T) {
 		withFFIHooks(t)
 		freed := 0
-		ffiValueFree = func(*ffi.Value) { freed++ }
-		if _, err := goToFFIValue([]any{"a", "b", struct{}{}}); !errors.Is(err, errUnsupportedGoTypeForFFI) {
+		ffiValueFree = func(value *ffi.Value) {
+			freed++
+			ffi.ValueFree(value)
+		}
+		if _, err := goToFFIValue([]any{"a", []any{"b"}, struct{}{}}); !errors.Is(err, errUnsupportedGoTypeForFFI) {
 			t.Fatalf("expected unsupported error, got %v", err)
 		}
-		if freed != 2 {
-			t.Fatalf("freed %d converted elements, want 2", freed)
+		if freed != 3 {
+			t.Fatalf("freed %d converted values, want 3", freed)
+		}
+	})
+
+	t.Run("multifield copy failure frees every borrowed element", func(t *testing.T) {
+		withFFIHooks(t)
+		copied := 0
+		freed := 0
+		ffiValueMultifieldCopy = func(elements []ffi.Value) (ffi.Value, ffi.ErrorCode) {
+			copied++
+			if len(elements) != 3 {
+				t.Fatalf("copy received %d elements, want 3", len(elements))
+			}
+			return ffi.ValueVoid(), ffi.ErrInvalidArgument
+		}
+		ffiValueFree = func(value *ffi.Value) {
+			freed++
+			ffi.ValueFree(value)
+		}
+
+		if _, err := goToFFIValue([]any{"a", Symbol("b"), int64(3)}); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("copy failure = %v, want ErrInvalidArgument", err)
+		}
+		if copied != 1 {
+			t.Fatalf("copy called %d times, want 1", copied)
+		}
+		if freed != 3 {
+			t.Fatalf("freed %d borrowed elements, want 3", freed)
 		}
 	})
 

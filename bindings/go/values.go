@@ -11,13 +11,21 @@ var (
 	errUnsupportedGoTypeForFFI = errors.New("ferric: unsupported Go type for FFI conversion")
 )
 
+const maxMultifieldNestingDepth = 128
+
 // Symbol is a distinct type representing a CLIPS symbol value.
 // Symbols are unquoted identifiers (e.g. TRUE, FALSE, foo) as
 // opposed to quoted string literals.
 type Symbol string
 
-// goToFFIValue converts a Go value to a C FerricValue for passing to the FFI layer.
+// goToFFIValue converts a Go value to a Ferric-owned C FerricValue for passing
+// to the FFI layer. Recursive multifields are constructed through Ferric's
+// copy API; no Go- or C-allocated value array is transferred to Rust cleanup.
 func goToFFIValue(v any) (ffi.Value, error) {
+	return goToFFIValueAtDepth(v, 0)
+}
+
+func goToFFIValueAtDepth(v any, depth int) (ffi.Value, error) {
 	switch val := v.(type) {
 	case int:
 		return ffi.ValueInteger(int64(val)), nil
@@ -41,9 +49,16 @@ func goToFFIValue(v any) (ffi.Value, error) {
 	case nil:
 		return ffi.ValueVoid(), nil
 	case []any:
+		if depth >= maxMultifieldNestingDepth {
+			return ffi.Value{}, fmt.Errorf(
+				"%w: multifield nesting exceeds %d levels",
+				ErrInvalidArgument,
+				maxMultifieldNestingDepth,
+			)
+		}
 		elements := make([]ffi.Value, len(val))
 		for i, elem := range val {
-			ev, err := goToFFIValue(elem)
+			ev, err := goToFFIValueAtDepth(elem, depth+1)
 			if err != nil {
 				// Free the elements converted before this failure. Goes through
 				// the ffiValueFree seam (as AssertFact/AssertTemplate do) so the
@@ -55,7 +70,14 @@ func goToFFIValue(v any) (ffi.Value, error) {
 			}
 			elements[i] = ev
 		}
-		return ffi.ValueMultifield(elements), nil
+		result, rc := ffiValueMultifieldCopy(elements)
+		for i := range elements {
+			ffiValueFree(&elements[i])
+		}
+		if rc != ffi.ErrOK {
+			return ffi.Value{}, errorFromFFI(rc, nil)
+		}
+		return result, nil
 	default:
 		return ffi.Value{}, fmt.Errorf("%w: %T", errUnsupportedGoTypeForFFI, v)
 	}
