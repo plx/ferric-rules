@@ -690,12 +690,11 @@ impl Engine {
             .intern_symbol("initial-fact", self.config.string_encoding)
             .map_err(|e| LoadError::Compile(format!("initial-fact symbol: {e}")))?;
 
-        let fid = self
-            .fact_base
-            .assert_ordered(initial_sym, smallvec::SmallVec::new());
-        let stored = self.fact_base.get(fid).unwrap().fact.clone();
-        self.rete.assert_fact(fid, &stored, &self.fact_base);
-        self.initial_fact_id = Some(fid);
+        let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+            relation: initial_sym,
+            fields: smallvec::SmallVec::new(),
+        }));
+        self.initial_fact_id = Some(result.fact_id());
 
         Ok(())
     }

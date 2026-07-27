@@ -13,8 +13,8 @@ use thiserror::Error;
 
 use ferric_rules_core::beta::RuleId;
 use ferric_rules_core::{
-    EncodingError, Fact, FactBase, FactId, FerricString, IntoFieldValues, ReteCompiler,
-    ReteNetwork, Symbol, SymbolTable, TemplateFact, TemplateId, Value,
+    EncodingError, Fact, FactBase, FactId, FactInsertionResult, FerricString, IntoFieldValues,
+    ReteCompiler, ReteNetwork, Symbol, SymbolTable, TemplateFact, TemplateId, Value,
 };
 
 use crate::actions::{self, ActionError, CompiledRuleInfo};
@@ -278,22 +278,13 @@ impl Engine {
     }
 
     pub(crate) fn assert_fact_internal(&mut self, fact: Fact) -> FactAssertionResult {
-        if !self.fact_duplication() {
-            if let Some(existing) = self.fact_base.find_equivalent(&fact) {
-                return FactAssertionResult::Duplicate(existing);
+        match self.fact_base.assert_fact(fact, self.fact_duplication()) {
+            FactInsertionResult::Inserted(fact_id) => {
+                propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
+                FactAssertionResult::Asserted(fact_id)
             }
+            FactInsertionResult::Duplicate(fact_id) => FactAssertionResult::Duplicate(fact_id),
         }
-
-        let fact_id = match fact {
-            Fact::Ordered(ordered) => self
-                .fact_base
-                .assert_ordered(ordered.relation, ordered.fields),
-            Fact::Template(template) => self
-                .fact_base
-                .assert_template(template.template_id, template.slots),
-        };
-        propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
-        FactAssertionResult::Asserted(fact_id)
     }
 
     /// Assert an ordered fact into working memory.
@@ -1119,11 +1110,11 @@ impl Engine {
                 .symbol_table
                 .intern_symbol("initial-fact", self.config.string_encoding)
                 .expect("initial-fact symbol interning must succeed");
-            let initial_fid = self
-                .fact_base
-                .assert_ordered(initial_sym, smallvec::SmallVec::new());
-            propagate_fact_assertion(&mut self.rete, &self.fact_base, initial_fid);
-            self.initial_fact_id = Some(initial_fid);
+            let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+                relation: initial_sym,
+                fields: smallvec::SmallVec::new(),
+            }));
+            self.initial_fact_id = Some(result.fact_id());
         }
 
         Ok(())
