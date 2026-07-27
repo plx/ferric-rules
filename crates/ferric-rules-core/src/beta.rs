@@ -703,31 +703,35 @@ impl BetaNetwork {
         &self,
         first_new_node: NodeId,
     ) -> Vec<(NodeId, Vec<NodeId>)> {
-        let mut frontier = Vec::new();
+        let mut children_by_parent: HashMap<NodeId, Vec<NodeId>> = HashMap::default();
 
-        for (&parent_id, parent) in &self.nodes {
-            if parent_id.0 >= first_new_node.0 {
+        // Node IDs are allocated monotonically, so inspect only nodes created by
+        // this installation. Reading each new node's parent avoids an O(total
+        // network size) scan after every rule in a cold-start rule set.
+        for raw_node_id in first_new_node.0..self.next_node_id {
+            let child_id = NodeId(raw_node_id);
+            let Some(child) = self.nodes.get(&child_id) else {
                 continue;
-            }
-
-            let children = match parent {
-                BetaNode::Root { children, .. }
-                | BetaNode::Join { children, .. }
-                | BetaNode::Negative { children, .. }
-                | BetaNode::Ncc { children, .. }
-                | BetaNode::Exists { children, .. } => children,
-                BetaNode::Terminal { .. } | BetaNode::NccPartner { .. } => continue,
             };
-            let new_children: Vec<NodeId> = children
-                .iter()
-                .copied()
-                .filter(|child_id| child_id.0 >= first_new_node.0)
-                .collect();
-            if !new_children.is_empty() {
-                frontier.push((parent_id, new_children));
+            let parent_id = match child {
+                BetaNode::Join { parent, .. }
+                | BetaNode::Terminal { parent, .. }
+                | BetaNode::Negative { parent, .. }
+                | BetaNode::Ncc { parent, .. }
+                | BetaNode::NccPartner { parent, .. }
+                | BetaNode::Exists { parent, .. } => *parent,
+                BetaNode::Root { .. } => continue,
+            };
+
+            if parent_id.0 < first_new_node.0 {
+                children_by_parent
+                    .entry(parent_id)
+                    .or_default()
+                    .push(child_id);
             }
         }
 
+        let mut frontier: Vec<_> = children_by_parent.into_iter().collect();
         frontier.sort_unstable_by_key(|(_, children)| {
             children.first().map_or(u32::MAX, |child_id| child_id.0)
         });
@@ -1251,6 +1255,24 @@ mod tests {
         } else {
             panic!("Expected Join node");
         }
+    }
+
+    #[test]
+    fn installation_frontier_contains_only_new_children_of_old_parents() {
+        let root = NodeId(100);
+        let mut net = BetaNetwork::new(root);
+        let (old_join, _) = net.create_join_node(root, AlphaMemoryId(1), Vec::new(), Vec::new());
+        net.create_terminal_node(old_join, RuleId(1), Salience::DEFAULT);
+
+        let first_new_node = net.next_node_id();
+        let new_terminal = net.create_terminal_node(old_join, RuleId(2), Salience::DEFAULT);
+        let (new_join, _) = net.create_join_node(root, AlphaMemoryId(2), Vec::new(), Vec::new());
+        net.create_terminal_node(new_join, RuleId(3), Salience::DEFAULT);
+
+        assert_eq!(
+            net.installation_frontier(first_new_node),
+            vec![(old_join, vec![new_terminal]), (root, vec![new_join])]
+        );
     }
 }
 
