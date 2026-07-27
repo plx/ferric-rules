@@ -1,6 +1,6 @@
 use std::fmt::Write as FmtWrite;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use ferric_rules::runtime::{Engine, EngineConfig};
 
 /// Compilation scaling benchmark: cold-start parse + Rete network construction
@@ -99,6 +99,60 @@ fn bench_compile_500r_50t(c: &mut Criterion) {
     group.finish();
 }
 
+fn generate_existing_wmes(n_wmes: usize) -> String {
+    let mut source = String::new();
+    for index in 0..n_wmes {
+        writeln!(source, "(assert (item {index} bucket-{}))", index % 10).unwrap();
+    }
+    source
+}
+
+fn generate_late_rules(n_rules: usize) -> String {
+    let mut source = String::new();
+    for index in 0..n_rules {
+        writeln!(
+            source,
+            "(defrule late-{index} (item ?value bucket-{}) =>)",
+            index % 10
+        )
+        .unwrap();
+    }
+    source
+}
+
+/// Online installation benchmark: compile rules after working memory is
+/// populated. Setup is excluded so the measurement covers alpha-memory
+/// backfill, beta-frontier initialization, and terminal activation only.
+fn bench_online_rule_install(c: &mut Criterion) {
+    let mut group = c.benchmark_group("online_rule_install");
+    group.sample_size(10);
+
+    for &(n_wmes, n_rules) in &[(100, 1), (100, 10), (1_000, 1), (1_000, 10)] {
+        let fact_source = generate_existing_wmes(n_wmes);
+        let rule_source = generate_late_rules(n_rules);
+        group.bench_with_input(
+            BenchmarkId::new(format!("{n_wmes}_wmes"), format!("{n_rules}_rules")),
+            &(n_wmes, n_rules),
+            |b, _| {
+                b.iter_batched(
+                    || {
+                        let mut engine = Engine::new(EngineConfig::utf8());
+                        engine.load_str(&fact_source).expect("load existing WMEs");
+                        engine
+                    },
+                    |mut engine| {
+                        engine
+                            .load_str(black_box(&rule_source))
+                            .expect("install late rules");
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_compile_10r_5t,
@@ -106,5 +160,6 @@ criterion_group!(
     bench_compile_100r_20t,
     bench_compile_200r_30t,
     bench_compile_500r_50t,
+    bench_online_rule_install,
 );
 criterion_main!(benches);

@@ -1798,6 +1798,23 @@ impl Engine {
     ) -> Result<CompileResult, LoadError> {
         self.validate_rule_action_callables(rule, self.module_registry.current_module())?;
 
+        // Complete every fallible RHS translation before exposing any LHS
+        // nodes. Once core compilation begins, a load error cannot leave a
+        // terminal or activation without executable rule metadata.
+        let mut runtime_actions = Vec::with_capacity(rule.actions.len());
+        for action in &rule.actions {
+            let expr = ActionExpr::FunctionCall(action.call.clone());
+            let runtime_expr =
+                crate::evaluator::from_action_expr(&expr, &mut self.symbol_table, &self.config)
+                    .map_err(|error| {
+                        LoadError::Compile(format!(
+                            "rule `{}` action `{}` at line {}: {error}",
+                            rule.name, action.call.name, action.call.span.start.line
+                        ))
+                    })?;
+            runtime_actions.push(Some(runtime_expr));
+        }
+
         let translated = self
             .translate_rule_construct(rule)
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
@@ -1812,20 +1829,6 @@ impl Engine {
                 &translated.conditions,
             )
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
-
-        let mut runtime_actions = Vec::with_capacity(rule.actions.len());
-        for action in &rule.actions {
-            let expr = ActionExpr::FunctionCall(action.call.clone());
-            let runtime_expr =
-                crate::evaluator::from_action_expr(&expr, &mut self.symbol_table, &self.config)
-                    .map_err(|error| {
-                        LoadError::Compile(format!(
-                            "rule `{}` action `{}` at line {}: {error}",
-                            rule.name, action.call.name, action.call.span.start.line
-                        ))
-                    })?;
-            runtime_actions.push(Some(runtime_expr));
-        }
 
         let source_definition = source
             .get(rule.span.start.offset..rule.span.end.offset)
@@ -2541,7 +2544,6 @@ impl Engine {
         &mut self,
         rule: &RuleConstruct,
     ) -> Result<TranslatedRule, LoadError> {
-        let rule_id = self.compiler.allocate_rule_id();
         let mut conditions = Vec::new();
         let mut fact_address_vars = HashMap::new();
         let mut test_conditions: Vec<CompiledTestCondition> = Vec::new();
@@ -2661,7 +2663,7 @@ impl Engine {
         }
 
         Ok(TranslatedRule {
-            rule_id,
+            rule_id: self.compiler.allocate_rule_id(),
             salience: Salience::new(rule.salience),
             conditions,
             fact_address_vars,

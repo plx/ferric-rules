@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap as HashMap;
 use smallvec::SmallVec;
 
 use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
-use crate::beta::{BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId, Salience};
+use crate::beta::{BetaNetwork, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
 use crate::fact::FactBase;
 use crate::rete::ReteNetwork;
@@ -94,6 +94,12 @@ struct JoinNodeKey {
     alpha_memory: AlphaMemoryId,
     tests: Vec<JoinTest>,
     bindings: Vec<(SlotIndex, VarId)>,
+}
+
+struct NewAlphaMemory {
+    id: AlphaMemoryId,
+    entry_type: AlphaEntryType,
+    tests: Vec<ConstantTest>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -195,7 +201,15 @@ impl ReteCompiler {
         Self::ensure_non_empty(&rule.patterns)?;
         Self::validate_rule_patterns(&rule.patterns)?;
         let conditions = Self::patterns_as_conditions(&rule.patterns);
-        self.compile_conditions_unchecked(rete, fact_base, rule.rule_id, rule.salience, &conditions)
+        let var_map = Self::prepare_var_map(&conditions)?;
+        Ok(self.compile_conditions_unchecked(
+            rete,
+            fact_base,
+            rule.rule_id,
+            rule.salience,
+            &conditions,
+            var_map,
+        ))
     }
 
     /// Compile a sequence of conditional elements into the rete network.
@@ -209,7 +223,9 @@ impl ReteCompiler {
     ) -> Result<CompileResult, CompileError> {
         Self::ensure_non_empty(conditions)?;
         Self::validate_conditions(conditions)?;
-        self.compile_conditions_unchecked(rete, fact_base, rule_id, salience, conditions)
+        let var_map = Self::prepare_var_map(conditions)?;
+        Ok(self
+            .compile_conditions_unchecked(rete, fact_base, rule_id, salience, conditions, var_map))
     }
 
     fn ensure_non_empty<T>(items: &[T]) -> Result<(), CompileError> {
@@ -227,6 +243,45 @@ impl ReteCompiler {
             .collect()
     }
 
+    /// Build the complete variable map before mutating the network.
+    ///
+    /// Variable overflow is the only fallible step in the structural compiler
+    /// after validation. Completing it up front makes installation failure-atomic:
+    /// once node construction starts, every remaining step is infallible.
+    fn prepare_var_map(conditions: &[CompilableCondition]) -> Result<VarMap, CompileError> {
+        fn register_condition(
+            condition: &CompilableCondition,
+            var_map: &mut VarMap,
+        ) -> Result<(), CompileError> {
+            match condition {
+                CompilableCondition::Pattern(pattern) => {
+                    for &(_, variable) in &pattern.variable_slots {
+                        var_map
+                            .get_or_create(variable)
+                            .map_err(|_| CompileError::VarMapOverflow)?;
+                    }
+                    for &(_, variable, _) in &pattern.negated_variable_slots {
+                        var_map
+                            .get_or_create(variable)
+                            .map_err(|_| CompileError::VarMapOverflow)?;
+                    }
+                }
+                CompilableCondition::Ncc(subconditions) => {
+                    for subcondition in subconditions {
+                        register_condition(subcondition, var_map)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        let mut var_map = VarMap::new();
+        for condition in conditions {
+            register_condition(condition, &mut var_map)?;
+        }
+        Ok(var_map)
+    }
+
     fn compile_conditions_unchecked(
         &mut self,
         rete: &mut ReteNetwork,
@@ -234,15 +289,13 @@ impl ReteCompiler {
         rule_id: RuleId,
         salience: Salience,
         conditions: &[CompilableCondition],
-    ) -> Result<CompileResult, CompileError> {
+        mut var_map: VarMap,
+    ) -> CompileResult {
         let mut alpha_memories = Vec::new();
-        let mut var_map = VarMap::new();
+        let mut new_alpha_memories = Vec::new();
         let mut bound_vars = SymbolSet::new();
         let mut current_parent = rete.beta.root_id();
-        let existing_root_children = match rete.beta.get_node(rete.beta.root_id()) {
-            Some(BetaNode::Root { children, .. }) => children.len(),
-            _ => 0,
-        };
+        let first_new_beta_node = rete.beta.next_node_id();
 
         for condition in conditions {
             match condition {
@@ -255,7 +308,8 @@ impl ReteCompiler {
                         &mut var_map,
                         &mut bound_vars,
                         &mut alpha_memories,
-                    )?;
+                        &mut new_alpha_memories,
+                    );
                 }
                 CompilableCondition::Ncc(subpatterns) => {
                     current_parent = self.compile_ncc_condition(
@@ -266,7 +320,8 @@ impl ReteCompiler {
                         &mut var_map,
                         &bound_vars,
                         &mut alpha_memories,
-                    )?;
+                        &mut new_alpha_memories,
+                    );
                 }
             }
         }
@@ -275,26 +330,22 @@ impl ReteCompiler {
             .beta
             .create_terminal_node(current_parent, rule_id, salience);
 
-        // The beta root's dummy token predates compilation. Left-activate only
-        // children added while compiling this rule so leading negative, exists,
-        // and NCC CEs observe the empty prefix immediately without replaying
-        // already-compiled rules.
-        let new_root_children: Vec<NodeId> = match rete.beta.get_node(rete.beta.root_id()) {
-            Some(BetaNode::Root { children, .. }) => children
-                .iter()
-                .skip(existing_root_children)
-                .copied()
-                .collect(),
-            _ => Vec::new(),
-        };
-        rete.activate_root_children(&new_root_children, fact_base);
+        // Initialize only structures added by this installation. New alpha
+        // memories receive current WMEs directly; then the new beta frontier is
+        // left-activated from existing parent tokens. Old descendants never see
+        // replayed facts or tokens.
+        for memory in new_alpha_memories {
+            rete.alpha
+                .backfill_memory(memory.id, &memory.entry_type, &memory.tests, fact_base);
+        }
+        rete.initialize_beta_frontier(first_new_beta_node, fact_base);
 
-        Ok(CompileResult {
+        CompileResult {
             rule_id,
             terminal_node: terminal,
             alpha_memories,
             var_map,
-        })
+        }
     }
 
     fn validate_rule_patterns(patterns: &[CompilablePattern]) -> Result<(), CompileError> {
@@ -399,16 +450,6 @@ impl ReteCompiler {
         }
     }
 
-    fn unsupported_structure_compile_error(description: impl Into<String>) -> CompileError {
-        CompileError::Validation(vec![PatternValidationError::new(
-            PatternViolation::UnsupportedNestingCombination {
-                description: description.into(),
-            },
-            None,
-            ValidationStage::ReteCompilation,
-        )])
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn validate_pattern_structure(
         pattern: &CompilablePattern,
@@ -456,14 +497,14 @@ impl ReteCompiler {
         &mut self,
         alpha: &mut AlphaNetwork,
         pattern: &CompilablePattern,
-    ) -> AlphaMemoryId {
+    ) -> (AlphaMemoryId, bool) {
         let key = AlphaPathKey {
             entry_type: pattern.entry_type.clone(),
             tests: pattern.constant_tests.clone(),
         };
 
         if let Some(&mem_id) = self.alpha_path_cache.get(&key) {
-            return mem_id;
+            return (mem_id, false);
         }
 
         // Build the path: entry node → constant test chain → memory
@@ -476,7 +517,7 @@ impl ReteCompiler {
 
         let mem_id = alpha.create_memory(current_node);
         self.alpha_path_cache.insert(key, mem_id);
-        mem_id
+        (mem_id, true)
     }
 
     /// Ensure a positive join node exists for the given structure.
@@ -514,9 +555,17 @@ impl ReteCompiler {
         var_map: &mut VarMap,
         bound_vars: &mut SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
-    ) -> Result<NodeId, CompileError> {
-        let alpha_mem = self.ensure_alpha_path(&mut rete.alpha, pattern);
+        new_alpha_memories: &mut Vec<NewAlphaMemory>,
+    ) -> NodeId {
+        let (alpha_mem, alpha_created) = self.ensure_alpha_path(&mut rete.alpha, pattern);
         alpha_memories.push(alpha_mem);
+        if alpha_created {
+            new_alpha_memories.push(NewAlphaMemory {
+                id: alpha_mem,
+                entry_type: pattern.entry_type.clone(),
+                tests: pattern.constant_tests.clone(),
+            });
+        }
 
         let mut join_tests = SmallVec::<[JoinTest; 8]>::new();
         let mut binding_extractions = SmallVec::<[(SlotIndex, VarId); 8]>::new();
@@ -524,8 +573,8 @@ impl ReteCompiler {
 
         for &(slot, var_sym) in &pattern.variable_slots {
             let var_id = var_map
-                .get_or_create(var_sym)
-                .map_err(|_| CompileError::VarMapOverflow)?;
+                .lookup(var_sym)
+                .expect("all rule variables must be prepared before node construction");
 
             if bound_vars.contains(var_sym) {
                 join_tests.push(JoinTest {
@@ -542,8 +591,8 @@ impl ReteCompiler {
         // Non-binding variable comparisons produce join tests.
         for &(slot, var_sym, test_type) in &pattern.negated_variable_slots {
             let var_id = var_map
-                .get_or_create(var_sym)
-                .map_err(|_| CompileError::VarMapOverflow)?;
+                .lookup(var_sym)
+                .expect("all rule variables must be prepared before node construction");
 
             join_tests.push(JoinTest {
                 alpha_slot: slot,
@@ -569,7 +618,7 @@ impl ReteCompiler {
                 for test in &join_tests {
                     if test.test_type == JoinTestType::Equal {
                         if let Some(parent_mem) = rete.beta.get_memory_mut(parent_mem_id) {
-                            parent_mem.request_var_index(test.beta_var);
+                            parent_mem.request_var_index(test.beta_var, &rete.token_store);
                         }
                     }
                 }
@@ -580,22 +629,21 @@ impl ReteCompiler {
             let (neg_id, _beta_mem, _neg_mem) =
                 rete.beta
                     .create_negative_node(current_parent, alpha_mem, join_tests.into_vec());
-            Ok(neg_id)
+            neg_id
         } else if pattern.exists {
             let (exists_id, _beta_mem, _exists_mem) =
                 rete.beta
                     .create_exists_node(current_parent, alpha_mem, join_tests.into_vec());
-            Ok(exists_id)
+            exists_id
         } else {
             bound_vars.extend(new_bindings);
-            let join_id = self.ensure_join_node(
+            self.ensure_join_node(
                 &mut rete.beta,
                 current_parent,
                 alpha_mem,
                 join_tests.into_vec(),
                 binding_extractions.into_vec(),
-            );
-            Ok(join_id)
+            )
         }
     }
 
@@ -609,12 +657,12 @@ impl ReteCompiler {
         var_map: &mut VarMap,
         bound_vars: &SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
-    ) -> Result<NodeId, CompileError> {
-        if subconditions.is_empty() {
-            return Err(Self::unsupported_structure_compile_error(
-                "NCC requires at least one subpattern",
-            ));
-        }
+        new_alpha_memories: &mut Vec<NewAlphaMemory>,
+    ) -> NodeId {
+        debug_assert!(
+            !subconditions.is_empty(),
+            "NCC structure must be validated before node construction"
+        );
 
         // Create the main-chain NCC node first, then wire its partner once the
         // subnetwork bottom is known.
@@ -637,7 +685,8 @@ impl ReteCompiler {
                         var_map,
                         &mut sub_bound_vars,
                         alpha_memories,
-                    )?;
+                        new_alpha_memories,
+                    );
                 }
                 CompilableCondition::Ncc(inner_conditions) => {
                     sub_parent = self.compile_ncc_condition(
@@ -648,7 +697,8 @@ impl ReteCompiler {
                         var_map,
                         &sub_bound_vars,
                         alpha_memories,
-                    )?;
+                        new_alpha_memories,
+                    );
                 }
             }
         }
@@ -658,7 +708,7 @@ impl ReteCompiler {
             .create_ncc_partner(sub_parent, ncc_id, ncc_memory_id);
         rete.beta.set_ncc_partner(ncc_id, partner_id);
 
-        Ok(ncc_id)
+        ncc_id
     }
 }
 
@@ -763,6 +813,55 @@ mod tests {
             rete.agenda.len(),
             1,
             "retracting the last blocker should reactivate"
+        );
+        rete.debug_assert_consistency();
+    }
+
+    #[test]
+    fn fr_rete_003_late_single_pattern_rule_backfills_core_network() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let mut fact_base = FactBase::new();
+        let mut table = new_table();
+        let foo_relation = intern(&mut table, "foo");
+
+        let fact_id = fact_base.assert_ordered(foo_relation, SmallVec::new());
+        let fact = fact_base.get(fact_id).expect("fact").fact.clone();
+        assert!(
+            rete.assert_fact(fact_id, &fact, &fact_base).is_empty(),
+            "no rule exists when the fact is asserted"
+        );
+
+        let rule = CompilableRule {
+            rule_id: compiler.allocate_rule_id(),
+            salience: Salience::DEFAULT,
+            patterns: vec![CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(foo_relation),
+                constant_tests: vec![],
+                variable_slots: vec![],
+                negated_variable_slots: vec![],
+                negated: false,
+                exists: false,
+            }],
+        };
+        let result = compiler
+            .compile_rule(&mut rete, &fact_base, &rule)
+            .expect("compile late rule");
+
+        assert_eq!(rete.agenda.len(), 1, "existing fact should activate rule");
+        assert!(
+            rete.alpha
+                .get_memory(result.alpha_memories[0])
+                .expect("alpha memory")
+                .contains(fact_id),
+            "new alpha memory should contain the existing fact"
+        );
+
+        rete.retract_fact(fact_id, &fact, &fact_base);
+        fact_base.retract(fact_id);
+        assert!(
+            rete.agenda.is_empty(),
+            "backfilled reverse indexes must support retraction"
         );
         rete.debug_assert_consistency();
     }
