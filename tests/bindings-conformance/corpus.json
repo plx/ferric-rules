@@ -1,0 +1,343 @@
+{
+  "schema_version": 1,
+  "suite_version": "1.0.0",
+  "bindings": ["rust", "c", "go", "node", "python"],
+  "cases": [
+    {
+      "id": "value.void",
+      "semantic": "value.void",
+      "canonical": {"type": "void"}
+    },
+    {
+      "id": "value.integer.boundaries",
+      "semantic": "value.integer",
+      "canonical": {
+        "maximum": {"type": "integer", "value": "9223372036854775807"},
+        "minimum": {"type": "integer", "value": "-9223372036854775808"}
+      }
+    },
+    {
+      "id": "value.float",
+      "semantic": "value.float",
+      "canonical": {"type": "float", "value": "1.5"}
+    },
+    {
+      "id": "value.symbol.explicit",
+      "semantic": "value.symbol",
+      "canonical": {"type": "symbol", "value": "red"}
+    },
+    {
+      "id": "value.string.explicit",
+      "semantic": "value.string",
+      "canonical": {"type": "string", "value": "red"}
+    },
+    {
+      "id": "value.string.plain-host",
+      "semantic": "value.string",
+      "canonical": {"type": "string", "value": "red"},
+      "deviations": {
+        "python": {
+          "expected": {"type": "symbol", "value": "red"},
+          "rationale": "Python plain str currently defaults to a CLIPS Symbol while the other host bindings default to String.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/166"
+        }
+      }
+    },
+    {
+      "id": "value.multifield.nested",
+      "semantic": "value.multifield",
+      "canonical": {
+        "type": "multifield",
+        "value": [
+          {"type": "void"},
+          {"type": "integer", "value": "7"},
+          {"type": "float", "value": "2.5"},
+          {"type": "symbol", "value": "blue"},
+          {"type": "string", "value": "text"},
+          {
+            "type": "multifield",
+            "value": [{"type": "integer", "value": "9"}]
+          }
+        ]
+      }
+    },
+    {
+      "id": "value.external-address",
+      "semantic": "value.external_address",
+      "canonical": {
+        "host_representation": "opaque",
+        "ingress": "accepted"
+      },
+      "deviations": {
+        "c": {
+          "expected": {
+            "host_representation": "opaque",
+            "ingress": "rejected"
+          },
+          "rationale": "The C value discriminant exists for egress, but structured assertion deliberately rejects foreign ExternalAddress ingress.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/167"
+        },
+        "go": {
+          "expected": {
+            "host_representation": "opaque_pointer",
+            "ingress": "unsupported"
+          },
+          "rationale": "Go preserves native egress as unsafe.Pointer but exposes no supported public ExternalAddress constructor.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/167"
+        },
+        "node": {
+          "expected": {
+            "host_representation": "void",
+            "ingress": "unsupported"
+          },
+          "rationale": "Node currently collapses ExternalAddress egress to null and exposes no ingress wrapper.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/167"
+        },
+        "python": {
+          "expected": {
+            "host_representation": "void",
+            "ingress": "unsupported"
+          },
+          "rationale": "Python currently collapses ExternalAddress egress to None and exposes no ingress wrapper.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/167"
+        }
+      }
+    },
+    {
+      "id": "configuration.default",
+      "semantic": "configuration.default",
+      "canonical": {
+        "max_call_depth": 64,
+        "strategy": "depth",
+        "unicode": "accepted"
+      }
+    },
+    {
+      "id": "configuration.custom",
+      "semantic": "configuration.custom",
+      "canonical": {
+        "ascii_unicode": "rejected",
+        "max_call_depth": "configurable",
+        "strategy_count": 4
+      },
+      "deviations": {
+        "python": {
+          "expected": {
+            "ascii_unicode": "rejected",
+            "max_call_depth": "unavailable",
+            "strategy_count": 4
+          },
+          "rationale": "Python construction does not yet expose max_call_depth.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/187"
+        }
+      }
+    },
+    {
+      "id": "error.parse",
+      "semantic": "error.parse",
+      "canonical": {"family": "parse"}
+    },
+    {
+      "id": "error.compile",
+      "semantic": "error.compile",
+      "canonical": {"family": "compile"}
+    },
+    {
+      "id": "error.unsupported-construct",
+      "semantic": "error.compile",
+      "canonical": {"family": "compile"},
+      "deviations": {
+        "node": {
+          "expected": {"family": "generic"},
+          "rationale": "Node does not yet classify every non-Parse/non-Compile LoadError variant.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/184"
+        },
+        "python": {
+          "expected": {"family": "generic"},
+          "rationale": "Python does not yet classify every non-Parse/non-Compile LoadError variant.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/189"
+        }
+      }
+    },
+    {
+      "id": "error.runtime",
+      "semantic": "error.runtime",
+      "canonical": {"family": "fact_not_found"}
+    },
+    {
+      "id": "fact.lifecycle",
+      "semantic": "fact.lifecycle",
+      "canonical": {
+        "count_after_retract": 0,
+        "ordered_snapshot_retained": true,
+        "template_snapshot_retained": true
+      }
+    },
+    {
+      "id": "execution.run-limits",
+      "semantic": "execution.run",
+      "canonical": {
+        "one": {"fired": 1, "reason": "limit_reached"},
+        "unlimited": {"fired": 3, "reason": "agenda_empty"},
+        "zero": {"fired": 0, "reason": "limit_reached"}
+      },
+      "deviations": {
+        "go": {
+          "expected": {
+            "one": {"fired": 1, "reason": "limit_reached"},
+            "unlimited": {"fired": 3, "reason": "agenda_empty"},
+            "zero": {"fired": 3, "reason": "agenda_empty"}
+          },
+          "rationale": "Go deliberately uses a zero public run limit to mean unlimited.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/112"
+        }
+      }
+    },
+    {
+      "id": "execution.step",
+      "semantic": "execution.step",
+      "canonical": {"empty": true, "first_rule": "only-rule"},
+      "deviations": {
+        "c": {
+          "expected": {"empty": true, "first_rule": null},
+          "rationale": "The C step ABI returns fired/empty status but not the fired rule name.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/112"
+        },
+        "go": {
+          "expected": {"empty": true, "first_rule": null},
+          "rationale": "Go inherits the C step result, which does not include a rule name.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/112"
+        }
+      }
+    },
+    {
+      "id": "execution.halt",
+      "semantic": "execution.halt",
+      "canonical": {"fired": 1, "reason": "halt_requested"}
+    },
+    {
+      "id": "execution.diagnostic",
+      "semantic": "execution.diagnostic",
+      "canonical": {
+        "diagnostic_count": 1,
+        "fired": 1,
+        "reason": "action_error"
+      }
+    },
+    {
+      "id": "execution.batch-boundary-halt",
+      "semantic": "execution.halt",
+      "canonical": {"fired": 100, "reason": "halt_requested"},
+      "deviations": {
+        "go": {
+          "expected": {"fired": 101, "reason": "agenda_empty"},
+          "rationale": "Cancelable Go runs currently start a new logical run after an exact 100-activation batch boundary.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/127"
+        },
+        "node": {
+          "expected": {"fired": 101, "reason": "agenda_empty"},
+          "rationale": "Node worker runs currently start a new logical run after an exact 100-activation batch boundary.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/134"
+        }
+      }
+    },
+    {
+      "id": "snapshot.json-roundtrip",
+      "semantic": "snapshot",
+      "canonical": {
+        "fact_count": 1,
+        "format": "json",
+        "rules_fired": 1
+      }
+    },
+    {
+      "id": "lifecycle.close",
+      "semantic": "lifecycle.close",
+      "canonical": {
+        "explicit": true,
+        "idempotent": true,
+        "post_close": "closed_error"
+      },
+      "deviations": {
+        "rust": {
+          "expected": {
+            "explicit": false,
+            "idempotent": false,
+            "post_close": "not_applicable"
+          },
+          "rationale": "The Rust facade uses ownership and Drop rather than an explicit close method.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/112"
+        },
+        "c": {
+          "expected": {
+            "explicit": true,
+            "idempotent": false,
+            "post_close": "undefined"
+          },
+          "rationale": "The raw C handle is invalid after free; repeated free or post-free use is outside the ABI contract.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/112"
+        }
+      }
+    },
+    {
+      "id": "robustness.embedded-nul",
+      "semantic": "robustness.nul",
+      "canonical": {"type": "string", "value": "a\u0000b"},
+      "deviations": {
+        "c": {
+          "expected": {"type": "string", "value": "a"},
+          "rationale": "The legacy C string constructor truncates at the first embedded NUL.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/115"
+        },
+        "go": {
+          "expected": {"type": "string", "value": "a"},
+          "rationale": "Go currently passes host strings through C.CString and therefore truncates at embedded NUL.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/115"
+        }
+      }
+    },
+    {
+      "id": "identifier.high-fact-id",
+      "semantic": "identifier.high",
+      "canonical": {"roundtrip": true},
+      "deviations": {
+        "node": {
+          "expected": {"roundtrip": false},
+          "rationale": "Node fact IDs currently cross N-API as number and lose precision above Number.MAX_SAFE_INTEGER.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/133"
+        }
+      }
+    },
+    {
+      "id": "count.run-result-width",
+      "semantic": "count.high",
+      "canonical": {"run_count_bits": 64, "run_limit_bits": 64},
+      "deviations": {
+        "node": {
+          "expected": {"run_count_bits": 32, "run_limit_bits": 32},
+          "rationale": "The native Node run limit and fired-count fields are currently u32.",
+          "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/183"
+        }
+      }
+    }
+  ]
+}

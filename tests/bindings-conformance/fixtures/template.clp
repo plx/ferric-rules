@@ -1,0 +1,2 @@
+(deftemplate person
+    (slot name))

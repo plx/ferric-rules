@@ -16,7 +16,7 @@ acceptable license is selected for notice generation.
 
 ## License Overview
 
-- MIT License: 209
+- MIT License: 210
 - Apache License 2.0: 4
 - Boost Software License 1.0: 2
 - ISC License: 1
@@ -2294,6 +2294,7 @@ Used by:
 - users-guide-12-error-handling 0.1.0 (`MIT OR Apache-2.0`)
 - users-guide-13-snapshots 0.1.0 (`MIT OR Apache-2.0`)
 - users-guide-14-pipeline 0.1.0 (`MIT OR Apache-2.0`)
+- ferric-bindings-conformance-adapter 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - users-guide-sync 0.1.0 (`MIT OR Apache-2.0`)
 - anes 0.1.6 (`MIT OR Apache-2.0`) - https://github.com/zrzka/anes-rs
 - napi-build 2.1.3 (`MIT`) - https://github.com/napi-rs/napi-rs

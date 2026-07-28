@@ -12,6 +12,7 @@ members = [
     "crates/ferric-rules-python",
     "examples/users-guide/*",
     "tools/users-guide-sync",
+    "tools/bindings-conformance-adapter",
 ]
 resolver = "2"
 
