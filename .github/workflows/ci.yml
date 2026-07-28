@@ -221,6 +221,30 @@ jobs:
         working-directory: packages/ferric
         run: npm test
 
+  bindings-conformance:
+    name: Cross-binding Conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bindings/go/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli
+      - run: just bindings-conformance
+
   python-tools:
     name: Python Tools
     runs-on: ubuntu-latest

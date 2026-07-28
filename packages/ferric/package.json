@@ -18,6 +18,7 @@
     "test:runtime:worker": "tsx --test test/conformance/runtime/worker/**/*.test.ts",
     "test:runtime:pool": "tsx --test test/conformance/runtime/pool/**/*.test.ts",
     "test:package": "tsx --test test/conformance/package/**/*.test.ts",
+    "test:bindings-conformance:types": "tsc --noEmit -p tsconfig.bindings-conformance.json",
     "test:artifact": "node ../../scripts/test-node-package-artifact.mjs",
     "test": "npm run test:types && npm run test:runtime:types && npm run test:runtime:sync && npm run test:runtime:worker && npm run test:runtime:pool && npm run test:package",
     "test:coverage": "npm run build && node --import tsx --test --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 test/conformance/coverage-entrypoint.test.ts",

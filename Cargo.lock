@@ -461,6 +461,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-bindings-conformance-adapter"
+version = "0.1.0"
+dependencies = [
+ "ferric-rules",
+ "serde_json",
+ "slotmap",
+]
+
+[[package]]
 name = "ferric-rules"
 version = "0.1.0"
 dependencies = [

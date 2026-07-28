@@ -141,6 +141,16 @@ py-test:
 py-bindings-test:
     cd crates/ferric-rules-python && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv run maturin develop --quiet && .venv/bin/python -m pytest tests/
 
+# Run one language-neutral semantic corpus through Rust, C, Go, Node, and Python.
+bindings-conformance:
+    just build-go-ffi
+    just build-napi
+    just ts-build
+    cd packages/ferric && npm run test:bindings-conformance:types
+    cd crates/ferric-rules-python && PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv run maturin develop --quiet
+    ./scripts/build-bindings-conformance-c.sh
+    uv run --project tools/ferric-tools ferric-bindings-conformance
+
 # ── Composite checks ────────────────────────────────────────────────────────
 
 # Full preflight: format check, clippy, all tests, cargo check, Python checks, Go lint
