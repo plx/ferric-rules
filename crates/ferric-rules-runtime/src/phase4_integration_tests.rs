@@ -2824,6 +2824,39 @@ fn if_in_deffunction_body_else_branch() {
 // Loop special forms: while, loop-for-count, progn$ / foreach
 // ===========================================================================
 
+fn run_with_action_loop_budget(
+    source: &str,
+    max_action_loop_iterations: usize,
+) -> (crate::Engine, crate::execution::RunResult) {
+    let mut config = crate::config::EngineConfig::utf8();
+    config.max_action_loop_iterations = max_action_loop_iterations;
+    let mut engine = crate::Engine::new(config);
+    load_ok(&mut engine, source);
+    engine.reset().expect("reset");
+    let run = run_to_completion(&mut engine);
+    (engine, run)
+}
+
+fn assert_action_iteration_limit(
+    engine: &crate::Engine,
+    expected_function: &str,
+    expected_limit: usize,
+) {
+    let [crate::ActionError::Evaluator(crate::evaluator::EvalError::ActionIterationLimit {
+        function,
+        limit,
+        ..
+    })] = engine.action_diagnostics()
+    else {
+        panic!(
+            "expected one action-iteration diagnostic, got {:?}",
+            engine.action_diagnostics()
+        );
+    };
+    assert_eq!(function, expected_function);
+    assert_eq!(*limit, expected_limit);
+}
+
 #[test]
 fn load_rule_with_while_loop() {
     let mut engine = new_utf8_engine();
@@ -3060,6 +3093,274 @@ fn loop_for_count_in_deffunction() {
     let output = output.trim_end_matches('\n');
     // sum 1+2+3+4 = 10
     assert_eq!(output, "10", "sum-to 4 should be 10, got {output:?}");
+}
+
+#[test]
+fn loop_for_count_handles_zero_descending_and_negative_ranges() {
+    for (label, start, end, expected) in [
+        ("zero", 0, 0, "0|"),
+        ("descending", 2, 1, ""),
+        ("negative", -2, 0, "-2|-1|0|"),
+        (
+            "maximum-singleton",
+            i64::MAX,
+            i64::MAX,
+            "9223372036854775807|",
+        ),
+    ] {
+        let source = format!(
+            r#"
+(defrule range-{label}
+    =>
+    (loop-for-count (?i {start} {end}) do
+        (printout t ?i "|")))
+"#
+        );
+        let (engine, run) = run_with_action_loop_budget(&source, 4);
+        assert_eq!(run.halt_reason, crate::HaltReason::AgendaEmpty, "{label}");
+        assert!(
+            engine.action_diagnostics().is_empty(),
+            "{label}: {:?}",
+            engine.action_diagnostics()
+        );
+        assert_eq!(engine.get_output("t").unwrap_or(""), expected, "{label}");
+    }
+}
+
+#[test]
+fn loop_for_count_accepts_exact_budget_and_rejects_budget_plus_one() {
+    let exact_source = r#"
+(defrule exact
+    =>
+    (loop-for-count (?i 1 3) do
+        (printout t "x"))
+    (assert (after-loop)))
+"#;
+    let (exact_engine, exact_run) = run_with_action_loop_budget(exact_source, 3);
+    assert_eq!(exact_run.halt_reason, crate::HaltReason::AgendaEmpty);
+    assert_eq!(exact_engine.get_output("t"), Some("xxx"));
+    assert_has_fact_with_relation(&exact_engine, "after-loop");
+
+    let over_source = r#"
+(defrule over
+    =>
+    (loop-for-count (?i 1 4) do
+        (printout t "x"))
+    (assert (after-loop)))
+"#;
+    let (over_engine, over_run) = run_with_action_loop_budget(over_source, 3);
+    assert_eq!(over_run.halt_reason, crate::HaltReason::ActionError);
+    assert_eq!(over_engine.get_output("t"), Some("xxx"));
+    assert_no_fact_with_relation(&over_engine, "after-loop");
+    assert_action_iteration_limit(&over_engine, "loop-for-count", 3);
+}
+
+#[test]
+fn loop_for_count_i64_max_terminates_with_action_error() {
+    const CHILD_ENV: &str = "FERRIC_LOOP_FOR_COUNT_I64_MAX_CHILD";
+
+    if std::env::var_os(CHILD_ENV).is_some() {
+        let mut config = crate::config::EngineConfig::utf8();
+        config.max_action_loop_iterations = 8;
+        let mut engine = crate::Engine::new(config);
+        load_ok(
+            &mut engine,
+            r"
+(defglobal ?*last* = 0)
+(defrule maximum-range
+    (go)
+    =>
+    (loop-for-count (?i 1 9223372036854775807) do
+        (bind ?*last* ?i)))
+(deffacts startup (go))
+",
+        );
+        engine.reset().expect("reset");
+        let run = run_to_completion(&mut engine);
+        assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
+        return;
+    }
+
+    let current_exe = std::env::current_exe().expect("current test executable");
+    let mut child = std::process::Command::new(current_exe)
+        .args([
+            "--exact",
+            "phase4_integration_tests::loop_for_count_i64_max_terminates_with_action_error",
+            "--nocapture",
+        ])
+        .env(CHILD_ENV, "1")
+        .spawn()
+        .expect("spawn maximum-range child");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+
+    loop {
+        if let Some(status) = child.try_wait().expect("poll maximum-range child") {
+            assert!(status.success(), "maximum-range child failed: {status}");
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().expect("kill hung maximum-range child");
+            let _ = child.wait();
+            panic!("maximum loop-for-count range did not terminate within 2 seconds");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn loop_for_count_full_i64_range_is_overflow_safe() {
+    let (engine, run) = run_with_action_loop_budget(
+        r#"
+(defrule full-integer-range
+    =>
+    (loop-for-count (?i -9223372036854775808 9223372036854775807) do
+        (printout t "x"))
+    (assert (after-loop)))
+"#,
+        2,
+    );
+    assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
+    assert_eq!(engine.get_output("t"), Some("xx"));
+    assert_no_fact_with_relation(&engine, "after-loop");
+    assert_action_iteration_limit(&engine, "loop-for-count", 2);
+}
+
+#[test]
+fn nested_while_and_loop_for_count_share_one_budget() {
+    let while_outer = r#"
+(defglobal ?*outer* = 0)
+(defrule while-outer
+    =>
+    (while (< ?*outer* 2) do
+        (bind ?*outer* (+ ?*outer* 1))
+        (loop-for-count (?i 1 2) do
+            (printout t "x")))
+    (assert (after-loop)))
+"#;
+    let (engine, run) = run_with_action_loop_budget(while_outer, 4);
+    assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
+    assert_eq!(engine.get_output("t"), Some("xx"));
+    assert_no_fact_with_relation(&engine, "after-loop");
+    assert_action_iteration_limit(&engine, "loop-for-count", 4);
+
+    let count_outer = r#"
+(defglobal ?*inner* = 0)
+(defrule count-outer
+    =>
+    (loop-for-count (?i 1 2) do
+        (bind ?*inner* 0)
+        (while (< ?*inner* 2) do
+            (bind ?*inner* (+ ?*inner* 1))
+            (printout t "x")))
+    (assert (after-loop)))
+"#;
+    let (engine, run) = run_with_action_loop_budget(count_outer, 4);
+    assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
+    assert_eq!(engine.get_output("t"), Some("xx"));
+    assert_no_fact_with_relation(&engine, "after-loop");
+    assert_action_iteration_limit(&engine, "while", 4);
+}
+
+#[test]
+fn rhs_and_deffunction_loops_have_equivalent_budget_errors() {
+    for (label, source, expected_function) in [
+        (
+            "rhs-count",
+            r#"
+(defrule rhs-count
+    =>
+    (loop-for-count (?i 1 3) do (printout t "x"))
+    (assert (after-loop)))
+"#,
+            "loop-for-count",
+        ),
+        (
+            "function-count",
+            r#"
+(deffunction counted ()
+    (loop-for-count (?i 1 3) do (printout t "x")))
+(defrule function-count
+    =>
+    (counted)
+    (assert (after-loop)))
+"#,
+            "loop-for-count",
+        ),
+        (
+            "rhs-while",
+            r#"
+(defglobal ?*counter* = 0)
+(defrule rhs-while
+    =>
+    (while (< ?*counter* 3) do
+        (bind ?*counter* (+ ?*counter* 1))
+        (printout t "x"))
+    (assert (after-loop)))
+"#,
+            "while",
+        ),
+        (
+            "function-while",
+            r#"
+(defglobal ?*counter* = 0)
+(deffunction repeated ()
+    (while (< ?*counter* 3) do
+        (bind ?*counter* (+ ?*counter* 1))
+        (printout t "x")))
+(defrule function-while
+    =>
+    (repeated)
+    (assert (after-loop)))
+"#,
+            "while",
+        ),
+    ] {
+        let (engine, run) = run_with_action_loop_budget(source, 2);
+        assert_eq!(run.halt_reason, crate::HaltReason::ActionError, "{label}");
+        assert_eq!(engine.get_output("t"), Some("xx"), "{label}");
+        assert_no_fact_with_relation(&engine, "after-loop");
+        assert_action_iteration_limit(&engine, expected_function, 2);
+    }
+}
+
+#[test]
+fn rhs_loop_and_nested_deffunction_loop_share_one_budget() {
+    let (engine, run) = run_with_action_loop_budget(
+        r#"
+(deffunction inner-loop ()
+    (loop-for-count (?j 1 3) do
+        (printout t "x")))
+(defrule cross-path
+    =>
+    (loop-for-count (?i 1 1) do
+        (inner-loop))
+    (assert (after-loop)))
+"#,
+        3,
+    );
+    assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
+    assert_eq!(engine.get_output("t"), Some("xx"));
+    assert_no_fact_with_relation(&engine, "after-loop");
+    assert_action_iteration_limit(&engine, "loop-for-count", 3);
+}
+
+#[test]
+fn action_loop_budget_resets_for_each_activation() {
+    let (engine, run) = run_with_action_loop_budget(
+        r#"
+(deffacts inputs (item a) (item b))
+(defrule per-activation
+    (item ?value)
+    =>
+    (loop-for-count (?i 1 2) do
+        (printout t "x")))
+"#,
+        2,
+    );
+    assert_eq!(run.halt_reason, crate::HaltReason::AgendaEmpty);
+    assert_eq!(run.rules_fired, 2);
+    assert_eq!(engine.get_output("t"), Some("xxxx"));
+    assert!(engine.action_diagnostics().is_empty());
 }
 
 #[test]

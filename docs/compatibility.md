@@ -189,8 +189,8 @@ chosen conflict resolution strategy:
 | `reset` | Deferred: sets a flag checked after action execution |
 | `clear` | Deferred: sets a flag checked after action execution |
 | `if`/`then`/`else` | Conditional action execution |
-| `while` | Conditional loop with `do` keyword |
-| `loop-for-count` | Indexed loop with optional variable binding |
+| `while` | Conditional loop with `do`; shares the configured per-activation action-loop budget |
+| `loop-for-count` | Indexed loop with optional variable binding; shares the configured per-activation action-loop budget |
 | `progn$` / `foreach` | Multifield iteration with element and index binding |
 | `switch`/`case`/`default` | Multi-branch dispatch |
 | `do-for-fact` | Iterate first matching fact |

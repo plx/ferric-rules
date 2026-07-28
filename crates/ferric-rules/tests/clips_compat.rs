@@ -542,6 +542,65 @@ fn test_compat_return_unwinds_only_the_current_callable() {
 }
 
 #[test]
+fn test_compat_action_loop_budget_preserves_boundary_and_stops_overrun() {
+    let mut config = EngineConfig::utf8();
+    config.max_action_loop_iterations = 3;
+
+    let mut exact = Engine::new(config.clone());
+    exact
+        .load_str(
+            r#"
+(defrule exact-loop
+    =>
+    (loop-for-count (?i 1 3) do
+        (printout t ?i "|"))
+    (assert (completed)))
+"#,
+        )
+        .expect("load exact loop");
+    exact.reset().expect("reset exact loop");
+    let exact_run = exact.run(RunLimit::Unlimited).expect("run exact loop");
+    assert_eq!(exact_run.halt_reason, HaltReason::AgendaEmpty);
+    assert_eq!(exact.get_output("t"), Some("1|2|3|"));
+    assert_eq!(
+        exact
+            .find_facts("completed")
+            .expect("completed facts")
+            .len(),
+        1
+    );
+    assert!(exact.action_diagnostics().is_empty());
+
+    let mut over = Engine::new(config);
+    over.load_str(
+        r#"
+(defrule over-budget-loop
+    =>
+    (loop-for-count (?i 1 4) do
+        (printout t ?i "|"))
+    (assert (completed)))
+"#,
+    )
+    .expect("load over-budget loop");
+    over.reset().expect("reset over-budget loop");
+    let over_run = over.run(RunLimit::Unlimited).expect("run over-budget loop");
+    assert_eq!(over_run.halt_reason, HaltReason::ActionError);
+    assert_eq!(over.get_output("t"), Some("1|2|3|"));
+    assert!(over
+        .find_facts("completed")
+        .expect("completed facts")
+        .is_empty());
+    assert!(matches!(
+        over.action_diagnostics(),
+        [ActionError::Evaluator(EvalError::ActionIterationLimit {
+            function,
+            limit: 3,
+            ..
+        })] if function == "loop-for-count"
+    ));
+}
+
+#[test]
 fn test_compat_return_stops_the_current_rule_rhs() {
     // CLIPS permits `return` in a rule RHS and uses it to stop the remaining
     // action sequence. Its value is discarded; it does not assert the sentinel

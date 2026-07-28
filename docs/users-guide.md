@@ -642,22 +642,32 @@ string. To actually print it, pipe it through `printout`:
 _Runnable example: [`examples/users-guide/11-configuration/`](../examples/users-guide/11-configuration/)._
 
 `EngineConfig` controls string encoding, conflict resolution strategy,
-and the user-function recursion limit. The factory helpers cover the
-common cases:
+the user-function recursion limit, and the per-activation action-loop
+budget. The factory helpers cover the common cases:
 
 <!-- example: 11-configuration/src/main.rs -->
 ```rust
-// UTF-8 symbols and strings, Depth strategy, 64-frame recursion limit.
+// UTF-8 symbols and strings, Depth strategy, 64-frame recursion limit,
+// and a 1,000,000-iteration action-loop budget.
 let _engine = Engine::new(EngineConfig::default());
 
 // CLIPS-strict ASCII mode with LEX strategy.
 let _engine = Engine::new(EngineConfig::ascii().with_strategy(ConflictResolutionStrategy::Lex));
 
-// Increase recursion depth for deeply recursive deffunctions.
+// Increase recursion depth and reduce the per-activation budget shared by
+// while/loop-for-count, including nested loops in deffunctions.
 let mut cfg = EngineConfig::utf8();
 cfg.max_call_depth = 256;
+cfg.max_action_loop_iterations = 10_000;
 let _engine = Engine::new(cfg);
 ```
+
+`max_action_loop_iterations` is the combined budget for `while` and
+`loop-for-count` during one fired rule activation. Every entered loop body
+costs one iteration, so nested loops and loops called through deffunctions or
+generic functions draw from the same budget. A false initial `while` condition
+or an empty/descending count range costs nothing. Exhaustion stops the
+activation with `EvalError::ActionIterationLimit`; the default is 1,000,000.
 
 Available strategies: `Depth` (default), `Breadth`, `Lex`, `Mea`.
 `Simplicity`, `Complexity`, and `Random` are not implemented — they are

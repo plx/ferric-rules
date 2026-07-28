@@ -4,9 +4,13 @@ use std::cell::Cell;
 
 use ferric_rules_core::{ConflictResolutionStrategy, StringEncoding};
 
+/// Default number of `while` and `loop-for-count` iterations allowed while
+/// executing one rule activation.
+pub const DEFAULT_MAX_ACTION_LOOP_ITERATIONS: usize = 1_000_000;
+
 /// Engine configuration.
 ///
-/// Includes encoding mode, conflict resolution strategy, and recursion limits.
+/// Includes encoding mode, conflict resolution strategy, and execution limits.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EngineConfig {
@@ -17,12 +21,32 @@ pub struct EngineConfig {
     /// Calls that exceed this depth return a `RecursionLimit` error rather than
     /// overflowing the stack.
     pub max_call_depth: usize,
+    /// Maximum combined `while` and `loop-for-count` iterations per rule
+    /// activation.
+    ///
+    /// The budget is shared by RHS loops and loops reached through
+    /// deffunctions or generic functions. Each entered loop body consumes one
+    /// iteration, including nested loop bodies.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "default_max_action_loop_iterations")
+    )]
+    pub max_action_loop_iterations: usize,
     /// Whether structurally equivalent facts may coexist in working memory.
     ///
     /// This is interior-mutable because evaluator contexts already borrow the
     /// engine configuration immutably. `Engine` is thread-affine, so mutation
     /// through `Cell` does not weaken its concurrency contract.
     fact_duplication: Cell<bool>,
+    /// Remaining iterations in the current action execution, or `None` when
+    /// no action/evaluator root owns a budget.
+    #[cfg_attr(feature = "serde", serde(skip, default))]
+    action_loop_iterations_remaining: Cell<Option<usize>>,
+}
+
+#[cfg(feature = "serde")]
+const fn default_max_action_loop_iterations() -> usize {
+    DEFAULT_MAX_ACTION_LOOP_ITERATIONS
 }
 
 impl EngineConfig {
@@ -33,7 +57,9 @@ impl EngineConfig {
             string_encoding: StringEncoding::Ascii,
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
+            max_action_loop_iterations: DEFAULT_MAX_ACTION_LOOP_ITERATIONS,
             fact_duplication: Cell::new(false),
+            action_loop_iterations_remaining: Cell::new(None),
         }
     }
 
@@ -44,7 +70,9 @@ impl EngineConfig {
             string_encoding: StringEncoding::Utf8,
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
+            max_action_loop_iterations: DEFAULT_MAX_ACTION_LOOP_ITERATIONS,
             fact_duplication: Cell::new(false),
+            action_loop_iterations_remaining: Cell::new(None),
         }
     }
 
@@ -55,7 +83,9 @@ impl EngineConfig {
             string_encoding: StringEncoding::AsciiSymbolsUtf8Strings,
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
+            max_action_loop_iterations: DEFAULT_MAX_ACTION_LOOP_ITERATIONS,
             fact_duplication: Cell::new(false),
+            action_loop_iterations_remaining: Cell::new(None),
         }
     }
 
@@ -85,6 +115,43 @@ impl EngineConfig {
     pub(crate) fn set_fact_duplication(&self, enabled: bool) -> bool {
         self.fact_duplication.replace(enabled)
     }
+
+    /// Start a fresh per-action loop budget.
+    pub(crate) fn begin_action_loop_budget(&self) {
+        self.action_loop_iterations_remaining
+            .set(Some(self.max_action_loop_iterations));
+    }
+
+    /// Start a loop budget only when no enclosing action/evaluation owns one.
+    ///
+    /// Returns whether this call started the budget.
+    pub(crate) fn begin_action_loop_budget_if_inactive(&self) -> bool {
+        if self.action_loop_iterations_remaining.get().is_some() {
+            false
+        } else {
+            self.begin_action_loop_budget();
+            true
+        }
+    }
+
+    /// Finish the active per-action loop budget.
+    pub(crate) fn end_action_loop_budget(&self) {
+        self.action_loop_iterations_remaining.set(None);
+    }
+
+    /// Consume one iteration, returning `false` when the active budget is
+    /// exhausted.
+    pub(crate) fn take_action_loop_iteration(&self) -> bool {
+        let Some(remaining) = self.action_loop_iterations_remaining.get() else {
+            debug_assert!(false, "loop iteration consumed without an active budget");
+            return false;
+        };
+        let Some(next) = remaining.checked_sub(1) else {
+            return false;
+        };
+        self.action_loop_iterations_remaining.set(Some(next));
+        true
+    }
 }
 
 impl Default for EngineConfig {
@@ -99,7 +166,9 @@ impl From<StringEncoding> for EngineConfig {
             string_encoding,
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
+            max_action_loop_iterations: DEFAULT_MAX_ACTION_LOOP_ITERATIONS,
             fact_duplication: Cell::new(false),
+            action_loop_iterations_remaining: Cell::new(None),
         }
     }
 }
@@ -147,6 +216,14 @@ mod tests {
         assert_eq!(encoding, StringEncoding::AsciiSymbolsUtf8Strings);
     }
 
+    #[test]
+    fn default_action_loop_budget_is_one_million() {
+        assert_eq!(
+            EngineConfig::default().max_action_loop_iterations,
+            DEFAULT_MAX_ACTION_LOOP_ITERATIONS
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Property-based tests
     // -----------------------------------------------------------------------
@@ -182,7 +259,7 @@ mod tests {
                 prop_assert_eq!(recovered, enc);
             }
 
-            /// `with_strategy` preserves the encoding and max_call_depth.
+            /// `with_strategy` preserves the encoding and execution limits.
             #[test]
             fn with_strategy_preserves_other_fields(
                 enc in arb_encoding(),
@@ -190,10 +267,15 @@ mod tests {
             ) {
                 let base = EngineConfig::from(enc);
                 let original_depth = base.max_call_depth;
+                let original_loop_budget = base.max_action_loop_iterations;
                 let modified = base.with_strategy(strategy);
                 prop_assert_eq!(modified.string_encoding, enc);
                 prop_assert_eq!(modified.strategy, strategy);
                 prop_assert_eq!(modified.max_call_depth, original_depth);
+                prop_assert_eq!(
+                    modified.max_action_loop_iterations,
+                    original_loop_budget
+                );
             }
 
             /// Named constructors always produce the advertised encoding.
@@ -206,6 +288,10 @@ mod tests {
                 };
                 prop_assert_eq!(config.string_encoding, expected);
                 prop_assert_eq!(config.max_call_depth, 64);
+                prop_assert_eq!(
+                    config.max_action_loop_iterations,
+                    DEFAULT_MAX_ACTION_LOOP_ITERATIONS
+                );
             }
         }
     }

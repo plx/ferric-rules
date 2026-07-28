@@ -32,8 +32,6 @@ use crate::Engine;
 type OrderedFields = smallvec::SmallVec<[Value; 8]>;
 type RuntimeBindingEnv = HashMap<String, Value>;
 
-/// Maximum iterations for action-level loops (while, loop-for-count, progn$).
-const MAX_ACTION_LOOP_ITERATIONS: usize = 1_000_000;
 /// Internal callable emitted by parser for compact fact-slot references (`?f:slot`).
 const FACT_SLOT_REF_FN: &str = "__fact_slot_ref";
 
@@ -430,6 +428,7 @@ pub(crate) fn execute_actions(
     context: &mut ActionExecutionContext<'_>,
     collected_facts: &[FactId],
 ) -> (bool, bool, bool, Vec<ActionError>) {
+    context.engine.config.begin_action_loop_budget();
     ferric_span!(
         debug_span,
         "execute_actions",
@@ -518,6 +517,7 @@ pub(crate) fn execute_actions(
         clear_requested,
         "execute_actions_complete"
     );
+    context.engine.config.end_action_loop_budget();
     (true, reset_requested, clear_requested, errors)
 }
 
@@ -947,10 +947,11 @@ fn execute_single_action(
             };
 
             if let Some(crate::evaluator::RuntimeExpr::While {
-                condition, body, ..
+                condition,
+                body,
+                span,
             }) = while_runtime
             {
-                let mut iterations = 0usize;
                 loop {
                     // Evaluate condition.
                     let cond_value = {
@@ -960,12 +961,12 @@ fn execute_single_action(
                     if !crate::evaluator::is_truthy(&cond_value, &context.engine.symbol_table) {
                         break;
                     }
-                    iterations += 1;
-                    if iterations > MAX_ACTION_LOOP_ITERATIONS {
-                        return Err(ActionError::EvalError(format!(
-                            "while loop exceeded maximum iterations ({MAX_ACTION_LOOP_ITERATIONS})"
-                        )));
-                    }
+                    crate::evaluator::consume_action_loop_iteration(
+                        &context.engine.config,
+                        "while",
+                        span.clone(),
+                    )
+                    .map_err(ActionError::from)?;
                     // Execute body items.
                     execute_loop_body(
                         reset_requested,
@@ -1037,6 +1038,12 @@ fn execute_single_action(
                 };
 
                 for counter in start_int..=end_int {
+                    crate::evaluator::consume_action_loop_iteration(
+                        &context.engine.config,
+                        "loop-for-count",
+                        span.clone(),
+                    )
+                    .map_err(ActionError::from)?;
                     // Build an augmented token and rule_info with the loop variable bound.
                     let (loop_token, loop_rule_info) = if let Some(var) = var_name {
                         augment_bindings_with_var(
@@ -1065,7 +1072,6 @@ fn execute_single_action(
                         break;
                     }
                 }
-                let _ = span; // suppress unused variable warning
                 Ok(())
             } else if let Some(runtime_expr) = runtime_call {
                 eval_env

@@ -10,15 +10,18 @@ use ferric_rules::core::ConflictResolutionStrategy;
 use ferric_rules::runtime::{Engine, EngineConfig};
 
 fn main() -> anyhow::Result<()> {
-    // UTF-8 symbols and strings, Depth strategy, 64-frame recursion limit.
+    // UTF-8 symbols and strings, Depth strategy, 64-frame recursion limit,
+    // and a 1,000,000-iteration action-loop budget.
     let _engine = Engine::new(EngineConfig::default());
 
     // CLIPS-strict ASCII mode with LEX strategy.
     let _engine = Engine::new(EngineConfig::ascii().with_strategy(ConflictResolutionStrategy::Lex));
 
-    // Increase recursion depth for deeply recursive deffunctions.
+    // Increase recursion depth and reduce the per-activation budget shared by
+    // while/loop-for-count, including nested loops in deffunctions.
     let mut cfg = EngineConfig::utf8();
     cfg.max_call_depth = 256;
+    cfg.max_action_loop_iterations = 10_000;
     let _engine = Engine::new(cfg);
 
     // Combine config with one-call rule loading.

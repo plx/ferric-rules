@@ -104,6 +104,13 @@ pub enum EvalError {
         span: Option<SourceSpan>,
     },
 
+    #[error("action iteration limit exceeded in `{function}` (limit {limit}) at {}", format_span(.span.as_ref()))]
+    ActionIterationLimit {
+        function: String,
+        limit: usize,
+        span: Option<SourceSpan>,
+    },
+
     #[error("no applicable method for `{name}` with argument types ({actual_types}) at {}", format_span(.span.as_ref()))]
     NoApplicableMethod {
         name: String,
@@ -133,16 +140,6 @@ pub enum EvalError {
         span: Option<SourceSpan>,
     },
 }
-
-// ---------------------------------------------------------------------------
-// Loop safety cap
-// ---------------------------------------------------------------------------
-
-/// Maximum number of loop iterations before an error is raised.
-///
-/// Applies to `while` loops and `loop-for-count` ranges. Prevents infinite
-/// loops and overly large iteration counts from hanging the engine.
-const MAX_LOOP_ITERATIONS: usize = 1_000_000;
 
 // ---------------------------------------------------------------------------
 // Runtime expression model
@@ -461,21 +458,26 @@ impl Drop for EvalRunGuard {
 /// through `eval_inner`, which keeps tracing lightweight on deep call stacks.
 #[allow(clippy::too_many_lines)] // The visibility checks add necessary verbosity
 pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
-    #[cfg(feature = "tracing")]
-    {
-        if EvalRunGuard::is_active() {
-            return finish_root_evaluation(eval_inner(ctx, expr));
-        }
+    let owns_action_loop_budget = ctx.config.begin_action_loop_budget_if_inactive();
 
-        let _run_guard = EvalRunGuard::enter_root();
-        ferric_span!(debug_span, "eval_root", call_depth = ctx.call_depth);
-        finish_root_evaluation(eval_inner(ctx, expr))
-    }
+    #[cfg(feature = "tracing")]
+    let result = {
+        if EvalRunGuard::is_active() {
+            finish_root_evaluation(eval_inner(ctx, expr))
+        } else {
+            let _run_guard = EvalRunGuard::enter_root();
+            ferric_span!(debug_span, "eval_root", call_depth = ctx.call_depth);
+            finish_root_evaluation(eval_inner(ctx, expr))
+        }
+    };
 
     #[cfg(not(feature = "tracing"))]
-    {
-        finish_root_evaluation(eval_inner(ctx, expr))
+    let result = { finish_root_evaluation(eval_inner(ctx, expr)) };
+
+    if owns_action_loop_budget {
+        ctx.config.end_action_loop_budget();
     }
+    result
 }
 
 fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, EvalError> {
@@ -652,24 +654,17 @@ fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Ev
             Ok(result)
         }
         RuntimeExpr::While {
-            condition, body, ..
+            condition,
+            body,
+            span,
         } => {
             let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
-            let mut iterations = 0usize;
             loop {
                 let cond_value = eval_inner(ctx, condition)?;
                 if !is_truthy(&cond_value, ctx.symbol_table) {
                     break;
                 }
-                iterations += 1;
-                if iterations > MAX_LOOP_ITERATIONS {
-                    return Err(EvalError::TypeError {
-                        function: "while".to_string(),
-                        expected: "loop to terminate".to_string(),
-                        actual: format!("exceeded maximum iterations ({MAX_LOOP_ITERATIONS})"),
-                        span: None,
-                    });
-                }
+                consume_action_loop_iteration(ctx.config, "while", span.clone())?;
                 for (action_expr, rt_expr) in body {
                     if let Some(rt) = rt_expr {
                         result = eval_inner(ctx, rt)?;
@@ -723,21 +718,9 @@ fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Ev
                 return Ok(false_val);
             }
 
-            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-            let total_iters = (end_int - start_int + 1) as usize;
-            if total_iters > MAX_LOOP_ITERATIONS {
-                return Err(EvalError::TypeError {
-                    function: "loop-for-count".to_string(),
-                    expected: "loop range within limits".to_string(),
-                    actual: format!(
-                        "range {start_int}..{end_int} exceeds maximum ({MAX_LOOP_ITERATIONS})"
-                    ),
-                    span: span.clone(),
-                });
-            }
-
             let mut result = clips_false(ctx.symbol_table, ctx.config.string_encoding);
             for counter in start_int..=end_int {
+                consume_action_loop_iteration(ctx.config, "loop-for-count", span.clone())?;
                 // Build a binding frame for this iteration.
                 let mut iter_var_map = ctx.var_map.clone();
                 let mut iter_bindings = ctx.bindings.clone();
@@ -957,6 +940,22 @@ fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Ev
                 _ => Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding)),
             }
         }
+    }
+}
+
+pub(crate) fn consume_action_loop_iteration(
+    config: &EngineConfig,
+    function: &str,
+    span: Option<SourceSpan>,
+) -> Result<(), EvalError> {
+    if config.take_action_loop_iteration() {
+        Ok(())
+    } else {
+        Err(EvalError::ActionIterationLimit {
+            function: function.to_string(),
+            limit: config.max_action_loop_iterations,
+            span,
+        })
     }
 }
 
@@ -8140,6 +8139,19 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("inf"));
         assert!(msg.contains("256"));
+    }
+
+    #[test]
+    fn eval_error_display_action_iteration_limit() {
+        let err = EvalError::ActionIterationLimit {
+            function: "loop-for-count".to_string(),
+            limit: 10,
+            span: Some(SourceSpan { line: 4, column: 9 }),
+        };
+        assert_eq!(
+            err.to_string(),
+            "action iteration limit exceeded in `loop-for-count` (limit 10) at line 4:9"
+        );
     }
 
     // -------------------------------------------------------------------
