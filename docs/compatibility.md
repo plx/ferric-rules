@@ -833,8 +833,15 @@ Two error channels exist:
 2. **Global (thread-local) errors**: `ferric_last_error_global()` /
    `ferric_last_error_global_copy()` / `ferric_clear_error_global()`
 
-Use the global channel for pre-engine failures (e.g., creation errors).
-Use the per-engine channel for all other operations.
+Failures involving a validated raw-engine handle publish the same current
+message to both that engine's snapshot and the calling thread's global
+fallback. Failures before handle validation (for example, creation or
+null-handle errors) update only the global channel. Engine snapshots are
+independent: an operation on one engine does not overwrite another engine's
+message.
+
+Bindings should prefer the per-engine channel for engine operations and use the
+global channel as a fallback or for pre-engine failures.
 
 ### Copy-to-Buffer Contract
 

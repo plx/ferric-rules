@@ -65,7 +65,9 @@ unsafe fn validate_stress_snapshot(
         ));
     }
     let message = &buffer[..written - 1];
-    if message != first.as_bytes() && message != second.as_bytes() {
+    let is_thread_violation = std::str::from_utf8(message)
+        .is_ok_and(|text| text.starts_with("engine called from wrong thread"));
+    if message != first.as_bytes() && message != second.as_bytes() && !is_thread_violation {
         return Err(format!(
             "reader observed a torn or stale snapshot: {:?}",
             String::from_utf8_lossy(message)

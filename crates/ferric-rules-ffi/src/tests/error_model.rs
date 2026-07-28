@@ -2,8 +2,8 @@
 
 use crate::error::{
     clear_global_error, ferric_clear_error_global, ferric_last_error_global, map_engine_error,
-    map_load_error, set_engine_error_global, set_global_error, with_global_error, EngineErrorState,
-    FerricError,
+    map_load_error, set_engine_and_global_error, set_global_error, with_global_error,
+    EngineErrorState, FerricError,
 };
 
 #[test]
@@ -185,18 +185,11 @@ fn error_channels_are_independent() {
 }
 
 #[test]
-fn set_engine_error_global_stores_and_maps() {
-    use ferric_rules_runtime::engine::EngineError;
+fn set_engine_and_global_error_mirrors_message() {
     clear_global_error();
-    let err = EngineError::ModuleNotFound("MISSING".to_string());
-    let code = set_engine_error_global(&err);
-    assert_eq!(code, FerricError::NotFound);
-    with_global_error(|msg| {
-        let msg = msg.unwrap();
-        assert!(
-            msg.contains("MISSING"),
-            "error message should contain module name"
-        );
-    });
+    let mut state = EngineErrorState::new();
+    set_engine_and_global_error(&mut state, "current failure".to_string());
+    assert_eq!(state.message(), Some("current failure"));
+    with_global_error(|msg| assert_eq!(msg, Some("current failure")));
     clear_global_error();
 }

@@ -12,7 +12,7 @@
  * - Creating thread: all operations succeed normally.
  * - Other threads: ordinary runtime operations return
  *   FERRIC_ERROR_THREAD_VIOLATION with a descriptive message in the
- *   global error channel.
+ *   engine snapshot and that thread's global fallback.
  * - ferric_engine_last_error_copy() is synchronized and may run
  *   concurrently from any thread. Each call copies one coherent
  *   error snapshot.
@@ -30,6 +30,10 @@
  *
  * The global error functions (ferric_last_error_global, etc.)
  * use thread-local storage and are safe to call from any thread.
+ * Every failed raw-engine call involving a validated handle publishes
+ * the same current message to that engine's snapshot and the calling
+ * thread's global fallback. Failures before handle validation update
+ * only the global channel.
  *
  * ============================================================
  * OWNERSHIP AND LIFETIME

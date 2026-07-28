@@ -11,6 +11,11 @@
 //!   module visibility/ambiguity failures, generic dispatch/conflict diagnostics)
 //!   are surfaced through FFI without reinterpretation or loss of source context.
 //!
+//! - **Error-channel synchronization**: Any failed call involving a validated
+//!   raw-engine handle publishes the same current message to that engine's
+//!   snapshot and the calling thread's global fallback. Failures before handle
+//!   validation can update only the global channel.
+//!
 //! - **Thread affinity**: A raw engine handle is bound to its creating thread.
 //!   Runtime operations validate affinity before accessing the engine. The
 //!   synchronized `ferric_engine_last_error_copy` accessor may run concurrently

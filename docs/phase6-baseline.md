@@ -117,6 +117,9 @@ C-ABI functions with opaque `FerricEngine*` handle:
 - `ferric_engine_get_output` -- retrieve captured channel output
 
 **Error Handling:**
+- Failed calls involving a validated raw-engine handle mirror the same current
+  text into the per-engine snapshot and calling thread's global fallback;
+  pre-handle failures are global-only.
 - `ferric_last_error_global` -- thread-local error (borrowed pointer, valid until next Ferric call)
 - `ferric_last_error_global_copy` -- thread-local error (copy-to-buffer)
 - `ferric_clear_error_global` -- clear thread-local error
