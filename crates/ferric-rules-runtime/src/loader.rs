@@ -4551,6 +4551,119 @@ mod tests {
         ferric_rules_parser::Span::new(pos, pos, FileId(0))
     }
 
+    fn parser_depth_nested_list_source(depth: usize) -> String {
+        let mut source = String::with_capacity(depth.saturating_mul(2).saturating_add(1));
+        source.extend(std::iter::repeat('(').take(depth));
+        source.push('x');
+        source.extend(std::iter::repeat(')').take(depth));
+        source
+    }
+
+    fn parser_depth_action_rule(action_depth: usize) -> String {
+        let mut source = String::from("(defrule depth-action (trigger) => ");
+        for _ in 0..action_depth {
+            source.push_str("(+ 1 ");
+        }
+        source.push('1');
+        source.extend(std::iter::repeat(')').take(action_depth));
+        source.push(')');
+        source
+    }
+
+    fn parser_depth_conditional_rule(not_depth: usize) -> String {
+        let mut source = String::from("(defrule depth-ce ");
+        for _ in 0..not_depth {
+            source.push_str("(not ");
+        }
+        source.push_str("(leaf)");
+        source.extend(std::iter::repeat(')').take(not_depth));
+        source.push_str(" => (assert (ok)))");
+        source
+    }
+
+    #[test]
+    fn parser_depth_accepts_documented_maximum_action() {
+        let action_depth = ferric_rules_parser::MAX_SEXPR_NESTING_DEPTH - 1;
+        let mut engine = new_utf8_engine();
+
+        let result = engine.load_str(&parser_depth_action_rule(action_depth));
+
+        assert!(
+            result.is_ok(),
+            "an action at the documented maximum must load: {result:?}"
+        );
+        assert_eq!(engine.rules().len(), 1);
+    }
+
+    #[test]
+    fn parser_depth_rejects_maximum_plus_one_actions_and_conditional_elements() {
+        let rejected_action =
+            parser_depth_action_rule(ferric_rules_parser::MAX_SEXPR_NESTING_DEPTH);
+        let rejected_ce =
+            parser_depth_conditional_rule(ferric_rules_parser::MAX_SEXPR_NESTING_DEPTH);
+
+        for source in [rejected_action, rejected_ce] {
+            let mut engine = new_utf8_engine();
+            let errors = engine
+                .load_str(&source)
+                .expect_err("maximum plus one must be rejected");
+            assert_eq!(errors.len(), 1, "diagnostics must remain bounded");
+            assert!(matches!(
+                &errors[0],
+                LoadError::Parse(error)
+                    if error.kind == ferric_rules_parser::ParseErrorKind::NestingDepthExceeded
+                        && error.message
+                            == format!(
+                                "S-expression nesting depth {} exceeds maximum of {}",
+                                ferric_rules_parser::MAX_SEXPR_NESTING_DEPTH + 1,
+                                ferric_rules_parser::MAX_SEXPR_NESTING_DEPTH
+                            )
+            ));
+        }
+    }
+
+    #[test]
+    fn parser_depth_extreme_is_bounded_in_small_stack_subprocess() {
+        const CHILD_ENV: &str = "FERRIC_ROBUST_001_RUNTIME_SMALL_STACK_CHILD";
+        const TEST_NAME: &str =
+            "loader::tests::parser_depth_extreme_is_bounded_in_small_stack_subprocess";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            std::thread::Builder::new()
+                .name("fr-robust-001-runtime-stack".to_string())
+                .stack_size(64 * 1024)
+                .spawn(|| {
+                    let mut engine = new_utf8_engine();
+                    let errors = engine
+                        .load_str(&parser_depth_nested_list_source(50_000))
+                        .expect_err("extreme nesting must be rejected");
+                    assert_eq!(errors.len(), 1);
+                    assert!(matches!(
+                        &errors[0],
+                        LoadError::Parse(error)
+                            if error.kind
+                                == ferric_rules_parser::ParseErrorKind::NestingDepthExceeded
+                    ));
+                })
+                .expect("small-stack runtime thread must start")
+                .join()
+                .expect("small-stack runtime load must not panic");
+            return;
+        }
+
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .status()
+                .expect("isolated runtime test subprocess must start");
+
+        assert!(
+            status.success(),
+            "extreme runtime input must not abort the isolated subprocess: {status}"
+        );
+    }
+
     #[test]
     fn load_empty_string_returns_empty_result() {
         let mut engine = new_utf8_engine();
