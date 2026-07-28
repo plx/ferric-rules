@@ -4,6 +4,15 @@ use crate::error::{ParseError, ParseErrorKind};
 use crate::lexer::{lex, SpannedToken, Token};
 use crate::span::{FileId, Span};
 
+/// Maximum supported nesting depth for S-expression lists.
+///
+/// A top-level list has depth 1. Atoms outside lists have depth 0. Parsing is
+/// iterative at every depth, but this limit also keeps downstream Stage 2
+/// interpretation, typed AST construction, and destruction within a safe stack
+/// budget. The parser runs in O(source bytes + tokens) time and memory, while
+/// its open-list stack is bounded by this value.
+pub const MAX_SEXPR_NESTING_DEPTH: usize = 64;
+
 /// An S-expression: either an atom or a list.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -47,6 +56,39 @@ impl SExpr {
         match self {
             Self::Atom(Atom::Symbol(s), _) => Some(s),
             _ => None,
+        }
+    }
+
+    pub(crate) fn nesting_depth_violation(&self) -> Option<(usize, Span)> {
+        let mut pending = vec![(self, 0_usize)];
+        while let Some((expr, parent_depth)) = pending.pop() {
+            let Self::List(items, span) = expr else {
+                continue;
+            };
+            let depth = parent_depth + 1;
+            if depth > MAX_SEXPR_NESTING_DEPTH {
+                return Some((depth, *span));
+            }
+            pending.extend(items.iter().rev().map(|item| (item, depth)));
+        }
+        None
+    }
+}
+
+impl Drop for SExpr {
+    fn drop(&mut self) {
+        let Self::List(items, _) = self else {
+            return;
+        };
+
+        // Detach descendants before ordinary enum drop glue can recurse through
+        // them. Each popped list is emptied before it is dropped, so stack use
+        // remains constant even for programmatically constructed hostile trees.
+        let mut pending = std::mem::take(items);
+        while let Some(mut expr) = pending.pop() {
+            if let Self::List(children, _) = &mut expr {
+                pending.append(children);
+            }
         }
     }
 }
@@ -169,6 +211,11 @@ struct Parser {
     errors: Vec<ParseError>,
 }
 
+struct ListFrame {
+    items: Vec<SExpr>,
+    start_span: Span,
+}
+
 impl Parser {
     fn new(tokens: Vec<SpannedToken>) -> Self {
         Self {
@@ -180,29 +227,60 @@ impl Parser {
 
     fn parse_all(mut self) -> ParseResult {
         let mut exprs = Vec::new();
+        let mut frames: Vec<ListFrame> = Vec::new();
 
         while self.position < self.tokens.len() {
-            match self.parse_expr() {
-                Some(expr) => exprs.push(expr),
-                None => {
-                    // Error recovery: skip unexpected tokens
-                    if let Some(token) = self.current() {
-                        if matches!(token.token, Token::RightParen) {
-                            self.errors.push(ParseError::new(
-                                "unexpected closing parenthesis",
-                                token.span,
-                                ParseErrorKind::UnexpectedCloseParen,
-                            ));
-                            self.position += 1;
-                        } else {
-                            // Should not happen in normal cases
-                            self.position += 1;
-                        }
+            let token = self.current().expect("position is in bounds");
+            match token.token {
+                Token::LeftParen => {
+                    if frames.len() == MAX_SEXPR_NESTING_DEPTH {
+                        let depth = frames.len() + 1;
+                        self.errors.push(ParseError::new(
+                            nesting_depth_message(depth),
+                            token.span,
+                            ParseErrorKind::NestingDepthExceeded,
+                        ));
+                        self.skip_current_list();
                     } else {
-                        break;
+                        let start_span = token.span;
+                        self.position += 1;
+                        frames.push(ListFrame {
+                            items: Vec::new(),
+                            start_span,
+                        });
                     }
                 }
+                Token::RightParen => {
+                    let end_span = token.span;
+                    self.position += 1;
+                    if let Some(frame) = frames.pop() {
+                        let expr = build_list_expr(frame.items, frame.start_span, end_span);
+                        append_expr(expr, &mut frames, &mut exprs);
+                    } else {
+                        self.errors.push(ParseError::new(
+                            "unexpected closing parenthesis",
+                            end_span,
+                            ParseErrorKind::UnexpectedCloseParen,
+                        ));
+                    }
+                }
+                _ => {
+                    let expr = self
+                        .parse_atom()
+                        .expect("non-parenthesis token must parse as an atom");
+                    append_expr(expr, &mut frames, &mut exprs);
+                }
             }
+        }
+
+        while let Some(frame) = frames.pop() {
+            self.errors.push(ParseError::new(
+                "unclosed parenthesis",
+                frame.start_span,
+                ParseErrorKind::UnclosedParen,
+            ));
+            let expr = SExpr::List(frame.items, frame.start_span);
+            append_expr(expr, &mut frames, &mut exprs);
         }
 
         ParseResult {
@@ -215,23 +293,12 @@ impl Parser {
         self.tokens.get(self.position)
     }
 
-    fn advance(&mut self) -> Option<&SpannedToken> {
-        if self.position < self.tokens.len() {
-            let token = &self.tokens[self.position];
-            self.position += 1;
-            Some(token)
-        } else {
-            None
-        }
-    }
-
-    fn parse_expr(&mut self) -> Option<SExpr> {
+    fn parse_atom(&mut self) -> Option<SExpr> {
         let (atom, span) = {
             let token = self.current()?;
             let span = token.span;
             let atom = match &token.token {
-                Token::LeftParen => return self.parse_list(),
-                Token::RightParen => return None, // Handled by caller
+                Token::LeftParen | Token::RightParen => return None,
                 Token::Integer(n) => Atom::Integer(*n),
                 Token::Float(f) => Atom::Float(*f),
                 Token::String(s) => Atom::String(s.clone()),
@@ -249,45 +316,39 @@ impl Parser {
             (atom, span)
         };
 
-        self.advance();
+        self.position += 1;
         Some(SExpr::Atom(atom, span))
     }
 
-    fn parse_list(&mut self) -> Option<SExpr> {
-        let open_token = self.current()?;
-        debug_assert!(matches!(open_token.token, Token::LeftParen));
-        let start_span = open_token.span;
-        self.advance();
-
-        let mut items = Vec::new();
-
-        loop {
-            if let Some(token) = self.current() {
-                if matches!(token.token, Token::RightParen) {
-                    let end_span = token.span;
-                    self.advance();
-                    return Some(build_list_expr(items, start_span, end_span));
+    fn skip_current_list(&mut self) {
+        debug_assert!(matches!(
+            self.current().map(|token| &token.token),
+            Some(Token::LeftParen)
+        ));
+        let mut depth = 0_usize;
+        while let Some(token) = self.current() {
+            match token.token {
+                Token::LeftParen => depth += 1,
+                Token::RightParen => {
+                    depth -= 1;
+                    self.position += 1;
+                    if depth == 0 {
+                        return;
+                    }
+                    continue;
                 }
-            } else {
-                // EOF without closing paren
-                self.errors.push(ParseError::new(
-                    "unclosed parenthesis",
-                    start_span,
-                    ParseErrorKind::UnclosedParen,
-                ));
-                return Some(SExpr::List(items, start_span));
+                _ => {}
             }
-
-            if let Some(expr) = self.parse_expr() {
-                items.push(expr);
-            } else {
-                // Unexpected token; caller handles recovery.
-                break;
-            }
+            self.position += 1;
         }
+    }
+}
 
-        // Should not reach here in normal cases
-        Some(SExpr::List(items, start_span))
+fn append_expr(expr: SExpr, frames: &mut [ListFrame], roots: &mut Vec<SExpr>) {
+    if let Some(parent) = frames.last_mut() {
+        parent.items.push(expr);
+    } else {
+        roots.push(expr);
     }
 }
 
@@ -295,12 +356,27 @@ fn build_list_expr(items: Vec<SExpr>, start_span: Span, end_span: Span) -> SExpr
     SExpr::List(items, start_span.merge(end_span))
 }
 
+pub(crate) fn nesting_depth_message(depth: usize) -> String {
+    format!("S-expression nesting depth {depth} exceeds maximum of {MAX_SEXPR_NESTING_DEPTH}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const EXTREME_NESTING_DEPTH: usize = 50_000;
+    const SMALL_TEST_STACK_BYTES: usize = 64 * 1024;
+
     fn file() -> FileId {
         FileId(0)
+    }
+
+    fn nested_list_source(depth: usize) -> String {
+        let mut source = String::with_capacity(depth.saturating_mul(2).saturating_add(1));
+        source.extend(std::iter::repeat('(').take(depth));
+        source.push('x');
+        source.extend(std::iter::repeat(')').take(depth));
+        source
     }
 
     #[test]
@@ -469,6 +545,102 @@ mod tests {
         let result = parse_sexprs("(a (b (c (d))))", file());
         assert!(result.errors.is_empty());
         assert_eq!(result.exprs.len(), 1);
+    }
+
+    #[test]
+    fn fr_robust_001_parser_nesting_boundaries() {
+        for depth in [1, MAX_SEXPR_NESTING_DEPTH - 1, MAX_SEXPR_NESTING_DEPTH] {
+            let result = parse_sexprs(&nested_list_source(depth), file());
+            assert!(
+                result.errors.is_empty(),
+                "depth {depth} must be accepted: {:?}",
+                result.errors
+            );
+            assert_eq!(result.exprs.len(), 1);
+        }
+
+        let rejected_depth = MAX_SEXPR_NESTING_DEPTH + 1;
+        let result = parse_sexprs(&nested_list_source(rejected_depth), file());
+        assert_eq!(result.errors.len(), 1);
+        let error = &result.errors[0];
+        assert_eq!(error.kind, ParseErrorKind::NestingDepthExceeded);
+        assert_eq!(
+            error.message,
+            nesting_depth_message(rejected_depth),
+            "the public-boundary diagnostic must remain stable"
+        );
+        assert_eq!(error.span.start.line, 1);
+        assert_eq!(
+            error.span.start.column as usize, rejected_depth,
+            "diagnostic must point at the first disallowed opening parenthesis"
+        );
+    }
+
+    #[test]
+    fn fr_robust_001_extreme_unclosed_nesting_has_bounded_errors() {
+        let result = parse_sexprs(&"(".repeat(EXTREME_NESTING_DEPTH), file());
+
+        assert_eq!(
+            result.errors.len(),
+            MAX_SEXPR_NESTING_DEPTH + 1,
+            "one depth error plus one error per retained open-list frame"
+        );
+        assert_eq!(result.errors[0].kind, ParseErrorKind::NestingDepthExceeded);
+        assert_eq!(
+            result.errors[0].message,
+            nesting_depth_message(MAX_SEXPR_NESTING_DEPTH + 1)
+        );
+        assert!(result.errors[1..]
+            .iter()
+            .all(|error| error.kind == ParseErrorKind::UnclosedParen));
+    }
+
+    #[test]
+    fn fr_robust_001_extreme_parse_and_drop_survive_small_stack_subprocess() {
+        const CHILD_ENV: &str = "FERRIC_ROBUST_001_SMALL_STACK_CHILD";
+        const TEST_NAME: &str =
+            "sexpr::tests::fr_robust_001_extreme_parse_and_drop_survive_small_stack_subprocess";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            std::thread::Builder::new()
+                .name("fr-robust-001-small-stack".to_string())
+                .stack_size(SMALL_TEST_STACK_BYTES)
+                .spawn(|| {
+                    let result = parse_sexprs(&nested_list_source(EXTREME_NESTING_DEPTH), file());
+                    assert_eq!(result.errors.len(), 1);
+                    assert_eq!(result.errors[0].kind, ParseErrorKind::NestingDepthExceeded);
+                    assert_eq!(
+                        result.errors[0].message,
+                        nesting_depth_message(MAX_SEXPR_NESTING_DEPTH + 1)
+                    );
+
+                    // Exercise destruction independently of the parser limit.
+                    // Public SExpr values can be built programmatically, so drop
+                    // itself must not recurse through an adversarial tree.
+                    let mut expr =
+                        SExpr::Atom(Atom::Symbol("leaf".to_string()), result.errors[0].span);
+                    for _ in 0..EXTREME_NESTING_DEPTH {
+                        expr = SExpr::List(vec![expr], result.errors[0].span);
+                    }
+                    drop(expr);
+                })
+                .expect("small-stack thread must start")
+                .join()
+                .expect("small-stack parser/drop thread must not panic");
+            return;
+        }
+
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .status()
+                .expect("isolated parser test subprocess must start");
+
+        assert!(
+            status.success(),
+            "extreme nesting must not abort the isolated subprocess: {status}"
+        );
     }
 
     #[test]

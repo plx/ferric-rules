@@ -44,7 +44,7 @@ pub mod stage2;
 pub use error::{LexError, ParseError, ParseErrorKind};
 pub use lexer::{lex, SpannedToken, Token};
 pub use qualified_name::{parse_qualified_name, QualifiedName};
-pub use sexpr::{parse_sexprs, Atom, Connective, ParseResult, SExpr};
+pub use sexpr::{parse_sexprs, Atom, Connective, ParseResult, SExpr, MAX_SEXPR_NESTING_DEPTH};
 pub use span::{FileId, Position, Span};
 pub use stage2::{
     interpret_constructs, Action, ActionExpr, Constraint, Construct, DefaultValue, FactBody,

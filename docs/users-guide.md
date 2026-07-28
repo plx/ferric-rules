@@ -334,6 +334,20 @@ A few rules of thumb:
   is rejected. If you need an inequality test inside an NCC, derive a
   helper fact that captures the predicate and reference it instead.
 
+### Parser nesting limit
+
+Ferric accepts at most 64 nested S-expression lists at every rule-source
+boundary. A top-level list has depth 1; an atom outside a list has depth 0.
+Depth 64 parses, interprets, and drops normally. The opening parenthesis at
+depth 65 is rejected with a source-located
+`S-expression nesting depth 65 exceeds maximum of 64` diagnostic.
+
+Parsing is linear in the source byte/token count. Tokens and accepted syntax
+trees use linear memory, while the open-list parser stack is capped at 64
+frames. This makes extreme balanced or unbalanced nesting reject without
+native-stack growth; applications do not need process isolation merely to
+protect against deeply parenthesized rule source.
+
 ---
 
 ## 6. RHS actions: modify, retract, duplicate, bind

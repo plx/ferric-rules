@@ -73,6 +73,8 @@ pub enum ParseErrorKind {
     UnclosedParen,
     /// Closing parenthesis without matching opening parenthesis.
     UnexpectedCloseParen,
+    /// S-expression list nesting exceeded the supported safety limit.
+    NestingDepthExceeded,
 }
 
 define_diagnostic_error!(

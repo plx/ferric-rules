@@ -16,7 +16,7 @@
 //! - `deffunction` and `defglobal` interpretation (Pass 005).
 //! - Add interpretation for `defmodule`, `defgeneric`, `defmethod`.
 
-use crate::sexpr::{Atom, Connective, SExpr};
+use crate::sexpr::{nesting_depth_message, Atom, Connective, SExpr};
 use crate::span::Span;
 use std::fmt;
 
@@ -512,6 +512,8 @@ pub enum InterpretErrorKind {
     MissingElement,
     /// Invalid construct structure.
     InvalidStructure,
+    /// S-expression list nesting exceeded the shared parser safety limit.
+    NestingDepthExceeded,
 }
 
 impl InterpretError {
@@ -576,6 +578,17 @@ impl InterpretError {
             suggestions: Vec::new(),
         }
     }
+
+    /// Creates an error for an S-expression that exceeds the shared nesting
+    /// safety limit.
+    pub fn nesting_depth_exceeded(depth: usize, span: Span) -> Self {
+        Self {
+            message: nesting_depth_message(depth),
+            span,
+            kind: InterpretErrorKind::NestingDepthExceeded,
+            suggestions: vec!["reduce S-expression list nesting".to_string()],
+        }
+    }
 }
 
 impl fmt::Display for InterpretError {
@@ -620,6 +633,20 @@ pub fn interpret_constructs(sexprs: &[SExpr], config: &InterpreterConfig) -> Int
     let mut result = InterpretResult::default();
 
     for sexpr in sexprs {
+        // Stage 2 is also a public boundary for callers that construct or
+        // deserialize S-expression trees without using Stage 1. Validate
+        // iteratively before any recursive interpretation or typed AST clone.
+        if let Some((depth, span)) = sexpr.nesting_depth_violation() {
+            if push_interpret_error(
+                &mut result,
+                config,
+                InterpretError::nesting_depth_exceeded(depth, span),
+            ) {
+                return result;
+            }
+            continue;
+        }
+
         // Each top-level element must be a list
         let Some(list) = sexpr.as_list() else {
             if push_interpret_error(
@@ -3030,12 +3057,97 @@ fn edit_distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sexpr::parse_sexprs;
+    use crate::sexpr::{parse_sexprs, MAX_SEXPR_NESTING_DEPTH};
     use crate::span::FileId;
     use proptest::prelude::*;
 
     fn file() -> FileId {
         FileId(0)
+    }
+
+    fn maximum_depth_action_construct() -> String {
+        let action_depth = MAX_SEXPR_NESTING_DEPTH - 1;
+        let mut source = String::from("(deffunction depth-safe () ");
+        for _ in 0..action_depth {
+            source.push_str("(+ 1 ");
+        }
+        source.push('1');
+        source.extend(std::iter::repeat(')').take(action_depth));
+        source.push(')');
+        source
+    }
+
+    #[test]
+    fn fr_robust_001_stage2_rejects_programmatic_over_limit_tree() {
+        let mut parsed = parse_sexprs("leaf", file());
+        let mut expr = parsed.exprs.pop().expect("leaf expression");
+        let span = expr.span();
+        for _ in 0..=MAX_SEXPR_NESTING_DEPTH {
+            expr = SExpr::List(vec![expr], span);
+        }
+
+        let result = interpret_constructs(&[expr], &InterpreterConfig::default());
+
+        assert!(result.constructs.is_empty());
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(
+            result.errors[0].kind,
+            InterpretErrorKind::NestingDepthExceeded
+        );
+        assert_eq!(
+            result.errors[0].message,
+            nesting_depth_message(MAX_SEXPR_NESTING_DEPTH + 1)
+        );
+    }
+
+    #[test]
+    fn fr_robust_001_stage2_maximum_depth_parses_and_drops_on_small_stack() {
+        const CHILD_ENV: &str = "FERRIC_ROBUST_001_STAGE2_SMALL_STACK_CHILD";
+        const TEST_NAME: &str =
+            "stage2::tests::fr_robust_001_stage2_maximum_depth_parses_and_drops_on_small_stack";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            std::thread::Builder::new()
+                .name("fr-robust-001-stage2-stack".to_string())
+                // Rust's debug-build Stage 2 frames are substantially larger
+                // than optimized frames. One MiB remains deliberately small
+                // relative to common multi-megabyte native thread stacks.
+                .stack_size(1024 * 1024)
+                .spawn(|| {
+                    let parsed = parse_sexprs(&maximum_depth_action_construct(), file());
+                    assert!(
+                        parsed.errors.is_empty(),
+                        "documented maximum must parse: {:?}",
+                        parsed.errors
+                    );
+                    let interpreted =
+                        interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+                    assert!(
+                        interpreted.errors.is_empty(),
+                        "documented maximum must interpret: {:?}",
+                        interpreted.errors
+                    );
+                    assert_eq!(interpreted.constructs.len(), 1);
+                    drop(interpreted);
+                    drop(parsed);
+                })
+                .expect("small-stack Stage 2 thread must start")
+                .join()
+                .expect("maximum-depth Stage 2 thread must not panic");
+            return;
+        }
+
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .status()
+                .expect("isolated Stage 2 test subprocess must start");
+
+        assert!(
+            status.success(),
+            "maximum-depth Stage 2 work must not abort the isolated subprocess: {status}"
+        );
     }
 
     /// Strategy that produces valid CLIPS identifiers: a letter followed by up to 10
