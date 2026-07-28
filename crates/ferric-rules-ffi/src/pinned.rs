@@ -32,7 +32,8 @@ use ferric_rules_pinned::{
 };
 
 use crate::error::{
-    copy_error_to_buffer, map_pinned_error, set_global_error, EngineErrorState, FerricError,
+    copy_error_to_buffer, map_pinned_error, set_engine_and_global_error, set_global_error,
+    EngineErrorState, FerricError,
 };
 use crate::types::{FerricConfig, FerricHaltReason};
 
@@ -281,9 +282,7 @@ fn queue_wait_from_millis(queue_wait_ms: i64) -> Result<QueueWait, FerricError> 
 
 fn record_pinned_error(handle: &FerricPinnedEngine, err: &PinnedError) -> FerricError {
     let code = map_pinned_error(err);
-    let message = err.to_string();
-    lock_unpoisoned(&handle.error_state).set(message.clone());
-    set_global_error(message);
+    set_engine_and_global_error(&mut lock_unpoisoned(&handle.error_state), err.to_string());
     code
 }
 

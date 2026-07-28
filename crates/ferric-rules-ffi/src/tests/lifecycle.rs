@@ -215,7 +215,7 @@ fn thread_violation_from_other_thread_via_raw_pointer() {
 }
 
 #[test]
-fn clear_error_rejects_other_thread_before_mutation() {
+fn clear_error_thread_violation_replaces_the_current_snapshot() {
     unsafe {
         let engine = ferric_engine_new();
         (*engine).set_error_for_test("sticky error".to_string());
@@ -231,10 +231,10 @@ fn clear_error_rejects_other_thread_before_mutation() {
         assert_eq!(result, FerricError::ThreadViolation);
 
         let err_ptr = ferric_engine_last_error(engine);
-        assert!(
-            !err_ptr.is_null(),
-            "error should remain set after violation"
-        );
+        assert!(!err_ptr.is_null());
+        let message = std::ffi::CStr::from_ptr(err_ptr).to_string_lossy();
+        assert!(message.contains("wrong thread"), "{message}");
+        assert!(!message.contains("sticky error"), "{message}");
 
         ferric_engine_free(engine);
     }

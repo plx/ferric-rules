@@ -167,7 +167,10 @@ C FFI surface. Key differences:
   thread). Per-engine last-error copies are synchronized across threads;
   borrowed-pointer use must not overlap another borrowed read or destruction.
   The destruction-only unchecked free skips affinity.
-- Error handling uses return codes + error channels (per-engine and global).
+- Error handling uses return codes plus synchronized error channels. A failure
+  involving a validated raw-engine handle updates both its per-engine snapshot
+  and the calling thread's global fallback; pre-handle failures update only
+  global state.
 - Include `ferric.h` and link against the Ferric shared library.
 
 See [compatibility.md](compatibility.md) Section 16.13 for the full FFI

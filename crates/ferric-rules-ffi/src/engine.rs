@@ -34,7 +34,7 @@ use crate::types::{
 };
 
 use crate::error::{
-    copy_error_to_buffer, map_engine_error, map_load_error, set_engine_error_global,
+    copy_error_to_buffer, map_engine_error, map_load_error, set_engine_and_global_error,
     set_global_error, EngineErrorState, FerricError,
 };
 use ferric_rules_runtime::engine::EngineError;
@@ -160,8 +160,11 @@ unsafe fn check_thread_affinity(handle: NonNull<FerricEngine>) -> Result<(), Fer
     let current = std::thread::current().id();
     if current != creator {
         let err = EngineError::WrongThread { creator, current };
-        set_global_error(err.to_string());
-        return Err(FerricError::ThreadViolation);
+        return Err(set_engine_error_for_handle(
+            handle,
+            FerricError::ThreadViolation,
+            err.to_string(),
+        ));
     }
     Ok(())
 }
@@ -193,6 +196,7 @@ struct EngineWriteAccess<'a> {
 
 struct EngineReadAccess<'a> {
     engine: &'a Engine,
+    diagnostics: &'a Mutex<EngineDiagnostics>,
     _guard: EngineCallGuard<'a>,
 }
 
@@ -213,11 +217,12 @@ unsafe fn enter_engine_call<'a>(
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        set_global_error(
+        return Err(set_engine_error_for_handle(
+            handle,
+            FerricError::InternalError,
             "reentrant call on a raw engine is not supported; only per-engine error accessors may be called from a host callback"
                 .to_string(),
-        );
-        return Err(FerricError::InternalError);
+        ));
     }
     Ok(EngineCallGuard {
         active,
@@ -247,42 +252,62 @@ unsafe fn borrow_engine_checked<'a>(
     check_thread_affinity(handle)?;
     let guard = enter_engine_call(handle)?;
     let runtime = &*std::ptr::addr_of!((*handle.as_ptr()).engine);
+    let diagnostic_state = diagnostics(handle);
     Ok(EngineReadAccess {
         engine: runtime,
+        diagnostics: diagnostic_state,
         _guard: guard,
     })
 }
 
-unsafe fn c_str_to_str<'a>(ptr: *const c_char, label: &str) -> Result<&'a str, FerricError> {
-    if ptr.is_null() {
-        set_global_error(format!("{label} pointer is null"));
-        return Err(FerricError::NullPointer);
-    }
-    let c_str = CStr::from_ptr(ptr);
-    c_str.to_str().map_err(|e| {
-        set_global_error(format!("{label} is not valid UTF-8: {e}"));
-        FerricError::InvalidArgument
-    })
-}
-
 fn set_engine_error_message(
-    handle: &EngineWriteAccess<'_>,
+    diagnostics: &Mutex<EngineDiagnostics>,
     code: FerricError,
     message: String,
 ) -> FerricError {
-    lock_unpoisoned(handle.diagnostics)
-        .error_state
-        .set(message.clone());
-    set_global_error(message);
+    set_engine_and_global_error(&mut lock_unpoisoned(diagnostics).error_state, message);
     code
 }
 
-fn set_engine_runtime_error(handle: &EngineWriteAccess<'_>, err: &EngineError) -> FerricError {
-    set_engine_error_message(handle, map_engine_error(err), err.to_string())
+unsafe fn set_engine_error_for_handle(
+    handle: NonNull<FerricEngine>,
+    code: FerricError,
+    message: String,
+) -> FerricError {
+    set_engine_error_message(diagnostics(handle), code, message)
 }
 
-fn set_engine_load_error(handle: &EngineWriteAccess<'_>, err: &LoadError) -> FerricError {
-    set_engine_error_message(handle, map_load_error(err), err.to_string())
+fn set_engine_runtime_error(
+    diagnostics: &Mutex<EngineDiagnostics>,
+    err: &EngineError,
+) -> FerricError {
+    set_engine_error_message(diagnostics, map_engine_error(err), err.to_string())
+}
+
+fn set_engine_load_error(diagnostics: &Mutex<EngineDiagnostics>, err: &LoadError) -> FerricError {
+    set_engine_error_message(diagnostics, map_load_error(err), err.to_string())
+}
+
+unsafe fn engine_c_str_to_str<'a>(
+    ptr: *const c_char,
+    label: &str,
+    diagnostics: &Mutex<EngineDiagnostics>,
+) -> Result<&'a str, FerricError> {
+    if ptr.is_null() {
+        return Err(set_engine_error_message(
+            diagnostics,
+            FerricError::NullPointer,
+            format!("{label} pointer is null"),
+        ));
+    }
+    let c_str = CStr::from_ptr(ptr);
+    c_str.to_str().map_err(|error| {
+        set_engine_error_message(
+            diagnostics,
+            FerricError::InvalidArgument,
+            format!("{label} is not valid UTF-8: {error}"),
+        )
+    })
 }
 
 /// Copy a string to a caller-provided buffer using the standard buffer copy pattern.
@@ -300,6 +325,7 @@ unsafe fn copy_str_to_buffer(
     buf: *mut c_char,
     buf_len: usize,
     out_len: *mut usize,
+    diagnostics: &Mutex<EngineDiagnostics>,
 ) -> FerricError {
     let needed = s.len() + 1; // string bytes + NUL
 
@@ -308,14 +334,21 @@ unsafe fn copy_str_to_buffer(
         return if buf_len == 0 {
             FerricError::Ok
         } else {
-            set_global_error("non-zero buf_len with null buf".to_string());
-            FerricError::InvalidArgument
+            set_engine_error_message(
+                diagnostics,
+                FerricError::InvalidArgument,
+                "non-zero buf_len with null buf".to_string(),
+            )
         };
     }
 
     if buf_len == 0 {
         *out_len = needed;
-        return FerricError::BufferTooSmall;
+        return set_engine_error_message(
+            diagnostics,
+            FerricError::BufferTooSmall,
+            format!("output buffer is too small: need {needed} bytes, got 0"),
+        );
     }
 
     if buf_len >= needed {
@@ -328,7 +361,11 @@ unsafe fn copy_str_to_buffer(
         std::ptr::copy_nonoverlapping(s.as_ptr(), buf.cast::<u8>(), copy_len);
         *buf.add(copy_len) = 0;
         *out_len = needed;
-        FerricError::BufferTooSmall
+        set_engine_error_message(
+            diagnostics,
+            FerricError::BufferTooSmall,
+            format!("output buffer is too small: need {needed} bytes, got {buf_len}"),
+        )
     }
 }
 
@@ -423,15 +460,12 @@ pub unsafe extern "C" fn ferric_engine_load_string(
     engine: *mut FerricEngine,
     source: *const c_char,
 ) -> FerricError {
-    if let Err(code) = validate_engine_ptr(engine) {
-        return code;
-    }
-    let source_str = match c_str_to_str(source, "source string") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
     let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
+        Err(code) => return code,
+    };
+    let source_str = match engine_c_str_to_str(source, "source string", handle.diagnostics) {
+        Ok(s) => s,
         Err(code) => return code,
     };
 
@@ -439,10 +473,10 @@ pub unsafe extern "C" fn ferric_engine_load_string(
         Ok(_) => FerricError::Ok,
         Err(errors) => {
             if let Some(first) = errors.first() {
-                set_engine_load_error(&handle, first)
+                set_engine_load_error(handle.diagnostics, first)
             } else {
                 set_engine_error_message(
-                    &handle,
+                    handle.diagnostics,
                     FerricError::InternalError,
                     "internal error: load failed without diagnostics".to_string(),
                 )
@@ -522,16 +556,22 @@ pub unsafe extern "C" fn ferric_engine_last_error_copy(
     buf_len: usize,
     out_len: *mut usize,
 ) -> FerricError {
-    if out_len.is_null() {
-        return FerricError::InvalidArgument;
-    }
     let handle = match validate_engine_ptr(engine) {
         Ok(handle) => handle,
         Err(code) => {
-            *out_len = 0;
+            if !out_len.is_null() {
+                *out_len = 0;
+            }
             return code;
         }
     };
+    if out_len.is_null() {
+        return set_engine_error_for_handle(
+            handle,
+            FerricError::InvalidArgument,
+            "out_len pointer is null".to_string(),
+        );
+    }
     let state = lock_unpoisoned(diagnostics(handle));
     copy_error_to_buffer(state.error_state.message(), buf, buf_len, out_len)
 }
@@ -568,7 +608,7 @@ pub unsafe extern "C" fn ferric_engine_reset(engine: *mut FerricEngine) -> Ferri
 
     match handle.engine.reset() {
         Ok(()) => FerricError::Ok,
-        Err(ref err) => set_engine_runtime_error(&handle, err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -613,7 +653,7 @@ pub unsafe extern "C" fn ferric_engine_run(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_runtime_error(&handle, err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -655,7 +695,7 @@ pub unsafe extern "C" fn ferric_engine_step(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_runtime_error(&handle, err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -678,15 +718,12 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
 ) -> FerricError {
     use slotmap::Key as _;
 
-    if let Err(code) = validate_engine_ptr(engine) {
-        return code;
-    }
-    let source_str = match c_str_to_str(source, "source string") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
     let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
+        Err(code) => return code,
+    };
+    let source_str = match engine_c_str_to_str(source, "source string", handle.diagnostics) {
+        Ok(s) => s,
         Err(code) => return code,
     };
 
@@ -702,10 +739,10 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
         }
         Err(errors) => {
             if let Some(first) = errors.first() {
-                set_engine_load_error(&handle, first)
+                set_engine_load_error(handle.diagnostics, first)
             } else {
                 set_engine_error_message(
-                    &handle,
+                    handle.diagnostics,
                     FerricError::InternalError,
                     "internal error: load failed without diagnostics".to_string(),
                 )
@@ -735,7 +772,7 @@ pub unsafe extern "C" fn ferric_engine_retract(
 
     match handle.engine.retract(fid) {
         Ok(()) => FerricError::Ok,
-        Err(ref err) => set_engine_runtime_error(&handle, err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -757,11 +794,7 @@ pub unsafe extern "C" fn ferric_engine_get_output(
     let Ok(handle) = borrow_engine_checked(engine) else {
         return ptr::null();
     };
-    if channel.is_null() {
-        return ptr::null();
-    }
-
-    let Ok(channel_str) = CStr::from_ptr(channel).to_str() else {
+    let Ok(channel_str) = engine_c_str_to_str(channel, "channel", handle.diagnostics) else {
         return ptr::null();
     };
 
@@ -812,8 +845,11 @@ pub unsafe extern "C" fn ferric_engine_action_diagnostic_count(
         Err(code) => return code,
     };
     if out_count.is_null() {
-        set_global_error("out_count pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_count pointer is null".to_string(),
+        );
     }
     *out_count = handle.engine.action_diagnostics().len();
     FerricError::Ok
@@ -837,24 +873,51 @@ pub unsafe extern "C" fn ferric_engine_action_diagnostic_copy(
     buf_len: usize,
     out_len: *mut usize,
 ) -> FerricError {
-    if out_len.is_null() {
-        return FerricError::InvalidArgument;
-    }
-
     let handle = match borrow_engine_checked(engine) {
         Ok(h) => h,
         Err(code) => {
-            *out_len = 0;
+            if !out_len.is_null() {
+                *out_len = 0;
+            }
             return code;
         }
     };
+    if out_len.is_null() {
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::InvalidArgument,
+            "out_len pointer is null".to_string(),
+        );
+    }
 
     let message = handle
         .engine
         .action_diagnostics()
         .get(index)
         .map(ToString::to_string);
-    copy_error_to_buffer(message.as_deref(), buf, buf_len, out_len)
+    let result = copy_error_to_buffer(message.as_deref(), buf, buf_len, out_len);
+    match result {
+        FerricError::Ok => FerricError::Ok,
+        FerricError::NotFound => set_engine_error_message(
+            handle.diagnostics,
+            result,
+            format!("action diagnostic index {index} not found"),
+        ),
+        FerricError::InvalidArgument => set_engine_error_message(
+            handle.diagnostics,
+            result,
+            "non-zero buf_len with null buf".to_string(),
+        ),
+        FerricError::BufferTooSmall => set_engine_error_message(
+            handle.diagnostics,
+            result,
+            format!(
+                "output buffer is too small: need {} bytes, got {buf_len}",
+                *out_len
+            ),
+        ),
+        _ => result,
+    }
 }
 
 /// Clear all stored action diagnostics.
@@ -896,8 +959,11 @@ pub unsafe extern "C" fn ferric_engine_fact_count(
         Err(code) => return code,
     };
     if out_count.is_null() {
-        set_global_error("out_count pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_count pointer is null".to_string(),
+        );
     }
     // facts() does its own thread check
     match handle.engine.facts() {
@@ -905,7 +971,7 @@ pub unsafe extern "C" fn ferric_engine_fact_count(
             *out_count = iter.count();
             FerricError::Ok
         }
-        Err(ref err) => set_engine_error_global(err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -929,8 +995,11 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field_count(
         Err(code) => return code,
     };
     if out_count.is_null() {
-        set_global_error("out_count pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_count pointer is null".to_string(),
+        );
     }
 
     let key_data = slotmap::KeyData::from_ffi(fact_id);
@@ -945,11 +1014,12 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field_count(
             };
             FerricError::Ok
         }
-        Ok(None) => {
-            set_global_error(format!("fact not found: {fact_id}"));
-            FerricError::NotFound
-        }
-        Err(ref err) => set_engine_error_global(err),
+        Ok(None) => set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NotFound,
+            format!("fact not found: {fact_id}"),
+        ),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -978,8 +1048,11 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field(
         Err(code) => return code,
     };
     if out_value.is_null() {
-        set_global_error("out_value pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_value pointer is null".to_string(),
+        );
     }
 
     let key_data = slotmap::KeyData::from_ffi(fact_id);
@@ -996,15 +1069,19 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field(
                 *out_value = value_to_ferric(val, handle.engine);
                 FerricError::Ok
             } else {
-                set_global_error(format!("field index {index} out of bounds"));
-                FerricError::InvalidArgument
+                set_engine_error_message(
+                    handle.diagnostics,
+                    FerricError::InvalidArgument,
+                    format!("field index {index} out of bounds"),
+                )
             }
         }
-        Ok(None) => {
-            set_global_error(format!("fact not found: {fact_id}"));
-            FerricError::NotFound
-        }
-        Err(ref err) => set_engine_error_global(err),
+        Ok(None) => set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NotFound,
+            format!("fact not found: {fact_id}"),
+        ),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -1027,28 +1104,31 @@ pub unsafe extern "C" fn ferric_engine_get_global(
     name: *const c_char,
     out_value: *mut FerricValue,
 ) -> FerricError {
-    if let Err(code) = validate_engine_ptr(engine) {
-        return code;
-    }
-    let name_str = match c_str_to_str(name, "name") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    if out_value.is_null() {
-        set_global_error("out_value pointer is null".to_string());
-        return FerricError::NullPointer;
-    }
     let handle = match borrow_engine_checked(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
+    let name_str = match engine_c_str_to_str(name, "name", handle.diagnostics) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    if out_value.is_null() {
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_value pointer is null".to_string(),
+        );
+    }
 
     if let Some(val) = handle.engine.get_global(name_str) {
         *out_value = value_to_ferric(val, handle.engine);
         FerricError::Ok
     } else {
-        set_global_error(format!("global variable not found: {name_str}"));
-        FerricError::NotFound
+        set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NotFound,
+            format!("global variable not found: {name_str}"),
+        )
     }
 }
 
@@ -1080,8 +1160,11 @@ pub unsafe extern "C" fn ferric_engine_fact_ids(
         Err(code) => return code,
     };
     if out_count.is_null() {
-        set_global_error("out_count pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_count pointer is null".to_string(),
+        );
     }
 
     match handle.engine.facts() {
@@ -1096,7 +1179,7 @@ pub unsafe extern "C" fn ferric_engine_fact_ids(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_error_global(err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -1124,13 +1207,16 @@ pub unsafe extern "C" fn ferric_engine_find_fact_ids(
         Ok(h) => h,
         Err(code) => return code,
     };
-    let relation_str = match c_str_to_str(relation, "relation") {
+    let relation_str = match engine_c_str_to_str(relation, "relation", handle.diagnostics) {
         Ok(s) => s,
         Err(code) => return code,
     };
     if out_count.is_null() {
-        set_global_error("out_count pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_count pointer is null".to_string(),
+        );
     }
 
     match handle.engine.find_facts(relation_str) {
@@ -1145,7 +1231,7 @@ pub unsafe extern "C" fn ferric_engine_find_fact_ids(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_error_global(err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -1170,8 +1256,11 @@ pub unsafe extern "C" fn ferric_engine_get_fact_type(
         Err(code) => return code,
     };
     if out_type.is_null() {
-        set_global_error("out_type pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_type pointer is null".to_string(),
+        );
     }
 
     let key_data = slotmap::KeyData::from_ffi(fact_id);
@@ -1186,11 +1275,12 @@ pub unsafe extern "C" fn ferric_engine_get_fact_type(
             };
             FerricError::Ok
         }
-        Ok(None) => {
-            set_global_error(format!("fact not found: {fact_id}"));
-            FerricError::NotFound
-        }
-        Err(ref err) => set_engine_error_global(err),
+        Ok(None) => set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NotFound,
+            format!("fact not found: {fact_id}"),
+        ),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -1216,8 +1306,11 @@ pub unsafe extern "C" fn ferric_engine_get_fact_relation(
         Err(code) => return code,
     };
     if out_len.is_null() {
-        set_global_error("out_len pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_len pointer is null".to_string(),
+        );
     }
 
     let key_data = slotmap::KeyData::from_ffi(fact_id);
@@ -1232,19 +1325,21 @@ pub unsafe extern "C" fn ferric_engine_get_fact_relation(
                         .engine
                         .resolve_symbol(o.relation)
                         .unwrap_or("<unknown>");
-                    copy_str_to_buffer(name, buf, buf_len, out_len)
+                    copy_str_to_buffer(name, buf, buf_len, out_len, handle.diagnostics)
                 }
-                Fact::Template(_) => {
-                    set_global_error("fact is a template fact, not an ordered fact".to_string());
-                    FerricError::InvalidArgument
-                }
+                Fact::Template(_) => set_engine_error_message(
+                    handle.diagnostics,
+                    FerricError::InvalidArgument,
+                    "fact is a template fact, not an ordered fact".to_string(),
+                ),
             }
         }
-        Ok(None) => {
-            set_global_error(format!("fact not found: {fact_id}"));
-            FerricError::NotFound
-        }
-        Err(ref err) => set_engine_error_global(err),
+        Ok(None) => set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NotFound,
+            format!("fact not found: {fact_id}"),
+        ),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -1270,8 +1365,11 @@ pub unsafe extern "C" fn ferric_engine_get_fact_template_name(
         Err(code) => return code,
     };
     if out_len.is_null() {
-        set_global_error("out_len pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_len pointer is null".to_string(),
+        );
     }
 
     let key_data = slotmap::KeyData::from_ffi(fact_id);
@@ -1286,19 +1384,21 @@ pub unsafe extern "C" fn ferric_engine_get_fact_template_name(
                         .engine
                         .template_name_by_id(t.template_id)
                         .unwrap_or("<unknown>");
-                    copy_str_to_buffer(name, buf, buf_len, out_len)
+                    copy_str_to_buffer(name, buf, buf_len, out_len, handle.diagnostics)
                 }
-                Fact::Ordered(_) => {
-                    set_global_error("fact is an ordered fact, not a template fact".to_string());
-                    FerricError::InvalidArgument
-                }
+                Fact::Ordered(_) => set_engine_error_message(
+                    handle.diagnostics,
+                    FerricError::InvalidArgument,
+                    "fact is an ordered fact, not a template fact".to_string(),
+                ),
             }
         }
-        Ok(None) => {
-            set_global_error(format!("fact not found: {fact_id}"));
-            FerricError::NotFound
-        }
-        Err(ref err) => set_engine_error_global(err),
+        Ok(None) => set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NotFound,
+            format!("fact not found: {fact_id}"),
+        ),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -1330,19 +1430,21 @@ pub unsafe extern "C" fn ferric_engine_assert_ordered(
 ) -> FerricError {
     use slotmap::Key as _;
 
-    let relation_str = match c_str_to_str(relation, "relation") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    if fields.is_null() && field_count > 0 {
-        set_global_error("fields pointer is null with non-zero field_count".to_string());
-        return FerricError::NullPointer;
-    }
-
     let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
+    let relation_str = match engine_c_str_to_str(relation, "relation", handle.diagnostics) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    if fields.is_null() && field_count > 0 {
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "fields pointer is null with non-zero field_count".to_string(),
+        );
+    }
 
     // Convert FerricValue array to Vec<Value>
     let mut values = Vec::with_capacity(field_count);
@@ -1352,7 +1454,7 @@ pub unsafe extern "C" fn ferric_engine_assert_ordered(
             Ok(v) => values.push(v),
             Err(msg) => {
                 return set_engine_error_message(
-                    &handle,
+                    handle.diagnostics,
                     FerricError::InvalidArgument,
                     format!("field {i}: {msg}"),
                 );
@@ -1367,7 +1469,7 @@ pub unsafe extern "C" fn ferric_engine_assert_ordered(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_runtime_error(&handle, err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -1391,8 +1493,11 @@ pub unsafe extern "C" fn ferric_engine_template_count(
         Err(code) => return code,
     };
     if out_count.is_null() {
-        set_global_error("out_count pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_count pointer is null".to_string(),
+        );
     }
     *out_count = handle.engine.templates().len();
     FerricError::Ok
@@ -1420,19 +1525,25 @@ pub unsafe extern "C" fn ferric_engine_template_name(
         Err(code) => return code,
     };
     if out_len.is_null() {
-        set_global_error("out_len pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_len pointer is null".to_string(),
+        );
     }
 
     let templates = handle.engine.templates();
     if index >= templates.len() {
-        set_global_error(format!(
-            "template index {index} out of bounds (count: {})",
-            templates.len()
-        ));
-        return FerricError::InvalidArgument;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::InvalidArgument,
+            format!(
+                "template index {index} out of bounds (count: {})",
+                templates.len()
+            ),
+        );
     }
-    copy_str_to_buffer(templates[index], buf, buf_len, out_len)
+    copy_str_to_buffer(templates[index], buf, buf_len, out_len, handle.diagnostics)
 }
 
 /// Get the number of slots in a named template.
@@ -1452,21 +1563,27 @@ pub unsafe extern "C" fn ferric_engine_template_slot_count(
         Ok(h) => h,
         Err(code) => return code,
     };
-    let name_str = match c_str_to_str(template_name, "template_name") {
+    let name_str = match engine_c_str_to_str(template_name, "template_name", handle.diagnostics) {
         Ok(s) => s,
         Err(code) => return code,
     };
     if out_count.is_null() {
-        set_global_error("out_count pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_count pointer is null".to_string(),
+        );
     }
 
     if let Some(slots) = handle.engine.template_slot_names(name_str) {
         *out_count = slots.len();
         FerricError::Ok
     } else {
-        set_global_error(format!("template not found: {name_str}"));
-        FerricError::NotFound
+        set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NotFound,
+            format!("template not found: {name_str}"),
+        )
     }
 }
 
@@ -1493,27 +1610,36 @@ pub unsafe extern "C" fn ferric_engine_template_slot_name(
         Ok(h) => h,
         Err(code) => return code,
     };
-    let name_str = match c_str_to_str(template_name, "template_name") {
+    let name_str = match engine_c_str_to_str(template_name, "template_name", handle.diagnostics) {
         Ok(s) => s,
         Err(code) => return code,
     };
     if out_len.is_null() {
-        set_global_error("out_len pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_len pointer is null".to_string(),
+        );
     }
 
     if let Some(slots) = handle.engine.template_slot_names(name_str) {
         if slot_index >= slots.len() {
-            set_global_error(format!(
-                "slot index {slot_index} out of bounds (count: {})",
-                slots.len()
-            ));
-            return FerricError::InvalidArgument;
+            return set_engine_error_message(
+                handle.diagnostics,
+                FerricError::InvalidArgument,
+                format!(
+                    "slot index {slot_index} out of bounds (count: {})",
+                    slots.len()
+                ),
+            );
         }
-        copy_str_to_buffer(slots[slot_index], buf, buf_len, out_len)
+        copy_str_to_buffer(slots[slot_index], buf, buf_len, out_len, handle.diagnostics)
     } else {
-        set_global_error(format!("template not found: {name_str}"));
-        FerricError::NotFound
+        set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NotFound,
+            format!("template not found: {name_str}"),
+        )
     }
 }
 
@@ -1537,8 +1663,11 @@ pub unsafe extern "C" fn ferric_engine_rule_count(
         Err(code) => return code,
     };
     if out_count.is_null() {
-        set_global_error("out_count pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_count pointer is null".to_string(),
+        );
     }
     *out_count = handle.engine.rules().len();
     FerricError::Ok
@@ -1569,23 +1698,26 @@ pub unsafe extern "C" fn ferric_engine_rule_info(
         Err(code) => return code,
     };
     if out_len.is_null() {
-        set_global_error("out_len pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_len pointer is null".to_string(),
+        );
     }
 
     let rules = handle.engine.rules();
     if index >= rules.len() {
-        set_global_error(format!(
-            "rule index {index} out of bounds (count: {})",
-            rules.len()
-        ));
-        return FerricError::InvalidArgument;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::InvalidArgument,
+            format!("rule index {index} out of bounds (count: {})", rules.len()),
+        );
     }
     let (name, salience) = rules[index];
     if !out_salience.is_null() {
         *out_salience = salience;
     }
-    copy_str_to_buffer(name, buf, buf_len, out_len)
+    copy_str_to_buffer(name, buf, buf_len, out_len, handle.diagnostics)
 }
 
 // ---------------------------------------------------------------------------
@@ -1613,11 +1745,14 @@ pub unsafe extern "C" fn ferric_engine_current_module(
         Err(code) => return code,
     };
     if out_len.is_null() {
-        set_global_error("out_len pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_len pointer is null".to_string(),
+        );
     }
     let name = handle.engine.current_module();
-    copy_str_to_buffer(name, buf, buf_len, out_len)
+    copy_str_to_buffer(name, buf, buf_len, out_len, handle.diagnostics)
 }
 
 /// Get the name of the module at the top of the focus stack.
@@ -1641,15 +1776,22 @@ pub unsafe extern "C" fn ferric_engine_get_focus(
         Err(code) => return code,
     };
     if out_len.is_null() {
-        set_global_error("out_len pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_len pointer is null".to_string(),
+        );
     }
 
     if let Some(name) = handle.engine.get_focus() {
-        copy_str_to_buffer(name, buf, buf_len, out_len)
+        copy_str_to_buffer(name, buf, buf_len, out_len, handle.diagnostics)
     } else {
         *out_len = 0;
-        FerricError::NotFound
+        set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NotFound,
+            "focus stack is empty".to_string(),
+        )
     }
 }
 
@@ -1669,8 +1811,11 @@ pub unsafe extern "C" fn ferric_engine_focus_stack_depth(
         Err(code) => return code,
     };
     if out_depth.is_null() {
-        set_global_error("out_depth pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_depth pointer is null".to_string(),
+        );
     }
     *out_depth = handle.engine.get_focus_stack().len();
     FerricError::Ok
@@ -1699,19 +1844,25 @@ pub unsafe extern "C" fn ferric_engine_focus_stack_entry(
         Err(code) => return code,
     };
     if out_len.is_null() {
-        set_global_error("out_len pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_len pointer is null".to_string(),
+        );
     }
 
     let stack = handle.engine.get_focus_stack();
     if index >= stack.len() {
-        set_global_error(format!(
-            "focus stack index {index} out of bounds (depth: {})",
-            stack.len()
-        ));
-        return FerricError::InvalidArgument;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::InvalidArgument,
+            format!(
+                "focus stack index {index} out of bounds (depth: {})",
+                stack.len()
+            ),
+        );
     }
-    copy_str_to_buffer(stack[index], buf, buf_len, out_len)
+    copy_str_to_buffer(stack[index], buf, buf_len, out_len, handle.diagnostics)
 }
 
 /// Get the number of registered modules.
@@ -1730,8 +1881,11 @@ pub unsafe extern "C" fn ferric_engine_module_count(
         Err(code) => return code,
     };
     if out_count.is_null() {
-        set_global_error("out_count pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_count pointer is null".to_string(),
+        );
     }
     *out_count = handle.engine.modules().len();
     FerricError::Ok
@@ -1759,19 +1913,25 @@ pub unsafe extern "C" fn ferric_engine_module_name(
         Err(code) => return code,
     };
     if out_len.is_null() {
-        set_global_error("out_len pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_len pointer is null".to_string(),
+        );
     }
 
     let modules = handle.engine.modules();
     if index >= modules.len() {
-        set_global_error(format!(
-            "module index {index} out of bounds (count: {})",
-            modules.len()
-        ));
-        return FerricError::InvalidArgument;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::InvalidArgument,
+            format!(
+                "module index {index} out of bounds (count: {})",
+                modules.len()
+            ),
+        );
     }
-    copy_str_to_buffer(modules[index], buf, buf_len, out_len)
+    copy_str_to_buffer(modules[index], buf, buf_len, out_len, handle.diagnostics)
 }
 
 // ---------------------------------------------------------------------------
@@ -1794,8 +1954,11 @@ pub unsafe extern "C" fn ferric_engine_agenda_count(
         Err(code) => return code,
     };
     if out_count.is_null() {
-        set_global_error("out_count pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_count pointer is null".to_string(),
+        );
     }
     *out_count = handle.engine.agenda_len();
     FerricError::Ok
@@ -1819,8 +1982,11 @@ pub unsafe extern "C" fn ferric_engine_is_halted(
         Err(code) => return code,
     };
     if out_halted.is_null() {
-        set_global_error("out_halted pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_halted pointer is null".to_string(),
+        );
     }
     *out_halted = i32::from(handle.engine.is_halted());
     FerricError::Ok
@@ -1854,12 +2020,12 @@ pub unsafe extern "C" fn ferric_engine_push_input(
     engine: *mut FerricEngine,
     line: *const c_char,
 ) -> FerricError {
-    let line_str = match c_str_to_str(line, "line") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
     let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
+        Err(code) => return code,
+    };
+    let line_str = match engine_c_str_to_str(line, "line", handle.diagnostics) {
+        Ok(s) => s,
         Err(code) => return code,
     };
     handle.engine.push_input(line_str);
@@ -1969,12 +2135,12 @@ pub unsafe extern "C" fn ferric_engine_clear_output(
     engine: *mut FerricEngine,
     channel: *const c_char,
 ) -> FerricError {
-    let channel_str = match c_str_to_str(channel, "channel") {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
     let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
+        Err(code) => return code,
+    };
+    let channel_str = match engine_c_str_to_str(channel, "channel", handle.diagnostics) {
+        Ok(s) => s,
         Err(code) => return code,
     };
     handle.engine.clear_output_channel(channel_str);
@@ -2020,7 +2186,7 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_runtime_error(&handle, err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -2059,32 +2225,37 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
 ) -> FerricError {
     use slotmap::Key as _;
 
-    let tmpl_str = match c_str_to_str(template_name, "template_name") {
+    let handle = match borrow_engine_mut(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let tmpl_str = match engine_c_str_to_str(template_name, "template_name", handle.diagnostics) {
         Ok(s) => s,
         Err(code) => return code,
     };
 
     if count > 0 {
         if slot_names.is_null() {
-            set_global_error("slot_names pointer is null with non-zero count".to_string());
-            return FerricError::NullPointer;
+            return set_engine_error_message(
+                handle.diagnostics,
+                FerricError::NullPointer,
+                "slot_names pointer is null with non-zero count".to_string(),
+            );
         }
         if slot_values.is_null() {
-            set_global_error("slot_values pointer is null with non-zero count".to_string());
-            return FerricError::NullPointer;
+            return set_engine_error_message(
+                handle.diagnostics,
+                FerricError::NullPointer,
+                "slot_values pointer is null with non-zero count".to_string(),
+            );
         }
     }
-
-    let handle = match borrow_engine_mut(engine) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
 
     // Convert slot names from C strings.
     let mut names = Vec::with_capacity(count);
     for i in 0..count {
         let name_ptr = *slot_names.add(i);
-        match c_str_to_str(name_ptr, &format!("slot_names[{i}]")) {
+        match engine_c_str_to_str(name_ptr, &format!("slot_names[{i}]"), handle.diagnostics) {
             Ok(s) => names.push(s),
             Err(code) => return code,
         }
@@ -2098,7 +2269,7 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
             Ok(v) => values.push(v),
             Err(msg) => {
                 return set_engine_error_message(
-                    &handle,
+                    handle.diagnostics,
                     FerricError::InvalidArgument,
                     format!("slot_values[{i}]: {msg}"),
                 );
@@ -2115,7 +2286,7 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
             }
             FerricError::Ok
         }
-        Err(ref err) => set_engine_runtime_error(&handle, err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -2144,20 +2315,22 @@ pub unsafe extern "C" fn ferric_engine_get_fact_slot_by_name(
     slot_name: *const c_char,
     out_value: *mut FerricValue,
 ) -> FerricError {
-    let name_str = match c_str_to_str(slot_name, "slot_name") {
+    let handle = match borrow_engine_checked(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+    let name_str = match engine_c_str_to_str(slot_name, "slot_name", handle.diagnostics) {
         Ok(s) => s,
         Err(code) => return code,
     };
 
     if out_value.is_null() {
-        set_global_error("out_value pointer is null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NullPointer,
+            "out_value pointer is null".to_string(),
+        );
     }
-
-    let handle = match borrow_engine_checked(engine) {
-        Ok(h) => h,
-        Err(code) => return code,
-    };
 
     let key_data = slotmap::KeyData::from_ffi(fact_id);
     let fid = ferric_rules_core::FactId::from(key_data);
@@ -2167,7 +2340,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_slot_by_name(
             *out_value = value_to_ferric(value, handle.engine);
             FerricError::Ok
         }
-        Err(ref err) => set_engine_error_global(err),
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
 
@@ -2281,10 +2454,18 @@ unsafe fn serialize_engine_impl(
     out_data: *mut *mut u8,
     out_len: *mut usize,
 ) -> FerricError {
+    let validated = match validate_engine_ptr(engine) {
+        Ok(handle) => handle,
+        Err(code) => return code,
+    };
+
     // Validate output pointers
     if out_data.is_null() || out_len.is_null() {
-        set_global_error("out_data and out_len must be non-null".to_string());
-        return FerricError::NullPointer;
+        return set_engine_error_for_handle(
+            validated,
+            FerricError::NullPointer,
+            "out_data and out_len must be non-null".to_string(),
+        );
     }
 
     // Validate engine and check thread affinity
@@ -2297,8 +2478,11 @@ unsafe fn serialize_engine_impl(
     let bytes = match handle.engine.serialize(format) {
         Ok(b) => b,
         Err(e) => {
-            set_global_error(e.to_string());
-            return FerricError::SerializationError;
+            return set_engine_error_message(
+                handle.diagnostics,
+                FerricError::SerializationError,
+                e.to_string(),
+            );
         }
     };
 
@@ -2308,8 +2492,11 @@ unsafe fn serialize_engine_impl(
         // Caller-provided allocator path
         let buf = alloc(len, alloc_context);
         if buf.is_null() {
-            set_global_error("caller allocator returned null".to_string());
-            return FerricError::SerializationError;
+            return set_engine_error_message(
+                handle.diagnostics,
+                FerricError::SerializationError,
+                "caller allocator returned null".to_string(),
+            );
         }
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, len);
         *out_data = buf;
@@ -2381,8 +2568,14 @@ pub unsafe extern "C" fn ferric_engine_serialize_as(
     out_len: *mut usize,
 ) -> FerricError {
     let Some(fmt) = FerricSerializationFormat::from_raw(format) else {
-        set_global_error(format!("invalid serialization format: {format}"));
-        return FerricError::InvalidArgument;
+        return match validate_engine_ptr(engine) {
+            Ok(handle) => set_engine_error_for_handle(
+                handle,
+                FerricError::InvalidArgument,
+                format!("invalid serialization format: {format}"),
+            ),
+            Err(code) => code,
+        };
     };
     serialize_engine_impl(
         engine,

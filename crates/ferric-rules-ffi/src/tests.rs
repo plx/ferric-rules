@@ -19,6 +19,9 @@ mod header;
 mod error_model;
 
 #[cfg(test)]
+mod error_channel_consistency;
+
+#[cfg(test)]
 mod lifecycle;
 
 #[cfg(test)]

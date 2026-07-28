@@ -69,6 +69,13 @@ pub(crate) fn set_global_error(msg: String) {
     LAST_ERROR_GLOBAL.with(|e| *e.borrow_mut() = Some(msg));
 }
 
+/// Store one current failure in both an engine-local snapshot and the
+/// thread-local global fallback.
+pub(crate) fn set_engine_and_global_error(state: &mut EngineErrorState, msg: String) {
+    state.set(msg.clone());
+    set_global_error(msg);
+}
+
 /// Clear the global error message.
 pub(crate) fn clear_global_error() {
     LAST_ERROR_GLOBAL.with(|e| *e.borrow_mut() = None);
@@ -277,17 +284,6 @@ pub(crate) unsafe fn copy_error_to_buffer(
         *out_len = needed;
         FerricError::BufferTooSmall
     }
-}
-
-// ---------------------------------------------------------------------------
-// Error mapping convenience
-// ---------------------------------------------------------------------------
-
-/// Map an [`EngineError`] to [`FerricError`], storing the message in the global channel.
-pub(crate) fn set_engine_error_global(err: &EngineError) -> FerricError {
-    let code = map_engine_error(err);
-    set_global_error(err.to_string());
-    code
 }
 
 // ---------------------------------------------------------------------------
