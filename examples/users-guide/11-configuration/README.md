@@ -12,5 +12,5 @@ What it shows:
 
 - `EngineConfig::default()`, `::ascii()`, and `::utf8()` factories.
 - `with_strategy(ConflictResolutionStrategy::Lex)` builder method.
-- Manually setting `max_call_depth`.
+- Manually setting `max_call_depth` and `max_action_loop_iterations`.
 - `Engine::with_rules_config(source, config)` for combining config and load.
