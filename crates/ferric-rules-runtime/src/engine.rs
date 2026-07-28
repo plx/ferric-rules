@@ -302,6 +302,10 @@ impl Engine {
                 continue;
             };
             let Some(info) = rule_index_get(&self.rule_info, pending.rule).cloned() else {
+                self.action_diagnostics.push(ActionError::EvalError(format!(
+                    "internal invariant violation: predicate for rule {:?} has no executable metadata",
+                    pending.rule
+                )));
                 continue;
             };
             let Some(condition) = info.test_conditions.get(pending.condition_index as usize) else {
@@ -311,9 +315,14 @@ impl Engine {
                 )));
                 continue;
             };
-            let current_module = rule_index_get(&self.rule_modules, pending.rule)
-                .copied()
-                .unwrap_or_else(|| self.module_registry.main_module_id());
+            let Some(current_module) = rule_index_get(&self.rule_modules, pending.rule).copied()
+            else {
+                self.action_diagnostics.push(ActionError::EvalError(format!(
+                    "internal invariant violation: predicate for rule {:?} has no module metadata",
+                    pending.rule
+                )));
+                continue;
+            };
             let collected_facts = if info.multifield_tail_bindings.is_empty() {
                 smallvec::SmallVec::new()
             } else {
@@ -851,22 +860,29 @@ impl Engine {
     ) -> (bool, bool, bool, bool) {
         ferric_span!(debug_span, "fire_rule", rule = rule_id.0);
         let Some(token) = self.rete.token_store.get(token_id).cloned() else {
-            // No token — treat as not fired.
             ferric_event!(debug, rule = rule_id.0, token = ?token_id, "activation_missing_token");
-            return (false, false, false, false);
+            self.action_diagnostics.push(ActionError::EvalError(format!(
+                "internal invariant violation: activation for rule {rule_id:?} references missing token {token_id:?}"
+            )));
+            return (false, false, false, true);
         };
 
         // Clone the handle so we can pass both this rule and the full map to
         // action helpers without deep-cloning `CompiledRuleInfo`.
         let Some(info) = rule_index_get(&self.rule_info, rule_id).cloned() else {
-            // No compiled rule info — treat as not fired.
             ferric_event!(debug, rule = rule_id.0, "activation_missing_rule_info");
-            return (false, false, false, false);
+            self.action_diagnostics.push(ActionError::EvalError(format!(
+                "internal invariant violation: activation for rule {rule_id:?} has no executable metadata"
+            )));
+            return (false, false, false, true);
         };
 
-        let current_module = rule_index_get(&self.rule_modules, rule_id)
-            .copied()
-            .unwrap_or_else(|| self.module_registry.main_module_id());
+        let Some(current_module) = rule_index_get(&self.rule_modules, rule_id).copied() else {
+            self.action_diagnostics.push(ActionError::EvalError(format!(
+                "internal invariant violation: activation for rule {rule_id:?} has no module metadata"
+            )));
+            return (false, false, false, true);
+        };
 
         let collected_facts = self.rete.token_store.collect_all_facts(token_id);
 
@@ -928,10 +944,17 @@ impl Engine {
     fn pop_next_focus_activation(&mut self) -> Option<ferric_rules_core::Activation> {
         loop {
             let focus_module = self.module_registry.current_focus()?;
+            let rule_info = &self.rule_info;
             let rule_modules = &self.rule_modules;
 
             if let Some(activation) = self.rete.agenda.pop_matching(|a| {
-                rule_index_get(rule_modules, a.rule).copied() == Some(focus_module)
+                if rule_index_get(rule_info, a.rule).is_none() {
+                    return true;
+                }
+                match rule_index_get(rule_modules, a.rule) {
+                    Some(module) => *module == focus_module,
+                    None => true,
+                }
             }) {
                 return Some(activation);
             }
@@ -1368,6 +1391,7 @@ impl Engine {
     /// This extends rete consistency checks with Phase 3 registries
     /// (modules/focus, functions, globals, generics).
     #[cfg(any(test, debug_assertions))]
+    #[allow(clippy::too_many_lines)]
     pub fn debug_assert_consistency(&self) {
         use std::collections::HashSet;
         self.rete.debug_assert_consistency();
@@ -1375,6 +1399,17 @@ impl Engine {
         self.functions.debug_assert_consistency();
         self.globals.debug_assert_consistency();
         self.generics.debug_assert_consistency();
+
+        let rule_slot_count = self.rule_info.len().max(self.rule_modules.len());
+        for index in 0..rule_slot_count {
+            let info = self.rule_info.get(index).and_then(Option::as_ref);
+            let module = self.rule_modules.get(index).and_then(Option::as_ref);
+            assert_eq!(
+                info.is_some(),
+                module.is_some(),
+                "rule metadata/module presence differs at rule slot {index}"
+            );
+        }
 
         for (index, maybe_module_id) in self.rule_modules.iter().enumerate() {
             let Some(module_id) = maybe_module_id else {
@@ -1385,6 +1420,73 @@ impl Engine {
             assert!(
                 self.module_registry.get(*module_id).is_some(),
                 "rule {rule_id:?} points to unknown module {module_id:?}"
+            );
+        }
+
+        let mut rules_with_terminals = HashSet::new();
+        for (node_id, node) in self.rete.beta.iter_nodes() {
+            let (rule_id, condition_index) = match node {
+                ferric_rules_core::BetaNode::Predicate {
+                    rule,
+                    condition_index,
+                    ..
+                } => (*rule, Some(*condition_index)),
+                ferric_rules_core::BetaNode::Terminal { rule, .. } => {
+                    rules_with_terminals.insert(*rule);
+                    (*rule, None)
+                }
+                _ => continue,
+            };
+            if self.rete.is_rule_disabled(rule_id) {
+                continue;
+            }
+            let info = rule_index_get(&self.rule_info, rule_id).unwrap_or_else(|| {
+                panic!("active beta node {node_id:?} references rule {rule_id:?} without metadata")
+            });
+            assert!(
+                rule_index_get(&self.rule_modules, rule_id).is_some(),
+                "active beta node {node_id:?} references rule {rule_id:?} without module metadata"
+            );
+            if let Some(condition_index) = condition_index {
+                assert!(
+                    info.test_conditions
+                        .get(condition_index as usize)
+                        .is_some(),
+                    "predicate node {node_id:?} references missing condition {condition_index} for rule {rule_id:?}"
+                );
+            }
+        }
+
+        for (index, maybe_info) in self.rule_info.iter().enumerate() {
+            if maybe_info.is_none() {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let rule_id = RuleId(index as u32);
+            assert!(
+                rules_with_terminals.contains(&rule_id),
+                "live rule {rule_id:?} has no terminal node"
+            );
+        }
+
+        for activation in self.rete.agenda.iter_activations() {
+            assert!(
+                self.rete.token_store.get(activation.token).is_some(),
+                "activation {:?} references missing token {:?}",
+                activation.id,
+                activation.token
+            );
+            assert!(
+                rule_index_get(&self.rule_info, activation.rule).is_some(),
+                "activation {:?} references rule {:?} without executable metadata",
+                activation.id,
+                activation.rule
+            );
+            assert!(
+                rule_index_get(&self.rule_modules, activation.rule).is_some(),
+                "activation {:?} references rule {:?} without module metadata",
+                activation.id,
+                activation.rule
             );
         }
 
@@ -2054,6 +2156,231 @@ mod tests {
             "future facts must not reach a failed rule installation"
         );
         assert_eq!(engine.rete.token_store.len(), baseline_tokens);
+    }
+
+    fn rule_install_state(
+        engine: &Engine,
+    ) -> (ferric_rules_core::ReteCardinality, usize, usize, usize) {
+        (
+            engine.rete.cardinality(),
+            engine.rule_info.len(),
+            engine.rule_modules.len(),
+            engine.symbol_table.len(),
+        )
+    }
+
+    const LATE_OR_FAILURE: &str = r"
+        (defrule broken-or
+            (or
+                (candidate ?x)
+                (missing-template (value ?x)))
+            =>
+            (assert (accepted ?x)))
+    ";
+
+    #[test]
+    fn fr_rete_007_bad_rhs_leaves_no_terminal() {
+        let mut engine = Engine::new(EngineConfig::ascii());
+        engine
+            .assert_ordered("initial-fact", Vec::<Value>::new())
+            .unwrap();
+        let baseline = rule_install_state(&engine);
+
+        let result = engine.load_str(
+            r#"
+            (defrule broken-rhs
+                (trigger ?x)
+                =>
+                (printout t "é" ?x crlf))
+            "#,
+        );
+
+        assert!(result.is_err(), "non-ASCII RHS must fail in ASCII mode");
+        assert_eq!(engine.rules(), Vec::<(&str, i32)>::new());
+        assert_eq!(
+            rule_install_state(&engine),
+            baseline,
+            "a rejected RHS must not expose any rule installation state"
+        );
+        engine.debug_assert_consistency();
+    }
+
+    #[test]
+    fn fr_rete_007_bad_rhs_cannot_create_activation_later() {
+        let mut engine = Engine::new(EngineConfig::ascii());
+        engine
+            .assert_ordered("initial-fact", Vec::<Value>::new())
+            .unwrap();
+        let result = engine.load_str(
+            r#"
+            (defrule broken-rhs
+                (trigger ?x)
+                =>
+                (printout t "é" ?x crlf))
+            "#,
+        );
+        assert!(result.is_err());
+        let baseline = engine.rete.cardinality();
+
+        engine.assert_ordered("trigger", 1_i64).unwrap();
+
+        let after_assert = engine.rete.cardinality();
+        assert_eq!(after_assert.beta_nodes, baseline.beta_nodes);
+        assert_eq!(after_assert.beta_memories, baseline.beta_memories);
+        assert_eq!(after_assert.tokens, baseline.tokens);
+        assert_eq!(after_assert.activations, 0);
+        let run = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(run.rules_fired, 0);
+        assert_eq!(run.halt_reason, HaltReason::AgendaEmpty);
+        engine.debug_assert_consistency();
+    }
+
+    #[test]
+    fn fr_rete_007_failed_compile_preserves_existing_rules() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(
+                r"
+                (defrule existing
+                    (good ?x)
+                    =>
+                    (assert (preserved ?x)))
+                ",
+            )
+            .unwrap();
+        let baseline = rule_install_state(&engine);
+        let existing_rules: Vec<(String, i32)> = engine
+            .rules()
+            .into_iter()
+            .map(|(name, salience)| (name.to_string(), salience))
+            .collect();
+
+        let result = engine.load_str(LATE_OR_FAILURE);
+
+        assert!(
+            result.is_err(),
+            "the second expanded branch must reject its unknown template"
+        );
+        assert_eq!(
+            engine.rules(),
+            existing_rules
+                .iter()
+                .map(|(name, salience)| (name.as_str(), *salience))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            rule_install_state(&engine),
+            baseline,
+            "failure in a later expansion must roll back the whole source rule"
+        );
+
+        engine.assert_ordered("good", 7_i64).unwrap();
+        let run = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(run.rules_fired, 1);
+        assert!(engine
+            .facts()
+            .unwrap()
+            .any(|(_, fact)| matches!(fact, Fact::Ordered(ordered) if engine
+                .resolve_symbol(ordered.relation) == Some("preserved"))));
+        engine.debug_assert_consistency();
+    }
+
+    #[test]
+    fn fr_rete_007_repeated_failure_has_constant_network_size() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .assert_ordered("initial-fact", Vec::<Value>::new())
+            .unwrap();
+        let baseline = rule_install_state(&engine);
+
+        for attempt in 0..32 {
+            assert!(
+                engine.load_str(LATE_OR_FAILURE).is_err(),
+                "attempt {attempt} must fail"
+            );
+            assert_eq!(
+                rule_install_state(&engine),
+                baseline,
+                "attempt {attempt} leaked rule installation state"
+            );
+        }
+
+        engine.assert_ordered("candidate", 42_i64).unwrap();
+        assert_eq!(engine.agenda_len(), 0);
+        engine.debug_assert_consistency();
+    }
+
+    #[test]
+    fn fr_rete_007_failures_before_each_commit_phase_are_non_mutating() {
+        let mut engine = Engine::new(EngineConfig::ascii());
+        engine
+            .assert_ordered("initial-fact", Vec::<Value>::new())
+            .unwrap();
+        let baseline = rule_install_state(&engine);
+        let failures = [
+            // Action callable validation.
+            "(defrule bad-callable (x) => (missing-function))",
+            // LHS translation/template resolution.
+            "(defrule bad-lhs (missing-template (value ?x)) => (assert (x ?x)))",
+            // RHS translation/encoding.
+            "(defrule bad-rhs (x) => (printout t \"é\" crlf))",
+            // A late expanded variant after an earlier variant plans cleanly.
+            LATE_OR_FAILURE,
+        ];
+
+        for source in failures {
+            assert!(engine.load_str(source).is_err(), "{source} must fail");
+            assert_eq!(
+                rule_install_state(&engine),
+                baseline,
+                "failed phase leaked installation state for {source}"
+            );
+        }
+        engine.debug_assert_consistency();
+    }
+
+    #[test]
+    fn fr_rete_007_missing_activation_metadata_is_action_error() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .load_str(
+                r"
+                (defmodule OTHER)
+                (defrule doomed (trigger) => (assert (should-not-run)))
+                ",
+            )
+            .unwrap();
+        engine
+            .assert_ordered("trigger", Vec::<Value>::new())
+            .unwrap();
+        let rule_id = engine
+            .rete
+            .agenda
+            .iter_activations()
+            .next()
+            .expect("activation")
+            .rule;
+        engine.rule_info[rule_id.0 as usize] = None;
+        assert_ne!(
+            engine.rule_modules[rule_id.0 as usize],
+            Some(engine.module_registry.current_focus().unwrap()),
+            "test requires an invalid activation outside the active focus"
+        );
+
+        let run = engine.run(RunLimit::Unlimited).unwrap();
+
+        assert_eq!(run.rules_fired, 0);
+        assert_eq!(run.halt_reason, HaltReason::ActionError);
+        assert_eq!(
+            engine.agenda_len(),
+            0,
+            "invalid activation must be consumed"
+        );
+        assert!(engine.action_diagnostics().iter().any(
+            |error| matches!(error, ActionError::EvalError(message)
+                if message.contains("internal invariant violation")
+                    && message.contains("no executable metadata"))
+        ));
     }
 
     #[test]

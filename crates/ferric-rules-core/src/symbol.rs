@@ -43,6 +43,13 @@ pub struct SymbolTable {
     utf8_strings: Vec<Box<str>>,
 }
 
+/// An opaque rollback point for symbol interning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SymbolTableCheckpoint {
+    ascii_len: usize,
+    utf8_len: usize,
+}
+
 impl SymbolTable {
     /// Create a new, empty symbol table.
     #[must_use]
@@ -52,6 +59,41 @@ impl SymbolTable {
             ascii_strings: Vec::new(),
             utf8_to_id: HashMap::default(),
             utf8_strings: Vec::new(),
+        }
+    }
+
+    /// Capture a rollback point without cloning existing interned strings.
+    #[must_use]
+    pub fn checkpoint(&self) -> SymbolTableCheckpoint {
+        SymbolTableCheckpoint {
+            ascii_len: self.ascii_strings.len(),
+            utf8_len: self.utf8_strings.len(),
+        }
+    }
+
+    /// Remove every symbol interned after `checkpoint`.
+    ///
+    /// Checkpoints may only be restored on the table that created them, before
+    /// any symbols from the discarded suffix are exposed to callers.
+    pub fn restore(&mut self, checkpoint: SymbolTableCheckpoint) {
+        assert!(
+            checkpoint.ascii_len <= self.ascii_strings.len()
+                && checkpoint.utf8_len <= self.utf8_strings.len(),
+            "symbol-table checkpoint is newer than the current table"
+        );
+        while self.ascii_strings.len() > checkpoint.ascii_len {
+            let symbol = self
+                .ascii_strings
+                .pop()
+                .expect("length check guarantees an ASCII symbol");
+            self.ascii_to_id.remove(symbol.as_ref());
+        }
+        while self.utf8_strings.len() > checkpoint.utf8_len {
+            let symbol = self
+                .utf8_strings
+                .pop()
+                .expect("length check guarantees a UTF-8 symbol");
+            self.utf8_to_id.remove(symbol.as_ref());
         }
     }
 
@@ -437,6 +479,32 @@ mod tests {
         let table = SymbolTable::new();
         assert!(table.is_empty());
         assert_eq!(table.len(), 0);
+    }
+
+    #[test]
+    fn checkpoint_restore_discards_only_new_symbols_from_both_pools() {
+        let mut table = SymbolTable::new();
+        let retained_ascii = table.intern_ascii(b"retained-ascii");
+        let retained_utf8 = table.intern_utf8("retained-utf8");
+        let checkpoint = table.checkpoint();
+        let discarded_ascii = table.intern_ascii(b"discarded-ascii");
+        let discarded_utf8 = table.intern_utf8("discarded-utf8");
+
+        table.restore(checkpoint);
+
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.resolve(retained_ascii), b"retained-ascii");
+        assert_eq!(table.resolve_str(retained_utf8), Some("retained-utf8"));
+        assert_eq!(
+            table.intern_ascii(b"replacement-ascii"),
+            discarded_ascii,
+            "rollback must make the discarded ASCII ID reusable"
+        );
+        assert_eq!(
+            table.intern_utf8("replacement-utf8"),
+            discarded_utf8,
+            "rollback must make the discarded UTF-8 ID reusable"
+        );
     }
 
     #[test]

@@ -27,9 +27,9 @@ use thiserror::Error;
 use crate::qualified_name::{parse_qualified_name, QualifiedName};
 
 use ferric_rules_core::{
-    AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult, ConstantTest,
-    ConstantTestType, Fact, FactId, FerricString, JoinTestType, Salience, SlotIndex, TemplateFact,
-    Value,
+    AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult,
+    ConditionCompilationPlan, ConstantTest, ConstantTestType, Fact, FactId, FerricString,
+    JoinTestType, Salience, SlotIndex, TemplateFact, Value,
 };
 use ferric_rules_parser::{
     interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
@@ -55,6 +55,12 @@ struct TranslatedRule {
     test_conditions: Vec<CompiledTestCondition>,
     /// Action-time hints for trailing ordered multifield captures.
     multifield_tail_bindings: Vec<MultifieldTailBindingHint>,
+}
+
+struct PreparedRuleInstallation {
+    plan: ConditionCompilationPlan,
+    info: Rc<CompiledRuleInfo>,
+    module: crate::modules::ModuleId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1375,15 +1381,36 @@ impl Engine {
         // N internal rules, each with one branch substituted. Multiple or CEs produce
         // the Cartesian product.
         let expanded_rules = Self::expand_or_patterns(&rule);
-        let mut last_result = None;
-
-        for variant in &expanded_rules {
-            let result = self.compile_single_rule(variant, source)?;
-            last_result = Some(result);
+        if expanded_rules.is_empty() {
+            return Err(LoadError::Compile("empty or-expansion".to_string()));
         }
 
-        // Return the last compile result (all variants share the same name/semantics)
-        last_result.ok_or_else(|| LoadError::Compile("empty or-expansion".to_string()))
+        // Translation interns symbols, so include that table in the detached
+        // planning transaction. No compiler, Rete, rule ID, or metadata state is
+        // touched until every expansion is ready to install.
+        let symbol_table_checkpoint = self.symbol_table.checkpoint();
+        let mut prepared_rules = Vec::with_capacity(expanded_rules.len());
+        for variant in &expanded_rules {
+            match self.prepare_single_rule(variant, source) {
+                Ok(prepared) => prepared_rules.push(prepared),
+                Err(error) => {
+                    self.symbol_table.restore(symbol_table_checkpoint);
+                    return Err(error);
+                }
+            }
+        }
+
+        // Every operation from this point through installation is infallible.
+        // Return the last result because all expansions share source semantics.
+        let mut installed = prepared_rules.into_iter();
+        let first = installed
+            .next()
+            .expect("non-empty expansion must produce a prepared rule");
+        let mut last_result = self.install_prepared_rule(first);
+        for prepared in installed {
+            last_result = self.install_prepared_rule(prepared);
+        }
+        Ok(last_result)
     }
 
     fn validate_rule_action_callables(
@@ -1788,11 +1815,11 @@ impl Engine {
         )
     }
 
-    fn compile_single_rule(
+    fn prepare_single_rule(
         &mut self,
         rule: &RuleConstruct,
         source: &str,
-    ) -> Result<CompileResult, LoadError> {
+    ) -> Result<PreparedRuleInstallation, LoadError> {
         self.validate_rule_action_callables(rule, self.module_registry.current_module())?;
 
         // Translate the LHS first to preserve source-order symbol interning, but
@@ -1816,17 +1843,9 @@ impl Engine {
             runtime_actions.push(Some(runtime_expr));
         }
 
-        let rule_id = self.compiler.allocate_rule_id();
-
-        let compile_result = self
+        let plan = self
             .compiler
-            .compile_conditions(
-                &mut self.rete,
-                &self.fact_base,
-                rule_id,
-                translated.salience,
-                &translated.conditions,
-            )
+            .plan_conditions(translated.salience, translated.conditions)
             .map_err(|e| LoadError::Compile(format!("{e}")))?;
 
         let source_definition = source
@@ -1840,26 +1859,37 @@ impl Engine {
             name: rule.name.clone(),
             source_definition,
             actions: rule.actions.clone(),
-            var_map: compile_result.var_map.clone(),
+            var_map: plan.var_map().clone(),
             fact_address_vars: translated.fact_address_vars,
             salience: Salience::new(rule.salience),
             test_conditions: translated.test_conditions,
             runtime_actions,
             multifield_tail_bindings: translated.multifield_tail_bindings,
         };
-        crate::engine::rule_index_insert(
-            &mut self.rule_info,
-            compile_result.rule_id,
-            Rc::new(info),
-        );
-        crate::engine::rule_index_insert(
-            &mut self.rule_modules,
-            compile_result.rule_id,
-            self.module_registry.current_module(),
+        Ok(PreparedRuleInstallation {
+            plan,
+            info: Rc::new(info),
+            module: self.module_registry.current_module(),
+        })
+    }
+
+    fn install_prepared_rule(&mut self, prepared: PreparedRuleInstallation) -> CompileResult {
+        let rule_id = self.compiler.allocate_rule_id();
+
+        // Publish executable metadata before network initialization can produce
+        // a predicate candidate or terminal activation for this rule.
+        crate::engine::rule_index_insert(&mut self.rule_info, rule_id, prepared.info);
+        crate::engine::rule_index_insert(&mut self.rule_modules, rule_id, prepared.module);
+
+        let compile_result = self.compiler.install_condition_plan(
+            &mut self.rete,
+            &self.fact_base,
+            rule_id,
+            prepared.plan,
         );
         self.drain_pending_predicate_matches();
 
-        Ok(compile_result)
+        compile_result
     }
 
     fn push_test_predicate(
