@@ -30,6 +30,23 @@ pub struct PendingPredicateMatch {
     pub condition_index: u32,
 }
 
+/// Structural and runtime cardinalities used to verify atomic Rete changes.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReteCardinality {
+    pub alpha_nodes: usize,
+    pub alpha_memories: usize,
+    pub beta_nodes: usize,
+    pub beta_memories: usize,
+    pub negative_memories: usize,
+    pub ncc_memories: usize,
+    pub exists_memories: usize,
+    pub tokens: usize,
+    pub activations: usize,
+    pub pending_predicate_matches: usize,
+    pub disabled_rules: usize,
+}
+
 /// The complete Rete network.
 ///
 /// Combines alpha network (fact discrimination), beta network (joins),
@@ -76,6 +93,27 @@ impl ReteNetwork {
         };
         rete.seed_root_token();
         rete
+    }
+
+    /// Capture all network cardinalities affected by rule installation.
+    #[must_use]
+    pub fn cardinality(&self) -> ReteCardinality {
+        let (alpha_nodes, alpha_memories) = self.alpha.structural_counts();
+        let (beta_nodes, beta_memories, negative_memories, ncc_memories, exists_memories) =
+            self.beta.structural_counts();
+        ReteCardinality {
+            alpha_nodes,
+            alpha_memories,
+            beta_nodes,
+            beta_memories,
+            negative_memories,
+            ncc_memories,
+            exists_memories,
+            tokens: self.token_store.len(),
+            activations: self.agenda.len(),
+            pending_predicate_matches: self.pending_predicate_matches.len(),
+            disabled_rules: self.disabled_rules.len(),
+        }
     }
 
     /// Assert a fact into the Rete network.
@@ -339,6 +377,13 @@ impl ReteNetwork {
         let _ = self.agenda.remove_activations_for_rule(rule_id);
         self.pending_predicate_matches
             .retain(|pending| pending.rule != rule_id);
+    }
+
+    /// Return whether a rule's retained network nodes have been disabled.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn is_rule_disabled(&self, rule_id: crate::beta::RuleId) -> bool {
+        self.disabled_rules.contains(&rule_id)
     }
 
     /// Pop the next runtime predicate evaluation requested by token propagation.

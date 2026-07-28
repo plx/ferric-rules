@@ -72,6 +72,25 @@ pub struct CompileResult {
     pub var_map: VarMap,
 }
 
+/// A fully validated rule installation that has not mutated a Rete network.
+///
+/// Planning owns every fallible structural input so installation can be a
+/// single infallible commit after runtime metadata is ready.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionCompilationPlan {
+    salience: Salience,
+    conditions: Vec<CompilableCondition>,
+    var_map: VarMap,
+}
+
+impl ConditionCompilationPlan {
+    /// Return the variable mapping prepared for this rule.
+    #[must_use]
+    pub fn var_map(&self) -> &VarMap {
+        &self.var_map
+    }
+}
+
 /// Errors from compilation.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CompileError {
@@ -225,6 +244,44 @@ impl ReteCompiler {
         let var_map = Self::prepare_var_map(conditions)?;
         Ok(self
             .compile_conditions_unchecked(rete, fact_base, rule_id, salience, conditions, var_map))
+    }
+
+    /// Validate and prepare conditional elements without mutating compiler or
+    /// network state.
+    pub fn plan_conditions(
+        &self,
+        salience: Salience,
+        conditions: Vec<CompilableCondition>,
+    ) -> Result<ConditionCompilationPlan, CompileError> {
+        Self::ensure_non_empty(&conditions)?;
+        Self::validate_conditions(&conditions)?;
+        let var_map = Self::prepare_var_map(&conditions)?;
+        Ok(ConditionCompilationPlan {
+            salience,
+            conditions,
+            var_map,
+        })
+    }
+
+    /// Install a previously validated condition plan.
+    ///
+    /// All validation and capacity checks occur in [`Self::plan_conditions`],
+    /// so this commit phase cannot return a partial-installation error.
+    pub fn install_condition_plan(
+        &mut self,
+        rete: &mut ReteNetwork,
+        fact_base: &FactBase,
+        rule_id: RuleId,
+        plan: ConditionCompilationPlan,
+    ) -> CompileResult {
+        self.compile_conditions_unchecked(
+            rete,
+            fact_base,
+            rule_id,
+            plan.salience,
+            &plan.conditions,
+            plan.var_map,
+        )
     }
 
     fn ensure_non_empty<T>(items: &[T]) -> Result<(), CompileError> {
@@ -2029,6 +2086,66 @@ mod tests {
                 ..
             }) if *rule == rule_id
         ));
+    }
+
+    #[test]
+    fn fr_rete_007_condition_planning_is_detached_until_install() {
+        let mut compiler = ReteCompiler::new();
+        let mut rete = ReteNetwork::new();
+        let fact_base = FactBase::new();
+        let mut table = new_table();
+        let baseline = rete.cardinality();
+        let pattern = CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(intern(&mut table, "item")),
+            constant_tests: vec![],
+            variable_slots: vec![],
+            negated_variable_slots: Vec::new(),
+            negated: false,
+            exists: false,
+        };
+
+        let plan = compiler
+            .plan_conditions(
+                Salience::DEFAULT,
+                vec![CompilableCondition::Pattern(pattern)],
+            )
+            .expect("valid plan");
+
+        assert_eq!(
+            rete.cardinality(),
+            baseline,
+            "planning must not mutate the network"
+        );
+        let rule_id = compiler.allocate_rule_id();
+        assert_eq!(rule_id, RuleId(1), "planning must not consume a rule ID");
+
+        let result = compiler.install_condition_plan(&mut rete, &fact_base, rule_id, plan);
+
+        assert_eq!(result.rule_id, rule_id);
+        assert!(rete.cardinality().beta_nodes > baseline.beta_nodes);
+        rete.debug_assert_consistency();
+    }
+
+    #[test]
+    fn fr_rete_007_rejected_condition_plan_is_non_mutating() {
+        let mut compiler = ReteCompiler::new();
+        let rete = ReteNetwork::new();
+        let baseline = rete.cardinality();
+
+        let error = compiler
+            .plan_conditions(
+                Salience::DEFAULT,
+                vec![CompilableCondition::Ncc(Vec::new())],
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, CompileError::Validation(_)));
+        assert_eq!(rete.cardinality(), baseline);
+        assert_eq!(
+            compiler.allocate_rule_id(),
+            RuleId(1),
+            "failed planning must not consume a rule ID"
+        );
     }
 
     #[test]

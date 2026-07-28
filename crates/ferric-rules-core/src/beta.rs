@@ -423,6 +423,22 @@ impl BetaNetwork {
         }
     }
 
+    pub(crate) fn structural_counts(&self) -> (usize, usize, usize, usize, usize) {
+        (
+            self.nodes.len(),
+            self.memories.len(),
+            self.neg_memories.len(),
+            self.ncc_memories.len(),
+            self.exists_memories.len(),
+        )
+    }
+
+    /// Iterate over all beta nodes and their IDs.
+    #[doc(hidden)]
+    pub fn iter_nodes(&self) -> impl Iterator<Item = (NodeId, &BetaNode)> {
+        self.nodes.iter().map(|(node_id, node)| (*node_id, node))
+    }
+
     /// Create a join node as a child of the given parent.
     ///
     /// Returns the new join node's ID and the ID of its associated beta memory.

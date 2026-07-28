@@ -355,6 +355,10 @@ impl AlphaNetwork {
         }
     }
 
+    pub(crate) fn structural_counts(&self) -> (usize, usize) {
+        (self.nodes.len(), self.memories.len())
+    }
+
     /// Get or create an entry node for a given entry type.
     ///
     /// Entry nodes are unique per entry type (idempotent).
