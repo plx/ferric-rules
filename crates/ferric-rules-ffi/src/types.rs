@@ -7,6 +7,7 @@ use std::ptr;
 use std::ffi::CStr;
 
 use ferric_rules_core::{ConflictResolutionStrategy, StringEncoding};
+use ferric_rules_ffi_macros::ffi_export;
 use ferric_rules_runtime::{Engine, EngineConfig, HaltReason};
 
 use crate::error::{set_global_error, FerricError};
@@ -497,6 +498,7 @@ pub(crate) unsafe fn ferric_to_value(
 // ---------------------------------------------------------------------------
 
 /// Create an integer `FerricValue`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub extern "C" fn ferric_value_integer(value: i64) -> FerricValue {
     FerricValue {
@@ -507,6 +509,7 @@ pub extern "C" fn ferric_value_integer(value: i64) -> FerricValue {
 }
 
 /// Create a float `FerricValue`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub extern "C" fn ferric_value_float(value: f64) -> FerricValue {
     FerricValue {
@@ -529,6 +532,7 @@ pub extern "C" fn ferric_value_float(value: f64) -> FerricValue {
 /// # Safety
 ///
 /// - `name` must be a valid NUL-terminated string, or null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_value_symbol(name: *const c_char) -> FerricValue {
     if name.is_null() {
@@ -555,6 +559,7 @@ pub unsafe extern "C" fn ferric_value_symbol(name: *const c_char) -> FerricValue
 /// # Safety
 ///
 /// - `s` must be a valid NUL-terminated string, or null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_value_string(s: *const c_char) -> FerricValue {
     if s.is_null() {
@@ -586,6 +591,7 @@ pub unsafe extern "C" fn ferric_value_string(s: *const c_char) -> FerricValue {
 /// - `out_value` must not currently contain live Ferric-owned resources.
 /// - If `len > 0`, `data` must point to `len` readable bytes.
 /// - The `data` span must not overlap `out_value`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_value_symbol_bytes(
     data: *const u8,
@@ -620,6 +626,7 @@ pub unsafe extern "C" fn ferric_value_symbol_bytes(
 /// - `out_value` must not currently contain live Ferric-owned resources.
 /// - If `len > 0`, `data` must point to `len` readable bytes.
 /// - The `data` span must not overlap `out_value`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_value_string_bytes(
     data: *const u8,
@@ -690,6 +697,7 @@ unsafe fn ferric_value_from_bytes(
 }
 
 /// Create a void `FerricValue` with all fields zeroed/null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub extern "C" fn ferric_value_void() -> FerricValue {
     FerricValue::void()
@@ -726,6 +734,7 @@ pub extern "C" fn ferric_value_void() -> FerricValue {
 ///   declared number of initialized `FerricValue`s.
 /// - The complete input tree must remain readable and unchanged until this
 ///   function returns.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_value_multifield_copy(
     elements: *const FerricValue,
@@ -895,6 +904,7 @@ unsafe fn copy_borrowed_ferric_values(
 ///
 /// - `ptr` must be a pointer returned by an FFI function or null.
 /// - The pointer must not have been freed already.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_string_free(ptr: *mut c_char) {
     if !ptr.is_null() {
@@ -920,6 +930,7 @@ pub unsafe extern "C" fn ferric_string_free(ptr: *mut c_char) {
 /// - Every recursively owned allocation must have Ferric provenance; borrowed
 ///   or foreign-allocated value trees must not be passed to this function.
 /// - Any owned resources (`string_ptr`, `multifield_ptr`) must not have been freed already.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_value_free(value: *mut FerricValue) -> FerricError {
     if value.is_null() {
@@ -946,6 +957,7 @@ pub unsafe extern "C" fn ferric_value_free(value: *mut FerricValue) -> FerricErr
 /// - `arr` must point to a contiguous array of `len` `FerricValue`s, or be null.
 /// - The array and every recursively owned allocation must have been allocated
 ///   by Ferric; borrowed or foreign-allocated arrays must not be passed here.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_value_array_free(arr: *mut FerricValue, len: usize) -> FerricError {
     if arr.is_null() || len == 0 {

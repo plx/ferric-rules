@@ -42,6 +42,13 @@ fn read_tsan_harness() -> String {
         .unwrap_or_else(|_| panic!("TSan harness not found at {}", script_path.display()))
 }
 
+fn read_panic_harness() -> String {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script_path = crate_dir.join("../../scripts/ffi-panic-harness.sh");
+    std::fs::read_to_string(&script_path)
+        .unwrap_or_else(|_| panic!("panic harness not found at {}", script_path.display()))
+}
+
 #[test]
 fn header_has_include_guard() {
     let header = read_committed_header();
@@ -206,12 +213,26 @@ fn ci_runs_mixed_language_thread_sanitizer_harness() {
 }
 
 #[test]
+fn ci_runs_debug_and_release_panic_containment_harness() {
+    let workflow = read_ci_workflow();
+    assert!(workflow.contains("FFI Panic Containment"));
+    assert!(workflow.contains("just ffi-panic-harness"));
+
+    let script = read_panic_harness();
+    assert!(script.contains("for profile in ffi-dev ffi-release"));
+    assert!(script.contains("FERRIC_FFI_TEST_PANIC_INJECTION_BUILD=1"));
+    assert!(script.contains("--features serde"));
+    assert!(script.contains("panic_containment.c"));
+    assert!(script.contains("expected 100 header exports"));
+}
+
+#[test]
 fn tsan_harness_instruments_rust_std_and_c() {
     let script = read_tsan_harness();
     for required in [
         "-Zsanitizer=thread",
         "-Zexternal-clangrt",
-        "-Zbuild-std=std,panic_abort",
+        "-Zbuild-std=std,panic_unwind",
         "--crate-type staticlib",
         "-fsanitize=thread",
         "nm -u",
@@ -219,6 +240,67 @@ fn tsan_harness_instruments_rust_std_and_c() {
         assert!(
             script.contains(required),
             "TSan harness is missing required mixed-language instrumentation: {required}"
+        );
+    }
+}
+
+#[test]
+fn every_authored_c_export_uses_the_generated_boundary_wrapper() {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source_dir = crate_dir.join("src");
+    let mut exports = Vec::new();
+
+    for file in ["engine.rs", "error.rs", "pinned.rs", "types.rs"] {
+        let source = std::fs::read_to_string(source_dir.join(file))
+            .unwrap_or_else(|_| panic!("could not read FFI source file {file}"));
+        let lines: Vec<_> = source.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            let Some(function_suffix) = line.split("extern \"C\" fn ferric_").nth(1) else {
+                continue;
+            };
+            let function_name = format!(
+                "ferric_{}",
+                function_suffix
+                    .split('(')
+                    .next()
+                    .expect("export name must end before arguments")
+            );
+            let attributes = lines[index.saturating_sub(6)..index].join("\n");
+            assert!(
+                attributes.contains("cfg_attr(ferric_ffi_compile, ffi_export"),
+                "{function_name} bypasses the generated panic wrapper"
+            );
+            assert!(
+                attributes.contains("#[no_mangle]"),
+                "{function_name} is missing its authored export marker"
+            );
+            exports.push(function_name);
+        }
+    }
+
+    exports.sort();
+    exports.dedup();
+    assert_eq!(
+        exports.len(),
+        100,
+        "the export audit count changed; verify every new return category has a panic sentinel"
+    );
+}
+
+#[test]
+fn header_documents_panic_containment_and_sentinels() {
+    let header = read_committed_header();
+    for required in [
+        "PANIC CONTAINMENT",
+        "generated wrapper around a non-extern",
+        "FERRIC_ERROR_INTERNAL_ERROR",
+        "FerricValue: Void",
+        "integer/count: 0",
+        "allocator abort/OOM",
+    ] {
+        assert!(
+            header.contains(required),
+            "panic contract is missing from ferric.h: {required}"
         );
     }
 }

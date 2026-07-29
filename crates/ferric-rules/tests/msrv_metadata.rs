@@ -8,11 +8,12 @@ const EXPECTED_MSRV: &str = "1.75";
 const EXPECTED_VERSION: &str = "0.1.0";
 const EXPECTED_LICENSE: &str = "MIT OR Apache-2.0";
 const EXPECTED_REPOSITORY: &str = "https://github.com/plx/ferric-rules";
-const PUBLISHABLE_PACKAGES: [&str; 7] = [
+const PUBLISHABLE_PACKAGES: [&str; 8] = [
     "ferric-rules",
     "ferric-rules-cli",
     "ferric-rules-core",
     "ferric-rules-ffi",
+    "ferric-rules-ffi-macros",
     "ferric-rules-parser",
     "ferric-rules-pinned",
     "ferric-rules-runtime",

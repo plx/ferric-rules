@@ -37,6 +37,7 @@ use crate::error::{
     copy_error_to_buffer, map_engine_error, map_load_error, set_engine_and_global_error,
     set_global_error, EngineErrorState, FerricError,
 };
+use ferric_rules_ffi_macros::ffi_export;
 use ferric_rules_runtime::engine::EngineError;
 use ferric_rules_runtime::loader::LoadError;
 use ferric_rules_runtime::{Engine, EngineConfig, InitError, RunLimit};
@@ -328,6 +329,22 @@ fn set_engine_error_message(
     code
 }
 
+/// Best-effort per-engine diagnostic update after a generated C wrapper
+/// contains a panic.
+///
+/// # Safety
+///
+/// `engine` must be null or a live raw-engine handle whose lifetime covers
+/// this call.
+pub(crate) unsafe fn record_boundary_panic(engine: *const FerricEngine, message: String) {
+    let Some(handle) = NonNull::new(engine.cast_mut()) else {
+        return;
+    };
+    lock_unpoisoned(diagnostics(handle))
+        .error_state
+        .set(message);
+}
+
 unsafe fn set_engine_error_for_handle(
     handle: NonNull<FerricEngine>,
     code: FerricError,
@@ -460,6 +477,7 @@ unsafe fn write_value_to_ffi(
 ///
 /// The returned pointer must be freed with `ferric_engine_free`.
 /// The engine is bound to the creating thread.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_new() -> *mut FerricEngine {
     ferric_engine_new_with_config(ptr::null())
@@ -473,6 +491,7 @@ pub unsafe extern "C" fn ferric_engine_new() -> *mut FerricEngine {
 ///
 /// - `config` may be null.
 /// - Returned pointer must be freed with `ferric_engine_free`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_new_with_config(
     config: *const FerricConfig,
@@ -503,6 +522,7 @@ pub unsafe extern "C" fn ferric_engine_new_with_config(
 /// - `engine` must be a pointer returned by `ferric_engine_new` or null.
 /// - The engine must not be in use by another call when freed.
 /// - The engine must be freed from the same thread that created it.
+#[cfg_attr(ferric_ffi_compile, ffi_export(global_only))]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_free(engine: *mut FerricEngine) -> FerricError {
     if engine.is_null() {
@@ -532,6 +552,7 @@ pub unsafe extern "C" fn ferric_engine_free(engine: *mut FerricEngine) -> Ferric
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `source` must be a valid NUL-terminated UTF-8 string.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_load_string(
     engine: *mut FerricEngine,
@@ -577,6 +598,7 @@ pub unsafe extern "C" fn ferric_engine_load_string(
 /// # Safety
 ///
 /// - `engine` must be a valid engine pointer or null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_last_error(engine: *const FerricEngine) -> *const c_char {
     // Deliberately skip thread-affinity and active-call checks. Error snapshots
@@ -626,6 +648,7 @@ pub unsafe extern "C" fn ferric_engine_last_error(engine: *const FerricEngine) -
 /// - `engine` must be a valid engine pointer or null (null → `NullPointer`).
 /// - `buf` must point to `buf_len` writable bytes, or be null for size query.
 /// - `out_len` must be a valid pointer (non-null).
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_last_error_copy(
     engine: *const FerricEngine,
@@ -658,6 +681,7 @@ pub unsafe extern "C" fn ferric_engine_last_error_copy(
 /// # Safety
 ///
 /// - `engine` must be a valid engine pointer or null (null returns `NullPointer`).
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_clear_error(engine: *mut FerricEngine) -> FerricError {
     let handle = match validate_engine_ptr(engine) {
@@ -676,6 +700,7 @@ pub unsafe extern "C" fn ferric_engine_clear_error(engine: *mut FerricEngine) ->
 /// # Safety
 ///
 /// - `engine` must be a valid engine pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_reset(engine: *mut FerricEngine) -> FerricError {
     let handle = match borrow_engine_mut(engine) {
@@ -708,6 +733,7 @@ pub unsafe extern "C" fn ferric_engine_reset(engine: *mut FerricEngine) -> Ferri
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_fired` may be null (output is simply not written).
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_run(
     engine: *mut FerricEngine,
@@ -749,6 +775,7 @@ pub unsafe extern "C" fn ferric_engine_run(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_status` may be null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_step(
     engine: *mut FerricEngine,
@@ -796,6 +823,7 @@ pub unsafe extern "C" fn ferric_engine_step(
 /// - `engine` must be a valid engine pointer.
 /// - `source` must be a valid NUL-terminated UTF-8 string.
 /// - `out_fact_id` may be null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_assert_string(
     engine: *mut FerricEngine,
@@ -843,6 +871,7 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `fact_id` must be a valid fact ID obtained from a previous assert.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_retract(
     engine: *mut FerricEngine,
@@ -884,6 +913,7 @@ pub unsafe extern "C" fn ferric_engine_retract(
 ///
 /// - `engine` must be a valid engine pointer or null.
 /// - `channel` must be a valid NUL-terminated UTF-8 string or null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_get_output(
     engine: *const FerricEngine,
@@ -975,6 +1005,7 @@ pub unsafe extern "C" fn ferric_engine_get_output(
 /// - `channel` must be a valid NUL-terminated UTF-8 string or null.
 /// - `buf` must point to `buf_len` writable bytes, or be null for a size query.
 /// - `out_len` must be a valid non-null pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_get_output_copy(
     engine: *const FerricEngine,
@@ -1026,6 +1057,7 @@ pub unsafe extern "C" fn ferric_engine_get_output_copy(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_count` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_action_diagnostic_count(
     engine: *const FerricEngine,
@@ -1056,6 +1088,7 @@ pub unsafe extern "C" fn ferric_engine_action_diagnostic_count(
 /// - `engine` must be a valid engine pointer.
 /// - `buf` must point to `buf_len` writable bytes, or be null for size query.
 /// - `out_len` must be a valid pointer (non-null).
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_action_diagnostic_copy(
     engine: *const FerricEngine,
@@ -1116,6 +1149,7 @@ pub unsafe extern "C" fn ferric_engine_action_diagnostic_copy(
 /// # Safety
 ///
 /// - `engine` must be a valid engine pointer or null (null returns `NullPointer`).
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_clear_action_diagnostics(
     engine: *mut FerricEngine,
@@ -1140,6 +1174,7 @@ pub unsafe extern "C" fn ferric_engine_clear_action_diagnostics(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_count` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_fact_count(
     engine: *const FerricEngine,
@@ -1175,6 +1210,7 @@ pub unsafe extern "C" fn ferric_engine_fact_count(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_count` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_get_fact_field_count(
     engine: *const FerricEngine,
@@ -1230,6 +1266,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field_count(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_value` must be a valid pointer to a `FerricValue`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_get_fact_field(
     engine: *const FerricEngine,
@@ -1293,6 +1330,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field(
 /// - `engine` must be a valid engine pointer.
 /// - `name` must be a valid NUL-terminated UTF-8 string.
 /// - `out_value` must be a valid pointer to a `FerricValue`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_get_global(
     engine: *const FerricEngine,
@@ -1340,6 +1378,7 @@ pub unsafe extern "C" fn ferric_engine_get_global(
 /// - `engine` must be a valid engine pointer.
 /// - `out_count` must be a valid pointer.
 /// - If `out_ids` is non-null, it must point to space for at least `max_ids` `u64`s.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_fact_ids(
     engine: *const FerricEngine,
@@ -1387,6 +1426,7 @@ pub unsafe extern "C" fn ferric_engine_fact_ids(
 /// - `relation` must be a valid NUL-terminated string.
 /// - `out_count` must be a valid pointer.
 /// - If `out_ids` is non-null, it must point to space for at least `max_ids` `u64`s.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_find_fact_ids(
     engine: *const FerricEngine,
@@ -1439,6 +1479,7 @@ pub unsafe extern "C" fn ferric_engine_find_fact_ids(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_type` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_get_fact_type(
     engine: *const FerricEngine,
@@ -1487,6 +1528,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_type(
 /// - `engine` must be a valid engine pointer.
 /// - `out_len` must be a valid pointer.
 /// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_get_fact_relation(
     engine: *const FerricEngine,
@@ -1546,6 +1588,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_relation(
 /// - `engine` must be a valid engine pointer.
 /// - `out_len` must be a valid pointer.
 /// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_get_fact_template_name(
     engine: *const FerricEngine,
@@ -1614,6 +1657,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_template_name(
 /// - `relation` must be a valid NUL-terminated string.
 /// - If `fields` is non-null, it must point to `field_count` valid `FerricValue`s.
 /// - `out_fact_id` may be null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_assert_ordered(
     engine: *mut FerricEngine,
@@ -1677,6 +1721,7 @@ pub unsafe extern "C" fn ferric_engine_assert_ordered(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_count` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_template_count(
     engine: *const FerricEngine,
@@ -1706,6 +1751,7 @@ pub unsafe extern "C" fn ferric_engine_template_count(
 /// - `engine` must be a valid engine pointer.
 /// - `out_len` must be a valid pointer.
 /// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_template_name(
     engine: *const FerricEngine,
@@ -1747,6 +1793,7 @@ pub unsafe extern "C" fn ferric_engine_template_name(
 /// - `engine` must be a valid engine pointer.
 /// - `template_name` must be a valid NUL-terminated string.
 /// - `out_count` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_template_slot_count(
     engine: *const FerricEngine,
@@ -1791,6 +1838,7 @@ pub unsafe extern "C" fn ferric_engine_template_slot_count(
 /// - `template_name` must be a valid NUL-terminated string.
 /// - `out_len` must be a valid pointer.
 /// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_template_slot_name(
     engine: *const FerricEngine,
@@ -1847,6 +1895,7 @@ pub unsafe extern "C" fn ferric_engine_template_slot_name(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_count` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_rule_count(
     engine: *const FerricEngine,
@@ -1878,6 +1927,7 @@ pub unsafe extern "C" fn ferric_engine_rule_count(
 /// - `out_len` must be a valid pointer.
 /// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
 /// - `out_salience` may be null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_rule_info(
     engine: *const FerricEngine,
@@ -1927,6 +1977,7 @@ pub unsafe extern "C" fn ferric_engine_rule_info(
 /// - `engine` must be a valid engine pointer.
 /// - `out_len` must be a valid pointer.
 /// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_current_module(
     engine: *const FerricEngine,
@@ -1958,6 +2009,7 @@ pub unsafe extern "C" fn ferric_engine_current_module(
 /// - `engine` must be a valid engine pointer.
 /// - `out_len` must be a valid pointer.
 /// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_get_focus(
     engine: *const FerricEngine,
@@ -1995,6 +2047,7 @@ pub unsafe extern "C" fn ferric_engine_get_focus(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_depth` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_focus_stack_depth(
     engine: *const FerricEngine,
@@ -2025,6 +2078,7 @@ pub unsafe extern "C" fn ferric_engine_focus_stack_depth(
 /// - `engine` must be a valid engine pointer.
 /// - `out_len` must be a valid pointer.
 /// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_focus_stack_entry(
     engine: *const FerricEngine,
@@ -2065,6 +2119,7 @@ pub unsafe extern "C" fn ferric_engine_focus_stack_entry(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_count` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_module_count(
     engine: *const FerricEngine,
@@ -2094,6 +2149,7 @@ pub unsafe extern "C" fn ferric_engine_module_count(
 /// - `engine` must be a valid engine pointer.
 /// - `out_len` must be a valid pointer.
 /// - If `buf` is non-null, it must point to at least `buf_len` writable bytes.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_module_name(
     engine: *const FerricEngine,
@@ -2138,6 +2194,7 @@ pub unsafe extern "C" fn ferric_engine_module_name(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_count` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_agenda_count(
     engine: *const FerricEngine,
@@ -2166,6 +2223,7 @@ pub unsafe extern "C" fn ferric_engine_agenda_count(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `out_halted` must be a valid pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_is_halted(
     engine: *const FerricEngine,
@@ -2193,6 +2251,7 @@ pub unsafe extern "C" fn ferric_engine_is_halted(
 /// # Safety
 ///
 /// - `engine` must be a valid engine pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_halt(engine: *mut FerricEngine) -> FerricError {
     let handle = match borrow_engine_mut(engine) {
@@ -2209,6 +2268,7 @@ pub unsafe extern "C" fn ferric_engine_halt(engine: *mut FerricEngine) -> Ferric
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `line` must be a valid NUL-terminated string.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_push_input(
     engine: *mut FerricEngine,
@@ -2234,6 +2294,7 @@ pub unsafe extern "C" fn ferric_engine_push_input(
 /// # Safety
 ///
 /// - `engine` must be a valid engine pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_clear(engine: *mut FerricEngine) -> FerricError {
     let handle = match borrow_engine_mut(engine) {
@@ -2258,6 +2319,7 @@ pub unsafe extern "C" fn ferric_engine_clear(engine: *mut FerricEngine) -> Ferri
 ///
 /// - `source` must be a valid NUL-terminated UTF-8 string, or null.
 /// - Returned pointer must be freed with `ferric_engine_free`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_new_with_source(source: *const c_char) -> *mut FerricEngine {
     ferric_engine_new_with_source_config(source, ptr::null())
@@ -2273,6 +2335,7 @@ pub unsafe extern "C" fn ferric_engine_new_with_source(source: *const c_char) ->
 /// - `source` must be a valid NUL-terminated UTF-8 string, or null.
 /// - `config` may be null.
 /// - Returned pointer must be freed with `ferric_engine_free`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_new_with_source_config(
     source: *const c_char,
@@ -2325,6 +2388,7 @@ pub unsafe extern "C" fn ferric_engine_new_with_source_config(
 ///
 /// - `engine` must be a valid engine pointer.
 /// - `channel` must be a valid NUL-terminated string.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_clear_output(
     engine: *mut FerricEngine,
@@ -2353,6 +2417,7 @@ pub unsafe extern "C" fn ferric_engine_clear_output(
 /// - `engine` must be a valid engine pointer.
 /// - `out_fired` may be null.
 /// - `out_reason` may be null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_run_ex(
     engine: *mut FerricEngine,
@@ -2411,6 +2476,7 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 /// - If `count > 0`, `slot_names` must point to `count` valid NUL-terminated string pointers.
 /// - If `count > 0`, `slot_values` must point to `count` valid `FerricValue`s.
 /// - `out_fact_id` may be null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_assert_template(
     engine: *mut FerricEngine,
@@ -2507,6 +2573,7 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
 /// - `engine` must be a valid engine pointer.
 /// - `slot_name` must be a valid NUL-terminated string.
 /// - `out_value` must be a valid pointer to a `FerricValue`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_get_fact_slot_by_name(
     engine: *const FerricEngine,
@@ -2557,6 +2624,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_slot_by_name(
 /// - `engine` must be a pointer returned by `ferric_engine_new` or null.
 /// - The engine must not be in use by another call when freed.
 /// - The caller must guarantee that no other thread is concurrently using this engine.
+#[cfg_attr(ferric_ffi_compile, ffi_export(global_only))]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_free_unchecked(engine: *mut FerricEngine) -> FerricError {
     if engine.is_null() {
@@ -2753,6 +2821,7 @@ unsafe fn deserialize_engine_impl(
 /// - `out_data` and `out_len` must be valid, non-null pointers.
 /// - If `alloc_fn` is non-null, it must return a valid pointer to `size` bytes
 ///   (or null to signal failure).
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_serialize_as(
@@ -2796,6 +2865,7 @@ pub unsafe extern "C" fn ferric_engine_serialize_as(
 /// - `data` must point to `len` valid, readable bytes.
 /// - `out_engine` must be a valid, non-null pointer.
 /// - The returned engine must be freed with `ferric_engine_free`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_deserialize_as(
@@ -2833,6 +2903,7 @@ pub unsafe extern "C" fn ferric_engine_deserialize_as(
 /// - `out_data` and `out_len` must be valid, non-null pointers.
 /// - If `alloc_fn` is non-null, it must return a valid pointer to `size` bytes
 ///   (or null to signal failure).
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_serialize_bincode(
@@ -2862,6 +2933,7 @@ pub unsafe extern "C" fn ferric_engine_serialize_bincode(
 /// - `data` must point to `len` valid, readable bytes.
 /// - `out_engine` must be a valid, non-null pointer.
 /// - The returned engine must be freed with `ferric_engine_free`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_deserialize_bincode(
@@ -2884,6 +2956,7 @@ pub unsafe extern "C" fn ferric_engine_deserialize_bincode(
 /// # Safety
 ///
 /// Same safety requirements as `ferric_engine_serialize_bincode`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_serialize_json(
@@ -2908,6 +2981,7 @@ pub unsafe extern "C" fn ferric_engine_serialize_json(
 /// # Safety
 ///
 /// Same safety requirements as `ferric_engine_deserialize_bincode`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_deserialize_json(
@@ -2930,6 +3004,7 @@ pub unsafe extern "C" fn ferric_engine_deserialize_json(
 /// # Safety
 ///
 /// Same safety requirements as `ferric_engine_serialize_bincode`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_serialize_cbor(
@@ -2954,6 +3029,7 @@ pub unsafe extern "C" fn ferric_engine_serialize_cbor(
 /// # Safety
 ///
 /// Same safety requirements as `ferric_engine_deserialize_bincode`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_deserialize_cbor(
@@ -2976,6 +3052,7 @@ pub unsafe extern "C" fn ferric_engine_deserialize_cbor(
 /// # Safety
 ///
 /// Same safety requirements as `ferric_engine_serialize_bincode`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_serialize_msgpack(
@@ -3000,6 +3077,7 @@ pub unsafe extern "C" fn ferric_engine_serialize_msgpack(
 /// # Safety
 ///
 /// Same safety requirements as `ferric_engine_deserialize_bincode`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_deserialize_msgpack(
@@ -3022,6 +3100,7 @@ pub unsafe extern "C" fn ferric_engine_deserialize_msgpack(
 /// # Safety
 ///
 /// Same safety requirements as `ferric_engine_serialize_bincode`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_serialize_postcard(
@@ -3046,6 +3125,7 @@ pub unsafe extern "C" fn ferric_engine_serialize_postcard(
 /// # Safety
 ///
 /// Same safety requirements as `ferric_engine_deserialize_bincode`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_engine_deserialize_postcard(
@@ -3072,6 +3152,7 @@ pub unsafe extern "C" fn ferric_engine_deserialize_postcard(
 ///   null `alloc_fn`), or null.
 /// - `len` must be the length reported by the corresponding serialize call.
 /// - The buffer must not have been previously freed.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_bytes_free(data: *mut u8, len: usize) {

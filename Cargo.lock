@@ -525,12 +525,22 @@ version = "0.1.0"
 dependencies = [
  "cbindgen",
  "ferric-rules-core",
+ "ferric-rules-ffi-macros",
  "ferric-rules-parser",
  "ferric-rules-pinned",
  "ferric-rules-runtime",
  "proptest",
  "slotmap",
  "tracing",
+]
+
+[[package]]
+name = "ferric-rules-ffi-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

@@ -4,6 +4,8 @@ use std::cell::RefCell;
 use std::ffi::CString;
 use std::os::raw::c_char;
 
+use ferric_rules_ffi_macros::ffi_export;
+
 /// C-facing error codes returned by all fallible FFI entry points.
 ///
 /// Stable numeric values — new codes may be added but existing values
@@ -67,6 +69,19 @@ thread_local! {
 /// Store a global (thread-local) error message.
 pub(crate) fn set_global_error(msg: String) {
     LAST_ERROR_GLOBAL.with(|e| *e.borrow_mut() = Some(msg));
+}
+
+/// Best-effort global diagnostic update for panic-containment paths.
+///
+/// Unlike [`set_global_error`], this never panics if containment interrupted a
+/// previous borrow of the thread-local slot or thread-local teardown is in
+/// progress.
+pub(crate) fn try_set_global_error(msg: String) {
+    let _ = LAST_ERROR_GLOBAL.try_with(|error| {
+        if let Ok(mut slot) = error.try_borrow_mut() {
+            *slot = Some(msg);
+        }
+    });
 }
 
 /// Store one current failure in both an engine-local snapshot and the
@@ -175,6 +190,7 @@ pub(crate) fn map_load_error(err: &LoadError) -> FerricError {
 ///
 /// The returned pointer must not be freed by the caller and must not be
 /// used after any subsequent FFI call that may modify the error channel.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_last_error_global() -> *const c_char {
     with_global_error(|msg| match msg {
@@ -192,6 +208,7 @@ pub unsafe extern "C" fn ferric_last_error_global() -> *const c_char {
 }
 
 /// Clear the global error channel.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub extern "C" fn ferric_clear_error_global() {
     clear_global_error();
@@ -218,6 +235,7 @@ pub extern "C" fn ferric_clear_error_global() {
 ///
 /// - `buf` must point to `buf_len` writable bytes, or be null for size query.
 /// - `out_len` must be a valid pointer (non-null).
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_last_error_global_copy(
     buf: *mut c_char,

@@ -36,6 +36,35 @@
  * only the global channel.
  *
  * ============================================================
+ * PANIC CONTAINMENT
+ * ============================================================
+ *
+ * Every exported function is a generated wrapper around a non-extern
+ * Rust implementation. The shipped ffi-dev and ffi-release profiles
+ * retain unwind support so an ordinary Rust panic can be caught before
+ * it reaches the C ABI.
+ *
+ * A contained panic records a stable, payload-independent message in
+ * the calling thread's global error channel and, when a still-live
+ * engine handle was supplied, that engine's error channel. Ownership-
+ * consuming free functions report globally because handle lifetime may
+ * be indeterminate after a panic.
+ *
+ * Defined panic sentinels by return category:
+ * - FerricError: FERRIC_ERROR_INTERNAL_ERROR
+ * - pointers: NULL
+ * - FerricValue: Void
+ * - bool: false
+ * - integer/count: 0
+ * - void: return after recording the diagnostic
+ *
+ * A panic in an async submission wrapper is a synchronous rejection:
+ * it returns FERRIC_ERROR_INTERNAL_ERROR and does not fire completion.
+ * The guarantee cannot contain non-unwinding termination such as an
+ * allocator abort/OOM or an explicit process abort. Host callbacks must
+ * still obey their documented no-unwind contract.
+ *
+ * ============================================================
  * OWNERSHIP AND LIFETIME
  * ============================================================
  *

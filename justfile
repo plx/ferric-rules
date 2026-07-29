@@ -24,11 +24,11 @@ build-release:
 build-crate crate:
     cargo build -p {{crate}}
 
-# Build the FFI crate with panic=abort (dev)
+# Build the FFI crate with unwind-capable C-boundary containment (dev)
 build-ffi:
     cargo build -p ferric-rules-ffi --profile ffi-dev
 
-# Build the FFI crate with panic=abort (release)
+# Build the FFI crate with unwind-capable C-boundary containment (release)
 build-ffi-release:
     cargo build -p ferric-rules-ffi --profile ffi-release
 
@@ -74,6 +74,10 @@ test-ffi:
 # subprocesses under ASan/UBSan (when the compiler supports them)
 ffi-c-harness:
     ./scripts/ffi-c-harness.sh
+
+# Exercise generated panic wrappers in debug and release FFI subprocesses
+ffi-panic-harness:
+    ./scripts/ffi-panic-harness.sh
 
 # Run the mixed Rust/C pthread diagnostic harness under ThreadSanitizer
 # (x86_64 Linux; uses a pinned nightly to instrument Rust and std)

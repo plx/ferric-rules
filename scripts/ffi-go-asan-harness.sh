@@ -58,7 +58,7 @@ CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" \
 RUSTFLAGS="-Zsanitizer=address -Zexternal-clangrt -Cforce-frame-pointers=yes" \
     cargo +"$asan_toolchain" rustc \
         --locked \
-        -Zbuild-std=std,panic_abort \
+        -Zbuild-std=std,panic_unwind \
         --target "$asan_target" \
         -p ferric-rules-ffi \
         --profile ffi-dev \

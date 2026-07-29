@@ -14,6 +14,7 @@ Rust converts package hyphens to import underscores:
 | `ferric-rules-pinned` | `ferric_rules_pinned` | yes |
 | `ferric-rules-cli` | binary remains `ferric` | yes |
 | `ferric-rules-ffi` | `ferric_rules_ffi` | yes |
+| `ferric-rules-ffi-macros` | internal proc-macro dependency | yes |
 | `ferric-rules-napi` | `ferric_rules_napi` | no; shipped through npm |
 | `ferric-rules-python` | extension remains `ferric` | no; shipped through PyPI |
 | `ferric-rules-bench-gen` | n/a | no; repository tool |
@@ -21,9 +22,9 @@ Rust converts package hyphens to import underscores:
 All internal path dependencies also carry the exact synchronized registry
 version. Cargo removes their `path` keys when producing an archive, leaving a
 complete registry dependency graph. The workspace Cargo configuration patches
-the facade's unpublished dependency chain back to the local sources so its
-first-release package and dry-run checks work before crates.io contains them;
-Cargo configuration is not included in the package archives.
+unpublished internal dependencies back to the local sources so first-release
+package and dry-run checks work before crates.io contains them; Cargo
+configuration is not included in the package archives.
 
 ## Local artifact verification
 
@@ -52,6 +53,7 @@ crates.io index before publishing the next:
 # Tier 1: independent packages
 cargo publish -p ferric-rules-parser --locked
 cargo publish -p ferric-rules-core --locked
+cargo publish -p ferric-rules-ffi-macros --locked
 
 # Tier 2: depends on parser and core
 cargo publish -p ferric-rules-runtime --locked

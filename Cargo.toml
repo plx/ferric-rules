@@ -5,6 +5,7 @@ members = [
     "crates/ferric-rules-cli",
     "crates/ferric-rules-core",
     "crates/ferric-rules-ffi",
+    "crates/ferric-rules-ffi-macros",
     "crates/ferric-rules-napi",
     "crates/ferric-rules-parser",
     "crates/ferric-rules-pinned",
@@ -93,6 +94,7 @@ objc2 = { version = "0.6" }
 ferric-rules = { version = "=0.1.0", path = "crates/ferric-rules" }
 ferric-rules-core = { version = "=0.1.0", path = "crates/ferric-rules-core" }
 ferric-rules-ffi = { version = "=0.1.0", path = "crates/ferric-rules-ffi" }
+ferric-rules-ffi-macros = { version = "=0.1.0", path = "crates/ferric-rules-ffi-macros" }
 ferric-rules-cli = { version = "=0.1.0", path = "crates/ferric-rules-cli" }
 ferric-rules-parser = { version = "=0.1.0", path = "crates/ferric-rules-parser" }
 ferric-rules-pinned = { version = "=0.1.0", path = "crates/ferric-rules-pinned" }
@@ -115,12 +117,13 @@ lto = true
 codegen-units = 1
 strip = "symbols"
 
-# FFI profile: development builds with panic=abort for C ABI safety
+# FFI profile: development builds retain unwind so exported wrappers can
+# contain ordinary Rust panics before they reach the C ABI boundary.
 [profile.ffi-dev]
 inherits = "dev"
-panic = "abort"
+panic = "unwind"
 
-# FFI profile: release builds with panic=abort for C ABI safety
+# FFI profile: release builds use the same containment-capable panic strategy.
 [profile.ffi-release]
 inherits = "release"
-panic = "abort"
+panic = "unwind"

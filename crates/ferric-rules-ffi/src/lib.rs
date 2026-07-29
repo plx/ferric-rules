@@ -41,19 +41,24 @@
 //!   unrepresentable content instead of returning empty/truncated strings.
 //!   Length-reporting copy and serialization APIs preserve exact bytes.
 //!
-//! - **Panic policy**: FFI builds use `panic = "abort"` profiles (`ffi-dev`,
-//!   `ffi-release`) so that Rust panics never unwind across the C ABI boundary.
+//! - **Panic containment**: Every C export is generated around a non-extern
+//!   implementation and catches ordinary Rust panics before they reach the ABI.
+//!   `ffi-dev` and `ffi-release` retain unwind support for that purpose. A
+//!   contained panic records a payload-independent internal-error diagnostic
+//!   and returns the documented sentinel for its return category. Allocator
+//!   abort/OOM and other non-unwinding process termination remain outside the
+//!   guarantee.
 //!
 //! ## Build Instructions
 //!
 //! Ferric FFI ships with two dedicated profiles for C-ABI-safe builds:
 //!
-//! - **ffi-dev**: Development builds with `panic = "abort"` and debug info.
+//! - **ffi-dev**: Development builds with unwind-capable containment and debug info.
 //!   ```sh
 //!   cargo build -p ferric-rules-ffi --profile ffi-dev
 //!   ```
 //!
-//! - **ffi-release**: Release builds with `panic = "abort"` and optimizations.
+//! - **ffi-release**: Optimized builds with unwind-capable containment.
 //!   ```sh
 //!   cargo build -p ferric-rules-ffi --profile ffi-release
 //!   ```
@@ -70,9 +75,10 @@
 //!
 //! ### Panic Policy
 //!
-//! Both FFI profiles use `panic = "abort"` to prevent Rust panics from
-//! unwinding across the C ABI boundary. The default `dev`/`release` profiles
-//! retain normal unwind semantics for ergonomic development and testing.
+//! Both FFI profiles use `panic = "unwind"` so generated export wrappers can
+//! catch ordinary Rust panics before they reach the C ABI boundary. Panics are
+//! converted to stable sentinels and internal-error diagnostics. Non-unwinding
+//! termination such as allocator abort/OOM remains outside the guarantee.
 //!
 //! ## Module Organization
 //!
@@ -86,6 +92,8 @@ pub mod error;
 pub mod header;
 pub mod pinned;
 pub mod types;
+
+mod boundary;
 
 #[cfg(test)]
 mod tests;

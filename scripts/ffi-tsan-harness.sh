@@ -31,7 +31,7 @@ CARGO_TARGET_DIR="$outdir" \
 RUSTFLAGS="-Zsanitizer=thread -Zexternal-clangrt -Cforce-frame-pointers=yes" \
     cargo +"$tsan_toolchain" rustc \
         --locked \
-        -Zbuild-std=std,panic_abort \
+        -Zbuild-std=std,panic_unwind \
         --target "$tsan_target" \
         -p ferric-rules-ffi \
         --profile ffi-dev \
