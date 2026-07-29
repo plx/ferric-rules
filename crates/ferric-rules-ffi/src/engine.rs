@@ -111,6 +111,17 @@ impl CachedOutputCString {
     }
 }
 
+fn prune_cleared_output_snapshots(
+    engine: &Engine,
+    output_cstrings: &RefCell<HashMap<String, CachedOutputCString>>,
+) {
+    output_cstrings.borrow_mut().retain(|channel, _| {
+        engine
+            .get_output(channel)
+            .is_some_and(|output| !output.is_empty())
+    });
+}
+
 #[cfg(test)]
 pub(crate) unsafe fn output_cache_lifetime_for_test(
     engine: *const FerricEngine,
@@ -699,6 +710,7 @@ pub unsafe extern "C" fn ferric_engine_run(
 
     match handle.engine.run(run_limit) {
         Ok(result) => {
+            prune_cleared_output_snapshots(handle.engine, handle.output_cstrings);
             if !out_fired.is_null() {
                 *out_fired = result.rules_fired as u64;
             }
@@ -729,7 +741,12 @@ pub unsafe extern "C" fn ferric_engine_step(
         Err(code) => return code,
     };
 
-    match handle.engine.step() {
+    let result = handle.engine.step();
+    if result.is_ok() {
+        prune_cleared_output_snapshots(handle.engine, handle.output_cstrings);
+    }
+
+    match result {
         Ok(Some(_fired)) => {
             if !out_status.is_null() {
                 *out_status = 1;
@@ -2302,6 +2319,7 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 
     match handle.engine.run(run_limit) {
         Ok(result) => {
+            prune_cleared_output_snapshots(handle.engine, handle.output_cstrings);
             if !out_fired.is_null() {
                 *out_fired = result.rules_fired as u64;
             }
