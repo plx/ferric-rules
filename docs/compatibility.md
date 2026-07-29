@@ -776,6 +776,7 @@ C, C++, Swift, Kotlin (NDK), and other languages with C FFI support.
 
 ```c
 #include "ferric.h"
+#include <stdlib.h>
 
 // Create engine with defaults
 FerricEngine* engine = ferric_engine_new();
@@ -795,8 +796,18 @@ ferric_engine_reset(engine);
 uint64_t fired;
 ferric_engine_run(engine, -1, &fired);
 
-// Read output
-const char* output = ferric_engine_get_output(engine, "stdout");
+// Read output into caller-owned storage
+size_t output_len = 0;
+if (ferric_engine_get_output_copy(engine, "t", NULL, 0, &output_len) ==
+    FERRIC_ERROR_OK) {
+    char* output = malloc(output_len);
+    if (output != NULL &&
+        ferric_engine_get_output_copy(engine, "t", output, output_len,
+                                      &output_len) == FERRIC_ERROR_OK) {
+        // use output
+    }
+    free(output);
+}
 
 // Clean up
 ferric_engine_free(engine);
@@ -849,14 +860,16 @@ The `*_copy` functions follow a uniform contract:
 
 | Condition | Return Code | `*out_len` |
 |-----------|-------------|------------|
-| No error stored | `FERRIC_ERROR_NOT_FOUND` | 0 |
+| No source value (for example, no error or no channel output) | `FERRIC_ERROR_NOT_FOUND` | 0 |
 | `out_len` is NULL | `FERRIC_ERROR_INVALID_ARGUMENT` | (not written) |
 | `buf` is NULL, `buf_len` is 0 (size query) | `FERRIC_ERROR_OK` | Required size (incl. NUL) |
 | `buf` non-null, `buf_len` >= needed | `FERRIC_ERROR_OK` | Bytes written (incl. NUL) |
 | `buf` non-null, `buf_len` < needed | `FERRIC_ERROR_BUFFER_TOO_SMALL` | Full needed size (incl. NUL) |
 
 On truncation, the buffer receives `buf_len - 1` bytes followed by a NUL
-terminator.
+terminator and the function returns `FERRIC_ERROR_BUFFER_TOO_SMALL`; truncation
+is never reported as success. `ferric_engine_get_output_copy` follows this
+contract and is the preferred output accessor for caller-owned storage.
 
 ### Fact Lifecycle
 
@@ -923,8 +936,13 @@ must be acyclic and no deeper than 128 nested multifield levels.
 Other borrowed pointers must **not** be freed by the caller.
 `ferric_engine_last_error` remains valid until the next borrowed last-error
 read on that engine or engine destruction; error writers and the copy API do
-not invalidate it. `ferric_engine_get_output` remains valid until the next
-call that writes to that output channel.
+not invalidate it. `ferric_engine_get_output` returns a per-engine,
+per-channel snapshot that remains valid until a later borrowed read for the
+same engine and channel replaces it; that channel is cleared; the engine is
+reset or cleared; or until engine destruction. Reads on other engines do not
+invalidate it, and later output writes are not reflected in an existing
+snapshot. Use `ferric_engine_get_output_copy` when the caller should own the
+bytes.
 
 ### Panic Policy
 

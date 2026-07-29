@@ -73,9 +73,13 @@
  * 7. External address pointers: FerricValue.external_pointer
  *    is NOT owned by the FFI. Lifetime is caller-managed.
  *
- * 8. Output string pointers: ferric_engine_get_output() returns
- *    a borrowed pointer valid until the next call that writes
- *    to that channel. Do NOT free.
+ * 8. Output snapshots: ferric_engine_get_output() returns a
+ *    per-engine, per-channel borrowed snapshot. It remains valid
+ *    until a later borrowed read for that same engine and channel
+ *    replaces it; that channel is cleared; the engine is reset or
+ *    cleared; or until engine destruction. Reads on other engines
+ *    never invalidate it. Do NOT free. Prefer
+ *    ferric_engine_get_output_copy() for caller-owned storage.
  *
  * 9. Bounds annotations: Pointer parameters and struct fields
  *    carry FERRIC_COUNTED_BY, FERRIC_SIZED_BY, and
@@ -574,13 +578,54 @@ enum FerricError ferric_engine_retract(struct FerricEngine *engine, uint64_t fac
 //
 // Returns a pointer to a NUL-terminated string, or null if the channel has
 // no output, the engine pointer is null, or the channel pointer is null.
-// The returned pointer is valid until the next call that writes to that channel.
+// The returned pointer is an engine-owned snapshot. It remains valid until a
+// later `ferric_engine_get_output` call for the same engine and channel
+// replaces that channel's snapshot; that channel is cleared; the engine is
+// reset or cleared; or the engine is destroyed. Calls involving another
+// engine never invalidate it. Output written after this call is not reflected
+// in the snapshot.
+//
+// Prefer `ferric_engine_get_output_copy` when retaining a borrowed pointer
+// would be inconvenient or when pointer-use windows could overlap.
 //
 // # Safety
 //
 // - `engine` must be a valid engine pointer or null.
 // - `channel` must be a valid NUL-terminated UTF-8 string or null.
 const char * FERRIC_NULL_TERMINATED ferric_engine_get_output(const struct FerricEngine *engine, const char * FERRIC_NULL_TERMINATED channel);
+
+// Copy the engine's captured output for a named channel.
+//
+// This is the preferred output accessor for hosts that do not want to retain
+// an engine-owned pointer. `*out_len` always reports the full required byte
+// count including the trailing NUL when output exists.
+//
+// ## Contract
+//
+// | Condition | Return | `*out_len` |
+// |-----------|--------|------------|
+// | `engine` is null | `NullPointer` | 0 |
+// | `channel` is null or invalid UTF-8 | `NullPointer` / `InvalidArgument` | 0 |
+// | `out_len` is null | `InvalidArgument` | (not written) |
+// | Channel has no non-empty output | `NotFound` | 0 |
+// | `buf` is null AND `buf_len` is 0 (size query) | `Ok` | required size (incl. NUL) |
+// | `buf` non-null, `buf_len` >= needed | `Ok` | bytes written (incl. NUL) |
+// | `buf` non-null, `buf_len` < needed | `BufferTooSmall` | full needed size (incl. NUL) |
+//
+// An undersized non-empty buffer receives a NUL-terminated prefix and a
+// `BufferTooSmall` status; truncation is never reported as success.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer or null.
+// - `channel` must be a valid NUL-terminated UTF-8 string or null.
+// - `buf` must point to `buf_len` writable bytes, or be null for a size query.
+// - `out_len` must be a valid non-null pointer.
+enum FerricError ferric_engine_get_output_copy(const struct FerricEngine *engine,
+                                               const char * FERRIC_NULL_TERMINATED channel,
+                                               char *buf FERRIC_SIZED_BY(buf_len),
+                                               uintptr_t buf_len,
+                                               uintptr_t *out_len);
 
 // Get the number of action diagnostics captured during recent execution.
 //

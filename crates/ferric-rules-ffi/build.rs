@@ -76,9 +76,13 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * 7. External address pointers: FerricValue.external_pointer
  *    is NOT owned by the FFI. Lifetime is caller-managed.
  *
- * 8. Output string pointers: ferric_engine_get_output() returns
- *    a borrowed pointer valid until the next call that writes
- *    to that channel. Do NOT free.
+ * 8. Output snapshots: ferric_engine_get_output() returns a
+ *    per-engine, per-channel borrowed snapshot. It remains valid
+ *    until a later borrowed read for that same engine and channel
+ *    replaces it; that channel is cleared; the engine is reset or
+ *    cleared; or until engine destruction. Reads on other engines
+ *    never invalidate it. Do NOT free. Prefer
+ *    ferric_engine_get_output_copy() for caller-owned storage.
  *
  * 9. Bounds annotations: Pointer parameters and struct fields
  *    carry FERRIC_COUNTED_BY, FERRIC_SIZED_BY, and
@@ -376,6 +380,11 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
         "ferric_engine_get_output(const struct FerricEngine *engine, const char *channel);",
         "ferric_engine_get_output(const struct FerricEngine *engine, const char * FERRIC_NULL_TERMINATED channel);",
     ),
+    // ferric_engine_get_output_copy: channel is NUL-terminated.
+    (
+        "ferric_engine_get_output_copy(const struct FerricEngine *engine,\n                                               const char *channel,",
+        "ferric_engine_get_output_copy(const struct FerricEngine *engine,\n                                               const char * FERRIC_NULL_TERMINATED channel,",
+    ),
     // ferric_engine_clear_output: channel is NUL-terminated.
     (
         "ferric_engine_clear_output(struct FerricEngine *engine, const char *channel);",
@@ -443,6 +452,11 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
     (
         "ferric_engine_last_error_copy(const struct FerricEngine *engine,\n                                               char *buf,",
         "ferric_engine_last_error_copy(const struct FerricEngine *engine,\n                                               char *buf FERRIC_SIZED_BY(buf_len),",
+    ),
+    // ferric_engine_get_output_copy: buf is a byte buffer of buf_len bytes.
+    (
+        "const char * FERRIC_NULL_TERMINATED channel,\n                                               char *buf,",
+        "const char * FERRIC_NULL_TERMINATED channel,\n                                               char *buf FERRIC_SIZED_BY(buf_len),",
     ),
     // ferric_pinned_engine_last_error_copy: buf is a byte buffer of buf_len bytes.
     // (multi-line signature — pattern spans the line break)

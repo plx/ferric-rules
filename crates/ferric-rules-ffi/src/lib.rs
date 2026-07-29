@@ -29,7 +29,10 @@
 //! - **Ownership conventions**: Callers own handles returned by `_new` functions and
 //!   must free them with corresponding `_free` functions. The borrowed raw-engine
 //!   error pointer remains valid until the next borrowed read on that engine or
-//!   engine destruction; concurrent consumers should use the copy API.
+//!   engine destruction; concurrent consumers should use the copy API. Borrowed
+//!   output snapshots are stored per engine and channel, cannot be invalidated by
+//!   another engine, and are reclaimed at engine destruction. Hosts should prefer
+//!   `ferric_engine_get_output_copy` for caller-owned output storage.
 //!
 //! - **Panic policy**: FFI builds use `panic = "abort"` profiles (`ffi-dev`,
 //!   `ffi-release`) so that Rust panics never unwind across the C ABI boundary.

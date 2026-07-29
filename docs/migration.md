@@ -171,6 +171,11 @@ C FFI surface. Key differences:
   involving a validated raw-engine handle updates both its per-engine snapshot
   and the calling thread's global fallback; pre-handle failures update only
   global state.
+- Prefer `ferric_engine_get_output_copy` for captured output. The legacy
+  `ferric_engine_get_output` pointer is an engine-owned, per-channel snapshot:
+  another engine cannot invalidate it, but a later borrowed read for the same
+  engine/channel can replace it; output clear/reset operations and engine
+  destruction invalidate the relevant snapshot.
 - Include `ferric.h` and link against the Ferric shared library.
 
 See [compatibility.md](compatibility.md) Section 16.13 for the full FFI

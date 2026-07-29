@@ -28,6 +28,9 @@ mod lifecycle;
 mod execution;
 
 #[cfg(test)]
+mod output_lifetime;
+
+#[cfg(test)]
 mod action_diagnostics;
 
 #[cfg(test)]

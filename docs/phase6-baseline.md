@@ -114,7 +114,10 @@ C-ABI functions with opaque `FerricEngine*` handle:
 - `ferric_engine_get_global` -- read a defglobal value as `FerricValue`
 
 **Output:**
-- `ferric_engine_get_output` -- retrieve captured channel output
+- `ferric_engine_get_output` -- retrieve an engine-scoped borrowed channel
+  snapshot; storage is reclaimed with the engine
+- `ferric_engine_get_output_copy` -- copy captured channel output into
+  caller-owned storage with required-length and truncation reporting
 
 **Error Handling:**
 - Failed calls involving a validated raw-engine handle mirror the same current
