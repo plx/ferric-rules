@@ -31,6 +31,9 @@ mod execution;
 mod output_lifetime;
 
 #[cfg(test)]
+mod embedded_nul;
+
+#[cfg(test)]
 mod action_diagnostics;
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ CC="${CC:-cc}"
 CXX="${CXX:-c++}"
 harness_sources=(
     "crates/ferric-rules-ffi/tests/c/discriminant_abuse.c"
+    "crates/ferric-rules-ffi/tests/c/embedded_nul.c"
     "crates/ferric-rules-ffi/tests/c/error_channels.c"
     "crates/ferric-rules-ffi/tests/c/multifield_copy.c"
     "crates/ferric-rules-ffi/tests/c/output_lifetime.c"

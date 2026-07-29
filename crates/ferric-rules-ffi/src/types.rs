@@ -362,46 +362,65 @@ use ferric_rules_core::Value;
 /// Heap-allocates strings (for Symbol/String variants) and arrays (for Multifield).
 /// The caller owns the resulting `FerricValue` and must free it with
 /// `ferric_value_free` or the type-specific free functions.
-pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> FerricValue {
+///
+/// Legacy `FerricValue` string payloads are NUL-terminated and therefore
+/// cannot represent embedded NUL. Such values return an error instead of
+/// silently becoming an empty or truncated C string.
+pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricValue, String> {
     match value {
-        Value::Integer(i) => FerricValue {
+        Value::Integer(i) => Ok(FerricValue {
             value_type: FerricValueType::Integer.as_raw(),
             integer: *i,
             ..FerricValue::void()
-        },
-        Value::Float(f) => FerricValue {
+        }),
+        Value::Float(f) => Ok(FerricValue {
             value_type: FerricValueType::Float.as_raw(),
             float: *f,
             ..FerricValue::void()
-        },
+        }),
         Value::Symbol(sym) => {
             let name = engine.resolve_symbol(*sym).unwrap_or("<unknown>");
-            let cstring = CString::new(name).unwrap_or_default();
-            FerricValue {
+            let cstring = CString::new(name).map_err(|error| {
+                format!(
+                    "symbol contains embedded NUL at byte {}; legacy FerricValue \
+                     C-string egress cannot represent it",
+                    error.nul_position()
+                )
+            })?;
+            Ok(FerricValue {
                 value_type: FerricValueType::Symbol.as_raw(),
                 string_ptr: cstring.into_raw(),
                 ..FerricValue::void()
-            }
+            })
         }
         Value::String(s) => {
-            let cstring = CString::new(s.as_str()).unwrap_or_default();
-            FerricValue {
+            let cstring = CString::new(s.as_str()).map_err(|error| {
+                format!(
+                    "string contains embedded NUL at byte {}; legacy FerricValue \
+                     C-string egress cannot represent it",
+                    error.nul_position()
+                )
+            })?;
+            Ok(FerricValue {
                 value_type: FerricValueType::String.as_raw(),
                 string_ptr: cstring.into_raw(),
                 ..FerricValue::void()
-            }
+            })
         }
         Value::Multifield(mf) => {
-            let values: Vec<FerricValue> = mf.iter().map(|v| value_to_ferric(v, engine)).collect();
-            OwnedFerricValues(values).into_multifield()
+            let mut values = OwnedFerricValues::with_capacity(mf.len());
+            for element in mf.iter() {
+                values.push(value_to_ferric(element, engine)?);
+            }
+            Ok(values.into_multifield())
         }
-        Value::ExternalAddress(ea) => FerricValue {
+        Value::ExternalAddress(ea) => Ok(FerricValue {
             value_type: FerricValueType::ExternalAddress.as_raw(),
             external_type_id: ea.type_id.0,
             external_pointer: ea.pointer,
             ..FerricValue::void()
-        },
-        Value::Void => FerricValue::void(),
+        }),
+        Value::Void => Ok(FerricValue::void()),
     }
 }
 
@@ -497,10 +516,15 @@ pub extern "C" fn ferric_value_float(value: f64) -> FerricValue {
     }
 }
 
-/// Create a symbol `FerricValue` with a heap-copied string.
+/// Create a symbol `FerricValue` with a heap-copied legacy C string.
 ///
 /// Returns a void value if `name` is null. The caller owns the
 /// `string_ptr` and must free it with `ferric_value_free`.
+///
+/// This legacy entry point reads through the first NUL terminator; bytes after
+/// that terminator are not part of the input and cannot be diagnosed. Hosts
+/// starting from a pointer-plus-length string should use
+/// `ferric_value_symbol_bytes`, which rejects embedded NUL explicitly.
 ///
 /// # Safety
 ///
@@ -510,8 +534,7 @@ pub unsafe extern "C" fn ferric_value_symbol(name: *const c_char) -> FerricValue
     if name.is_null() {
         return FerricValue::void();
     }
-    let cstr = CStr::from_ptr(name);
-    let cstring = CString::new(cstr.to_bytes()).unwrap_or_default();
+    let cstring = CStr::from_ptr(name).to_owned();
     FerricValue {
         value_type: FerricValueType::Symbol.as_raw(),
         string_ptr: cstring.into_raw(),
@@ -519,10 +542,15 @@ pub unsafe extern "C" fn ferric_value_symbol(name: *const c_char) -> FerricValue
     }
 }
 
-/// Create a string `FerricValue` with a heap-copied string.
+/// Create a string `FerricValue` with a heap-copied legacy C string.
 ///
 /// Returns a void value if `s` is null. The caller owns the
 /// `string_ptr` and must free it with `ferric_value_free`.
+///
+/// This legacy entry point reads through the first NUL terminator; bytes after
+/// that terminator are not part of the input and cannot be diagnosed. Hosts
+/// starting from a pointer-plus-length string should use
+/// `ferric_value_string_bytes`, which rejects embedded NUL explicitly.
 ///
 /// # Safety
 ///
@@ -532,13 +560,133 @@ pub unsafe extern "C" fn ferric_value_string(s: *const c_char) -> FerricValue {
     if s.is_null() {
         return FerricValue::void();
     }
-    let cstr = CStr::from_ptr(s);
-    let cstring = CString::new(cstr.to_bytes()).unwrap_or_default();
+    let cstring = CStr::from_ptr(s).to_owned();
     FerricValue {
         value_type: FerricValueType::String.as_raw(),
         string_ptr: cstring.into_raw(),
         ..FerricValue::void()
     }
+}
+
+/// Create a symbol from a pointer-plus-length UTF-8 span.
+///
+/// This is the checked constructor for hosts whose native strings carry an
+/// explicit byte length. Embedded NUL is rejected with
+/// `FERRIC_ERROR_INVALID_ARGUMENT` rather than silently truncating the value.
+/// The resulting legacy `FerricValue` remains NUL-terminated and is owned by
+/// the caller.
+///
+/// On every failure, `*out_value` is left as Void. A null `data` pointer with
+/// zero length creates an empty symbol; null with non-zero length returns
+/// `FERRIC_ERROR_NULL_POINTER`.
+///
+/// # Safety
+///
+/// - `out_value` must point to writable storage for one `FerricValue`.
+/// - `out_value` must not currently contain live Ferric-owned resources.
+/// - If `len > 0`, `data` must point to `len` readable bytes.
+/// - The `data` span must not overlap `out_value`.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_value_symbol_bytes(
+    data: *const u8,
+    len: usize,
+    out_value: *mut FerricValue,
+) -> FerricError {
+    ferric_value_from_bytes(
+        data,
+        len,
+        out_value,
+        FerricValueType::Symbol,
+        "ferric_value_symbol_bytes",
+        "symbol",
+    )
+}
+
+/// Create a string from a pointer-plus-length UTF-8 span.
+///
+/// This is the checked constructor for hosts whose native strings carry an
+/// explicit byte length. Embedded NUL is rejected with
+/// `FERRIC_ERROR_INVALID_ARGUMENT` rather than silently truncating the value.
+/// The resulting legacy `FerricValue` remains NUL-terminated and is owned by
+/// the caller.
+///
+/// On every failure, `*out_value` is left as Void. A null `data` pointer with
+/// zero length creates an empty string; null with non-zero length returns
+/// `FERRIC_ERROR_NULL_POINTER`.
+///
+/// # Safety
+///
+/// - `out_value` must point to writable storage for one `FerricValue`.
+/// - `out_value` must not currently contain live Ferric-owned resources.
+/// - If `len > 0`, `data` must point to `len` readable bytes.
+/// - The `data` span must not overlap `out_value`.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_value_string_bytes(
+    data: *const u8,
+    len: usize,
+    out_value: *mut FerricValue,
+) -> FerricError {
+    ferric_value_from_bytes(
+        data,
+        len,
+        out_value,
+        FerricValueType::String,
+        "ferric_value_string_bytes",
+        "string",
+    )
+}
+
+unsafe fn ferric_value_from_bytes(
+    data: *const u8,
+    len: usize,
+    out_value: *mut FerricValue,
+    value_type: FerricValueType,
+    function: &str,
+    value_label: &str,
+) -> FerricError {
+    if out_value.is_null() {
+        set_global_error(format!("{function}: out_value is null"));
+        return FerricError::NullPointer;
+    }
+    ptr::write(out_value, FerricValue::void());
+
+    let bytes = if data.is_null() {
+        if len == 0 {
+            &[][..]
+        } else {
+            set_global_error(format!("{function}: data is null with non-zero length"));
+            return FerricError::NullPointer;
+        }
+    } else {
+        std::slice::from_raw_parts(data, len)
+    };
+
+    if let Err(error) = std::str::from_utf8(bytes) {
+        set_global_error(format!(
+            "{function}: {value_label} is not valid UTF-8: {error}"
+        ));
+        return FerricError::InvalidArgument;
+    }
+    if let Some(position) = bytes.iter().position(|byte| *byte == 0) {
+        set_global_error(format!(
+            "{function}: {value_label} contains embedded NUL at byte {position}"
+        ));
+        return FerricError::InvalidArgument;
+    }
+
+    let Some(cstring) = CString::new(bytes).ok() else {
+        set_global_error(format!("{function}: {value_label} contains embedded NUL"));
+        return FerricError::InvalidArgument;
+    };
+    ptr::write(
+        out_value,
+        FerricValue {
+            value_type: value_type.as_raw(),
+            string_ptr: cstring.into_raw(),
+            ..FerricValue::void()
+        },
+    );
+    FerricError::Ok
 }
 
 /// Create a void `FerricValue` with all fields zeroed/null.

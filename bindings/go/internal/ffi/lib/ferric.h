@@ -81,7 +81,17 @@
  *    never invalidate it. Do NOT free. Prefer
  *    ferric_engine_get_output_copy() for caller-owned storage.
  *
- * 9. Bounds annotations: Pointer parameters and struct fields
+ * 9. Embedded NUL policy: Legacy NUL-terminated inputs end at
+ *    the first NUL. Hosts starting from length-bearing strings
+ *    must reject embedded NUL before calling those entry points;
+ *    ferric_value_symbol_bytes() and ferric_value_string_bytes()
+ *    provide checked value construction. Legacy FerricValue
+ *    egress rejects unrepresentable Symbol/String data with
+ *    FERRIC_ERROR_INVALID_ARGUMENT. Borrowed output returns NULL
+ *    and records that error; ferric_engine_get_output_copy()
+ *    preserves all bytes and reports an authoritative length.
+ *
+ * 10. Bounds annotations: Pointer parameters and struct fields
  *    carry FERRIC_COUNTED_BY, FERRIC_SIZED_BY, and
  *    FERRIC_NULL_TERMINATED annotations when compiled with
  *    Clang -fbounds-safety. Define FERRIC_NO_BOUNDS_ANNOTATIONS
@@ -585,6 +595,10 @@ enum FerricError ferric_engine_retract(struct FerricEngine *engine, uint64_t fac
 // engine never invalidate it. Output written after this call is not reflected
 // in the snapshot.
 //
+// If the captured output contains embedded NUL, this legacy C-string accessor
+// returns null and records `InvalidArgument`. Use
+// `ferric_engine_get_output_copy` to preserve every byte.
+//
 // Prefer `ferric_engine_get_output_copy` when retaining a borrowed pointer
 // would be inconvenient or when pointer-use windows could overlap.
 //
@@ -598,7 +612,8 @@ const char * FERRIC_NULL_TERMINATED ferric_engine_get_output(const struct Ferric
 //
 // This is the preferred output accessor for hosts that do not want to retain
 // an engine-owned pointer. `*out_len` always reports the full required byte
-// count including the trailing NUL when output exists.
+// count including the trailing NUL when output exists. The copied payload
+// preserves embedded NUL; `*out_len`, not C-string scanning, is authoritative.
 //
 // ## Contract
 //
@@ -694,6 +709,9 @@ enum FerricError ferric_engine_get_fact_field_count(const struct FerricEngine *e
 // The returned `FerricValue` is written to `*out_value`. The caller owns
 // any heap-allocated resources (`string_ptr`, `multifield_ptr`) and must free
 // them with `ferric_value_free` or the type-specific free functions.
+// A Symbol/String containing embedded NUL (including inside a multifield)
+// cannot be represented by this legacy C-string value and returns
+// `InvalidArgument`; `*out_value` is left as Void.
 //
 // # Safety
 //
@@ -711,6 +729,8 @@ enum FerricError ferric_engine_get_fact_field(const struct FerricEngine *engine,
 //
 // Module/global visibility resolution follows the runtime's standard rules.
 // Ambiguity and not-found conditions produce runtime-authored diagnostics.
+// A Symbol/String containing embedded NUL (including inside a multifield)
+// returns `InvalidArgument`, and `*out_value` is left as Void.
 //
 // # Safety
 //
@@ -1097,6 +1117,8 @@ enum FerricError ferric_engine_assert_template(struct FerricEngine *engine,
 //
 // The returned `FerricValue` is written to `*out_value`. The caller owns
 // any heap-allocated resources and must free them with `ferric_value_free`.
+// A Symbol/String containing embedded NUL (including inside a multifield)
+// returns `InvalidArgument`, and `*out_value` is left as Void.
 //
 // # Safety
 //
@@ -1656,25 +1678,79 @@ struct FerricValue ferric_value_integer(int64_t value);
 // Create a float `FerricValue`.
 struct FerricValue ferric_value_float(double value);
 
-// Create a symbol `FerricValue` with a heap-copied string.
+// Create a symbol `FerricValue` with a heap-copied legacy C string.
 //
 // Returns a void value if `name` is null. The caller owns the
 // `string_ptr` and must free it with `ferric_value_free`.
+//
+// This legacy entry point reads through the first NUL terminator; bytes after
+// that terminator are not part of the input and cannot be diagnosed. Hosts
+// starting from a pointer-plus-length string should use
+// `ferric_value_symbol_bytes`, which rejects embedded NUL explicitly.
 //
 // # Safety
 //
 // - `name` must be a valid NUL-terminated string, or null.
 struct FerricValue ferric_value_symbol(const char * FERRIC_NULL_TERMINATED name);
 
-// Create a string `FerricValue` with a heap-copied string.
+// Create a string `FerricValue` with a heap-copied legacy C string.
 //
 // Returns a void value if `s` is null. The caller owns the
 // `string_ptr` and must free it with `ferric_value_free`.
+//
+// This legacy entry point reads through the first NUL terminator; bytes after
+// that terminator are not part of the input and cannot be diagnosed. Hosts
+// starting from a pointer-plus-length string should use
+// `ferric_value_string_bytes`, which rejects embedded NUL explicitly.
 //
 // # Safety
 //
 // - `s` must be a valid NUL-terminated string, or null.
 struct FerricValue ferric_value_string(const char * FERRIC_NULL_TERMINATED s);
+
+// Create a symbol from a pointer-plus-length UTF-8 span.
+//
+// This is the checked constructor for hosts whose native strings carry an
+// explicit byte length. Embedded NUL is rejected with
+// `FERRIC_ERROR_INVALID_ARGUMENT` rather than silently truncating the value.
+// The resulting legacy `FerricValue` remains NUL-terminated and is owned by
+// the caller.
+//
+// On every failure, `*out_value` is left as Void. A null `data` pointer with
+// zero length creates an empty symbol; null with non-zero length returns
+// `FERRIC_ERROR_NULL_POINTER`.
+//
+// # Safety
+//
+// - `out_value` must point to writable storage for one `FerricValue`.
+// - `out_value` must not currently contain live Ferric-owned resources.
+// - If `len > 0`, `data` must point to `len` readable bytes.
+// - The `data` span must not overlap `out_value`.
+enum FerricError ferric_value_symbol_bytes(const uint8_t *data FERRIC_SIZED_BY(len),
+                                           uintptr_t len,
+                                           struct FerricValue *out_value);
+
+// Create a string from a pointer-plus-length UTF-8 span.
+//
+// This is the checked constructor for hosts whose native strings carry an
+// explicit byte length. Embedded NUL is rejected with
+// `FERRIC_ERROR_INVALID_ARGUMENT` rather than silently truncating the value.
+// The resulting legacy `FerricValue` remains NUL-terminated and is owned by
+// the caller.
+//
+// On every failure, `*out_value` is left as Void. A null `data` pointer with
+// zero length creates an empty string; null with non-zero length returns
+// `FERRIC_ERROR_NULL_POINTER`.
+//
+// # Safety
+//
+// - `out_value` must point to writable storage for one `FerricValue`.
+// - `out_value` must not currently contain live Ferric-owned resources.
+// - If `len > 0`, `data` must point to `len` readable bytes.
+// - The `data` span must not overlap `out_value`.
+enum FerricError ferric_value_string_bytes(const uint8_t *data FERRIC_SIZED_BY(len),
+                                           uintptr_t len,
+                                           struct FerricValue *out_value);
 
 // Create a void `FerricValue` with all fields zeroed/null.
 struct FerricValue ferric_value_void(void);

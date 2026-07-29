@@ -854,6 +854,36 @@ message.
 Bindings should prefer the per-engine channel for engine operations and use the
 global channel as a fallback or for pre-engine failures.
 
+### Embedded-NUL String Policy
+
+Ferric's Rust strings can contain `\0`, but the legacy C ABI represents input
+strings and `FerricValue` Symbol/String payloads as NUL-terminated C strings.
+The C ABI therefore uses an explicit-rejection policy at that legacy boundary:
+
+- A legacy `const char *` input ends at its first NUL by definition; bytes
+  after it are not part of the C string. Bindings starting from a
+  pointer-plus-length string must reject embedded NUL before calling any such
+  entry point.
+- `ferric_value_symbol_bytes` and `ferric_value_string_bytes` accept an
+  explicit UTF-8 byte span and return `FERRIC_ERROR_INVALID_ARGUMENT` if it
+  contains embedded NUL. Their output remains Void on failure.
+- Fact-field, global, and named-slot queries return
+  `FERRIC_ERROR_INVALID_ARGUMENT` (with a diagnostic) instead of converting a
+  stored NUL-bearing Symbol/String to empty or truncated `FerricValue` data.
+  This rule applies recursively to multifields.
+- `ferric_engine_get_output` returns NULL and records
+  `FERRIC_ERROR_INVALID_ARGUMENT` when captured output contains embedded NUL.
+  Use `ferric_engine_get_output_copy` for exact access.
+- Length-reporting copy APIs preserve every source byte, including embedded
+  NUL. Their reported length includes one additional trailing terminator, so
+  callers must use `out_len` rather than `strlen`.
+- Snapshot serialization/deserialization APIs are byte-oriented and preserve
+  their serialized bytes exactly. If a restored engine contains NUL-bearing
+  values, the same legacy-egress rejection rules apply.
+
+The dependent Go boundary audit tracks applying this policy before every
+`C.CString` conversion.
+
 ### Copy-to-Buffer Contract
 
 The `*_copy` functions follow a uniform contract:
@@ -869,7 +899,9 @@ The `*_copy` functions follow a uniform contract:
 On truncation, the buffer receives `buf_len - 1` bytes followed by a NUL
 terminator and the function returns `FERRIC_ERROR_BUFFER_TOO_SMALL`; truncation
 is never reported as success. `ferric_engine_get_output_copy` follows this
-contract and is the preferred output accessor for caller-owned storage.
+contract and is the preferred output accessor for caller-owned storage. The
+reported length is authoritative even when the copied payload contains an
+embedded NUL.
 
 ### Fact Lifecycle
 
