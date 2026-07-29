@@ -252,6 +252,7 @@ fn ci_runs_pinned_async_completion_race_under_thread_sanitizer() {
         "-Zbuild-std=std,panic_unwind",
         "cancellation_racing_operation_panic_finalizes_once",
         "--exact",
+        "test result: ok. 1 passed;",
     ] {
         assert!(
             script.contains(required),

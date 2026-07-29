@@ -795,7 +795,8 @@ mod policy_tests {
 #[cfg(test)]
 mod completion_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{mpsc, Arc};
+    use std::sync::{mpsc, Arc, Barrier};
+    use std::thread;
     use std::time::Duration;
 
     use super::*;
@@ -812,14 +813,15 @@ mod completion_tests {
             let admission_token = token.clone();
             let callback_count = completion_count.clone();
             let (entered_tx, entered_rx) = mpsc::channel();
-            let (release_tx, release_rx) = mpsc::channel();
             let (result_tx, result_rx) = mpsc::channel();
+            let race_start = Arc::new(Barrier::new(2));
+            let operation_start = race_start.clone();
 
             let request = Request::with_completion(
                 move |_| -> Result<(), PinnedError> {
                     operation_token.begin()?;
                     entered_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
+                    operation_start.wait();
                     panic!("synthetic cancellation/panic race");
                 },
                 move |result| {
@@ -833,13 +835,17 @@ mod completion_tests {
                 .unwrap();
 
             entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-            assert!(token.cancel_run());
-            release_tx.send(()).unwrap();
+            let cancellation_token = token.clone();
+            let cancellation = thread::spawn(move || {
+                race_start.wait();
+                cancellation_token.cancel_run()
+            });
 
             let (result, cancellation_won) =
                 result_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let cancellation_requested = cancellation.join().unwrap();
             assert!(matches!(result, Err(PinnedError::Internal)));
-            assert!(cancellation_won);
+            assert_eq!(cancellation_won, cancellation_requested);
             assert!(!token.is_started());
             assert_eq!(completion_count.load(Ordering::SeqCst), expected_count);
         }

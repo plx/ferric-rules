@@ -20,6 +20,9 @@ if ! command -v "cargo" >/dev/null 2>&1; then
     exit 1
 fi
 
+tsan_output="$(mktemp "${TMPDIR:-/tmp}/ferric-pinned-async-tsan.XXXXXX")"
+trap 'rm -f "$tsan_output"' EXIT
+
 CARGO_TARGET_DIR="$outdir" \
 RUSTFLAGS="-Zsanitizer=thread -Cforce-frame-pointers=yes" \
 TSAN_OPTIONS="halt_on_error=1:exitcode=66:detect_deadlocks=1" \
@@ -31,4 +34,10 @@ TSAN_OPTIONS="halt_on_error=1:exitcode=66:detect_deadlocks=1" \
         --lib \
         engine::completion_tests::cancellation_racing_operation_panic_finalizes_once \
         -- \
-        --exact
+        --exact \
+        2>&1 | tee "$tsan_output"
+
+if ! grep -Fq "test result: ok. 1 passed;" "$tsan_output"; then
+    echo "pinned-async-tsan: exact filter did not run one passing test" >&2
+    exit 1
+fi

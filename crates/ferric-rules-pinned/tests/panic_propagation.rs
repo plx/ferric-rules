@@ -1,7 +1,5 @@
-//! Request panics surface as `DispatchFailed` without killing the worker.
-//!
-//! Note: in release builds with the `ffi-abort` profile, panics abort the
-//! process. These tests run under the default `dev` profile which unwinds.
+//! Synchronous request panics surface as `DispatchFailed`; completion-aware
+//! asynchronous panics surface as `Internal`. The worker survives both.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};

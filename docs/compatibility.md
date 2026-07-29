@@ -1009,6 +1009,11 @@ result: the registry entry is removed, the callback fires exactly once with
 `FERRIC_ERROR_INTERNAL_ERROR`, and later work continues on the same worker.
 Registry cleanup happens before callback invocation, so the completed
 `request_id` is reusable at that point.
+The terminal diagnostic is carried by the result handle rather than written to
+the global or per-engine last-error channel. Although the worker remains
+available, the panic may have left logical engine state partially updated;
+consumers that require a known state should reset or recreate the engine before
+relying on later results.
 Containment does not cover non-unwinding termination such as allocator
 abort/OOM or an explicit process abort. Foreign callbacks must still return
 normally and obey their own no-unwind contract.
