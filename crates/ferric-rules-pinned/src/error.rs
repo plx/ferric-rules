@@ -12,8 +12,8 @@ use ferric_rules_runtime::SerializationError;
 
 /// Error returned by [`PinnedEngine`](crate::PinnedEngine) operations.
 ///
-/// The five `Pinned*`-style variants describe scheduling failures owned by
-/// this crate; the rest wrap errors from the underlying engine.
+/// The scheduling and internal variants describe failures owned by this
+/// crate; the rest wrap errors from the underlying engine.
 #[derive(Debug)]
 pub enum PinnedError {
     /// Handle has been closed and no longer accepts requests.
@@ -24,6 +24,8 @@ pub enum PinnedError {
     QueueFull,
     /// Worker thread is unreachable (panicked or terminated unexpectedly).
     DispatchFailed,
+    /// An accepted asynchronous request panicked while executing.
+    Internal,
     /// A synchronous pinned operation was called from its own worker thread.
     ReentrantCall,
     /// Engine construction failed.
@@ -44,6 +46,7 @@ impl fmt::Display for PinnedError {
             Self::Canceled => f.write_str("request canceled before completion"),
             Self::QueueFull => f.write_str("pinned engine request queue is full"),
             Self::DispatchFailed => f.write_str("pinned engine worker stopped unexpectedly"),
+            Self::Internal => f.write_str("pinned engine request failed internally"),
             Self::ReentrantCall => {
                 f.write_str("synchronous pinned engine call from its worker would deadlock")
             }
@@ -74,6 +77,7 @@ impl Error for PinnedError {
             | Self::Canceled
             | Self::QueueFull
             | Self::DispatchFailed
+            | Self::Internal
             | Self::ReentrantCall => None,
         }
     }

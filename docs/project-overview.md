@@ -87,6 +87,16 @@ Thin re-export crate: `ferric_rules::core`, `ferric_rules::parser`, `ferric_rule
   run via `just scaling-check`.
 - `benches/` — Criterion suite (see §5).
 
+### `ferric-rules-pinned`
+
+Rust-owned worker-thread execution for embedding contexts that cannot preserve
+the runtime engine's thread affinity. Requests use a bounded FIFO queue with
+cooperative cancellation and optional Apple autorelease-pool policies.
+Completion-aware request envelopes keep the operation separate from one
+terminal callback: an ordinary operation panic becomes `PinnedError::Internal`,
+the callback still runs exactly once, and the worker continues serving later
+requests.
+
 ### `ferric-rules-ffi`
 
 C-ABI wrapper over the runtime. Produces `libferric_rules_ffi.{a,dylib,so}` plus

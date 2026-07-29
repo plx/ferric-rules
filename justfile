@@ -84,6 +84,11 @@ ffi-panic-harness:
 ffi-tsan-harness:
     ./scripts/ffi-tsan-harness.sh
 
+# Repeat the cancellation/panic completion race under Rust ThreadSanitizer
+# (x86_64 Linux; pure Rust, with a pinned nightly and instrumented std)
+pinned-async-tsan:
+    bash ./scripts/pinned-async-tsan.sh
+
 # Build the Rust static library and Go cgo binding with AddressSanitizer, then
 # run the real-handle post-Close lifecycle regression (Linux amd64/arm64)
 ffi-go-asan-harness:

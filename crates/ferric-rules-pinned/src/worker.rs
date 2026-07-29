@@ -18,7 +18,7 @@ use ferric_rules_runtime::{Engine, HaltReason, RunLimit, RunResult};
 use crate::autorelease;
 use crate::error::PinnedError;
 use crate::options::ResolvedOptions;
-use crate::request::Request;
+use crate::request::{discard_panic_payload, Request};
 
 /// Maximum number of rule firings between cancellation checks inside
 /// [`run_with_cancel`].
@@ -93,7 +93,9 @@ fn dispatch_request(engine: &mut Engine, request: Request) {
     // One misbehaving request must not terminate the worker and drop every
     // queued completion. Sync requests observe their dropped response sender
     // as DispatchFailed; later requests remain available for dispatch.
-    drop(catch_unwind(AssertUnwindSafe(|| request(engine))));
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| request.dispatch(engine))) {
+        discard_panic_payload(payload);
+    }
 }
 
 fn drain_more(rx: &Receiver<Request>, engine: &mut Engine, max: usize) {

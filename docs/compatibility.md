@@ -1003,6 +1003,12 @@ Return sentinels are fixed by category:
 
 An async submission-wrapper panic is a synchronous rejection: it returns
 `FERRIC_ERROR_INTERNAL_ERROR` and does not invoke the completion callback.
+After a pinned async submission returns `FERRIC_ERROR_OK`, an ordinary Rust
+panic while executing that accepted request is instead a terminal asynchronous
+result: the registry entry is removed, the callback fires exactly once with
+`FERRIC_ERROR_INTERNAL_ERROR`, and later work continues on the same worker.
+Registry cleanup happens before callback invocation, so the completed
+`request_id` is reusable at that point.
 Containment does not cover non-unwinding termination such as allocator
 abort/OOM or an explicit process abort. Foreign callbacks must still return
 normally and obey their own no-unwind contract.

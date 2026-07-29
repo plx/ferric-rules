@@ -18,6 +18,13 @@
 //! [`FerricPinnedResult`] handle. The completion is contractually
 //! transport-only — it must not perform long work or call back into
 //! the same pinned engine.
+//!
+//! Successful submission accepts the operation: every accepted operation
+//! removes its request ID from the registry and invokes its completion exactly
+//! once across success, error, cancellation, close, or a contained operation
+//! panic. A contained operation panic reports [`FerricError::InternalError`];
+//! cleanup occurs before foreign callback code runs, so the ID is reusable
+//! from the callback onward.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -139,6 +146,27 @@ struct AsyncRequestRegistration {
     token: Arc<PreDispatchCancelToken>,
 }
 
+struct RegisteredAsyncRequest {
+    token: Arc<PreDispatchCancelToken>,
+    cleanup: AsyncRequestCleanup,
+}
+
+/// Sole owner of one registry removal.
+///
+/// It is captured by the accepted request's completion. If submission fails,
+/// dropping the unaccepted request drops this guard instead. Either path
+/// removes the ID once, without duplicating cleanup branches.
+struct AsyncRequestCleanup {
+    registry: Arc<Mutex<HashMap<u64, AsyncRequestRegistration>>>,
+    request_id: u64,
+}
+
+impl Drop for AsyncRequestCleanup {
+    fn drop(&mut self) {
+        lock_unpoisoned(&self.registry).remove(&self.request_id);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Async-callback plumbing
 // ---------------------------------------------------------------------------
@@ -215,7 +243,7 @@ fn register_async_request(
     handle: &FerricPinnedEngine,
     request_id: u64,
     kind: AsyncRequestKind,
-) -> Result<Arc<PreDispatchCancelToken>, FerricError> {
+) -> Result<RegisteredAsyncRequest, FerricError> {
     let mut requests = lock_unpoisoned(&handle.async_requests);
     if requests.contains_key(&request_id) {
         set_global_error(format!(
@@ -231,14 +259,13 @@ fn register_async_request(
             token: token.clone(),
         },
     );
-    Ok(token)
-}
-
-fn unregister_async_request(
-    registry: &Arc<Mutex<HashMap<u64, AsyncRequestRegistration>>>,
-    request_id: u64,
-) {
-    lock_unpoisoned(registry).remove(&request_id);
+    Ok(RegisteredAsyncRequest {
+        token,
+        cleanup: AsyncRequestCleanup {
+            registry: handle.async_requests.clone(),
+            request_id,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -820,11 +847,12 @@ fn pinned_engine_run_async_impl(
         set_global_error("completion callback is null".to_string());
         return FerricError::InvalidArgument;
     };
-    let pre_dispatch = match register_async_request(handle, request_id, AsyncRequestKind::Run) {
-        Ok(token) => token,
+    let registered = match register_async_request(handle, request_id, AsyncRequestKind::Run) {
+        Ok(registered) => registered,
         Err(code) => return code,
     };
-    let registry = handle.async_requests.clone();
+    let pre_dispatch = registered.token;
+    let cleanup = registered.cleanup;
     let callback = CompletionCallback { context, func };
     let run_limit = run_limit_from_i64(limit);
 
@@ -833,7 +861,7 @@ fn pinned_engine_run_async_impl(
         pre_dispatch,
         queue_wait,
         move |result| {
-            unregister_async_request(&registry, request_id);
+            drop(cleanup);
             let pinned_result = build_run_result(request_id, &result);
             let code = pinned_result.code;
             callback.fire(code, Box::new(pinned_result));
@@ -842,10 +870,7 @@ fn pinned_engine_run_async_impl(
 
     match submission {
         Ok(()) => FerricError::Ok,
-        Err(e) => {
-            unregister_async_request(&handle.async_requests, request_id);
-            record_pinned_error(handle, &e)
-        }
+        Err(e) => record_pinned_error(handle, &e),
     }
 }
 
@@ -932,11 +957,12 @@ fn pinned_engine_load_string_async_impl(
         set_global_error("completion callback is null".to_string());
         return FerricError::InvalidArgument;
     };
-    let pre_dispatch = match register_async_request(handle, request_id, AsyncRequestKind::Load) {
-        Ok(token) => token,
+    let registered = match register_async_request(handle, request_id, AsyncRequestKind::Load) {
+        Ok(registered) => registered,
         Err(code) => return code,
     };
-    let registry = handle.async_requests.clone();
+    let pre_dispatch = registered.token;
+    let cleanup = registered.cleanup;
     let callback = CompletionCallback { context, func };
 
     let submission = handle.pinned.load_str_async_cancelable_with_queue_wait(
@@ -944,7 +970,7 @@ fn pinned_engine_load_string_async_impl(
         pre_dispatch,
         queue_wait,
         move |result| {
-            unregister_async_request(&registry, request_id);
+            drop(cleanup);
             let (code, message) = match result {
                 Ok(_) => (FerricError::Ok, None),
                 Err(ref e) => (map_pinned_error(e), Some(e.to_string())),
@@ -963,10 +989,7 @@ fn pinned_engine_load_string_async_impl(
 
     match submission {
         Ok(()) => FerricError::Ok,
-        Err(e) => {
-            unregister_async_request(&handle.async_requests, request_id);
-            record_pinned_error(handle, &e)
-        }
+        Err(e) => record_pinned_error(handle, &e),
     }
 }
 
@@ -1102,6 +1125,93 @@ pub unsafe extern "C" fn ferric_pinned_result_free(result: *mut FerricPinnedResu
         return;
     }
     drop(Box::from_raw(result));
+}
+
+#[cfg(test)]
+mod async_lifecycle_tests {
+    use std::collections::HashMap;
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::Duration;
+
+    use super::*;
+
+    fn test_handle() -> FerricPinnedEngine {
+        FerricPinnedEngine {
+            pinned: PinnedEngine::new(PinnedEngineOptions::default()).unwrap(),
+            error_state: Mutex::new(EngineErrorState::default()),
+            error_cstring: Mutex::new(None),
+            async_requests: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[test]
+    fn panicking_request_removes_registry_entry_before_terminal_delivery() {
+        let handle = test_handle();
+        let registered = register_async_request(&handle, 117, AsyncRequestKind::Run).unwrap();
+        let cleanup = registered.cleanup;
+        let (result_tx, result_rx) = mpsc::channel();
+
+        handle
+            .pinned
+            .submit_with_completion(
+                |_| -> Result<(), PinnedError> {
+                    panic!("synthetic registered async request panic");
+                },
+                move |result| {
+                    drop(cleanup);
+                    result_tx.send(result).unwrap();
+                },
+            )
+            .unwrap();
+
+        let result = result_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(result, Err(PinnedError::Internal)));
+        assert!(!lock_unpoisoned(&handle.async_requests).contains_key(&117));
+
+        let reused = register_async_request(&handle, 117, AsyncRequestKind::Run)
+            .expect("terminal registry removal should permit request ID reuse");
+        drop(reused.cleanup);
+
+        handle
+            .pinned
+            .with_engine(|_| Ok(()))
+            .expect("worker should serve a later request");
+        handle.pinned.close().unwrap();
+    }
+
+    #[test]
+    fn internal_pinned_error_maps_to_internal_ffi_result() {
+        let result = build_run_result(117, &Err(PinnedError::Internal));
+        assert_eq!(result.code, FerricError::InternalError);
+        assert_eq!(result.request_id, 117);
+        assert!(matches!(result.payload, PinnedResultPayload::Empty));
+        assert_eq!(
+            result
+                .message
+                .as_ref()
+                .and_then(|message| message.to_str().ok()),
+            Some("pinned engine request failed internally")
+        );
+    }
+
+    #[test]
+    fn rejected_submission_drops_its_registry_cleanup_guard() {
+        let handle = test_handle();
+        handle.pinned.close().unwrap();
+        let registered = register_async_request(&handle, 118, AsyncRequestKind::Load).unwrap();
+        let cleanup = registered.cleanup;
+
+        let submission = handle.pinned.submit_with_completion(
+            |_| Ok(()),
+            move |_| {
+                drop(cleanup);
+                panic!("rejected request must not complete");
+            },
+        );
+
+        assert!(matches!(submission, Err(PinnedError::Closed)));
+        assert!(!lock_unpoisoned(&handle.async_requests).contains_key(&118));
+    }
 }
 
 #[cfg(test)]
