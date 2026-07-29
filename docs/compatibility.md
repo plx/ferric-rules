@@ -978,8 +978,34 @@ bytes.
 
 ### Panic Policy
 
-FFI builds use `panic = "abort"` profiles. No Rust panic unwind crosses the
-FFI boundary.
+Every public C function is generated as a small `extern "C"` wrapper around a
+non-extern Rust implementation. The `ffi-dev` and `ffi-release` profiles retain
+unwind support, and each wrapper catches ordinary Rust panics before they can
+reach the C ABI.
+
+A contained panic records a stable message naming the export, without
+formatting or downcasting the panic payload. The calling thread's global error
+channel is always updated; a supplied live raw or pinned engine also receives
+the same per-engine message. Ownership-consuming free functions update only
+the global channel because a panic can make the handle's remaining lifetime
+indeterminate.
+
+Return sentinels are fixed by category:
+
+| Return category | Panic sentinel |
+|-----------------|----------------|
+| `FerricError` | `FERRIC_ERROR_INTERNAL_ERROR` |
+| Any pointer | NULL |
+| `FerricValue` | Void |
+| `bool` | false |
+| Integer/count | 0 |
+| `void` | Return after recording the diagnostic |
+
+An async submission-wrapper panic is a synchronous rejection: it returns
+`FERRIC_ERROR_INTERNAL_ERROR` and does not invoke the completion callback.
+Containment does not cover non-unwinding termination such as allocator
+abort/OOM or an explicit process abort. Foreign callbacks must still return
+normally and obey their own no-unwind contract.
 
 ---
 

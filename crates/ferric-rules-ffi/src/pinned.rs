@@ -26,6 +26,7 @@ use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use ferric_rules_ffi_macros::ffi_export;
 use ferric_rules_pinned::{
     AutoreleasePolicy, HaltReason, PinnedEngine, PinnedEngineOptions, PinnedError,
     PreDispatchCancelToken, QueueWait, RunLimit, RunResult,
@@ -286,6 +287,19 @@ fn record_pinned_error(handle: &FerricPinnedEngine, err: &PinnedError) -> Ferric
     code
 }
 
+/// Best-effort per-engine diagnostic update after a generated C wrapper
+/// contains a panic.
+///
+/// # Safety
+///
+/// `engine` must be null or a live pinned-engine handle whose lifetime covers
+/// this call.
+pub(crate) unsafe fn record_boundary_panic(engine: *const FerricPinnedEngine, message: String) {
+    if let Some(handle) = engine.as_ref() {
+        lock_unpoisoned(&handle.error_state).set(message);
+    }
+}
+
 fn build_options_from_ffi(
     options: &FerricPinnedEngineOptions,
 ) -> Result<PinnedEngineOptions, FerricError> {
@@ -345,6 +359,7 @@ fn run_limit_from_i64(limit: i64) -> RunLimit {
 ///
 /// - `options` must point to a valid [`FerricPinnedEngineOptions`] or be NULL.
 /// - The returned handle must be freed with [`ferric_pinned_engine_free`].
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_new(
     options: *const FerricPinnedEngineOptions,
@@ -378,6 +393,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_new(
 /// # Safety
 ///
 /// - `engine` must be a valid handle or NULL.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_close(
     engine: *mut FerricPinnedEngine,
@@ -397,6 +413,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_close(
 ///
 /// - `engine` must be a pointer returned by [`ferric_pinned_engine_new`], or NULL.
 /// - The pointer must not be used after this call.
+#[cfg_attr(ferric_ffi_compile, ffi_export(global_only))]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_free(engine: *mut FerricPinnedEngine) -> FerricError {
     if engine.is_null() {
@@ -413,6 +430,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_free(engine: *mut FerricPinnedEngi
 /// # Safety
 ///
 /// - `engine` must be a valid handle (NULL ⇒ `false`).
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_is_closed(engine: *const FerricPinnedEngine) -> bool {
     match validate_engine_ptr(engine) {
@@ -428,6 +446,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_is_closed(engine: *const FerricPin
 /// # Safety
 ///
 /// - `engine` must be a valid handle.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_halt(engine: *mut FerricPinnedEngine) -> FerricError {
     let Ok(handle) = validate_engine_ptr(engine) else {
@@ -456,6 +475,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_halt(engine: *mut FerricPinnedEngi
 /// # Safety
 ///
 /// - `engine` must be a valid handle.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_cancel_request(
     engine: *mut FerricPinnedEngine,
@@ -497,6 +517,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_cancel_request(
 /// # Safety
 ///
 /// - `engine` must be a valid handle (NULL ⇒ NULL return).
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_last_error(
     engine: *const FerricPinnedEngine,
@@ -540,6 +561,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_last_error(
 /// - `engine` must be a valid pinned engine pointer or null.
 /// - `buf` must point to `buf_len` writable bytes, or be null for a size query.
 /// - `out_len` must be a valid, non-null pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_last_error_copy(
     engine: *const FerricPinnedEngine,
@@ -571,6 +593,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_last_error_copy(
 ///
 /// - `engine` must be a valid handle.
 /// - `source` must be a valid NUL-terminated UTF-8 string.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_load_string(
     engine: *mut FerricPinnedEngine,
@@ -594,6 +617,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_load_string(
 /// # Safety
 ///
 /// - `engine` must be a valid handle.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_reset(
     engine: *mut FerricPinnedEngine,
@@ -612,6 +636,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_reset(
 /// # Safety
 ///
 /// - `engine` must be a valid handle.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_clear(
     engine: *mut FerricPinnedEngine,
@@ -636,6 +661,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_clear(
 ///
 /// - `engine` must be a valid handle.
 /// - `out_fired` and `out_reason` may be NULL.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_run(
     engine: *mut FerricPinnedEngine,
@@ -668,6 +694,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_run(
 /// - `engine` must be a valid handle.
 /// - `out_data` and `out_len` must be valid, non-null pointers.
 /// - If `alloc_fn` is non-null, see [`crate::engine::FerricAllocFn`].
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 #[cfg(feature = "serde")]
 pub unsafe extern "C" fn ferric_pinned_engine_serialize_as(
@@ -729,6 +756,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_serialize_as(
 /// - `completion` must be a callable function pointer.
 /// - `context` may be any pointer; the caller is responsible for ensuring it
 ///   is safe to access from the worker thread.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_run_async(
     engine: *mut FerricPinnedEngine,
@@ -760,6 +788,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_run_async(
 ///
 /// The safety requirements are the same as
 /// [`ferric_pinned_engine_run_async`].
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_run_async_wait_for_capacity(
     engine: *mut FerricPinnedEngine,
@@ -833,6 +862,7 @@ fn pinned_engine_run_async_impl(
 /// - `source` must be a valid NUL-terminated UTF-8 string. The string is
 ///   copied; the caller may free it immediately after this call returns.
 /// - `completion` must be a callable function pointer.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_load_string_async(
     engine: *mut FerricPinnedEngine,
@@ -864,6 +894,7 @@ pub unsafe extern "C" fn ferric_pinned_engine_load_string_async(
 ///
 /// The safety requirements are the same as
 /// [`ferric_pinned_engine_load_string_async`].
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_engine_load_string_async_wait_for_capacity(
     engine: *mut FerricPinnedEngine,
@@ -976,6 +1007,7 @@ fn build_run_result(
 /// # Safety
 ///
 /// - `result` must be a valid handle returned via a completion callback.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_result_code(
     result: *const FerricPinnedResult,
@@ -991,6 +1023,7 @@ pub unsafe extern "C" fn ferric_pinned_result_code(
 /// # Safety
 ///
 /// - `result` must be a valid handle returned via a completion callback.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_result_request_id(result: *const FerricPinnedResult) -> u64 {
     if result.is_null() {
@@ -1008,6 +1041,7 @@ pub unsafe extern "C" fn ferric_pinned_result_request_id(result: *const FerricPi
 ///
 /// - `result` must be a valid handle.
 /// - `out_fired` and `out_reason` may be NULL.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_result_get_run(
     result: *const FerricPinnedResult,
@@ -1041,6 +1075,7 @@ pub unsafe extern "C" fn ferric_pinned_result_get_run(
 /// # Safety
 ///
 /// - `result` must be a valid handle.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_result_error_message(
     result: *const FerricPinnedResult,
@@ -1060,6 +1095,7 @@ pub unsafe extern "C" fn ferric_pinned_result_error_message(
 ///
 /// - `result` must be a handle obtained from a completion callback, or NULL.
 /// - The handle must not be used after this call.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_pinned_result_free(result: *mut FerricPinnedResult) {
     if result.is_null() {

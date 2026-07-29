@@ -162,8 +162,12 @@ caller-owned.
   last-error access remains callback-safe.
 
 **FFI Panic Policy:**
-- Shipped FFI artifacts use `ffi-dev` / `ffi-release` profiles with `panic = "abort"`.
-- No Rust unwind crosses the FFI boundary.
+- Shipped FFI artifacts use unwind-capable `ffi-dev` / `ffi-release` profiles.
+- Every C export is a generated panic-containing wrapper around a non-extern
+  implementation; ordinary panics become a documented sentinel plus an
+  internal-error diagnostic before reaching the ABI.
+- Allocator abort/OOM and other non-unwinding termination remain outside the
+  containment guarantee.
 
 **Copy-to-Buffer Semantics (stable contract):**
 - `out_len` is required.

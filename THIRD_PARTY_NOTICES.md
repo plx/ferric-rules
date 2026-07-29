@@ -16,7 +16,7 @@ acceptable license is selected for notice generation.
 
 ## License Overview
 
-- MIT License: 210
+- MIT License: 211
 - Apache License 2.0: 4
 - Boost Software License 1.0: 2
 - ISC License: 1
@@ -2275,6 +2275,7 @@ Used by:
 - ferric-rules-cli 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-core 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-ffi 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
+- ferric-rules-ffi-macros 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-napi 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-parser 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules
 - ferric-rules-pinned 0.1.0 (`MIT OR Apache-2.0`) - https://github.com/plx/ferric-rules

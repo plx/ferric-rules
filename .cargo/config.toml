@@ -4,5 +4,7 @@
 # versions.
 [patch.crates-io]
 ferric-rules-core = { path = "crates/ferric-rules-core" }
+ferric-rules-ffi-macros = { path = "crates/ferric-rules-ffi-macros" }
 ferric-rules-parser = { path = "crates/ferric-rules-parser" }
+ferric-rules-pinned = { path = "crates/ferric-rules-pinned" }
 ferric-rules-runtime = { path = "crates/ferric-rules-runtime" }

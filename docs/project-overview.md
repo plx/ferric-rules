@@ -91,8 +91,9 @@ Thin re-export crate: `ferric_rules::core`, `ferric_rules::parser`, `ferric_rule
 
 C-ABI wrapper over the runtime. Produces `libferric_rules_ffi.{a,dylib,so}` plus
 auto-generated `ferric.h` via `cbindgen`. Dedicated `ffi-dev`/`ffi-release`
-profiles with `panic = abort`.
+profiles retain unwind support for generated panic-containing export wrappers.
 
+- `boundary.rs` — shared panic containment, error recording, and return sentinels.
 - `engine.rs` — `ferric_engine_*` surface (new/free, asserts, run, serialize,
   query).
 - `types.rs` — `FerricValue`, allocator-owned multifield copying, arrays,
@@ -107,6 +108,13 @@ profiles with `panic = abort`.
   last-error copies are synchronized across threads; borrowed last-error
   pointer use must not overlap other borrowed reads or destruction. The
   destruction-only unchecked free skips affinity but must not overlap access.
+
+### `ferric-rules-ffi-macros`
+
+Internal proc-macro dependency that separates each authored C signature into a
+generated `extern "C"` containment wrapper and a private non-extern
+implementation. It is published only so registry builds of
+`ferric-rules-ffi` retain the same boundary architecture.
 
 ### `ferric-rules-cli`
 

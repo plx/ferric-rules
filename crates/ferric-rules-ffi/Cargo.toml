@@ -17,6 +17,7 @@ tracing = ["dep:tracing", "ferric-rules-runtime/tracing", "ferric-rules-pinned/t
 
 [dependencies]
 ferric-rules-core = { workspace = true }
+ferric-rules-ffi-macros = { workspace = true }
 ferric-rules-parser = { workspace = true }
 ferric-rules-pinned = { workspace = true }
 ferric-rules-runtime = { workspace = true }

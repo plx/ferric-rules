@@ -1,7 +1,7 @@
 //! Build matrix verification tests (Pass 009).
 //!
 //! These tests validate that FFI artifacts build correctly under all profiles
-//! and that the default test profile retains normal unwind semantics.
+//! and that every profile needed for containment retains unwind semantics.
 //!
 //! The `#[ignore]`d tests invoke `cargo build` as subprocesses and are slow;
 //! they are intended for CI validation rather than routine `cargo test` runs.
@@ -26,6 +26,11 @@ fn workspace_root() -> String {
         .to_str()
         .expect("workspace root is valid UTF-8")
         .to_string()
+}
+
+fn workspace_manifest() -> String {
+    std::fs::read_to_string(Path::new(&workspace_root()).join("Cargo.toml"))
+        .expect("workspace Cargo.toml must be readable")
 }
 
 /// Runs `cargo build -p ferric-rules-ffi --profile <profile>` from the workspace root
@@ -160,4 +165,21 @@ fn default_test_profile_uses_unwind() {
         result.is_err(),
         "catch_unwind should have caught the panic — test profile must use unwind, not abort"
     );
+}
+
+#[test]
+fn ffi_profiles_use_unwind_for_containment() {
+    let manifest = workspace_manifest();
+    for profile in ["ffi-dev", "ffi-release"] {
+        let marker = format!("[profile.{profile}]");
+        let start = manifest
+            .find(&marker)
+            .unwrap_or_else(|| panic!("missing {marker}"));
+        let rest = &manifest[start + marker.len()..];
+        let end = rest.find("\n[").unwrap_or(rest.len());
+        assert!(
+            rest[..end].contains("panic = \"unwind\""),
+            "{profile} must retain unwind support for generated C wrappers"
+        );
+    }
 }

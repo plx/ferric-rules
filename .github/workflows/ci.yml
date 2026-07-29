@@ -102,6 +102,18 @@ jobs:
         env:
           FERRIC_REQUIRE_SANITIZERS: "1"
 
+  ffi-panic-harness:
+    name: FFI Panic Containment
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: just ffi-panic-harness
+
   ffi-diagnostics-tsan:
     name: FFI Diagnostics (ThreadSanitizer)
     runs-on: ubuntu-latest
