@@ -58,6 +58,7 @@ pub struct FerricEngine {
     owner_thread: ThreadId,
     call_active: AtomicBool,
     diagnostics: Mutex<EngineDiagnostics>,
+    output_cstrings: RefCell<HashMap<String, CachedOutputCString>>,
 }
 
 #[derive(Debug, Default)]
@@ -82,6 +83,7 @@ impl FerricEngine {
             owner_thread: std::thread::current().id(),
             call_active: AtomicBool::new(false),
             diagnostics: Mutex::new(EngineDiagnostics::new()),
+            output_cstrings: RefCell::new(HashMap::new()),
         }
     }
 
@@ -91,14 +93,53 @@ impl FerricEngine {
     }
 }
 
-thread_local! {
-    static OUTPUT_CSTRINGS: RefCell<HashMap<String, CachedOutputCString>> =
-        RefCell::new(HashMap::new());
-}
-
 struct CachedOutputCString {
     snapshot: String,
     cstring: CString,
+    #[cfg(test)]
+    lifetime: std::sync::Arc<()>,
+}
+
+impl CachedOutputCString {
+    fn new(output: &str) -> Self {
+        Self {
+            snapshot: output.to_string(),
+            cstring: CString::new(output).unwrap_or_default(),
+            #[cfg(test)]
+            lifetime: std::sync::Arc::new(()),
+        }
+    }
+}
+
+fn prune_cleared_output_snapshots(
+    engine: &Engine,
+    output_cstrings: &RefCell<HashMap<String, CachedOutputCString>>,
+) {
+    output_cstrings.borrow_mut().retain(|channel, _| {
+        engine
+            .get_output(channel)
+            .is_some_and(|output| !output.is_empty())
+    });
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn output_cache_lifetime_for_test(
+    engine: *const FerricEngine,
+    channel: &str,
+) -> Option<std::sync::Weak<()>> {
+    let handle = NonNull::new(engine.cast_mut())?;
+    output_cstrings(handle)
+        .borrow()
+        .get(channel)
+        .map(|entry| std::sync::Arc::downgrade(&entry.lifetime))
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn output_cache_entry_count_for_test(
+    engine: *const FerricEngine,
+) -> Option<usize> {
+    let handle = NonNull::new(engine.cast_mut())?;
+    Some(output_cstrings(handle).borrow().len())
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +191,18 @@ unsafe fn diagnostics<'a>(handle: NonNull<FerricEngine>) -> &'a Mutex<EngineDiag
     &*std::ptr::addr_of!((*handle.as_ptr()).diagnostics)
 }
 
+/// Project the owner-thread borrowed-output cache from an opaque handle.
+///
+/// # Safety
+///
+/// `handle` must point to a live engine handle, and access must remain on the
+/// engine's owner thread without overlapping another runtime call.
+unsafe fn output_cstrings<'a>(
+    handle: NonNull<FerricEngine>,
+) -> &'a RefCell<HashMap<String, CachedOutputCString>> {
+    &*std::ptr::addr_of!((*handle.as_ptr()).output_cstrings)
+}
+
 /// Check thread affinity without touching the owner-thread-only runtime.
 ///
 /// # Safety
@@ -191,12 +244,14 @@ impl Drop for EngineCallGuard<'_> {
 struct EngineWriteAccess<'a> {
     engine: &'a mut Engine,
     diagnostics: &'a Mutex<EngineDiagnostics>,
+    output_cstrings: &'a RefCell<HashMap<String, CachedOutputCString>>,
     _guard: EngineCallGuard<'a>,
 }
 
 struct EngineReadAccess<'a> {
     engine: &'a Engine,
     diagnostics: &'a Mutex<EngineDiagnostics>,
+    output_cstrings: &'a RefCell<HashMap<String, CachedOutputCString>>,
     _guard: EngineCallGuard<'a>,
 }
 
@@ -238,9 +293,11 @@ unsafe fn borrow_engine_mut<'a>(
     let guard = enter_engine_call(handle)?;
     let runtime = &mut *std::ptr::addr_of_mut!((*handle.as_ptr()).engine);
     let diagnostic_state = diagnostics(handle);
+    let output_cache = output_cstrings(handle);
     Ok(EngineWriteAccess {
         engine: runtime,
         diagnostics: diagnostic_state,
+        output_cstrings: output_cache,
         _guard: guard,
     })
 }
@@ -253,9 +310,11 @@ unsafe fn borrow_engine_checked<'a>(
     let guard = enter_engine_call(handle)?;
     let runtime = &*std::ptr::addr_of!((*handle.as_ptr()).engine);
     let diagnostic_state = diagnostics(handle);
+    let output_cache = output_cstrings(handle);
     Ok(EngineReadAccess {
         engine: runtime,
         diagnostics: diagnostic_state,
+        output_cstrings: output_cache,
         _guard: guard,
     })
 }
@@ -607,7 +666,10 @@ pub unsafe extern "C" fn ferric_engine_reset(engine: *mut FerricEngine) -> Ferri
     };
 
     match handle.engine.reset() {
-        Ok(()) => FerricError::Ok,
+        Ok(()) => {
+            handle.output_cstrings.borrow_mut().clear();
+            FerricError::Ok
+        }
         Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }
@@ -648,6 +710,7 @@ pub unsafe extern "C" fn ferric_engine_run(
 
     match handle.engine.run(run_limit) {
         Ok(result) => {
+            prune_cleared_output_snapshots(handle.engine, handle.output_cstrings);
             if !out_fired.is_null() {
                 *out_fired = result.rules_fired as u64;
             }
@@ -678,7 +741,12 @@ pub unsafe extern "C" fn ferric_engine_step(
         Err(code) => return code,
     };
 
-    match handle.engine.step() {
+    let result = handle.engine.step();
+    if result.is_ok() {
+        prune_cleared_output_snapshots(handle.engine, handle.output_cstrings);
+    }
+
+    match result {
         Ok(Some(_fired)) => {
             if !out_status.is_null() {
                 *out_status = 1;
@@ -780,7 +848,15 @@ pub unsafe extern "C" fn ferric_engine_retract(
 ///
 /// Returns a pointer to a NUL-terminated string, or null if the channel has
 /// no output, the engine pointer is null, or the channel pointer is null.
-/// The returned pointer is valid until the next call that writes to that channel.
+/// The returned pointer is an engine-owned snapshot. It remains valid until a
+/// later `ferric_engine_get_output` call for the same engine and channel
+/// replaces that channel's snapshot; that channel is cleared; the engine is
+/// reset or cleared; or the engine is destroyed. Calls involving another
+/// engine never invalidate it. Output written after this call is not reflected
+/// in the snapshot.
+///
+/// Prefer `ferric_engine_get_output_copy` when retaining a borrowed pointer
+/// would be inconvenient or when pointer-use windows could overlap.
 ///
 /// # Safety
 ///
@@ -799,30 +875,93 @@ pub unsafe extern "C" fn ferric_engine_get_output(
     };
 
     match handle.engine.get_output(channel_str) {
-        Some(output) if !output.is_empty() => OUTPUT_CSTRINGS.with(|cache| {
+        Some(output) if !output.is_empty() => {
             use std::collections::hash_map::Entry;
 
-            let mut cache = cache.borrow_mut();
+            let mut cache = handle.output_cstrings.borrow_mut();
             match cache.entry(channel_str.to_string()) {
                 Entry::Occupied(mut entry) => {
                     if entry.get().snapshot != output {
-                        entry.insert(CachedOutputCString {
-                            snapshot: output.to_string(),
-                            cstring: CString::new(output).unwrap_or_default(),
-                        });
+                        entry.insert(CachedOutputCString::new(output));
                     }
                     entry.get().cstring.as_ptr()
                 }
                 Entry::Vacant(entry) => {
-                    let slot = entry.insert(CachedOutputCString {
-                        snapshot: output.to_string(),
-                        cstring: CString::new(output).unwrap_or_default(),
-                    });
+                    let slot = entry.insert(CachedOutputCString::new(output));
                     slot.cstring.as_ptr()
                 }
             }
-        }),
+        }
         _ => ptr::null(),
+    }
+}
+
+/// Copy the engine's captured output for a named channel.
+///
+/// This is the preferred output accessor for hosts that do not want to retain
+/// an engine-owned pointer. `*out_len` always reports the full required byte
+/// count including the trailing NUL when output exists.
+///
+/// ## Contract
+///
+/// | Condition | Return | `*out_len` |
+/// |-----------|--------|------------|
+/// | `engine` is null | `NullPointer` | 0 |
+/// | `channel` is null or invalid UTF-8 | `NullPointer` / `InvalidArgument` | 0 |
+/// | `out_len` is null | `InvalidArgument` | (not written) |
+/// | Channel has no non-empty output | `NotFound` | 0 |
+/// | `buf` is null AND `buf_len` is 0 (size query) | `Ok` | required size (incl. NUL) |
+/// | `buf` non-null, `buf_len` >= needed | `Ok` | bytes written (incl. NUL) |
+/// | `buf` non-null, `buf_len` < needed | `BufferTooSmall` | full needed size (incl. NUL) |
+///
+/// An undersized non-empty buffer receives a NUL-terminated prefix and a
+/// `BufferTooSmall` status; truncation is never reported as success.
+///
+/// # Safety
+///
+/// - `engine` must be a valid engine pointer or null.
+/// - `channel` must be a valid NUL-terminated UTF-8 string or null.
+/// - `buf` must point to `buf_len` writable bytes, or be null for a size query.
+/// - `out_len` must be a valid non-null pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ferric_engine_get_output_copy(
+    engine: *const FerricEngine,
+    channel: *const c_char,
+    buf: *mut c_char,
+    buf_len: usize,
+    out_len: *mut usize,
+) -> FerricError {
+    let handle = match borrow_engine_checked(engine) {
+        Ok(handle) => handle,
+        Err(code) => {
+            if !out_len.is_null() {
+                *out_len = 0;
+            }
+            return code;
+        }
+    };
+    if out_len.is_null() {
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::InvalidArgument,
+            "out_len pointer is null".to_string(),
+        );
+    }
+    *out_len = 0;
+    let channel_str = match engine_c_str_to_str(channel, "channel", handle.diagnostics) {
+        Ok(channel) => channel,
+        Err(code) => return code,
+    };
+
+    match handle.engine.get_output(channel_str) {
+        Some(output) if !output.is_empty() => {
+            copy_str_to_buffer(output, buf, buf_len, out_len, handle.diagnostics)
+        }
+        _ => set_engine_error_message(
+            handle.diagnostics,
+            FerricError::NotFound,
+            format!("output channel has no captured output: {channel_str}"),
+        ),
     }
 }
 /// Get the number of action diagnostics captured during recent execution.
@@ -2047,6 +2186,7 @@ pub unsafe extern "C" fn ferric_engine_clear(engine: *mut FerricEngine) -> Ferri
         Err(code) => return code,
     };
     handle.engine.clear();
+    handle.output_cstrings.borrow_mut().clear();
     FerricError::Ok
 }
 
@@ -2144,6 +2284,7 @@ pub unsafe extern "C" fn ferric_engine_clear_output(
         Err(code) => return code,
     };
     handle.engine.clear_output_channel(channel_str);
+    handle.output_cstrings.borrow_mut().remove(channel_str);
     FerricError::Ok
 }
 
@@ -2178,6 +2319,7 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 
     match handle.engine.run(run_limit) {
         Ok(result) => {
+            prune_cleared_output_snapshots(handle.engine, handle.output_cstrings);
             if !out_fired.is_null() {
                 *out_fired = result.rules_fired as u64;
             }

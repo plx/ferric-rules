@@ -534,6 +534,10 @@ fn header_contains_query_functions() {
         header.contains("ferric_engine_get_output"),
         "Missing ferric_engine_get_output"
     );
+    assert!(
+        header.contains("ferric_engine_get_output_copy"),
+        "Missing ferric_engine_get_output_copy"
+    );
 }
 
 #[test]
@@ -689,6 +693,10 @@ fn header_has_counted_by_and_sized_by_annotations() {
     assert!(
         header.contains("*buf FERRIC_SIZED_BY(buf_len),\n                                                      uintptr_t buf_len,\n                                                      uintptr_t *out_len);"),
         "Missing FERRIC_SIZED_BY on ferric_engine_action_diagnostic_copy buf parameter"
+    );
+    assert!(
+        header.contains("ferric_engine_get_output_copy(const struct FerricEngine *engine,\n                                               const char * FERRIC_NULL_TERMINATED channel,\n                                               char *buf FERRIC_SIZED_BY(buf_len),"),
+        "Missing bounds annotations on ferric_engine_get_output_copy"
     );
 }
 

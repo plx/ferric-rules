@@ -13,9 +13,10 @@ use crate::engine::{
     ferric_engine_assert_string, ferric_engine_clear_action_diagnostics, ferric_engine_clear_error,
     ferric_engine_fact_count, ferric_engine_free, ferric_engine_get_fact_field,
     ferric_engine_get_fact_field_count, ferric_engine_get_global, ferric_engine_get_output,
-    ferric_engine_last_error, ferric_engine_last_error_copy, ferric_engine_load_string,
-    ferric_engine_new, ferric_engine_new_with_config, ferric_engine_reset, ferric_engine_retract,
-    ferric_engine_run, ferric_engine_step, FerricEngine,
+    ferric_engine_get_output_copy, ferric_engine_last_error, ferric_engine_last_error_copy,
+    ferric_engine_load_string, ferric_engine_new, ferric_engine_new_with_config,
+    ferric_engine_reset, ferric_engine_retract, ferric_engine_run, ferric_engine_step,
+    FerricEngine,
 };
 use crate::error::{
     ferric_clear_error_global, ferric_last_error_global, ferric_last_error_global_copy, FerricError,
@@ -93,6 +94,13 @@ fn contract_lock_canonical_function_names_exist() {
     // output capture
     let _: unsafe extern "C" fn(*const FerricEngine, *const c_char) -> *const c_char =
         ferric_engine_get_output;
+    let _: unsafe extern "C" fn(
+        *const FerricEngine,
+        *const c_char,
+        *mut c_char,
+        usize,
+        *mut usize,
+    ) -> FerricError = ferric_engine_get_output_copy;
 
     // action diagnostics
     let _: unsafe extern "C" fn(*const FerricEngine, *mut usize) -> FerricError =

@@ -19,6 +19,7 @@ harness_sources=(
     "crates/ferric-rules-ffi/tests/c/discriminant_abuse.c"
     "crates/ferric-rules-ffi/tests/c/error_channels.c"
     "crates/ferric-rules-ffi/tests/c/multifield_copy.c"
+    "crates/ferric-rules-ffi/tests/c/output_lifetime.c"
 )
 outdir="target/c-harness"
 mkdir -p "$outdir"
