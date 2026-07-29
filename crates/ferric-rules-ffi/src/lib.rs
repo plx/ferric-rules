@@ -34,6 +34,13 @@
 //!   another engine, and are reclaimed at engine destruction. Hosts should prefer
 //!   `ferric_engine_get_output_copy` for caller-owned output storage.
 //!
+//! - **Embedded-NUL policy**: Legacy NUL-terminated inputs end at their first
+//!   NUL. Hosts converting length-bearing strings must reject embedded NUL
+//!   before calling those entry points; the checked value constructors do this
+//!   explicitly. Legacy `FerricValue` and borrowed-output egress reject
+//!   unrepresentable content instead of returning empty/truncated strings.
+//!   Length-reporting copy and serialization APIs preserve exact bytes.
+//!
 //! - **Panic policy**: FFI builds use `panic = "abort"` profiles (`ffi-dev`,
 //!   `ffi-release`) so that Rust panics never unwind across the C ABI boundary.
 //!

@@ -300,16 +300,16 @@
       "canonical": {"type": "string", "value": "a\u0000b"},
       "deviations": {
         "c": {
-          "expected": {"type": "string", "value": "a"},
-          "rationale": "The legacy C string constructor truncates at the first embedded NUL.",
+          "expected": {"error": "invalid_argument"},
+          "rationale": "The checked C byte-span constructor rejects embedded NUL explicitly because legacy FerricValue strings are NUL-terminated.",
           "since": "1.0.0",
           "tracking_issue": "https://github.com/plx/ferric-rules/issues/115"
         },
         "go": {
           "expected": {"type": "string", "value": "a"},
-          "rationale": "Go currently passes host strings through C.CString and therefore truncates at embedded NUL.",
+          "rationale": "Go currently passes host strings through C.CString; rejecting embedded NUL across the binding remains tracked by FR-GO-012.",
           "since": "1.0.0",
-          "tracking_issue": "https://github.com/plx/ferric-rules/issues/115"
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/131"
         }
       }
     },

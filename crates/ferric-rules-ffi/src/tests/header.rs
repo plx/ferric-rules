@@ -670,6 +670,14 @@ fn header_has_counted_by_and_sized_by_annotations() {
         header.contains("*elements FERRIC_COUNTED_BY(len)"),
         "Missing FERRIC_COUNTED_BY on ferric_value_multifield_copy elements"
     );
+    assert!(
+        header.contains("ferric_value_symbol_bytes(const uint8_t *data FERRIC_SIZED_BY(len),"),
+        "Missing FERRIC_SIZED_BY on ferric_value_symbol_bytes data"
+    );
+    assert!(
+        header.contains("ferric_value_string_bytes(const uint8_t *data FERRIC_SIZED_BY(len),"),
+        "Missing FERRIC_SIZED_BY on ferric_value_string_bytes data"
+    );
 
     // ferric_last_error_global_copy: buf sized_by buf_len
     assert!(
@@ -698,6 +706,16 @@ fn header_has_counted_by_and_sized_by_annotations() {
         header.contains("ferric_engine_get_output_copy(const struct FerricEngine *engine,\n                                               const char * FERRIC_NULL_TERMINATED channel,\n                                               char *buf FERRIC_SIZED_BY(buf_len),"),
         "Missing bounds annotations on ferric_engine_get_output_copy"
     );
+}
+
+#[test]
+fn header_documents_embedded_nul_policy() {
+    let header = read_committed_header();
+    assert!(header.contains("Embedded NUL policy:"));
+    assert!(header.contains("ferric_value_symbol_bytes()"));
+    assert!(header.contains("ferric_value_string_bytes()"));
+    assert!(header.contains("Legacy FerricValue"));
+    assert!(header.contains("ferric_engine_get_output_copy()"));
 }
 
 #[test]

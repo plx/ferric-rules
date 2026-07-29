@@ -568,11 +568,17 @@ static bool lifecycle_close(void) {
 }
 
 static bool embedded_nul(void) {
-    char embedded[] = {'a', '\0', 'b', '\0'};
-    struct FerricValue value = ferric_value_string(embedded);
-    bool success = print_asserted_value(&value);
-    ferric_value_free(&value);
-    return success;
+    const uint8_t embedded[] = {'a', '\0', 'b'};
+    struct FerricValue value = ferric_value_void();
+    enum FerricError code =
+        ferric_value_string_bytes(embedded, sizeof(embedded), &value);
+    if (code != FERRIC_ERROR_INVALID_ARGUMENT ||
+        value.value_type != FERRIC_VALUE_TYPE_VOID) {
+        ferric_value_free(&value);
+        return false;
+    }
+    fputs("{\"error\":\"invalid_argument\"}", stdout);
+    return true;
 }
 
 static bool high_fact_id(void) {

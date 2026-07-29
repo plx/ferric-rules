@@ -101,13 +101,13 @@ struct CachedOutputCString {
 }
 
 impl CachedOutputCString {
-    fn new(output: &str) -> Self {
-        Self {
+    fn new(output: &str) -> Result<Self, std::ffi::NulError> {
+        Ok(Self {
             snapshot: output.to_string(),
-            cstring: CString::new(output).unwrap_or_default(),
+            cstring: CString::new(output)?,
             #[cfg(test)]
             lifetime: std::sync::Arc::new(()),
-        }
+        })
     }
 }
 
@@ -425,6 +425,24 @@ unsafe fn copy_str_to_buffer(
             FerricError::BufferTooSmall,
             format!("output buffer is too small: need {needed} bytes, got {buf_len}"),
         )
+    }
+}
+
+unsafe fn write_value_to_ffi(
+    value: &ferric_rules_core::Value,
+    engine: &Engine,
+    out_value: *mut FerricValue,
+    diagnostics: &Mutex<EngineDiagnostics>,
+) -> FerricError {
+    ptr::write(out_value, FerricValue::void());
+    match value_to_ferric(value, engine) {
+        Ok(converted) => {
+            ptr::write(out_value, converted);
+            FerricError::Ok
+        }
+        Err(message) => {
+            set_engine_error_message(diagnostics, FerricError::InvalidArgument, message)
+        }
     }
 }
 
@@ -855,6 +873,10 @@ pub unsafe extern "C" fn ferric_engine_retract(
 /// engine never invalidate it. Output written after this call is not reflected
 /// in the snapshot.
 ///
+/// If the captured output contains embedded NUL, this legacy C-string accessor
+/// returns null and records `InvalidArgument`. Use
+/// `ferric_engine_get_output_copy` to preserve every byte.
+///
 /// Prefer `ferric_engine_get_output_copy` when retaining a borrowed pointer
 /// would be inconvenient or when pointer-use windows could overlap.
 ///
@@ -878,16 +900,45 @@ pub unsafe extern "C" fn ferric_engine_get_output(
         Some(output) if !output.is_empty() => {
             use std::collections::hash_map::Entry;
 
+            if let Some(position) = output.as_bytes().iter().position(|byte| *byte == 0) {
+                handle.output_cstrings.borrow_mut().remove(channel_str);
+                set_engine_error_message(
+                    handle.diagnostics,
+                    FerricError::InvalidArgument,
+                    format!(
+                        "output channel {channel_str:?} contains embedded NUL at byte {position}; \
+                         use ferric_engine_get_output_copy for length-aware access"
+                    ),
+                );
+                return ptr::null();
+            }
+
             let mut cache = handle.output_cstrings.borrow_mut();
             match cache.entry(channel_str.to_string()) {
                 Entry::Occupied(mut entry) => {
                     if entry.get().snapshot != output {
-                        entry.insert(CachedOutputCString::new(output));
+                        let Ok(snapshot) = CachedOutputCString::new(output) else {
+                            set_engine_error_message(
+                                handle.diagnostics,
+                                FerricError::InvalidArgument,
+                                "captured output cannot be represented as a C string".to_string(),
+                            );
+                            return ptr::null();
+                        };
+                        entry.insert(snapshot);
                     }
                     entry.get().cstring.as_ptr()
                 }
                 Entry::Vacant(entry) => {
-                    let slot = entry.insert(CachedOutputCString::new(output));
+                    let Ok(snapshot) = CachedOutputCString::new(output) else {
+                        set_engine_error_message(
+                            handle.diagnostics,
+                            FerricError::InvalidArgument,
+                            "captured output cannot be represented as a C string".to_string(),
+                        );
+                        return ptr::null();
+                    };
+                    let slot = entry.insert(snapshot);
                     slot.cstring.as_ptr()
                 }
             }
@@ -900,7 +951,8 @@ pub unsafe extern "C" fn ferric_engine_get_output(
 ///
 /// This is the preferred output accessor for hosts that do not want to retain
 /// an engine-owned pointer. `*out_len` always reports the full required byte
-/// count including the trailing NUL when output exists.
+/// count including the trailing NUL when output exists. The copied payload
+/// preserves embedded NUL; `*out_len`, not C-string scanning, is authoritative.
 ///
 /// ## Contract
 ///
@@ -1170,6 +1222,9 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field_count(
 /// The returned `FerricValue` is written to `*out_value`. The caller owns
 /// any heap-allocated resources (`string_ptr`, `multifield_ptr`) and must free
 /// them with `ferric_value_free` or the type-specific free functions.
+/// A Symbol/String containing embedded NUL (including inside a multifield)
+/// cannot be represented by this legacy C-string value and returns
+/// `InvalidArgument`; `*out_value` is left as Void.
 ///
 /// # Safety
 ///
@@ -1205,8 +1260,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field(
                 Fact::Template(t) => t.slots.get(index),
             };
             if let Some(val) = field_value {
-                *out_value = value_to_ferric(val, handle.engine);
-                FerricError::Ok
+                write_value_to_ffi(val, handle.engine, out_value, handle.diagnostics)
             } else {
                 set_engine_error_message(
                     handle.diagnostics,
@@ -1231,6 +1285,8 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field(
 ///
 /// Module/global visibility resolution follows the runtime's standard rules.
 /// Ambiguity and not-found conditions produce runtime-authored diagnostics.
+/// A Symbol/String containing embedded NUL (including inside a multifield)
+/// returns `InvalidArgument`, and `*out_value` is left as Void.
 ///
 /// # Safety
 ///
@@ -1260,8 +1316,7 @@ pub unsafe extern "C" fn ferric_engine_get_global(
     }
 
     if let Some(val) = handle.engine.get_global(name_str) {
-        *out_value = value_to_ferric(val, handle.engine);
-        FerricError::Ok
+        write_value_to_ffi(val, handle.engine, out_value, handle.diagnostics)
     } else {
         set_engine_error_message(
             handle.diagnostics,
@@ -2444,6 +2499,8 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
 ///
 /// The returned `FerricValue` is written to `*out_value`. The caller owns
 /// any heap-allocated resources and must free them with `ferric_value_free`.
+/// A Symbol/String containing embedded NUL (including inside a multifield)
+/// returns `InvalidArgument`, and `*out_value` is left as Void.
 ///
 /// # Safety
 ///
@@ -2478,10 +2535,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_slot_by_name(
     let fid = ferric_rules_core::FactId::from(key_data);
 
     match handle.engine.get_fact_slot_by_name(fid, name_str) {
-        Ok(value) => {
-            *out_value = value_to_ferric(value, handle.engine);
-            FerricError::Ok
-        }
+        Ok(value) => write_value_to_ffi(value, handle.engine, out_value, handle.diagnostics),
         Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
     }
 }

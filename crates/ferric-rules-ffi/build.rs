@@ -84,7 +84,17 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *    never invalidate it. Do NOT free. Prefer
  *    ferric_engine_get_output_copy() for caller-owned storage.
  *
- * 9. Bounds annotations: Pointer parameters and struct fields
+ * 9. Embedded NUL policy: Legacy NUL-terminated inputs end at
+ *    the first NUL. Hosts starting from length-bearing strings
+ *    must reject embedded NUL before calling those entry points;
+ *    ferric_value_symbol_bytes() and ferric_value_string_bytes()
+ *    provide checked value construction. Legacy FerricValue
+ *    egress rejects unrepresentable Symbol/String data with
+ *    FERRIC_ERROR_INVALID_ARGUMENT. Borrowed output returns NULL
+ *    and records that error; ferric_engine_get_output_copy()
+ *    preserves all bytes and reports an authoritative length.
+ *
+ * 10. Bounds annotations: Pointer parameters and struct fields
  *    carry FERRIC_COUNTED_BY, FERRIC_SIZED_BY, and
  *    FERRIC_NULL_TERMINATED annotations when compiled with
  *    Clang -fbounds-safety. Define FERRIC_NO_BOUNDS_ANNOTATIONS
@@ -441,6 +451,16 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
     (
         "ferric_value_multifield_copy(const struct FerricValue *elements,\n                                              uintptr_t len,",
         "ferric_value_multifield_copy(const struct FerricValue *elements FERRIC_COUNTED_BY(len),\n                                              uintptr_t len,",
+    ),
+    // ferric_value_symbol_bytes: data is a byte span of len bytes.
+    (
+        "ferric_value_symbol_bytes(const uint8_t *data,\n                                           uintptr_t len,",
+        "ferric_value_symbol_bytes(const uint8_t *data FERRIC_SIZED_BY(len),\n                                           uintptr_t len,",
+    ),
+    // ferric_value_string_bytes: data is a byte span of len bytes.
+    (
+        "ferric_value_string_bytes(const uint8_t *data,\n                                           uintptr_t len,",
+        "ferric_value_string_bytes(const uint8_t *data FERRIC_SIZED_BY(len),\n                                           uintptr_t len,",
     ),
     // ferric_last_error_global_copy: buf is a byte buffer of buf_len bytes.
     (
