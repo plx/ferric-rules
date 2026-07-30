@@ -19,7 +19,7 @@
 //! The internal `unsafe fn move_to_current_thread` is deliberately NOT
 //! exposed through the C API.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -58,6 +58,7 @@ pub struct FerricEngine {
     pub(crate) engine: Engine,
     owner_thread: ThreadId,
     call_active: AtomicBool,
+    logical_run_continuation_ready: Cell<bool>,
     diagnostics: Mutex<EngineDiagnostics>,
     output_cstrings: RefCell<HashMap<String, CachedOutputCString>>,
 }
@@ -83,6 +84,7 @@ impl FerricEngine {
             engine,
             owner_thread: std::thread::current().id(),
             call_active: AtomicBool::new(false),
+            logical_run_continuation_ready: Cell::new(false),
             diagnostics: Mutex::new(EngineDiagnostics::new()),
             output_cstrings: RefCell::new(HashMap::new()),
         }
@@ -183,6 +185,16 @@ unsafe fn call_active<'a>(handle: NonNull<FerricEngine>) -> &'a AtomicBool {
     &*std::ptr::addr_of!((*handle.as_ptr()).call_active)
 }
 
+/// Project the owner-thread logical-run continuation state.
+///
+/// # Safety
+///
+/// `handle` must point to a live engine handle, and access must remain on the
+/// engine's owner thread without overlapping another runtime call.
+unsafe fn logical_run_continuation_ready<'a>(handle: NonNull<FerricEngine>) -> &'a Cell<bool> {
+    &*std::ptr::addr_of!((*handle.as_ptr()).logical_run_continuation_ready)
+}
+
 /// Project the synchronized diagnostic state from an opaque handle.
 ///
 /// # Safety
@@ -244,6 +256,7 @@ impl Drop for EngineCallGuard<'_> {
 
 struct EngineWriteAccess<'a> {
     engine: &'a mut Engine,
+    logical_run_continuation_ready: &'a Cell<bool>,
     diagnostics: &'a Mutex<EngineDiagnostics>,
     output_cstrings: &'a RefCell<HashMap<String, CachedOutputCString>>,
     _guard: EngineCallGuard<'a>,
@@ -289,14 +302,24 @@ unsafe fn enter_engine_call<'a>(
 unsafe fn borrow_engine_mut<'a>(
     engine: *mut FerricEngine,
 ) -> Result<EngineWriteAccess<'a>, FerricError> {
+    let access = borrow_engine_mut_preserving_logical_run(engine)?;
+    access.logical_run_continuation_ready.set(false);
+    Ok(access)
+}
+
+unsafe fn borrow_engine_mut_preserving_logical_run<'a>(
+    engine: *mut FerricEngine,
+) -> Result<EngineWriteAccess<'a>, FerricError> {
     let handle = validate_engine_ptr(engine)?;
     check_thread_affinity(handle)?;
     let guard = enter_engine_call(handle)?;
     let runtime = &mut *std::ptr::addr_of_mut!((*handle.as_ptr()).engine);
+    let continuation_ready = logical_run_continuation_ready(handle);
     let diagnostic_state = diagnostics(handle);
     let output_cache = output_cstrings(handle);
     Ok(EngineWriteAccess {
         engine: runtime,
+        logical_run_continuation_ready: continuation_ready,
         diagnostics: diagnostic_state,
         output_cstrings: output_cache,
         _guard: guard,
@@ -2409,8 +2432,14 @@ pub unsafe extern "C" fn ferric_engine_clear_output(
 
 /// Extended run with halt reason output.
 ///
-/// Same limit semantics as `ferric_engine_run` (negative = unlimited).
-/// Additionally writes the halt reason to `*out_reason` if non-null.
+/// Always starts a fresh logical run, clearing any prior halt request and
+/// action diagnostics without resetting working memory, the agenda, globals,
+/// or output. Same limit semantics as `ferric_engine_run` (negative =
+/// unlimited). Additionally writes the halt reason to `*out_reason` if
+/// non-null.
+///
+/// A successful `LimitReached` result may be continued with
+/// `ferric_engine_continue_run_ex`. Other halt reasons are terminal.
 ///
 /// # Safety
 ///
@@ -2425,10 +2454,11 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
     out_fired: *mut u64,
     out_reason: *mut FerricHaltReason,
 ) -> FerricError {
-    let handle = match borrow_engine_mut(engine) {
+    let handle = match borrow_engine_mut_preserving_logical_run(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
+    handle.logical_run_continuation_ready.set(false);
 
     let run_limit = if limit < 0 {
         RunLimit::Unlimited
@@ -2439,12 +2469,90 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 
     match handle.engine.run(run_limit) {
         Ok(result) => {
+            let reason = FerricHaltReason::from(result.halt_reason);
+            handle
+                .logical_run_continuation_ready
+                .set(reason == FerricHaltReason::LimitReached);
             prune_cleared_output_snapshots(handle.engine, handle.output_cstrings);
             if !out_fired.is_null() {
                 *out_fired = result.rules_fired as u64;
             }
             if !out_reason.is_null() {
-                *out_reason = FerricHaltReason::from(result.halt_reason);
+                *out_reason = reason;
+            }
+            FerricError::Ok
+        }
+        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
+    }
+}
+
+/// Continue a logical run previously started by `ferric_engine_run_ex`.
+///
+/// Call this only after `ferric_engine_run_ex` or a previous continuation
+/// returned `FerricHaltReason::LimitReached`. Unlike a fresh run, continuation
+/// preserves a pending halt request and action diagnostics from earlier chunks.
+///
+/// Each successful call writes the number of rules fired by that chunk, not a
+/// cumulative total. Hosts should accumulate `out_fired` across chunks. A
+/// result other than `LimitReached` is terminal for the logical run.
+///
+/// Read-only raw-engine queries may be called between chunks. Starting a fresh
+/// run or calling another runtime-mutating raw-engine function ends the current
+/// logical run; a later continuation attempt then returns
+/// `FerricError::InvalidArgument`. On any error, output parameters are left
+/// unchanged.
+///
+/// Host cancellation is distinct from an engine halt: stop calling this
+/// function, report cancellation in the host API, and use
+/// `ferric_engine_run_ex` to start the next logical run.
+///
+/// # Safety
+///
+/// - `engine` must be a valid engine pointer.
+/// - `out_fired` may be null.
+/// - `out_reason` may be null.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
+#[no_mangle]
+pub unsafe extern "C" fn ferric_engine_continue_run_ex(
+    engine: *mut FerricEngine,
+    limit: i64,
+    out_fired: *mut u64,
+    out_reason: *mut FerricHaltReason,
+) -> FerricError {
+    let handle = match borrow_engine_mut_preserving_logical_run(engine) {
+        Ok(h) => h,
+        Err(code) => return code,
+    };
+
+    if !handle.logical_run_continuation_ready.get() {
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::InvalidArgument,
+            "ferric_engine_continue_run_ex requires a preceding logical-run chunk that returned LimitReached"
+                .to_string(),
+        );
+    }
+    handle.logical_run_continuation_ready.set(false);
+
+    let run_limit = if limit < 0 {
+        RunLimit::Unlimited
+    } else {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        RunLimit::Count(limit as usize)
+    };
+
+    match handle.engine.continue_run(run_limit) {
+        Ok(result) => {
+            let reason = FerricHaltReason::from(result.halt_reason);
+            handle
+                .logical_run_continuation_ready
+                .set(reason == FerricHaltReason::LimitReached);
+            prune_cleared_output_snapshots(handle.engine, handle.output_cstrings);
+            if !out_fired.is_null() {
+                *out_fired = result.rules_fired as u64;
+            }
+            if !out_reason.is_null() {
+                *out_reason = reason;
             }
             FerricError::Ok
         }

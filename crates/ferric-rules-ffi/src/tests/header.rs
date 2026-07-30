@@ -150,6 +150,24 @@ fn header_documents_active_only_pinned_halt() {
 }
 
 #[test]
+fn header_documents_logical_run_continuation_contract() {
+    let header = read_committed_header();
+    for required in [
+        "LOGICAL RUN CONTINUATION",
+        "ferric_engine_continue_run_ex",
+        "Each call reports only that chunk's fired count",
+        "exact-boundary halt requests",
+        "Host cancellation is not HALT_REQUESTED",
+        "leaves output parameters unchanged",
+    ] {
+        assert!(
+            header.contains(required),
+            "logical-run continuation contract is missing from ferric.h: {required}"
+        );
+    }
+}
+
+#[test]
 fn header_contains_capacity_wait_async_entry_points() {
     let header = read_committed_header();
     assert!(
@@ -272,7 +290,7 @@ fn ci_runs_debug_and_release_panic_containment_harness() {
     assert!(script.contains("FERRIC_FFI_TEST_PANIC_INJECTION_BUILD=1"));
     assert!(script.contains("--features serde"));
     assert!(script.contains("panic_containment.c"));
-    assert!(script.contains("expected 100 header exports"));
+    assert!(script.contains("expected 101 header exports"));
 }
 
 #[test]
@@ -331,7 +349,7 @@ fn every_authored_c_export_uses_the_generated_boundary_wrapper() {
     exports.dedup();
     assert_eq!(
         exports.len(),
-        100,
+        101,
         "the export audit count changed; verify every new return category has a panic sentinel"
     );
 }

@@ -11,12 +11,12 @@
 use crate::engine::{
     ferric_engine_action_diagnostic_copy, ferric_engine_action_diagnostic_count,
     ferric_engine_assert_string, ferric_engine_clear_action_diagnostics, ferric_engine_clear_error,
-    ferric_engine_fact_count, ferric_engine_free, ferric_engine_get_fact_field,
-    ferric_engine_get_fact_field_count, ferric_engine_get_global, ferric_engine_get_output,
-    ferric_engine_get_output_copy, ferric_engine_last_error, ferric_engine_last_error_copy,
-    ferric_engine_load_string, ferric_engine_new, ferric_engine_new_with_config,
-    ferric_engine_reset, ferric_engine_retract, ferric_engine_run, ferric_engine_step,
-    FerricEngine,
+    ferric_engine_continue_run_ex, ferric_engine_fact_count, ferric_engine_free,
+    ferric_engine_get_fact_field, ferric_engine_get_fact_field_count, ferric_engine_get_global,
+    ferric_engine_get_output, ferric_engine_get_output_copy, ferric_engine_last_error,
+    ferric_engine_last_error_copy, ferric_engine_load_string, ferric_engine_new,
+    ferric_engine_new_with_config, ferric_engine_reset, ferric_engine_retract, ferric_engine_run,
+    ferric_engine_run_ex, ferric_engine_step, FerricEngine,
 };
 use crate::error::{
     ferric_clear_error_global, ferric_last_error_global, ferric_last_error_global_copy, FerricError,
@@ -24,7 +24,7 @@ use crate::error::{
 use crate::types::{
     ferric_string_free, ferric_value_array_free, ferric_value_free, ferric_value_multifield_copy,
     ferric_value_string_bytes, ferric_value_symbol_bytes, FerricConfig, FerricConflictStrategy,
-    FerricStringEncoding, FerricValue,
+    FerricHaltReason, FerricStringEncoding, FerricValue,
 };
 use std::os::raw::c_char;
 
@@ -51,6 +51,18 @@ fn contract_lock_canonical_function_names_exist() {
     // execution
     let _: unsafe extern "C" fn(*mut FerricEngine, i64, *mut u64) -> FerricError =
         ferric_engine_run;
+    let _: unsafe extern "C" fn(
+        *mut FerricEngine,
+        i64,
+        *mut u64,
+        *mut FerricHaltReason,
+    ) -> FerricError = ferric_engine_run_ex;
+    let _: unsafe extern "C" fn(
+        *mut FerricEngine,
+        i64,
+        *mut u64,
+        *mut FerricHaltReason,
+    ) -> FerricError = ferric_engine_continue_run_ex;
     let _: unsafe extern "C" fn(*mut FerricEngine, *mut i32) -> FerricError = ferric_engine_step;
 
     // error retrieval — per-engine
@@ -593,6 +605,15 @@ fn contract_lock_null_engine_pointer_returns_null_pointer_error() {
         assert_eq!(ferric_engine_reset(null_engine), FerricError::NullPointer);
         assert_eq!(
             ferric_engine_run(null_engine, -1, std::ptr::null_mut()),
+            FerricError::NullPointer
+        );
+        assert_eq!(
+            ferric_engine_continue_run_ex(
+                null_engine,
+                -1,
+                std::ptr::null_mut(),
+                std::ptr::null_mut()
+            ),
             FerricError::NullPointer
         );
         assert_eq!(

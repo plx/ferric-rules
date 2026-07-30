@@ -127,6 +127,32 @@
  *    before including this header to suppress.
  *
  * ============================================================
+ * LOGICAL RUN CONTINUATION
+ * ============================================================
+ *
+ * ferric_engine_run_ex() always starts a fresh logical run. It
+ * clears any prior halt request and action diagnostics, but does
+ * not reset working memory, the agenda, globals, or output.
+ *
+ * When it returns FERRIC_HALT_REASON_LIMIT_REACHED, a host may call
+ * ferric_engine_continue_run_ex() to execute another bounded chunk
+ * of that same logical run. Continuation preserves the pending halt
+ * flag and action diagnostics, so exact-boundary halt requests and
+ * early-chunk diagnostics remain visible.
+ *
+ * - Each call reports only that chunk's fired count. Hosts must sum
+ *   chunk counts for a logical-run total.
+ * - LIMIT_REACHED keeps continuation eligibility. AGENDA_EMPTY,
+ *   HALT_REQUESTED, and ACTION_ERROR are terminal and close it.
+ * - Read-only raw-engine queries are allowed between chunks. A fresh
+ *   run or another runtime-mutating raw-engine call closes the
+ *   continuation; later continuation returns INVALID_ARGUMENT and
+ *   leaves output parameters unchanged.
+ * - Host cancellation is not HALT_REQUESTED. A cancelable binding
+ *   stops submitting chunks, reports its own canceled outcome, and
+ *   starts any later logical run with ferric_engine_run_ex().
+ *
+ * ============================================================
  * PINNED EXECUTION (ferric_pinned_*)
  * ============================================================
  *
@@ -279,7 +305,8 @@ typedef enum FerricFactType {
     FERRIC_FACT_TYPE_TEMPLATE = 1
 } FerricFactType;
 
-// C-facing halt reason returned by `ferric_engine_run_ex`.
+// C-facing halt reason returned by `ferric_engine_run_ex` and
+// `ferric_engine_continue_run_ex`.
 typedef enum FerricHaltReason {
     FERRIC_HALT_REASON_AGENDA_EMPTY = 0,
     FERRIC_HALT_REASON_LIMIT_REACHED = 1,
@@ -1104,8 +1131,14 @@ enum FerricError ferric_engine_clear_output(struct FerricEngine *engine, const c
 
 // Extended run with halt reason output.
 //
-// Same limit semantics as `ferric_engine_run` (negative = unlimited).
-// Additionally writes the halt reason to `*out_reason` if non-null.
+// Always starts a fresh logical run, clearing any prior halt request and
+// action diagnostics without resetting working memory, the agenda, globals,
+// or output. Same limit semantics as `ferric_engine_run` (negative =
+// unlimited). Additionally writes the halt reason to `*out_reason` if
+// non-null.
+//
+// A successful `LimitReached` result may be continued with
+// `ferric_engine_continue_run_ex`. Other halt reasons are terminal.
 //
 // # Safety
 //
@@ -1116,6 +1149,36 @@ enum FerricError ferric_engine_run_ex(struct FerricEngine *engine,
                                       int64_t limit,
                                       uint64_t *out_fired,
                                       enum FerricHaltReason *out_reason);
+
+// Continue a logical run previously started by `ferric_engine_run_ex`.
+//
+// Call this only after `ferric_engine_run_ex` or a previous continuation
+// returned `FerricHaltReason::LimitReached`. Unlike a fresh run, continuation
+// preserves a pending halt request and action diagnostics from earlier chunks.
+//
+// Each successful call writes the number of rules fired by that chunk, not a
+// cumulative total. Hosts should accumulate `out_fired` across chunks. A
+// result other than `LimitReached` is terminal for the logical run.
+//
+// Read-only raw-engine queries may be called between chunks. Starting a fresh
+// run or calling another mutable raw-engine function ends the current logical
+// run; a later continuation attempt then returns
+// `FerricError::InvalidArgument`. On any error, output parameters are left
+// unchanged.
+//
+// Host cancellation is distinct from an engine halt: stop calling this
+// function, report cancellation in the host API, and use
+// `ferric_engine_run_ex` to start the next logical run.
+//
+// # Safety
+//
+// - `engine` must be a valid engine pointer.
+// - `out_fired` may be null.
+// - `out_reason` may be null.
+enum FerricError ferric_engine_continue_run_ex(struct FerricEngine *engine,
+                                               int64_t limit,
+                                               uint64_t *out_fired,
+                                               enum FerricHaltReason *out_reason);
 
 // Assert a template fact with named slots.
 //

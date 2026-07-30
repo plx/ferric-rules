@@ -130,6 +130,32 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *    before including this header to suppress.
  *
  * ============================================================
+ * LOGICAL RUN CONTINUATION
+ * ============================================================
+ *
+ * ferric_engine_run_ex() always starts a fresh logical run. It
+ * clears any prior halt request and action diagnostics, but does
+ * not reset working memory, the agenda, globals, or output.
+ *
+ * When it returns FERRIC_HALT_REASON_LIMIT_REACHED, a host may call
+ * ferric_engine_continue_run_ex() to execute another bounded chunk
+ * of that same logical run. Continuation preserves the pending halt
+ * flag and action diagnostics, so exact-boundary halt requests and
+ * early-chunk diagnostics remain visible.
+ *
+ * - Each call reports only that chunk's fired count. Hosts must sum
+ *   chunk counts for a logical-run total.
+ * - LIMIT_REACHED keeps continuation eligibility. AGENDA_EMPTY,
+ *   HALT_REQUESTED, and ACTION_ERROR are terminal and close it.
+ * - Read-only raw-engine queries are allowed between chunks. A fresh
+ *   run or another runtime-mutating raw-engine call closes the
+ *   continuation; later continuation returns INVALID_ARGUMENT and
+ *   leaves output parameters unchanged.
+ * - Host cancellation is not HALT_REQUESTED. A cancelable binding
+ *   stops submitting chunks, reports its own canceled outcome, and
+ *   starts any later logical run with ferric_engine_run_ex().
+ *
+ * ============================================================
  * PINNED EXECUTION (ferric_pinned_*)
  * ============================================================
  *
