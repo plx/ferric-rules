@@ -131,6 +131,21 @@ jobs:
           CC: clang
           FERRIC_TSAN_TOOLCHAIN: nightly-2025-11-04
 
+  pinned-async-tsan:
+    name: Pinned Async Completion (ThreadSanitizer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2025-11-04
+          components: rust-src
+      - run: just pinned-async-tsan
+        env:
+          FERRIC_TSAN_TOOLCHAIN: nightly-2025-11-04
+
   ffi-go-asan:
     name: Go/C Lifecycle (AddressSanitizer)
     runs-on: ubuntu-latest

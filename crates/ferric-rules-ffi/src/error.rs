@@ -317,6 +317,7 @@ pub(crate) fn map_pinned_error(err: &PinnedError) -> FerricError {
         PinnedError::Canceled => FerricError::PinnedCanceled,
         PinnedError::QueueFull => FerricError::PinnedQueueFull,
         PinnedError::DispatchFailed => FerricError::PinnedDispatchFailed,
+        PinnedError::Internal => FerricError::InternalError,
         PinnedError::ReentrantCall => FerricError::PinnedReentrantCall,
         PinnedError::Init(_) => FerricError::InternalError,
         PinnedError::Load(errors) => errors

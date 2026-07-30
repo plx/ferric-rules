@@ -172,7 +172,7 @@ impl PinnedEngine {
             return Err(PinnedError::ReentrantCall);
         }
         let (tx, rx) = mpsc::channel::<Result<R, PinnedError>>();
-        let req: Request = Box::new(move |engine: &mut Engine| {
+        let req = Request::new(move |engine: &mut Engine| {
             let result = f(engine);
             // Caller may have abandoned; send failure is fine.
             let _ = tx.send(result);
@@ -237,7 +237,7 @@ impl PinnedEngine {
     where
         F: FnOnce(&mut Engine) + Send + 'static,
     {
-        let req: Request = Box::new(f);
+        let req = Request::new(f);
         self.send_request(req, QueueWait::NoWait, None)
     }
 
@@ -246,8 +246,35 @@ impl PinnedEngine {
     where
         F: FnOnce(&mut Engine) + Send + 'static,
     {
-        let req: Request = Box::new(f);
+        let req = Request::new(f);
         self.send_request(req, wait, None)
+    }
+
+    /// Submit a typed asynchronous operation with an exactly-once completion.
+    ///
+    /// Once submission succeeds, `completion` is invoked once on the worker
+    /// thread with the operation result. A panic in `operation` is contained
+    /// and reported as [`PinnedError::Internal`]. A synchronous submission
+    /// error means the request was not accepted and `completion` will not run.
+    /// The completion is consumed before invocation; if it panics, the worker
+    /// contains that panic without retrying it. As with the typed async
+    /// helpers, completion work must be transport-only and must not block or
+    /// synchronously re-enter this engine.
+    pub fn submit_with_completion<T, F, C>(
+        &self,
+        operation: F,
+        completion: C,
+    ) -> Result<(), PinnedError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Engine) -> Result<T, PinnedError> + Send + 'static,
+        C: FnOnce(Result<T, PinnedError>) + Send + 'static,
+    {
+        self.send_request(
+            Request::with_completion(operation, completion),
+            QueueWait::NoWait,
+            None,
+        )
     }
 
     /// Async variant of [`Self::run`].
@@ -315,23 +342,25 @@ impl PinnedEngine {
         let cancel_token = request_cancel.run_cancel_flag();
         let closed = self.inner.closed.clone();
         let admission_cancel = request_cancel.clone();
-        let req: Request = Box::new(move |engine| {
-            if let Err(err) = request_cancel.begin() {
-                let _ = request_cancel.finish();
-                completion(Err(err));
-                return;
-            }
-            let guard = cancel_state.activate(cancel_token.clone());
-            let mut result = crate::worker::run_with_cancel(engine, limit, &cancel_token, &closed)
-                .map_err(PinnedError::from);
-            drop(guard);
-            if request_cancel.finish() {
-                if let Ok(run_result) = &mut result {
-                    run_result.halt_reason = ferric_rules_runtime::HaltReason::HaltRequested;
+        let completion_cancel = request_cancel.clone();
+        let req = Request::with_completion(
+            move |engine| {
+                request_cancel.begin()?;
+                let guard = cancel_state.activate(cancel_token.clone());
+                let result = crate::worker::run_with_cancel(engine, limit, &cancel_token, &closed)
+                    .map_err(PinnedError::from);
+                drop(guard);
+                result
+            },
+            move |mut result| {
+                if completion_cancel.finish() {
+                    if let Ok(run_result) = &mut result {
+                        run_result.halt_reason = ferric_rules_runtime::HaltReason::HaltRequested;
+                    }
                 }
-            }
-            completion(result);
-        });
+                completion(result);
+            },
+        );
         self.send_request(req, queue_wait, Some(&admission_cancel))
     }
 
@@ -391,16 +420,17 @@ impl PinnedEngine {
         F: FnOnce(Result<ferric_rules_runtime::LoadResult, PinnedError>) + Send + 'static,
     {
         let admission_cancel = request_cancel.clone();
-        let req: Request = Box::new(move |engine| {
-            if let Err(err) = request_cancel.begin() {
-                let _ = request_cancel.finish();
-                completion(Err(err));
-                return;
-            }
-            let result = engine.load_str(&source).map_err(PinnedError::from);
-            let _ = request_cancel.finish();
-            completion(result);
-        });
+        let completion_cancel = request_cancel.clone();
+        let req = Request::with_completion(
+            move |engine| {
+                request_cancel.begin()?;
+                engine.load_str(&source).map_err(PinnedError::from)
+            },
+            move |result| {
+                let _ = completion_cancel.finish();
+                completion(result);
+            },
+        );
         self.send_request(req, queue_wait, Some(&admission_cancel))
     }
 
@@ -759,5 +789,71 @@ mod policy_tests {
             (1..=5).contains(&delta),
             "expected 1..=5 batches, got {delta}"
         );
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn cancellation_racing_operation_panic_finalizes_once() {
+        let engine = PinnedEngine::new(PinnedEngineOptions::default()).unwrap();
+        let completion_count = Arc::new(AtomicUsize::new(0));
+
+        for expected_count in 1..=128 {
+            let token = Arc::new(PreDispatchCancelToken::new());
+            let operation_token = token.clone();
+            let completion_token = token.clone();
+            let admission_token = token.clone();
+            let callback_count = completion_count.clone();
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (result_tx, result_rx) = mpsc::channel();
+            let race_start = Arc::new(Barrier::new(2));
+            let operation_start = race_start.clone();
+
+            let request = Request::with_completion(
+                move |_| -> Result<(), PinnedError> {
+                    operation_token.begin()?;
+                    entered_tx.send(()).unwrap();
+                    operation_start.wait();
+                    panic!("synthetic cancellation/panic race");
+                },
+                move |result| {
+                    let cancellation_won = completion_token.finish();
+                    callback_count.fetch_add(1, Ordering::SeqCst);
+                    result_tx.send((result, cancellation_won)).unwrap();
+                },
+            );
+            engine
+                .send_request(request, QueueWait::NoWait, Some(&admission_token))
+                .unwrap();
+
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let cancellation_token = token.clone();
+            let cancellation = thread::spawn(move || {
+                race_start.wait();
+                cancellation_token.cancel_run()
+            });
+
+            let (result, cancellation_won) =
+                result_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let cancellation_requested = cancellation.join().unwrap();
+            assert!(matches!(result, Err(PinnedError::Internal)));
+            assert_eq!(cancellation_won, cancellation_requested);
+            assert!(!token.is_started());
+            assert_eq!(completion_count.load(Ordering::SeqCst), expected_count);
+        }
+
+        engine
+            .with_engine(|_| Ok(()))
+            .expect("worker should remain usable after cancellation/panic race");
+        assert_eq!(completion_count.load(Ordering::SeqCst), 128);
+        engine.close().unwrap();
     }
 }

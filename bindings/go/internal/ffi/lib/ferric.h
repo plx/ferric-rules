@@ -144,6 +144,12 @@
  *   submission and later invoke the supplied
  *   FerricPinnedCompletionFn with an owned FerricPinnedResult
  *   carrying the echoed request_id.
+ *   Every accepted operation removes its registry entry and
+ *   invokes completion exactly once across success, error,
+ *   cancellation, close, and contained operation panic. A
+ *   contained operation panic reports
+ *   FERRIC_ERROR_INTERNAL_ERROR. Cleanup happens before callback
+ *   invocation, so the request_id is reusable from the callback.
  *
  * The async completion callback runs ON THE WORKER THREAD.
  * It must be transport-only: resume a continuation, signal an

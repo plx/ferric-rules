@@ -42,6 +42,17 @@ fn read_tsan_harness() -> String {
         .unwrap_or_else(|_| panic!("TSan harness not found at {}", script_path.display()))
 }
 
+fn read_pinned_async_tsan_harness() -> String {
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script_path = crate_dir.join("../../scripts/pinned-async-tsan.sh");
+    std::fs::read_to_string(&script_path).unwrap_or_else(|_| {
+        panic!(
+            "pinned async TSan harness not found at {}",
+            script_path.display()
+        )
+    })
+}
+
 fn read_panic_harness() -> String {
     let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let script_path = crate_dir.join("../../scripts/ffi-panic-harness.sh");
@@ -173,6 +184,23 @@ fn header_documents_cancel_and_submission_race() {
 }
 
 #[test]
+fn header_documents_exactly_once_async_terminal_contract() {
+    let header = read_committed_header();
+    for required in [
+        "Every accepted operation removes its registry entry",
+        "invokes completion exactly once",
+        "contained operation panic reports",
+        "FERRIC_ERROR_INTERNAL_ERROR",
+        "request_id is reusable from the callback",
+    ] {
+        assert!(
+            header.contains(required),
+            "pinned async terminal contract is missing from ferric.h: {required}"
+        );
+    }
+}
+
+#[test]
 fn header_documents_completion_callback_unwind_contract() {
     let header = read_committed_header();
     assert!(
@@ -210,6 +238,27 @@ fn ci_runs_mixed_language_thread_sanitizer_harness() {
         workflow.contains("just ffi-tsan-harness"),
         "CI must run the mixed Rust/C TSan harness"
     );
+}
+
+#[test]
+fn ci_runs_pinned_async_completion_race_under_thread_sanitizer() {
+    let workflow = read_ci_workflow();
+    assert!(workflow.contains("Pinned Async Completion (ThreadSanitizer)"));
+    assert!(workflow.contains("just pinned-async-tsan"));
+
+    let script = read_pinned_async_tsan_harness();
+    for required in [
+        "-Zsanitizer=thread",
+        "-Zbuild-std=std,panic_unwind",
+        "cancellation_racing_operation_panic_finalizes_once",
+        "--exact",
+        "test result: ok. 1 passed;",
+    ] {
+        assert!(
+            script.contains(required),
+            "pinned async TSan harness is missing required coverage: {required}"
+        );
+    }
 }
 
 #[test]

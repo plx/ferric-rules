@@ -11,10 +11,10 @@
 //!
 //! - The handle is `Send + Sync`. The underlying `Engine` never leaves the
 //!   worker thread, so its `!Send + !Sync` invariants are preserved.
-//! - Requests are erased into `Box<dyn FnOnce(&mut Engine) + Send + 'static>`.
-//!   Typed operations (`run`, `load_str`, …) are thin wrappers that construct
-//!   the closure and ship the typed `Result` back through a per-request
-//!   oneshot.
+//! - Requests are erased into worker-owned envelopes. Completion-aware
+//!   envelopes keep the operation separate from one terminal `FnOnce`, so an
+//!   operation panic becomes [`PinnedError::Internal`] and still consumes the
+//!   completion exactly once.
 //! - [`PinnedEngine::halt`] flips the active run's cancellation token; the
 //!   worker bounds [`Engine::run`] into 64-firing chunks and checks the token
 //!   between chunks. Idle calls are non-latching no-ops.
