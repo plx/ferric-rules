@@ -148,10 +148,14 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * - LIMIT_REACHED keeps continuation eligibility. AGENDA_EMPTY,
  *   HALT_REQUESTED, and ACTION_ERROR are terminal and close it.
  * - Read-only raw-engine queries and ferric_engine_clear_error() are
- *   allowed between chunks. A fresh run or any other runtime-mutating
- *   raw-engine call closes the continuation, even if that call fails.
- *   A later continuation then returns INVALID_ARGUMENT and
+ *   allowed between chunks. Any other raw-engine call that reaches
+ *   engine state closes the continuation, whether or not it then
+ *   succeeds; a later continuation returns INVALID_ARGUMENT and
  *   leaves output parameters unchanged.
+ * - A call rejected before it reaches engine state changes nothing,
+ *   including continuation eligibility. A null handle, a thread
+ *   affinity violation, and a reentrant call from a host callback all
+ *   leave the logical run intact for the owner thread.
  * - Host cancellation is not HALT_REQUESTED. A cancelable binding
  *   stops submitting chunks, reports its own canceled outcome, and
  *   starts any later logical run with ferric_engine_run_ex().

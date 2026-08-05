@@ -2,12 +2,16 @@
 
 use std::ffi::{CStr, CString};
 
+#[cfg(feature = "serde")]
+use crate::engine::{
+    ferric_bytes_free, ferric_engine_deserialize_bincode, ferric_engine_serialize_bincode,
+};
 use crate::engine::{
     ferric_engine_action_diagnostic_count, ferric_engine_agenda_count, ferric_engine_clear_error,
     ferric_engine_continue_run_ex, ferric_engine_fact_count, ferric_engine_free,
     ferric_engine_halt, ferric_engine_is_halted, ferric_engine_last_error,
     ferric_engine_load_string, ferric_engine_new, ferric_engine_reset, ferric_engine_retract,
-    ferric_engine_run_ex, FerricEngine,
+    ferric_engine_run, ferric_engine_run_ex, ferric_engine_step, FerricEngine,
 };
 use crate::error::FerricError;
 use crate::types::FerricHaltReason;
@@ -526,6 +530,359 @@ fn a_failed_mutating_call_still_ends_the_logical_run() {
             ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
             FerricError::InvalidArgument
         );
+
+        ferric_engine_free(engine);
+    }
+}
+
+const ACTION_ERROR_PROGRAM: &str = r"
+    (defrule first (initial-fact) => (assert (go)))
+    (defrule boom (go) => (/ 1 0) (assert (never)))
+";
+
+/// Drive one chunk and assert the logical run is eligible to continue.
+unsafe fn start_eligible_logical_run(engine: *mut FerricEngine, source: &str) {
+    load_and_reset(engine, source);
+    let mut fired = 0;
+    let mut reason = FerricHaltReason::AgendaEmpty;
+    assert_eq!(
+        ferric_engine_run_ex(engine, 1, &mut fired, &mut reason),
+        FerricError::Ok
+    );
+    assert_eq!(reason, FerricHaltReason::LimitReached);
+}
+
+#[test]
+fn a_wrong_thread_mutating_call_leaves_the_logical_run_intact() {
+    unsafe {
+        let engine = ferric_engine_new();
+        start_eligible_logical_run(engine, TWO_ACTIVATION_PROGRAM);
+
+        // A wrong-thread call is rejected before it reaches engine state, so
+        // per the thread-affinity contract it must change nothing at all —
+        // including this engine's continuation eligibility.
+        let engine_addr = engine as usize;
+        let rejected = std::thread::spawn(move || {
+            let engine = engine_addr as *mut FerricEngine;
+            ferric_engine_reset(engine)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(rejected, FerricError::ThreadViolation);
+
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::Ok,
+            "a rejected wrong-thread call must not end the owner's logical run"
+        );
+        assert_eq!(fired, 1);
+        assert_eq!(reason, FerricHaltReason::AgendaEmpty);
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn a_wrong_thread_continuation_is_rejected_without_consuming_eligibility() {
+    unsafe {
+        let engine = ferric_engine_new();
+        start_eligible_logical_run(engine, TWO_ACTIVATION_PROGRAM);
+
+        let engine_addr = engine as usize;
+        let (code, fired, reason) = std::thread::spawn(move || {
+            let engine = engine_addr as *mut FerricEngine;
+            let mut fired = 55;
+            let mut reason = FerricHaltReason::ActionError;
+            let code = ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason);
+            (code, fired, reason)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(code, FerricError::ThreadViolation);
+        assert_eq!(fired, 55);
+        assert_eq!(reason, FerricHaltReason::ActionError);
+
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(reason, FerricHaltReason::AgendaEmpty);
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn every_terminal_halt_reason_ends_continuation_eligibility() {
+    unsafe {
+        // AgendaEmpty is covered by the lifecycle test above; check the two
+        // remaining terminal reasons.
+        let engine = ferric_engine_new();
+        start_eligible_logical_run(engine, ACTION_ERROR_PROGRAM);
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(reason, FerricHaltReason::ActionError);
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::InvalidArgument,
+            "ActionError is terminal for the logical run"
+        );
+        ferric_engine_free(engine);
+
+        let engine = ferric_engine_new();
+        let halting = exact_boundary_halt_program(2);
+        start_eligible_logical_run(engine, &halting);
+        // Chunk two lands exactly on the halting activation.
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, 1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(reason, FerricHaltReason::LimitReached);
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, 1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(fired, 0);
+        assert_eq!(reason, FerricHaltReason::HaltRequested);
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::InvalidArgument,
+            "HaltRequested is terminal for the logical run"
+        );
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn zero_limit_chunks_fire_nothing_and_stay_eligible() {
+    unsafe {
+        let engine = ferric_engine_new();
+        load_and_reset(engine, &exact_boundary_halt_program(2));
+
+        let mut fired = 7;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_run_ex(engine, 0, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(fired, 0);
+        assert_eq!(reason, FerricHaltReason::LimitReached);
+
+        for _ in 0..2 {
+            assert_eq!(
+                ferric_engine_continue_run_ex(engine, 0, &mut fired, &mut reason),
+                FerricError::Ok
+            );
+            assert_eq!(fired, 0);
+            assert_eq!(reason, FerricHaltReason::LimitReached);
+        }
+
+        // Run up to and including the halting activation, then confirm that a
+        // zero-limit chunk reports the neutral boundary rather than the pending
+        // halt — the halt surfaces on the next chunk that can actually run.
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, 2, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(fired, 2);
+        assert_eq!(reason, FerricHaltReason::LimitReached);
+        let mut halted = 0;
+        assert_eq!(
+            ferric_engine_is_halted(engine, &mut halted),
+            FerricError::Ok
+        );
+        assert_eq!(halted, 1);
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, 0, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(reason, FerricHaltReason::LimitReached);
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(fired, 0);
+        assert_eq!(reason, FerricHaltReason::HaltRequested);
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn continuation_accepts_null_output_pointers_on_the_success_path() {
+    unsafe {
+        let engine = ferric_engine_new();
+        start_eligible_logical_run(engine, TWO_ACTIVATION_PROGRAM);
+
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, std::ptr::null_mut(), std::ptr::null_mut()),
+            FerricError::Ok
+        );
+        // The discarded reason was AgendaEmpty, so eligibility must be closed.
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::InvalidArgument
+        );
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn legacy_run_and_step_do_not_participate_in_logical_runs() {
+    unsafe {
+        // `ferric_engine_run` cannot report LimitReached, so it never arms
+        // continuation even when it stops at its limit.
+        let engine = ferric_engine_new();
+        load_and_reset(engine, TWO_ACTIVATION_PROGRAM);
+        let mut legacy_fired = 0;
+        assert_eq!(
+            ferric_engine_run(engine, 1, &mut legacy_fired),
+            FerricError::Ok
+        );
+        assert_eq!(legacy_fired, 1);
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::InvalidArgument
+        );
+        ferric_engine_free(engine);
+
+        // A single-activation step is a mutating call and ends the logical run.
+        let engine = ferric_engine_new();
+        start_eligible_logical_run(engine, TWO_ACTIVATION_PROGRAM);
+        let mut stepped = 0;
+        assert_eq!(ferric_engine_step(engine, &mut stepped), FerricError::Ok);
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::InvalidArgument
+        );
+        ferric_engine_free(engine);
+    }
+}
+
+/// Caller storage plus the outcome of a same-engine runtime call attempted
+/// from inside a serialization allocator callback.
+#[cfg(feature = "serde")]
+struct ReentrantResetContext {
+    engine: *mut FerricEngine,
+    storage: Vec<u8>,
+    reset_result: FerricError,
+}
+
+#[cfg(feature = "serde")]
+unsafe extern "C" fn reentrant_reset_allocator(
+    size: usize,
+    context: *mut std::ffi::c_void,
+) -> *mut u8 {
+    let context = &mut *context.cast::<ReentrantResetContext>();
+    context.reset_result = ferric_engine_reset(context.engine);
+    context.storage.resize(size, 0);
+    context.storage.as_mut_ptr()
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn a_reentrant_mutating_call_leaves_the_logical_run_intact() {
+    unsafe {
+        let engine = ferric_engine_new();
+        start_eligible_logical_run(engine, TWO_ACTIVATION_PROGRAM);
+
+        // Serialization is a read-only query, and the mutating call its
+        // allocator callback attempts is rejected before it reaches engine
+        // state. Neither may end the owner's logical run.
+        let mut context = ReentrantResetContext {
+            engine,
+            storage: Vec::new(),
+            reset_result: FerricError::Ok,
+        };
+        let mut data = std::ptr::null_mut();
+        let mut len = 0;
+        assert_eq!(
+            ferric_engine_serialize_bincode(
+                engine,
+                Some(reentrant_reset_allocator),
+                std::ptr::addr_of_mut!(context).cast::<std::ffi::c_void>(),
+                &mut data,
+                &mut len,
+            ),
+            FerricError::Ok
+        );
+        assert_eq!(
+            context.reset_result,
+            FerricError::InternalError,
+            "same-engine runtime reentry must be rejected"
+        );
+
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::Ok,
+            "a rejected reentrant call must not end the logical run"
+        );
+        assert_eq!(fired, 1);
+        assert_eq!(reason, FerricHaltReason::AgendaEmpty);
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn continuation_eligibility_is_per_handle_and_not_serialized() {
+    unsafe {
+        let engine = ferric_engine_new();
+        start_eligible_logical_run(engine, TWO_ACTIVATION_PROGRAM);
+
+        let mut data = std::ptr::null_mut();
+        let mut len = 0;
+        assert_eq!(
+            ferric_engine_serialize_bincode(
+                engine,
+                None,
+                std::ptr::null_mut(),
+                &mut data,
+                &mut len
+            ),
+            FerricError::Ok
+        );
+
+        let mut restored = std::ptr::null_mut();
+        assert_eq!(
+            ferric_engine_deserialize_bincode(data, len, &mut restored),
+            FerricError::Ok
+        );
+        ferric_bytes_free(data, len);
+
+        let mut fired = 42;
+        let mut reason = FerricHaltReason::ActionError;
+        assert_eq!(
+            ferric_engine_continue_run_ex(restored, -1, &mut fired, &mut reason),
+            FerricError::InvalidArgument,
+            "a restored handle always begins a fresh logical run"
+        );
+        assert_eq!(fired, 42);
+        assert_eq!(reason, FerricHaltReason::ActionError);
+        ferric_engine_free(restored);
+
+        // Serializing is a read-only query, so the source handle is untouched.
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(reason, FerricHaltReason::AgendaEmpty);
 
         ferric_engine_free(engine);
     }

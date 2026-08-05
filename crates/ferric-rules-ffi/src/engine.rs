@@ -2497,10 +2497,14 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 /// result other than `LimitReached` is terminal for the logical run.
 ///
 /// Read-only raw-engine queries and `ferric_engine_clear_error` may be called
-/// between chunks. Starting a fresh run or calling any other
-/// runtime-mutating raw-engine function ends the current logical run — even if
-/// that call itself fails — and a later continuation attempt then returns
-/// `FerricError::InvalidArgument`. On any error, output parameters are left
+/// between chunks. Any other raw-engine call that reaches engine state ends the
+/// current logical run — whether or not it then succeeds — and a later
+/// continuation attempt returns `FerricError::InvalidArgument`.
+///
+/// A call rejected before it reaches engine state changes nothing, including
+/// continuation eligibility: a null handle, a thread-affinity violation, and a
+/// reentrant call from a host callback all leave the logical run intact for the
+/// owner thread to continue. On any error, output parameters are left
 /// unchanged.
 ///
 /// Host cancellation is distinct from an engine halt: stop calling this
