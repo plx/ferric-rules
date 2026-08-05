@@ -510,7 +510,7 @@ fn read_only_queries_and_error_maintenance_preserve_continuation() {
 }
 
 #[test]
-fn a_failed_mutating_call_still_ends_the_logical_run() {
+fn a_failed_call_that_reached_engine_state_still_ends_the_logical_run() {
     unsafe {
         let engine = ferric_engine_new();
         load_and_reset(engine, TWO_ACTIVATION_PROGRAM);
