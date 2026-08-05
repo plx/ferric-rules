@@ -813,6 +813,74 @@ if (ferric_engine_get_output_copy(engine, "t", NULL, 0, &output_len) ==
 ferric_engine_free(engine);
 ```
 
+### Logical Run Continuation
+
+`ferric_engine_run_ex` always begins a *fresh logical run*: it clears any
+pending halt request and the accumulated action diagnostics, but leaves working
+memory, the agenda, globals, and captured output untouched. Hosts that split
+one long run into bounded chunks — to poll for cancellation between them —
+must not use repeated `ferric_engine_run_ex` calls for that, because each call
+discards the halt flag and diagnostics that the previous chunk produced. A rule
+set that halts on its 100th activation then fires 101 rules through a
+100-activation chunk loop.
+
+`ferric_engine_continue_run_ex` resumes the current logical run instead:
+
+```c
+uint64_t chunk_fired = 0, total_fired = 0;
+FerricHaltReason reason;
+
+if (ferric_engine_run_ex(engine, CHUNK, &chunk_fired, &reason) != FERRIC_ERROR_OK)
+    return -1;
+total_fired += chunk_fired;
+
+while (reason == FERRIC_HALT_REASON_LIMIT_REACHED) {
+    if (host_canceled())   // cancellation is the host's outcome, not the engine's
+        break;
+    if (ferric_engine_continue_run_ex(engine, CHUNK, &chunk_fired, &reason) !=
+        FERRIC_ERROR_OK)
+        return -1;
+    total_fired += chunk_fired;
+}
+```
+
+Contract:
+
+- Continuation is legal only after `ferric_engine_run_ex` or a previous
+  continuation returned `FERRIC_HALT_REASON_LIMIT_REACHED`. Any other call
+  returns `FERRIC_ERROR_INVALID_ARGUMENT`, records a per-engine message, and
+  leaves `*out_fired` and `*out_reason` unmodified.
+- `FERRIC_HALT_REASON_AGENDA_EMPTY`, `FERRIC_HALT_REASON_HALT_REQUESTED`, and
+  `FERRIC_HALT_REASON_ACTION_ERROR` are terminal and end continuation
+  eligibility.
+- `*out_fired` is that chunk's count, not a running total. Hosts accumulate it.
+- Read-only queries and `ferric_engine_clear_error` may be interleaved between
+  chunks. Any other call that reaches engine state ends the logical run,
+  whether or not it then succeeds — a rejected `ferric_engine_retract` counts.
+- A call rejected *before* it reaches engine state changes no runtime or
+  continuation state, though it still publishes its documented error on the
+  channels described under Error Handling. Consistent with the thread-affinity
+  contract below, a null handle, a wrong-thread call, and a reentrant call from
+  a host callback all leave the logical run intact for the owner thread to
+  continue.
+- Absent host cancellation, a chunked run and an equivalent one-shot run report
+  the same total fired count, halt reason, agenda state, and action
+  diagnostics.
+- Host cancellation is not `FERRIC_HALT_REASON_HALT_REQUESTED`. The ABI has no
+  canceled state: a canceling host stops submitting chunks, reports its own
+  outcome, and starts any later logical run with `ferric_engine_run_ex`. The
+  agenda is left intact.
+- Cancellation does **not** guarantee an un-halted engine. The halt flag
+  reflects whatever the chunks that did run executed. If a chunk landed exactly
+  on an activation that called `(halt)`, that chunk still reports
+  `FERRIC_HALT_REASON_LIMIT_REACHED` — the pending halt only surfaces as
+  `HALT_REQUESTED` on the next chunk that can run — so a host canceling at that
+  boundary leaves a halted engine. Query `ferric_engine_is_halted` if the
+  distinction matters; `ferric_engine_run_ex` clears the flag either way when it
+  starts the next logical run.
+- Continuation eligibility is per-handle and is not serialized. A handle
+  produced by `ferric_engine_deserialize_*` always begins a fresh logical run.
+
 ### Thread Affinity
 
 Engine instances are bound to their creating thread (`!Send + !Sync`):

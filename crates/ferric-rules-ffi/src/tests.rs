@@ -64,6 +64,9 @@ mod contract_lock;
 mod ffi_expansion;
 
 #[cfg(test)]
+mod logical_run_continuation;
+
+#[cfg(test)]
 mod template_assertion;
 
 #[cfg(test)]

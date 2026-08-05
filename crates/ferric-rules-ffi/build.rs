@@ -130,6 +130,45 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *    before including this header to suppress.
  *
  * ============================================================
+ * LOGICAL RUN CONTINUATION
+ * ============================================================
+ *
+ * ferric_engine_run_ex() always starts a fresh logical run. It
+ * clears any prior halt request and action diagnostics, but does
+ * not reset working memory, the agenda, globals, or output.
+ *
+ * When it returns FERRIC_HALT_REASON_LIMIT_REACHED, a host may call
+ * ferric_engine_continue_run_ex() to execute another bounded chunk
+ * of that same logical run. Continuation preserves the pending halt
+ * flag and action diagnostics, so exact-boundary halt requests and
+ * early-chunk diagnostics remain visible.
+ *
+ * - Each call reports only that chunk's fired count. Hosts must sum
+ *   chunk counts for a logical-run total.
+ * - LIMIT_REACHED keeps continuation eligibility. AGENDA_EMPTY,
+ *   HALT_REQUESTED, and ACTION_ERROR are terminal and close it.
+ * - Read-only raw-engine queries and ferric_engine_clear_error() are
+ *   allowed between chunks. Any other raw-engine call that reaches
+ *   engine state closes the continuation, whether or not it then
+ *   succeeds; a later continuation returns INVALID_ARGUMENT and
+ *   leaves output parameters unchanged.
+ * - A call rejected before it reaches engine state changes no runtime
+ *   or continuation state, though it still publishes its documented
+ *   error. A null handle, a thread affinity violation, and a reentrant
+ *   call from a host callback all leave the logical run intact for the
+ *   owner thread.
+ * - Host cancellation is not HALT_REQUESTED. A cancelable binding
+ *   stops submitting chunks, reports its own canceled outcome, and
+ *   starts any later logical run with ferric_engine_run_ex(). The
+ *   agenda is left intact.
+ * - Canceling does not guarantee an un-halted engine. A chunk that
+ *   lands exactly on an activation calling (halt) still reports
+ *   LIMIT_REACHED; the pending halt surfaces as HALT_REQUESTED only on
+ *   the next chunk that can run. Query ferric_engine_is_halted() if
+ *   that distinction matters. ferric_engine_run_ex() clears the flag
+ *   either way when it starts the next logical run.
+ *
+ * ============================================================
  * PINNED EXECUTION (ferric_pinned_*)
  * ============================================================
  *

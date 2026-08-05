@@ -155,7 +155,8 @@ pub enum FerricFactType {
     Template = 1,
 }
 
-/// C-facing halt reason returned by `ferric_engine_run_ex`.
+/// C-facing halt reason returned by `ferric_engine_run_ex` and
+/// `ferric_engine_continue_run_ex`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FerricHaltReason {

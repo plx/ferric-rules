@@ -41,6 +41,13 @@
 //!   unrepresentable content instead of returning empty/truncated strings.
 //!   Length-reporting copy and serialization APIs preserve exact bytes.
 //!
+//! - **Logical-run continuation**: `ferric_engine_run_ex` starts a fresh logical
+//!   run. After it returns `LimitReached`, `ferric_engine_continue_run_ex` runs
+//!   another bounded chunk without clearing a pending halt request or action
+//!   diagnostics. Chunk counts are per-call; terminal reasons close
+//!   continuation eligibility. Host cancellation remains a distinct,
+//!   host-owned outcome.
+//!
 //! - **Panic containment**: Every C export is generated around a non-extern
 //!   implementation and catches ordinary Rust panics before they reach the ABI.
 //!   `ffi-dev` and `ffi-release` retain unwind support for that purpose. A
