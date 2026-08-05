@@ -2501,11 +2501,11 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 /// current logical run — whether or not it then succeeds — and a later
 /// continuation attempt returns `FerricError::InvalidArgument`.
 ///
-/// A call rejected before it reaches engine state changes nothing, including
-/// continuation eligibility: a null handle, a thread-affinity violation, and a
-/// reentrant call from a host callback all leave the logical run intact for the
-/// owner thread to continue. On any error, output parameters are left
-/// unchanged.
+/// A call rejected before it reaches engine state changes no runtime or
+/// continuation state, though it still publishes its documented error: a null
+/// handle, a thread-affinity violation, and a reentrant call from a host
+/// callback all leave the logical run intact for the owner thread to continue.
+/// On any error, output parameters are left unchanged.
 ///
 /// Host cancellation is distinct from an engine halt: stop calling this
 /// function, report cancellation in the host API, and use

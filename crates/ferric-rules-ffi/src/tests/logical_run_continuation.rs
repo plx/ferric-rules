@@ -719,22 +719,56 @@ fn zero_limit_chunks_fire_nothing_and_stay_eligible() {
 #[test]
 fn continuation_accepts_null_output_pointers_on_the_success_path() {
     unsafe {
-        let engine = ferric_engine_new();
-        start_eligible_logical_run(engine, TWO_ACTIVATION_PROGRAM);
+        // Either output may be discarded independently. Whichever pointer is
+        // supplied still receives its value, and the discarded reason still
+        // drives eligibility.
+        for (want_fired, want_reason) in [(false, false), (true, false), (false, true)] {
+            let engine = ferric_engine_new();
+            start_eligible_logical_run(engine, TWO_ACTIVATION_PROGRAM);
 
-        assert_eq!(
-            ferric_engine_continue_run_ex(engine, -1, std::ptr::null_mut(), std::ptr::null_mut()),
-            FerricError::Ok
-        );
-        // The discarded reason was AgendaEmpty, so eligibility must be closed.
-        let mut fired = 0;
-        let mut reason = FerricHaltReason::AgendaEmpty;
-        assert_eq!(
-            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
-            FerricError::InvalidArgument
-        );
+            let mut fired = u64::MAX;
+            let mut reason = FerricHaltReason::LimitReached;
+            let fired_out = if want_fired {
+                std::ptr::addr_of_mut!(fired)
+            } else {
+                std::ptr::null_mut()
+            };
+            let reason_out = if want_reason {
+                std::ptr::addr_of_mut!(reason)
+            } else {
+                std::ptr::null_mut()
+            };
+            assert_eq!(
+                ferric_engine_continue_run_ex(engine, -1, fired_out, reason_out),
+                FerricError::Ok,
+                "null outputs must not affect the success path ({want_fired}, {want_reason})"
+            );
+            if want_fired {
+                assert_eq!(fired, 1);
+            } else {
+                assert_eq!(fired, u64::MAX, "a null out_fired must not be written");
+            }
+            if want_reason {
+                assert_eq!(reason, FerricHaltReason::AgendaEmpty);
+            } else {
+                assert_eq!(
+                    reason,
+                    FerricHaltReason::LimitReached,
+                    "a null out_reason must not be written"
+                );
+            }
 
-        ferric_engine_free(engine);
+            // The run reached AgendaEmpty, so eligibility must be closed even
+            // when the host discarded that reason.
+            let mut probe_fired = 0;
+            let mut probe_reason = FerricHaltReason::AgendaEmpty;
+            assert_eq!(
+                ferric_engine_continue_run_ex(engine, -1, &mut probe_fired, &mut probe_reason),
+                FerricError::InvalidArgument
+            );
+
+            ferric_engine_free(engine);
+        }
     }
 }
 

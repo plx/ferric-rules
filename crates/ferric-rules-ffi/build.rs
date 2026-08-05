@@ -152,10 +152,11 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *   engine state closes the continuation, whether or not it then
  *   succeeds; a later continuation returns INVALID_ARGUMENT and
  *   leaves output parameters unchanged.
- * - A call rejected before it reaches engine state changes nothing,
- *   including continuation eligibility. A null handle, a thread
- *   affinity violation, and a reentrant call from a host callback all
- *   leave the logical run intact for the owner thread.
+ * - A call rejected before it reaches engine state changes no runtime
+ *   or continuation state, though it still publishes its documented
+ *   error. A null handle, a thread affinity violation, and a reentrant
+ *   call from a host callback all leave the logical run intact for the
+ *   owner thread.
  * - Host cancellation is not HALT_REQUESTED. A cancelable binding
  *   stops submitting chunks, reports its own canceled outcome, and
  *   starts any later logical run with ferric_engine_run_ex().

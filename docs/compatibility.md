@@ -857,10 +857,12 @@ Contract:
 - Read-only queries and `ferric_engine_clear_error` may be interleaved between
   chunks. Any other call that reaches engine state ends the logical run,
   whether or not it then succeeds — a rejected `ferric_engine_retract` counts.
-- A call rejected *before* it reaches engine state changes nothing, including
-  continuation eligibility. Consistent with the thread-affinity contract below,
-  a null handle, a wrong-thread call, and a reentrant call from a host callback
-  all leave the logical run intact for the owner thread to continue.
+- A call rejected *before* it reaches engine state changes no runtime or
+  continuation state, though it still publishes its documented error on the
+  channels described under Error Handling. Consistent with the thread-affinity
+  contract below, a null handle, a wrong-thread call, and a reentrant call from
+  a host callback all leave the logical run intact for the owner thread to
+  continue.
 - Absent host cancellation, a chunked run and an equivalent one-shot run report
   the same total fired count, halt reason, agenda state, and action
   diagnostics.
