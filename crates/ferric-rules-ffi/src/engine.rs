@@ -2454,11 +2454,11 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
     out_fired: *mut u64,
     out_reason: *mut FerricHaltReason,
 ) -> FerricError {
-    let handle = match borrow_engine_mut_preserving_logical_run(engine) {
+    // `borrow_engine_mut` already ends any in-flight logical run.
+    let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
     };
-    handle.logical_run_continuation_ready.set(false);
 
     let run_limit = if limit < 0 {
         RunLimit::Unlimited
@@ -2496,9 +2496,10 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 /// cumulative total. Hosts should accumulate `out_fired` across chunks. A
 /// result other than `LimitReached` is terminal for the logical run.
 ///
-/// Read-only raw-engine queries may be called between chunks. Starting a fresh
-/// run or calling another runtime-mutating raw-engine function ends the current
-/// logical run; a later continuation attempt then returns
+/// Read-only raw-engine queries and `ferric_engine_clear_error` may be called
+/// between chunks. Starting a fresh run or calling any other
+/// runtime-mutating raw-engine function ends the current logical run — even if
+/// that call itself fails — and a later continuation attempt then returns
 /// `FerricError::InvalidArgument`. On any error, output parameters are left
 /// unchanged.
 ///

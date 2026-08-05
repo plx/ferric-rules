@@ -17,23 +17,23 @@
 //!   `ferric_engine_halt`, `ferric_engine_push_input`, `ferric_engine_clear`
 //! - Convenience variants: `ferric_engine_new_with_source`,
 //!   `ferric_engine_new_with_source_config`, `ferric_engine_clear_output`,
-//!   `ferric_engine_run_ex`, `ferric_engine_continue_run_ex`
+//!   `ferric_engine_run_ex`
 
 use std::ffi::{CStr, CString};
 use std::ptr;
 
 use crate::engine::{
     ferric_engine_agenda_count, ferric_engine_assert_ordered, ferric_engine_clear,
-    ferric_engine_clear_output, ferric_engine_continue_run_ex, ferric_engine_current_module,
-    ferric_engine_fact_ids, ferric_engine_find_fact_ids, ferric_engine_focus_stack_depth,
-    ferric_engine_focus_stack_entry, ferric_engine_free, ferric_engine_get_fact_relation,
-    ferric_engine_get_fact_template_name, ferric_engine_get_fact_type, ferric_engine_get_focus,
-    ferric_engine_halt, ferric_engine_is_halted, ferric_engine_load_string,
-    ferric_engine_module_count, ferric_engine_module_name, ferric_engine_new,
-    ferric_engine_new_with_source, ferric_engine_new_with_source_config, ferric_engine_push_input,
-    ferric_engine_reset, ferric_engine_rule_count, ferric_engine_rule_info, ferric_engine_run,
-    ferric_engine_run_ex, ferric_engine_template_count, ferric_engine_template_name,
-    ferric_engine_template_slot_count, ferric_engine_template_slot_name,
+    ferric_engine_clear_output, ferric_engine_current_module, ferric_engine_fact_ids,
+    ferric_engine_find_fact_ids, ferric_engine_focus_stack_depth, ferric_engine_focus_stack_entry,
+    ferric_engine_free, ferric_engine_get_fact_relation, ferric_engine_get_fact_template_name,
+    ferric_engine_get_fact_type, ferric_engine_get_focus, ferric_engine_halt,
+    ferric_engine_is_halted, ferric_engine_load_string, ferric_engine_module_count,
+    ferric_engine_module_name, ferric_engine_new, ferric_engine_new_with_source,
+    ferric_engine_new_with_source_config, ferric_engine_push_input, ferric_engine_reset,
+    ferric_engine_rule_count, ferric_engine_rule_info, ferric_engine_run, ferric_engine_run_ex,
+    ferric_engine_template_count, ferric_engine_template_name, ferric_engine_template_slot_count,
+    ferric_engine_template_slot_name,
 };
 use crate::error::FerricError;
 use crate::types::{
@@ -1635,85 +1635,5 @@ fn run_ex_action_error() {
         assert_eq!(reason, FerricHaltReason::ActionError);
 
         ferric_engine_free(engine);
-    }
-}
-
-fn exact_boundary_halt_program(boundary: u64) -> CString {
-    assert!(boundary > 0);
-    let target = boundary - 1;
-    CString::new(format!(
-        r"
-        (deffacts start (position 0))
-        (defrule halt-at-boundary
-            (declare (salience 100))
-            (position {target})
-            =>
-            (halt))
-        (defrule advance
-            ?current <- (position ?n&:(< ?n {target}))
-            =>
-            (retract ?current)
-            (assert (position (+ ?n 1))))
-        (defrule after-halt
-            (declare (salience -100))
-            ?current <- (position {target})
-            =>
-            (retract ?current)
-            (assert (past-boundary)))
-        "
-    ))
-    .unwrap()
-}
-
-unsafe fn run_exact_boundary_program(
-    source: &CStr,
-    chunk_size: Option<u64>,
-) -> (u64, FerricHaltReason, usize) {
-    let engine = ferric_engine_new();
-    assert_eq!(
-        ferric_engine_load_string(engine, source.as_ptr()),
-        FerricError::Ok
-    );
-    assert_eq!(ferric_engine_reset(engine), FerricError::Ok);
-
-    let mut total_fired = 0;
-    let mut reason = FerricHaltReason::AgendaEmpty;
-    let limit = chunk_size.map_or(-1, |size| i64::try_from(size).unwrap());
-    let mut chunk_fired = 0;
-    assert_eq!(
-        ferric_engine_run_ex(engine, limit, &mut chunk_fired, &mut reason),
-        FerricError::Ok
-    );
-    total_fired += chunk_fired;
-
-    while chunk_size.is_some() && reason == FerricHaltReason::LimitReached {
-        assert_eq!(
-            ferric_engine_continue_run_ex(engine, limit, &mut chunk_fired, &mut reason),
-            FerricError::Ok
-        );
-        total_fired += chunk_fired;
-    }
-
-    let mut agenda_count = 0;
-    assert_eq!(
-        ferric_engine_agenda_count(engine, &mut agenda_count),
-        FerricError::Ok
-    );
-    ferric_engine_free(engine);
-    (total_fired, reason, agenda_count)
-}
-
-#[test]
-fn chunked_run_matches_one_shot_at_exact_halt_boundaries() {
-    unsafe {
-        for (boundary, chunk_size) in [(1, 1), (100, 100), (200, 100)] {
-            let source = exact_boundary_halt_program(boundary);
-            let one_shot = run_exact_boundary_program(&source, None);
-            let chunked = run_exact_boundary_program(&source, Some(chunk_size));
-            assert_eq!(
-                chunked, one_shot,
-                "chunked execution diverged at exact halt boundary {boundary}"
-            );
-        }
     }
 }

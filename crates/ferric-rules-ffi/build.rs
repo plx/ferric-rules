@@ -147,9 +147,10 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *   chunk counts for a logical-run total.
  * - LIMIT_REACHED keeps continuation eligibility. AGENDA_EMPTY,
  *   HALT_REQUESTED, and ACTION_ERROR are terminal and close it.
- * - Read-only raw-engine queries are allowed between chunks. A fresh
- *   run or another runtime-mutating raw-engine call closes the
- *   continuation; later continuation returns INVALID_ARGUMENT and
+ * - Read-only raw-engine queries and ferric_engine_clear_error() are
+ *   allowed between chunks. A fresh run or any other runtime-mutating
+ *   raw-engine call closes the continuation, even if that call fails.
+ *   A later continuation then returns INVALID_ARGUMENT and
  *   leaves output parameters unchanged.
  * - Host cancellation is not HALT_REQUESTED. A cancelable binding
  *   stops submitting chunks, reports its own canceled outcome, and

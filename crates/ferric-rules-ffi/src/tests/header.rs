@@ -158,6 +158,7 @@ fn header_documents_logical_run_continuation_contract() {
         "Each call reports only that chunk's fired count",
         "exact-boundary halt requests",
         "Host cancellation is not HALT_REQUESTED",
+        "even if that call fails",
         "leaves output parameters unchanged",
     ] {
         assert!(

@@ -3,11 +3,11 @@
 use std::ffi::{CStr, CString};
 
 use crate::engine::{
-    ferric_engine_action_diagnostic_count, ferric_engine_agenda_count,
+    ferric_engine_action_diagnostic_count, ferric_engine_agenda_count, ferric_engine_clear_error,
     ferric_engine_continue_run_ex, ferric_engine_fact_count, ferric_engine_free,
     ferric_engine_halt, ferric_engine_is_halted, ferric_engine_last_error,
-    ferric_engine_load_string, ferric_engine_new, ferric_engine_reset, ferric_engine_run_ex,
-    FerricEngine,
+    ferric_engine_load_string, ferric_engine_new, ferric_engine_reset, ferric_engine_retract,
+    ferric_engine_run_ex, FerricEngine,
 };
 use crate::error::FerricError;
 use crate::types::FerricHaltReason;
@@ -273,6 +273,258 @@ fn fresh_run_clears_an_exact_boundary_halt_without_resetting_working_memory() {
             facts_after,
             facts_before + 1,
             "the fresh run must execute the preserved agenda instead of resetting working memory"
+        );
+
+        ferric_engine_free(engine);
+    }
+}
+
+/// Everything a host can observe about a finished logical run.
+#[derive(Debug, PartialEq, Eq)]
+struct RunObservation {
+    fired: u64,
+    reason: FerricHaltReason,
+    agenda: usize,
+    diagnostics: usize,
+}
+
+/// Execute `source` as one logical run and report the observable outcome.
+///
+/// `chunk_size` of `None` runs the program in a single unlimited call;
+/// `Some(n)` drives it as an `n`-activation chunk loop, exactly as a
+/// cancelable host would.
+unsafe fn observe_logical_run(source: &str, chunk_size: Option<u64>) -> RunObservation {
+    let engine = ferric_engine_new();
+    load_and_reset(engine, source);
+
+    let limit = chunk_size.map_or(-1, |size| i64::try_from(size).unwrap());
+    let mut chunk_fired = 0;
+    let mut reason = FerricHaltReason::AgendaEmpty;
+    assert_eq!(
+        ferric_engine_run_ex(engine, limit, &mut chunk_fired, &mut reason),
+        FerricError::Ok
+    );
+    let mut fired = chunk_fired;
+
+    while chunk_size.is_some() && reason == FerricHaltReason::LimitReached {
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, limit, &mut chunk_fired, &mut reason),
+            FerricError::Ok
+        );
+        fired += chunk_fired;
+    }
+
+    let mut agenda = 0;
+    assert_eq!(
+        ferric_engine_agenda_count(engine, &mut agenda),
+        FerricError::Ok
+    );
+    let diagnostics = action_diagnostic_count(engine);
+    ferric_engine_free(engine);
+
+    RunObservation {
+        fired,
+        reason,
+        agenda,
+        diagnostics,
+    }
+}
+
+/// A program that fires exactly `boundary` rules and then halts, leaving one
+/// lower-salience activation on the agenda.
+fn exact_boundary_halt_program(boundary: u64) -> String {
+    assert!(boundary > 0);
+    let target = boundary - 1;
+    format!(
+        r"
+        (deffacts start (position 0))
+        (defrule halt-at-boundary
+            (declare (salience 100))
+            (position {target})
+            =>
+            (halt))
+        (defrule advance
+            ?current <- (position ?n&:(< ?n {target}))
+            =>
+            (retract ?current)
+            (assert (position (+ ?n 1))))
+        (defrule after-halt
+            (declare (salience -100))
+            ?current <- (position {target})
+            =>
+            (retract ?current)
+            (assert (past-boundary)))
+        "
+    )
+}
+
+#[test]
+fn chunked_run_matches_one_shot_at_exact_halt_boundaries() {
+    unsafe {
+        // Chunk sizes that land exactly on the halting activation are the
+        // regression case: without continuation the next chunk clears the
+        // pending halt and fires one rule too many.
+        for (boundary, chunk_size) in [(1, 1), (100, 100), (200, 100), (200, 200), (100, 7)] {
+            let source = exact_boundary_halt_program(boundary);
+            let one_shot = observe_logical_run(&source, None);
+            let chunked = observe_logical_run(&source, Some(chunk_size));
+            assert_eq!(
+                one_shot.reason,
+                FerricHaltReason::HaltRequested,
+                "boundary {boundary} must halt in one-shot execution"
+            );
+            assert_eq!(one_shot.fired, boundary);
+            assert_eq!(
+                chunked, one_shot,
+                "chunked execution diverged at exact halt boundary {boundary}"
+            );
+        }
+    }
+}
+
+#[test]
+fn chunked_run_matches_one_shot_for_diagnostics_and_agenda() {
+    unsafe {
+        let one_shot = observe_logical_run(EARLY_DIAGNOSTIC_PROGRAM, None);
+        assert!(
+            one_shot.diagnostics > 0,
+            "the fixture must emit at least one diagnostic"
+        );
+        for chunk_size in [1, 2, 3] {
+            assert_eq!(
+                observe_logical_run(EARLY_DIAGNOSTIC_PROGRAM, Some(chunk_size)),
+                one_shot,
+                "chunk size {chunk_size} lost diagnostics or agenda state"
+            );
+        }
+    }
+}
+
+#[test]
+fn host_cancellation_is_distinct_from_every_engine_terminal_state() {
+    unsafe {
+        // A host that cancels simply stops submitting chunks. The engine is
+        // then in a state no terminal halt reason can produce: the last chunk
+        // reported LimitReached, nothing is halted, and work remains queued.
+        let source = exact_boundary_halt_program(100);
+        let engine = ferric_engine_new();
+        load_and_reset(engine, &source);
+
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_run_ex(engine, 10, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        let mut total_fired = fired;
+        // Two chunks in, the host observes cancellation and stops.
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, 10, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        total_fired += fired;
+
+        assert_eq!(total_fired, 20);
+        assert_eq!(
+            reason,
+            FerricHaltReason::LimitReached,
+            "an abandoned chunk loop must not look like an engine halt"
+        );
+
+        let mut halted = 1;
+        assert_eq!(
+            ferric_engine_is_halted(engine, &mut halted),
+            FerricError::Ok
+        );
+        assert_eq!(halted, 0, "cancellation must not set the engine halt flag");
+
+        let mut agenda = 0;
+        assert_eq!(
+            ferric_engine_agenda_count(engine, &mut agenda),
+            FerricError::Ok
+        );
+        assert!(
+            agenda > 0,
+            "cancellation must leave pending work on the agenda"
+        );
+
+        // Reporting cancellation and starting the next logical run is legal and
+        // completes the work the canceled run left behind.
+        assert_eq!(
+            ferric_engine_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(fired, 80, "the fresh run resumes from the preserved agenda");
+        assert_eq!(reason, FerricHaltReason::HaltRequested);
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn read_only_queries_and_error_maintenance_preserve_continuation() {
+    unsafe {
+        let engine = ferric_engine_new();
+        load_and_reset(engine, TWO_ACTIVATION_PROGRAM);
+
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_run_ex(engine, 1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(reason, FerricHaltReason::LimitReached);
+
+        // Everything a host may legitimately do between chunks.
+        let mut facts = 0;
+        assert_eq!(
+            ferric_engine_fact_count(engine, &mut facts),
+            FerricError::Ok
+        );
+        let mut agenda = 0;
+        assert_eq!(
+            ferric_engine_agenda_count(engine, &mut agenda),
+            FerricError::Ok
+        );
+        let mut halted = 1;
+        assert_eq!(
+            ferric_engine_is_halted(engine, &mut halted),
+            FerricError::Ok
+        );
+        let _ = action_diagnostic_count(engine);
+        assert_eq!(ferric_engine_clear_error(engine), FerricError::Ok);
+
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::Ok,
+            "read-only queries and error maintenance must not end the logical run"
+        );
+        assert_eq!(reason, FerricHaltReason::AgendaEmpty);
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn a_failed_mutating_call_still_ends_the_logical_run() {
+    unsafe {
+        let engine = ferric_engine_new();
+        load_and_reset(engine, TWO_ACTIVATION_PROGRAM);
+
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_run_ex(engine, 1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(reason, FerricHaltReason::LimitReached);
+
+        // Retracting a fact ID that was never asserted fails, but the call is
+        // still a mutating entry point and closes continuation eligibility.
+        assert_ne!(ferric_engine_retract(engine, u64::MAX), FerricError::Ok);
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::InvalidArgument
         );
 
         ferric_engine_free(engine);
