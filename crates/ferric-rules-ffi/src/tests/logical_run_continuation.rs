@@ -887,3 +887,44 @@ fn continuation_eligibility_is_per_handle_and_not_serialized() {
         ferric_engine_free(engine);
     }
 }
+
+#[test]
+fn repeated_fresh_runs_overfire_at_an_exact_halt_boundary() {
+    unsafe {
+        // The reproducer from FR-CABI-009, kept as a characterization test.
+        // A host that chunks a long run with repeated `ferric_engine_run_ex`
+        // calls discards the halt each chunk cleared. At a 100-activation
+        // boundary with a 100-activation chunk the run reports 101 fired
+        // rules instead of 100, and the engine ends up un-halted with the
+        // post-halt rule already fired. This is correct fresh-run behavior —
+        // it is why `ferric_engine_continue_run_ex` exists.
+        let source = exact_boundary_halt_program(100);
+        let engine = ferric_engine_new();
+        load_and_reset(engine, &source);
+
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        let mut total = 0;
+        loop {
+            assert_eq!(
+                ferric_engine_run_ex(engine, 100, &mut fired, &mut reason),
+                FerricError::Ok
+            );
+            total += fired;
+            if reason != FerricHaltReason::LimitReached {
+                break;
+            }
+        }
+
+        assert_eq!(total, 101, "the naive chunk loop fires one rule too many");
+        assert_eq!(reason, FerricHaltReason::AgendaEmpty);
+
+        // The continuation-based loop agrees with one-shot execution instead.
+        assert_eq!(
+            observe_logical_run(&source, Some(100)),
+            observe_logical_run(&source, None)
+        );
+
+        ferric_engine_free(engine);
+    }
+}
