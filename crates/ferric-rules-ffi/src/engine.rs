@@ -2509,7 +2509,11 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 ///
 /// Host cancellation is distinct from an engine halt: stop calling this
 /// function, report cancellation in the host API, and use
-/// `ferric_engine_run_ex` to start the next logical run.
+/// `ferric_engine_run_ex` to start the next logical run. This leaves the agenda
+/// intact, but does not guarantee an un-halted engine — a chunk that lands
+/// exactly on an activation calling `(halt)` still reports `LimitReached`, and
+/// the pending halt surfaces only on the next chunk that can run. Query
+/// `ferric_engine_is_halted` if that distinction matters.
 ///
 /// # Safety
 ///

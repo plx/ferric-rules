@@ -159,7 +159,14 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *   owner thread.
  * - Host cancellation is not HALT_REQUESTED. A cancelable binding
  *   stops submitting chunks, reports its own canceled outcome, and
- *   starts any later logical run with ferric_engine_run_ex().
+ *   starts any later logical run with ferric_engine_run_ex(). The
+ *   agenda is left intact.
+ * - Canceling does not guarantee an un-halted engine. A chunk that
+ *   lands exactly on an activation calling (halt) still reports
+ *   LIMIT_REACHED; the pending halt surfaces as HALT_REQUESTED only on
+ *   the next chunk that can run. Query ferric_engine_is_halted() if
+ *   that distinction matters. ferric_engine_run_ex() clears the flag
+ *   either way when it starts the next logical run.
  *
  * ============================================================
  * PINNED EXECUTION (ferric_pinned_*)

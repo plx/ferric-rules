@@ -866,10 +866,18 @@ Contract:
 - Absent host cancellation, a chunked run and an equivalent one-shot run report
   the same total fired count, halt reason, agenda state, and action
   diagnostics.
-- Host cancellation is not `FERRIC_HALT_REASON_HALT_REQUESTED`. A canceling
-  host stops submitting chunks and reports its own outcome; the engine is left
-  un-halted with its remaining agenda intact, and the next logical run starts
-  with `ferric_engine_run_ex`.
+- Host cancellation is not `FERRIC_HALT_REASON_HALT_REQUESTED`. The ABI has no
+  canceled state: a canceling host stops submitting chunks, reports its own
+  outcome, and starts any later logical run with `ferric_engine_run_ex`. The
+  agenda is left intact.
+- Cancellation does **not** guarantee an un-halted engine. The halt flag
+  reflects whatever the chunks that did run executed. If a chunk landed exactly
+  on an activation that called `(halt)`, that chunk still reports
+  `FERRIC_HALT_REASON_LIMIT_REACHED` — the pending halt only surfaces as
+  `HALT_REQUESTED` on the next chunk that can run — so a host canceling at that
+  boundary leaves a halted engine. Query `ferric_engine_is_halted` if the
+  distinction matters; `ferric_engine_run_ex` clears the flag either way when it
+  starts the next logical run.
 - Continuation eligibility is per-handle and is not serialized. A handle
   produced by `ferric_engine_deserialize_*` always begins a fresh logical run.
 

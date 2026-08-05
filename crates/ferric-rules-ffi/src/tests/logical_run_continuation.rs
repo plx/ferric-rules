@@ -466,6 +466,64 @@ fn host_cancellation_is_distinct_from_every_engine_terminal_state() {
 }
 
 #[test]
+fn cancellation_does_not_guarantee_an_unhalted_engine() {
+    unsafe {
+        // Cancelling at an arbitrary chunk boundary leaves the engine
+        // un-halted, but cancelling at a chunk that landed exactly on the
+        // activation calling `(halt)` does not: that chunk still reports
+        // LimitReached while the halt latch is already set. Hosts that care
+        // must query `ferric_engine_is_halted` rather than infer it from the
+        // last halt reason.
+        let engine = ferric_engine_new();
+        load_and_reset(engine, &exact_boundary_halt_program(100));
+
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_run_ex(engine, 100, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(fired, 100);
+        assert_eq!(
+            reason,
+            FerricHaltReason::LimitReached,
+            "the halting activation is the last one the limit permits"
+        );
+
+        // The host cancels here and never sees HaltRequested.
+        let mut halted = 0;
+        assert_eq!(
+            ferric_engine_is_halted(engine, &mut halted),
+            FerricError::Ok
+        );
+        assert_eq!(
+            halted, 1,
+            "a chunk that ran the halting activation leaves the engine halted"
+        );
+
+        let mut agenda = 0;
+        assert_eq!(
+            ferric_engine_agenda_count(engine, &mut agenda),
+            FerricError::Ok
+        );
+        assert!(agenda > 0, "cancellation still leaves the agenda intact");
+
+        // Starting the next logical run clears the latch, as documented.
+        assert_eq!(
+            ferric_engine_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(
+            ferric_engine_is_halted(engine, &mut halted),
+            FerricError::Ok
+        );
+        assert_eq!(halted, 0);
+
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
 fn read_only_queries_and_error_maintenance_preserve_continuation() {
     unsafe {
         let engine = ferric_engine_new();
