@@ -425,7 +425,9 @@ func (e *Engine) Run(ctx context.Context) (*RunResult, error) {
 
 // RunWithLimit runs the engine with a maximum number of rule firings.
 // A limit of 0 means unlimited. Checks context for cancellation between
-// batches of rule firings.
+// batches of rule firings. Cancellation returns the partial RunResult with
+// HaltRequested and an error wrapping ctx.Err(); an engine-requested halt
+// returns HaltRequested with a nil error.
 func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error) {
 	handle, release, err := e.leaseHandle()
 	if err != nil {
@@ -445,10 +447,14 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 		}
 		return e.runDirect(handle, ffiLimit)
 	}
+	return e.runCancelable(ctx, handle, limit)
+}
 
+func (e *Engine) runCancelable(ctx context.Context, handle ffi.EngineHandle, limit int) (*RunResult, error) {
 	// For cancelable contexts, run in small batches and check context.
 	const batchSize = 100
 	totalFired := 0
+	runChunk := ffiEngineRunEx
 	for {
 		if err := ctx.Err(); err != nil {
 			return &RunResult{RulesFired: totalFired, HaltReason: HaltRequested}, fmt.Errorf("ferric: run canceled: %w", err)
@@ -466,7 +472,7 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 			}
 		}
 
-		fired, reason, rc := ffiEngineRunEx(handle, batch)
+		fired, reason, rc := runChunk(handle, batch)
 		if rc != ffi.ErrOK {
 			return &RunResult{RulesFired: totalFired}, errorFromFFI(rc, handle)
 		}
@@ -488,7 +494,19 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 			if limit > 0 && totalFired >= limit {
 				return &RunResult{RulesFired: totalFired, HaltReason: HaltLimitReached}, nil
 			}
-			// Otherwise loop and check context before next batch.
+			if err := ctx.Err(); err != nil {
+				return &RunResult{RulesFired: totalFired, HaltReason: HaltRequested}, fmt.Errorf("ferric: run canceled: %w", err)
+			}
+			halted, rc := ffiEngineIsHalted(handle)
+			if rc != ffi.ErrOK {
+				return &RunResult{RulesFired: totalFired}, errorFromFFI(rc, handle)
+			}
+			if halted {
+				return &RunResult{RulesFired: totalFired, HaltReason: HaltRequested}, nil
+			}
+			// Otherwise preserve this logical run and check context before the
+			// next continuation chunk.
+			runChunk = ffiEngineContinueRunEx
 		}
 	}
 }

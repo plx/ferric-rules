@@ -106,6 +106,14 @@ func EngineRunEx(h EngineHandle, limit int64) (uint64, HaltReason, ErrorCode) {
 	return uint64(fired), HaltReason(reason), rc
 }
 
+// EngineContinueRunEx continues a logical run after a limit-reached result.
+func EngineContinueRunEx(h EngineHandle, limit int64) (uint64, HaltReason, ErrorCode) {
+	var fired C.uint64_t
+	var reason C.enum_FerricHaltReason
+	rc := ErrorCode(C.ferric_engine_continue_run_ex(h, C.int64_t(limit), &fired, &reason))
+	return uint64(fired), HaltReason(reason), rc
+}
+
 // EngineStep executes a single rule firing.
 // Returns a status: 1 = rule fired, 0 = agenda empty, -1 = halted.
 func EngineStep(h EngineHandle) (int32, ErrorCode) {
