@@ -383,6 +383,13 @@ def test_repository_metadata_and_abi_contract_is_valid():
     assert package_lib.validate_repository_contract() == "0.1.0"
 
 
+def test_distribution_license_copies_have_stable_checkout_bytes():
+    attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+    for filename in package_lib.EXPECTED_LICENSE_FILES:
+        assert f"{filename} text eol=lf" in attributes
+        assert f"crates/ferric-rules-python/{filename} text eol=lf" in attributes
+
+
 def test_musl_linker_replaces_only_the_dynamic_gcc_runtime_and_libc_name(
     tmp_path,
 ):
