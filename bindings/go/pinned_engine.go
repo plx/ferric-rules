@@ -16,7 +16,9 @@ var errPinnedEngineClosed = errors.New("ferric: pinned engine is closed")
 // serializes all engine operations through it.
 //
 // All methods are safe for concurrent use from multiple goroutines.
-// Operations are serialized on the internal worker goroutine in FIFO order.
+// Engine operations are serialized on the internal worker goroutine in FIFO
+// order. Halt and the initial Close signal are out-of-band controls so they can
+// interrupt an active Run without violating engine thread affinity.
 //
 // PinnedEngine implements io.Closer. Always defer Close() after creation.
 type PinnedEngine struct {
@@ -25,7 +27,12 @@ type PinnedEngine struct {
 	done       chan struct{}
 	closeOnce  sync.Once
 	closed     atomic.Bool
+	activeRun  atomic.Pointer[pinnedRunControl]
 	closeGuard sync.RWMutex // protects enqueue windows during shutdown
+}
+
+type pinnedRunControl struct {
+	halted atomic.Bool
 }
 
 type pinnedRequest struct {
@@ -89,14 +96,25 @@ func (p *PinnedEngine) drain(eng *Engine) {
 	}
 }
 
-// Close shuts down the PinnedEngine. It stops accepting new requests,
-// waits for all in-progress enqueue attempts to resolve, drains all
-// previously-accepted work, closes the underlying engine, and blocks
-// until the worker goroutine exits.
+// Close shuts down the PinnedEngine. It stops accepting new requests and
+// interrupts active and already-accepted queued Run requests. Close-induced
+// interruption uses the same cooperative-cancellation outcome as Halt: a
+// partial (or zero) RunResult with HaltRequested and a nil error, rather than
+// errPinnedEngineClosed. Requests rejected after Close begins return
+// errPinnedEngineClosed. Other previously-accepted work is drained before the
+// underlying engine is closed. Close then blocks until the worker goroutine
+// exits.
+//
+// Run interruption is cooperative and is observed between batches of at most
+// 100 rule firings. Close cannot preempt an arbitrary function submitted with
+// Do while that function is executing.
 //
 // Close is idempotent and safe to call from any goroutine.
 func (p *PinnedEngine) Close() error {
 	p.closeOnce.Do(func() {
+		// The run loop observes this sticky flag without going through the
+		// request queue. Publish it before waiting for enqueue readers so an
+		// active run can release a full queue and let shutdown make progress.
 		p.closed.Store(true)
 		// Wait for all in-progress enqueue attempts to resolve,
 		// then signal worker to stop while holding the write lock.
@@ -271,20 +289,50 @@ func (p *PinnedEngine) FactCount() (int, error) {
 // Execution
 // ---------------------------------------------------------------------------
 
-// Run runs the engine to completion, checking context for cancellation.
+// Run runs the engine to completion, checking context for cancellation and
+// PinnedEngine interruption between batches of at most 100 rule firings.
 func (p *PinnedEngine) Run(ctx context.Context) (*RunResult, error) {
 	return p.RunWithLimit(ctx, 0)
 }
 
 // RunWithLimit runs the engine with a maximum number of rule firings.
-// A limit of 0 means unlimited. Checks context for cancellation.
+// A limit of 0 means unlimited. Context cancellation before queue acceptance
+// rejects the request. Once accepted, RunWithLimit waits for the cooperative
+// worker response; context cancellation returns a partial RunResult with
+// HaltRequested and an error wrapping ctx.Err(). Halt or Close interruption
+// returns a partial (or zero) RunResult with HaltRequested and a nil error.
+// A native terminal result or completed explicit limit wins first; at an
+// internal batch boundary, caller context cancellation wins over simultaneous
+// Halt or Close interruption.
 func (p *PinnedEngine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error) {
+	if ctx == nil {
+		return nil, errNilContext
+	}
+
 	var result *RunResult
-	err := p.Do(ctx, func(e *Engine) error {
-		var err error
-		result, err = e.RunWithLimit(ctx, limit)
-		return err
-	})
+	resp := make(chan error, 1)
+	req := pinnedRequest{
+		resp: resp,
+		fn: func(e *Engine) error {
+			control := &pinnedRunControl{}
+			p.activeRun.Store(control)
+			defer p.activeRun.CompareAndSwap(control, nil)
+
+			var err error
+			result, err = e.runWithLimit(ctx, limit, func() bool {
+				return control.halted.Load() || p.closed.Load()
+			})
+			return err
+		},
+	}
+	if err := p.tryEnqueue(ctx, req); err != nil {
+		return nil, err
+	}
+
+	// An accepted run observes ctx itself between chunks. Waiting for the
+	// worker's sole response gives the captured result a channel happens-before
+	// edge and prevents Do's post-dispatch cancellation select from racing it.
+	err := <-resp
 	return result, err
 }
 
@@ -300,12 +348,13 @@ func (p *PinnedEngine) Step() (*FiredRule, error) {
 	return fr, err
 }
 
-// Halt requests the engine to halt.
+// Halt requests that the currently active Run stop at the next batch boundary.
+// It returns immediately, has no effect while the worker is idle or handling a
+// non-Run operation, and does not latch onto queued or future runs.
 func (p *PinnedEngine) Halt() {
-	_ = p.do(func(e *Engine) error {
-		e.Halt()
-		return nil
-	})
+	if control := p.activeRun.Load(); control != nil {
+		control.halted.Store(true)
+	}
 }
 
 // Reset resets the engine to its initial state (facts cleared, rules kept).

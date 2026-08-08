@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -223,20 +222,21 @@ func TestPinnedEngine_RunWithLimit(t *testing.T) {
 }
 
 func TestPinnedEngine_RunContextCancellation(t *testing.T) {
-	// Use a rule that produces unbounded activations so we can test cancel.
-	src := `(defrule loop (initial-fact) => (assert (tick)))`
-	p, err := NewPinnedEngine(WithSource(src))
+	p, err := NewPinnedEngine(WithSource(pinnedCyclingRules))
 	require.NoError(t, err)
 	defer mustClose(t, p)
+	require.NoError(t, p.Reset())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	_, err = p.Run(ctx)
-	// Should either complete or be canceled — both are acceptable.
-	if err != nil {
-		assert.ErrorIs(t, err, context.DeadlineExceeded)
-	}
+	outcomes := startPinnedTestRun(ctx, p, 0)
+	waitForPinnedActiveRun(t, p)
+	cancel()
+	outcome := receivePinnedRunOutcome(t, outcomes)
+	require.ErrorIs(t, outcome.err, context.Canceled)
+	require.NotNil(t, outcome.result)
+	assert.Equal(t, HaltRequested, outcome.result.HaltReason)
 }
 
 func TestPinnedEngine_Step(t *testing.T) {

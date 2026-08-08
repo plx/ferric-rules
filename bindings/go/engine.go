@@ -13,6 +13,10 @@ import (
 
 var errIntOverflow = fmt.Errorf("ferric: integer overflow")
 
+// runBatchSize bounds the number of rule firings between host-side
+// cancellation or interruption checks in a chunked run.
+const runBatchSize = 100
+
 // Engine wraps a single ferric rules engine instance.
 //
 // An Engine is bound to the OS thread that created it. All methods
@@ -424,11 +428,24 @@ func (e *Engine) Run(ctx context.Context) (*RunResult, error) {
 }
 
 // RunWithLimit runs the engine with a maximum number of rule firings.
-// A limit of 0 means unlimited. Checks context for cancellation between
-// batches of rule firings. Cancellation returns the partial RunResult with
-// HaltRequested and an error wrapping ctx.Err(); an engine-requested halt
-// returns HaltRequested with a nil error.
+// A limit of 0 means unlimited. A cancelable context is checked between batches
+// of at most 100 rule firings; a noncancelable context uses one direct native
+// call. Cancellation returns the partial RunResult with HaltRequested and an
+// error wrapping ctx.Err(); an engine-requested halt returns HaltRequested with
+// a nil error.
 func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error) {
+	return e.runWithLimit(ctx, limit, nil)
+}
+
+// runWithLimit is the shared raw-engine run implementation. A non-nil
+// shouldInterrupt predicate forces chunked execution even when ctx itself is
+// not cancelable. The predicate is evaluated only on the engine's owner
+// thread, before the first chunk and between continuation chunks.
+func (e *Engine) runWithLimit(
+	ctx context.Context,
+	limit int,
+	shouldInterrupt func() bool,
+) (*RunResult, error) {
 	handle, release, err := e.leaseHandle()
 	if err != nil {
 		return nil, err
@@ -439,29 +456,35 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 		return nil, errNilContext
 	}
 
-	// If context has no deadline/cancel, use a single direct FFI call.
-	if ctx.Done() == nil {
+	// Preserve the raw Engine fast path when no host-side polling is needed.
+	if ctx.Done() == nil && shouldInterrupt == nil {
 		ffiLimit := int64(-1)
 		if limit > 0 {
 			ffiLimit = int64(limit)
 		}
 		return e.runDirect(handle, ffiLimit)
 	}
-	return e.runCancelable(ctx, handle, limit)
+	return e.runChunked(ctx, handle, limit, shouldInterrupt)
 }
 
-func (e *Engine) runCancelable(ctx context.Context, handle ffi.EngineHandle, limit int) (*RunResult, error) {
-	// For cancelable contexts, run in small batches and check context.
-	const batchSize = 100
+func (e *Engine) runChunked(
+	ctx context.Context,
+	handle ffi.EngineHandle,
+	limit int,
+	shouldInterrupt func() bool,
+) (*RunResult, error) {
 	totalFired := 0
 	runChunk := ffiEngineRunEx
 	for {
 		if err := ctx.Err(); err != nil {
 			return &RunResult{RulesFired: totalFired, HaltReason: HaltRequested}, fmt.Errorf("ferric: run canceled: %w", err)
 		}
+		if shouldInterrupt != nil && shouldInterrupt() {
+			return &RunResult{RulesFired: totalFired, HaltReason: HaltRequested}, nil
+		}
 
 		// Compute batch limit.
-		batch := int64(batchSize)
+		batch := int64(runBatchSize)
 		if limit > 0 {
 			remaining := int64(limit - totalFired)
 			if remaining <= 0 {
