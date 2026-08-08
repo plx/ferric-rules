@@ -6,6 +6,7 @@ import csv
 
 import pytest
 
+from ferric_tools.compat.diagnostics import diagnostic
 from ferric_tools.compat.report import (
     _write_delimited,
     compute_oracle_coverage,
@@ -188,6 +189,50 @@ def test_delimited_report_exposes_per_file_oracle_evidence(tmp_path, delimiter, 
     refused = rows["legacy-equivalent.clp"]
     assert refused["oracle_status"] == "invalid"
     assert refused["oracle_refused_equivalent"] == "True"
+
+
+def test_reports_expose_phase_diagnostic_and_independent_termination(tmp_path, capsys):
+    manifest = _manifest()
+    divergent = manifest["files"]["missing.clp"]
+    divergent["reason"] = "diagnostic-phase-mismatch"
+    divergent["ferric"] = {
+        "exit_code": 1,
+        "diagnostic": diagnostic("load", "construct-error", continued=False),
+        "termination": {"kind": "exit", "exit_code": 1, "signal": None},
+    }
+    divergent["clips"] = {
+        "exit_code": -9,
+        "diagnostic": diagnostic("run", "evaluation-error", continued=False),
+        "termination": {
+            "kind": "signal",
+            "exit_code": None,
+            "signal": 9,
+            "active_phase": "run",
+        },
+    }
+    report = tmp_path / "compat.md"
+    table = tmp_path / "compat.csv"
+
+    print_summary(manifest)
+    write_report(manifest, str(report))
+    _write_delimited(manifest, str(table), ",")
+
+    summary = capsys.readouterr().out
+    assert "Diagnostic evidence (1):" in summary
+    assert "ferric: diagnostic v1 load/construct-error" in summary
+    assert "clips: diagnostic v1 run/evaluation-error" in summary
+    assert "termination=signal signal=9 active-phase=run" in summary
+    markdown = report.read_text(encoding="utf-8")
+    assert "### Diagnostic evidence (1)" in markdown
+    assert "ferric: diagnostic v1 load/construct-error" in markdown
+    with table.open(newline="", encoding="utf-8") as stream:
+        row = {item["path"]: item for item in csv.DictReader(stream)}["missing.clp"]
+    assert row["ferric_diagnostic_phase"] == "load"
+    assert row["ferric_diagnostic_category"] == "construct-error"
+    assert row["clips_diagnostic_phase"] == "run"
+    assert row["clips_termination"] == "signal"
+    assert row["clips_signal"] == "9"
+    assert row["clips_active_phase"] == "run"
 
 
 @pytest.mark.parametrize(

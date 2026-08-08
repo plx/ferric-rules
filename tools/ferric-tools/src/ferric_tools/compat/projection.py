@@ -9,6 +9,13 @@ from __future__ import annotations
 
 import re
 
+from ferric_tools.compat.diagnostics import (
+    DIAGNOSTIC_TAXONOMY_VERSION,
+    ENGINE_DIAGNOSTIC_CATEGORIES,
+    ENGINE_DIAGNOSTIC_PHASES,
+    UNKNOWN_DIAGNOSTIC,
+)
+
 _OBSERVATION_SCHEMA = "ferric.compat-observation"
 _OBSERVATION_VERSION = 1
 _HARNESS_LINE_RE = re.compile(r"^FERRIC-HARNESS\|\d+\|.*(?:\r?\n)?$")
@@ -21,6 +28,21 @@ _HALT_REASONS = frozenset(
         "halt-requested",
         "action-error",
         "not-run",
+    }
+)
+_DIAGNOSTIC_CATEGORY_BY_PHASE = {
+    "parse": "syntax-error",
+    "load": "construct-error",
+    "reset": "evaluation-error",
+    "run": "evaluation-error",
+}
+_INTERRUPTED_TAIL_PROTOCOL_ISSUES = frozenset(
+    {
+        "lifecycle-cardinality-or-order",
+        "native-phase-records-missing",
+        "native-run-metadata-missing",
+        "phase-cardinality-or-order",
+        "module-cardinality",
     }
 )
 
@@ -171,38 +193,119 @@ def _strip_harness_output(text: str) -> tuple[str, list[str]]:
     return "".join(semantic_lines), instrumentation
 
 
-def _canonical_diagnostic(raw: dict, *, engine: str) -> dict:
+def _canonical_diagnostic(
+    raw: dict,
+    *,
+    engine: str,
+    interrupted: bool = False,
+    preserve_unknown: bool = False,
+    diagnostic_subset: bool = False,
+) -> dict:
     diagnostics = raw.get("diagnostics")
     if type(diagnostics) is not list or not all(
         type(diagnostic) is dict for diagnostic in diagnostics
     ):
         raise ObservationProjectionError(f"{engine} diagnostics are malformed")
-    protocol_issues = (
-        raw.get("protocol_issues", []) if engine == "ferric" else raw.get("protocol_issues")
-    )
-    if type(protocol_issues) is not list:
-        raise ObservationProjectionError(f"{engine} protocol issue evidence is malformed")
-    if protocol_issues:
-        raise ObservationProjectionError(
-            f"{engine} protocol violations: {', '.join(map(str, protocol_issues))}"
+    if engine == "ferric":
+        protocol_issues = raw.get("protocol_issues", [])
+    elif diagnostic_subset:
+        protocol_issues = raw.get(
+            "diagnostic_protocol_issues",
+            raw.get("protocol_issues"),
         )
-    if diagnostics:
-        # Phase-aware diagnostic equivalence is deliberately unavailable until
-        # FR-COMPAT-005 (#119). Unknown evidence fails strict oracle validation.
-        return {"phase": "unknown", "category": "unknown", "continued": False}
-    return {"phase": "none", "category": "none", "continued": True}
+    else:
+        protocol_issues = raw.get("protocol_issues")
+    if type(protocol_issues) is not list or not all(
+        type(issue) is str for issue in protocol_issues
+    ):
+        raise ObservationProjectionError(f"{engine} protocol issue evidence is malformed")
+    allowed_protocol_issues = set(_INTERRUPTED_TAIL_PROTOCOL_ISSUES)
+    if interrupted and "native-run-metadata-missing" in protocol_issues:
+        # The parser also reports this state check when interruption cut off
+        # the RUN record. It is contradictory, rather than incomplete, when a
+        # RUN record was present and explicitly denied the diagnostic state.
+        allowed_protocol_issues.add("native-run-diagnostic-state")
+    unexpected_protocol_issues = (
+        [issue for issue in protocol_issues if issue not in allowed_protocol_issues]
+        if interrupted
+        else protocol_issues
+    )
+    if unexpected_protocol_issues:
+        raise ObservationProjectionError(
+            f"{engine} protocol violations: {', '.join(map(str, unexpected_protocol_issues))}"
+        )
+    if not diagnostics:
+        return {"phase": "none", "category": "none", "continued": True}
+
+    summaries: list[tuple[str, str, bool]] = []
+    for index, raw_diagnostic in enumerate(diagnostics):
+        assert isinstance(raw_diagnostic, dict)
+        taxonomy_version = raw_diagnostic.get("taxonomy_version")
+        phase = raw_diagnostic.get("phase")
+        category = raw_diagnostic.get("category")
+        continued = raw_diagnostic.get("continued")
+        if type(taxonomy_version) is not int or taxonomy_version != DIAGNOSTIC_TAXONOMY_VERSION:
+            raise ObservationProjectionError(
+                f"{engine} diagnostic {index} taxonomy version is unsupported"
+            )
+        unknown_pair = (phase, category) == (UNKNOWN_DIAGNOSTIC, UNKNOWN_DIAGNOSTIC)
+        if type(phase) is not str or (
+            phase not in ENGINE_DIAGNOSTIC_PHASES and not (preserve_unknown and unknown_pair)
+        ):
+            raise ObservationProjectionError(
+                f"{engine} diagnostic {index} phase is unsupported: {phase!r}"
+            )
+        if type(category) is not str or (
+            category not in ENGINE_DIAGNOSTIC_CATEGORIES and not (preserve_unknown and unknown_pair)
+        ):
+            raise ObservationProjectionError(
+                f"{engine} diagnostic {index} category is unsupported: {category!r}"
+            )
+        expected_category = _DIAGNOSTIC_CATEGORY_BY_PHASE.get(phase)
+        if not unknown_pair and category != expected_category:
+            raise ObservationProjectionError(
+                f"{engine} diagnostic {index} phase/category pair is unsupported: "
+                f"{phase!r}/{category!r}"
+            )
+        if type(continued) is not bool:
+            raise ObservationProjectionError(
+                f"{engine} diagnostic {index} continuation is malformed"
+            )
+        if type(raw_diagnostic.get("message")) is not str:
+            raise ObservationProjectionError(f"{engine} diagnostic {index} message is malformed")
+        if engine == "ferric":
+            if raw_diagnostic.get("severity") not in {"error", "warning"}:
+                raise ObservationProjectionError(
+                    f"{engine} diagnostic {index} severity is unsupported"
+                )
+        elif raw_diagnostic.get("channel") != "stderr":
+            raise ObservationProjectionError(f"{engine} diagnostic {index} channel is unsupported")
+        summaries.append((phase, category, continued))
+
+    first = summaries[0]
+    if any(summary != first for summary in summaries[1:]):
+        raise ObservationProjectionError(
+            f"{engine} diagnostics are heterogeneous and cannot be collapsed"
+        )
+    phase, category, continued = first
+    return {"phase": phase, "category": category, "continued": continued}
 
 
-def _canonical_markers(raw: dict, *, engine: str) -> list[dict]:
+def _canonical_markers(
+    raw: dict,
+    *,
+    engine: str,
+    interrupted: bool = False,
+) -> list[dict]:
     fixture = raw.get("fixture")
     lifecycle = raw.get("lifecycle")
     if type(fixture) is not dict or type(lifecycle) is not list:
         raise ObservationProjectionError("observation identity or lifecycle is malformed")
-    expected_sequences = (0, 1) if engine == "ferric" else (0, 3)
+    complete_sequences = (0, 1) if engine == "ferric" else (0, 3)
     sequences = [record.get("sequence") if type(record) is dict else None for record in lifecycle]
+    expected_sequences = (0,) if interrupted and tuple(sequences) == (0,) else complete_sequences
     if (
-        len(sequences) != 2
-        or not all(type(sequence) is int for sequence in sequences)
+        not all(type(sequence) is int for sequence in sequences)
         or tuple(sequences) != expected_sequences
     ):
         raise ObservationProjectionError(f"{engine} lifecycle sequence is malformed")
@@ -225,14 +328,20 @@ def _canonical_markers(raw: dict, *, engine: str) -> list[dict]:
                 "nonce": record.get("nonce"),
             }
         )
-    if [marker["kind"] for marker in markers] != ["START", "COMPLETE"]:
+    expected_kinds = ["START"] if expected_sequences == (0,) else ["START", "COMPLETE"]
+    if [marker["kind"] for marker in markers] != expected_kinds:
         raise ObservationProjectionError(f"{engine} lifecycle event order is malformed")
     return markers
 
 
 def _phase(raw: object) -> str:
-    if raw in {"post-run", "post_run"}:
+    if type(raw) is not str:
+        raise ObservationProjectionError(f"unsupported observed phase: {raw!r}")
+    normalized = raw.replace("_", "-")
+    if normalized == "post-run":
         return "run-complete"
+    if normalized in ENGINE_DIAGNOSTIC_PHASES:
+        return normalized
     raise ObservationProjectionError(f"unsupported observed phase: {raw!r}")
 
 
@@ -259,6 +368,93 @@ def _validate_raw_envelope(raw: dict, *, engine: str) -> None:
         raise ObservationProjectionError(f"{engine} observation engine identity is malformed")
 
 
+def _validate_diagnostic_context(
+    raw: dict,
+    *,
+    engine: str,
+    canonical: dict,
+    interrupted: bool,
+) -> None:
+    """Validate phase/run fields that directly attest a diagnostic summary."""
+    diagnostic_phase = canonical["phase"]
+    if diagnostic_phase in {"none", UNKNOWN_DIAGNOSTIC}:
+        return
+
+    observed_phase = _phase(raw.get("phase_reached"))
+    run = raw.get("run")
+    if canonical["continued"]:
+        if interrupted:
+            phase_order = {"parse": 0, "load": 1, "reset": 2, "run": 3, "run-complete": 4}
+            if phase_order[observed_phase] < phase_order[diagnostic_phase]:
+                raise ObservationProjectionError(
+                    f"{engine} continued diagnostic precedes its observed phase"
+                )
+            return
+        if observed_phase != "run-complete" or type(run) is not dict:
+            raise ObservationProjectionError(f"{engine} continued diagnostic lacks a completed run")
+        return
+
+    if observed_phase != diagnostic_phase:
+        raise ObservationProjectionError(
+            f"{engine} terminal phase and diagnostic phase are inconsistent"
+        )
+    if diagnostic_phase == "run":
+        if run is None and interrupted:
+            return
+        if type(run) is not dict or _halt_reason(run.get("halt_reason")) != "action-error":
+            raise ObservationProjectionError(
+                f"{engine} terminal run diagnostic lacks an action-error halt"
+            )
+    elif run is not None:
+        raise ObservationProjectionError(
+            f"{engine} terminal pre-run diagnostic contains run evidence"
+        )
+
+
+def project_observation_diagnostic(
+    raw: object,
+    *,
+    engine: str,
+    expected_fixture: dict[str, str],
+    interrupted: bool = False,
+) -> dict:
+    """Validate the trusted diagnostic subset before full semantic projection."""
+    if type(raw) is not dict:
+        raise ObservationProjectionError(f"{engine} observation is not an object")
+    _validate_raw_envelope(raw, engine=engine)
+    fixture = raw.get("fixture")
+    if type(fixture) is not dict:
+        raise ObservationProjectionError(f"{engine} fixture identity is malformed")
+    for field in ("id", "nonce", "source_sha256", "composed_sha256"):
+        if fixture.get(field) != expected_fixture.get(field):
+            raise ObservationProjectionError(
+                f"{engine} fixture identity field {field!r} does not match the invocation"
+            )
+    for marker_index, marker in enumerate(
+        _canonical_markers(raw, engine=engine, interrupted=interrupted)
+    ):
+        for field in ("id", "nonce", "source_sha256", "composed_sha256"):
+            if marker.get(field) != expected_fixture.get(field):
+                raise ObservationProjectionError(
+                    f"{engine} lifecycle marker {marker_index} field {field!r} "
+                    "does not match the invocation"
+                )
+    canonical = _canonical_diagnostic(
+        raw,
+        engine=engine,
+        interrupted=interrupted,
+        preserve_unknown=True,
+        diagnostic_subset=True,
+    )
+    _validate_diagnostic_context(
+        raw,
+        engine=engine,
+        canonical=canonical,
+        interrupted=interrupted,
+    )
+    return canonical
+
+
 def _validate_capabilities(
     raw: dict,
     *,
@@ -269,16 +465,18 @@ def _validate_capabilities(
     capabilities = raw.get("capabilities")
     if type(capabilities) is not dict:
         raise ObservationProjectionError(f"{engine} capabilities are malformed")
-    required = {"fact_modules"}
+    completed_run = type(raw.get("run")) is dict
+    required = {"fact_modules"} if completed_run else set()
     if engine == "ferric":
         required.add("composed_digest_verification")
-        if require_firing_names:
+        if require_firing_names and completed_run:
             required.add("fired_rule_names")
-        if require_globals:
+        if require_globals and completed_run:
             required.add("global_values")
     else:
-        required.add("rules_fired")
-        if require_firing_names:
+        if completed_run:
+            required.add("rules_fired")
+        if require_firing_names and completed_run:
             required.add("fired_rule_names")
     unavailable = sorted(name for name in required if capabilities.get(name) is not True)
     if unavailable:
@@ -345,16 +543,67 @@ def _base_projection(
     run = raw.get("run")
     if type(fixture) is not dict:
         raise ObservationProjectionError(f"{engine} fixture identity is malformed")
-    if type(run) is not dict:
-        raise ObservationProjectionError(f"{engine} did not complete a run")
+    if run is not None and type(run) is not dict:
+        raise ObservationProjectionError(f"{engine} run observation is malformed")
+    diagnostic = _canonical_diagnostic(raw, engine=engine)
+    observed_phase = _phase(raw.get("phase_reached"))
     raw_facts = raw.get("facts")
     if type(raw_facts) is not list:
         raise ObservationProjectionError(f"{engine} facts are malformed")
-    facts = [_canonical_fact(fact, engine=engine, harnessed=harnessed) for fact in raw_facts]
-    fact_ids = [fact["id"] for fact in facts]
-    if len(fact_ids) != len(set(fact_ids)):
-        raise ObservationProjectionError(f"{engine} observation contains a duplicate fact id")
-    facts = [fact for fact in facts if fact["origin"] != "instrumentation"]
+    if run is None:
+        if diagnostic["phase"] == "none":
+            raise ObservationProjectionError(
+                f"{engine} did not complete a run and has no semantic diagnostic"
+            )
+        if diagnostic["continued"]:
+            raise ObservationProjectionError(
+                f"{engine} diagnostic claims continuation without a completed run"
+            )
+        if observed_phase != diagnostic["phase"]:
+            raise ObservationProjectionError(
+                f"{engine} terminal phase and diagnostic phase are inconsistent"
+            )
+        # A stopped load/reset/run does not provide a comparable final-state
+        # snapshot. Preserve the envelope and channels, but do not project any
+        # partial engine state as semantic evidence.
+        facts: list[dict] = []
+        run_projection = {"limit": None, "halt_reason": "not-run"}
+    else:
+        assert isinstance(run, dict)
+        facts = [_canonical_fact(fact, engine=engine, harnessed=harnessed) for fact in raw_facts]
+        fact_ids = [fact["id"] for fact in facts]
+        if len(fact_ids) != len(set(fact_ids)):
+            raise ObservationProjectionError(f"{engine} observation contains a duplicate fact id")
+        facts = [fact for fact in facts if fact["origin"] != "instrumentation"]
+        halt_reason = _halt_reason(run.get("halt_reason"))
+        run_projection = {"limit": None, "halt_reason": halt_reason}
+        if diagnostic["phase"] == "none":
+            if observed_phase != "run-complete":
+                raise ObservationProjectionError(
+                    f"{engine} stopped before run completion without a diagnostic"
+                )
+        elif diagnostic["continued"]:
+            if observed_phase != "run-complete":
+                raise ObservationProjectionError(
+                    f"{engine} continued diagnostic lacks a completed run"
+                )
+        elif diagnostic["phase"] != "run" or observed_phase != "run":
+            raise ObservationProjectionError(
+                f"{engine} non-continuing diagnostic is inconsistent with run evidence"
+            )
+        terminal_run_diagnostic = {
+            "phase": "run",
+            "category": "evaluation-error",
+            "continued": False,
+        }
+        if halt_reason == "action-error" and diagnostic != terminal_run_diagnostic:
+            raise ObservationProjectionError(
+                f"{engine} action-error halt lacks a matching evaluation diagnostic"
+            )
+        if diagnostic == terminal_run_diagnostic and halt_reason != "action-error":
+            raise ObservationProjectionError(
+                f"{engine} terminal run diagnostic lacks an action-error halt"
+            )
     return (
         {
             "version": 1,
@@ -363,14 +612,11 @@ def _base_projection(
             "composed_sha256": fixture.get("composed_sha256"),
             "nonce": fixture.get("nonce"),
             "markers": _canonical_markers(raw, engine=engine),
-            "phase": _phase(raw.get("phase_reached")),
+            "phase": observed_phase,
             "effects": [_fact_effect(fact) for fact in facts],
             "facts": facts,
-            "diagnostic": _canonical_diagnostic(raw, engine=engine),
-            "run": {
-                "limit": None,
-                "halt_reason": _halt_reason(run.get("halt_reason")),
-            },
+            "diagnostic": diagnostic,
+            "run": run_projection,
             "globals": None,
         },
         facts,
@@ -395,12 +641,15 @@ def project_ferric_observation(
         require_globals=require_globals,
     )
     projected, _facts = _base_projection(raw, engine="ferric", harnessed=harnessed)
-    run = raw["run"]
-    assert isinstance(run, dict)
-    rules_fired = run.get("rules_fired")
-    if type(rules_fired) is not int or rules_fired < 0:
-        raise ObservationProjectionError("Ferric firing count is unavailable")
-    if harnessed:
+    run = raw.get("run")
+    if run is None:
+        rules_fired = 0
+    else:
+        assert isinstance(run, dict)
+        rules_fired = run.get("rules_fired")
+        if type(rules_fired) is not int or rules_fired < 0:
+            raise ObservationProjectionError("Ferric firing count is unavailable")
+    if harnessed and run is not None:
         raise ObservationProjectionError(
             "Ferric cannot separate harness firings from fixture firings"
         )
@@ -436,17 +685,20 @@ def project_clips_observation(
         require_firing_names=require_firing_names,
     )
     projected, _facts = _base_projection(raw, engine="clips", harnessed=harnessed)
-    run = raw["run"]
-    assert isinstance(run, dict)
-    rules_fired = run.get("rules_fired")
-    if type(rules_fired) is not int or rules_fired < 0:
-        raise ObservationProjectionError("CLIPS firing count is unavailable")
-    if harnessed:
+    run = raw.get("run")
+    if run is None:
+        rules_fired = 0
+    else:
+        assert isinstance(run, dict)
+        rules_fired = run.get("rules_fired")
+        if type(rules_fired) is not int or rules_fired < 0:
+            raise ObservationProjectionError("CLIPS firing count is unavailable")
+    if harnessed and run is not None:
         raise ObservationProjectionError(
             "CLIPS cannot separate harness firings from fixture firings"
         )
     fired_rules = raw.get("fired_rules")
-    if require_firing_names:
+    if require_firing_names and run is not None:
         if type(fired_rules) is not list or not all(
             type(rule) is str and rule for rule in fired_rules
         ):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 
+from ferric_tools.compat.diagnostics import diagnostic
 from ferric_tools.compat.diff import compute_diff, format_markdown, write_tsv
 from ferric_tools.compat.report import compute_oracle_coverage
 
@@ -57,6 +58,20 @@ def _file_entry(classification: str, reason: str = "", *, oracle: dict | None = 
     if oracle is not None:
         entry["oracle_evidence"] = oracle
     return entry
+
+
+def _engine_result(
+    phase: str,
+    category: str,
+    *,
+    continued: bool,
+    exit_code: int = 1,
+) -> dict:
+    return {
+        "exit_code": exit_code,
+        "diagnostic": diagnostic(phase, category, continued=continued),
+        "termination": {"kind": "exit", "exit_code": exit_code, "signal": None},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +137,56 @@ def test_compute_diff_reason_change_within_same_classification():
     assert reason_changes[0][0] == "c.clp"
     assert len(regressions) == 0
     assert len(real_improvements) == 0
+
+
+def test_compute_diff_exposes_phase_change_with_unchanged_classification_and_reason():
+    base_entry = _file_entry("divergent", "diagnostic-phase-mismatch")
+    base_entry["ferric"] = _engine_result("load", "construct-error", continued=False)
+    base_entry["clips"] = _engine_result("run", "evaluation-error", continued=False)
+    head_entry = _file_entry("divergent", "diagnostic-phase-mismatch")
+    head_entry["ferric"] = _engine_result("run", "evaluation-error", continued=False)
+    head_entry["clips"] = _engine_result("load", "construct-error", continued=False)
+
+    _bc, _hc, regressions, improvements, reason_changes = compute_diff(
+        _manifest({"phase.clp": base_entry}),
+        _manifest({"phase.clp": head_entry}),
+    )
+
+    assert regressions == []
+    assert improvements == []
+    assert len(reason_changes) == 1
+    assert "ferric=load/construct-error" in reason_changes[0][2]
+    assert "ferric=run/evaluation-error" in reason_changes[0][4]
+
+
+def test_compute_diff_exposes_diagnostics_when_classification_changes():
+    base_entry = _file_entry("pending", "diagnostic-invalid")
+    base_entry["ferric"] = _engine_result("load", "construct-error", continued=False)
+    base_entry["clips"] = _engine_result("run", "evaluation-error", continued=False)
+    head_entry = _file_entry("divergent", "diagnostic-phase-mismatch")
+    head_entry["ferric"] = _engine_result("run", "evaluation-error", continued=False)
+    head_entry["clips"] = _engine_result("load", "construct-error", continued=False)
+
+    _bc, _hc, regressions, improvements, reason_changes = compute_diff(
+        _manifest({"phase.clp": base_entry}),
+        _manifest({"phase.clp": head_entry}),
+    )
+
+    assert improvements == [
+        (
+            "phase.clp",
+            "pending",
+            base_entry["reason"] + "; diagnostics: "
+            "ferric=load/construct-error/continued:false;termination:exit(1), "
+            "clips=run/evaluation-error/continued:false;termination:exit(1)",
+            "divergent",
+            head_entry["reason"] + "; diagnostics: "
+            "ferric=run/evaluation-error/continued:false;termination:exit(1), "
+            "clips=load/construct-error/continued:false;termination:exit(1)",
+        )
+    ]
+    assert regressions == []
+    assert reason_changes == []
 
 
 def test_compute_diff_counts_reflect_head_manifest():
@@ -634,6 +699,41 @@ def test_write_tsv_marks_oracle_coverage_loss_as_regression(tmp_path):
     assert rows[0]["head_oracle_status"] == "invalid"
     assert rows[0]["head_oracle_normalizations"] == "fact-ids"
     assert "completed true\u2192false" in rows[0]["oracle_regression"]
+
+
+def test_write_tsv_includes_diagnostic_and_termination_evidence(tmp_path):
+    base_entry = {**_file_entry("divergent", "same"), "source": "fixtures"}
+    base_entry["ferric"] = _engine_result("load", "construct-error", continued=False)
+    base_entry["clips"] = _engine_result("run", "evaluation-error", continued=False)
+    head_entry = {**_file_entry("divergent", "same"), "source": "fixtures"}
+    head_entry["ferric"] = _engine_result("run", "evaluation-error", continued=False)
+    head_entry["clips"] = {
+        "exit_code": -9,
+        "diagnostic": diagnostic("process", "signal", continued=False),
+        "termination": {
+            "kind": "signal",
+            "exit_code": None,
+            "signal": 9,
+            "active_phase": "run",
+        },
+    }
+    output = tmp_path / "diagnostics.tsv"
+
+    write_tsv(
+        _manifest({"phase.clp": base_entry}),
+        _manifest({"phase.clp": head_entry}),
+        str(output),
+    )
+
+    with output.open(newline="", encoding="utf-8") as stream:
+        row = next(csv.DictReader(stream, delimiter="\t"))
+    assert row["change"] == "reason-changed"
+    assert row["base_ferric_diagnostic_phase"] == "load"
+    assert row["head_ferric_diagnostic_phase"] == "run"
+    assert row["head_clips_diagnostic_category"] == "signal"
+    assert row["head_clips_termination"] == "signal"
+    assert row["head_clips_signal"] == "9"
+    assert row["head_clips_active_phase"] == "run"
 
 
 # ---------------------------------------------------------------------------

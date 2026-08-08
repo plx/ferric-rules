@@ -14,6 +14,7 @@ OBSERVER_FIXTURE_ID=""
 OBSERVER_SOURCE_SHA256=""
 OBSERVER_COMPOSED_SHA256=""
 OBSERVER_AUTH_KEY=""
+OBSERVER_CONTAINER_NAME=""
 WORKDIR_IN_CONTAINER="/workspace"
 
 usage() {
@@ -48,6 +49,9 @@ Run options:
                         Bind native observations to composed bytes (internal)
   --observer-auth-key <key>
                         Authenticate native observation records (internal)
+  --observer-container-name <name>
+                        Assign a caller-owned Docker name for timeout cleanup
+                        (internal; structured observer only)
   --quiet               Execute stdin with CLIPS batch* semantics, suppressing
                         the interactive banner, prompts, and return values
 
@@ -186,6 +190,7 @@ run_command() {
 
   local clips_args=()
   local observer_args=()
+  local container_name_args=()
   if [[ "$QUIET" -eq 1 && -z "$OBSERVER_NONCE" ]]; then
     clips_args+=("-f2" "/dev/stdin")
   fi
@@ -211,13 +216,19 @@ run_command() {
       echo "error: --observer-auth-key must encode 32 bytes as lowercase hexadecimal" >&2
       exit 1
     fi
+    if [[ ! "$OBSERVER_CONTAINER_NAME" =~ ^[a-z0-9][a-z0-9_.-]{0,127}$ ]]; then
+      echo "error: structured observer requires a protocol-safe container name" >&2
+      exit 1
+    fi
     observer_args+=(
       "--ferric-observer"
       "--source"
       "${container_files[0]}"
     )
+    container_name_args+=("--name" "$OBSERVER_CONTAINER_NAME")
   elif [[ -n "$OBSERVER_FIXTURE_ID" || -n "$OBSERVER_SOURCE_SHA256" ||
-          -n "$OBSERVER_COMPOSED_SHA256" || -n "$OBSERVER_AUTH_KEY" ]]; then
+          -n "$OBSERVER_COMPOSED_SHA256" || -n "$OBSERVER_AUTH_KEY" ||
+          -n "$OBSERVER_CONTAINER_NAME" ]]; then
     echo "error: observer bindings require --observer-nonce" >&2
     exit 1
   fi
@@ -238,6 +249,7 @@ run_command() {
       printf '(exit)\n'
     fi
   } | docker run --rm -i \
+      ${container_name_args[@]+"${container_name_args[@]}"} \
       -v "${repo_root}:${WORKDIR_IN_CONTAINER}:ro" \
       -w "$WORKDIR_IN_CONTAINER" \
       "$full_image" \
@@ -298,6 +310,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --observer-auth-key)
       OBSERVER_AUTH_KEY="$2"
+      shift 2
+      ;;
+    --observer-container-name)
+      OBSERVER_CONTAINER_NAME="$2"
       shift 2
       ;;
     --quiet)

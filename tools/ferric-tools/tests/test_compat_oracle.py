@@ -259,6 +259,59 @@ def test_declaration_and_observation_versions_are_independently_strict(target):
     assert evidence.issues[0].field == "version"
 
 
+@pytest.mark.parametrize("target", ["declaration", "observation"])
+@pytest.mark.parametrize(
+    ("phase", "category", "continued", "issue_suffix"),
+    [
+        ("unknown", "unknown", False, ""),
+        ("process", "timeout", False, ""),
+        ("harness", "harness-error", False, ""),
+        ("run", "syntax-error", False, ""),
+        ("parse", "none", False, ""),
+        ("none", "none", False, ".continued"),
+    ],
+)
+def test_diagnostic_taxonomy_fails_closed_for_declarations_and_observations(
+    target,
+    phase,
+    category,
+    continued,
+    issue_suffix,
+):
+    declaration = _declaration()
+    observation = _observation()
+    if target == "declaration":
+        diagnostic = declaration["expectations"]["diagnostic"]
+        field = "expectations.diagnostic"
+    else:
+        diagnostic = observation["diagnostic"]
+        field = "diagnostic"
+    diagnostic.update(
+        {
+            "phase": phase,
+            "category": category,
+            "continued": continued,
+        }
+    )
+
+    declaration_evidence = validate_declaration(
+        declaration,
+        expected_source_sha256=SOURCE_DIGEST,
+        expected_composed_sha256=COMPOSED_DIGEST,
+    )
+    if target == "declaration":
+        evidence = declaration_evidence
+    else:
+        assert declaration_evidence.value is not None
+        evidence = validate_observation(
+            observation,
+            declaration=declaration_evidence.value,
+        )
+
+    assert evidence.status is EvidenceStatus.INVALID
+    assert evidence.issues[0].field == f"{field}{issue_suffix}"
+
+
 def test_unknown_normalizer_fails_closed():
     declaration = _declaration(normalizers=["whitespace"])
 

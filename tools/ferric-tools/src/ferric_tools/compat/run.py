@@ -7,12 +7,14 @@ the manifest with classification results.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import copy
 import json
 import os
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import tempfile
@@ -45,7 +47,17 @@ from ferric_tools._paths import (
     repo_root,
 )
 from ferric_tools._subprocess import parallel_run
-from ferric_tools.compat.clips_oracle import build_probe_operations, parse_probe_output
+from ferric_tools.compat.clips_oracle import (
+    ClipsOracleProtocolError,
+    build_probe_operations,
+    parse_probe_output,
+)
+from ferric_tools.compat.diagnostics import (
+    diagnostic,
+    diagnostic_evidence_state,
+    process_diagnostic,
+    termination,
+)
 from ferric_tools.compat.oracle import (
     DECLARATION_VERSION,
     EvidenceStatus,
@@ -57,14 +69,34 @@ from ferric_tools.compat.projection import (
     ObservationProjectionError,
     project_clips_observation,
     project_ferric_observation,
+    project_observation_diagnostic,
 )
 
 app = typer.Typer(help="Run CLIPS compatibility assessment.")
 console = Console(stderr=True)
 VALID_RUNABILITY = {"batch", "interactive", "library", "standalone", "unknown"}
 FAILED_CLASSIFICATIONS = {"divergent", "incompatible"}
+INVALID_RUNTIME_EVIDENCE_REASONS = frozenset(
+    {
+        "diagnostic-invalid",
+        "diagnostic-missing",
+        "harness-failure",
+        "termination-invalid",
+        "termination-missing",
+    }
+)
 COMPAT_WORKSPACE = Path(".ferric-compat")
 IS_WINDOWS = os.name == "nt"
+_EMPTY_INTERRUPTION_PROTOCOL_ISSUES = frozenset(
+    {
+        "native-phase-records-missing",
+        "lifecycle-cardinality-or-order",
+        "native-run-metadata-missing",
+        "phase-cardinality-or-order",
+        "module-cardinality",
+        "truncated-native-record",
+    }
+)
 
 
 class CompatibilityWorkspaceError(RuntimeError):
@@ -302,14 +334,6 @@ def _retain_failure_artifact(
         ) from error
 
 
-def _timeout_text(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
-
-
 def _output_bytes(value: str | bytes | None) -> bytes:
     if value is None:
         return b""
@@ -320,6 +344,108 @@ def _output_bytes(value: str | bytes | None) -> bytes:
 
 def _display_output(value: bytes) -> str:
     return value.decode("utf-8", errors="replace")
+
+
+def _attach_raw_output(result: dict, *, stdout: bytes, stderr: bytes) -> dict:
+    """Persist exact process bytes alongside their human-readable views."""
+    result["raw_output"] = {
+        "encoding": "base64",
+        "stdout": base64.b64encode(stdout).decode("ascii"),
+        "stderr": base64.b64encode(stderr).decode("ascii"),
+    }
+    return result
+
+
+def _with_termination(result: dict, *, spawn_error: bool = False) -> dict:
+    """Attach process state without treating it as an engine diagnostic."""
+    if spawn_error:
+        result["spawn_error"] = True
+    result["termination"] = termination(
+        exit_code=result["exit_code"],
+        timed_out=result["timed_out"],
+        spawn_error=spawn_error,
+    )
+    return result
+
+
+def _clips_wrapper_termination(exit_code: int) -> dict[str, object]:
+    """Normalize Docker's documented 128+signal transport status."""
+    # The observer runs in a Linux container even when the compatibility tool
+    # runs on another host. Linux signal numbers occupy 1..64, including the
+    # realtime range that is absent from some host-side Python enums.
+    if 129 <= exit_code <= 192:
+        return {"kind": "signal", "exit_code": None, "signal": exit_code - 128}
+    return termination(exit_code=exit_code, timed_out=False)
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    """Terminate the isolated CLIPS wrapper and all local pipeline children."""
+    if IS_WINDOWS:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            process.kill()
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+
+
+def _remove_clips_container(container_name: str) -> None:
+    """Force-remove the uniquely named observer container after interruption."""
+    if re.fullmatch(r"ferric-compat-[0-9a-f]{32}", container_name) is None:
+        raise ValueError("refusing to remove an unrecognized CLIPS container name")
+    # The local process group is already dead. A missing daemon/container is
+    # expected when startup lost the race with the timeout.
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            ["docker", "rm", "--force", container_name],
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+
+
+def _run_clips_process(
+    command: list[str],
+    *,
+    timeout_secs: int,
+    root: str,
+    container_name: str | None = None,
+) -> subprocess.CompletedProcess:
+    """Run the shell/Docker observer with a wall-clock process-tree timeout."""
+    popen_options: dict[str, object] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": False,
+        "cwd": root,
+    }
+    if IS_WINDOWS:
+        popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_options["start_new_session"] = True
+    process = subprocess.Popen(command, **popen_options)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_secs)
+    except subprocess.TimeoutExpired as error:
+        _terminate_process_tree(process)
+        if container_name is not None:
+            _remove_clips_container(container_name)
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = error.output, error.stderr
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout_secs,
+            output=stdout,
+            stderr=stderr,
+        ) from error
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def run_ferric_observer(
@@ -352,37 +478,60 @@ def run_ferric_observer(
         proc = subprocess.run(
             command,
             capture_output=True,
-            text=True,
+            text=False,
             timeout=timeout_secs,
             cwd=root,
         )
+        raw_stdout = _output_bytes(proc.stdout)
+        raw_stderr = _output_bytes(proc.stderr)
         duration_ms = int((time.monotonic() - start) * 1000)
-        result = {
-            "exit_code": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-            "duration_ms": duration_ms,
-            "timed_out": False,
-        }
+        result = _attach_raw_output(
+            _with_termination(
+                {
+                    "exit_code": proc.returncode,
+                    "stdout": _display_output(raw_stdout),
+                    "stderr": _display_output(raw_stderr),
+                    "duration_ms": duration_ms,
+                    "timed_out": False,
+                }
+            ),
+            stdout=raw_stdout,
+            stderr=raw_stderr,
+        )
     except subprocess.TimeoutExpired as error:
+        raw_stdout = _output_bytes(error.stdout)
+        raw_stderr = _output_bytes(error.stderr)
         duration_ms = int((time.monotonic() - start) * 1000)
-        return {
-            "exit_code": -1,
-            "stdout": _timeout_text(error.stdout),
-            "stderr": _timeout_text(error.stderr) or f"timeout after {timeout_secs}s",
-            "duration_ms": duration_ms,
-            "timed_out": True,
-            "observation_error": "observer timed out before terminal evidence",
-        }
-    except FileNotFoundError:
-        return {
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": f"ferric binary not found: {ferric_bin}",
-            "duration_ms": 0,
-            "timed_out": False,
-            "observation_error": "observer executable not found",
-        }
+        return _attach_raw_output(
+            _with_termination(
+                {
+                    "exit_code": None,
+                    "stdout": _display_output(raw_stdout),
+                    "stderr": _display_output(raw_stderr) or f"timeout after {timeout_secs}s",
+                    "duration_ms": duration_ms,
+                    "timed_out": True,
+                    "observation_error": "observer timed out before terminal evidence",
+                }
+            ),
+            stdout=raw_stdout,
+            stderr=raw_stderr,
+        )
+    except OSError as error:
+        return _attach_raw_output(
+            _with_termination(
+                {
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": f"cannot start ferric observer {ferric_bin}: {error}",
+                    "duration_ms": 0,
+                    "timed_out": False,
+                    "observation_error": "observer executable could not be started",
+                },
+                spawn_error=True,
+            ),
+            stdout=b"",
+            stderr=b"",
+        )
 
     try:
         if result["stdout"].count("\n") != 1 or not result["stdout"].endswith("\n"):
@@ -391,7 +540,11 @@ def run_ferric_observer(
         if type(observation) is not dict:
             raise ValueError("observation must be a JSON object")
     except (json.JSONDecodeError, ValueError) as error:
-        result["observation_error"] = str(error)
+        if (result.get("termination") or {}).get("kind") == "signal":
+            result["observation_error"] = "observer was signaled before terminal evidence"
+        else:
+            result["observation_error"] = str(error)
+            result["harness_error"] = True
     else:
         result["observation"] = observation
     return result
@@ -424,6 +577,7 @@ def run_clips_observer(
         globals_to_capture=globals_to_capture,
     )
     auth_key = secrets.token_hex(32)
+    container_name = f"ferric-compat-{auth_key[:32]}"
     command = [
         script,
         "run",
@@ -438,6 +592,8 @@ def run_clips_observer(
         composed_sha256,
         "--observer-auth-key",
         auth_key,
+        "--observer-container-name",
+        container_name,
         "--file",
         str(resolved_path),
     ]
@@ -448,46 +604,70 @@ def run_clips_observer(
     raw_stdout = b""
     raw_stderr = b""
     try:
-        proc = subprocess.run(
+        proc = _run_clips_process(
             command,
-            capture_output=True,
-            text=False,
-            timeout=timeout_secs,
-            cwd=root,
+            timeout_secs=timeout_secs,
+            root=root,
+            container_name=container_name,
         )
         raw_stdout = _output_bytes(proc.stdout)
         raw_stderr = _output_bytes(proc.stderr)
         duration_ms = int((time.monotonic() - start) * 1000)
-        result = {
-            "exit_code": proc.returncode,
-            "stdout": _display_output(raw_stdout),
-            "stderr": _display_output(raw_stderr),
-            "duration_ms": duration_ms,
-            "timed_out": False,
-        }
+        result = _attach_raw_output(
+            _with_termination(
+                {
+                    "exit_code": proc.returncode,
+                    "stdout": _display_output(raw_stdout),
+                    "stderr": _display_output(raw_stderr),
+                    "duration_ms": duration_ms,
+                    "timed_out": False,
+                }
+            ),
+            stdout=raw_stdout,
+            stderr=raw_stderr,
+        )
+        result["termination"] = _clips_wrapper_termination(proc.returncode)
+        if proc.returncode in {125, 126, 127}:
+            result["harness_error"] = True
+            result["observation_error"] = (
+                f"reference observer transport failed with status {proc.returncode}"
+            )
     except subprocess.TimeoutExpired as error:
         duration_ms = int((time.monotonic() - start) * 1000)
         raw_stdout = _output_bytes(error.stdout)
         raw_stderr = _output_bytes(error.stderr)
         partial_stdout = _display_output(raw_stdout)
         partial_stderr = _display_output(raw_stderr)
-        result = {
-            "exit_code": -1,
-            "stdout": partial_stdout,
-            "stderr": partial_stderr or f"timeout after {timeout_secs}s",
-            "duration_ms": duration_ms,
-            "timed_out": True,
-            "observation_error": "reference observer timed out before terminal evidence",
-        }
-    except FileNotFoundError:
-        return {
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": f"harness script not found: {script}",
-            "duration_ms": 0,
-            "timed_out": False,
-            "observation_error": "reference observer executable not found",
-        }
+        result = _attach_raw_output(
+            _with_termination(
+                {
+                    "exit_code": None,
+                    "stdout": partial_stdout,
+                    "stderr": partial_stderr or f"timeout after {timeout_secs}s",
+                    "duration_ms": duration_ms,
+                    "timed_out": True,
+                    "observation_error": "reference observer timed out before terminal evidence",
+                }
+            ),
+            stdout=raw_stdout,
+            stderr=raw_stderr,
+        )
+    except OSError as error:
+        return _attach_raw_output(
+            _with_termination(
+                {
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": f"cannot start reference observer {script}: {error}",
+                    "duration_ms": 0,
+                    "timed_out": False,
+                    "observation_error": "reference observer executable could not be started",
+                },
+                spawn_error=True,
+            ),
+            stdout=b"",
+            stderr=b"",
+        )
 
     try:
         observation = parse_probe_output(
@@ -499,9 +679,20 @@ def run_clips_observer(
             composed_sha256=composed_sha256,
             auth_key=auth_key,
             harnessed=harnessed,
+            interrupted=(result.get("termination") or {}).get("kind") in {"signal", "timeout"},
         )
-    except (ValueError, RuntimeError) as error:
+    except ClipsOracleProtocolError as error:
         result["observation_error"] = str(error)
+        result["harness_error"] = True
+    except (ValueError, RuntimeError) as error:
+        if (result.get("termination") or {}).get("kind") in {"signal", "timeout"}:
+            result.setdefault(
+                "observation_error",
+                "reference observer was interrupted before parsable terminal evidence",
+            )
+        else:
+            result["observation_error"] = str(error)
+            result["harness_error"] = True
     else:
         result["observation"] = observation
     return result
@@ -521,6 +712,10 @@ def _oracle_outcome(evaluation) -> tuple[str, str, dict]:
         evaluation.ferric.status is EvidenceStatus.VALID
         and evaluation.clips.status is EvidenceStatus.VALID
     )
+    observations_completed = observations_valid and all(
+        evidence.value is not None and evidence.value.run.halt_reason != "not-run"
+        for evidence in (evaluation.ferric, evaluation.clips)
+    )
     effect_mismatch = any(mismatch["field"] == "effects" for mismatch in mismatches)
     normalizations = (
         list(evaluation.declaration.value.normalizers)
@@ -535,8 +730,8 @@ def _oracle_outcome(evaluation) -> tuple[str, str, dict]:
         "version": 1,
         "declaration": declaration_valid,
         "reached": observations_valid,
-        "completed": observations_valid,
-        "effect": observations_valid and not effect_mismatch,
+        "completed": observations_completed,
+        "effect": observations_completed and not effect_mismatch,
         "normalizations": normalizations,
         "violations": violations,
         "evaluation": evaluation_dict,
@@ -562,11 +757,95 @@ def classify_results(
     evaluation=None,
 ) -> tuple[str, str]:
     """Classify only from independently validated structured evidence."""
-    del ferric_result, clips_result
+    diagnostic_outcome = _diagnostic_outcome(ferric_result, clips_result)
     if evaluation is None:
-        return "pending", "oracle-missing"
+        return diagnostic_outcome or ("pending", "oracle-missing")
+    if diagnostic_outcome is not None:
+        classification, reason = diagnostic_outcome
+        complete_terminal_oracle = (
+            classification == "incompatible"
+            and reason == "diagnostic-match-without-complete-oracle"
+            and all(
+                evidence.status is EvidenceStatus.VALID
+                and evidence.value is not None
+                and evidence.value.run.halt_reason != "not-run"
+                for evidence in (evaluation.ferric, evaluation.clips)
+            )
+        )
+        if not complete_terminal_oracle:
+            return diagnostic_outcome
     classification, reason, _evidence = _oracle_outcome(evaluation)
     return classification, reason
+
+
+def _termination_state(result: dict | None) -> tuple[str, tuple[object, ...] | None]:
+    if not isinstance(result, dict) or "termination" not in result:
+        return "missing", None
+    raw = result.get("termination")
+    if not isinstance(raw, dict):
+        return "invalid", None
+    kind = raw.get("kind")
+    exit_code = raw.get("exit_code")
+    signal = raw.get("signal")
+    active_phase = raw.get("active_phase")
+    if active_phase is not None and active_phase not in {"load", "reset", "run"}:
+        return "invalid", None
+    if kind == "exit" and type(exit_code) is int and exit_code >= 0 and signal is None:
+        return "valid", (kind, exit_code, None, active_phase)
+    if kind == "signal" and exit_code is None and type(signal) is int and signal > 0:
+        return "valid", (kind, None, signal, active_phase)
+    if kind in {"timeout", "spawn-error"} and exit_code is None and signal is None:
+        return "valid", (kind, None, None, active_phase)
+    return "invalid", None
+
+
+def _diagnostic_outcome(
+    ferric_result: dict,
+    clips_result: dict | None,
+) -> tuple[str, str] | None:
+    """Classify trusted terminal diagnostics when full oracle evidence is unavailable."""
+    ferric_status, ferric = diagnostic_evidence_state(ferric_result)
+    clips_status, clips = diagnostic_evidence_state(clips_result)
+    statuses = {ferric_status, clips_status}
+    if "harness" in statuses:
+        return "pending", "harness-failure"
+    if "invalid" in statuses:
+        return "pending", "diagnostic-invalid"
+    if ferric_status == clips_status == "missing":
+        return None
+    if "missing" in statuses:
+        known = clips if ferric is None else ferric
+        if known is not None and known[0] == "none":
+            return None
+        return "pending", "diagnostic-missing"
+    assert ferric is not None and clips is not None
+    for index, field in enumerate(("phase", "category", "continued")):
+        if ferric[index] != clips[index]:
+            return "divergent", f"diagnostic-{field}-mismatch"
+
+    ferric_termination_status, ferric_termination = _termination_state(ferric_result)
+    clips_termination_status, clips_termination = _termination_state(clips_result)
+    termination_statuses = {ferric_termination_status, clips_termination_status}
+    if "invalid" in termination_statuses:
+        return "pending", "termination-invalid"
+    if termination_statuses == {"missing"}:
+        pass
+    elif "missing" in termination_statuses:
+        return "pending", "termination-missing"
+    else:
+        assert ferric_termination is not None and clips_termination is not None
+        for index, field in enumerate(("kind", "exit-code", "signal", "active-phase")):
+            if ferric_termination[index] != clips_termination[index]:
+                return "divergent", f"termination-{field}-mismatch"
+        if ferric_termination[0] in {"timeout", "signal"}:
+            return "incompatible", "termination-match-without-complete-oracle"
+    if ferric[0] != "none" and ferric[2] is False:
+        return "incompatible", "diagnostic-match-without-complete-oracle"
+    if ferric_termination is not None and (
+        ferric_termination[0] == "exit" and ferric_termination[1] != 0
+    ):
+        return "incompatible", "termination-nonzero-exit-match"
+    return None
 
 
 def _missing_oracle_evidence() -> dict:
@@ -602,33 +881,103 @@ def _invalid_preflight_evidence(error: str) -> dict:
     }
 
 
+def _is_empty_clips_interruption(observation: object, *, engine: str) -> bool:
+    """Recognize a kill before the native observer emitted authenticated evidence."""
+    if engine != "clips" or type(observation) is not dict:
+        return False
+    protocol_issues = observation.get("protocol_issues")
+    return (
+        observation.get("lifecycle") == []
+        and observation.get("diagnostics") == []
+        and observation.get("active_phase") is None
+        and type(protocol_issues) is list
+        and all(type(issue) is str for issue in protocol_issues)
+        and set(protocol_issues).issubset(_EMPTY_INTERRUPTION_PROTOCOL_ISSUES)
+    )
+
+
 def _project_result(
     result: dict,
     *,
     engine: str,
     harnessed: bool,
+    expected_fixture: dict[str, str] | None = None,
     require_firing_names: bool = False,
     require_globals: bool = False,
 ) -> dict:
     """Project one successful observer result or return invalid evidence."""
     observation = result.get("observation")
-    if result.get("timed_out"):
-        error = result.get("observation_error", f"{engine} observer timed out")
+    process = result.get("termination")
+    if not isinstance(process, dict):
+        process = termination(
+            exit_code=result.get("exit_code"),
+            timed_out=result.get("timed_out") is True,
+            spawn_error=result.get("spawn_error") is True,
+        )
+        result["termination"] = process
+    process_kind = process.get("kind")
+    interrupted = process_kind in {"timeout", "signal"}
+    if process_kind in {"timeout", "signal", "spawn-error"} and type(observation) is dict:
+        instrumentation = observation.get("instrumentation")
+        active_phase = (
+            instrumentation.get("active_phase") if isinstance(instrumentation, dict) else None
+        )
+        if active_phase in {"load", "reset", "run"}:
+            process["active_phase"] = active_phase
+
+    if result.get("harness_error") is True:
+        error = result.get("observation_error", f"{engine} observer harness failed")
+        result["diagnostic"] = diagnostic("harness", "harness-error", continued=False)
         result["projection_error"] = error
         return _invalid_observation(error)
-    if result.get("exit_code") != 0:
+
+    trusted_diagnostic: dict | None = None
+    validate_diagnostic_subset = not interrupted or not _is_empty_clips_interruption(
+        observation,
+        engine=engine,
+    )
+    if (
+        expected_fixture is not None
+        and type(observation) is dict
+        and observation.get("schema") == "ferric.compat-observation"
+        and validate_diagnostic_subset
+    ):
+        try:
+            trusted_diagnostic = project_observation_diagnostic(
+                observation,
+                engine=engine,
+                expected_fixture=expected_fixture,
+                interrupted=interrupted,
+            )
+        except ObservationProjectionError as error:
+            result["diagnostic"] = diagnostic("harness", "harness-error", continued=False)
+            result["projection_error"] = str(error)
+            return _invalid_observation(str(error))
+    if process_kind in {"timeout", "signal", "spawn-error"}:
         error = result.get(
             "observation_error",
-            f"{engine} observer exited with status {result.get('exit_code')!r}",
+            f"{engine} observer terminated as {process_kind}",
         )
+        if trusted_diagnostic is not None and trusted_diagnostic["phase"] != "none":
+            result["diagnostic"] = diagnostic(
+                trusted_diagnostic["phase"],
+                trusted_diagnostic["category"],
+                continued=trusted_diagnostic["continued"],
+            )
+        else:
+            result["diagnostic"] = process_diagnostic(result)
         result["projection_error"] = error
         return _invalid_observation(error)
     if engine == "ferric" and result.get("stderr"):
         error = "ferric observer emitted out-of-band stderr"
+        result["diagnostic"] = diagnostic("harness", "harness-error", continued=False)
         result["projection_error"] = error
         return _invalid_observation(error)
     if type(observation) is not dict:
         error = result.get("observation_error", f"{engine} observation is missing")
+        result["diagnostic"] = process_diagnostic(result) or diagnostic(
+            "harness", "harness-error", continued=False
+        )
         result["projection_error"] = error
         return _invalid_observation(error)
 
@@ -647,8 +996,33 @@ def _project_result(
                 require_firing_names=require_firing_names,
             )
     except ObservationProjectionError as error:
+        if trusted_diagnostic is not None and trusted_diagnostic["phase"] != "none":
+            result["diagnostic"] = diagnostic(
+                trusted_diagnostic["phase"],
+                trusted_diagnostic["category"],
+                continued=trusted_diagnostic["continued"],
+            )
+        else:
+            result["diagnostic"] = diagnostic("harness", "harness-error", continued=False)
         result["projection_error"] = str(error)
         return _invalid_observation(str(error))
+
+    canonical_diagnostic = projected.get("diagnostic")
+    if type(canonical_diagnostic) is not dict:
+        error = f"{engine} projected diagnostic is malformed"
+        result["diagnostic"] = diagnostic("harness", "harness-error", continued=False)
+        result["projection_error"] = error
+        return _invalid_observation(error)
+    result["diagnostic"] = diagnostic(
+        canonical_diagnostic["phase"],
+        canonical_diagnostic["category"],
+        continued=canonical_diagnostic["continued"],
+    )
+    if result.get("exit_code") != 0 and canonical_diagnostic.get("phase") == "none":
+        error = f"{engine} observer exited with status {result.get('exit_code')!r}"
+        result["diagnostic"] = process_diagnostic(result)
+        result["projection_error"] = error
+        return _invalid_observation(error)
 
     result["canonical_observation"] = projected
     return projected
@@ -744,6 +1118,12 @@ def process_file(args: tuple) -> tuple:
         if declaration_evidence.status is EvidenceStatus.VALID:
             fixture_id = runtime_declaration["id"]
             nonce = runtime_declaration["nonce"]
+            expected_fixture = {
+                "id": fixture_id,
+                "nonce": nonce,
+                "source_sha256": source_digest,
+                "composed_sha256": composed_digest,
+            }
             ferric_result = run_ferric_observer(
                 run_path,
                 ferric,
@@ -758,6 +1138,7 @@ def process_file(args: tuple) -> tuple:
                 ferric_result,
                 engine="ferric",
                 harnessed=harness is not None,
+                expected_fixture=expected_fixture,
                 require_firing_names=(
                     runtime_declaration["expectations"]["firings"]["names"] is not None
                 ),
@@ -765,12 +1146,13 @@ def process_file(args: tuple) -> tuple:
             )
         else:
             ferric_result = {
-                "exit_code": -1,
+                "exit_code": None,
                 "stdout": "",
                 "stderr": "oracle declaration is invalid for the current source",
                 "duration_ms": 0,
                 "timed_out": False,
                 "observation_error": "oracle declaration validation failed",
+                "not_run": True,
             }
             ferric_observation = None
 
@@ -805,13 +1187,14 @@ def process_file(args: tuple) -> tuple:
                 clips_result,
                 engine="clips",
                 harnessed=harness is not None,
+                expected_fixture=expected_fixture,
                 require_firing_names=(
                     runtime_declaration["expectations"]["firings"]["names"] is not None
                 ),
             )
         else:
             clips_result = {
-                "exit_code": -1,
+                "exit_code": None,
                 "stdout": "",
                 "stderr": (
                     "reference observer was skipped"
@@ -825,6 +1208,7 @@ def process_file(args: tuple) -> tuple:
                     if skip_clips
                     else "oracle declaration validation failed"
                 ),
+                "not_run": True,
             }
             clips_observation = (
                 _invalid_observation("reference observer was skipped") if skip_clips else None
@@ -837,7 +1221,12 @@ def process_file(args: tuple) -> tuple:
             expected_source_sha256=source_digest,
             expected_composed_sha256=composed_digest,
         )
-        classification, reason, evidence = _oracle_outcome(evaluation)
+        _oracle_classification, _oracle_reason, evidence = _oracle_outcome(evaluation)
+        classification, reason = classify_results(
+            ferric_result,
+            clips_result,
+            evaluation=evaluation,
+        )
         for engine_name, engine_result in (
             ("ferric", ferric_result),
             ("clips", clips_result),
@@ -860,7 +1249,7 @@ def process_file(args: tuple) -> tuple:
             )
 
         retain_failure = classification in FAILED_CLASSIFICATIONS or reason.startswith(
-            "oracle-invalid"
+            ("oracle-invalid", "diagnostic-", "termination-", "harness-")
         )
         if composed_content is not None and composed_digest is not None:
             composed_metadata: dict[str, str | int] = {
@@ -1288,6 +1677,18 @@ def main(
             print(f"  {rel_path} ({reason})")
             for violation in ferric_r["oracle_evidence"].get("violations", [])[:3]:
                 print(f"    {violation}")
+
+    invalid_runtime = [
+        (rel_path, values)
+        for rel_path, values in results.items()
+        if values[3] in INVALID_RUNTIME_EVIDENCE_REASONS
+    ]
+    if invalid_runtime:
+        print(f"\nInvalid runtime evidence ({len(invalid_runtime)}):")
+        for rel_path, (_ferric_r, _clips_r, _classification, reason) in invalid_runtime[:20]:
+            print(f"  {rel_path} ({reason})")
+
+    if invalid or invalid_runtime:
         raise typer.Exit(1)
 
 

@@ -20,13 +20,16 @@
 #define DIGEST_LENGTH 64
 #define AUTH_KEY_HEX_LENGTH 64
 #define AUTH_KEY_LENGTH 32
+#define DIAGNOSTIC_TAXONOMY_VERSION 1
 #define MAX_CONFIG_LENGTH                                                     \
   (MAX_NONCE_LENGTH + MAX_TOKEN_LENGTH + (2 * DIGEST_LENGTH) +               \
    AUTH_KEY_HEX_LENGTH + 5)
 #define MAX_PROBE_PAYLOAD (16U * 1024U * 1024U)
+#define MAX_DIAGNOSTIC_PAYLOAD MAX_PROBE_PAYLOAD
 
 #define NATIVE_EMIT_FUNCTION "ferric-compat-native-emit"
 #define NATIVE_COMPLETE_FUNCTION "ferric-compat-native-complete"
+#define DIAGNOSTIC_ROUTER_NAME "ferric-diagnostic-observer"
 
 struct observer_config {
   char nonce[MAX_NONCE_LENGTH + 1];
@@ -34,6 +37,12 @@ struct observer_config {
   char source_sha256[DIGEST_LENGTH + 1];
   char composed_sha256[DIGEST_LENGTH + 1];
   unsigned char auth_key[AUTH_KEY_LENGTH];
+};
+
+struct diagnostic_buffer {
+  char *data;
+  size_t length;
+  size_t capacity;
 };
 
 static struct observer_config config;
@@ -44,6 +53,9 @@ static int observed_evaluation_error = 0;
 static int observer_after_run = 0;
 static int observer_complete = 0;
 static int protocol_violation = 0;
+static struct diagnostic_buffer diagnostic_output = {NULL, 0, 0};
+static const char *active_diagnostic_phase = NULL;
+static int phase_sequence = 0;
 
 static void write_all(int descriptor, const char *data, size_t length) {
   size_t written = 0;
@@ -124,6 +136,143 @@ static void emit_lifecycle(int sequence, const char *event) {
   emit_formatted_record("LIFECYCLE|%d|%s|%s|%s|%s", sequence, event,
                         config.fixture_id, config.source_sha256,
                         config.composed_sha256);
+}
+
+static void emit_phase(const char *phase, const char *event,
+                       const char *status) {
+  phase_sequence++;
+  if (status == NULL) {
+    emit_formatted_record("PHASE|%d|%s|%s", phase_sequence, phase, event);
+  } else {
+    emit_formatted_record("PHASE|%d|%s|%s|%s", phase_sequence, phase, event,
+                          status);
+  }
+}
+
+static void emit_diagnostic(const char *phase, int continued,
+                            const char *payload, size_t payload_length) {
+  char header[96];
+  int header_length;
+  char *record;
+
+  header_length = snprintf(header, sizeof(header), "DIAGNOSTIC|%d|%s|%d|%zu|",
+                           DIAGNOSTIC_TAXONOMY_VERSION, phase,
+                           continued != 0, payload_length);
+  if (header_length <= 0 || (size_t)header_length >= sizeof(header)) {
+    fail("diagnostic header is too long");
+  }
+  if (payload_length > MAX_DIAGNOSTIC_PAYLOAD ||
+      payload_length > SIZE_MAX - (size_t)header_length) {
+    fail("diagnostic record length overflow");
+  }
+  record = malloc((size_t)header_length + payload_length);
+  if (record == NULL) {
+    fail("could not allocate a diagnostic record");
+  }
+  (void)memcpy(record, header, (size_t)header_length);
+  if (payload_length != 0) {
+    (void)memcpy(record + header_length, payload, payload_length);
+  }
+  emit_authenticated(record, (size_t)header_length + payload_length);
+  (void)memset(record, 0, (size_t)header_length + payload_length);
+  free(record);
+}
+
+static void append_diagnostic_output(const char *text) {
+  const size_t text_length = strlen(text);
+  size_t required;
+  size_t capacity;
+  char *resized;
+
+  if (text_length > MAX_DIAGNOSTIC_PAYLOAD - diagnostic_output.length) {
+    fail("CLIPS diagnostic output is too long");
+  }
+  required = diagnostic_output.length + text_length;
+  if (required <= diagnostic_output.capacity) {
+    (void)memcpy(diagnostic_output.data + diagnostic_output.length, text,
+                 text_length);
+    diagnostic_output.length = required;
+    return;
+  }
+
+  capacity = diagnostic_output.capacity == 0 ? 1024 : diagnostic_output.capacity;
+  while (capacity < required) {
+    if (capacity > MAX_DIAGNOSTIC_PAYLOAD / 2) {
+      capacity = MAX_DIAGNOSTIC_PAYLOAD;
+    } else {
+      capacity *= 2;
+    }
+  }
+  resized = realloc(diagnostic_output.data, capacity);
+  if (resized == NULL) {
+    fail("could not allocate CLIPS diagnostic output");
+  }
+  diagnostic_output.data = resized;
+  diagnostic_output.capacity = capacity;
+  (void)memcpy(diagnostic_output.data + diagnostic_output.length, text,
+               text_length);
+  diagnostic_output.length = required;
+}
+
+static int diagnostic_router_query(void *environment,
+                                   const char *logical_name) {
+  if (environment != observer_environment || active_diagnostic_phase == NULL) {
+    return 0;
+  }
+  return strcmp(logical_name, "werror") == 0 ||
+         strcmp(logical_name, "wwarning") == 0;
+}
+
+static int diagnostic_router_print(void *environment,
+                                   const char *logical_name,
+                                   const char *text) {
+  (void)logical_name;
+  if (environment != observer_environment || active_diagnostic_phase == NULL ||
+      text == NULL) {
+    return 0;
+  }
+  write_all(STDERR_FILENO, text, strlen(text));
+  append_diagnostic_output(text);
+  return 1;
+}
+
+static void begin_diagnostic_phase(const char *phase) {
+  if (active_diagnostic_phase != NULL) {
+    fail("diagnostic phases overlap");
+  }
+  diagnostic_output.length = 0;
+  emit_phase(phase, "BEGIN", NULL);
+  active_diagnostic_phase = phase;
+}
+
+static void end_diagnostic_phase(const char *phase, int has_diagnostic,
+                                 int continued) {
+  const char *status;
+
+  if (active_diagnostic_phase == NULL ||
+      strcmp(active_diagnostic_phase, phase) != 0) {
+    fail("diagnostic phase ended out of order");
+  }
+  active_diagnostic_phase = NULL;
+  if (has_diagnostic) {
+    emit_diagnostic(phase, continued, diagnostic_output.data,
+                    diagnostic_output.length);
+    status = continued ? "CONTINUED" : "ERROR";
+  } else {
+    status = "OK";
+  }
+  diagnostic_output.length = 0;
+  emit_phase(phase, "END", status);
+}
+
+static void release_diagnostic_output(void) {
+  if (diagnostic_output.data != NULL) {
+    (void)memset(diagnostic_output.data, 0, diagnostic_output.capacity);
+    free(diagnostic_output.data);
+  }
+  diagnostic_output.data = NULL;
+  diagnostic_output.length = 0;
+  diagnostic_output.capacity = 0;
 }
 
 static int valid_nonce(const char *nonce) {
@@ -391,6 +540,12 @@ int main(int argc, char **argv) {
   void *environment;
   long long rules_fired;
   long long agenda_size;
+  int load_failed;
+  int reset_evaluation_error;
+  int reset_halt_execution;
+  int reset_halt_rules;
+  int reset_diagnostic;
+  int run_failed;
   int result = 0;
 
   if (argc != 3 || strcmp(argv[1], "--source") != 0) {
@@ -421,15 +576,41 @@ int main(int argc, char **argv) {
     (void)DestroyEnvironment(environment);
     return 127;
   }
-
-  if (EnvLoad(environment, source_path) != 1) {
-    mark_violation("source-load-failed");
+  if (!EnvAddRouter(environment, DIAGNOSTIC_ROUTER_NAME, 30,
+                    diagnostic_router_query, diagnostic_router_print, NULL,
+                    NULL, NULL)) {
+    fprintf(stderr,
+            "ferric CLIPS observer: cannot register diagnostic router\n");
     (void)DestroyEnvironment(environment);
-    return 1;
+    return 127;
   }
 
   emit_lifecycle(0, "START");
+  begin_diagnostic_phase("load");
+  load_failed = EnvLoad(environment, source_path) != 1;
+  end_diagnostic_phase("load", load_failed, 0);
+  if (load_failed) {
+    emit_lifecycle(3, "COMPLETE");
+    observer_complete = 1;
+    (void)DestroyEnvironment(environment);
+    observer_environment = NULL;
+    release_diagnostic_output();
+    (void)memset(&config, 0, sizeof(config));
+    return 1;
+  }
+
+  SetEvaluationError(environment, FALSE);
+  begin_diagnostic_phase("reset");
   EnvReset(environment);
+  reset_evaluation_error = GetEvaluationError(environment) != 0;
+  reset_halt_execution = GetHaltExecution(environment) != 0;
+  reset_halt_rules = EnvGetHaltRules(environment) != 0;
+  reset_diagnostic = reset_evaluation_error || reset_halt_execution ||
+                     reset_halt_rules;
+  end_diagnostic_phase("reset", reset_diagnostic, reset_diagnostic);
+  SetEvaluationError(environment, FALSE);
+  SetHaltExecution(environment, FALSE);
+  EnvSetHaltRules(environment, FALSE);
   observed_halt_rules = 0;
   observed_halt_execution = 0;
   observed_evaluation_error = 0;
@@ -439,6 +620,7 @@ int main(int argc, char **argv) {
     (void)DestroyEnvironment(environment);
     return 127;
   }
+  begin_diagnostic_phase("run");
   rules_fired = EnvRun(environment, -1);
   observe_after_firing(environment);
   if (!EnvRemoveRunFunction(environment, "ferric-native-observer")) {
@@ -446,6 +628,9 @@ int main(int argc, char **argv) {
     (void)DestroyEnvironment(environment);
     return 127;
   }
+  run_failed = observed_evaluation_error != 0 ||
+               (observed_halt_execution != 0 && observed_halt_rules == 0);
+  end_diagnostic_phase("run", run_failed, 0);
   agenda_size = count_agenda(environment);
   emit_formatted_record(
       "RUN|-1|%lld|%d|%d|%d|%lld|%d", rules_fired,
@@ -454,9 +639,14 @@ int main(int argc, char **argv) {
       agenda_size, protocol_violation != 0);
   observer_after_run = 1;
 
-  evaluate_probe_operations(environment);
-  if (!observer_complete) {
-    mark_violation("completion-missing");
+  if (run_failed) {
+    emit_lifecycle(3, "COMPLETE");
+    observer_complete = 1;
+  } else {
+    evaluate_probe_operations(environment);
+    if (!observer_complete) {
+      mark_violation("completion-missing");
+    }
   }
   if (protocol_violation) {
     result = 1;
@@ -466,6 +656,7 @@ int main(int argc, char **argv) {
     return 127;
   }
   observer_environment = NULL;
+  release_diagnostic_output();
   (void)memset(&config, 0, sizeof(config));
   return result;
 }

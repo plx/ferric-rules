@@ -12,6 +12,7 @@ from rich.console import Console
 
 from ferric_tools._manifest import load_manifest
 from ferric_tools._paths import examples_dir as default_examples_dir
+from ferric_tools.compat.diagnostics import result_diagnostic_view
 from ferric_tools.compat.oracle import SUPPORTED_NORMALIZERS
 
 app = typer.Typer(help="Generate compatibility assessment reports.")
@@ -157,6 +158,56 @@ def _format_counter(counter: dict[str, int]) -> str:
     return ", ".join(f"{name}: {count:,}" for name, count in sorted(counter.items()))
 
 
+def _termination_view(result: dict) -> dict:
+    raw = result.get("termination")
+    if not isinstance(raw, dict):
+        return {
+            "kind": "",
+            "exit_code": result.get("exit_code"),
+            "signal": None,
+            "active_phase": None,
+        }
+    return {
+        "kind": raw.get("kind", ""),
+        "exit_code": raw.get("exit_code"),
+        "signal": raw.get("signal"),
+        "active_phase": raw.get("active_phase"),
+    }
+
+
+def _diagnostic_line(engine: str, result: dict) -> str | None:
+    diagnostic = result_diagnostic_view(result)
+    if diagnostic["phase"] == "none" and diagnostic["category"] == "none":
+        return None
+    process = _termination_view(result)
+    line = (
+        f"{engine}: diagnostic v{diagnostic['version']} "
+        f"{diagnostic['phase']}/{diagnostic['category']} "
+        f"continued={str(diagnostic['continued']).lower()}; "
+        f"termination={process['kind'] or 'unknown'}"
+    )
+    if process["signal"] is not None:
+        line += f" signal={process['signal']}"
+    elif process["exit_code"] is not None:
+        line += f" exit={process['exit_code']}"
+    if process["active_phase"] is not None:
+        line += f" active-phase={process['active_phase']}"
+    return line
+
+
+def _diagnostic_entries(manifest: dict) -> list[tuple[str, dict, list[str]]]:
+    entries: list[tuple[str, dict, list[str]]] = []
+    for path, info in sorted(manifest["files"].items()):
+        details = [
+            line
+            for engine in ("ferric", "clips")
+            if (line := _diagnostic_line(engine, info.get(engine) or {})) is not None
+        ]
+        if details:
+            entries.append((path, info, details))
+    return entries
+
+
 def print_summary(manifest: dict) -> None:
     """Print summary to stdout."""
     summary = manifest["summary"]
@@ -254,6 +305,15 @@ def print_summary(manifest: dict) -> None:
                     print(f"    ferric: {f_out!r}")
                     print(f"    clips:  {c_out!r}")
 
+    diagnostic_entries = _diagnostic_entries(manifest)
+    if diagnostic_entries:
+        print()
+        print(f"Diagnostic evidence ({len(diagnostic_entries)}):")
+        for path, info, details in diagnostic_entries:
+            print(f"  {path} ({info['classification']}: {info['reason']})")
+            for detail in details:
+                print(f"    {detail}")
+
 
 _FIELDNAMES = [
     "path",
@@ -266,9 +326,23 @@ _FIELDNAMES = [
     "ferric_exit",
     "ferric_duration_ms",
     "ferric_timed_out",
+    "ferric_termination",
+    "ferric_signal",
+    "ferric_active_phase",
+    "ferric_diagnostic_version",
+    "ferric_diagnostic_phase",
+    "ferric_diagnostic_category",
+    "ferric_diagnostic_continued",
     "clips_exit",
     "clips_duration_ms",
     "clips_timed_out",
+    "clips_termination",
+    "clips_signal",
+    "clips_active_phase",
+    "clips_diagnostic_version",
+    "clips_diagnostic_phase",
+    "clips_diagnostic_category",
+    "clips_diagnostic_continued",
     "oracle_selected",
     "oracle_declaration",
     "oracle_status",
@@ -291,6 +365,10 @@ def _write_delimited(manifest: dict, out_path: str, delimiter: str) -> None:
         for path, info in sorted(manifest["files"].items()):
             ferric = info.get("ferric") or {}
             clips = info.get("clips") or {}
+            ferric_diagnostic = result_diagnostic_view(ferric)
+            clips_diagnostic = result_diagnostic_view(clips)
+            ferric_termination = _termination_view(ferric)
+            clips_termination = _termination_view(clips)
             oracle = oracle_evidence_view(info)
             writer.writerow(
                 {
@@ -304,9 +382,23 @@ def _write_delimited(manifest: dict, out_path: str, delimiter: str) -> None:
                     "ferric_exit": ferric.get("exit_code", ""),
                     "ferric_duration_ms": ferric.get("duration_ms", ""),
                     "ferric_timed_out": ferric.get("timed_out", ""),
+                    "ferric_termination": ferric_termination["kind"],
+                    "ferric_signal": ferric_termination["signal"],
+                    "ferric_active_phase": ferric_termination["active_phase"],
+                    "ferric_diagnostic_version": ferric_diagnostic["version"],
+                    "ferric_diagnostic_phase": ferric_diagnostic["phase"],
+                    "ferric_diagnostic_category": ferric_diagnostic["category"],
+                    "ferric_diagnostic_continued": ferric_diagnostic["continued"],
                     "clips_exit": clips.get("exit_code", ""),
                     "clips_duration_ms": clips.get("duration_ms", ""),
                     "clips_timed_out": clips.get("timed_out", ""),
+                    "clips_termination": clips_termination["kind"],
+                    "clips_signal": clips_termination["signal"],
+                    "clips_active_phase": clips_termination["active_phase"],
+                    "clips_diagnostic_version": clips_diagnostic["version"],
+                    "clips_diagnostic_phase": clips_diagnostic["phase"],
+                    "clips_diagnostic_category": clips_diagnostic["category"],
+                    "clips_diagnostic_continued": clips_diagnostic["continued"],
                     "oracle_selected": oracle["selected"],
                     "oracle_declaration": oracle["declaration"],
                     "oracle_status": oracle["status"],
@@ -423,6 +515,16 @@ def write_report(
         lines.append("")
         for k, v in divergent:
             lines.append(f"- `{k}` ({v['reason']})")
+
+    diagnostic_entries = _diagnostic_entries(manifest)
+    if diagnostic_entries:
+        lines.append("")
+        lines.append(f"### Diagnostic evidence ({len(diagnostic_entries)})")
+        lines.append("")
+        for path, info, details in diagnostic_entries:
+            lines.append(f"- `{path}` ({info['classification']}: {info['reason']})")
+            for detail in details:
+                lines.append(f"  - {detail}")
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
