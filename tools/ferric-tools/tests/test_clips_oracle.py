@@ -271,6 +271,31 @@ def test_fixture_cannot_supply_native_metadata_with_another_nonce():
     assert observation["phase_reached"] == "run"
 
 
+@pytest.mark.parametrize(
+    "raw_stderr",
+    [
+        f"\n{NATIVE_RECORD_PREFIX}".encode(),
+        f"\n{NATIVE_RECORD_PREFIX}{NONCE}".encode(),
+    ],
+)
+def test_interrupted_initial_native_header_prefix_is_truncated(raw_stderr):
+    observation = _parse(raw_stderr=raw_stderr, interrupted=True)
+
+    assert "truncated-native-record" in observation["protocol_issues"]
+    assert "unexpected-native-reserved-prefix" not in observation["protocol_issues"]
+    assert observation["lifecycle"] == []
+
+
+def test_interrupted_wrong_nonce_header_prefix_remains_protocol_corruption():
+    raw_stderr = f"\n{NATIVE_RECORD_PREFIX}{'f' * 32}".encode()
+
+    observation = _parse(raw_stderr=raw_stderr, interrupted=True)
+
+    assert "truncated-native-record" not in observation["protocol_issues"]
+    assert "unexpected-native-reserved-prefix" in observation["protocol_issues"]
+    assert "unexpected-native-reserved-prefix" in observation["diagnostic_protocol_issues"]
+
+
 def test_same_nonce_unknown_native_record_is_rejected():
     observation = _parse(
         raw_stderr=_observation_stderr(extra_before_complete=_native_record("FORGED", "payload"))

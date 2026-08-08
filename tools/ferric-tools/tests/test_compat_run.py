@@ -18,6 +18,7 @@ from ferric_tools._harness import HARNESS_GENERATION_VERSION, ResolvedHarness, s
 from ferric_tools._manifest import load_manifest, save_manifest
 from ferric_tools._paths import repo_root
 from ferric_tools.compat import run as run_module
+from ferric_tools.compat.clips_oracle import NATIVE_RECORD_PREFIX
 
 
 def _resolved_harness(
@@ -812,6 +813,68 @@ def test_interrupted_clips_parse_failure_preserves_process_termination(
     assert result["diagnostic"] == run_module.diagnostic(
         "process", expected_category, continued=False
     )
+
+
+@pytest.mark.parametrize(
+    "partial_start",
+    [
+        pytest.param(f"\n{NATIVE_RECORD_PREFIX}".encode(), id="after-prefix"),
+        pytest.param(
+            f"\n{NATIVE_RECORD_PREFIX}{'0' * 32}".encode(),
+            id="after-nonce",
+        ),
+        pytest.param(
+            f"\n{NATIVE_RECORD_PREFIX}{'0' * 32}|LIFECYCLE|0|STA".encode(),
+            id="during-record",
+        ),
+    ],
+)
+def test_signal_during_initial_native_record_remains_process_signal(
+    monkeypatch,
+    tmp_path,
+    partial_start,
+):
+    source = tmp_path / "fixture.clp"
+    source.write_text("(deffacts startup (ready))\n")
+    fixture_id = "fixture.initial-record"
+    nonce = "0" * 32
+    source_digest = "a" * 64
+    monkeypatch.setattr(
+        run_module,
+        "_run_clips_process",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 137, b"", partial_start),
+    )
+
+    result = run_module.run_clips_observer(
+        str(source),
+        str(tmp_path),
+        "scripts/clips-reference.sh",
+        1,
+        fixture_id=fixture_id,
+        nonce=nonce,
+        source_sha256=source_digest,
+        composed_sha256=source_digest,
+        globals_to_capture=(),
+        harnessed=False,
+    )
+    projected = run_module._project_result(
+        result,
+        engine="clips",
+        harnessed=False,
+        expected_fixture={
+            "id": fixture_id,
+            "nonce": nonce,
+            "source_sha256": source_digest,
+            "composed_sha256": source_digest,
+        },
+    )
+
+    assert result["observation"]["lifecycle"] == []
+    assert "truncated-native-record" in result["observation"]["protocol_issues"]
+    assert result.get("harness_error") is None
+    assert result["termination"] == {"kind": "signal", "exit_code": None, "signal": 9}
+    assert projected == {"observation_error": "clips observer terminated as signal"}
+    assert result["diagnostic"] == run_module.diagnostic("process", "signal", continued=False)
 
 
 def test_interrupted_clips_retains_invalid_utf8_bytes_losslessly(monkeypatch, tmp_path):

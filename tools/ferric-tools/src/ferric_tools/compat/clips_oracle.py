@@ -397,6 +397,14 @@ def _parse_native_records(
         cursor = end
 
     semantic_bytes = _remove_intervals(raw, intervals)
+    if interrupted and not records:
+        public_prefix = b"\n" + reserved_prefix
+        prefix_start = semantic_bytes.rfind(public_prefix)
+        if prefix_start >= 0:
+            trailing_bytes = semantic_bytes[prefix_start:]
+            if len(trailing_bytes) < len(exact_prefix) and exact_prefix.startswith(trailing_bytes):
+                semantic_bytes = semantic_bytes[:prefix_start]
+                issues.append("truncated-native-record")
     if reserved_prefix in semantic_bytes:
         issues.append("unexpected-native-reserved-prefix")
     semantic_stderr = (
