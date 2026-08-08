@@ -208,6 +208,42 @@ jobs:
           rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
           target: ${{ matrix.rust_target }}
           working-directory: crates/ferric-rules-python
+      - name: Reclaim macOS native build scratch before audit
+        if: matrix.family == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          staged=()
+          while IFS= read -r -d '' wheel; do
+            staged+=("$wheel")
+          done < <(find \
+            "$GITHUB_WORKSPACE/crates/ferric-rules-python/python-wheel-staging" \
+            -mindepth 1 -maxdepth 1 -type f -name '*.whl' -print0)
+          if [[ "${#staged[@]}" -ne 1 ]]; then
+            printf 'refusing cleanup: expected one staged wheel, found %s\n' \
+              "${#staged[@]}" >&2
+            exit 1
+          fi
+          target_directory="$(
+            cargo metadata \
+              --format-version 1 \
+              --no-deps \
+              --locked \
+              --offline \
+              --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" |
+              python3 -c \
+                'import json,sys; print(json.load(sys.stdin)["target_directory"])'
+          )"
+          if [[ "$target_directory" != "$GITHUB_WORKSPACE/target" ||
+                ! -d "$target_directory" || -L "$target_directory" ]]; then
+            printf 'refusing unexpected Cargo target cleanup: %s\n' \
+              "$target_directory" >&2
+            exit 1
+          fi
+          du -sh "$target_directory"
+          rm -rf -- "$target_directory"
+          test ! -e "$target_directory"
+          df -h "$GITHUB_WORKSPACE"
       - name: Install pinned packaging tools
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:

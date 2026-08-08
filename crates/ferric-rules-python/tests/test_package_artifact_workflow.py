@@ -163,6 +163,25 @@ def test_builds_are_pinned_repaired_audited_and_uploaded_exactly_once():
     assert "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER" in job
     assert "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER" in job
     assert "scripts/musl_static_libgcc_linker.py" in job
+    cleanup = "Reclaim macOS native build scratch before audit"
+    assert cleanup in job
+    assert job.index(cleanup) > job.index("Build one staged Unix wheel")
+    assert job.index(cleanup) < job.index("Install pinned packaging tools")
+    cleanup_block = job[
+        job.index(cleanup) : job.index("Install pinned packaging tools")
+    ]
+    assert "if: matrix.family == 'macos'" in cleanup_block
+    assert "expected one staged wheel" in cleanup_block
+    for metadata_guard in [
+        "--no-deps",
+        "--locked",
+        "--offline",
+        '--manifest-path "$GITHUB_WORKSPACE/Cargo.toml"',
+    ]:
+        assert metadata_guard in cleanup_block
+    assert '"$target_directory" != "$GITHUB_WORKSPACE/target"' in cleanup_block
+    assert '! -d "$target_directory" || -L "$target_directory"' in cleanup_block
+    assert 'rm -rf -- "$target_directory"' in cleanup_block
     assert "--auditwheel ${{ matrix.auditwheel_mode }}" in job
     assert job.count("auditwheel_mode: repair") == 4
     assert "auditwheel show" in job
