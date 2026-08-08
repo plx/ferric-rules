@@ -62,8 +62,9 @@ rustc-hash = "2"
 # Bounded channels with cancel-aware and timeout-aware admission.
 crossbeam-channel = "0.5"
 
-# PyO3 Python bindings
-pyo3 = { version = "0.23", features = ["extension-module"] }
+# PyO3 Python bindings. The Python distribution targets CPython's stable ABI
+# from 3.9 onward; keep this feature aligned with wheel-targets.json.
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
 pyo3-build-config = "0.23"
 
 # napi-rs Node.js bindings
@@ -116,6 +117,13 @@ missing_panics_doc = "allow"
 lto = true
 codegen-units = 1
 strip = "symbols"
+
+# Stripping the abi3 extension during Cargo's link step can produce malformed
+# Mach-O string-table alignment with some Apple linkers. Maturin inspects and
+# packages this crate separately, so retain its symbols while leaving the
+# workspace release policy unchanged for every other package.
+[profile.release.package.ferric-rules-python]
+strip = "none"
 
 # FFI profile: development builds retain unwind so exported wrappers can
 # contain ordinary Rust panics before they reach the C ABI boundary.

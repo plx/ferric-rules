@@ -42,13 +42,12 @@ def test_python_metadata_matches_ci_matrix():
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _python_bindings_job(workflow)
 
-    requires_python = re.search(r'^requires-python\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
+    requires_python = re.search(
+        r'^requires-python\s*=\s*"([^"]+)"', pyproject, re.MULTILINE
+    )
     assert requires_python is not None
     assert requires_python.group(1) == REQUIRES_PYTHON
-    assert (
-        '"Programming Language :: Python :: Implementation :: CPython"'
-        in pyproject
-    )
+    assert '"Programming Language :: Python :: Implementation :: CPython"' in pyproject
 
     classifiers = re.findall(
         r'"Programming Language :: Python :: (\d+\.\d+)"',
@@ -83,37 +82,31 @@ def test_lockfile_carries_the_same_python_range_without_314_artifacts():
     pyproject = PYPROJECT.read_text(encoding="utf-8")
     lockfile = UV_LOCK.read_text(encoding="utf-8")
 
-    project_range = re.search(r'^requires-python\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
+    project_range = re.search(
+        r'^requires-python\s*=\s*"([^"]+)"', pyproject, re.MULTILINE
+    )
     lock_range = re.search(r'^requires-python\s*=\s*"([^"]+)"', lockfile, re.MULTILINE)
     assert project_range is not None
     assert lock_range is not None
     assert lock_range.group(1) == LOCK_REQUIRES_PYTHON
-    assert "".join(lock_range.group(1).split()) == "".join(project_range.group(1).split())
+    assert "".join(lock_range.group(1).split()) == "".join(
+        project_range.group(1).split()
+    )
     assert re.search(r"(?i)(?:cp|cpython[-_])314", lockfile) is None
 
 
-def test_every_matrix_lane_builds_tests_and_smokes_a_wheel():
+def test_every_fast_ci_matrix_lane_builds_and_tests_from_source():
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _python_bindings_job(workflow)
 
     required_commands = [
         "maturin develop",
         "pytest tests/",
-        "maturin build",
-        "$RUNNER_TEMP",
-        "${#artifacts[@]}",
-        "-m venv",
-        "pip install",
-        'cd "$smoke_dir"',
-        "import ferric",
         "sys.version_info[:2]",
-        "ferric.__file__",
-        "engine.load(",
-        "engine.run()",
-        "engine.close()",
     ]
     missing = [command for command in required_commands if command not in job]
     assert not missing, f"python-bindings job is missing coverage: {missing}"
+    assert "maturin build" not in job
 
 
 def test_supported_builds_do_not_use_pyo3_forward_compatibility_escape_hatch():

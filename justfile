@@ -150,6 +150,22 @@ py-test:
 py-bindings-test:
     cd crates/ferric-rules-python && uv run maturin develop --quiet && .venv/bin/python -m pytest tests/
 
+# Validate Python publish metadata, stable ABI, strip policy, and artifact targets
+python-package-validate:
+    python3 scripts/validate-python-package.py
+
+# Smoke one exact local Python wheel and write a machine-verifiable receipt
+python-wheel-artifact-smoke wheel target receipt *args:
+    python3 scripts/test-python-wheel-artifact.py --wheel {{wheel}} --target {{target}} --receipt {{receipt}} {{args}}
+
+# Normalize, PEP 517-build, and smoke one exact Python source distribution
+python-sdist-artifact-test raw_sdist final_sdist target receipt:
+    uv run --project crates/ferric-rules-python --locked python scripts/test-python-sdist-artifact.py --sdist {{raw_sdist}} --output {{final_sdist}} --target {{target}} --receipt {{receipt}}
+
+# Verify seven final wheels, one tested sdist, and their complete receipt matrix
+python-package-artifacts-verify artifacts receipts manifest:
+    python3 scripts/verify-python-package-artifacts.py --artifacts-dir {{artifacts}} --receipts-dir {{receipts}} --manifest-out {{manifest}}
+
 # Run one language-neutral semantic corpus through Rust, C, Go, Node, and Python.
 bindings-conformance:
     just build-go-ffi

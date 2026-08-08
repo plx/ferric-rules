@@ -138,8 +138,10 @@ implementation. It is published only so registry builds of
 
 ### `ferric-rules-python`
 
-PyO3 extension module (`ferric`) built via `maturin`. Located in
-`crates/ferric-rules-python/`; tests in `tests/*.py`.
+PyO3 extension module (`ferric`) built via `maturin`. Its `abi3-py39` release
+contract covers GIL-enabled CPython 3.9 through 3.13 across seven native wheel
+targets; see [`python-package-release.md`](python-package-release.md). Located
+in `crates/ferric-rules-python/`; tests are in `tests/*.py`.
 
 - `engine.rs` — `PyEngine`.
 - `fact.rs` — `Fact`, `FactType`.

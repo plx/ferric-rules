@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "distribution": {
+    "name": "ferric",
+    "import_name": "ferric",
+    "version_source": {
+      "path": "../../Cargo.toml",
+      "toml_key": "workspace.package.version"
+    }
+  },
+  "python": {
+    "implementation": "CPython",
+    "gil": "enabled",
+    "requires_python": ">=3.9,<3.14",
+    "supported_minors": [
+      "3.9",
+      "3.10",
+      "3.11",
+      "3.12",
+      "3.13"
+    ],
+    "abi": {
+      "kind": "abi3",
+      "pyo3_feature": "abi3-py39",
+      "minimum_python": "3.9",
+      "python_tag": "cp39",
+      "abi_tag": "abi3"
+    },
+    "exclusions": {
+      "python_versions": [
+        "<3.9",
+        ">=3.14"
+      ],
+      "implementations": [
+        "PyPy",
+        "GraalPy"
+      ],
+      "cpython_builds": [
+        "free-threaded"
+      ],
+      "wheel_targets": [
+        "macos-universal2",
+        "windows-arm64",
+        "unlisted-platforms-and-architectures"
+      ]
+    }
+  },
+  "wheels": [
+    {
+      "id": "manylinux2014-x86_64",
+      "runner": "ubuntu-24.04",
+      "rust_target": "x86_64-unknown-linux-gnu",
+      "platform_tags": [
+        "manylinux_2_17_x86_64",
+        "manylinux2014_x86_64"
+      ],
+      "runtime": {
+        "os": "linux",
+        "architecture": "x86_64",
+        "libc": "glibc",
+        "libc_minimum": "2.17"
+      },
+      "compatibility": {
+        "family": "manylinux",
+        "maturin": "manylinux2014"
+      }
+    },
+    {
+      "id": "manylinux2014-aarch64",
+      "runner": "ubuntu-24.04-arm",
+      "rust_target": "aarch64-unknown-linux-gnu",
+      "platform_tags": [
+        "manylinux_2_17_aarch64",
+        "manylinux2014_aarch64"
+      ],
+      "runtime": {
+        "os": "linux",
+        "architecture": "aarch64",
+        "libc": "glibc",
+        "libc_minimum": "2.17"
+      },
+      "compatibility": {
+        "family": "manylinux",
+        "maturin": "manylinux2014"
+      }
+    },
+    {
+      "id": "musllinux1_2-x86_64",
+      "runner": "ubuntu-24.04",
+      "rust_target": "x86_64-unknown-linux-musl",
+      "platform_tags": [
+        "musllinux_1_2_x86_64"
+      ],
+      "runtime": {
+        "os": "linux",
+        "architecture": "x86_64",
+        "libc": "musl",
+        "libc_minimum": "1.2"
+      },
+      "compatibility": {
+        "family": "musllinux",
+        "maturin": "musllinux_1_2"
+      }
+    },
+    {
+      "id": "musllinux1_2-aarch64",
+      "runner": "ubuntu-24.04-arm",
+      "rust_target": "aarch64-unknown-linux-musl",
+      "platform_tags": [
+        "musllinux_1_2_aarch64"
+      ],
+      "runtime": {
+        "os": "linux",
+        "architecture": "aarch64",
+        "libc": "musl",
+        "libc_minimum": "1.2"
+      },
+      "compatibility": {
+        "family": "musllinux",
+        "maturin": "musllinux_1_2"
+      }
+    },
+    {
+      "id": "macos-x86_64",
+      "runner": "macos-15-intel",
+      "rust_target": "x86_64-apple-darwin",
+      "platform_tags": [
+        "macosx_10_12_x86_64"
+      ],
+      "runtime": {
+        "os": "macos",
+        "architecture": "x86_64",
+        "minimum_os_version": "10.12"
+      },
+      "compatibility": {
+        "family": "macos",
+        "maturin": "pypi",
+        "deployment_target": "10.12"
+      }
+    },
+    {
+      "id": "macos-arm64",
+      "runner": "macos-15",
+      "rust_target": "aarch64-apple-darwin",
+      "platform_tags": [
+        "macosx_11_0_arm64"
+      ],
+      "runtime": {
+        "os": "macos",
+        "architecture": "aarch64",
+        "minimum_os_version": "11.0"
+      },
+      "compatibility": {
+        "family": "macos",
+        "maturin": "pypi",
+        "deployment_target": "11.0"
+      }
+    },
+    {
+      "id": "windows-x86_64",
+      "runner": "windows-2025",
+      "rust_target": "x86_64-pc-windows-msvc",
+      "platform_tags": [
+        "win_amd64"
+      ],
+      "runtime": {
+        "os": "windows",
+        "architecture": "x86_64"
+      },
+      "compatibility": {
+        "family": "windows",
+        "maturin": "pypi"
+      }
+    }
+  ],
+  "sdist": {
+    "included": true,
+    "artifact_count": 1,
+    "format": "tar.gz",
+    "build_and_test": true,
+    "include_in_publish_dry_run": true,
+    "cargo_lock": {
+      "required": true,
+      "relocated_workspace": "normalize-offline-then-verify-locked",
+      "final_artifact": "deterministically-repacked-and-tested"
+    },
+    "requirements": {
+      "python": ">=3.9,<3.14",
+      "rust": ">=1.75",
+      "maturin": ">=1.0,<2.0",
+      "native_toolchain": true,
+      "dependency_resolution": "network access or pre-populated Python and Cargo caches"
+    }
+  }
+}
