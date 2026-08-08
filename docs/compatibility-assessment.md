@@ -56,6 +56,23 @@ stop. The manifest's top-level `oracle_protocol_version: 1` continues to name
 the shared observation/evaluation protocol; each declaration and evidence
 record carries its own version.
 
+## Static source classification
+
+`compat-scan` makes one lexical pass over each raw source and classifies only
+recognized form heads. Strings, comments, and symbol substrings cannot create
+feature detections; real form heads remain case-insensitive, including nested
+forms. Every successfully decoded entry carries `feature_scan` version 1 with a
+`valid` or `invalid` status, ordered detections, and lexical issues. Each
+detection records its feature, category, reason, and exact form-head and
+enclosing-form spans; each issue records its kind, reason, and exact span. Spans
+use half-open UTF-8 byte offsets plus 1-based line and column coordinates.
+
+Malformed source is fail-closed as
+`incompatible/malformed-source` with runability `unknown`, and explicit
+compatibility-run selection refuses it. This preserves any trustworthy
+detections found before the lexical error without silently treating the file as
+runnable or compatible.
+
 ## Observation boundary
 
 Every run receives a fresh 128-bit nonce. Successful observations must produce
@@ -177,6 +194,18 @@ evidence. Compare a baseline and candidate with:
 ```console
 just compat-diff BASE_MANIFEST HEAD_MANIFEST
 ```
+
+The PR compatibility workflow also retains a scanner-only comparison. It
+captures each revision's manifest immediately after `compat-scan`, before
+`compat-run` can replace the scanner's classification and reason with runtime
+results. The Markdown and TSV summaries compare `features`,
+`unsupported_features`, classification, reason, runability, and structured scan
+status and issues. The JSON artifact additionally retains the complete
+`feature_scan` detections, reasons, issues, and exact spans for every reported
+file. A base manifest without `feature_scan` is identified as legacy evidence
+instead of reporting every file as changed. Scanner changes are review evidence
+and do not fail CI; failure to generate the retained artifacts does fail the
+workflow.
 
 For schema-v3 heads, the diff gate rejects every unverified equivalence claim,
 including a legacy claim copied forward unchanged, as well as evidence-coverage

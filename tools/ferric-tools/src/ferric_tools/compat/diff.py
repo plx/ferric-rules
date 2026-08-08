@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import csv
+import json
 from typing import Annotated
 
 import typer
 from rich.console import Console
 
+from ferric_tools._clips_parser import (
+    COOL_CONSTRUCTS,
+    INTERACTIVE_IO,
+    LOADING_COMMANDS,
+    SUPPORTED_CONSTRUCTS,
+    UNSUPPORTED_CONTROL,
+    UNSUPPORTED_IO,
+)
 from ferric_tools._manifest import load_manifest
 from ferric_tools.compat.diagnostics import result_diagnostic_view
 from ferric_tools.compat.report import compute_oracle_coverage, oracle_evidence_view
@@ -22,6 +31,39 @@ RANK = {"equivalent": 0, "divergent": 1, "pending": 2, "incompatible": 3}
 ORACLE_STATUS_RANK = {"invalid": 0, "missing": 1, "valid": 2}
 ORACLE_BOOLEAN_COVERAGE = ("selected", "declaration", "reached", "completed", "effect")
 STRUCTURED_ORACLE_MANIFEST_VERSION = 3
+SCANNER_DIFF_VERSION = 1
+FEATURE_SCAN_VERSION = 1
+SCANNER_FIELDS = (
+    "features",
+    "unsupported_features",
+    "classification",
+    "reason",
+    "runability",
+)
+FEATURE_SCAN_FIELDS = {"version", "status", "detections", "issues"}
+FEATURE_SCAN_DETECTION_FIELDS = {"feature", "category", "reason", "head_span", "form_span"}
+FEATURE_SCAN_ISSUE_FIELDS = {"kind", "reason", "span"}
+FEATURE_SCAN_SPAN_FIELDS = {
+    "start_byte",
+    "end_byte",
+    "start_line",
+    "start_column",
+    "end_line",
+    "end_column",
+}
+PROJECTED_FEATURES = frozenset((*SUPPORTED_CONSTRUCTS, *COOL_CONSTRUCTS, "printout"))
+PROJECTED_UNSUPPORTED_FEATURES = frozenset(
+    (*COOL_CONSTRUCTS, *UNSUPPORTED_CONTROL, *UNSUPPORTED_IO, *INTERACTIVE_IO, *LOADING_COMMANDS)
+)
+FEATURE_SCAN_SPECS = {
+    **{feature: ("supported-construct", "supported-form") for feature in SUPPORTED_CONSTRUCTS},
+    **{feature: ("cool-construct", "unsupported-form") for feature in COOL_CONSTRUCTS},
+    "printout": ("output", "supported-output"),
+    **{feature: ("unsupported-control", "unsupported-control") for feature in UNSUPPORTED_CONTROL},
+    **{feature: ("file-io", "unsupported-io") for feature in UNSUPPORTED_IO},
+    **{feature: ("interactive-io", "interactive") for feature in INTERACTIVE_IO},
+    **{feature: ("loading-command", "unsupported-command") for feature in LOADING_COMMANDS},
+}
 ABSENT_CLASSIFICATION = "absent"
 ABSENT_REASON = "not present"
 LEGACY_RUNNER_CLASSIFICATIONS = {
@@ -102,6 +144,503 @@ def fmt_delta(n: int) -> str:
     if n < 0:
         return str(n)
     return "0"
+
+
+def _scanner_string(value: object, *, label: str) -> str:
+    if type(value) is not str:
+        raise ValueError(f"{label} must be a string")
+    return value
+
+
+def _scanner_string_list(value: object, *, label: str) -> list[str]:
+    if type(value) is not list or any(type(item) is not str for item in value):
+        raise ValueError(f"{label} must be an array of strings")
+    return sorted(value)
+
+
+def _feature_scan_span(value: object, *, label: str) -> dict[str, int]:
+    if type(value) is not dict or set(value) != FEATURE_SCAN_SPAN_FIELDS:
+        raise ValueError(
+            f"{label} must contain exactly: {', '.join(sorted(FEATURE_SCAN_SPAN_FIELDS))}"
+        )
+
+    span: dict[str, int] = {}
+    for field in FEATURE_SCAN_SPAN_FIELDS:
+        coordinate = value[field]
+        minimum = 0 if field in {"start_byte", "end_byte"} else 1
+        if type(coordinate) is not int or coordinate < minimum:
+            qualifier = "non-negative" if minimum == 0 else "positive"
+            raise ValueError(f"{label}.{field} must be a {qualifier} integer")
+        span[field] = coordinate
+    if span["end_byte"] < span["start_byte"]:
+        raise ValueError(f"{label}.end_byte must not precede start_byte")
+    return span
+
+
+def _feature_scan_snapshot(value: object, *, label: str) -> dict:
+    if type(value) is not dict or set(value) != FEATURE_SCAN_FIELDS:
+        raise ValueError(f"{label} must contain exactly: {', '.join(sorted(FEATURE_SCAN_FIELDS))}")
+    if type(value["version"]) is not int or value["version"] != FEATURE_SCAN_VERSION:
+        raise ValueError(f"{label}.version must be {FEATURE_SCAN_VERSION}")
+    status = value["status"]
+    if type(status) is not str or status not in {"valid", "invalid"}:
+        raise ValueError(f"{label}.status must be 'valid' or 'invalid'")
+
+    raw_detections = value["detections"]
+    if type(raw_detections) is not list:
+        raise ValueError(f"{label}.detections must be an array")
+    detections: list[dict] = []
+    for index, raw_detection in enumerate(raw_detections):
+        detection_label = f"{label}.detections[{index}]"
+        if type(raw_detection) is not dict or set(raw_detection) != FEATURE_SCAN_DETECTION_FIELDS:
+            raise ValueError(
+                f"{detection_label} must contain exactly: "
+                f"{', '.join(sorted(FEATURE_SCAN_DETECTION_FIELDS))}"
+            )
+        detections.append(
+            {
+                "feature": _scanner_string(
+                    raw_detection["feature"], label=f"{detection_label}.feature"
+                ),
+                "category": _scanner_string(
+                    raw_detection["category"], label=f"{detection_label}.category"
+                ),
+                "reason": _scanner_string(
+                    raw_detection["reason"], label=f"{detection_label}.reason"
+                ),
+                "head_span": _feature_scan_span(
+                    raw_detection["head_span"], label=f"{detection_label}.head_span"
+                ),
+                "form_span": _feature_scan_span(
+                    raw_detection["form_span"], label=f"{detection_label}.form_span"
+                ),
+            }
+        )
+
+    raw_issues = value["issues"]
+    if type(raw_issues) is not list:
+        raise ValueError(f"{label}.issues must be an array")
+    issues: list[dict] = []
+    for index, raw_issue in enumerate(raw_issues):
+        issue_label = f"{label}.issues[{index}]"
+        if type(raw_issue) is not dict or set(raw_issue) != FEATURE_SCAN_ISSUE_FIELDS:
+            raise ValueError(
+                f"{issue_label} must contain exactly: "
+                f"{', '.join(sorted(FEATURE_SCAN_ISSUE_FIELDS))}"
+            )
+        issues.append(
+            {
+                "kind": _scanner_string(raw_issue["kind"], label=f"{issue_label}.kind"),
+                "reason": _scanner_string(raw_issue["reason"], label=f"{issue_label}.reason"),
+                "span": _feature_scan_span(raw_issue["span"], label=f"{issue_label}.span"),
+            }
+        )
+
+    if (status == "invalid") != bool(issues):
+        raise ValueError(f"{label}.status must be 'invalid' exactly when issues are present")
+
+    return {
+        "version": FEATURE_SCAN_VERSION,
+        "status": status,
+        "detections": detections,
+        "issues": issues,
+    }
+
+
+def _validate_scanner_snapshot(snapshot: dict, *, label: str) -> None:
+    scan = snapshot.get("feature_scan")
+    if scan is None:
+        return
+
+    detected_features = {detection["feature"] for detection in scan["detections"]}
+    unknown_detections = sorted(detected_features - FEATURE_SCAN_SPECS.keys())
+    if unknown_detections:
+        raise ValueError(
+            f"{label}.feature_scan contains unknown detections: {', '.join(unknown_detections)}"
+        )
+    for index, detection in enumerate(scan["detections"]):
+        expected_category, expected_reason = FEATURE_SCAN_SPECS[detection["feature"]]
+        if (detection["category"], detection["reason"]) != (
+            expected_category,
+            expected_reason,
+        ):
+            raise ValueError(
+                f"{label}.feature_scan.detections[{index}] category/reason must be "
+                f"{expected_category!r}/{expected_reason!r} for {detection['feature']!r}"
+            )
+
+    projected_features = sorted(detected_features & PROJECTED_FEATURES)
+    if snapshot["features"] != projected_features:
+        raise ValueError(
+            f"{label}.features must exactly project feature_scan detections: "
+            f"expected {projected_features!r}, got {snapshot['features']!r}"
+        )
+    projected_unsupported = sorted(detected_features & PROJECTED_UNSUPPORTED_FEATURES)
+    if snapshot["unsupported_features"] != projected_unsupported:
+        raise ValueError(
+            f"{label}.unsupported_features must exactly project feature_scan detections: "
+            f"expected {projected_unsupported!r}, got {snapshot['unsupported_features']!r}"
+        )
+
+    malformed_disposition = (
+        snapshot["classification"] == "incompatible"
+        and snapshot["reason"] == "malformed-source"
+        and snapshot["runability"] == "unknown"
+    )
+    if scan["status"] == "invalid" and not malformed_disposition:
+        raise ValueError(
+            f"{label}: invalid feature_scan requires "
+            "incompatible/malformed-source/unknown disposition"
+        )
+    if scan["status"] == "valid" and (
+        snapshot["reason"] == "malformed-source" or snapshot["runability"] == "unknown"
+    ):
+        raise ValueError(f"{label}: valid feature_scan cannot claim a malformed disposition")
+
+
+def _scanner_snapshot(value: object, *, label: str) -> dict:
+    if type(value) is not dict:
+        raise ValueError(f"{label} must be an object")
+    snapshot = {
+        "features": _scanner_string_list(value.get("features"), label=f"{label}.features"),
+        "unsupported_features": _scanner_string_list(
+            value.get("unsupported_features"), label=f"{label}.unsupported_features"
+        ),
+        "classification": _scanner_string(
+            value.get("classification"), label=f"{label}.classification"
+        ),
+        "reason": _scanner_string(value.get("reason"), label=f"{label}.reason"),
+        "runability": _scanner_string(value.get("runability"), label=f"{label}.runability"),
+    }
+    if "feature_scan" in value:
+        snapshot["feature_scan"] = _feature_scan_snapshot(
+            value["feature_scan"], label=f"{label}.feature_scan"
+        )
+    _validate_scanner_snapshot(snapshot, label=label)
+    return snapshot
+
+
+def _scanner_manifest_files(
+    manifest: object,
+    *,
+    label: str,
+    require_structured_evidence: bool = False,
+) -> dict[str, dict]:
+    if type(manifest) is not dict:
+        raise ValueError(f"{label} manifest must be an object")
+    raw_files = manifest.get("files")
+    if type(raw_files) is not dict:
+        raise ValueError(f"{label} manifest files must be an object")
+
+    files: dict[str, dict] = {}
+    for path, value in raw_files.items():
+        if type(path) is not str or not path:
+            raise ValueError(f"{label} manifest file paths must be non-empty strings")
+        entry_label = f"{label} manifest files[{path!r}]"
+        snapshot = _scanner_snapshot(value, label=entry_label)
+        read_error = (
+            snapshot["classification"] == "incompatible"
+            and snapshot["reason"] == "read-error"
+            and snapshot["runability"] == "unknown"
+        )
+        if read_error and (snapshot["features"] or snapshot["unsupported_features"]):
+            raise ValueError(f"{entry_label}: read-error entries cannot claim detected features")
+        if require_structured_evidence and "feature_scan" not in snapshot and not read_error:
+            raise ValueError(f"{entry_label}.feature_scan is required")
+        files[path] = snapshot
+    return files
+
+
+def _structured_evidence_change(base: dict | None, head: dict | None) -> str:
+    base_scan = base.get("feature_scan") if base is not None else None
+    head_scan = head.get("feature_scan") if head is not None else None
+    if base is None:
+        return "added" if head_scan is not None else "absent"
+    if head is None:
+        return "removed" if base_scan is not None else "absent"
+    if base_scan is None and head_scan is None:
+        return "absent"
+    if base_scan is None and head_scan is not None:
+        return "legacy-base"
+    if base_scan is not None and head_scan is None:
+        return "removed"
+    if base_scan != head_scan:
+        return "changed"
+    return "unchanged"
+
+
+def _head_scan_requires_retention(head: dict | None) -> bool:
+    if head is None or "feature_scan" not in head:
+        return False
+    scan = head["feature_scan"]
+    return scan["status"] != "valid" or bool(scan["issues"])
+
+
+def compute_scanner_diff(base: dict, head: dict) -> dict:
+    """Compare pre-run scanner-owned manifest evidence.
+
+    A base entry without the v1 ``feature_scan`` object is legacy evidence.
+    Adding that structured evidence on the head is deliberately neutral by
+    itself, while invalid head evidence is retained for review.
+    """
+    base_files = _scanner_manifest_files(base, label="base")
+    head_files = _scanner_manifest_files(head, label="head", require_structured_evidence=True)
+    common_paths = sorted(set(base_files) & set(head_files))
+    changes: list[dict] = []
+    changed_files = 0
+    added_files = 0
+    removed_files = 0
+    legacy_base_structured_evidence = 0
+    head_structured_evidence = sum("feature_scan" in snapshot for snapshot in head_files.values())
+    head_invalid_structured_evidence = sum(
+        snapshot.get("feature_scan", {}).get("status") == "invalid"
+        for snapshot in head_files.values()
+    )
+    head_scan_issues = sum(
+        len(snapshot.get("feature_scan", {}).get("issues", [])) for snapshot in head_files.values()
+    )
+
+    for path in sorted(set(base_files) | set(head_files)):
+        base_snapshot = base_files.get(path)
+        head_snapshot = head_files.get(path)
+        structured_change = _structured_evidence_change(base_snapshot, head_snapshot)
+
+        if base_snapshot is None:
+            added_files += 1
+            changes.append(
+                {
+                    "path": path,
+                    "change": "added",
+                    "changed_fields": list(SCANNER_FIELDS),
+                    "structured_evidence_change": structured_change,
+                    "base": None,
+                    "head": head_snapshot,
+                }
+            )
+            continue
+        if head_snapshot is None:
+            removed_files += 1
+            changes.append(
+                {
+                    "path": path,
+                    "change": "removed",
+                    "changed_fields": list(SCANNER_FIELDS),
+                    "structured_evidence_change": structured_change,
+                    "base": base_snapshot,
+                    "head": None,
+                }
+            )
+            continue
+
+        changed_fields = [
+            field for field in SCANNER_FIELDS if base_snapshot[field] != head_snapshot[field]
+        ]
+        if structured_change == "legacy-base":
+            legacy_base_structured_evidence += 1
+        elif structured_change in {"changed", "removed"}:
+            changed_fields.append("feature_scan")
+
+        retain_head_evidence = _head_scan_requires_retention(head_snapshot)
+        if changed_fields:
+            changed_files += 1
+            change = "changed"
+        elif retain_head_evidence:
+            change = "structured-evidence"
+        else:
+            continue
+        changes.append(
+            {
+                "path": path,
+                "change": change,
+                "changed_fields": changed_fields,
+                "structured_evidence_change": structured_change,
+                "base": base_snapshot,
+                "head": head_snapshot,
+            }
+        )
+
+    return {
+        "version": SCANNER_DIFF_VERSION,
+        "base_manifest_version": base.get("version"),
+        "head_manifest_version": head.get("version"),
+        "summary": {
+            "files_compared": len(common_paths),
+            "changed_files": changed_files,
+            "added_files": added_files,
+            "removed_files": removed_files,
+            "legacy_base_structured_evidence": legacy_base_structured_evidence,
+            "head_structured_evidence": head_structured_evidence,
+            "head_invalid_structured_evidence": head_invalid_structured_evidence,
+            "head_scan_issues": head_scan_issues,
+        },
+        "changes": changes,
+    }
+
+
+def _scanner_disposition(snapshot: dict | None) -> str:
+    if snapshot is None:
+        return "absent"
+    return " / ".join(str(snapshot[field]) for field in ("classification", "reason", "runability"))
+
+
+def _scanner_evidence_label(snapshot: dict | None) -> str:
+    if snapshot is None:
+        return "absent"
+    scan = snapshot.get("feature_scan")
+    if scan is None:
+        return "legacy"
+    issue_count = len(scan["issues"])
+    return f"{scan['status']} ({issue_count} issue{'s' if issue_count != 1 else ''})"
+
+
+def _markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
+
+
+def format_scanner_markdown(
+    scanner_diff: dict,
+    *,
+    repo: str | None = None,
+    base_sha: str | None = None,
+    head_sha: str | None = None,
+) -> list[str]:
+    """Build a concise retained scanner-evidence report."""
+    summary = scanner_diff["summary"]
+    lines = [
+        "## Static Compatibility Scanner Diff",
+        "",
+        "Compares scanner-owned fields from manifests captured before either compatibility run.",
+        "Observed changes are retained for review and do not fail the comparison job.",
+        "",
+    ]
+    if repo and base_sha and head_sha:
+        base_link = f"[`{base_sha[:10]}`](https://github.com/{repo}/commit/{base_sha})"
+        head_link = f"[`{head_sha[:10]}`](https://github.com/{repo}/commit/{head_sha})"
+        lines.extend([f"Base: {base_link} | Head: {head_link}", ""])
+
+    lines.extend(
+        [
+            "| Measure | Count |",
+            "|---|---:|",
+            f"| Files compared | {summary['files_compared']} |",
+            f"| Changed files | {summary['changed_files']} |",
+            f"| Added files | {summary['added_files']} |",
+            f"| Removed files | {summary['removed_files']} |",
+            f"| Head files with structured evidence | {summary['head_structured_evidence']} |",
+            f"| Head files with invalid scans | {summary['head_invalid_structured_evidence']} |",
+            f"| Head lexical issues | {summary['head_scan_issues']} |",
+        ]
+    )
+    legacy_count = summary["legacy_base_structured_evidence"]
+    if legacy_count:
+        lines.extend(
+            [
+                "",
+                f"The base lacks structured `feature_scan` evidence for {legacy_count} matched "
+                "file(s). This is treated as a legacy schema boundary, not as scanner changes.",
+            ]
+        )
+
+    changes = scanner_diff["changes"]
+    lines.extend(["", f"### Retained scanner observations ({len(changes)})", ""])
+    if not changes:
+        lines.append("None")
+        return lines
+
+    lines.extend(
+        [
+            f"<details><summary>Show {len(changes)} per-file observation(s)</summary>",
+            "",
+            "| File | Kind | Fields | Base disposition | Head disposition | Head evidence |",
+            "|---|---|---|---|---|---|",
+        ]
+    )
+    for change in changes:
+        fields = ", ".join(change["changed_fields"]) or "structured evidence"
+        lines.append(
+            "| "
+            f"`{_markdown_cell(change['path'])}` | "
+            f"{change['change']} | "
+            f"{_markdown_cell(fields)} | "
+            f"{_markdown_cell(_scanner_disposition(change['base']))} | "
+            f"{_markdown_cell(_scanner_disposition(change['head']))} | "
+            f"{_markdown_cell(_scanner_evidence_label(change['head']))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "</details>",
+            "",
+            "The JSON artifact retains feature lists, unsupported-feature lists, structured "
+            "detections, issues, reasons, and exact spans for every observation above.",
+        ]
+    )
+    return lines
+
+
+def write_scanner_tsv(scanner_diff: dict, tsv_path: str) -> None:
+    """Write retained scanner observations as TSV."""
+    fieldnames = [
+        "path",
+        "change",
+        "changed_fields",
+        "structured_evidence_change",
+        "base_features",
+        "head_features",
+        "base_unsupported_features",
+        "head_unsupported_features",
+        "base_classification",
+        "head_classification",
+        "base_reason",
+        "head_reason",
+        "base_runability",
+        "head_runability",
+        "base_feature_scan_status",
+        "head_feature_scan_status",
+        "base_feature_scan_issues",
+        "head_feature_scan_issues",
+    ]
+
+    def side_fields(prefix: str, snapshot: dict | None) -> dict[str, str]:
+        if snapshot is None:
+            return {f"{prefix}_{field}": "" for field in SCANNER_FIELDS} | {
+                f"{prefix}_feature_scan_status": "",
+                f"{prefix}_feature_scan_issues": "",
+            }
+        scan = snapshot.get("feature_scan")
+        return {
+            f"{prefix}_features": ";".join(snapshot["features"]),
+            f"{prefix}_unsupported_features": ";".join(snapshot["unsupported_features"]),
+            f"{prefix}_classification": snapshot["classification"],
+            f"{prefix}_reason": snapshot["reason"],
+            f"{prefix}_runability": snapshot["runability"],
+            f"{prefix}_feature_scan_status": scan["status"] if scan else "",
+            f"{prefix}_feature_scan_issues": (
+                json.dumps(scan["issues"], sort_keys=True, separators=(",", ":")) if scan else ""
+            ),
+        }
+
+    with open(tsv_path, "w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        for change in scanner_diff["changes"]:
+            writer.writerow(
+                {
+                    "path": change["path"],
+                    "change": change["change"],
+                    "changed_fields": ";".join(change["changed_fields"]),
+                    "structured_evidence_change": change["structured_evidence_change"],
+                    **side_fields("base", change["base"]),
+                    **side_fields("head", change["head"]),
+                }
+            )
+
+
+def write_scanner_json(scanner_diff: dict, json_path: str) -> None:
+    """Write the complete retained scanner diff as deterministic JSON."""
+    with open(json_path, "w", encoding="utf-8") as stream:
+        json.dump(scanner_diff, stream, indent=2, ensure_ascii=False, sort_keys=True)
+        stream.write("\n")
 
 
 def _oracle_loss_details(
@@ -679,6 +1218,14 @@ def main(
     head_manifest: Annotated[str, typer.Argument(help="Head manifest JSON")],
     tsv: Annotated[str | None, typer.Option(help="Write per-file data as TSV")] = None,
     report: Annotated[str | None, typer.Option(help="Write self-contained Markdown report")] = None,
+    scanner_only: Annotated[
+        bool,
+        typer.Option(help="Compare retained pre-run scanner evidence instead of run results"),
+    ] = False,
+    json_output: Annotated[
+        str | None,
+        typer.Option("--json", help="Write the retained scanner diff as JSON"),
+    ] = None,
     repo: Annotated[str | None, typer.Option(help="GitHub repository for commit links")] = None,
     base_sha: Annotated[str | None, typer.Option(help="Base commit SHA")] = None,
     head_sha: Annotated[str | None, typer.Option(help="Head commit SHA")] = None,
@@ -686,6 +1233,33 @@ def main(
     """Compare two compat manifests."""
     base = load_manifest(base_manifest)
     head = load_manifest(head_manifest)
+
+    if scanner_only:
+        try:
+            scanner_diff = compute_scanner_diff(base, head)
+        except ValueError as error:
+            console.print(f"[red]error:[/] cannot generate scanner diff: {error}")
+            raise typer.Exit(2) from error
+        scanner_lines = format_scanner_markdown(
+            scanner_diff,
+            repo=repo,
+            base_sha=base_sha,
+            head_sha=head_sha,
+        )
+        print("\n".join(scanner_lines))
+        if report:
+            with open(report, "w", encoding="utf-8") as f:
+                f.write("\n".join(scanner_lines))
+                f.write("\n")
+        if tsv:
+            write_scanner_tsv(scanner_diff, tsv)
+        if json_output:
+            write_scanner_json(scanner_diff, json_output)
+        return
+
+    if json_output:
+        console.print("[red]error:[/] --json requires --scanner-only")
+        raise typer.Exit(2)
 
     base_counts, head_counts, regressions, real_improvements, reason_changes = compute_diff(
         base, head

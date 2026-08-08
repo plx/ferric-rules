@@ -49,6 +49,12 @@ def _clp(name: str = "example.clp") -> Path:
     return Path(name)
 
 
+def _span_text(source: str, span: dict) -> str:
+    """Slice source using one serialized byte-oriented feature-scan span."""
+    encoded = source.encode("utf-8")
+    return encoded[span["start_byte"] : span["end_byte"]].decode("utf-8")
+
+
 def _materialized_library_harness(tmp_path):
     root = tmp_path / "repo"
     examples = root / "tests" / "examples"
@@ -192,6 +198,105 @@ def test_classify_file_bat_extension_is_incompatible():
 
     assert classification == "incompatible"
     assert reason == "test-suite-batch"
+
+
+@pytest.mark.parametrize("suffix", [".clp", ".bat"])
+def test_scan_preserves_strict_utf8_read_errors_as_unknown(tmp_path, suffix):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    source = examples / f"invalid-utf8{suffix}"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"(defrule visible =>)\r\n\xff")
+
+    entry = scan_examples(examples, root=root)[source.name]
+
+    assert entry["classification"] == "incompatible"
+    assert entry["reason"] == "read-error"
+    assert entry["runability"] == "unknown"
+    assert entry["features"] == []
+    assert entry["unsupported_features"] == []
+    assert "utf-8" in entry["notes"]
+
+
+def test_scan_attaches_string_aware_feature_evidence_and_legacy_aggregates(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    source = examples / "string-aware.clp"
+    source.parent.mkdir(parents=True)
+    source_text = (
+        "; (read) in a comment must not count\r\n"
+        "(DeFrUlE safe\r\n"
+        "  =>\r\n"
+        '  (PrInToUt t "π ; \\"(open fake)\\"" crlf)\r\n'
+        "  (assert (batch-mode open-file readline-token)))\r\n"
+    )
+    source.write_bytes(source_text.encode("utf-8"))
+
+    entry = scan_examples(examples, root=root)[source.name]
+
+    assert entry["classification"] == "pending"
+    assert entry["reason"] == "testable"
+    assert entry["runability"] == "standalone"
+    assert entry["features"] == ["defrule", "printout"]
+    assert entry["unsupported_features"] == []
+    evidence = entry["feature_scan"]
+    assert evidence["version"] == 1
+    assert evidence["status"] == "valid"
+    assert evidence["issues"] == []
+    assert [detection["feature"] for detection in evidence["detections"]] == [
+        "defrule",
+        "printout",
+    ]
+    for detection in evidence["detections"]:
+        assert detection["category"] in {"supported-construct", "output"}
+        assert detection["reason"] in {"supported-form", "supported-output"}
+        assert _span_text(source_text, detection["head_span"]).lower() == detection["feature"]
+        assert _span_text(source_text, detection["form_span"]).startswith("(")
+
+
+@pytest.mark.parametrize("suffix", [".clp", ".bat"])
+def test_scan_marks_lexically_malformed_source_unknown_with_partial_evidence(
+    tmp_path,
+    suffix,
+):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    source = examples / f"malformed{suffix}"
+    source.parent.mkdir(parents=True)
+    source_text = '(DeFrUlE seen => (PrInToUt t "ok" crlf))\r\n(OpEn "fixture" logical "r")\r\n)'
+    source.write_bytes(source_text.encode("utf-8"))
+
+    entry = scan_examples(examples, root=root)[source.name]
+
+    assert entry["classification"] == "incompatible"
+    assert entry["reason"] == "malformed-source"
+    assert entry["runability"] == "unknown"
+    assert entry["features"] == ["defrule", "printout"]
+    assert entry["unsupported_features"] == ["open"]
+    evidence = entry["feature_scan"]
+    assert evidence["status"] == "invalid"
+    assert [detection["feature"] for detection in evidence["detections"]] == [
+        "defrule",
+        "printout",
+        "open",
+    ]
+    assert evidence["detections"][2]["category"] == "file-io"
+    assert evidence["detections"][2]["reason"] == "unsupported-io"
+    assert _span_text(source_text, evidence["detections"][2]["head_span"]) == "OpEn"
+    assert evidence["issues"] == [
+        {
+            "kind": "unmatched-close",
+            "reason": "unmatched-close",
+            "span": {
+                "start_byte": len(source_text.encode("utf-8")) - 1,
+                "end_byte": len(source_text.encode("utf-8")),
+                "start_line": 3,
+                "start_column": 1,
+                "end_line": 3,
+                "end_column": 2,
+            },
+        }
+    ]
 
 
 @pytest.mark.parametrize(("input_version", "expected_version"), [(1, 2), (3, 3)])

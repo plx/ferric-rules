@@ -1829,6 +1829,12 @@ def main(
             if rel_path != file:
                 continue
             file_was_found = True
+            if runability == "unknown":
+                console.print(
+                    f"[red]error:[/] {rel_path}: cannot explicitly run a file "
+                    "with unknown runability"
+                )
+                raise typer.Exit(1)
         elif only_pending:
             if info["classification"] != "pending":
                 continue

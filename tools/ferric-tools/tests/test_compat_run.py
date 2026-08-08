@@ -21,6 +21,7 @@ from ferric_tools._paths import repo_root
 from ferric_tools.compat import run as run_module
 from ferric_tools.compat.clips_oracle import NATIVE_RECORD_PREFIX
 from ferric_tools.compat.oracle import canonical_scenario_plan
+from ferric_tools.compat.scan import build_summary, scan_examples
 
 
 def _resolved_harness(
@@ -1864,6 +1865,46 @@ def test_runner_persists_missing_oracle_state_without_engine_preflight(
     assert persisted["files"]["fixture.clp"]["oracle_evidence"]["status"] == "missing"
     assert persisted["files"]["fixture.clp"]["ferric"] is None
     assert persisted["files"]["fixture.clp"]["clips"] is None
+
+
+def test_runner_rejects_explicit_unknown_runability_before_oracle_or_engine_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    source = examples / "malformed.clp"
+    source.parent.mkdir(parents=True)
+    source.write_text('(defrule partial => (printout t "unterminated)\n', encoding="utf-8")
+    files = scan_examples(examples, root=root)
+    assert files["malformed.clp"]["reason"] == "malformed-source"
+    assert files["malformed.clp"]["runability"] == "unknown"
+    manifest_path = examples / "compat-manifest.json"
+    save_manifest(
+        manifest_path,
+        {
+            "version": 3,
+            "oracle_protocol_version": 1,
+            "summary": build_summary(files),
+            "files": files,
+        },
+    )
+    monkeypatch.setattr(run_module, "repo_root", lambda: root)
+    monkeypatch.setattr(run_module, "default_examples_dir", lambda: examples)
+
+    def fail_if_scheduled(*_args, **_kwargs):
+        raise AssertionError("engine work must not be scheduled")
+
+    monkeypatch.setattr(run_module, "parallel_run", fail_if_scheduled)
+
+    result = CliRunner().invoke(
+        run_module.app,
+        ["--manifest", str(manifest_path), "--file", "malformed.clp"],
+    )
+
+    assert result.exit_code == 1
+    assert "cannot explicitly run a file with unknown runability" in result.output
+    assert load_manifest(manifest_path)["files"]["malformed.clp"]["reason"] == ("malformed-source")
 
 
 def test_runner_persists_explicit_missing_oracle_before_nonzero_exit(

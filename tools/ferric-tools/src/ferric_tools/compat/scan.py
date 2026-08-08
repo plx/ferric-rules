@@ -20,8 +20,7 @@ from ferric_tools._clips_parser import (
     LOADING_COMMANDS,
     UNSUPPORTED_CONTROL,
     UNSUPPORTED_IO,
-    detect_features,
-    strip_comments,
+    scan_features,
 )
 from ferric_tools._harness import attach_harness_contracts, sha256_bytes
 from ferric_tools._manifest import save_manifest, utc_now_iso
@@ -321,6 +320,21 @@ def classify_file(path: Path, features: list[str], unsupported: list[str]) -> tu
     return "pending", "testable", "standalone"
 
 
+def _read_error_entry(source: str, error: OSError | UnicodeDecodeError) -> dict:
+    """Return the fail-closed manifest entry for unreadable UTF-8 source."""
+    return {
+        "source": source,
+        "classification": "incompatible",
+        "reason": "read-error",
+        "runability": "unknown",
+        "features": [],
+        "unsupported_features": [],
+        "ferric": None,
+        "clips": None,
+        "notes": str(error),
+    }
+
+
 def scan_examples(
     examples_path: Path,
     *,
@@ -337,24 +351,27 @@ def scan_examples(
         source = rel.parts[0] if len(rel.parts) > 1 else ""
 
         try:
-            raw_content = filepath.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            files[rel_str] = {
-                "source": source,
-                "classification": "incompatible",
-                "reason": "read-error",
-                "runability": "unknown",
-                "features": [],
-                "unsupported_features": [],
-                "ferric": None,
-                "clips": None,
-                "notes": str(e),
-            }
+            raw_bytes = filepath.read_bytes()
+        except OSError as error:
+            files[rel_str] = _read_error_entry(source, error)
+            continue
+        try:
+            raw_content = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            files[rel_str] = _read_error_entry(source, error)
             continue
 
-        cleaned = strip_comments(raw_content)
-        features, unsupported = detect_features(cleaned)
-        classification, reason, runability = classify_file(filepath, features, unsupported)
+        feature_scan = scan_features(raw_content)
+        features = list(feature_scan.feature_names)
+        unsupported = list(feature_scan.unsupported_feature_names)
+        if feature_scan.issues:
+            classification, reason, runability = (
+                "incompatible",
+                "malformed-source",
+                "unknown",
+            )
+        else:
+            classification, reason, runability = classify_file(filepath, features, unsupported)
 
         files[rel_str] = {
             "source": source,
@@ -363,6 +380,7 @@ def scan_examples(
             "runability": runability,
             "features": sorted(set(features)),
             "unsupported_features": sorted(set(unsupported)),
+            "feature_scan": feature_scan.to_dict(),
             "ferric": None,
             "clips": None,
             "notes": "",
