@@ -74,6 +74,12 @@ jobs:
       - name: Assess base branch
         run: |
           git checkout ${{ inputs.base_sha }}
+          # Retain the base scanner's own pre-run result before installing any
+          # head tooling. The run comparison below intentionally uses the head
+          # observer protocol, but scanner changes must compare each revision's
+          # native scanner output.
+          uv run --project tools/ferric-tools ferric-compat-scan
+          cp tests/examples/compat-manifest.json /tmp/base-compat-scan-manifest.json
           # Assess both revisions through the head observer protocol.
           git checkout ${{ inputs.head_sha }} -- \
             tools/ferric-tools/ \
@@ -98,7 +104,22 @@ jobs:
         run: cargo build --release -p ferric-rules-cli
 
       - name: Run compat scan
-        run: uv run --project tools/ferric-tools ferric-compat-scan
+        run: |
+          uv run --project tools/ferric-tools ferric-compat-scan
+          cp tests/examples/compat-manifest.json /tmp/head-compat-scan-manifest.json
+
+      - name: Generate retained scanner comparison
+        run: |
+          uv run --project tools/ferric-tools ferric-compat-diff \
+            /tmp/base-compat-scan-manifest.json /tmp/head-compat-scan-manifest.json \
+            --scanner-only \
+            --tsv /tmp/compat-scanner-diff.tsv \
+            --json /tmp/compat-scanner-diff.json \
+            --report /tmp/compat-scanner-diff-report.md \
+            --repo "${{ github.repository }}" \
+            --base-sha "${{ inputs.base_sha }}" \
+            --head-sha "${{ inputs.head_sha }}"
+          cat /tmp/compat-scanner-diff-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run compat assessment
         run: uv run --project tools/ferric-tools ferric-compat-run --workers 4 --timeout 30
@@ -119,10 +140,21 @@ jobs:
             --head-sha "${{ inputs.head_sha }}" \
             >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Append retained scanner comparison
+        if: always()
+        run: |
+          if [[ -f /tmp/compat-scanner-diff-report.md ]]; then
+            if [[ -s /tmp/compat-diff-report.md ]]; then
+              printf '\n' >> /tmp/compat-diff-report.md
+            fi
+            cat /tmp/compat-scanner-diff-report.md >> /tmp/compat-diff-report.md
+          fi
+
       - name: Copy head manifest
         run: cp tests/examples/compat-manifest.json /tmp/head-compat-manifest.json
 
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: compat-diff-report
@@ -130,5 +162,10 @@ jobs:
           path: |
             /tmp/compat-diff.tsv
             /tmp/compat-diff-report.md
+            /tmp/compat-scanner-diff.tsv
+            /tmp/compat-scanner-diff.json
+            /tmp/compat-scanner-diff-report.md
             /tmp/head-compat-manifest.json
             /tmp/base-compat-manifest.json
+            /tmp/head-compat-scan-manifest.json
+            /tmp/base-compat-scan-manifest.json

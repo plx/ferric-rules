@@ -6,9 +6,22 @@ Covers compute_diff() and format_markdown().
 from __future__ import annotations
 
 import csv
+import json
+from pathlib import Path
+
+from typer.testing import CliRunner
 
 from ferric_tools.compat.diagnostics import diagnostic
-from ferric_tools.compat.diff import compute_diff, format_markdown, write_tsv
+from ferric_tools.compat.diff import (
+    app,
+    compute_diff,
+    compute_scanner_diff,
+    format_markdown,
+    format_scanner_markdown,
+    write_scanner_json,
+    write_scanner_tsv,
+    write_tsv,
+)
 from ferric_tools.compat.report import compute_oracle_coverage
 
 # ---------------------------------------------------------------------------
@@ -72,6 +85,472 @@ def _engine_result(
         "diagnostic": diagnostic(phase, category, continued=continued),
         "termination": {"kind": "exit", "exit_code": exit_code, "signal": None},
     }
+
+
+def _span(start_byte: int = 0, end_byte: int = 4) -> dict:
+    return {
+        "start_byte": start_byte,
+        "end_byte": end_byte,
+        "start_line": 1,
+        "start_column": start_byte + 1,
+        "end_line": 1,
+        "end_column": end_byte + 1,
+    }
+
+
+def _detection(
+    feature: str = "defrule",
+    *,
+    category: str = "supported-construct",
+    reason: str = "supported-form",
+    head_span: dict | None = None,
+    form_span: dict | None = None,
+) -> dict:
+    return {
+        "feature": feature,
+        "category": category,
+        "reason": reason,
+        "head_span": head_span or _span(1, 8),
+        "form_span": form_span or _span(0, 20),
+    }
+
+
+def _feature_scan(
+    *,
+    status: str = "valid",
+    detections: list[dict] | None = None,
+    issues: list[dict] | None = None,
+) -> dict:
+    return {
+        "version": 1,
+        "status": status,
+        "detections": [_detection()] if detections is None else detections,
+        "issues": issues or [],
+    }
+
+
+def _scanner_entry(
+    *,
+    features: list[str] | None = None,
+    unsupported_features: list[str] | None = None,
+    classification: str = "pending",
+    reason: str = "testable",
+    runability: str = "standalone",
+    feature_scan: dict | None = None,
+) -> dict:
+    entry = {
+        "features": ["defrule"] if features is None else features,
+        "unsupported_features": [] if unsupported_features is None else unsupported_features,
+        "classification": classification,
+        "reason": reason,
+        "runability": runability,
+    }
+    if feature_scan is not None:
+        entry["feature_scan"] = feature_scan
+    return entry
+
+
+# ---------------------------------------------------------------------------
+# scanner-only retained diff
+# ---------------------------------------------------------------------------
+
+
+def test_scanner_diff_treats_new_structured_evidence_as_legacy_neutral():
+    base = _manifest({"same.clp": _scanner_entry()})
+    head = _manifest({"same.clp": _scanner_entry(feature_scan=_feature_scan())})
+
+    result = compute_scanner_diff(base, head)
+
+    assert result["summary"] == {
+        "files_compared": 1,
+        "changed_files": 0,
+        "added_files": 0,
+        "removed_files": 0,
+        "legacy_base_structured_evidence": 1,
+        "head_structured_evidence": 1,
+        "head_invalid_structured_evidence": 0,
+        "head_scan_issues": 0,
+    }
+    assert result["changes"] == []
+
+
+def test_scanner_diff_retains_effective_field_changes_and_structured_spans():
+    base = _manifest({"string.clp": _scanner_entry()})
+    detection = {
+        "feature": "load",
+        "category": "loading-command",
+        "reason": "unsupported-command",
+        "head_span": _span(12, 16),
+        "form_span": _span(11, 24),
+    }
+    head = _manifest(
+        {
+            "string.clp": _scanner_entry(
+                features=["deffacts", "defrule"],
+                unsupported_features=["load"],
+                classification="incompatible",
+                reason="unsupported-command",
+                runability="batch",
+                feature_scan=_feature_scan(
+                    detections=[_detection(), _detection("deffacts"), detection]
+                ),
+            )
+        }
+    )
+
+    result = compute_scanner_diff(base, head)
+
+    assert result["summary"]["changed_files"] == 1
+    assert result["summary"]["legacy_base_structured_evidence"] == 1
+    assert len(result["changes"]) == 1
+    change = result["changes"][0]
+    assert change["change"] == "changed"
+    assert change["structured_evidence_change"] == "legacy-base"
+    assert change["changed_fields"] == [
+        "features",
+        "unsupported_features",
+        "classification",
+        "reason",
+        "runability",
+    ]
+    assert change["head"]["feature_scan"]["detections"][2]["head_span"] == _span(12, 16)
+
+
+def test_scanner_diff_retains_invalid_head_evidence_without_counting_legacy_as_change():
+    issue = {
+        "kind": "unterminated-string",
+        "reason": "string literal reaches end of input",
+        "span": _span(8, 19),
+    }
+    malformed_entry = {
+        "classification": "incompatible",
+        "reason": "malformed-source",
+        "runability": "unknown",
+    }
+    base = _manifest({"malformed.clp": _scanner_entry(**malformed_entry)})
+    head = _manifest(
+        {
+            "malformed.clp": _scanner_entry(
+                **malformed_entry,
+                feature_scan=_feature_scan(status="invalid", issues=[issue]),
+            )
+        }
+    )
+
+    result = compute_scanner_diff(base, head)
+
+    assert result["summary"]["changed_files"] == 0
+    assert result["summary"]["legacy_base_structured_evidence"] == 1
+    assert result["summary"]["head_invalid_structured_evidence"] == 1
+    assert result["summary"]["head_scan_issues"] == 1
+    assert result["changes"] == [
+        {
+            "path": "malformed.clp",
+            "change": "structured-evidence",
+            "changed_fields": [],
+            "structured_evidence_change": "legacy-base",
+            "base": _scanner_entry(**malformed_entry),
+            "head": _scanner_entry(
+                **malformed_entry,
+                feature_scan=_feature_scan(status="invalid", issues=[issue]),
+            ),
+        }
+    ]
+
+
+def test_scanner_diff_compares_structured_evidence_once_both_revisions_have_it():
+    base_scan = _feature_scan()
+    head_scan = _feature_scan(
+        detections=[
+            {
+                "feature": "defrule",
+                "category": "supported-construct",
+                "reason": "supported-form",
+                "head_span": _span(2, 9),
+                "form_span": _span(0, 20),
+            }
+        ]
+    )
+    base = _manifest({"evidence.clp": _scanner_entry(feature_scan=base_scan)})
+    head = _manifest({"evidence.clp": _scanner_entry(feature_scan=head_scan)})
+
+    result = compute_scanner_diff(base, head)
+
+    assert result["summary"]["changed_files"] == 1
+    assert result["summary"]["legacy_base_structured_evidence"] == 0
+    assert result["changes"][0]["changed_fields"] == ["feature_scan"]
+    assert result["changes"][0]["structured_evidence_change"] == "changed"
+
+
+def test_scanner_diff_does_not_label_a_new_file_as_legacy_structured_evidence():
+    result = compute_scanner_diff(
+        _manifest({}),
+        _manifest({"new.clp": _scanner_entry(feature_scan=_feature_scan())}),
+    )
+
+    assert result["summary"]["added_files"] == 1
+    assert result["summary"]["legacy_base_structured_evidence"] == 0
+    assert result["changes"][0]["structured_evidence_change"] == "added"
+
+
+def test_scanner_diff_machine_outputs_and_markdown_retain_review_evidence(tmp_path):
+    base = _manifest({"changed.clp": _scanner_entry()})
+    head = _manifest(
+        {
+            "changed.clp": _scanner_entry(
+                features=["deffacts", "defrule"],
+                unsupported_features=["load"],
+                feature_scan=_feature_scan(
+                    detections=[
+                        _detection(),
+                        _detection("deffacts"),
+                        _detection(
+                            "load",
+                            category="loading-command",
+                            reason="unsupported-command",
+                        ),
+                    ]
+                ),
+            )
+        }
+    )
+    result = compute_scanner_diff(base, head)
+    tsv_path = tmp_path / "scanner.tsv"
+    json_path = tmp_path / "scanner.json"
+
+    write_scanner_tsv(result, str(tsv_path))
+    write_scanner_json(result, str(json_path))
+    markdown = "\n".join(format_scanner_markdown(result))
+
+    with tsv_path.open(newline="", encoding="utf-8") as stream:
+        row = next(csv.DictReader(stream, delimiter="\t"))
+    assert row["changed_fields"] == "features;unsupported_features"
+    assert row["structured_evidence_change"] == "legacy-base"
+    assert row["head_feature_scan_status"] == "valid"
+    assert json.loads(json_path.read_text(encoding="utf-8")) == result
+    assert "Static Compatibility Scanner Diff" in markdown
+    assert "legacy schema boundary, not as scanner changes" in markdown
+    assert "`changed.clp`" in markdown
+
+
+def test_scanner_only_cli_exits_zero_for_observed_changes(tmp_path):
+    base_path = tmp_path / "base.json"
+    head_path = tmp_path / "head.json"
+    report_path = tmp_path / "scanner.md"
+    tsv_path = tmp_path / "scanner.tsv"
+    json_path = tmp_path / "scanner-diff.json"
+    base_path.write_text(json.dumps(_manifest({"changed.clp": _scanner_entry()})), encoding="utf-8")
+    head_path.write_text(
+        json.dumps(
+            _manifest(
+                {
+                    "changed.clp": _scanner_entry(
+                        classification="incompatible",
+                        reason="unsupported-command",
+                        runability="batch",
+                        feature_scan=_feature_scan(),
+                    )
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            str(base_path),
+            str(head_path),
+            "--scanner-only",
+            "--report",
+            str(report_path),
+            "--tsv",
+            str(tsv_path),
+            "--json",
+            str(json_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert report_path.is_file()
+    assert tsv_path.is_file()
+    assert json_path.is_file()
+
+
+def test_scanner_only_cli_fails_on_malformed_structured_evidence(tmp_path):
+    base_path = tmp_path / "base.json"
+    head_path = tmp_path / "head.json"
+    base_path.write_text(json.dumps(_manifest({"bad.clp": _scanner_entry()})), encoding="utf-8")
+    malformed = _feature_scan()
+    malformed["status"] = "maybe"
+    head_path.write_text(
+        json.dumps(_manifest({"bad.clp": _scanner_entry(feature_scan=malformed)})),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [str(base_path), str(head_path), "--scanner-only"],
+    )
+
+    assert result.exit_code == 2
+    assert "cannot generate scanner diff" in result.output
+
+
+def test_scanner_only_cli_fails_when_head_lacks_required_structured_evidence(tmp_path):
+    base_path = tmp_path / "base.json"
+    head_path = tmp_path / "head.json"
+    base_path.write_text(json.dumps(_manifest({"missing.clp": _scanner_entry()})), encoding="utf-8")
+    head_path.write_text(json.dumps(_manifest({"missing.clp": _scanner_entry()})), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [str(base_path), str(head_path), "--scanner-only"],
+    )
+
+    assert result.exit_code == 2
+    assert "missing.clp" in result.output
+    assert "feature_scan is required" in result.output
+
+
+def test_scanner_only_cli_fails_when_head_aggregates_do_not_project_detections(tmp_path):
+    base_path = tmp_path / "base.json"
+    head_path = tmp_path / "head.json"
+    base_path.write_text(
+        json.dumps(_manifest({"mismatch.clp": _scanner_entry()})), encoding="utf-8"
+    )
+    head_path.write_text(
+        json.dumps(
+            _manifest(
+                {
+                    "mismatch.clp": _scanner_entry(
+                        features=[],
+                        feature_scan=_feature_scan(),
+                    )
+                }
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [str(base_path), str(head_path), "--scanner-only"],
+    )
+
+    assert result.exit_code == 2
+    assert "features must exactly project feature_scan detections" in result.output
+
+
+def test_scanner_only_cli_fails_when_detection_metadata_is_not_canonical(tmp_path):
+    base_path = tmp_path / "base.json"
+    head_path = tmp_path / "head.json"
+    base_path.write_text(json.dumps(_manifest({"bad.clp": _scanner_entry()})), encoding="utf-8")
+    bad_detection = _detection(reason="unsupported-form")
+    head_path.write_text(
+        json.dumps(
+            _manifest(
+                {"bad.clp": _scanner_entry(feature_scan=_feature_scan(detections=[bad_detection]))}
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [str(base_path), str(head_path), "--scanner-only"],
+    )
+
+    assert result.exit_code == 2
+    assert "category/reason must be" in result.output
+
+
+def test_scanner_diff_rejects_structured_status_disposition_mismatches():
+    issue = {
+        "kind": "unmatched-close",
+        "reason": "unmatched-close",
+        "span": _span(),
+    }
+    mismatched_entries = (
+        _scanner_entry(feature_scan=_feature_scan(status="invalid", issues=[issue])),
+        _scanner_entry(
+            classification="incompatible",
+            reason="malformed-source",
+            runability="unknown",
+            feature_scan=_feature_scan(),
+        ),
+    )
+
+    for entry in mismatched_entries:
+        try:
+            compute_scanner_diff(_manifest({}), _manifest({"bad.clp": entry}))
+        except ValueError as error:
+            assert "feature_scan" in str(error)
+        else:
+            raise AssertionError("feature_scan disposition mismatch must fail closed")
+
+
+def test_scanner_diff_allows_head_read_error_without_structured_evidence():
+    read_error = _scanner_entry(
+        features=[],
+        classification="incompatible",
+        reason="read-error",
+        runability="unknown",
+    )
+
+    result = compute_scanner_diff(
+        _manifest({"binary.clp": read_error}),
+        _manifest({"binary.clp": read_error}),
+    )
+
+    assert result["changes"] == []
+    assert result["summary"]["head_structured_evidence"] == 0
+
+
+def test_scanner_diff_rejects_head_read_error_with_feature_aggregates():
+    read_error = _scanner_entry(
+        classification="incompatible",
+        reason="read-error",
+        runability="unknown",
+    )
+
+    try:
+        compute_scanner_diff(_manifest({}), _manifest({"binary.clp": read_error}))
+    except ValueError as error:
+        assert "read-error entries cannot claim detected features" in str(error)
+    else:
+        raise AssertionError("read-error feature aggregates must fail closed")
+
+
+def test_compat_compare_workflow_retains_native_pre_run_scans_and_artifacts():
+    workflow_path = Path(__file__).parents[3] / ".github" / "workflows" / "compat-compare.yml"
+    workflow = workflow_path.read_text(encoding="utf-8")
+
+    base_capture = "cp tests/examples/compat-manifest.json /tmp/base-compat-scan-manifest.json"
+    head_overlay = "git checkout ${{ inputs.head_sha }} --"
+    head_capture = "cp tests/examples/compat-manifest.json /tmp/head-compat-scan-manifest.json"
+    head_run = "uv run --project tools/ferric-tools ferric-compat-run --workers 4 --timeout 30"
+    scanner_generation = workflow.index("- name: Generate retained scanner comparison")
+    assert workflow.index(base_capture) < workflow.index(head_overlay)
+    assert workflow.index(head_capture) < scanner_generation < workflow.rindex(head_run)
+    assert "--scanner-only" in workflow
+    assert "cat /tmp/compat-scanner-diff-report.md >> /tmp/compat-diff-report.md" in workflow
+    scanner_step = workflow.split("- name: Generate retained scanner comparison", maxsplit=1)[1]
+    scanner_step = scanner_step.split("- name: Run compat assessment", maxsplit=1)[0]
+    assert "continue-on-error" not in scanner_step
+    append_step = workflow.split("- name: Append retained scanner comparison", maxsplit=1)[1]
+    append_step = append_step.split("- name: Copy head manifest", maxsplit=1)[0]
+    assert "if: always()" in append_step
+    upload_step = workflow.split("- name: Upload artifacts", maxsplit=1)[1]
+    assert "if: always()" in upload_step
+    for artifact in (
+        "/tmp/compat-scanner-diff.tsv",
+        "/tmp/compat-scanner-diff.json",
+        "/tmp/compat-scanner-diff-report.md",
+        "/tmp/base-compat-scan-manifest.json",
+        "/tmp/head-compat-scan-manifest.json",
+    ):
+        assert artifact in workflow
 
 
 # ---------------------------------------------------------------------------
