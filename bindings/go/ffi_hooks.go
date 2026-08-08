@@ -21,6 +21,7 @@ var (
 	ffiEngineFindFactIDs            = ffi.EngineFindFactIDs
 	ffiEngineFactCount              = ffi.EngineFactCount
 	ffiEngineRunEx                  = ffi.EngineRunEx
+	ffiEngineContinueRunEx          = ffi.EngineContinueRunEx
 	ffiEngineStep                   = ffi.EngineStep
 	ffiEngineHalt                   = ffi.EngineHalt
 	ffiEngineReset                  = ffi.EngineReset

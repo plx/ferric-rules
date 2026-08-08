@@ -289,12 +289,6 @@
       "semantic": "execution.halt",
       "canonical": {"fired": 100, "reason": "halt_requested"},
       "deviations": {
-        "go": {
-          "expected": {"fired": 101, "reason": "agenda_empty"},
-          "rationale": "Cancelable Go runs currently start a new logical run after an exact 100-activation batch boundary.",
-          "since": "1.0.0",
-          "tracking_issue": "https://github.com/plx/ferric-rules/issues/127"
-        },
         "node": {
           "expected": {"fired": 101, "reason": "agenda_empty"},
           "rationale": "Node worker runs currently start a new logical run after an exact 100-activation batch boundary.",
