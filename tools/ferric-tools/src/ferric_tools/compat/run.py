@@ -94,6 +94,7 @@ _EMPTY_INTERRUPTION_PROTOCOL_ISSUES = frozenset(
         "native-run-metadata-missing",
         "phase-cardinality-or-order",
         "module-cardinality",
+        "truncated-native-record",
     }
 )
 

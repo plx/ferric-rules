@@ -903,7 +903,8 @@ def test_partial_timeout_preserves_authenticated_active_phase():
     assert result["termination"]["active_phase"] == "reset"
 
 
-def test_signal_before_native_start_remains_process_signal():
+@pytest.mark.parametrize("extra_issue", [None, "truncated-native-record"])
+def test_signal_before_or_during_native_start_remains_process_signal(extra_issue):
     expected_fixture = {
         "id": "fixture.early-signal",
         "nonce": "0" * 32,
@@ -927,6 +928,7 @@ def test_signal_before_native_start_remains_process_signal():
                 "native-run-metadata-missing",
                 "phase-cardinality-or-order",
                 "module-cardinality",
+                *([extra_issue] if extra_issue is not None else []),
             ],
         },
         "termination": run_module.termination(exit_code=-9, timed_out=False),
