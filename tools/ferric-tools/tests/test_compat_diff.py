@@ -636,7 +636,7 @@ def test_pr_assessment_exposes_stable_required_compatibility_context():
     required = workflow.split("compatibility-required:", maxsplit=1)[1]
     required = required.split("\n  comment:", maxsplit=1)[0]
 
-    assert "name: Compatibility Gate" in required
+    assert "name: PR Compatibility Gate" in required
     assert "needs: compat-compare" in required
     assert "if: always()" in required
     assert "${{ needs.compat-compare.result }}" in required

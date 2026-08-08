@@ -258,7 +258,7 @@ upload use GitHub Actions `always()` handling, so a missing reference image,
 harness failure, state/output divergence, or policy violation still produces a
 manifest or explicit fallback status plus candidate/reference provenance and
 retained failure inputs; those postmortem steps do not change the failed job
-conclusion. Pull requests expose the stable `Compatibility Gate` aggregation
+conclusion. Pull requests expose the stable `PR Compatibility Gate` aggregation
 context for repository rules.
 
 For schema-v3 heads, the diff gate rejects every unverified equivalence claim,

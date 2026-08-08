@@ -28,7 +28,7 @@ jobs:
       head_sha: ${{ github.sha }}
 
   compatibility-required:
-    name: Compatibility Gate
+    name: PR Compatibility Gate
     needs: compat-compare
     if: always()
     runs-on: ubuntu-latest
