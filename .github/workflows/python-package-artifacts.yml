@@ -1,0 +1,729 @@
+name: Python Package Artifacts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".cargo/**"
+      - ".gitattributes"
+      - ".github/workflows/python-package-artifacts.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "LICENSE-APACHE"
+      - "LICENSE-MIT"
+      - "crates/ferric-*/**"
+      - "scripts/python_package_lib.py"
+      - "scripts/test-python-sdist-artifact.py"
+      - "scripts/test-python-wheel-artifact.py"
+      - "scripts/validate-python-package.py"
+      - "scripts/verify-python-package-artifacts.py"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".cargo/**"
+      - ".gitattributes"
+      - ".github/workflows/python-package-artifacts.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "LICENSE-APACHE"
+      - "LICENSE-MIT"
+      - "crates/ferric-*/**"
+      - "scripts/python_package_lib.py"
+      - "scripts/test-python-sdist-artifact.py"
+      - "scripts/test-python-wheel-artifact.py"
+      - "scripts/validate-python-package.py"
+      - "scripts/verify-python-package-artifacts.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ABI3AUDIT_VERSION: "0.0.26"
+  AUDITWHEEL_VERSION: "6.7.0"
+  CARGO_TERM_COLOR: always
+  DELOCATE_VERSION: "0.13.0"
+  DELVEWHEEL_VERSION: "1.13.0"
+  MATURIN_VERSION: "1.12.6"
+  RUSTFLAGS: "-D warnings"
+  RUST_TOOLCHAIN: "1.93.0"
+  UV_VERSION: "0.12.3"
+
+jobs:
+  validate-artifact-contract:
+    name: Validate Python artifact contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate package metadata and release matrix
+        run: python3 scripts/validate-python-package.py
+
+  build-wheels:
+    name: Build and repair (${{ matrix.target }})
+    needs: validate-artifact-contract
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: manylinux2014-x86_64
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            family: manylinux
+            container_policy: "2014"
+            compatibility: manylinux2014
+            compatibility_args: ""
+            auditwheel_mode: repair
+            required_arch: x86_64
+            deployment_target: ""
+          - target: manylinux2014-aarch64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            family: manylinux
+            container_policy: "2014"
+            compatibility: manylinux2014
+            compatibility_args: ""
+            auditwheel_mode: repair
+            required_arch: aarch64
+            deployment_target: ""
+          - target: musllinux1_2-x86_64
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-musl
+            family: musllinux
+            container_policy: musllinux_1_2
+            compatibility: musllinux_1_2
+            compatibility_args: ""
+            auditwheel_mode: repair
+            required_arch: x86_64
+            deployment_target: ""
+          - target: musllinux1_2-aarch64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+            family: musllinux
+            container_policy: musllinux_1_2
+            compatibility: musllinux_1_2
+            compatibility_args: ""
+            auditwheel_mode: repair
+            required_arch: aarch64
+            deployment_target: ""
+          - target: macos-x86_64
+            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+            family: macos
+            container_policy: auto
+            compatibility: pypi
+            compatibility_args: "--compatibility pypi"
+            auditwheel_mode: skip
+            required_arch: x86_64
+            deployment_target: "10.12"
+          - target: macos-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+            family: macos
+            container_policy: auto
+            compatibility: pypi
+            compatibility_args: "--compatibility pypi"
+            auditwheel_mode: skip
+            required_arch: arm64
+            deployment_target: "11.0"
+          - target: windows-x86_64
+            runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+            family: windows
+            container_policy: auto
+            compatibility: pypi
+            compatibility_args: "--compatibility pypi"
+            auditwheel_mode: skip
+            required_arch: AMD64
+            deployment_target: ""
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the abi3 baseline interpreter for Windows linking
+        if: matrix.family == 'windows'
+        uses: actions/setup-python@v5
+        with:
+          architecture: x64
+          python-version: "3.9"
+      - name: Build one staged Unix wheel with pinned maturin
+        if: matrix.family != 'windows'
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        env:
+          PYO3_NO_PYTHON: "1"
+        with:
+          args: >-
+            --release
+            --locked
+            ${{ matrix.compatibility_args }}
+            --auditwheel ${{ matrix.auditwheel_mode }}
+            --out python-wheel-staging
+          manylinux: ${{ matrix.container_policy }}
+          maturin-version: v${{ env.MATURIN_VERSION }}
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          target: ${{ matrix.rust_target }}
+          working-directory: crates/ferric-rules-python
+      - name: Build one staged Windows wheel with pinned maturin
+        if: matrix.family == 'windows'
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          args: >-
+            --release
+            --locked
+            ${{ matrix.compatibility_args }}
+            --auditwheel ${{ matrix.auditwheel_mode }}
+            --out python-wheel-staging
+          manylinux: ${{ matrix.container_policy }}
+          maturin-version: v${{ env.MATURIN_VERSION }}
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          target: ${{ matrix.rust_target }}
+          working-directory: crates/ferric-rules-python
+      - name: Install pinned packaging tools
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Promote and audit repaired Linux wheel
+        if: matrix.family == 'manylinux' || matrix.family == 'musllinux'
+        shell: bash
+        working-directory: crates/ferric-rules-python
+        run: |
+          set -euo pipefail
+          mkdir -p python-wheel-final python-audit
+          staged=()
+          while IFS= read -r -d '' wheel; do
+            staged+=("$wheel")
+          done < <(find python-wheel-staging -mindepth 1 -maxdepth 1 \
+            -type f -name '*.whl' -print0)
+          if [[ "${#staged[@]}" -ne 1 ]]; then
+            printf 'expected exactly one staged wheel, found %s\n' \
+              "${#staged[@]}" >&2
+            exit 1
+          fi
+          cp -- "${staged[0]}" python-wheel-final/
+          final="python-wheel-final/${staged[0]##*/}"
+          report="python-audit/audit-${{ matrix.target }}.txt"
+          {
+            printf 'target=%s\n' '${{ matrix.target }}'
+            printf 'rust_target=%s\n' '${{ matrix.rust_target }}'
+            printf 'compatibility=%s\n' '${{ matrix.compatibility }}'
+            printf 'auditwheel=%s\n' "$AUDITWHEEL_VERSION"
+            uvx --from "auditwheel==$AUDITWHEEL_VERSION" auditwheel show "$final"
+            printf '\nabi3audit=%s\n' "$ABI3AUDIT_VERSION"
+            uvx --from "abi3audit==$ABI3AUDIT_VERSION" abi3audit --strict "$final"
+          } >"$report" 2>&1
+          cat "$report"
+      - name: Repair and audit macOS wheel
+        if: matrix.family == 'macos'
+        shell: bash
+        working-directory: crates/ferric-rules-python
+        run: |
+          set -euo pipefail
+          mkdir -p python-wheel-final python-audit
+          staged=()
+          while IFS= read -r -d '' wheel; do
+            staged+=("$wheel")
+          done < <(find python-wheel-staging -mindepth 1 -maxdepth 1 \
+            -type f -name '*.whl' -print0)
+          if [[ "${#staged[@]}" -ne 1 ]]; then
+            printf 'expected exactly one staged wheel, found %s\n' \
+              "${#staged[@]}" >&2
+            exit 1
+          fi
+          report="python-audit/audit-${{ matrix.target }}.txt"
+          {
+            printf 'target=%s\n' '${{ matrix.target }}'
+            printf 'rust_target=%s\n' '${{ matrix.rust_target }}'
+            printf 'deployment_target=%s\n' "$MACOSX_DEPLOYMENT_TARGET"
+            printf 'delocate=%s\n' "$DELOCATE_VERSION"
+            uvx --from "delocate==$DELOCATE_VERSION" \
+              delocate-listdeps --all "${staged[0]}"
+            uvx --from "delocate==$DELOCATE_VERSION" \
+              delocate-wheel \
+              --require-archs '${{ matrix.required_arch }}' \
+              -w python-wheel-final \
+              "${staged[0]}"
+          } >"$report" 2>&1
+          repaired=()
+          while IFS= read -r -d '' wheel; do
+            repaired+=("$wheel")
+          done < <(find python-wheel-final -mindepth 1 -maxdepth 1 \
+            -type f -name '*.whl' -print0)
+          if [[ "${#repaired[@]}" -ne 1 ]]; then
+            printf 'expected exactly one repaired wheel, found %s\n' \
+              "${#repaired[@]}" >&2
+            exit 1
+          fi
+          {
+            uvx --from "delocate==$DELOCATE_VERSION" \
+              delocate-listdeps --all "${repaired[0]}"
+            printf '\nabi3audit=%s\n' "$ABI3AUDIT_VERSION"
+            uvx --from "abi3audit==$ABI3AUDIT_VERSION" \
+              abi3audit --strict "${repaired[0]}"
+          } >>"$report" 2>&1
+          cat "$report"
+      - name: Repair and audit Windows wheel
+        if: matrix.family == 'windows'
+        shell: bash
+        working-directory: crates/ferric-rules-python
+        run: |
+          set -euo pipefail
+          mkdir -p python-wheel-final python-audit
+          staged=()
+          while IFS= read -r -d '' wheel; do
+            staged+=("$wheel")
+          done < <(find python-wheel-staging -mindepth 1 -maxdepth 1 \
+            -type f -name '*.whl' -print0)
+          if [[ "${#staged[@]}" -ne 1 ]]; then
+            printf 'expected exactly one staged wheel, found %s\n' \
+              "${#staged[@]}" >&2
+            exit 1
+          fi
+          report="python-audit/audit-${{ matrix.target }}.txt"
+          {
+            printf 'target=%s\n' '${{ matrix.target }}'
+            printf 'rust_target=%s\n' '${{ matrix.rust_target }}'
+            printf 'delvewheel=%s\n' "$DELVEWHEEL_VERSION"
+            uvx --from "delvewheel==$DELVEWHEEL_VERSION" \
+              delvewheel show "${staged[0]}"
+            uvx --from "delvewheel==$DELVEWHEEL_VERSION" \
+              delvewheel repair \
+              --wheel-dir python-wheel-final \
+              "${staged[0]}"
+          } >"$report" 2>&1
+          repaired=()
+          while IFS= read -r -d '' wheel; do
+            repaired+=("$wheel")
+          done < <(find python-wheel-final -mindepth 1 -maxdepth 1 \
+            -type f -name '*.whl' -print0)
+          if [[ "${#repaired[@]}" -ne 1 ]]; then
+            printf 'expected exactly one repaired wheel, found %s\n' \
+              "${#repaired[@]}" >&2
+            exit 1
+          fi
+          {
+            uvx --from "delvewheel==$DELVEWHEEL_VERSION" \
+              delvewheel show "${repaired[0]}"
+            printf '\nabi3audit=%s\n' "$ABI3AUDIT_VERSION"
+            uvx --from "abi3audit==$ABI3AUDIT_VERSION" \
+              abi3audit --strict "${repaired[0]}"
+          } >>"$report" 2>&1
+          cat "$report"
+      - name: Select the exact final wheel
+        id: final-wheel
+        shell: bash
+        working-directory: crates/ferric-rules-python
+        run: |
+          set -euo pipefail
+          wheels=()
+          while IFS= read -r -d '' wheel; do
+            wheels+=("$wheel")
+          done < <(find python-wheel-final -mindepth 1 -maxdepth 1 \
+            -type f -name '*.whl' -print0)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            printf 'expected exactly one final wheel, found %s\n' \
+              "${#wheels[@]}" >&2
+            exit 1
+          fi
+          case "${wheels[0]##*/}" in
+            *-cp39-abi3-*.whl) ;;
+            *)
+              printf 'wheel is not tagged cp39-abi3: %s\n' "${wheels[0]}" >&2
+              exit 1
+              ;;
+          esac
+          printf 'path=%s\n' \
+            "crates/ferric-rules-python/${wheels[0]}" >>"$GITHUB_OUTPUT"
+      - name: Upload exact repaired wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel-${{ matrix.target }}
+          path: ${{ steps.final-wheel.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload exact repair and ABI audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-audit-${{ matrix.target }}
+          path: crates/ferric-rules-python/python-audit/audit-${{ matrix.target }}.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke-wheels:
+    name: Smoke (${{ matrix.target }}, CPython ${{ matrix.python_version }})
+    needs: build-wheels
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - manylinux2014-x86_64
+          - manylinux2014-aarch64
+          - musllinux1_2-x86_64
+          - musllinux1_2-aarch64
+          - macos-x86_64
+          - macos-arm64
+          - windows-x86_64
+        python_version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          - target: manylinux2014-x86_64
+            runner: ubuntu-24.04
+            family: manylinux
+          - target: manylinux2014-aarch64
+            runner: ubuntu-24.04-arm
+            family: manylinux
+          - target: musllinux1_2-x86_64
+            runner: ubuntu-24.04
+            family: musllinux
+          - target: musllinux1_2-aarch64
+            runner: ubuntu-24.04-arm
+            family: musllinux
+          - target: macos-x86_64
+            runner: macos-15-intel
+            family: macos
+          - target: macos-arm64
+            runner: macos-15
+            family: macos
+          - target: windows-x86_64
+            runner: windows-2025
+            family: windows
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the exact repaired wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: python-wheel-${{ matrix.target }}
+          path: downloaded-python-wheel
+      - name: Select the downloaded wheel
+        id: downloaded-wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheels=()
+          while IFS= read -r -d '' wheel; do
+            wheels+=("$wheel")
+          done < <(find downloaded-python-wheel -type f -name '*.whl' -print0)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            printf 'expected exactly one downloaded wheel, found %s\n' \
+              "${#wheels[@]}" >&2
+            exit 1
+          fi
+          printf 'path=%s\n' "${wheels[0]}" >>"$GITHUB_OUTPUT"
+      - name: Install pinned uv
+        if: matrix.family != 'musllinux'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Install managed CPython
+        if: matrix.family != 'musllinux'
+        shell: bash
+        run: uv python install '${{ matrix.python_version }}'
+      - name: Smoke exact wheel in a clean managed-Python environment
+        if: matrix.family != 'musllinux'
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+          RECEIPT: python-receipts/wheel-smoke-${{ matrix.target }}-py${{ matrix.python_version }}.json
+          TARGET_ID: ${{ matrix.target }}
+          WHEEL: ${{ steps.downloaded-wheel.outputs.path }}
+        run: |
+          set -euo pipefail
+          mkdir -p python-receipts
+          uv_bin="$(command -v uv)"
+          case "$RUNNER_OS" in
+            Windows) clean_path='/c/Windows/System32:/c/Windows:/usr/bin:/bin' ;;
+            *) clean_path='/usr/bin:/bin:/usr/sbin:/sbin' ;;
+          esac
+          if PATH="$clean_path" command -v cargo >/dev/null \
+              || PATH="$clean_path" command -v rustc >/dev/null; then
+            printf 'Rust toolchain leaked into clean wheel smoke PATH\n' >&2
+            exit 1
+          fi
+          PATH="$clean_path" UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never \
+            "$uv_bin" run --isolated --no-project --python "$PYTHON_VERSION" -- \
+            python scripts/test-python-wheel-artifact.py \
+              --wheel "$WHEEL" \
+              --target "$TARGET_ID" \
+              --receipt "$RECEIPT"
+      - name: Smoke exact wheel in native matching-architecture Alpine
+        if: matrix.family == 'musllinux'
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ matrix.python_version }}
+          RECEIPT: python-receipts/wheel-smoke-${{ matrix.target }}-py${{ matrix.python_version }}.json
+          TARGET_ID: ${{ matrix.target }}
+          WHEEL: ${{ steps.downloaded-wheel.outputs.path }}
+        run: |
+          set -euo pipefail
+          mkdir -p python-receipts
+          docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:exec \
+            --env PYTHONDONTWRITEBYTECODE=1 \
+            --env PYTHONNOUSERSITE=1 \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /tmp \
+            "python:$PYTHON_VERSION-alpine" \
+            python /workspace/scripts/test-python-wheel-artifact.py \
+              --wheel "/workspace/$WHEEL" \
+              --target "$TARGET_ID" \
+              --receipt "/workspace/$RECEIPT"
+      - name: Upload exact smoke receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-smoke-${{ matrix.target }}-py${{ matrix.python_version }}
+          path: python-receipts/wheel-smoke-${{ matrix.target }}-py${{ matrix.python_version }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  reject-python-314:
+    name: Reject CPython 3.14
+    needs: build-wheels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the exact manylinux x86-64 wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: python-wheel-manylinux2014-x86_64
+          path: downloaded-python-wheel
+      - name: Select the downloaded wheel
+        id: downloaded-wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheels=()
+          while IFS= read -r -d '' wheel; do
+            wheels+=("$wheel")
+          done < <(find downloaded-python-wheel -type f -name '*.whl' -print0)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            printf 'expected exactly one downloaded wheel, found %s\n' \
+              "${#wheels[@]}" >&2
+            exit 1
+          fi
+          printf 'path=%s\n' "${wheels[0]}" >>"$GITHUB_OUTPUT"
+      - name: Install pinned uv and managed CPython 3.14
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+      - name: Materialize managed CPython 3.14 before offline rejection
+        run: uv python install 3.14
+      - name: Prove Requires-Python rejects the otherwise-compatible abi3 wheel
+        env:
+          WHEEL: ${{ steps.downloaded-wheel.outputs.path }}
+        run: |
+          mkdir -p python-receipts
+          uv_bin="$(command -v uv)"
+          clean_path='/usr/bin:/bin:/usr/sbin:/sbin'
+          if PATH="$clean_path" command -v cargo >/dev/null \
+              || PATH="$clean_path" command -v rustc >/dev/null; then
+            printf 'Rust toolchain leaked into rejection smoke PATH\n' >&2
+            exit 1
+          fi
+          PATH="$clean_path" UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never \
+            "$uv_bin" run --isolated --no-project --python 3.14 -- \
+            python scripts/test-python-wheel-artifact.py \
+              --wheel "$WHEEL" \
+              --target manylinux2014-x86_64 \
+              --receipt python-receipts/wheel-reject-py314.json \
+              --expect-python-rejection
+      - name: Upload exact rejection receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-rejection-py314
+          path: python-receipts/wheel-reject-py314.json
+          if-no-files-found: error
+          retention-days: 14
+
+  build-and-smoke-sdist:
+    name: Build and clean-test sdist
+    needs: validate-artifact-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the source-build interpreter
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Build exactly one sdist with pinned maturin
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        env:
+          PYO3_NO_PYTHON: "1"
+        with:
+          args: --out python-sdist-staging
+          command: sdist
+          manylinux: "off"
+          maturin-version: v${{ env.MATURIN_VERSION }}
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          target: x86_64-unknown-linux-gnu
+          working-directory: crates/ferric-rules-python
+      - name: Select the exact raw sdist and final output path
+        id: sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdists=()
+          while IFS= read -r -d '' sdist; do
+            sdists+=("$sdist")
+          done < <(find crates/ferric-rules-python/python-sdist-staging \
+            -mindepth 1 -maxdepth 1 -type f -name '*.tar.gz' -print0)
+          if [[ "${#sdists[@]}" -ne 1 ]]; then
+            printf 'expected exactly one sdist, found %s\n' \
+              "${#sdists[@]}" >&2
+            exit 1
+          fi
+          case "${sdists[0]##*/}" in
+            ferric-*.tar.gz) ;;
+            *)
+              printf 'unexpected sdist filename: %s\n' "${sdists[0]}" >&2
+              exit 1
+              ;;
+          esac
+          final_dir="crates/ferric-rules-python/python-sdist-final"
+          mkdir -p "$final_dir"
+          printf 'raw_path=%s\n' "${sdists[0]}" >>"$GITHUB_OUTPUT"
+          printf 'final_path=%s/%s\n' \
+            "$final_dir" "${sdists[0]##*/}" >>"$GITHUB_OUTPUT"
+      - name: Prefetch the locked Rust dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo "+$RUST_TOOLCHAIN" fetch \
+            --locked --manifest-path Cargo.toml
+      - name: Normalize, locked-build, and smoke on native Linux
+        shell: bash
+        env:
+          FINAL_SDIST: ${{ steps.sdist.outputs.final_path }}
+          RAW_SDIST: ${{ steps.sdist.outputs.raw_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p python-receipts
+          python_path="$(command -v python)"
+          cargo_path="$(command -v cargo)"
+          uv_path="$(command -v uv)"
+          "$uv_path" run \
+            --isolated --no-project \
+            --python "$python_path" \
+            --with "maturin==$MATURIN_VERSION" -- \
+            python scripts/test-python-sdist-artifact.py \
+              --sdist "$RAW_SDIST" \
+              --output "$FINAL_SDIST" \
+              --target manylinux2014-x86_64 \
+              --receipt python-receipts/sdist-smoke.json \
+              --cargo "$cargo_path" \
+              --uv "$uv_path"
+          test -f "$FINAL_SDIST"
+      - name: Upload exact tested sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sdist
+          path: ${{ steps.sdist.outputs.final_path }}
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload exact sdist smoke receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-sdist-smoke
+          path: python-receipts/sdist-smoke.json
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-artifact-set:
+    name: Verify deterministic Python release bundle
+    needs:
+      - smoke-wheels
+      - reject-python-314
+      - build-and-smoke-sdist
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download only final wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-wheel-*
+          merge-multiple: true
+          path: downloaded-python-artifacts
+      - name: Download the final sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: python-sdist
+          path: downloaded-python-artifacts
+      - name: Download all 35 wheel smoke receipts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-smoke-*
+          merge-multiple: true
+          path: downloaded-python-receipts
+      - name: Download the Python 3.14 rejection receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: python-rejection-py314
+          path: downloaded-python-receipts
+      - name: Download the sdist smoke receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: python-sdist-smoke
+          path: downloaded-python-receipts
+      - name: Download exact platform audit reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-audit-*
+          merge-multiple: true
+          path: downloaded-python-reports
+      - name: Verify artifact, receipt, tag, ABI, and architecture coverage
+        run: |
+          mkdir -p python-release-bundle
+          python3 scripts/verify-python-package-artifacts.py \
+            --artifacts-dir downloaded-python-artifacts \
+            --receipts-dir downloaded-python-receipts \
+            --manifest-out python-release-bundle/python-package-manifest.json
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Dry-run publish the exact verified files without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          publish_files=()
+          while IFS= read -r -d '' artifact; do
+            publish_files+=("$artifact")
+          done < <(find downloaded-python-artifacts -type f \
+            \( -name '*.whl' -o -name '*.tar.gz' \) -print0 | sort -z)
+          if [[ "${#publish_files[@]}" -ne 8 ]]; then
+            printf 'expected exactly eight publish files, found %s\n' \
+              "${#publish_files[@]}" >&2
+            exit 1
+          fi
+          uv publish \
+            --dry-run \
+            --trusted-publishing never \
+            --no-attestations \
+            "${publish_files[@]}"
+          uv publish \
+            --dry-run \
+            --publish-url https://test.pypi.org/legacy/ \
+            --trusted-publishing never \
+            --no-attestations \
+            "${publish_files[@]}"
+      - name: Upload exact verified release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-release-bundle
+          path: |
+            downloaded-python-artifacts
+            downloaded-python-receipts
+            downloaded-python-reports
+            python-release-bundle/python-package-manifest.json
+          if-no-files-found: error
+          retention-days: 14

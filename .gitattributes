@@ -9,3 +9,10 @@ packages/ferric/package.json text eol=lf
 packages/ferric/native/index.js text eol=lf
 packages/ferric/native/runtime-target.js text eol=lf
 packages/ferric/native/targets.json text eol=lf
+
+# Keep Python package metadata and files embedded in distributions stable.
+crates/ferric-rules-python/README.md text eol=lf
+crates/ferric-rules-python/LICENSE-MIT text eol=lf
+crates/ferric-rules-python/LICENSE-APACHE text eol=lf
+crates/ferric-rules-python/wheel-targets.json text eol=lf
+docs/python-package-release.md text eol=lf

@@ -4,11 +4,22 @@ build-backend = "maturin"
 
 [project]
 name = "ferric"
-version = "0.1.0"
+dynamic = ["version"]
+description = "A CLIPS-inspired rules engine for Python, implemented in Rust"
+readme = { file = "README.md", content-type = "text/markdown" }
 license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+authors = [{ name = "Ferric contributors" }]
 requires-python = ">=3.9,<3.14"
+keywords = ["clips", "expert-system", "rete", "rules-engine"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Rust",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
@@ -17,6 +28,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 
+[project.urls]
+Homepage = "https://github.com/plx/ferric-rules"
+Documentation = "https://github.com/plx/ferric-rules/blob/main/docs/users-guide.md"
+Repository = "https://github.com/plx/ferric-rules"
+Issues = "https://github.com/plx/ferric-rules/issues"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
@@ -24,4 +41,7 @@ dev = [
 ]
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "pyo3/abi3-py39"]
+include = [{ path = "README.md", format = "sdist" }]
+locked = true
+strip = false
