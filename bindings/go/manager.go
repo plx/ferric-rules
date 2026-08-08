@@ -69,6 +69,10 @@ func (m *Manager) tryEnqueue(ctx context.Context, w *worker, req workerRequest) 
 // Do dispatches a function to an engine of this Manager's type.
 // The function runs on a thread-locked worker goroutine. The Engine
 // must not be retained beyond the closure's return.
+// A panic in fn is recovered by the worker as *PanicError; engine changes
+// completed before the panic are not rolled back. If ctx is canceled after
+// dispatch but before the worker response is received, Do may return an error
+// wrapping ctx.Err() instead.
 //
 //nolint:nonamedreturns // named return needed for deferred observability recording.
 func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) (retErr error) {

@@ -72,7 +72,7 @@ func NewPinnedEngine(opts ...EngineOption) (*PinnedEngine, error) {
 				p.drain(eng)
 				return
 			case req := <-p.requests:
-				req.resp <- req.fn(eng)
+				req.resp <- invokeWorkerCallback(eng, req.fn)
 			}
 		}
 	}()
@@ -89,7 +89,7 @@ func (p *PinnedEngine) drain(eng *Engine) {
 	for {
 		select {
 		case req := <-p.requests:
-			req.resp <- req.fn(eng)
+			req.resp <- invokeWorkerCallback(eng, req.fn)
 		default:
 			return
 		}
@@ -156,6 +156,10 @@ func (p *PinnedEngine) tryEnqueue(ctx context.Context, req pinnedRequest) error 
 // Do dispatches an arbitrary function to the pinned engine's worker thread.
 // The function runs with exclusive access to the underlying Engine.
 // The Engine must not be retained beyond the closure's return.
+// A panic in fn is recovered by the worker as *PanicError; engine changes
+// completed before the panic are not rolled back. If ctx is canceled after
+// dispatch but before the worker response is received, Do may return an error
+// wrapping ctx.Err() instead.
 //
 // Returns errPinnedEngineClosed if the PinnedEngine has been closed.
 // Respects context cancellation for both dispatch and waiting.

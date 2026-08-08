@@ -189,7 +189,7 @@ func (w *worker) handle(req workerRequest) {
 		req.resp <- err
 		return
 	}
-	req.resp <- req.fn(engine)
+	req.resp <- invokeWorkerCallback(engine, req.fn)
 }
 
 // drain processes all buffered requests remaining in the channel so that
