@@ -123,6 +123,8 @@ _REFERENCE_FIELDS = frozenset(
 _REFERENCE_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _REFERENCE_BASE_IMAGE_RE = re.compile(r"debian:bookworm-slim@sha256:[0-9a-f]{64}")
 _REFERENCE_IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
+_CANDIDATE_SCHEMA = "ferric.compat-candidate-provenance"
+_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
 class CompatibilityWorkspaceError(RuntimeError):
@@ -133,6 +135,10 @@ class ReferenceProvenanceError(RuntimeError):
     """Raised when the CLIPS reference identity is unavailable or malformed."""
 
 
+class CandidateProvenanceError(RuntimeError):
+    """Raised when the Ferric candidate identity is unavailable or changes."""
+
+
 @dataclass(frozen=True)
 class ResolvedScenarioBundle:
     """One fully validated runtime view of a v2 scenario bundle."""
@@ -140,6 +146,31 @@ class ResolvedScenarioBundle:
     plan: bytes
     paths: tuple[Path, ...]
     native_phases: tuple[str, ...]
+
+
+def candidate_provenance(binary: Path, *, commit_sha: str) -> dict[str, object]:
+    """Measure the exact Ferric executable used by a compatibility run."""
+    if _COMMIT_SHA_RE.fullmatch(commit_sha) is None:
+        raise CandidateProvenanceError(
+            "candidate commit SHA must be exactly 40 lowercase hexadecimal characters"
+        )
+    if binary.is_symlink():
+        raise CandidateProvenanceError(f"candidate binary must not be a symlink: {binary}")
+    try:
+        resolved = binary.resolve(strict=True)
+        if not resolved.is_file():
+            raise CandidateProvenanceError(f"candidate binary is not a regular file: {binary}")
+        content = resolved.read_bytes()
+    except CandidateProvenanceError:
+        raise
+    except OSError as error:
+        raise CandidateProvenanceError(f"cannot read candidate binary {binary}: {error}") from error
+    return {
+        "schema": _CANDIDATE_SCHEMA,
+        "version": 1,
+        "commit_sha": commit_sha,
+        "binary_sha256": sha256_bytes(content),
+    }
 
 
 def _make_read_only(path: Path) -> None:
@@ -839,7 +870,7 @@ def run_clips_observer(
     source_sha256: str,
     composed_sha256: str,
     globals_to_capture: tuple[str, ...],
-    harnessed: bool,
+    harness_identity: str | None = None,
     scenario_path: str | None = None,
     expected_phases: tuple[str, ...] | None = None,
 ) -> dict:
@@ -970,7 +1001,7 @@ def run_clips_observer(
             source_sha256=source_sha256,
             composed_sha256=composed_sha256,
             auth_key=auth_key,
-            harnessed=harnessed,
+            expected_harness_identity=harness_identity,
             interrupted=(result.get("termination") or {}).get("kind") in {"signal", "timeout"},
             expected_phases=expected_phases,
         )
@@ -988,6 +1019,7 @@ def run_clips_observer(
             result["harness_error"] = True
     else:
         result["observation"] = observation
+    result["observer_auth_key"] = auth_key
     return result
 
 
@@ -1206,7 +1238,7 @@ def _project_result(
     result: dict,
     *,
     engine: str,
-    harnessed: bool,
+    harness_identity: str | None,
     expected_fixture: dict[str, str] | None = None,
     require_firing_names: bool = False,
     require_globals: bool = False,
@@ -1291,14 +1323,14 @@ def _project_result(
         if engine == "ferric":
             projected = project_ferric_observation(
                 observation,
-                harnessed=harnessed,
+                harness_identity=harness_identity,
                 require_firing_names=require_firing_names,
                 require_globals=require_globals,
             )
         else:
             projected = project_clips_observation(
                 observation,
-                harnessed=harnessed,
+                harness_identity=harness_identity,
                 require_firing_names=require_firing_names,
             )
     except ObservationProjectionError as error:
@@ -1357,6 +1389,7 @@ def process_file(args: tuple) -> tuple:
     if len(oracle_args) != 1 or oracle_args[0] is None:
         raise TypeError("compatibility work item requires one structured oracle declaration")
     declaration = oracle_args[0]
+    harness_identity = harness.verifier_identity if harness is not None else None
 
     run_path = abs_path
     composed_path: Path | None = None
@@ -1518,7 +1551,7 @@ def process_file(args: tuple) -> tuple:
             ferric_observation = _project_result(
                 ferric_result,
                 engine="ferric",
-                harnessed=harness is not None,
+                harness_identity=harness_identity,
                 expected_fixture=expected_fixture,
                 require_firing_names=(
                     runtime_declaration["expectations"]["firings"]["names"] is not None
@@ -1576,7 +1609,7 @@ def process_file(args: tuple) -> tuple:
                 source_sha256=source_digest,
                 composed_sha256=composed_digest,
                 globals_to_capture=globals_to_capture,
-                harnessed=harness is not None,
+                harness_identity=harness_identity,
                 **(
                     {
                         "scenario_path": str(scenario_path),
@@ -1589,7 +1622,7 @@ def process_file(args: tuple) -> tuple:
             clips_observation = _project_result(
                 clips_result,
                 engine="clips",
-                harnessed=harness is not None,
+                harness_identity=harness_identity,
                 expected_fixture=expected_fixture,
                 require_firing_names=(
                     runtime_declaration["expectations"]["firings"]["names"] is not None
@@ -1777,6 +1810,14 @@ def main(
     ferric_bin_path: Annotated[
         str | None, typer.Option("--ferric-bin", help="Path to ferric binary")
     ] = None,
+    candidate_sha: Annotated[
+        str | None,
+        typer.Option(help="Exact 40-character Git commit SHA represented by the Ferric candidate"),
+    ] = None,
+    require_selected: Annotated[
+        bool,
+        typer.Option(help="Fail when no structured-oracle fixture is selected"),
+    ] = False,
     skip_clips: Annotated[bool, typer.Option(help="Skip Docker CLIPS (ferric-only)")] = False,
     dry_run: Annotated[bool, typer.Option(help="Show files without running")] = False,
 ) -> None:
@@ -1786,6 +1827,15 @@ def main(
     manifest_path = Path(manifest) if manifest else ed / "compat-manifest.json"
     ferric = ferric_bin_path or str(default_ferric_bin())
     script = str(default_harness_script())
+
+    if require_selected and candidate_sha is None:
+        console.print("[red]error:[/] --require-selected also requires --candidate-sha")
+        raise typer.Exit(1)
+    if candidate_sha is not None and _COMMIT_SHA_RE.fullmatch(candidate_sha) is None:
+        console.print(
+            "[red]error:[/] --candidate-sha must be exactly 40 lowercase hexadecimal characters"
+        )
+        raise typer.Exit(1)
 
     if not manifest_path.exists():
         console.print(f"[red]error:[/] manifest not found: {manifest_path}")
@@ -1969,6 +2019,9 @@ def main(
             print(f"Manifest updated: {manifest_path}")
         else:
             print("No oracle-backed files to run.")
+        if require_selected:
+            console.print("[red]error:[/] required compatibility selection is empty")
+            raise typer.Exit(1)
         raise typer.Exit(0)
 
     print(f"Files to run: {len(files_to_run)}")
@@ -1983,10 +2036,35 @@ def main(
             print(f"  {rel_path}")
         raise typer.Exit(0)
 
-    if not Path(ferric).exists():
-        console.print(f"[red]error:[/] ferric binary not found: {ferric}")
+    try:
+        ferric_path = Path(ferric)
+        if ferric_path.is_symlink():
+            raise CandidateProvenanceError(f"candidate binary must not be a symlink: {ferric}")
+        resolved_ferric = ferric_path.resolve(strict=True)
+        if not resolved_ferric.is_file():
+            raise CandidateProvenanceError(f"candidate binary is not a regular file: {ferric}")
+        candidate = (
+            candidate_provenance(resolved_ferric, commit_sha=candidate_sha)
+            if candidate_sha is not None
+            else None
+        )
+        ferric = str(resolved_ferric)
+    except (OSError, CandidateProvenanceError) as error:
+        console.print(f"[red]error:[/] {error}")
         console.print("Run: cargo build --release -p ferric-rules-cli")
+        raise typer.Exit(1) from error
+    persisted_candidate = mdata.get("candidate")
+    if persisted_candidate is not None and candidate is None:
+        console.print("[red]error:[/] manifest candidate requires --candidate-sha verification")
         raise typer.Exit(1)
+    if persisted_candidate is not None and persisted_candidate != candidate:
+        console.print("[red]error:[/] manifest candidate provenance does not match the binary")
+        raise typer.Exit(1)
+    if candidate is not None:
+        mdata["candidate"] = candidate
+        # Persist candidate identity before the Docker/reference boundary so a
+        # missing or broken reference still leaves an attributable artifact.
+        save_manifest(manifest_path, mdata)
     if skip_clips:
         console.print(
             "[red]error:[/] --skip-clips cannot produce structured compatibility evidence"
@@ -2017,27 +2095,34 @@ def main(
     results: dict[str, tuple] = {}
     start_time = time.monotonic()
 
-    with _compatibility_run_workspace(root) as (run_workspace, failures_dir):
-        work_items = [
-            (
-                rel,
-                abs_p,
-                ferric,
-                str(root),
-                script,
-                timeout,
-                skip_clips,
-                resolved_harnesses[rel],
-                str(run_workspace),
-                str(failures_dir),
-                declarations[rel],
-            )
-            for rel, abs_p in files_to_run
-        ]
+    execution_error: Exception | None = None
+    try:
+        with _compatibility_run_workspace(root) as (run_workspace, failures_dir):
+            work_items = [
+                (
+                    rel,
+                    abs_p,
+                    ferric,
+                    str(root),
+                    script,
+                    timeout,
+                    skip_clips,
+                    resolved_harnesses[rel],
+                    str(run_workspace),
+                    str(failures_dir),
+                    declarations[rel],
+                )
+                for rel, abs_p in files_to_run
+            ]
 
-        for result_tuple in parallel_run(process_file, work_items, workers=workers):
-            try:
+            for result_tuple in parallel_run(process_file, work_items, workers=workers):
+                if type(result_tuple) is not tuple or len(result_tuple) != 5:
+                    raise RuntimeError("compatibility worker returned a malformed result")
                 rel, ferric_result, clips_result, classification, reason = result_tuple
+                if rel not in declarations or rel in results:
+                    raise RuntimeError(
+                        f"compatibility worker returned an unexpected result for {rel!r}"
+                    )
                 results[rel] = (ferric_result, clips_result, classification, reason)
                 completed += 1
                 status_char = {
@@ -2050,10 +2135,10 @@ def main(
                 if completed % 80 == 0:
                     sys.stdout.write(f" [{completed}/{len(files_to_run)}]\n")
                 sys.stdout.flush()
-            except Exception:
-                completed += 1
-                sys.stdout.write("E")
-                sys.stdout.flush()
+    except Exception as error:
+        execution_error = error
+        sys.stdout.write("E")
+        sys.stdout.flush()
 
     elapsed = time.monotonic() - start_time
     print(f"\n\nCompleted {completed} files in {elapsed:.1f}s")
@@ -2122,6 +2207,27 @@ def main(
         print(f"\nInvalid runtime evidence ({len(invalid_runtime)}):")
         for rel_path, (_ferric_r, _clips_r, _classification, reason) in invalid_runtime[:20]:
             print(f"  {rel_path} ({reason})")
+
+    if candidate is not None:
+        try:
+            final_candidate = candidate_provenance(Path(ferric), commit_sha=candidate["commit_sha"])
+        except CandidateProvenanceError as error:
+            console.print(f"[red]error:[/] {error}")
+            raise typer.Exit(1) from error
+        if final_candidate != candidate:
+            console.print("[red]error:[/] candidate binary changed during compatibility execution")
+            raise typer.Exit(1)
+
+    if execution_error is not None:
+        console.print(f"[red]error:[/] compatibility execution failed: {execution_error}")
+        raise typer.Exit(1) from execution_error
+
+    if completed != len(files_to_run):
+        console.print(
+            "[red]error:[/] compatibility execution was incomplete: "
+            f"completed {completed} of {len(files_to_run)}"
+        )
+        raise typer.Exit(1)
 
     if invalid or invalid_runtime:
         raise typer.Exit(1)

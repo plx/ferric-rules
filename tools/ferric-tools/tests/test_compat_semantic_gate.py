@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 from pathlib import Path
 
 import pytest
 
 from ferric_tools._harness import sha256_bytes
+from ferric_tools.compat.clips_oracle import NATIVE_RECORD_PREFIX, parse_probe_output
 from ferric_tools.compat.diagnostics import diagnostic, termination
 from ferric_tools.compat.oracle import (
     evaluate_oracle,
@@ -41,6 +44,7 @@ BINARY_DIGEST = "b" * 64
 LIBRARY_DIGEST = "c" * 64
 BASE_IMAGE = f"debian:bookworm-slim@sha256:{'d' * 64}"
 IMAGE_ID = f"sha256:{'e' * 64}"
+AUTH_KEY = "f" * 64
 
 
 def _reference_policy() -> ReferencePolicy:
@@ -220,19 +224,109 @@ def _raw_observation(
     return observation
 
 
+def _authenticated_record(logical: bytes, *, nonce: str) -> bytes:
+    digest = hmac.new(bytes.fromhex(AUTH_KEY), logical, hashlib.sha256).hexdigest()
+    return f"\n{NATIVE_RECORD_PREFIX}{nonce}|".encode() + logical + f"|{digest}\n".encode()
+
+
+def _native_record(declaration: dict[str, object], kind: str, *fields: object) -> bytes:
+    payload = "|".join(str(field) for field in fields)
+    return _authenticated_record(
+        f"{kind}|{payload}".encode(),
+        nonce=str(declaration["nonce"]),
+    )
+
+
+def _probe(declaration: dict[str, object], payload: str) -> bytes:
+    encoded = payload.encode()
+    return _authenticated_record(
+        f"PROBE|{len(encoded)}|".encode() + encoded,
+        nonce=str(declaration["nonce"]),
+    )
+
+
+def _clips_raw_evidence(
+    declaration: dict[str, object],
+    *,
+    value: int,
+) -> tuple[bytes, bytes, dict[str, object]]:
+    setup = declaration["setup"]
+    assert isinstance(setup, dict)
+    steps = setup["steps"]
+    assert isinstance(steps, list)
+    expected_phases = tuple(
+        str(step["operation"])
+        for step in steps
+        if isinstance(step, dict) and step["operation"] != "set-strategy"
+    )
+    records = [
+        _native_record(
+            declaration,
+            "LIFECYCLE",
+            0,
+            "START",
+            declaration["id"],
+            declaration["source_sha256"],
+            declaration["composed_sha256"],
+        )
+    ]
+    sequence = 1
+    for phase in expected_phases:
+        records.append(_native_record(declaration, "PHASE", sequence, phase, "BEGIN"))
+        sequence += 1
+        records.append(_native_record(declaration, "PHASE", sequence, phase, "END", "OK"))
+        sequence += 1
+    records.extend(
+        [
+            _native_record(declaration, "RUN", -1, 1, 0, 0, 0, 0, 0),
+            _probe(declaration, "PHASE|1|RESET_COMPLETE"),
+            _probe(declaration, "PHASE|2|RUN_COMPLETE"),
+            _probe(declaration, "MODULE|MAIN"),
+            _probe(declaration, "FOCUS|MAIN"),
+            _probe(declaration, "FACT|1|9|MAIN|result|ordered|1"),
+            _probe(declaration, "SLOT|1|9|1|implied|MULTIFIELD|1"),
+            _probe(declaration, f"VALUE|1|9|MAIN|result|1|implied|1|INTEGER|{value}"),
+            _native_record(
+                declaration,
+                "LIFECYCLE",
+                3,
+                "COMPLETE",
+                declaration["id"],
+                declaration["source_sha256"],
+                declaration["composed_sha256"],
+            ),
+        ]
+    )
+    raw_stdout = b""
+    raw_stderr = b"".join(records)
+    observation = parse_probe_output(
+        raw_stdout,
+        raw_stderr=raw_stderr,
+        fixture_id=str(declaration["id"]),
+        nonce=str(declaration["nonce"]),
+        source_sha256=str(declaration["source_sha256"]),
+        composed_sha256=str(declaration["composed_sha256"]),
+        auth_key=AUTH_KEY,
+        expected_phases=expected_phases,
+    )
+    return raw_stdout, raw_stderr, observation
+
+
 def _result(
     observation: dict[str, object],
     *,
     raw_observation: dict[str, object],
     engine: str,
+    raw_stdout: bytes | None = None,
+    raw_stderr: bytes | None = None,
 ) -> dict[str, object]:
     if engine == "ferric":
         raw_stdout = (json.dumps(raw_observation, separators=(",", ":")) + "\n").encode()
         raw_stderr = b""
     else:
-        raw_stdout = b""
-        raw_stderr = b"authenticated-native-record\n"
-    return {
+        assert raw_stdout is not None
+        assert raw_stderr is not None
+    result = {
         "exit_code": 0,
         "stdout": raw_stdout.decode(),
         "stderr": raw_stderr.decode(),
@@ -248,6 +342,9 @@ def _result(
         "termination": termination(exit_code=0, timed_out=False),
         "canonical_observation": observation,
     }
+    if engine == "clips":
+        result["observer_auth_key"] = AUTH_KEY
+    return result
 
 
 def _fixture_evidence(tmp_path: Path, *, ferric_value: int = 42, clips_value: int = 42):
@@ -267,11 +364,20 @@ def _fixture_evidence(tmp_path: Path, *, ferric_value: int = 42, clips_value: in
         encoding="utf-8",
     )
     ferric_raw = _raw_observation(declaration, engine="ferric", value=ferric_value)
-    clips_raw = _raw_observation(declaration, engine="clips", value=clips_value)
-    ferric_observation = project_ferric_observation(ferric_raw, harnessed=False)
-    clips_observation = project_clips_observation(clips_raw, harnessed=False)
+    clips_stdout, clips_stderr, clips_raw = _clips_raw_evidence(
+        declaration,
+        value=clips_value,
+    )
+    ferric_observation = project_ferric_observation(ferric_raw, harness_identity=None)
+    clips_observation = project_clips_observation(clips_raw, harness_identity=None)
     ferric = _result(ferric_observation, raw_observation=ferric_raw, engine="ferric")
-    clips = _result(clips_observation, raw_observation=clips_raw, engine="clips")
+    clips = _result(
+        clips_observation,
+        raw_observation=clips_raw,
+        engine="clips",
+        raw_stdout=clips_stdout,
+        raw_stderr=clips_stderr,
+    )
     evaluation = evaluate_oracle(
         declaration,
         ferric_observation,
@@ -431,7 +537,7 @@ def test_known_divergence_rejects_fingerprint_drift(tmp_path: Path) -> None:
     examples_dir, policy, manifest = _divergence_policy(tmp_path)
     entry = manifest["files"]["ferric-semantic/fr-rete-001.clp"]
     changed_raw = _raw_observation(entry["oracle"], engine="ferric", value=44)
-    changed = project_ferric_observation(changed_raw, harnessed=False)
+    changed = project_ferric_observation(changed_raw, harness_identity=None)
     entry["ferric"] = _result(
         changed,
         raw_observation=changed_raw,
@@ -634,7 +740,24 @@ def test_clips_semantic_stdout_is_bound_to_exact_process_bytes(tmp_path: Path) -
         examples_dir=examples_dir,
     )
 
-    assert any("semantic stdout" in failure for failure in report.failures)
+    assert any("raw observer transcript disagrees" in failure for failure in report.failures)
+
+
+def test_clips_semantic_stderr_is_bound_to_authenticated_process_bytes(tmp_path: Path) -> None:
+    examples_dir, _raw, _declaration, _evaluation, manifest = _fixture_evidence(tmp_path)
+    clips = manifest["files"]["ferric-semantic/fr-rete-001.clp"]["clips"]
+    original_stderr = base64.b64decode(clips["raw_output"]["stderr"])
+    substituted = b"VISIBLE-FIXTURE-ERROR\n" + original_stderr
+    clips["stderr"] = substituted.decode()
+    clips["raw_output"]["stderr"] = base64.b64encode(substituted).decode()
+
+    report = evaluate_manifest(
+        _policy(ExpectedResult(classification="equivalent")),
+        manifest,
+        examples_dir=examples_dir,
+    )
+
+    assert any("raw observer transcript disagrees" in failure for failure in report.failures)
 
 
 def test_policy_and_reference_versions_reject_boolean_aliases(tmp_path: Path) -> None:

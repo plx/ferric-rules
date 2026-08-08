@@ -22,7 +22,7 @@ from ferric_tools._clips_parser import (
     UNSUPPORTED_IO,
     scan_features,
 )
-from ferric_tools._harness import attach_harness_contracts, sha256_bytes
+from ferric_tools._harness import HarnessPlan, attach_harness_contracts, sha256_bytes
 from ferric_tools._manifest import save_manifest, utc_now_iso
 from ferric_tools._paths import examples_dir as default_examples_dir
 from ferric_tools._paths import repo_root
@@ -189,6 +189,7 @@ def _attach_oracle_declarations(
     *,
     examples_path: Path,
     root: Path,
+    harness_plans: dict[str, HarnessPlan],
 ) -> None:
     """Validate tracked declarations and attach them to generated entries."""
     declarations = _load_oracle_registry(examples_path / "compat-oracles.json")
@@ -236,22 +237,24 @@ def _attach_oracle_declarations(
             composed_sha256 = source_sha256
             harness = entry.get("harness")
             if harness is not None:
-                if harness.get("executable") is not True:
+                plan = harness_plans.get(rel_path)
+                if plan is None or plan.metadata != harness:
+                    raise OracleRegistryError(
+                        f"{rel_path}: declared library oracle has no deterministic harness plan"
+                    )
+                if (
+                    harness.get("executable") is not True
+                    or plan.harness_path is None
+                    or plan.harness_bytes is None
+                ):
                     raise OracleRegistryError(
                         f"{rel_path}: declared library oracle has no executable harness"
                     )
-                harness_path = harness.get("path")
-                if type(harness_path) is not str:
+                if plan.source_bytes != source_bytes:
                     raise OracleRegistryError(
-                        f"{rel_path}: declared library oracle has no harness path"
+                        f"{rel_path}: declared library source changed while scanning"
                     )
-                try:
-                    harness_bytes = (root / harness_path).read_bytes()
-                except OSError as error:
-                    raise OracleRegistryError(
-                        f"{rel_path}: declared harness cannot be read: {error}"
-                    ) from error
-                composed_sha256 = sha256_bytes(source_bytes + b"\n" + harness_bytes)
+                composed_sha256 = sha256_bytes(source_bytes + b"\n" + plan.harness_bytes)
 
         evidence = validate_declaration(
             declaration,
@@ -392,13 +395,18 @@ def scan_examples(
         else:
             root = repo_root()
     output_dir = harness_dir or root / "tests" / "harnesses"
-    attach_harness_contracts(
+    harness_plans = attach_harness_contracts(
         files,
         examples_dir=examples_path,
         output_dir=output_dir,
         root=root,
     )
-    _attach_oracle_declarations(files, examples_path=examples_path, root=root)
+    _attach_oracle_declarations(
+        files,
+        examples_path=examples_path,
+        root=root,
+        harness_plans=harness_plans,
+    )
     return files
 
 

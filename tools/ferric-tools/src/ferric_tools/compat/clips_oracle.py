@@ -36,6 +36,7 @@ _NONCE_RE = re.compile(r"^[0-9a-f]{32,128}$")
 _AUTH_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 _CLIPS_DIAGNOSTIC_CODE_RE = re.compile(r"(?m)^[ \t]*\[([A-Z][A-Z0-9]*\d+)\]")
 _HARNESS_LINE_RE = re.compile(r"^FERRIC-HARNESS\|(?P<version>\d+)\|(?P<body>.*)$")
+_HARNESS_ID_RE = re.compile(r"ferric-harness-[0-9a-f]{64}(?:-[1-9][0-9]*)?")
 _MAX_NATIVE_PAYLOAD = 16 * 1024 * 1024
 _PROBE_KINDS = frozenset({"PHASE", "MODULE", "FOCUS", "FACT", "SLOT", "VALUE", "GLOBAL"})
 _V1_NATIVE_PHASES = ("load", "reset", "run")
@@ -701,7 +702,7 @@ def parse_probe_output(
     source_sha256: str,
     composed_sha256: str,
     auth_key: str,
-    harnessed: bool = False,
+    expected_harness_identity: str | None = None,
     interrupted: bool = False,
     expected_phases: tuple[str, ...] | None = None,
 ) -> dict:
@@ -711,6 +712,11 @@ def parse_probe_output(
     source_sha256 = _require_digest(source_sha256, label="source digest")
     composed_sha256 = _require_digest(composed_sha256, label="composed digest")
     auth_key = _require_auth_key(auth_key)
+    if expected_harness_identity is not None and (
+        type(expected_harness_identity) is not str
+        or _HARNESS_ID_RE.fullmatch(expected_harness_identity) is None
+    ):
+        raise ValueError("expected generated harness identity is malformed")
     scenario_mode = expected_phases is not None
     if expected_phases is None:
         expected_phases = _V1_NATIVE_PHASES
@@ -1229,7 +1235,11 @@ def parse_probe_output(
     harness_records: list[dict] = []
     feature_lines: list[str] = []
     for line in semantic_stdout.splitlines(keepends=True):
-        match = _HARNESS_LINE_RE.match(line.rstrip("\r\n")) if harnessed else None
+        match = (
+            _HARNESS_LINE_RE.match(line.rstrip("\r\n"))
+            if expected_harness_identity is not None
+            else None
+        )
         if match:
             harness_records.append(
                 {"version": int(match.group("version")), "record": match.group("body")}
@@ -1237,6 +1247,17 @@ def parse_probe_output(
         else:
             feature_lines.append(line)
     semantic_stdout = "".join(feature_lines)
+    if expected_harness_identity is not None:
+        expected_records = [
+            {"version": 2, "record": f"{expected_harness_identity}|START"},
+            {
+                "version": 2,
+                "record": f"{expected_harness_identity}|STATE|focus=MAIN",
+            },
+            {"version": 2, "record": f"{expected_harness_identity}|COMPLETE"},
+        ]
+        if harness_records != expected_records:
+            protocol_issues.append("generated-harness-records")
 
     if RECORD_PREFIX in semantic_stdout or NATIVE_RECORD_PREFIX in semantic_stdout:
         protocol_issues.append("unexpected-reserved-prefix")

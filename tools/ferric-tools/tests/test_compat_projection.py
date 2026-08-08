@@ -207,8 +207,8 @@ def _declaration() -> dict[str, object]:
 
 
 def test_seed_ordered_result_projects_to_equivalent_non_vacuous_evidence():
-    ferric = project_ferric_observation(_raw_observation("ferric"), harnessed=False)
-    clips = project_clips_observation(_raw_observation("clips"), harnessed=False)
+    ferric = project_ferric_observation(_raw_observation("ferric"), harness_identity=None)
+    clips = project_clips_observation(_raw_observation("clips"), harness_identity=None)
 
     assert (
         ferric["effects"]
@@ -252,8 +252,8 @@ def test_action_error_halt_reason_is_canonical_across_adapters():
         )
     ]
 
-    ferric = project_ferric_observation(ferric_raw, harnessed=False)
-    clips = project_clips_observation(clips_raw, harnessed=False)
+    ferric = project_ferric_observation(ferric_raw, harness_identity=None)
+    clips = project_clips_observation(clips_raw, harness_identity=None)
 
     assert ferric["run"]["halt_reason"] == clips["run"]["halt_reason"] == "action-error"
     assert clips["firings"] == [{"rule": "counted-firing-1", "origin": "fixture"}]
@@ -294,10 +294,21 @@ def test_terminal_run_diagnostic_requires_action_error_halt(engine):
     projector = project_ferric_observation if engine == "ferric" else project_clips_observation
 
     with pytest.raises(ObservationProjectionError, match="lacks an action-error halt"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
-def test_generated_clips_harness_activity_fails_when_firings_cannot_be_attributed():
+HARNESS_IDENTITY = "ferric-harness-" + ("d" * 64)
+
+
+def _harness_records() -> list[dict[str, object]]:
+    return [
+        {"version": 2, "record": f"{HARNESS_IDENTITY}|START"},
+        {"version": 2, "record": f"{HARNESS_IDENTITY}|STATE|focus=MAIN"},
+        {"version": 2, "record": f"{HARNESS_IDENTITY}|COMPLETE"},
+    ]
+
+
+def test_generated_clips_harness_activity_is_proven_and_subtracted():
     raw = _raw_observation("clips")
     raw["facts"] = [
         _raw_fact(
@@ -309,26 +320,65 @@ def test_generated_clips_harness_activity_fails_when_firings_cannot_be_attribute
         _raw_fact("clips", fact_id="2"),
     ]
     raw["run"]["rules_fired"] = 2
-    raw["channels"][0]["text"] = (
-        "FERRIC-HARNESS|2|ferric-harness-deadbeef|START\n"
-        "FERRIC-HARNESS|2|ferric-harness-deadbeef|STATE|focus=MAIN\n"
-        "FERRIC-HARNESS|2|ferric-harness-deadbeef|COMPLETE\n"
-        "feature-output\n"
-    )
+    raw["channels"][0]["text"] = "feature-output\n"
+    raw["instrumentation"]["harness_records"] = _harness_records()
 
-    with pytest.raises(
-        ObservationProjectionError,
-        match="cannot separate harness firings",
-    ):
-        project_clips_observation(raw, harnessed=True)
+    projected = project_clips_observation(raw, harness_identity=HARNESS_IDENTITY)
+
+    assert projected["firings"] == [{"rule": "counted-firing-1", "origin": "fixture"}]
+    assert [fact["relation"] for fact in projected["facts"]] == [
+        "ferric-harness-generated-state",
+        "result",
+    ]
+    assert projected["channels"]["stdout"] == "feature-output\n"
 
 
-def test_ferric_harness_observation_fails_when_firings_cannot_be_attributed():
-    with pytest.raises(
-        ObservationProjectionError,
-        match="cannot separate harness firings",
-    ):
-        project_ferric_observation(_raw_observation("ferric"), harnessed=True)
+def test_ferric_generated_harness_activity_is_proven_and_subtracted():
+    raw = _raw_observation("ferric")
+    raw["channels"][0] = {
+        "name": "t",
+        "present": True,
+        "text": "".join(
+            f"FERRIC-HARNESS|{record['version']}|{record['record']}\n"
+            for record in _harness_records()
+        ),
+    }
+
+    projected = project_ferric_observation(raw, harness_identity=HARNESS_IDENTITY)
+
+    assert projected["firings"] == []
+    assert projected["channels"]["stdout"] == ""
+    assert [fact["relation"] for fact in projected["facts"]] == ["result"]
+
+
+def test_generated_harness_fails_closed_without_complete_verifier_records():
+    raw = _raw_observation("clips")
+    raw["instrumentation"]["harness_records"] = _harness_records()[:2]
+
+    with pytest.raises(ObservationProjectionError, match="exactly three verifier records"):
+        project_clips_observation(raw, harness_identity=HARNESS_IDENTITY)
+
+
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+def test_generated_harness_identity_must_match_bound_verifier(engine):
+    raw = _raw_observation(engine)
+    if engine == "ferric":
+        raw["channels"][0] = {
+            "name": "t",
+            "present": True,
+            "text": "".join(
+                f"FERRIC-HARNESS|{record['version']}|{record['record']}\n"
+                for record in _harness_records()
+            ),
+        }
+        projector = project_ferric_observation
+    else:
+        raw["instrumentation"]["harness_records"] = _harness_records()
+        projector = project_clips_observation
+
+    wrong_identity = "ferric-harness-" + ("e" * 64)
+    with pytest.raises(ObservationProjectionError, match="does not match"):
+        projector(raw, harness_identity=wrong_identity)
 
 
 def test_harness_looking_fixture_data_is_semantic_without_a_harness():
@@ -342,7 +392,7 @@ def test_harness_looking_fixture_data_is_semantic_without_a_harness():
     ]
     raw["channels"][0]["text"] = "FERRIC-HARNESS|1|domain-feature|event\n"
 
-    projected = project_clips_observation(raw, harnessed=False)
+    projected = project_clips_observation(raw, harness_identity=None)
 
     assert projected["facts"][0]["origin"] == "fixture"
     assert projected["effects"][0]["origin"] == "fixture"
@@ -357,7 +407,7 @@ def test_ambiguous_fact_ownership_fails_closed(engine):
 
     projector = project_ferric_observation if engine == "ferric" else project_clips_observation
     with pytest.raises(ObservationProjectionError, match="fact module is unavailable"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
 @pytest.mark.parametrize("engine", ["ferric", "clips"])
@@ -370,12 +420,12 @@ def test_lossy_or_duplicate_fact_identity_fails_closed(engine):
 
     projector = project_ferric_observation if engine == "ferric" else project_clips_observation
     with pytest.raises(ObservationProjectionError, match="fact id"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
     raw = _raw_observation(engine)
     raw["facts"].append(deepcopy(raw["facts"][0]))
     with pytest.raises(ObservationProjectionError, match="duplicate fact id"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
 @pytest.mark.parametrize("engine", ["ferric", "clips"])
@@ -385,7 +435,7 @@ def test_noncanonical_integer_transport_fails_closed(engine):
 
     projector = project_ferric_observation if engine == "ferric" else project_clips_observation
     with pytest.raises(ObservationProjectionError, match="canonical decimal text"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
 @pytest.mark.parametrize("engine", ["ferric", "clips"])
@@ -395,7 +445,7 @@ def test_duplicate_semantic_channels_fail_closed(engine):
 
     projector = project_ferric_observation if engine == "ferric" else project_clips_observation
     with pytest.raises(ObservationProjectionError, match="duplicate channel"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
 @pytest.mark.parametrize("engine", ["ferric", "clips"])
@@ -404,12 +454,12 @@ def test_wrong_raw_envelope_or_lifecycle_sequence_fails_closed(engine):
     raw = _raw_observation(engine)
     raw["schema"] = "fixture-controlled"
     with pytest.raises(ObservationProjectionError, match="schema"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
     raw = _raw_observation(engine)
     raw["lifecycle"][1]["sequence"] = 99
     with pytest.raises(ObservationProjectionError, match="lifecycle sequence"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
 def test_clips_protocol_issue_fails_closed():
@@ -417,7 +467,7 @@ def test_clips_protocol_issue_fails_closed():
     raw["protocol_issues"] = ["unexpected-reserved-prefix"]
 
     with pytest.raises(ObservationProjectionError, match="protocol violations"):
-        project_clips_observation(raw, harnessed=False)
+        project_clips_observation(raw, harness_identity=None)
     with pytest.raises(ObservationProjectionError, match="protocol violations"):
         project_observation_diagnostic(
             raw,
@@ -432,13 +482,13 @@ def test_unavailable_declared_ferric_capability_fails_closed():
     with pytest.raises(ObservationProjectionError, match="fired_rule_names"):
         project_ferric_observation(
             raw,
-            harnessed=False,
+            harness_identity=None,
             require_firing_names=True,
         )
     with pytest.raises(ObservationProjectionError, match="global_values"):
         project_ferric_observation(
             raw,
-            harnessed=False,
+            harness_identity=None,
             require_globals=True,
         )
 
@@ -446,7 +496,7 @@ def test_unavailable_declared_ferric_capability_fails_closed():
     with pytest.raises(ObservationProjectionError, match="fired_rule_names"):
         project_clips_observation(
             clips_raw,
-            harnessed=False,
+            harness_identity=None,
             require_firing_names=True,
         )
 
@@ -461,7 +511,7 @@ def test_multi_module_ferric_without_facts_does_not_require_fact_ownership_capab
         "focus_stack": ["MAIN", "SECONDARY"],
     }
 
-    projected = project_ferric_observation(raw, harnessed=False)
+    projected = project_ferric_observation(raw, harness_identity=None)
 
     assert projected["facts"] == []
 
@@ -471,7 +521,7 @@ def test_ferric_with_any_fact_still_requires_authenticated_module_ownership():
     raw["capabilities"]["fact_modules"] = False
 
     with pytest.raises(ObservationProjectionError, match="fact_modules"):
-        project_ferric_observation(raw, harnessed=False)
+        project_ferric_observation(raw, harness_identity=None)
 
 
 @pytest.mark.parametrize("engine", ["ferric", "clips"])
@@ -504,7 +554,7 @@ def test_completed_pre_run_diagnostic_projects_without_partial_state(
         raw["channels"][0]["present"] = True
 
     projector = project_ferric_observation if engine == "ferric" else project_clips_observation
-    projected = projector(raw, harnessed=False)
+    projected = projector(raw, harness_identity=None)
 
     assert projected["phase"] == phase
     assert projected["diagnostic"] == {
@@ -547,7 +597,7 @@ def test_homogeneous_diagnostics_collapse_but_heterogeneous_diagnostics_fail(eng
     ]
     projector = project_ferric_observation if engine == "ferric" else project_clips_observation
 
-    projected = projector(raw, harnessed=False)
+    projected = projector(raw, harness_identity=None)
     assert projected["diagnostic"] == {
         "phase": "load",
         "category": "construct-error",
@@ -561,7 +611,7 @@ def test_homogeneous_diagnostics_collapse_but_heterogeneous_diagnostics_fail(eng
         continued=True,
     )
     with pytest.raises(ObservationProjectionError, match="heterogeneous"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
 @pytest.mark.parametrize("engine", ["ferric", "clips"])
@@ -594,7 +644,7 @@ def test_unknown_or_malformed_diagnostic_taxonomy_fails_closed(
     projector = project_ferric_observation if engine == "ferric" else project_clips_observation
 
     with pytest.raises(ObservationProjectionError, match=message):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
 @pytest.mark.parametrize(
@@ -617,7 +667,7 @@ def test_engine_specific_diagnostic_metadata_fails_closed(engine, field, value, 
     projector = project_ferric_observation if engine == "ferric" else project_clips_observation
 
     with pytest.raises(ObservationProjectionError, match=message):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
 @pytest.mark.parametrize("engine", ["ferric", "clips"])
@@ -636,7 +686,7 @@ def test_harness_diagnostic_is_not_projected_as_semantic_evidence(engine):
     projector = project_ferric_observation if engine == "ferric" else project_clips_observation
 
     with pytest.raises(ObservationProjectionError, match="phase is unsupported"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
 @pytest.mark.parametrize("engine", ["ferric", "clips"])
@@ -665,7 +715,7 @@ def test_bound_diagnostic_subset_survives_unrelated_projection_failure(engine):
         "continued": False,
     }
     with pytest.raises(ObservationProjectionError, match="facts are malformed"):
-        projector(raw, harnessed=False)
+        projector(raw, harness_identity=None)
 
 
 @pytest.mark.parametrize("engine", ["ferric", "clips"])
@@ -846,7 +896,7 @@ def test_terminal_run_diagnostic_without_post_run_state_is_not_complete_oracle()
         expected_fixture=_identity(),
     ) == {"phase": "run", "category": "evaluation-error", "continued": False}
     with pytest.raises(ObservationProjectionError, match="post-run-state-missing"):
-        project_clips_observation(raw, harnessed=False)
+        project_clips_observation(raw, harness_identity=None)
 
 
 def test_ferric_and_clips_diagnostic_phase_category_mismatch_remains_divergent():
@@ -869,8 +919,8 @@ def test_ferric_and_clips_diagnostic_phase_category_mismatch_remains_divergent()
         )
     ]
 
-    ferric = project_ferric_observation(ferric_raw, harnessed=False)
-    clips = project_clips_observation(clips_raw, harnessed=False)
+    ferric = project_ferric_observation(ferric_raw, harness_identity=None)
+    clips = project_clips_observation(clips_raw, harness_identity=None)
     declaration = _declaration()
     declaration["expectations"]["diagnostic"] = {
         "phase": "parse",

@@ -87,11 +87,13 @@ a dedicated native embedding that owns the single reset/run boundary, counts
 the agenda across every module, and enables typed post-run probes only after
 `EnvRun` returns. It emits length-prefixed, nonce-bound records on the process
 stderr boundary, separate from fixture router output. Each record also carries
-a keyed authentication tag whose per-run key is never emitted. The nonce,
-identity, and authentication binding are consumed before the CLIPS environment
-is created and never enter the fixture-visible environment or command stream.
-Parsing uses byte offsets, so UTF-8 values are framed by their encoded byte
-length.
+a keyed authentication tag whose per-run key is withheld from the live fixture.
+The nonce, identity, and authentication binding are consumed before the CLIPS
+environment is created and never enter the fixture-visible environment or
+command stream. After the child exits, the runner retains the invocation key
+with the raw transcript so the blocking gate can independently replay and
+verify every authenticated record. Parsing uses byte offsets, so UTF-8 values
+are framed by their encoded byte length.
 
 The native adapter installs a dedicated CLIPS error router and emits explicit
 authenticated `load`, `reset`, and `run` phase boundaries. Router bytes are
@@ -117,9 +119,20 @@ engine/package versions, platform, measured CLIPS executable and library
 SHA-256 digests, base-image digest, and local image ID. That record is stored as
 top-level manifest `reference` evidence.
 
-Generated verifier records, facts, and firings are instrumentation, not
-fixture effects. If either adapter cannot separate instrumentation from
-feature behavior, the observation is invalid rather than equivalent.
+The runner also hashes the exact release-mode Ferric executable before and
+after assessment and records the explicitly supplied 40-character revision
+SHA. Hosted gates establish that mapping by building from a clean checkout of
+the recorded revision; the executable digest remains the authoritative byte
+identity for local assessments of a dirty tree. The resulting top-level
+`candidate` record contains both values. A stale manifest identity, unreadable
+or symlinked executable, or executable that changes during the run fails before
+the result can be accepted.
+
+Generated verifier records and its single firing are instrumentation, not
+fixture effects. Generation v2 asserts no facts, so every observed fact remains
+fixture-owned even when its relation resembles the reserved verifier name. If
+either adapter cannot separate instrumentation from feature behavior, the
+observation is invalid rather than equivalent.
 
 ## Classification and exit behavior
 
@@ -163,11 +176,42 @@ migration. Undeclared fixtures remain pending instead of preserving legacy
 Run the assessment from the repository root:
 
 ```console
+just assess-compatibility
+```
+
+That recipe performs the complete ordered lane: build the pinned reference
+image and release Ferric candidate, scan, generate deterministic library
+harnesses into `.ferric-compat/`, verify their source/output/contracts without
+rewriting them, run every structured-oracle fixture through both engines,
+enforce the reviewed compatibility policy, and finally report. The lower-level
+equivalent is:
+
+```console
 cargo build --release -p ferric-rules-cli
+docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
 just compat-scan
-just compat-run
+just harness-gen --output-dir "$PWD/.ferric-compat/harnesses"
+just harness-gen --output-dir "$PWD/.ferric-compat/harnesses" --check
+just compat-run --all --require-selected --candidate-sha "$(git rev-parse HEAD)"
+just compat-ci-gate --expected-commit-sha "$(git rev-parse HEAD)"
 just compat-report
 ```
+
+`--require-selected` makes a zero-fixture or declaration-free selection an
+error. The generated-harness control
+`ferric-oracle/empty-output-state.clp` deliberately has no committed harness:
+scan validates the deterministic plan bytes, generation materializes them,
+verification re-resolves their digests, and only then may the runner compose
+and execute the control. Its empty channels are non-vacuous because both
+engines prove the declared final state/effect while generated verifier firings
+remain instrumentation.
+
+`compat-ci-gate` is the outer release policy. It preserves the exact 22-case
+semantic matrix and its issue-linked known divergences, requires every oracle
+registry fixture to belong to the reviewed policy, recomputes the generated
+harness control as equivalent from raw engine observations, verifies complete
+candidate/reference provenance and manifest totals, and rejects every missing,
+partial, vacuous, or unexplained result.
 
 The release-blocking matrix of 22 scenarios covering 20 audit IDs has an
 additional exact policy gate:
@@ -206,6 +250,16 @@ file. A base manifest without `feature_scan` is identified as legacy evidence
 instead of reporting every file as changed. Scanner changes are review evidence
 and do not fail CI; failure to generate the retained artifacts does fail the
 workflow.
+
+Standalone, pull-request comparison, and direct CI compatibility jobs all use
+the same scan → harness generation → harness verification → dual-engine run →
+policy-gate order. Core steps are blocking. Report finalization and artifact
+upload use GitHub Actions `always()` handling, so a missing reference image,
+harness failure, state/output divergence, or policy violation still produces a
+manifest or explicit fallback status plus candidate/reference provenance and
+retained failure inputs; those postmortem steps do not change the failed job
+conclusion. Pull requests expose the stable `Compatibility Gate` aggregation
+context for repository rules.
 
 For schema-v3 heads, the diff gate rejects every unverified equivalence claim,
 including a legacy claim copied forward unchanged, as well as evidence-coverage

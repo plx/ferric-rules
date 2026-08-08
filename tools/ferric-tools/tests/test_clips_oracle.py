@@ -21,6 +21,7 @@ NONCE = "0123456789abcdef0123456789abcdef"
 DIGEST = "a" * 64
 FIXTURE_ID = "oracle.test"
 AUTH_KEY = "b" * 64
+HARNESS_IDENTITY = "ferric-harness-" + ("d" * 64)
 
 
 def _authenticated(logical_record: bytes, *, nonce: str) -> bytes:
@@ -125,7 +126,7 @@ def _observation_stderr(
 def _parse(
     raw_stdout: str | bytes = b"",
     *,
-    harnessed: bool = False,
+    expected_harness_identity: str | None = None,
     raw_stderr: bytes | None = None,
     interrupted: bool = False,
     expected_phases: tuple[str, ...] | None = None,
@@ -138,7 +139,7 @@ def _parse(
         source_sha256=DIGEST,
         composed_sha256=DIGEST,
         auth_key=AUTH_KEY,
-        harnessed=harnessed,
+        expected_harness_identity=expected_harness_identity,
         interrupted=interrupted,
         expected_phases=expected_phases,
     )
@@ -427,7 +428,7 @@ def test_harness_looking_fixture_output_is_not_removed_without_a_harness():
     line = "FERRIC-HARNESS|2|fixture-domain-value|COMPLETE\n"
 
     observation = _parse(line)
-    harnessed = _parse(line, harnessed=True)
+    harnessed = _parse(line, expected_harness_identity=HARNESS_IDENTITY)
 
     assert observation["channels"][0]["text"] == line
     assert observation["instrumentation"]["harness_records"] == []
@@ -435,6 +436,22 @@ def test_harness_looking_fixture_output_is_not_removed_without_a_harness():
     assert harnessed["instrumentation"]["harness_records"] == [
         {"version": 2, "record": "fixture-domain-value|COMPLETE"}
     ]
+    assert "generated-harness-records" in harnessed["protocol_issues"]
+
+
+def test_expected_generated_harness_records_are_exact_and_ordered():
+    lines = "".join(
+        [
+            f"FERRIC-HARNESS|2|{HARNESS_IDENTITY}|START\n",
+            f"FERRIC-HARNESS|2|{HARNESS_IDENTITY}|STATE|focus=MAIN\n",
+            f"FERRIC-HARNESS|2|{HARNESS_IDENTITY}|COMPLETE\n",
+        ]
+    )
+
+    observation = _parse(lines, expected_harness_identity=HARNESS_IDENTITY)
+
+    assert "generated-harness-records" not in observation["protocol_issues"]
+    assert observation["channels"][0]["text"] == ""
 
 
 def test_semantic_stderr_is_preserved_around_native_records():

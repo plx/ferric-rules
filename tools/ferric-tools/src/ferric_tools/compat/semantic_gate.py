@@ -17,12 +17,14 @@ from rich.console import Console
 
 from ferric_tools._harness import sha256_bytes
 from ferric_tools._paths import examples_dir as default_examples_dir
+from ferric_tools.compat.clips_oracle import ClipsOracleProtocolError, parse_probe_output
 from ferric_tools.compat.diagnostics import diagnostic, validated_result_diagnostic
 from ferric_tools.compat.oracle import (
     EvidenceStatus,
     OracleDeclaration,
     evaluate_oracle,
     observation_semantic_fingerprint,
+    scenario_native_phases,
     scenario_plan_sha256,
     validate_declaration,
     validate_scenario_source_sizes,
@@ -32,6 +34,7 @@ from ferric_tools.compat.projection import (
     project_clips_observation,
     project_ferric_observation,
     project_observation_diagnostic,
+    split_generated_harness_output,
 )
 from ferric_tools.compat.run import classify_results, oracle_outcome
 
@@ -569,16 +572,17 @@ def _runtime_declaration(
     return runtime_raw, evidence.value
 
 
-def _validated_engine_observation(
-    case: SemanticCase,
+def validated_engine_observation(
+    label: str,
     *,
     engine: str,
     raw_result: object,
     declaration: OracleDeclaration,
+    harness_identity: str | None,
 ) -> dict[str, object]:
-    """Require complete successful adapter evidence for one semantic-lane result."""
+    """Require complete successful adapter evidence and reproject it from raw bytes."""
     if type(raw_result) is not dict:
-        raise SemanticGateError(f"{case.id}: {engine} result is missing")
+        raise SemanticGateError(f"{label}: {engine} result is missing")
     result = raw_result
     assert isinstance(result, dict)
     for field in (
@@ -589,74 +593,98 @@ def _validated_engine_observation(
         "not_run",
     ):
         if field in result:
-            raise SemanticGateError(f"{case.id}: {engine} result contains {field!r}")
+            raise SemanticGateError(f"{label}: {engine} result contains {field!r}")
     if type(result.get("exit_code")) is not int or result["exit_code"] != 0:
-        raise SemanticGateError(f"{case.id}: {engine} result did not exit successfully")
+        raise SemanticGateError(f"{label}: {engine} result did not exit successfully")
     if result.get("timed_out") is not False:
-        raise SemanticGateError(f"{case.id}: {engine} result has invalid timeout evidence")
+        raise SemanticGateError(f"{label}: {engine} result has invalid timeout evidence")
     duration_ms = result.get("duration_ms")
     if type(duration_ms) is not int or duration_ms < 0:
-        raise SemanticGateError(f"{case.id}: {engine} result duration is malformed")
+        raise SemanticGateError(f"{label}: {engine} result duration is malformed")
     for field in ("stdout", "stderr"):
         if type(result.get(field)) is not str:
-            raise SemanticGateError(f"{case.id}: {engine} readable {field} is malformed")
+            raise SemanticGateError(f"{label}: {engine} readable {field} is malformed")
 
     if result.get("termination") != {"kind": "exit", "exit_code": 0, "signal": None}:
-        raise SemanticGateError(f"{case.id}: {engine} termination evidence is not a clean exit")
+        raise SemanticGateError(f"{label}: {engine} termination evidence is not a clean exit")
 
     raw_output = result.get("raw_output")
     if type(raw_output) is not dict or set(raw_output) != {"encoding", "stdout", "stderr"}:
-        raise SemanticGateError(f"{case.id}: {engine} raw output evidence is malformed")
+        raise SemanticGateError(f"{label}: {engine} raw output evidence is malformed")
     assert isinstance(raw_output, dict)
     if raw_output.get("encoding") != "base64":
-        raise SemanticGateError(f"{case.id}: {engine} raw output encoding is unsupported")
+        raise SemanticGateError(f"{label}: {engine} raw output encoding is unsupported")
     decoded: dict[str, bytes] = {}
     for field in ("stdout", "stderr"):
         encoded = raw_output.get(field)
         if type(encoded) is not str:
-            raise SemanticGateError(f"{case.id}: {engine} raw {field} is malformed")
+            raise SemanticGateError(f"{label}: {engine} raw {field} is malformed")
         try:
             decoded[field] = base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError) as error:
             raise SemanticGateError(
-                f"{case.id}: {engine} raw {field} is not canonical base64"
+                f"{label}: {engine} raw {field} is not canonical base64"
             ) from error
         if base64.b64encode(decoded[field]).decode("ascii") != encoded:
-            raise SemanticGateError(f"{case.id}: {engine} raw {field} is not canonical base64")
+            raise SemanticGateError(f"{label}: {engine} raw {field} is not canonical base64")
         if decoded[field].decode("utf-8", errors="replace") != result[field]:
-            raise SemanticGateError(
-                f"{case.id}: {engine} readable {field} disagrees with raw bytes"
-            )
+            raise SemanticGateError(f"{label}: {engine} readable {field} disagrees with raw bytes")
 
     observation = result.get("observation")
     canonical = result.get("canonical_observation")
     if type(observation) is not dict or type(canonical) is not dict:
-        raise SemanticGateError(f"{case.id}: {engine} observation evidence is incomplete")
+        raise SemanticGateError(f"{label}: {engine} observation evidence is incomplete")
     assert isinstance(observation, dict)
     assert isinstance(canonical, dict)
     if engine == "ferric":
         if decoded["stderr"]:
-            raise SemanticGateError(f"{case.id}: Ferric emitted out-of-band stderr")
+            raise SemanticGateError(f"{label}: Ferric emitted out-of-band stderr")
         if (
             decoded["stdout"].count(b"\n") != 1
             or not decoded["stdout"].startswith(b"{")
             or not decoded["stdout"].endswith(b"}\n")
         ):
             raise SemanticGateError(
-                f"{case.id}: Ferric raw stdout is not one newline-terminated JSON object"
+                f"{label}: Ferric raw stdout is not one newline-terminated JSON object"
             )
         try:
             decoded_observation = json.loads(decoded["stdout"])
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise SemanticGateError(
-                f"{case.id}: Ferric raw stdout is not its JSON observation"
+                f"{label}: Ferric raw stdout is not its JSON observation"
             ) from error
         if decoded_observation != observation:
             raise SemanticGateError(
-                f"{case.id}: Ferric raw stdout disagrees with its observation envelope"
+                f"{label}: Ferric raw stdout disagrees with its observation envelope"
             )
     elif not decoded["stderr"]:
-        raise SemanticGateError(f"{case.id}: CLIPS authenticated raw evidence is empty")
+        raise SemanticGateError(f"{label}: CLIPS authenticated raw evidence is empty")
+
+    if engine == "clips":
+        auth_key = result.get("observer_auth_key")
+        if type(auth_key) is not str:
+            raise SemanticGateError(f"{label}: CLIPS observer authentication key is missing")
+        expected_phases = scenario_native_phases(declaration) if declaration.version == 2 else None
+        try:
+            reparsed = parse_probe_output(
+                decoded["stdout"],
+                raw_stderr=decoded["stderr"],
+                fixture_id=declaration.id,
+                nonce=declaration.nonce,
+                source_sha256=declaration.source_sha256,
+                composed_sha256=declaration.composed_sha256,
+                auth_key=auth_key,
+                expected_harness_identity=harness_identity,
+                expected_phases=expected_phases,
+            )
+        except (ClipsOracleProtocolError, ValueError, RuntimeError) as error:
+            raise SemanticGateError(
+                f"{label}: CLIPS raw observer transcript does not reparse: {error}"
+            ) from error
+        if reparsed != observation:
+            raise SemanticGateError(
+                f"{label}: CLIPS raw observer transcript disagrees with its observation envelope"
+            )
 
     expected_fixture = {
         "id": declaration.id,
@@ -673,19 +701,19 @@ def _validated_engine_observation(
         if engine == "ferric":
             reprojected = project_ferric_observation(
                 observation,
-                harnessed=False,
+                harness_identity=harness_identity,
                 require_firing_names=declaration.expectations.firings.names is not None,
                 require_globals=declaration.expectations.globals is not None,
             )
         else:
             reprojected = project_clips_observation(
                 observation,
-                harnessed=False,
+                harness_identity=harness_identity,
                 require_firing_names=declaration.expectations.firings.names is not None,
             )
     except ObservationProjectionError as error:
         raise SemanticGateError(
-            f"{case.id}: {engine} raw observation does not reproject: {error}"
+            f"{label}: {engine} raw observation does not reproject: {error}"
         ) from error
     expected_diagnostic = diagnostic(
         canonical_diagnostic["phase"],
@@ -697,17 +725,27 @@ def _validated_engine_observation(
         persisted_diagnostic != result.get("diagnostic")
         or persisted_diagnostic != expected_diagnostic
     ):
-        raise SemanticGateError(
-            f"{case.id}: {engine} result diagnostic disagrees with raw evidence"
-        )
+        raise SemanticGateError(f"{label}: {engine} result diagnostic disagrees with raw evidence")
     if reprojected != canonical:
         raise SemanticGateError(
-            f"{case.id}: {engine} canonical observation disagrees with raw evidence"
+            f"{label}: {engine} canonical observation disagrees with raw evidence"
         )
-    if engine == "clips" and result["stdout"] != canonical["channels"]["stdout"]:
-        raise SemanticGateError(
-            f"{case.id}: CLIPS semantic stdout disagrees with exact process bytes"
-        )
+    if engine == "clips":
+        semantic_stdout = result["stdout"]
+        if harness_identity is not None:
+            semantic_stdout, raw_harness_records = split_generated_harness_output(semantic_stdout)
+            instrumentation = observation.get("instrumentation")
+            observation_harness_records = (
+                instrumentation.get("harness_records") if type(instrumentation) is dict else None
+            )
+            if raw_harness_records != observation_harness_records:
+                raise SemanticGateError(
+                    f"{label}: CLIPS raw harness records disagree with authenticated evidence"
+                )
+        if semantic_stdout != canonical["channels"]["stdout"]:
+            raise SemanticGateError(
+                f"{label}: CLIPS semantic stdout disagrees with exact process bytes"
+            )
     return canonical
 
 
@@ -801,17 +839,19 @@ def evaluate_manifest(
         ferric = raw_entry.get("ferric")
         clips = raw_entry.get("clips")
         try:
-            ferric_observation = _validated_engine_observation(
-                case,
+            ferric_observation = validated_engine_observation(
+                case.id,
                 engine="ferric",
                 raw_result=ferric,
                 declaration=declaration,
+                harness_identity=None,
             )
-            clips_observation = _validated_engine_observation(
-                case,
+            clips_observation = validated_engine_observation(
+                case.id,
                 engine="clips",
                 raw_result=clips,
                 declaration=declaration,
+                harness_identity=None,
             )
         except SemanticGateError as error:
             failures.append(str(error))

@@ -531,6 +531,7 @@ def test_generated_verifier_advances_past_forced_name_collisions(monkeypatch):
     )
 
     assert f"(defrule MAIN::{base}-2-verify\n" in harness
+    assert harness_core.harness_verifier_identity("fixture.clp", source_bytes) == f"{base}-2"
 
 
 def test_generated_verifier_executes_after_trailing_module_without_changing_feature_output(
@@ -769,6 +770,7 @@ def test_resolver_accepts_digest_matched_harness(tmp_path):
     assert resolved.path == plan.harness_path.resolve()
     assert resolved.source_bytes == source.read_bytes()
     assert resolved.harness_bytes == plan.harness_bytes
+    assert resolved.verifier_identity == plan.verifier_identity
     assert resolved.metadata == entry["harness"]
 
 
@@ -1019,11 +1021,11 @@ def test_process_file_records_harness_executed_by_both_engines(tmp_path, monkeyp
         _timeout,
         *,
         globals_to_capture,
-        harnessed,
+        harness_identity,
         **identity,
     ):
         assert globals_to_capture == ()
-        assert harnessed is True
+        assert harness_identity == resolved.verifier_identity
         invocations.append(("clips", path, Path(path).read_bytes()))
         return {
             "exit_code": 0,
@@ -1131,11 +1133,11 @@ def test_process_file_composes_harness_inside_clips_mounted_root(tmp_path, monke
         _timeout,
         *,
         globals_to_capture,
-        harnessed,
+        harness_identity,
         **identity,
     ):
         assert globals_to_capture == ()
-        assert harnessed is True
+        assert harness_identity == resolved.verifier_identity
         candidate = Path(path)
         invocations.append(("clips", candidate, candidate.read_bytes()))
         if not candidate.resolve().is_relative_to(Path(mounted_root).resolve()):
@@ -1232,6 +1234,170 @@ def _oracle_declaration(digest: str, *, composed_digest: str | None = None) -> d
         },
         "normalizers": ["fact-ids"],
     }
+
+
+def _declared_library_manifest(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    source = examples / "library.clp"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"(deffacts setup (result 1))\n")
+    output_dir = root / "tests" / "harnesses"
+    planned = build_harness_plans(
+        {"library.clp": {"runability": "library"}},
+        examples_dir=examples,
+        output_dir=output_dir,
+        root=root,
+    )["library.clp"]
+    assert planned.harness_bytes is not None
+    declaration = _oracle_declaration(
+        sha256_bytes(planned.source_bytes),
+        composed_digest=sha256_bytes(planned.source_bytes + b"\n" + planned.harness_bytes),
+    )
+    declaration["expectations"]["firings"]["count"] = 0
+    (examples / "compat-oracles.json").write_text(
+        json.dumps({"version": 1, "fixtures": {"library.clp": declaration}}),
+        encoding="utf-8",
+    )
+
+    files = scan_examples(examples, root=root, harness_dir=output_dir)
+    manifest_path = examples / "compat-manifest.json"
+    save_manifest(
+        manifest_path,
+        {
+            "version": 3,
+            "oracle_protocol_version": 1,
+            "generated": "2026-07-26T00:00:00+00:00",
+            "summary": build_summary(files),
+            "files": files,
+        },
+    )
+    return root, examples, source, output_dir, manifest_path, planned
+
+
+def test_declared_library_scans_without_output_then_generation_and_check_pass(
+    tmp_path,
+    monkeypatch,
+):
+    root, examples, _source, output_dir, manifest_path, planned = _declared_library_manifest(
+        tmp_path
+    )
+    assert planned.harness_path is not None
+    assert not planned.harness_path.exists()
+    scanned = load_manifest(manifest_path)["files"]["library.clp"]
+    assert scanned["runability"] == "library"
+    assert scanned["harness"] == planned.metadata
+    assert scanned["oracle"]["composed_sha256"] == sha256_bytes(
+        planned.source_bytes + b"\n" + planned.harness_bytes
+    )
+
+    monkeypatch.setattr(harness_module, "repo_root", lambda: root)
+    monkeypatch.setattr(run_module, "repo_root", lambda: root)
+    monkeypatch.setattr(run_module, "default_examples_dir", lambda: examples)
+    harness_args = [
+        "--manifest",
+        str(manifest_path),
+        "--output-dir",
+        str(output_dir),
+    ]
+
+    scanned_manifest = manifest_path.read_bytes()
+    check_before = CliRunner().invoke(harness_module.app, [*harness_args, "--check"])
+    assert manifest_path.read_bytes() == scanned_manifest
+    run_before = CliRunner().invoke(
+        run_module.app,
+        ["--manifest", str(manifest_path), "--file", "library.clp", "--dry-run"],
+    )
+    generated = CliRunner().invoke(harness_module.app, harness_args)
+    generated_manifest = manifest_path.read_bytes()
+    check_after = CliRunner().invoke(harness_module.app, [*harness_args, "--check"])
+    assert manifest_path.read_bytes() == generated_manifest
+    run_after = CliRunner().invoke(
+        run_module.app,
+        ["--manifest", str(manifest_path), "--file", "library.clp", "--dry-run"],
+    )
+
+    assert check_before.exit_code == 1
+    assert "does not exist" in check_before.output
+    assert run_before.exit_code == 1
+    assert "does not exist" in run_before.output
+    assert generated.exit_code == 0, generated.output
+    assert "Verified 1 executable harnesses." in generated.output
+    assert planned.harness_path.exists()
+    assert check_after.exit_code == 0, check_after.output
+    assert "Verified 1 executable harnesses." in check_after.output
+    assert run_after.exit_code == 0, run_after.output
+    assert "library.clp" in run_after.output
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("output", "harness digest is stale"),
+        ("digest", "manifest harness contract does not match deterministic plan"),
+    ],
+)
+def test_harness_check_rejects_stale_output_or_manifest_digest(
+    tmp_path,
+    monkeypatch,
+    mutation,
+    message,
+):
+    root, _examples, _source, output_dir, manifest_path, planned = _declared_library_manifest(
+        tmp_path
+    )
+    monkeypatch.setattr(harness_module, "repo_root", lambda: root)
+    harness_args = [
+        "--manifest",
+        str(manifest_path),
+        "--output-dir",
+        str(output_dir),
+    ]
+    generated = CliRunner().invoke(harness_module.app, harness_args)
+    assert generated.exit_code == 0, generated.output
+    assert planned.harness_path is not None
+
+    if mutation == "output":
+        planned.harness_path.write_bytes(b"; stale output\n")
+    else:
+        manifest = load_manifest(manifest_path)
+        manifest["files"]["library.clp"]["harness"]["harness_sha256"] = "0" * 64
+        save_manifest(manifest_path, manifest)
+
+    result = CliRunner().invoke(harness_module.app, [*harness_args, "--check"])
+
+    assert result.exit_code == 1
+    assert message in result.output
+
+
+def test_generation_verifies_materialized_bytes_before_publishing_manifest(
+    tmp_path,
+    monkeypatch,
+):
+    root, _examples, _source, output_dir, manifest_path, _planned = _declared_library_manifest(
+        tmp_path
+    )
+    before = manifest_path.read_bytes()
+    monkeypatch.setattr(harness_module, "repo_root", lambda: root)
+
+    def write_corrupt_output(path, _content):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"; corrupt output\n")
+
+    monkeypatch.setattr(harness_module, "atomic_write_bytes", write_corrupt_output)
+    result = CliRunner().invoke(
+        harness_module.app,
+        [
+            "--manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "harness digest is stale" in result.output
+    assert manifest_path.read_bytes() == before
 
 
 def _scenario_declaration(primary_digest: str, library_digest: str) -> dict:

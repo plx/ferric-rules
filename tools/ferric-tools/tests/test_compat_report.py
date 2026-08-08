@@ -137,6 +137,28 @@ def test_compute_oracle_coverage_handles_legacy_and_refuses_unverified_equivalen
     assert refused["refused_equivalent"] is True
 
 
+def test_valid_scenario_v2_evidence_is_reported_as_valid():
+    info = _entry(
+        "equivalent",
+        "oracle-v2-match",
+        _oracle(
+            "valid",
+            version=2,
+            declaration=True,
+            reached=True,
+            completed=True,
+            effect=True,
+            normalizations=["fact-ids"],
+        ),
+    )
+
+    view = oracle_evidence_view(info)
+
+    assert view["status"] == "valid"
+    assert view["version"] == 2
+    assert view["refused_equivalent"] is False
+
+
 def test_print_summary_exposes_oracle_coverage_versions_and_normalizations(capsys):
     print_summary(_manifest())
 
@@ -165,6 +187,35 @@ def test_markdown_report_exposes_oracle_coverage_and_refused_claim(tmp_path):
         "`legacy-equivalent.clp` (empty-match) \u2014 **REFUSED: invalid oracle evidence**"
         in output
     )
+
+
+def test_reports_retain_candidate_and_reference_digests(tmp_path, capsys):
+    manifest = _manifest()
+    manifest["candidate"] = {
+        "schema": "ferric.compat-candidate-provenance",
+        "version": 1,
+        "commit_sha": "a" * 40,
+        "binary_sha256": "b" * 64,
+    }
+    manifest["reference"] = {
+        "platform": "linux/amd64",
+        "binary_sha256": "c" * 64,
+        "library_sha256": "d" * 64,
+        "image_id": "sha256:" + "e" * 64,
+        "base_image": "debian:bookworm-slim@sha256:" + "f" * 64,
+    }
+    report = tmp_path / "compat.md"
+
+    print_summary(manifest)
+    write_report(manifest, str(report))
+
+    summary = capsys.readouterr().out
+    assert f"Candidate commit:       {'a' * 40}" in summary
+    assert f"Reference binary SHA:   {'c' * 64}" in summary
+    markdown = report.read_text(encoding="utf-8")
+    assert "### Candidate and reference provenance" in markdown
+    assert f"| Ferric candidate binary SHA-256 | `{'b' * 64}` |" in markdown
+    assert f"| CLIPS image ID | `sha256:{'e' * 64}` |" in markdown
 
 
 @pytest.mark.parametrize(("delimiter", "suffix"), [(",", "csv"), ("\t", "tsv")])
@@ -244,7 +295,7 @@ def test_reports_expose_phase_diagnostic_and_independent_termination(tmp_path, c
         {"status": "valid", "normalizations": "fact-ids"},
         _oracle(
             "valid",
-            version=2,
+            version=3,
             declaration=True,
             reached=True,
             completed=True,

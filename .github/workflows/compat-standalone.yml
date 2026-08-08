@@ -14,7 +14,7 @@ env:
 
 jobs:
   compat-standalone:
-    name: Compat Standalone Report
+    name: Compatibility Gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +32,21 @@ jobs:
           python-version: "3.12"
 
       - uses: astral-sh/setup-uv@v5
+
+      - name: Prepare compatibility evidence
+        run: mkdir -p /tmp/compat-evidence
+
+      - name: Build ferric candidate
+        run: cargo build --release -p ferric-rules-cli
+
+      - name: Record candidate provenance
+        run: |
+          candidate_digest="$(sha256sum target/release/ferric | cut -d ' ' -f 1)"
+          printf '{"schema":"ferric.compat-candidate-provenance","version":1,' \
+            > /tmp/compat-evidence/candidate-provenance.json
+          printf '"commit_sha":"%s","binary_sha256":"%s"}\n' \
+            "${{ github.sha }}" "$candidate_digest" \
+            >> /tmp/compat-evidence/candidate-provenance.json
 
       - name: Build CLIPS reference image
         timeout-minutes: 10
@@ -51,36 +66,81 @@ jobs:
             sleep "$retry_delay"
           done
 
-      - name: Build ferric
-        run: cargo build --release -p ferric-rules-cli
+      - name: Record CLIPS reference provenance
+        run: |
+          scripts/clips-reference.sh provenance \
+            > /tmp/compat-evidence/clips-reference-provenance.json
 
       - name: Run compat scan
         run: uv run --project tools/ferric-tools ferric-compat-scan
 
-      - name: Run compat assessment
-        run: uv run --project tools/ferric-tools ferric-compat-run --workers 4 --timeout 30
+      - name: Generate compatibility harnesses
+        run: |
+          uv run --project tools/ferric-tools ferric-harness-gen \
+            --output-dir .ferric-compat/standalone-harnesses
 
-      - name: Enforce semantic differential policy
-        run: uv run --project tools/ferric-tools ferric-compat-semantic-gate
+      - name: Verify compatibility harnesses
+        run: |
+          uv run --project tools/ferric-tools ferric-harness-gen \
+            --output-dir .ferric-compat/standalone-harnesses --check
+
+      - name: Run compat assessment
+        run: |
+          uv run --project tools/ferric-tools ferric-compat-run \
+            --all --require-selected --candidate-sha "${{ github.sha }}" \
+            --workers 4 --timeout 30
+
+      - name: Enforce compatibility policy
+        run: |
+          uv run --project tools/ferric-tools ferric-compat-ci-gate \
+            --expected-commit-sha "${{ github.sha }}"
 
       - name: Generate standalone report
         run: |
           uv run --project tools/ferric-tools ferric-compat-report \
-            --tsv /tmp/compat-report.tsv \
-            --report /tmp/compat-report.md \
+            --tsv /tmp/compat-evidence/compat-report.tsv \
+            --report /tmp/compat-evidence/compat-report.md \
             --repo "${{ github.repository }}" \
             --commit-sha "${{ github.sha }}" \
             >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Copy manifest
-        run: cp tests/examples/compat-manifest.json /tmp/compat-manifest.json
+      - name: Finalize compatibility evidence
+        if: always()
+        run: |
+          mkdir -p /tmp/compat-evidence
+          if [[ -f tests/examples/compat-manifest.json ]]; then
+            cp tests/examples/compat-manifest.json \
+              /tmp/compat-evidence/compat-manifest.json
+            if [[ ! -f /tmp/compat-evidence/compat-report.md ]]; then
+              uv run --project tools/ferric-tools ferric-compat-report \
+                --tsv /tmp/compat-evidence/compat-report.tsv \
+                --report /tmp/compat-evidence/compat-report.md \
+                --repo "${{ github.repository }}" \
+                --commit-sha "${{ github.sha }}" || true
+            fi
+          fi
+          if [[ ! -f /tmp/compat-evidence/compat-report.md ]]; then
+            printf '## CLIPS Compatibility Report\n\nAssessment did not produce a manifest.\n' \
+              > /tmp/compat-evidence/compat-report.md
+          fi
+          if [[ -d .ferric-compat/failures ]]; then
+            cp -R .ferric-compat/failures /tmp/compat-evidence/failures
+          fi
+          for gate_report in .ferric-compat/compat-ci-gate.json \
+            .ferric-compat/compat-ci-gate.md; do
+            if [[ -f "$gate_report" ]]; then
+              cp "$gate_report" /tmp/compat-evidence/
+            fi
+          done
+          printf '{"commit_sha":"%s","job_status":"%s"}\n' \
+            "${{ github.sha }}" "${{ job.status }}" \
+            > /tmp/compat-evidence/workflow-status.json
 
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: compat-report
           retention-days: 30
-          path: |
-            /tmp/compat-report.tsv
-            /tmp/compat-report.md
-            /tmp/compat-manifest.json
+          if-no-files-found: error
+          path: /tmp/compat-evidence/

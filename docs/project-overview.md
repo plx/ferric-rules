@@ -212,7 +212,8 @@ helpers: `_clips_parser.py`, `_manifest.py`, `_subprocess.py`, `_formatting.py`,
 
 - `bat/` — `analyze`, `convert`, `extract`, `harness`, `segment`: processes
   CLIPS `.bat` batch scripts into runnable `.clp` segments and harnesses.
-- `compat/` — `scan`, `run`, `report`, `diff`: compatibility assessment
+- `compat/` — `scan`, `run`, `report`, `diff`, `semantic_gate`, `ci_gate`:
+  compatibility assessment and blocking reviewed-policy enforcement
   pipeline (ferric vs. CLIPS reference container). Its structured,
   non-vacuous oracle contract is documented in
   [`compatibility-assessment.md`](compatibility-assessment.md).
@@ -291,7 +292,8 @@ thresholds). Scaling regression: `just scaling-check` runs facade-crate
   `bench-manners`, `bench-join`, `bench-churn`, `bench-negation`,
   `bench-thresholds`, `bench-compare`, `scaling-check`.
 - Compat: `compat-scan`, `compat-run`, `compat-report`, `compat-diff`,
-  `compat-semantic-gate`, `compat-semantic-lane`, `assess-compatibility`.
+  `compat-semantic-gate`, `compat-ci-gate`, `compat-semantic-lane`,
+  `assess-compatibility`.
 - Bat processing: `bat-analyze`, `bat-extract`, `bat-convert`,
   `harness-gen`, `segment-check`.
 - Perf: `perf-collect`, `perf-report`, `perf-diff`, `assess-performance`.

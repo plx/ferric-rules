@@ -27,6 +27,7 @@ class HarnessPlan:
     source_bytes: bytes
     harness_path: Path | None
     harness_bytes: bytes | None
+    verifier_identity: str | None
     metadata: dict[str, object]
 
 
@@ -37,6 +38,7 @@ class ResolvedHarness:
     path: Path
     source_bytes: bytes
     harness_bytes: bytes
+    verifier_identity: str
     metadata: dict[str, object]
 
 
@@ -103,8 +105,12 @@ def has_any_constructs(constructs: dict) -> bool:
     return any(len(items) > 0 for items in constructs.values())
 
 
-def _collision_safe_verifier_id(source_relpath: str, source_bytes: bytes) -> str:
+def harness_verifier_identity(source_relpath: str, source_bytes: bytes) -> str:
     """Return a deterministic verifier identity absent from the source bytes."""
+    source_relpath = _normalized_relative_path(
+        source_relpath,
+        label="source path",
+    ).as_posix()
     identity_input = (
         f"ferric-harness-v{HARNESS_GENERATION_VERSION}\0".encode()
         + source_relpath.encode("utf-8")
@@ -161,7 +167,7 @@ def generate_harness(source_relpath: str, source_bytes: bytes, constructs: dict)
                 summary_parts.append(f"{kind}: {', '.join(names)}")
 
     summary = "; ".join(summary_parts) if summary_parts else "no named constructs"
-    verifier_id = _collision_safe_verifier_id(source_relpath, source_bytes)
+    verifier_id = harness_verifier_identity(source_relpath, source_bytes)
     lines = [
         f"; Harness for {source_relpath}",
         f"; Detected constructs: {summary}",
@@ -273,7 +279,7 @@ def build_harness_plan(
             "executable": False,
             "skip_reason": skip_reason,
         }
-        return HarnessPlan(source_path, source_bytes, None, None, metadata)
+        return HarnessPlan(source_path, source_bytes, None, None, None, metadata)
 
     harness_text = generate_harness(manifest_key, source_bytes, constructs)
     harness_bytes = harness_text.encode("utf-8")
@@ -295,7 +301,14 @@ def build_harness_plan(
         "generation_version": HARNESS_GENERATION_VERSION,
         "executable": True,
     }
-    return HarnessPlan(source_path, source_bytes, harness_path, harness_bytes, metadata)
+    return HarnessPlan(
+        source_path,
+        source_bytes,
+        harness_path,
+        harness_bytes,
+        harness_verifier_identity(manifest_key, source_bytes),
+        metadata,
+    )
 
 
 def build_harness_plans(
@@ -475,5 +488,6 @@ def resolve_harness_contract(
         path=resolved_harness_path,
         source_bytes=source_bytes,
         harness_bytes=harness_bytes,
+        verifier_identity=harness_verifier_identity(manifest_key, source_bytes),
         metadata=dict(contract),
     )

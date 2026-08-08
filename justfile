@@ -279,6 +279,10 @@ compat-diff *args:
 compat-semantic-gate *args:
     just _uv ferric-compat-semantic-gate {{args}}
 
+# Enforce the complete blocking compatibility CI policy
+compat-ci-gate *args:
+    just _uv ferric-compat-ci-gate {{args}}
+
 # Rebuild and execute the complete pinned-CLIPS semantic differential lane
 compat-semantic-lane:
     docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
@@ -287,8 +291,16 @@ compat-semantic-lane:
     just compat-run --all --source ferric-semantic
     just compat-semantic-gate
 
-# Full compatibility assessment: scan, run, report
-assess-compatibility: compat-scan compat-run compat-report
+# Full blocking compatibility assessment with generated-harness verification
+assess-compatibility:
+    just build-cli-release
+    docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+    just compat-scan
+    just harness-gen --output-dir "$PWD/.ferric-compat/assessment-harnesses"
+    just harness-gen --output-dir "$PWD/.ferric-compat/assessment-harnesses" --check
+    assessment_sha="$(git rev-parse HEAD)"; just compat-run --all --require-selected --candidate-sha "$assessment_sha"
+    assessment_sha="$(git rev-parse HEAD)"; just compat-ci-gate --expected-commit-sha "$assessment_sha"
+    just compat-report
 
 # ── Bat processing ───────────────────────────────────────────────────────────
 
