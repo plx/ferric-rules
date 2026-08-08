@@ -52,6 +52,12 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(cfg.snapshot) == 0 {
+			return nil, &InvalidArgumentError{FerricError{
+				Code:    int(ffi.ErrInvalidArgument),
+				Message: "snapshot data is empty",
+			}}
+		}
 		var rc ffi.ErrorCode
 		h, rc = ffiEngineDeserializeAs(cfg.snapshot, ffiFormat)
 		if rc != ffi.ErrOK {

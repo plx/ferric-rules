@@ -251,6 +251,19 @@ func TestInvalidEngineOptionsFailBeforeNativeConstruction(t *testing.T) {
 	})
 }
 
+func TestEmptySnapshotValidationFailsBeforeNativeConstruction(t *testing.T) {
+	calls := recordEngineConstructors(t)
+	_, err := NewEngine(WithSnapshot(make([]byte, 0), FormatBincode))
+	var invalid *InvalidArgumentError
+	if !errors.As(err, &invalid) || invalid.Code != int(ffi.ErrInvalidArgument) ||
+		invalid.Message != "snapshot data is empty" {
+		t.Fatalf("error = %v, want typed empty-snapshot InvalidArgument", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("native constructors called for empty snapshot: %v", *calls)
+	}
+}
+
 func TestSnapshotInputsReachDeserializerUnchanged(t *testing.T) {
 	directData := []byte("direct snapshot")
 	assertSnapshotInput(t, directData, FormatMessagePack, func() error {
