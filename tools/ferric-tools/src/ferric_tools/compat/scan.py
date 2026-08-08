@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 import typer
@@ -28,9 +28,13 @@ from ferric_tools._manifest import save_manifest, utc_now_iso
 from ferric_tools._paths import examples_dir as default_examples_dir
 from ferric_tools._paths import repo_root
 from ferric_tools.compat.oracle import (
-    DECLARATION_VERSION,
+    ORACLE_PROTOCOL_VERSION,
+    SCENARIO_DECLARATION_VERSION,
     EvidenceStatus,
+    OracleDeclaration,
+    canonical_scenario_plan,
     validate_declaration,
+    validate_scenario_source_sizes,
 )
 
 app = typer.Typer(help="Scan CLIPS examples for compatibility assessment.")
@@ -97,6 +101,90 @@ def _load_oracle_registry(path: Path) -> dict[str, dict]:
     return declarations
 
 
+def _read_scenario_source(
+    source_path: Path,
+    *,
+    examples_path: Path,
+    root: Path,
+    label: str,
+) -> bytes:
+    """Read a regular scenario source contained by both examples and repo roots."""
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_examples = examples_path.resolve(strict=True)
+    except OSError as error:
+        raise OracleRegistryError(f"{label}: source root cannot be resolved: {error}") from error
+    try:
+        resolved_examples.relative_to(resolved_root)
+    except ValueError as error:
+        raise OracleRegistryError(f"{label}: examples directory escapes repository root") from error
+    if source_path.is_symlink():
+        raise OracleRegistryError(f"{label}: source must not be a symlink")
+    try:
+        resolved_source = source_path.resolve(strict=True)
+        resolved_source.relative_to(resolved_examples)
+        resolved_source.relative_to(resolved_root)
+    except (OSError, ValueError) as error:
+        raise OracleRegistryError(
+            f"{label}: source cannot be resolved inside tests/examples: {error}"
+        ) from error
+    if not resolved_source.is_file():
+        raise OracleRegistryError(f"{label}: source is not a regular file")
+    try:
+        size = resolved_source.stat().st_size
+        validate_scenario_source_sizes((size,))
+        content = resolved_source.read_bytes()
+        validate_scenario_source_sizes((len(content),))
+        return content
+    except ValueError as error:
+        raise OracleRegistryError(f"{label}: {error}") from error
+    except OSError as error:
+        raise OracleRegistryError(f"{label}: source cannot be read: {error}") from error
+
+
+def _validate_scenario_bundle(
+    declaration: OracleDeclaration,
+    *,
+    registry_key: str,
+    examples_path: Path,
+    root: Path,
+) -> None:
+    """Bind every declared v2 bundle member to its repository file bytes."""
+    assert declaration.sources is not None
+    primary = declaration.sources[0]
+    if primary.path != registry_key:
+        raise OracleRegistryError(f"{registry_key}: sources[0].path must equal the registry key")
+    try:
+        resolved_examples = examples_path.resolve(strict=True)
+        canonical_examples = (root / "tests" / "examples").resolve(strict=True)
+    except OSError as error:
+        raise OracleRegistryError(
+            f"{registry_key}: canonical tests/examples root cannot be resolved: {error}"
+        ) from error
+    if resolved_examples != canonical_examples:
+        raise OracleRegistryError(
+            f"{registry_key}: v2 scenarios require the canonical tests/examples directory"
+        )
+
+    sizes: list[int] = []
+    for index, source in enumerate(declaration.sources):
+        content = _read_scenario_source(
+            examples_path.joinpath(*PurePosixPath(source.path).parts),
+            examples_path=examples_path,
+            root=root,
+            label=f"{registry_key}: sources[{index}]",
+        )
+        if sha256_bytes(content) != source.sha256:
+            raise OracleRegistryError(
+                f"{registry_key}: sources[{index}].sha256: source digest is stale"
+            )
+        sizes.append(len(content))
+    try:
+        validate_scenario_source_sizes(tuple(sizes))
+    except ValueError as error:
+        raise OracleRegistryError(f"{registry_key}: {error}") from error
+
+
 def _attach_oracle_declarations(
     files: dict[str, dict],
     *,
@@ -113,41 +201,58 @@ def _attach_oracle_declarations(
 
     for rel_path, entry in files.items():
         source_path = examples_path / rel_path
-        try:
-            source_bytes = source_path.read_bytes()
-        except OSError as error:
-            entry["source_sha256"] = None
-            if rel_path in declarations:
-                raise OracleRegistryError(
-                    f"{rel_path}: declared oracle source cannot be read: {error}"
-                ) from error
-            continue
+        declaration = declarations.get(rel_path)
+        if declaration is not None and declaration.get("version") == SCENARIO_DECLARATION_VERSION:
+            source_bytes = _read_scenario_source(
+                source_path,
+                examples_path=examples_path,
+                root=root,
+                label=f"{rel_path}: primary source",
+            )
+        else:
+            try:
+                source_bytes = source_path.read_bytes()
+            except OSError as error:
+                entry["source_sha256"] = None
+                if rel_path in declarations:
+                    raise OracleRegistryError(
+                        f"{rel_path}: declared oracle source cannot be read: {error}"
+                    ) from error
+                continue
 
         source_sha256 = sha256_bytes(source_bytes)
         entry["source_sha256"] = source_sha256
-        declaration = declarations.get(rel_path)
         if declaration is None:
             continue
 
-        composed_sha256 = source_sha256
-        harness = entry.get("harness")
-        if harness is not None:
-            if harness.get("executable") is not True:
-                raise OracleRegistryError(
-                    f"{rel_path}: declared library oracle has no executable harness"
-                )
-            harness_path = harness.get("path")
-            if type(harness_path) is not str:
-                raise OracleRegistryError(
-                    f"{rel_path}: declared library oracle has no harness path"
-                )
+        if declaration.get("version") == SCENARIO_DECLARATION_VERSION:
             try:
-                harness_bytes = (root / harness_path).read_bytes()
-            except OSError as error:
+                plan = canonical_scenario_plan(declaration)
+            except ValueError as error:
                 raise OracleRegistryError(
-                    f"{rel_path}: declared harness cannot be read: {error}"
+                    f"{rel_path}: invalid oracle declaration: {error}"
                 ) from error
-            composed_sha256 = sha256_bytes(source_bytes + b"\n" + harness_bytes)
+            composed_sha256 = sha256_bytes(plan)
+        else:
+            composed_sha256 = source_sha256
+            harness = entry.get("harness")
+            if harness is not None:
+                if harness.get("executable") is not True:
+                    raise OracleRegistryError(
+                        f"{rel_path}: declared library oracle has no executable harness"
+                    )
+                harness_path = harness.get("path")
+                if type(harness_path) is not str:
+                    raise OracleRegistryError(
+                        f"{rel_path}: declared library oracle has no harness path"
+                    )
+                try:
+                    harness_bytes = (root / harness_path).read_bytes()
+                except OSError as error:
+                    raise OracleRegistryError(
+                        f"{rel_path}: declared harness cannot be read: {error}"
+                    ) from error
+                composed_sha256 = sha256_bytes(source_bytes + b"\n" + harness_bytes)
 
         evidence = validate_declaration(
             declaration,
@@ -157,11 +262,20 @@ def _attach_oracle_declarations(
         if evidence.status is not EvidenceStatus.VALID:
             detail = "; ".join(f"{issue.field}: {issue.message}" for issue in evidence.issues)
             raise OracleRegistryError(f"{rel_path}: invalid oracle declaration: {detail}")
+        validated = evidence.value
+        assert validated is not None
+        if validated.version == SCENARIO_DECLARATION_VERSION:
+            _validate_scenario_bundle(
+                validated,
+                registry_key=rel_path,
+                examples_path=examples_path,
+                root=root,
+            )
 
         entry["oracle"] = declaration
         entry["oracle_evidence"] = {
             "status": "missing",
-            "version": DECLARATION_VERSION,
+            "version": validated.version,
             "declaration": True,
             "reached": False,
             "completed": False,
@@ -341,7 +455,7 @@ def main(
 
     manifest = {
         "version": MANIFEST_VERSION,
-        "oracle_protocol_version": DECLARATION_VERSION,
+        "oracle_protocol_version": ORACLE_PROTOCOL_VERSION,
         "generated": utc_now_iso(),
         "summary": summary,
         "files": files,

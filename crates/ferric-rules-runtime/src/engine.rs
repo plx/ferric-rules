@@ -822,6 +822,13 @@ impl Engine {
         self.template_defs.get(tid).map(|def| def.name.as_str())
     }
 
+    /// Return the owning module name for a `TemplateId`, or `None` if the ID
+    /// or its recorded module is not registered.
+    pub fn template_module_name_by_id(&self, tid: TemplateId) -> Option<&str> {
+        let module_id = self.template_modules.get(tid)?;
+        self.module_registry.module_name(*module_id)
+    }
+
     /// Return the names of all registered modules.
     pub fn modules(&self) -> Vec<&str> {
         self.module_registry.module_names()

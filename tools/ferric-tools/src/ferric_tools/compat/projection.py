@@ -182,6 +182,17 @@ def _fact_effect(fact: dict) -> dict:
     return {"name": name, "value": value, "origin": fact["origin"]}
 
 
+def _stdout_effect(text: str) -> dict | None:
+    """Represent nonempty fixture stdout as independently reviewable evidence."""
+    if not text:
+        return None
+    return {
+        "name": "channel:stdout",
+        "value": {"type": "string", "value": text},
+        "origin": "fixture",
+    }
+
+
 def _strip_harness_output(text: str) -> tuple[str, list[str]]:
     semantic_lines: list[str] = []
     instrumentation: list[str] = []
@@ -466,7 +477,10 @@ def _validate_capabilities(
     if type(capabilities) is not dict:
         raise ObservationProjectionError(f"{engine} capabilities are malformed")
     completed_run = type(raw.get("run")) is dict
-    required = {"fact_modules"} if completed_run else set()
+    raw_facts = raw.get("facts")
+    required = (
+        {"fact_modules"} if completed_run and type(raw_facts) is list and raw_facts else set()
+    )
     if engine == "ferric":
         required.add("composed_digest_verification")
         if require_firing_names and completed_run:
@@ -665,6 +679,8 @@ def project_ferric_observation(
         "stdout": stdout,
         "stderr": channel_map["stderr"],
     }
+    if effect := _stdout_effect(stdout):
+        projected["effects"].append(effect)
     projected["focus_stack"] = _focus_stack(raw, engine="ferric")
     return projected
 
@@ -720,6 +736,8 @@ def project_clips_observation(
         "stdout": stdout,
         "stderr": channel_map["stderr"],
     }
+    if effect := _stdout_effect(stdout):
+        projected["effects"].append(effect)
     projected["focus_stack"] = _focus_stack(raw, engine="clips")
     globals_raw = raw.get("globals")
     if type(globals_raw) is not dict:

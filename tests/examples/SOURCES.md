@@ -6,6 +6,7 @@ Examples gathered for ferric-rules compatibility testing against classic CLIPS.
 
 | Directory | .clp files | Source | Description |
 |-----------|-----------|--------|-------------|
+| `ferric-semantic/` | 22 | First-party | Release-blocking structured scenarios covering 20 audit IDs: FR-RETE-001..018 and FR-LANG-001/002, with dedicated breadth and MEA variants. Additional `.stage` files are digest-bound scenario sources, not standalone entries. |
 | `clips-official/` | 126 | [smarr/CLIPS](https://github.com/smarr/CLIPS) | Official CLIPS source mirror with bundled examples (waltz, sudoku, circuit, manners, etc.) and test suite. Also includes 185 companion files (.bat, .tst, .fct). |
 | `telefonica-clips/` | 520 | [Telefonica/clips](https://github.com/Telefonica/clips) | Another CLIPS source fork (64-bit branch). Includes examples, test suite, and clipsjni demos. 601 companion files. |
 | `csp-rules-v2.1/` | 4,283 | [denis-berthier/CSP-Rules-V2.1](https://github.com/denis-berthier/CSP-Rules-V2.1) | Constraint satisfaction puzzle solver (Sudoku, Slitherlink, etc.). Large parameterized rule sets exercising advanced CLIPS features. |
@@ -24,7 +25,7 @@ Examples gathered for ferric-rules compatibility testing against classic CLIPS.
 | `decision-tree-family/` | 1 | [shahriar-rahman/Clips-Programming-Decision-Tree-Family](https://github.com/shahriar-rahman/Clips-Programming-Decision-Tree-Family) | Family relationship decision tree. |
 | `language-deficit-screener/` | 1 | [pierclgr/Language-Deficit-Screener](https://github.com/pierclgr/Language-Deficit-Screener) | Language deficit screening expert system. |
 
-**Total: 5,463 .clp files + 800 companion files (.bat, .tst, .fct, .dat)**
+**Total: 5,483 .clp files + 800 companion files (.bat, .tst, .fct, .dat)**
 
 ## Notes
 

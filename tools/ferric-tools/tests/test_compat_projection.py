@@ -451,6 +451,29 @@ def test_unavailable_declared_ferric_capability_fails_closed():
         )
 
 
+def test_multi_module_ferric_without_facts_does_not_require_fact_ownership_capability():
+    raw = _raw_observation("ferric")
+    raw["facts"] = []
+    raw["capabilities"]["fact_modules"] = False
+    raw["modules"] = {
+        "current": "SECONDARY",
+        "focus": "MAIN",
+        "focus_stack": ["MAIN", "SECONDARY"],
+    }
+
+    projected = project_ferric_observation(raw, harnessed=False)
+
+    assert projected["facts"] == []
+
+
+def test_ferric_with_any_fact_still_requires_authenticated_module_ownership():
+    raw = _raw_observation("ferric")
+    raw["capabilities"]["fact_modules"] = False
+
+    with pytest.raises(ObservationProjectionError, match="fact_modules"):
+        project_ferric_observation(raw, harnessed=False)
+
+
 @pytest.mark.parametrize("engine", ["ferric", "clips"])
 @pytest.mark.parametrize(
     ("phase", "category"),
@@ -491,7 +514,13 @@ def test_completed_pre_run_diagnostic_projects_without_partial_state(
     }
     assert projected["run"] == {"limit": None, "halt_reason": "not-run"}
     assert projected["firings"] == []
-    assert projected["effects"] == []
+    assert projected["effects"] == [
+        {
+            "name": "channel:stdout",
+            "value": {"type": "string", "value": "diagnostic output\n"},
+            "origin": "fixture",
+        }
+    ]
     assert projected["facts"] == []
     assert projected["channels"]["stdout"] == "diagnostic output\n"
     assert [marker["kind"] for marker in projected["markers"]] == ["START", "COMPLETE"]

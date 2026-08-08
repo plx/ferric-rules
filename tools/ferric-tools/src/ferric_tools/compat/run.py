@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -60,10 +61,16 @@ from ferric_tools.compat.diagnostics import (
 )
 from ferric_tools.compat.oracle import (
     DECLARATION_VERSION,
+    ORACLE_PROTOCOL_VERSION,
+    SCENARIO_DECLARATION_VERSION,
     EvidenceStatus,
+    OracleDeclaration,
+    canonical_scenario_plan,
     evaluate_oracle,
     evaluation_to_dict,
+    scenario_native_phases,
     validate_declaration,
+    validate_scenario_source_sizes,
 )
 from ferric_tools.compat.projection import (
     ObservationProjectionError,
@@ -97,10 +104,42 @@ _EMPTY_INTERRUPTION_PROTOCOL_ISSUES = frozenset(
         "truncated-native-record",
     }
 )
+_REFERENCE_SCHEMA = "ferric.clips-reference-provenance"
+_REFERENCE_FIELDS = frozenset(
+    {
+        "schema",
+        "version",
+        "engine",
+        "engine_version",
+        "package",
+        "package_version",
+        "platform",
+        "binary_sha256",
+        "library_sha256",
+        "base_image",
+        "image_id",
+    }
+)
+_REFERENCE_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+_REFERENCE_BASE_IMAGE_RE = re.compile(r"debian:bookworm-slim@sha256:[0-9a-f]{64}")
+_REFERENCE_IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class CompatibilityWorkspaceError(RuntimeError):
     """Raised when composed compatibility inputs cannot be staged safely."""
+
+
+class ReferenceProvenanceError(RuntimeError):
+    """Raised when the CLIPS reference identity is unavailable or malformed."""
+
+
+@dataclass(frozen=True)
+class ResolvedScenarioBundle:
+    """One fully validated runtime view of a v2 scenario bundle."""
+
+    plan: bytes
+    paths: tuple[Path, ...]
+    native_phases: tuple[str, ...]
 
 
 def _make_read_only(path: Path) -> None:
@@ -212,8 +251,16 @@ def _compatibility_run_workspace(root: Path):
         yield run_dir, failures_dir
 
 
-def _materialize_composed_source(content: bytes, *, workspace: Path, root: Path) -> Path:
-    """Write one closed, fsynced composed source in the invocation workspace."""
+def _materialize_read_only_input(
+    content: bytes,
+    *,
+    workspace: Path,
+    root: Path,
+    prefix: str,
+    suffix: str,
+    label: str,
+) -> Path:
+    """Write one closed, fsynced input in the invocation workspace."""
     resolved_workspace = _require_contained_directory(
         workspace,
         root=root,
@@ -224,8 +271,8 @@ def _materialize_composed_source(content: bytes, *, workspace: Path, root: Path)
     materialized = False
     try:
         file_descriptor, temp_name = tempfile.mkstemp(
-            prefix="composed-",
-            suffix=".clp",
+            prefix=prefix,
+            suffix=suffix,
             dir=resolved_workspace,
         )
         temp_path = Path(temp_name)
@@ -238,23 +285,43 @@ def _materialize_composed_source(content: bytes, *, workspace: Path, root: Path)
         resolved_path = _require_contained_file(
             temp_path,
             root=root,
-            label="composed compatibility source",
+            label=label,
         )
         if resolved_path.read_bytes() != content:
-            raise CompatibilityWorkspaceError(
-                f"composed compatibility source changed after write: {resolved_path}"
-            )
+            raise CompatibilityWorkspaceError(f"{label} changed after write: {resolved_path}")
         materialized = True
         return resolved_path
     except OSError as error:
-        raise CompatibilityWorkspaceError(
-            f"cannot materialize composed compatibility source: {error}"
-        ) from error
+        raise CompatibilityWorkspaceError(f"cannot materialize {label}: {error}") from error
     finally:
         if file_descriptor >= 0:
             os.close(file_descriptor)
         if temp_path is not None and not materialized:
             temp_path.unlink(missing_ok=True)
+
+
+def _materialize_composed_source(content: bytes, *, workspace: Path, root: Path) -> Path:
+    """Write one closed, fsynced composed source in the invocation workspace."""
+    return _materialize_read_only_input(
+        content,
+        workspace=workspace,
+        root=root,
+        prefix="composed-",
+        suffix=".clp",
+        label="composed compatibility source",
+    )
+
+
+def _materialize_scenario_plan(content: bytes, *, workspace: Path, root: Path) -> Path:
+    """Write one closed, fsynced canonical scenario plan in the run workspace."""
+    return _materialize_read_only_input(
+        content,
+        workspace=workspace,
+        root=root,
+        prefix="scenario-",
+        suffix=".plan",
+        label="compatibility scenario plan",
+    )
 
 
 def _verify_composed_source(
@@ -283,12 +350,142 @@ def _verify_composed_source(
     return resolved_path
 
 
+def _verify_scenario_plan(
+    path: Path,
+    expected_content: bytes,
+    *,
+    root: Path,
+    boundary: str,
+) -> Path:
+    """Fail closed if a staged scenario plan changes across a boundary."""
+    resolved_path = _require_contained_file(
+        path,
+        root=root,
+        label="compatibility scenario plan",
+    )
+    try:
+        actual_content = resolved_path.read_bytes()
+    except OSError as error:
+        raise CompatibilityWorkspaceError(
+            f"cannot verify compatibility scenario plan {boundary}: {error}"
+        ) from error
+    if actual_content != expected_content:
+        raise CompatibilityWorkspaceError(
+            f"compatibility scenario plan changed {boundary}: {resolved_path}"
+        )
+    return resolved_path
+
+
+def _resolve_scenario_bundle(
+    declaration: OracleDeclaration,
+    *,
+    registry_key: str,
+    primary_path: Path,
+    root: Path,
+) -> ResolvedScenarioBundle:
+    """Resolve and digest-check every v2 source before engine execution."""
+    if declaration.version != SCENARIO_DECLARATION_VERSION or declaration.sources is None:
+        raise CompatibilityWorkspaceError("scenario bundle requires a valid v2 declaration")
+    if declaration.sources[0].path != registry_key:
+        raise CompatibilityWorkspaceError(
+            f"{registry_key}: primary source path does not match the manifest key"
+        )
+    examples = _require_contained_directory(
+        root / "tests" / "examples",
+        root=root,
+        label="scenario examples directory",
+    )
+    expected_primary = _require_contained_file(
+        primary_path,
+        root=root,
+        label=f"{registry_key} primary source",
+    )
+    paths: list[Path] = []
+    sizes: list[int] = []
+    for index, source in enumerate(declaration.sources):
+        candidate = examples.joinpath(*Path(source.path).parts)
+        resolved = _require_contained_file(
+            candidate,
+            root=examples,
+            label=f"{registry_key} scenario source {index}",
+        )
+        try:
+            validate_scenario_source_sizes((resolved.stat().st_size,))
+            content = resolved.read_bytes()
+            validate_scenario_source_sizes((len(content),))
+        except ValueError as error:
+            raise CompatibilityWorkspaceError(f"{registry_key}: {error}") from error
+        except OSError as error:
+            raise CompatibilityWorkspaceError(
+                f"{registry_key}: cannot read scenario source {index}: {error}"
+            ) from error
+        if sha256_bytes(content) != source.sha256:
+            raise CompatibilityWorkspaceError(
+                f"{registry_key}: scenario source {index} digest is stale"
+            )
+        paths.append(resolved)
+        sizes.append(len(content))
+    try:
+        validate_scenario_source_sizes(tuple(sizes))
+    except ValueError as error:
+        raise CompatibilityWorkspaceError(f"{registry_key}: {error}") from error
+    if paths[0] != expected_primary:
+        raise CompatibilityWorkspaceError(
+            f"{registry_key}: primary scenario source differs from the selected input"
+        )
+    return ResolvedScenarioBundle(
+        plan=canonical_scenario_plan(declaration),
+        paths=tuple(paths),
+        native_phases=scenario_native_phases(declaration),
+    )
+
+
+def _verify_scenario_bundle(
+    bundle: ResolvedScenarioBundle,
+    declaration: OracleDeclaration,
+    *,
+    root: Path,
+    boundary: str,
+) -> None:
+    """Revalidate every source across each independently invoked engine boundary."""
+    assert declaration.sources is not None
+    if len(bundle.paths) != len(declaration.sources):
+        raise CompatibilityWorkspaceError("scenario source cardinality changed")
+    sizes: list[int] = []
+    for index, (path, source) in enumerate(zip(bundle.paths, declaration.sources, strict=True)):
+        resolved = _require_contained_file(
+            path,
+            root=root / "tests" / "examples",
+            label=f"scenario source {index}",
+        )
+        try:
+            validate_scenario_source_sizes((resolved.stat().st_size,))
+            content = resolved.read_bytes()
+            validate_scenario_source_sizes((len(content),))
+        except ValueError as error:
+            raise CompatibilityWorkspaceError(f"scenario source {index}: {error}") from error
+        except OSError as error:
+            raise CompatibilityWorkspaceError(
+                f"cannot verify scenario source {index} {boundary}: {error}"
+            ) from error
+        if sha256_bytes(content) != source.sha256:
+            raise CompatibilityWorkspaceError(
+                f"scenario source {index} changed {boundary}: {resolved}"
+            )
+        sizes.append(len(content))
+    try:
+        validate_scenario_source_sizes(tuple(sizes))
+    except ValueError as error:
+        raise CompatibilityWorkspaceError(f"scenario bundle {boundary}: {error}") from error
+
+
 def _retain_failure_artifact(
     content: bytes,
     digest: str,
     *,
     failures_dir: Path,
     root: Path,
+    suffix: str = ".clp",
 ) -> Path:
     """Atomically retain exact failed input bytes under their SHA-256 digest."""
     resolved_failures_dir = _require_contained_directory(
@@ -296,7 +493,9 @@ def _retain_failure_artifact(
         root=root,
         label="compatibility failure workspace",
     )
-    artifact_path = resolved_failures_dir / f"{digest}.clp"
+    if suffix not in {".clp", ".plan"}:
+        raise CompatibilityWorkspaceError("unsupported compatibility artifact suffix")
+    artifact_path = resolved_failures_dir / f"{digest}{suffix}"
     if artifact_path.is_symlink():
         raise CompatibilityWorkspaceError(
             f"compatibility failure artifact must not be a symlink: {artifact_path}"
@@ -344,6 +543,81 @@ def _output_bytes(value: str | bytes | None) -> bytes:
 
 def _display_output(value: bytes) -> str:
     return value.decode("utf-8", errors="replace")
+
+
+def load_reference_provenance(
+    script: str,
+    *,
+    root: str,
+    timeout_secs: int = 30,
+) -> dict[str, object]:
+    """Invoke and strictly validate the reference wrapper's measured identity."""
+    try:
+        process = subprocess.run(
+            [script, "provenance"],
+            capture_output=True,
+            text=False,
+            timeout=timeout_secs,
+            cwd=root,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ReferenceProvenanceError(
+            f"cannot obtain CLIPS reference provenance: {error}"
+        ) from error
+    stdout = _output_bytes(process.stdout)
+    stderr = _output_bytes(process.stderr)
+    if process.returncode != 0:
+        detail = _display_output(stderr).strip() or f"status {process.returncode}"
+        raise ReferenceProvenanceError(f"CLIPS reference provenance failed: {detail}")
+    if stderr:
+        raise ReferenceProvenanceError("CLIPS reference provenance emitted stderr")
+    if stdout.count(b"\n") != 1 or not stdout.endswith(b"\n"):
+        raise ReferenceProvenanceError(
+            "CLIPS reference provenance must be one LF-terminated JSON object"
+        )
+
+    def reject_duplicate_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate field: {key}")
+            result[key] = value
+        return result
+
+    try:
+        decoded = stdout.decode("utf-8", errors="strict")
+        raw = json.loads(decoded, object_pairs_hook=reject_duplicate_fields)
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ReferenceProvenanceError(
+            f"CLIPS reference provenance is malformed: {error}"
+        ) from error
+    if type(raw) is not dict or set(raw) != _REFERENCE_FIELDS:
+        raise ReferenceProvenanceError("CLIPS reference provenance has an unexpected field set")
+    constants = {
+        "schema": _REFERENCE_SCHEMA,
+        "version": 1,
+        "engine": "clips",
+        "engine_version": "6.30",
+        "package": "clips",
+        "package_version": "6.30-4.1",
+    }
+    for field, expected in constants.items():
+        if type(raw[field]) is not type(expected) or raw[field] != expected:
+            raise ReferenceProvenanceError(f"CLIPS reference provenance field {field!r} is invalid")
+    platform = raw["platform"]
+    if type(platform) is not str or platform not in {"linux/amd64", "linux/arm64"}:
+        raise ReferenceProvenanceError("CLIPS reference provenance platform is invalid")
+    for field in ("binary_sha256", "library_sha256"):
+        value = raw[field]
+        if type(value) is not str or _REFERENCE_DIGEST_RE.fullmatch(value) is None:
+            raise ReferenceProvenanceError(f"CLIPS reference provenance field {field!r} is invalid")
+    base_image = raw["base_image"]
+    if type(base_image) is not str or _REFERENCE_BASE_IMAGE_RE.fullmatch(base_image) is None:
+        raise ReferenceProvenanceError("CLIPS reference provenance base_image is invalid")
+    image_id = raw["image_id"]
+    if type(image_id) is not str or _REFERENCE_IMAGE_ID_RE.fullmatch(image_id) is None:
+        raise ReferenceProvenanceError("CLIPS reference provenance image_id is invalid")
+    return raw
 
 
 def _attach_raw_output(result: dict, *, stdout: bytes, stderr: bytes) -> dict:
@@ -458,6 +732,7 @@ def run_ferric_observer(
     nonce: str,
     source_sha256: str,
     composed_sha256: str,
+    scenario_path: str | None = None,
 ) -> dict:
     """Run the dedicated Ferric compatibility observer."""
     start = time.monotonic()
@@ -472,8 +747,11 @@ def run_ferric_observer(
         source_sha256,
         "--composed-sha256",
         composed_sha256,
-        file_path,
     ]
+    if scenario_path is None:
+        command.append(file_path)
+    else:
+        command.extend(["--scenario", scenario_path])
     try:
         proc = subprocess.run(
             command,
@@ -562,13 +840,24 @@ def run_clips_observer(
     composed_sha256: str,
     globals_to_capture: tuple[str, ...],
     harnessed: bool,
+    scenario_path: str | None = None,
+    expected_phases: tuple[str, ...] | None = None,
 ) -> dict:
     """Run reference CLIPS quietly and parse its nonce-bound post-run probe."""
-    resolved_path = _require_contained_file(
-        Path(file_path),
-        root=Path(root),
-        label="CLIPS input",
-    )
+    resolved_path: Path | None = None
+    resolved_scenario: Path | None = None
+    if scenario_path is None:
+        resolved_path = _require_contained_file(
+            Path(file_path),
+            root=Path(root),
+            label="CLIPS input",
+        )
+    else:
+        resolved_scenario = _require_contained_file(
+            Path(scenario_path),
+            root=Path(root),
+            label="CLIPS scenario plan",
+        )
     operations = build_probe_operations(
         fixture_id=fixture_id,
         nonce=nonce,
@@ -594,9 +883,12 @@ def run_clips_observer(
         auth_key,
         "--observer-container-name",
         container_name,
-        "--file",
-        str(resolved_path),
     ]
+    if resolved_scenario is None:
+        assert resolved_path is not None
+        command.extend(["--file", str(resolved_path)])
+    else:
+        command.extend(["--scenario", str(resolved_scenario)])
     for operation in operations:
         command.extend(["--op", operation])
 
@@ -680,6 +972,7 @@ def run_clips_observer(
             auth_key=auth_key,
             harnessed=harnessed,
             interrupted=(result.get("termination") or {}).get("kind") in {"signal", "timeout"},
+            expected_phases=expected_phases,
         )
     except ClipsOracleProtocolError as error:
         result["observation_error"] = str(error)
@@ -703,7 +996,7 @@ def run_clips_observer(
 # ---------------------------------------------------------------------------
 
 
-def _oracle_outcome(evaluation) -> tuple[str, str, dict]:
+def oracle_outcome(evaluation) -> tuple[str, str, dict]:
     """Translate one strict oracle evaluation into manifest fields."""
     evaluation_dict = evaluation_to_dict(evaluation)
     mismatches = evaluation_dict["mismatches"]
@@ -727,7 +1020,11 @@ def _oracle_outcome(evaluation) -> tuple[str, str, dict]:
     ]
     evidence = {
         "status": evaluation.status.value,
-        "version": 1,
+        "version": (
+            evaluation.declaration.value.version
+            if declaration_valid and evaluation.declaration.value is not None
+            else DECLARATION_VERSION
+        ),
         "declaration": declaration_valid,
         "reached": observations_valid,
         "completed": observations_completed,
@@ -744,11 +1041,20 @@ def _oracle_outcome(evaluation) -> tuple[str, str, dict]:
         reason_field = re.sub(r"[^a-z0-9]+", "-", field.lower()).strip("-") or "evidence"
         return "pending", f"oracle-invalid:{reason_field}", evidence
     if evaluation.equivalent:
-        return "equivalent", "oracle-v1-match", evidence
+        assert evaluation.declaration.value is not None
+        return (
+            "equivalent",
+            f"oracle-v{evaluation.declaration.value.version}-match",
+            evidence,
+        )
 
     field = mismatches[0]["field"] if mismatches else "semantic"
     reason_field = re.sub(r"[^a-z0-9]+", "-", field.lower()).strip("-") or "semantic"
     return "divergent", f"oracle-{reason_field}-mismatch", evidence
+
+
+# Retained for callers testing the historical internal boundary.
+_oracle_outcome = oracle_outcome
 
 
 def classify_results(
@@ -774,7 +1080,7 @@ def classify_results(
         )
         if not complete_terminal_oracle:
             return diagnostic_outcome
-    classification, reason, _evidence = _oracle_outcome(evaluation)
+    classification, reason, _evidence = oracle_outcome(evaluation)
     return classification, reason
 
 
@@ -1054,12 +1360,69 @@ def process_file(args: tuple) -> tuple:
 
     run_path = abs_path
     composed_path: Path | None = None
+    scenario_path: Path | None = None
+    scenario_bundle: ResolvedScenarioBundle | None = None
     composed_content: bytes | None = None
     composed_digest: str | None = None
     retained_artifact: Path | None = None
     resolved_root = Path(root).resolve(strict=True)
+    runtime_declaration = copy.deepcopy(declaration)
+    runtime_declaration["nonce"] = secrets.token_hex(16)
+    is_scenario = runtime_declaration.get("version") == SCENARIO_DECLARATION_VERSION
     try:
-        if harness is not None:
+        if is_scenario:
+            if harness is not None:
+                raise CompatibilityWorkspaceError(
+                    f"{rel_path}: v2 scenario cannot also use a legacy generated harness"
+                )
+            if run_workspace is None:
+                raise CompatibilityWorkspaceError(
+                    f"{rel_path}: scenario execution requires an invocation workspace"
+                )
+            try:
+                composed_content = canonical_scenario_plan(runtime_declaration)
+            except ValueError as error:
+                raise CompatibilityWorkspaceError(
+                    f"{rel_path}: invalid scenario declaration: {error}"
+                ) from error
+            composed_digest = sha256_bytes(composed_content)
+            primary_path = _require_contained_file(
+                Path(abs_path),
+                root=resolved_root / "tests" / "examples",
+                label=f"{rel_path} primary source",
+            )
+            try:
+                validate_scenario_source_sizes((primary_path.stat().st_size,))
+                source_content = primary_path.read_bytes()
+                validate_scenario_source_sizes((len(source_content),))
+            except ValueError as error:
+                raise CompatibilityWorkspaceError(f"{rel_path}: {error}") from error
+            except OSError as error:
+                raise CompatibilityWorkspaceError(
+                    f"{rel_path}: cannot read primary source: {error}"
+                ) from error
+            source_digest = sha256_bytes(source_content)
+            declaration_evidence = validate_declaration(
+                runtime_declaration,
+                expected_source_sha256=source_digest,
+                expected_composed_sha256=composed_digest,
+            )
+            if declaration_evidence.status is EvidenceStatus.VALID:
+                validated_declaration = declaration_evidence.value
+                assert validated_declaration is not None
+                scenario_bundle = _resolve_scenario_bundle(
+                    validated_declaration,
+                    registry_key=rel_path,
+                    primary_path=primary_path,
+                    root=resolved_root,
+                )
+                scenario_path = _materialize_scenario_plan(
+                    scenario_bundle.plan,
+                    workspace=Path(run_workspace),
+                    root=resolved_root,
+                )
+                run_path = str(primary_path)
+        elif harness is not None:
             if run_workspace is None or failures_dir is None:
                 raise CompatibilityWorkspaceError(
                     f"{rel_path}: harness execution requires an invocation workspace"
@@ -1072,6 +1435,12 @@ def process_file(args: tuple) -> tuple:
                 root=resolved_root,
             )
             run_path = str(composed_path)
+            source_digest = sha256_bytes(harness.source_bytes)
+            declaration_evidence = validate_declaration(
+                runtime_declaration,
+                expected_source_sha256=source_digest,
+                expected_composed_sha256=composed_digest,
+            )
         else:
             if run_workspace is None:
                 raise CompatibilityWorkspaceError(
@@ -1095,6 +1464,12 @@ def process_file(args: tuple) -> tuple:
                 root=resolved_root,
             )
             run_path = str(composed_path)
+            source_digest = sha256_bytes(composed_content)
+            declaration_evidence = validate_declaration(
+                runtime_declaration,
+                expected_source_sha256=source_digest,
+                expected_composed_sha256=composed_digest,
+            )
 
         if composed_path is not None and composed_content is not None:
             _verify_composed_source(
@@ -1103,17 +1478,22 @@ def process_file(args: tuple) -> tuple:
                 root=resolved_root,
                 boundary="before Ferric execution",
             )
+        if scenario_path is not None and scenario_bundle is not None:
+            _verify_scenario_plan(
+                scenario_path,
+                scenario_bundle.plan,
+                root=resolved_root,
+                boundary="before Ferric execution",
+            )
+            assert declaration_evidence.value is not None
+            _verify_scenario_bundle(
+                scenario_bundle,
+                declaration_evidence.value,
+                root=resolved_root,
+                boundary="before Ferric execution",
+            )
         assert composed_content is not None
         assert composed_digest is not None
-        source_content = harness.source_bytes if harness is not None else composed_content
-        source_digest = sha256_bytes(source_content)
-        runtime_declaration = copy.deepcopy(declaration)
-        runtime_declaration["nonce"] = secrets.token_hex(16)
-        declaration_evidence = validate_declaration(
-            runtime_declaration,
-            expected_source_sha256=source_digest,
-            expected_composed_sha256=composed_digest,
-        )
 
         if declaration_evidence.status is EvidenceStatus.VALID:
             fixture_id = runtime_declaration["id"]
@@ -1133,6 +1513,7 @@ def process_file(args: tuple) -> tuple:
                 nonce=nonce,
                 source_sha256=source_digest,
                 composed_sha256=composed_digest,
+                **({"scenario_path": str(scenario_path)} if scenario_path is not None else {}),
             )
             ferric_observation = _project_result(
                 ferric_result,
@@ -1163,6 +1544,20 @@ def process_file(args: tuple) -> tuple:
                 root=resolved_root,
                 boundary="before CLIPS execution",
             )
+        if scenario_path is not None and scenario_bundle is not None:
+            _verify_scenario_plan(
+                scenario_path,
+                scenario_bundle.plan,
+                root=resolved_root,
+                boundary="before CLIPS execution",
+            )
+            assert declaration_evidence.value is not None
+            _verify_scenario_bundle(
+                scenario_bundle,
+                declaration_evidence.value,
+                root=resolved_root,
+                boundary="before CLIPS execution",
+            )
 
         if declaration_evidence.status is EvidenceStatus.VALID and not skip_clips:
             globals_expectation = runtime_declaration["expectations"]["globals"]
@@ -1182,6 +1577,14 @@ def process_file(args: tuple) -> tuple:
                 composed_sha256=composed_digest,
                 globals_to_capture=globals_to_capture,
                 harnessed=harness is not None,
+                **(
+                    {
+                        "scenario_path": str(scenario_path),
+                        "expected_phases": scenario_bundle.native_phases,
+                    }
+                    if scenario_path is not None and scenario_bundle is not None
+                    else {}
+                ),
             )
             clips_observation = _project_result(
                 clips_result,
@@ -1221,7 +1624,7 @@ def process_file(args: tuple) -> tuple:
             expected_source_sha256=source_digest,
             expected_composed_sha256=composed_digest,
         )
-        _oracle_classification, _oracle_reason, evidence = _oracle_outcome(evaluation)
+        _oracle_classification, _oracle_reason, evidence = oracle_outcome(evaluation)
         classification, reason = classify_results(
             ferric_result,
             clips_result,
@@ -1247,6 +1650,20 @@ def process_file(args: tuple) -> tuple:
                 root=resolved_root,
                 boundary="after engine execution",
             )
+        if scenario_path is not None and scenario_bundle is not None:
+            _verify_scenario_plan(
+                scenario_path,
+                scenario_bundle.plan,
+                root=resolved_root,
+                boundary="after engine execution",
+            )
+            assert declaration_evidence.value is not None
+            _verify_scenario_bundle(
+                scenario_bundle,
+                declaration_evidence.value,
+                root=resolved_root,
+                boundary="after engine execution",
+            )
 
         retain_failure = classification in FAILED_CLASSIFICATIONS or reason.startswith(
             ("oracle-invalid", "diagnostic-", "termination-", "harness-")
@@ -1262,13 +1679,15 @@ def process_file(args: tuple) -> tuple:
                     composed_digest,
                     failures_dir=Path(failures_dir),
                     root=resolved_root,
+                    suffix=".plan" if is_scenario else ".clp",
                 )
                 composed_metadata["artifact_path"] = retained_artifact.relative_to(
                     resolved_root
                 ).as_posix()
-            ferric_result["composed_source"] = dict(composed_metadata)
+            metadata_field = "scenario_plan" if is_scenario else "composed_source"
+            ferric_result[metadata_field] = dict(composed_metadata)
             if clips_result is not None:
-                clips_result["composed_source"] = dict(composed_metadata)
+                clips_result[metadata_field] = dict(composed_metadata)
 
         return rel_path, ferric_result, clips_result, classification, reason
     except BaseException as error:
@@ -1284,6 +1703,7 @@ def process_file(args: tuple) -> tuple:
                     composed_digest,
                     failures_dir=Path(failures_dir),
                     root=resolved_root,
+                    suffix=".plan" if is_scenario else ".clp",
                 )
             except Exception as retention_error:
                 error.add_note(f"could not retain composed failure artifact: {retention_error}")
@@ -1292,14 +1712,17 @@ def process_file(args: tuple) -> tuple:
                 error.add_note(f"composed failure artifact retained at {artifact_relpath}")
         raise
     finally:
-        if composed_path is not None:
+        for temporary_path, label in (
+            (composed_path, "composed temporary source"),
+            (scenario_path, "temporary scenario plan"),
+        ):
+            if temporary_path is None:
+                continue
             try:
-                composed_path.unlink(missing_ok=True)
+                temporary_path.unlink(missing_ok=True)
             except OSError as cleanup_error:
                 active_error = sys.exception()
-                message = (
-                    f"could not remove composed temporary source {composed_path}: {cleanup_error}"
-                )
+                message = f"could not remove {label} {temporary_path}: {cleanup_error}"
                 if active_error is None:
                     raise CompatibilityWorkspaceError(message) from cleanup_error
                 active_error.add_note(message)
@@ -1372,7 +1795,7 @@ def main(
     mdata = load_manifest(manifest_path)
     if (
         mdata.get("version") != 3
-        or mdata.get("oracle_protocol_version") != DECLARATION_VERSION
+        or mdata.get("oracle_protocol_version") != ORACLE_PROTOCOL_VERSION
         or type(mdata.get("files")) is not dict
     ):
         console.print(
@@ -1454,7 +1877,7 @@ def main(
             abs_path = root / "tests" / rel_path
         else:
             abs_path = ed / rel_path
-        if runability == "library":
+        if runability == "library" and declaration.get("version") != SCENARIO_DECLARATION_VERSION:
             try:
                 resolved_harness = _resolve_harness(
                     info,
@@ -1577,6 +2000,12 @@ def main(
             "[red]error:[/] Docker CLIPS image not found: ferric-rules/clips-reference:latest"
         )
         raise typer.Exit(1)
+    try:
+        reference = load_reference_provenance(script, root=str(root))
+    except ReferenceProvenanceError as error:
+        console.print(f"[red]error:[/] {error}")
+        raise typer.Exit(1) from error
+    mdata["reference"] = reference
 
     completed = 0
     results: dict[str, tuple] = {}

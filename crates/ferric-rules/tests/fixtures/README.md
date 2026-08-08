@@ -1,13 +1,15 @@
-# CLIPS Compatibility Test Harness
+# Ferric Semantic Regression Harness
 
 This directory contains fixture files and documentation for the Ferric engine's
-CLIPS compatibility test suite. It lives inside the `ferric-rules` package so
-the packaged crate can run its complete test suite after extraction.
+internal CLIPS-language semantic regression suite. It lives inside the
+`ferric-rules` package so the packaged crate can run its complete test suite
+after extraction. This suite executes Ferric only; the repository's external
+differential lane owns claims about behavior relative to reference CLIPS.
 
 ## How to run
 
 ```
-cargo test -p ferric-rules --test clips_compat
+cargo test -p ferric-rules --test ferric_semantic_regressions
 ```
 
 ## Directory structure
@@ -28,20 +30,22 @@ behaviour) and a `.gitkeep` placeholder until real fixtures are added.
 
 ## Harness API
 
-The harness is defined in `crates/ferric-rules/tests/clips_compat.rs` and provides
-the following public items.
+The harness is defined in
+`crates/ferric-rules/tests/ferric_semantic_regressions.rs` and provides the
+following public items.
 
-### `CompatResult`
+### `RegressionResult`
 
-Returned by `run_clips_compat` and `run_clips_compat_file`. Holds:
+Returned by `run_ferric_semantic_regression` and
+`run_ferric_semantic_regression_file`. Holds:
 - `rules_fired: usize` — number of rules that fired
 - `output: String` — captured output from the `t` (stdout) channel
 - `fact_count: usize` — number of user-visible facts after execution
 
-### `CompatEngine`
+### `RegressionEngine`
 
-Returned by `run_clips_compat_full`. Retains the live engine after execution
-for richer post-run inspection:
+Returned by `run_ferric_semantic_regression_full`. Retains the live engine
+after execution for richer post-run inspection:
 - `rules_fired: usize` — number of rules that fired
 - `output: String` — captured output from the `t` channel
 - `fn fact_count(&self) -> usize` — count user-visible facts
@@ -53,33 +57,33 @@ for richer post-run inspection:
 
 | Function | Returns | Use when |
 |---|---|---|
-| `run_clips_compat(source)` | `CompatResult` | Most tests; engine is dropped after capture |
-| `run_clips_compat_full(source)` | `CompatEngine` | You need to inspect working memory after the run |
-| `run_clips_compat_file(name)` | `CompatResult` | Load a `.clp` fixture file |
-| `assert_clips_compat(source, expected)` | `()` | One-liner output assertion |
+| `run_ferric_semantic_regression(source)` | `RegressionResult` | Most tests; engine is dropped after capture |
+| `run_ferric_semantic_regression_full(source)` | `RegressionEngine` | You need to inspect working memory after the run |
+| `run_ferric_semantic_regression_file(name)` | `RegressionResult` | Load a `.clp` fixture file |
+| `assert_ferric_semantic_regression(source, expected)` | `()` | One-line output assertion |
 
-Compatibility runs use a bounded firing limit to prevent non-quiescing fixtures
-from spinning indefinitely:
+Semantic-regression runs use a bounded firing limit to prevent non-quiescing
+fixtures from spinning indefinitely:
 - Default cap: `10_000` rule firings per run
-- Local override: `FERRIC_COMPAT_RUN_LIMIT=<N>`
+- Local override: `FERRIC_SEMANTIC_REGRESSION_RUN_LIMIT=<N>`
 
 If a fixture reaches the cap, the harness fails with an explicit
 non-quiescence message.
 
-`run_clips_compat_file` accepts subdirectory paths:
+`run_ferric_semantic_regression_file` accepts subdirectory paths:
 ```rust
-run_clips_compat_file("core/basic_match.clp")
-run_clips_compat_file("negation/simple_not.clp")
+run_ferric_semantic_regression_file("core/basic_match.clp")
+run_ferric_semantic_regression_file("negation/simple_not.clp")
 ```
 
 ### Assertion helpers
 
-These operate on a `&CompatResult`:
+These operate on a `&RegressionResult`:
 
 ```rust
 assert_output_exact(&result, "expected output\n");
 assert_rules_fired(&result, 3);
-assert_fact_count_compat(&result, 5);
+assert_fact_count(&result, 5);
 ```
 
 All helpers panic with a descriptive message on mismatch.
@@ -105,24 +109,27 @@ All helpers panic with a descriptive message on mismatch.
     (printout t "colour is " ?c crlf))
 ```
 
-Corresponding test in `clips_compat.rs`:
+Corresponding test in `ferric_semantic_regressions.rs`:
 ```rust
 #[test]
 fn test_core_basic_match() {
-    let result = run_clips_compat_file("core/basic_match.clp");
+    let result = run_ferric_semantic_regression_file("core/basic_match.clp");
     assert_output_exact(&result, "colour is red\n");
     assert_rules_fired(&result, 1);
 }
 ```
 
-## Adding a new compatibility test
+## Adding a new semantic regression
 
 1. Create or choose the appropriate subdirectory under `fixtures/`.
 2. Write a `.clp` fixture file that demonstrates the behaviour.
-3. Add a `#[test]` function in `crates/ferric-rules/tests/clips_compat.rs` that:
-   - Calls `run_clips_compat_file("subdir/file.clp")` (or
-     `run_clips_compat_full` if you need working-memory inspection).
+3. Add a `#[test]` function in
+   `crates/ferric-rules/tests/ferric_semantic_regressions.rs` that:
+   - Calls `run_ferric_semantic_regression_file("subdir/file.clp")` (or
+     `run_ferric_semantic_regression_full` if you need working-memory
+     inspection).
    - Asserts the expected output and/or rule-fired count.
-4. Run `cargo test -p ferric-rules --test clips_compat` to verify.
+4. Run `cargo test -p ferric-rules --test ferric_semantic_regressions` to
+   verify.
 5. Run `cargo clippy -p ferric-rules --all-targets -- -D warnings` and
    `cargo fmt --all` before committing.

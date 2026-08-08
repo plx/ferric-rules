@@ -99,8 +99,13 @@ enum Command {
         #[arg(long, value_parser = commands::compat_observe::parse_sha256)]
         composed_sha256: String,
 
+        /// Path to a strict multi-step compatibility scenario plan.
+        #[arg(long, value_name = "PATH", conflicts_with = "file")]
+        scenario: Option<PathBuf>,
+
         /// Path to the composed CLIPS source to observe.
-        file: PathBuf,
+        #[arg(required_unless_present = "scenario")]
+        file: Option<PathBuf>,
     },
 
     /// Parse and validate a CLIPS file without executing.
@@ -178,14 +183,25 @@ fn main() {
             nonce,
             source_sha256,
             composed_sha256,
+            scenario,
             file,
-        } => commands::compat_observe::execute(
-            &file,
-            fixture_id,
-            nonce,
-            source_sha256,
-            composed_sha256,
-        ),
+        } => match (scenario, file) {
+            (Some(scenario), None) => commands::compat_observe::execute_scenario(
+                &scenario,
+                fixture_id,
+                nonce,
+                source_sha256,
+                composed_sha256,
+            ),
+            (None, Some(file)) => commands::compat_observe::execute(
+                &file,
+                fixture_id,
+                nonce,
+                source_sha256,
+                composed_sha256,
+            ),
+            _ => unreachable!("clap requires exactly one compat-observe input"),
+        },
         Command::Check { json, file } => commands::check::execute(json, &file),
         Command::Repl {
             load,

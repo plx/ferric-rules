@@ -60,6 +60,9 @@ jobs:
       - name: Run compat assessment
         run: uv run --project tools/ferric-tools ferric-compat-run --workers 4 --timeout 30
 
+      - name: Enforce semantic differential policy
+        run: uv run --project tools/ferric-tools ferric-compat-semantic-gate
+
       - name: Generate standalone report
         run: |
           uv run --project tools/ferric-tools ferric-compat-report \

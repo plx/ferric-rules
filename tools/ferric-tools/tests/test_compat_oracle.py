@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 
 import pytest
 
 from ferric_tools.compat.oracle import (
+    MAX_SCENARIO_BUNDLE_BYTES,
+    MAX_SCENARIO_SOURCE_BYTES,
     EvidenceStatus,
+    canonical_scenario_plan,
     evaluate_oracle,
     evaluation_to_dict,
+    normalized_observation_semantics,
+    observation_semantic_fingerprint,
     validate_declaration,
     validate_observation,
+    validate_scenario_source_sizes,
 )
 
 SOURCE_DIGEST = "a" * 64
@@ -90,6 +97,37 @@ def _declaration(
         },
         "normalizers": list(normalizers or []),
     }
+
+
+def _scenario_declaration() -> dict[str, object]:
+    declaration = _declaration(normalizers=["fact-ids"])
+    declaration.update(
+        {
+            "version": 2,
+            "sources": [
+                {"name": "primary", "path": "fixture.clp", "sha256": SOURCE_DIGEST},
+                {"name": "library", "path": "shared/library.clp", "sha256": OTHER_DIGEST},
+            ],
+            "setup": {
+                "steps": [
+                    {"operation": "load", "source": "primary", "on_error": "stop"},
+                    {"operation": "reset", "on_error": "continue"},
+                    {"operation": "load", "source": "library", "on_error": "stop"},
+                    {"operation": "reset", "on_error": "stop"},
+                    {
+                        "operation": "set-strategy",
+                        "strategy": "breadth",
+                        "on_error": "stop",
+                    },
+                    {"operation": "run", "limit": None, "on_error": "stop"},
+                ]
+            },
+        }
+    )
+    declaration["composed_sha256"] = hashlib.sha256(
+        canonical_scenario_plan(declaration)
+    ).hexdigest()
+    return declaration
 
 
 def _markers() -> list[dict[str, object]]:
@@ -180,6 +218,127 @@ def test_valid_non_vacuous_observations_are_equivalent():
     assert result.status is EvidenceStatus.VALID
     assert result.equivalent
     assert result.mismatches == ()
+
+
+def test_v2_declaration_canonicalizes_exact_repeated_scenario_plan():
+    declaration = _scenario_declaration()
+    plan = canonical_scenario_plan(declaration)
+    digest = hashlib.sha256(plan).hexdigest()
+
+    assert plan == (
+        b"FERRIC-COMPAT-SCENARIO|1\n"
+        b"SOURCE|primary|" + SOURCE_DIGEST.encode() + b"|tests/examples/fixture.clp\n"
+        b"SOURCE|library|" + OTHER_DIGEST.encode() + b"|tests/examples/shared/library.clp\n"
+        b"STEP|1|LOAD|primary|stop\n"
+        b"STEP|2|RESET|-|continue\n"
+        b"STEP|3|LOAD|library|stop\n"
+        b"STEP|4|RESET|-|stop\n"
+        b"STEP|5|SET-STRATEGY|breadth|stop\n"
+        b"STEP|6|RUN|-1|stop\n"
+        b"END\n"
+    )
+    evidence = validate_declaration(
+        declaration,
+        expected_source_sha256=SOURCE_DIGEST,
+        expected_composed_sha256=digest,
+    )
+    assert evidence.status is EvidenceStatus.VALID
+    assert evidence.value is not None
+    assert evidence.value.version == 2
+
+
+def test_scenario_source_size_caps_accept_exact_boundaries_and_reject_one_byte_over():
+    validate_scenario_source_sizes(
+        (MAX_SCENARIO_SOURCE_BYTES,) * (MAX_SCENARIO_BUNDLE_BYTES // MAX_SCENARIO_SOURCE_BYTES)
+    )
+    with pytest.raises(ValueError, match="source exceeds"):
+        validate_scenario_source_sizes((MAX_SCENARIO_SOURCE_BYTES + 1,))
+    with pytest.raises(ValueError, match="aggregate source bytes exceed"):
+        validate_scenario_source_sizes(
+            (MAX_SCENARIO_SOURCE_BYTES,) * (MAX_SCENARIO_BUNDLE_BYTES // MAX_SCENARIO_SOURCE_BYTES)
+            + (1,)
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "field"),
+    [
+        (lambda value: value["sources"][0].update(name="not-primary"), "sources[0].name"),
+        (lambda value: value["sources"][0].update(path="../fixture.clp"), "sources[0].path"),
+        (lambda value: value["sources"][1].update(name="primary"), "sources"),
+        (
+            lambda value: value["setup"]["steps"].insert(
+                0, {"operation": "reset", "on_error": "stop"}
+            ),
+            "setup.steps[0]",
+        ),
+        (
+            lambda value: value["setup"]["steps"][-1].update(limit=1),
+            "setup.steps[5].limit",
+        ),
+    ],
+)
+def test_v2_declaration_rejects_invalid_bundle_and_operation_order(mutate, field):
+    declaration = _scenario_declaration()
+    mutate(declaration)
+    evidence = validate_declaration(
+        declaration,
+        expected_source_sha256=SOURCE_DIGEST,
+        expected_composed_sha256=declaration["composed_sha256"],
+    )
+
+    assert evidence.status is EvidenceStatus.INVALID
+    assert evidence.issues[0].field == field
+
+
+def test_semantic_fingerprint_ignores_nonce_and_normalized_fact_ids_but_detects_drift():
+    first_declaration_raw = _declaration(normalizers=["fact-ids"])
+    first_evidence = validate_declaration(
+        first_declaration_raw,
+        expected_source_sha256=SOURCE_DIGEST,
+        expected_composed_sha256=COMPOSED_DIGEST,
+    )
+    assert first_evidence.value is not None
+    first_observation = _observation()
+
+    second_declaration_raw = deepcopy(first_declaration_raw)
+    second_declaration_raw["nonce"] = "f" * 32
+    second_evidence = validate_declaration(
+        second_declaration_raw,
+        expected_source_sha256=SOURCE_DIGEST,
+        expected_composed_sha256=COMPOSED_DIGEST,
+    )
+    assert second_evidence.value is not None
+    second_observation = _observation(facts=[_ordered_fact(fact_id=991)])
+    second_observation["nonce"] = "f" * 32
+    for marker in second_observation["markers"]:
+        marker["nonce"] = "f" * 32
+
+    first = observation_semantic_fingerprint(
+        first_observation,
+        declaration=first_evidence.value,
+    )
+    second = observation_semantic_fingerprint(
+        second_observation,
+        declaration=second_evidence.value,
+    )
+    assert first == second
+    assert hash(
+        normalized_observation_semantics(
+            first_observation,
+            declaration=first_evidence.value,
+        )
+    )
+
+    drifted = deepcopy(second_observation)
+    drifted["channels"]["stdout"] = "semantic drift\n"
+    assert (
+        observation_semantic_fingerprint(
+            drifted,
+            declaration=second_evidence.value,
+        )
+        != first
+    )
 
 
 def test_missing_declaration_is_represented_without_an_exception():

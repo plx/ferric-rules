@@ -527,9 +527,10 @@ Relevant code:
 - [`tools/ferric-tools/src/ferric_tools/compat/run.py`](../../tools/ferric-tools/src/ferric_tools/compat/run.py)
 - [`.github/workflows/compat-standalone.yml`](../../.github/workflows/compat-standalone.yml)
 
-The `clips_compat.rs` suite runs only Ferric and compares it with hand-written
-expectations. It is useful regression coverage, but it is not differential
-evidence.
+The suite formerly named `clips_compat.rs` (now
+`ferric_semantic_regressions.rs`) runs only Ferric and compares it with
+hand-written expectations. It is useful regression coverage, but it is not
+differential evidence.
 
 ## Architecture and maintainability
 

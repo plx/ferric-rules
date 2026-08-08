@@ -1,0 +1,4 @@
+; This rule is loaded after the attempted redefinition.
+(defrule seed-t
+  =>
+  (assert (t (x 2))))

@@ -38,10 +38,12 @@ _CLIPS_DIAGNOSTIC_CODE_RE = re.compile(r"(?m)^[ \t]*\[([A-Z][A-Z0-9]*\d+)\]")
 _HARNESS_LINE_RE = re.compile(r"^FERRIC-HARNESS\|(?P<version>\d+)\|(?P<body>.*)$")
 _MAX_NATIVE_PAYLOAD = 16 * 1024 * 1024
 _PROBE_KINDS = frozenset({"PHASE", "MODULE", "FOCUS", "FACT", "SLOT", "VALUE", "GLOBAL"})
-_NATIVE_PHASES = ("load", "reset", "run")
+_V1_NATIVE_PHASES = ("load", "reset", "run")
+_NATIVE_PHASE_NAMES = frozenset(_V1_NATIVE_PHASES)
 _NATIVE_PHASE_STATUSES = frozenset({"OK", "CONTINUED", "ERROR"})
 _LOAD_SYNTAX_DIAGNOSTIC_FAMILIES = frozenset({"CSTRCPSR", "SCANNER"})
 _LOAD_SYNTAX_DIAGNOSTIC_CODES = frozenset({"PRNTUTIL2"})
+_LOAD_CONSTRUCT_DIAGNOSTIC_CODES = frozenset({"PRNTUTIL1"})
 _LOAD_CONSTRUCT_DIAGNOSTIC_FAMILIES = frozenset(
     {
         "ARGACCES",
@@ -57,6 +59,8 @@ _LOAD_CONSTRUCT_DIAGNOSTIC_FAMILIES = frozenset(
         "TMPLTPSR",
     }
 )
+_EVALUATION_DIAGNOSTIC_CODES = frozenset({"PRNTUTIL7"})
+_EVALUATION_DIAGNOSTIC_FAMILIES = frozenset({"ARGACCES", "PRCCODE"})
 
 
 class ClipsOracleProtocolError(ValueError):
@@ -209,6 +213,58 @@ def _decode_utf8(value: bytes, *, label: str) -> str:
         raise ClipsOracleProtocolError(f"{label} is not valid UTF-8") from error
 
 
+def _diagnostic_channel_disposition(
+    fields: tuple[str, ...],
+    payload: bytes,
+) -> bool | None:
+    """Decide whether one authenticated diagnostic can be separated from stderr.
+
+    ``True`` means the payload is a narrowly recognized CLIPS diagnostic and
+    can be removed only by its exact raw byte offset. ``False`` means known
+    diagnostic evidence is mixed with ambiguous router output and must fail
+    closed. ``None`` leaves unknown/malformed evidence untouched for the
+    normal diagnostic parser to reject or retain.
+    """
+    if len(fields) != 3:
+        return None
+    version_text, native_phase, continued_text = fields
+    if (
+        version_text != str(DIAGNOSTIC_TAXONOMY_VERSION)
+        or native_phase not in _NATIVE_PHASE_NAMES
+        or continued_text not in {"0", "1"}
+    ):
+        return None
+
+    message = _decode_utf8(payload, label="native DIAGNOSTIC payload")
+    matches = list(_CLIPS_DIAGNOSTIC_CODE_RE.finditer(message))
+    codes = [match.group(1) for match in matches]
+    if native_phase == "load":
+        syntax = [
+            code in _LOAD_SYNTAX_DIAGNOSTIC_CODES
+            or any(code.startswith(family) for family in _LOAD_SYNTAX_DIAGNOSTIC_FAMILIES)
+            for code in codes
+        ]
+        construct = [
+            code in _LOAD_CONSTRUCT_DIAGNOSTIC_CODES
+            or any(code.startswith(family) for family in _LOAD_CONSTRUCT_DIAGNOSTIC_FAMILIES)
+            for code in codes
+        ]
+        recognized = any(syntax) or any(construct)
+        homogeneous = bool(codes) and (all(syntax) or all(construct))
+    else:
+        evaluation = [
+            code in _EVALUATION_DIAGNOSTIC_CODES
+            or any(code.startswith(family) for family in _EVALUATION_DIAGNOSTIC_FAMILIES)
+            for code in codes
+        ]
+        recognized = any(evaluation)
+        homogeneous = bool(codes) and all(evaluation)
+
+    if not recognized:
+        return None if native_phase == "load" else False
+    return homogeneous and not message[: matches[0].start()].strip()
+
+
 def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
     if not intervals:
         return []
@@ -350,6 +406,25 @@ def _parse_native_records(
                     _decode_utf8(field, label=f"native {kind} field") for field in framed_fields
                 )
                 records.append(_NativeRecord(kind, fields, raw[value_start:value_end], start, end))
+                if kind == "DIAGNOSTIC":
+                    # The native router tees these bytes before emitting the
+                    # authenticated record. Remove only that adjacent byte
+                    # range; never search arbitrary successful output.
+                    disposition = _diagnostic_channel_disposition(
+                        fields,
+                        raw[value_start:value_end],
+                    )
+                    if disposition is True:
+                        mirror_start = start - payload_length
+                        if (
+                            mirror_start < cursor
+                            or raw[mirror_start:start] != raw[value_start:value_end]
+                        ):
+                            issues.append("native-diagnostic-channel-mirror")
+                        else:
+                            intervals.append((mirror_start, start))
+                    elif disposition is False:
+                        issues.append("native-diagnostic-channel-ambiguous")
         else:
             end_of_line = raw.find(b"\n", payload_start)
             if end_of_line < 0:
@@ -477,7 +552,8 @@ def _load_diagnostic_taxonomy(message: str) -> tuple[str, str]:
     construct_codes = {
         code
         for code in codes
-        if any(code.startswith(family) for family in _LOAD_CONSTRUCT_DIAGNOSTIC_FAMILIES)
+        if code in _LOAD_CONSTRUCT_DIAGNOSTIC_CODES
+        or any(code.startswith(family) for family in _LOAD_CONSTRUCT_DIAGNOSTIC_FAMILIES)
     }
     if codes and syntax_codes == codes:
         return "parse", "syntax-error"
@@ -498,7 +574,7 @@ def _parse_native_diagnostic(
     if version_text != str(DIAGNOSTIC_TAXONOMY_VERSION):
         issues.append("native-diagnostic-taxonomy-version")
         return None
-    if native_phase not in _NATIVE_PHASES:
+    if native_phase not in _NATIVE_PHASE_NAMES:
         issues.append("native-diagnostic-phase")
         return None
     if continued_text not in {"0", "1"}:
@@ -535,6 +611,7 @@ def _parse_native_phase_records(
     records: list[_NativeRecord],
     *,
     diagnostic_states: list[tuple[dict, str, bool]],
+    expected_phases: tuple[str, ...],
     lifecycle_complete: bool,
     issues: list[str],
 ) -> tuple[list[dict], str | None]:
@@ -543,7 +620,7 @@ def _parse_native_phase_records(
     active_phase: str | None = None
     next_phase_index = 0
     expected_sequence = 1
-    statuses: dict[str, str] = {}
+    statuses: dict[str, list[str]] = {}
 
     for record in phase_records:
         if len(record.fields) not in {3, 4}:
@@ -560,7 +637,7 @@ def _parse_native_phase_records(
         if sequence != expected_sequence:
             issues.append("native-phase-sequence-order")
         expected_sequence = sequence + 1
-        if phase not in _NATIVE_PHASES:
+        if phase not in _NATIVE_PHASE_NAMES:
             issues.append("native-phase-name")
         status = status_fields[0] if status_fields else None
 
@@ -569,7 +646,10 @@ def _parse_native_phase_records(
                 issues.append("native-phase-begin-status")
             if active_phase is not None:
                 issues.append("native-phase-overlap")
-            if next_phase_index >= len(_NATIVE_PHASES) or phase != _NATIVE_PHASES[next_phase_index]:
+            if (
+                next_phase_index >= len(expected_phases)
+                or phase != expected_phases[next_phase_index]
+            ):
                 issues.append("native-phase-order")
             active_phase = phase
             phases.append({"sequence": sequence, "phase": phase, "event": "begin"})
@@ -582,7 +662,7 @@ def _parse_native_phase_records(
                 active_phase = None
                 next_phase_index += 1
             if status is not None:
-                statuses[phase] = status
+                statuses.setdefault(phase, []).append(status)
             phases.append(
                 {
                     "sequence": sequence,
@@ -600,14 +680,10 @@ def _parse_native_phase_records(
     diagnostics_by_phase: dict[str, list[bool]] = {}
     for _diagnostic, native_phase, continued in diagnostic_states:
         diagnostics_by_phase.setdefault(native_phase, []).append(continued)
-    if any(len(values) != 1 for values in diagnostics_by_phase.values()):
-        issues.append("native-diagnostic-cardinality")
-    for phase, status in statuses.items():
+    for phase, phase_statuses in statuses.items():
         continued_values = diagnostics_by_phase.get(phase, [])
-        expected_continued = status == "CONTINUED"
-        if (status == "OK" and continued_values) or (
-            status in {"CONTINUED", "ERROR"} and continued_values != [expected_continued]
-        ):
+        expected_continued = [status == "CONTINUED" for status in phase_statuses if status != "OK"]
+        if continued_values != expected_continued:
             issues.append("native-phase-diagnostic-status")
     for phase in diagnostics_by_phase:
         if phase not in statuses and not (not lifecycle_complete and active_phase == phase):
@@ -627,6 +703,7 @@ def parse_probe_output(
     auth_key: str,
     harnessed: bool = False,
     interrupted: bool = False,
+    expected_phases: tuple[str, ...] | None = None,
 ) -> dict:
     """Parse one quiet CLIPS invocation into a structured observation."""
     fixture_id = _require_token(fixture_id, label="fixture id")
@@ -634,6 +711,18 @@ def parse_probe_output(
     source_sha256 = _require_digest(source_sha256, label="source digest")
     composed_sha256 = _require_digest(composed_sha256, label="composed digest")
     auth_key = _require_auth_key(auth_key)
+    scenario_mode = expected_phases is not None
+    if expected_phases is None:
+        expected_phases = _V1_NATIVE_PHASES
+    elif type(expected_phases) is not tuple:
+        raise ValueError("expected native phases must be a tuple")
+    if (
+        not expected_phases
+        or len(expected_phases) > 256
+        or expected_phases[-1] != "run"
+        or any(phase not in _NATIVE_PHASE_NAMES for phase in expected_phases)
+    ):
+        raise ValueError("expected native phases must be a bounded load/reset/run sequence")
 
     stdout_bytes = raw_stdout.encode("utf-8") if isinstance(raw_stdout, str) else raw_stdout
     stderr_bytes = raw_stderr.encode("utf-8") if isinstance(raw_stderr, str) else raw_stderr
@@ -652,6 +741,8 @@ def parse_probe_output(
             "native-authentication-malformed",
             "native-framing-malformed",
             "native-record-malformed",
+            "native-diagnostic-channel-ambiguous",
+            "native-diagnostic-channel-mirror",
             "unexpected-native-reserved-prefix",
         }
     ]
@@ -731,6 +822,7 @@ def parse_probe_output(
     native_phases, active_phase = _parse_native_phase_records(
         native_records,
         diagnostic_states=diagnostic_states,
+        expected_phases=expected_phases,
         lifecycle_complete=lifecycle_complete,
         issues=phase_issues,
     )
@@ -752,12 +844,23 @@ def parse_probe_output(
         if lifecycle and [entry["sequence"] for entry in lifecycle] != [0, 3]:
             protocol_issues.append("lifecycle-sequence-order")
     ended_phases = [phase["phase"] for phase in native_phases if phase["event"] == "end"]
-    if terminal_diagnostic is None or terminal_diagnostic[1] == "run":
-        expected_ended_phases = list(_NATIVE_PHASES)
-    else:
-        terminal_phase_index = _NATIVE_PHASES.index(terminal_diagnostic[1])
-        expected_ended_phases = list(_NATIVE_PHASES[: terminal_phase_index + 1])
-    if (lifecycle_complete or partial_terminal_path) and ended_phases != expected_ended_phases:
+    expected_ended_phases = list(expected_phases)
+    completed_before_run = (
+        lifecycle_complete and terminal_diagnostic is not None and terminal_diagnostic[1] != "run"
+    )
+    terminal_prefix_invalid = (
+        ended_phases != list(expected_phases[: len(ended_phases)])
+        or not ended_phases
+        or terminal_diagnostic is None
+        or ended_phases[-1] != terminal_diagnostic[1]
+    )
+    full_path_invalid = (
+        lifecycle_complete and not completed_before_run and ended_phases != expected_ended_phases
+    )
+    terminal_path_invalid = (
+        completed_before_run or partial_terminal_path
+    ) and terminal_prefix_invalid
+    if full_path_invalid or terminal_path_invalid:
         add_protocol_issue("native-phase-terminal-path", diagnostic=True)
 
     native_run_records = [record for record in native_records if record.kind == "RUN"]
@@ -846,20 +949,20 @@ def parse_probe_output(
         if not (all(run_position < position < complete_position for position in probe_positions)):
             protocol_issues.append("native-record-order")
 
-    phase_boundaries: dict[str, tuple[int, int]] = {}
-    for phase in _NATIVE_PHASES:
-        matching = [
-            record
-            for record in native_records
-            if record.kind == "PHASE" and len(record.fields) >= 2 and record.fields[1] == phase
-        ]
-        if len(matching) == 2:
-            phase_boundaries[phase] = (
-                record_positions[id(matching[0])],
-                record_positions[id(matching[1])],
-            )
+    phase_boundaries: list[tuple[str, int, int]] = []
+    open_boundary: tuple[str, int] | None = None
+    for record in native_records:
+        if record.kind != "PHASE" or len(record.fields) < 3:
+            continue
+        phase, event = record.fields[1:3]
+        position = record_positions[id(record)]
+        if event == "BEGIN":
+            open_boundary = (phase, position)
+        elif event == "END" and open_boundary is not None and open_boundary[0] == phase:
+            phase_boundaries.append((phase, open_boundary[1], position))
+            open_boundary = None
     for record, (_diagnostic, native_phase, _continued) in parsed_diagnostic_records:
-        boundary = phase_boundaries.get(native_phase)
+        record_position = record_positions[id(record)]
         active_begin_positions = [
             record_positions[id(phase_record)]
             for phase_record in native_records
@@ -867,21 +970,22 @@ def parse_probe_output(
             and len(phase_record.fields) >= 3
             and phase_record.fields[1:3] == (native_phase, "BEGIN")
         ]
-        inside_completed_phase = boundary is not None and (
-            boundary[0] < record_positions[id(record)] < boundary[1]
+        inside_completed_phase = any(
+            phase == native_phase and begin < record_position < end
+            for phase, begin, end in phase_boundaries
         )
         inside_interrupted_phase = (
             not lifecycle_complete
             and active_phase == native_phase
             and len(active_begin_positions) == 1
-            and active_begin_positions[0] < record_positions[id(record)]
+            and active_begin_positions[-1] < record_position
         )
         if not (inside_completed_phase or inside_interrupted_phase):
             add_protocol_issue("native-diagnostic-record-order", diagnostic=True)
     if len(native_run_records) == 1:
-        run_boundary = phase_boundaries.get("run")
+        run_boundaries = [(begin, end) for phase, begin, end in phase_boundaries if phase == "run"]
         run_position = record_positions[id(native_run_records[0])]
-        if run_boundary is None or run_position <= run_boundary[1]:
+        if len(run_boundaries) != 1 or run_position <= run_boundaries[0][1]:
             add_protocol_issue("native-run-record-order", diagnostic=run_diagnostic_present)
 
     records = [
@@ -895,11 +999,21 @@ def parse_probe_output(
 
     phase_records = [record for record in records if record.kind == "PHASE"]
     phase_values = [record.fields for record in phase_records]
-    probes_expected = terminal_diagnostic is None and not partial_path
-    if terminal_diagnostic is not None and terminal_diagnostic[1] == "run":
-        # The native observer deliberately stops after authenticated RUN
-        # metadata on an evaluation failure. Empty fact/module/global
-        # placeholders are not a final-state snapshot.
+    scenario_run_snapshot = (
+        scenario_mode
+        and lifecycle_complete
+        and terminal_diagnostic is not None
+        and terminal_diagnostic[1] == "run"
+    )
+    probes_expected = (terminal_diagnostic is None and not partial_path) or scenario_run_snapshot
+    if (
+        terminal_diagnostic is not None
+        and terminal_diagnostic[1] == "run"
+        and not scenario_run_snapshot
+    ):
+        # Legacy v1 deliberately stops after authenticated RUN metadata on
+        # an evaluation failure. Only an explicit v2 scenario phase plan
+        # authorizes the native observer's full post-error snapshot.
         protocol_issues.append("post-run-state-missing")
     if probes_expected and phase_values != [("1", "RESET_COMPLETE"), ("2", "RUN_COMPLETE")]:
         protocol_issues.append("phase-cardinality-or-order")
@@ -1162,13 +1276,13 @@ def parse_probe_output(
         add_protocol_issue("native-run-diagnostic-state", diagnostic=True)
 
     complete = not protocol_issues and lifecycle_complete and probes_expected
-    if complete:
-        phase_reached = "post_run"
-    elif terminal_diagnostic is not None:
+    if terminal_diagnostic is not None:
         canonical_phase = terminal_diagnostic[0]["phase"]
         phase_reached = (
             terminal_diagnostic[1] if canonical_phase == UNKNOWN_DIAGNOSTIC else canonical_phase
         )
+    elif complete:
+        phase_reached = "post_run"
     elif active_phase is not None:
         phase_reached = active_phase
     elif native_run is not None:

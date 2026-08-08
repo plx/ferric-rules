@@ -1,10 +1,11 @@
-//! CLIPS compatibility test harness.
+//! Ferric semantic regression test harness.
 //!
-//! Provides helper functions for running CLIPS source through the Ferric engine
-//! and asserting on the resulting output and working-memory state. Smoke tests
-//! validate the harness itself before compatibility fixtures are added.
+//! Provides helper functions for running CLIPS-language source through the
+//! Ferric engine and asserting on the resulting output and working-memory
+//! state. This suite does not execute reference CLIPS; external conformance is
+//! owned by the differential compatibility lane.
 
-use ferric_rules::core::Fact;
+use ferric_rules::core::{ConflictResolutionStrategy, Fact};
 use ferric_rules::runtime::evaluator::EvalError;
 use ferric_rules::runtime::{ActionError, Engine, EngineConfig, HaltReason, LoadError, RunLimit};
 use std::path::Path;
@@ -13,8 +14,8 @@ use std::path::Path;
 // Result type
 // ---------------------------------------------------------------------------
 
-/// Result of running a CLIPS compatibility test.
-pub struct CompatResult {
+/// Result of running a Ferric semantic regression test.
+pub struct RegressionResult {
     /// Number of rules that fired.
     pub rules_fired: usize,
     /// Captured output from the `t` (stdout) channel.
@@ -24,15 +25,15 @@ pub struct CompatResult {
 }
 
 // ---------------------------------------------------------------------------
-// CompatEngine — retains the engine for post-execution inspection
+// RegressionEngine — retains the engine for post-execution inspection
 // ---------------------------------------------------------------------------
 
 /// An engine that has been loaded, reset, and run — ready for post-execution inspection.
 ///
-/// Unlike [`CompatResult`], this wrapper keeps the engine alive so callers can
+/// Unlike [`RegressionResult`], this wrapper keeps the engine alive so callers can
 /// query working-memory state (fact counts, relation membership, etc.) after the
 /// run has completed.
-pub struct CompatEngine {
+pub struct RegressionEngine {
     engine: Engine,
     /// Number of rules that fired during the run.
     pub rules_fired: usize,
@@ -40,7 +41,7 @@ pub struct CompatEngine {
     pub output: String,
 }
 
-impl CompatEngine {
+impl RegressionEngine {
     /// Count user-visible facts in working memory (excluding `initial-fact`).
     ///
     /// # Panics
@@ -50,7 +51,7 @@ impl CompatEngine {
     pub fn fact_count(&self) -> usize {
         self.engine
             .facts()
-            .expect("CompatEngine::fact_count: facts() failed")
+            .expect("RegressionEngine::fact_count: facts() failed")
             .count()
     }
 
@@ -68,7 +69,7 @@ impl CompatEngine {
     pub fn has_fact(&self, relation: &str) -> bool {
         self.engine
             .facts()
-            .expect("CompatEngine::has_fact: facts() failed")
+            .expect("RegressionEngine::has_fact: facts() failed")
             .any(|(_, fact)| match fact {
                 Fact::Ordered(of) => self.engine.resolve_symbol(of.relation) == Some(relation),
                 Fact::Template(_) => false,
@@ -86,36 +87,38 @@ impl CompatEngine {
 // Core harness helpers
 // ---------------------------------------------------------------------------
 
-/// Default maximum rule firings per compatibility fixture run.
+/// Default maximum rule firings per semantic-regression fixture run.
 ///
 /// A finite ceiling prevents runaway fixtures from spinning forever and leaking
-/// long-lived `clips_compat-*` processes.
-const DEFAULT_COMPAT_RUN_LIMIT: usize = 10_000;
+/// long-lived `ferric_semantic_regression-*` processes.
+const DEFAULT_SEMANTIC_REGRESSION_RUN_LIMIT: usize = 10_000;
 
-/// Environment variable for overriding the compatibility run limit locally.
-const COMPAT_RUN_LIMIT_ENV: &str = "FERRIC_COMPAT_RUN_LIMIT";
+/// Environment variable for overriding the semantic-regression run limit locally.
+const SEMANTIC_REGRESSION_RUN_LIMIT_ENV: &str = "FERRIC_SEMANTIC_REGRESSION_RUN_LIMIT";
 
-/// Resolve the compatibility run limit from environment (or default).
-fn compat_run_limit_count() -> usize {
-    match std::env::var(COMPAT_RUN_LIMIT_ENV) {
+/// Resolve the semantic-regression run limit from environment (or default).
+fn semantic_regression_run_limit_count() -> usize {
+    match std::env::var(SEMANTIC_REGRESSION_RUN_LIMIT_ENV) {
         Ok(raw) => {
             let parsed = raw.trim().parse::<usize>().unwrap_or_else(|_| {
-                panic!("{COMPAT_RUN_LIMIT_ENV} must be a positive integer, got {raw:?}")
+                panic!(
+                    "{SEMANTIC_REGRESSION_RUN_LIMIT_ENV} must be a positive integer, got {raw:?}"
+                )
             });
             assert!(
                 parsed > 0,
-                "{COMPAT_RUN_LIMIT_ENV} must be > 0, got {parsed}"
+                "{SEMANTIC_REGRESSION_RUN_LIMIT_ENV} must be > 0, got {parsed}"
             );
             parsed
         }
-        Err(std::env::VarError::NotPresent) => DEFAULT_COMPAT_RUN_LIMIT,
-        Err(err) => panic!("failed to read {COMPAT_RUN_LIMIT_ENV}: {err}"),
+        Err(std::env::VarError::NotPresent) => DEFAULT_SEMANTIC_REGRESSION_RUN_LIMIT,
+        Err(err) => panic!("failed to read {SEMANTIC_REGRESSION_RUN_LIMIT_ENV}: {err}"),
     }
 }
 
-/// Run with the compatibility fixture safety limit and fail fast on non-quiescence.
-fn run_compat_with_guard(engine: &mut Engine, context: &str) -> usize {
-    let limit = compat_run_limit_count();
+/// Run with the fixture safety limit and fail fast on non-quiescence.
+fn run_regression_with_guard(engine: &mut Engine, context: &str) -> usize {
+    let limit = semantic_regression_run_limit_count();
     let run_result = engine
         .run(RunLimit::Count(limit))
         .unwrap_or_else(|err| panic!("{context} run failed: {err:?}"));
@@ -123,17 +126,30 @@ fn run_compat_with_guard(engine: &mut Engine, context: &str) -> usize {
     assert_ne!(
         run_result.halt_reason,
         HaltReason::LimitReached,
-        "{context} reached compatibility run limit ({limit}). \
+        "{context} reached semantic-regression run limit ({limit}). \
          Possible non-quiescing fixture/regression. \
-         Increase {COMPAT_RUN_LIMIT_ENV} for local debugging if needed."
+         Increase {SEMANTIC_REGRESSION_RUN_LIMIT_ENV} for local debugging if needed."
     );
 
     run_result.rules_fired
 }
 
-/// Build and execute a fresh compatibility engine, returning it for inspection.
-fn run_clips_compat_engine(source: &str, context: &str) -> CompatEngine {
-    let mut engine = Engine::new(EngineConfig::utf8());
+/// Build and execute a fresh Ferric engine, returning it for inspection.
+fn run_ferric_semantic_regression_engine(source: &str, context: &str) -> RegressionEngine {
+    run_ferric_semantic_regression_engine_with_strategy(
+        source,
+        context,
+        ConflictResolutionStrategy::Depth,
+    )
+}
+
+/// Build and execute a fresh Ferric engine with an explicit agenda strategy.
+fn run_ferric_semantic_regression_engine_with_strategy(
+    source: &str,
+    context: &str,
+    strategy: ConflictResolutionStrategy,
+) -> RegressionEngine {
+    let mut engine = Engine::new(EngineConfig::utf8().with_strategy(strategy));
 
     engine
         .load_str(source)
@@ -143,17 +159,17 @@ fn run_clips_compat_engine(source: &str, context: &str) -> CompatEngine {
         .reset()
         .unwrap_or_else(|_| panic!("{context} reset failed"));
 
-    let rules_fired = run_compat_with_guard(&mut engine, context);
+    let rules_fired = run_regression_with_guard(&mut engine, context);
     let output = engine.get_output("t").unwrap_or("").to_string();
 
-    CompatEngine {
+    RegressionEngine {
         engine,
         rules_fired,
         output,
     }
 }
 
-/// Run CLIPS source through a fresh engine and return the compatibility result.
+/// Run CLIPS-language source through a fresh Ferric engine.
 ///
 /// The sequence is:
 /// 1. Create a new UTF-8 engine.
@@ -165,31 +181,31 @@ fn run_clips_compat_engine(source: &str, context: &str) -> CompatEngine {
 /// # Panics
 ///
 /// Panics if loading, reset, or run returns an error.
-pub fn run_clips_compat(source: &str) -> CompatResult {
-    let compat = run_clips_compat_engine(source, "clips_compat");
-    let fact_count = compat
+pub fn run_ferric_semantic_regression(source: &str) -> RegressionResult {
+    let regression = run_ferric_semantic_regression_engine(source, "ferric_semantic_regression");
+    let fact_count = regression
         .engine
         .facts()
-        .expect("clips_compat facts() failed")
+        .expect("ferric_semantic_regression facts() failed")
         .count();
 
-    CompatResult {
-        rules_fired: compat.rules_fired,
-        output: compat.output,
+    RegressionResult {
+        rules_fired: regression.rules_fired,
+        output: regression.output,
         fact_count,
     }
 }
 
-/// Run CLIPS source and return a [`CompatEngine`] for post-execution inspection.
+/// Run CLIPS source and return a [`RegressionEngine`] for post-execution inspection.
 ///
-/// Unlike [`run_clips_compat`], this function retains the engine so callers can
+/// Unlike [`run_ferric_semantic_regression`], this function retains the engine so callers can
 /// query working-memory state after the run.
 ///
 /// # Panics
 ///
 /// Panics if loading, reset, or run returns an error.
-pub fn run_clips_compat_full(source: &str) -> CompatEngine {
-    run_clips_compat_engine(source, "run_clips_compat_full")
+pub fn run_ferric_semantic_regression_full(source: &str) -> RegressionEngine {
+    run_ferric_semantic_regression_engine(source, "run_ferric_semantic_regression_full")
 }
 
 /// Run CLIPS source and assert the `t` channel output equals `expected`.
@@ -197,12 +213,12 @@ pub fn run_clips_compat_full(source: &str) -> CompatEngine {
 /// # Panics
 ///
 /// Panics if the output does not match.
-pub fn assert_clips_compat(source: &str, expected: &str) {
-    let _ = assert_clips_compat_returns(source, expected);
+pub fn assert_ferric_semantic_regression(source: &str, expected: &str) {
+    let _ = assert_ferric_semantic_regression_returns(source, expected);
 }
 
 /// Run a fixture `.clp` file relative to this package's `tests/fixtures/` and
-/// return the compatibility result.
+/// return the semantic-regression result.
 ///
 /// The `fixture_name` may include subdirectory path components, e.g.
 /// `"core/basic_match.clp"` or `"negation/simple_negation.clp"`.
@@ -213,7 +229,7 @@ pub fn assert_clips_compat(source: &str, expected: &str) {
 /// # Panics
 ///
 /// Panics if the file cannot be read or if the engine returns an error.
-pub fn run_clips_compat_file(fixture_name: &str) -> CompatResult {
+pub fn run_ferric_semantic_regression_file(fixture_name: &str) -> RegressionResult {
     let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
@@ -222,7 +238,7 @@ pub fn run_clips_compat_file(fixture_name: &str) -> CompatResult {
     let source = std::fs::read_to_string(&fixture_path)
         .unwrap_or_else(|e| panic!("could not read fixture {fixture_name:?}: {e}"));
 
-    run_clips_compat(&source)
+    run_ferric_semantic_regression(&source)
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +250,7 @@ pub fn run_clips_compat_file(fixture_name: &str) -> CompatResult {
 /// # Panics
 ///
 /// Panics if the output does not match.
-pub fn assert_output_exact(result: &CompatResult, expected: &str) {
+pub fn assert_output_exact(result: &RegressionResult, expected: &str) {
     assert_eq!(
         result.output, expected,
         "Output mismatch:\n  expected: {:?}\n    actual: {:?}",
@@ -247,7 +263,7 @@ pub fn assert_output_exact(result: &CompatResult, expected: &str) {
 /// # Panics
 ///
 /// Panics if the rule-fired count does not match.
-pub fn assert_rules_fired(result: &CompatResult, expected: usize) {
+pub fn assert_rules_fired(result: &RegressionResult, expected: usize) {
     assert_eq!(
         result.rules_fired, expected,
         "Rules fired mismatch: expected {expected}, got {}",
@@ -260,7 +276,7 @@ pub fn assert_rules_fired(result: &CompatResult, expected: usize) {
 /// # Panics
 ///
 /// Panics if the fact count does not match.
-pub fn assert_fact_count_compat(result: &CompatResult, expected: usize) {
+pub fn assert_fact_count(result: &RegressionResult, expected: usize) {
     assert_eq!(
         result.fact_count, expected,
         "Fact count mismatch: expected {expected}, got {}",
@@ -281,7 +297,7 @@ fn test_harness_smoke_simple_assert() {
     =>
     (printout t "Hello " ?name crlf))
 "#;
-    let result = assert_clips_compat_returns(source, "Hello Alice\n");
+    let result = assert_ferric_semantic_regression_returns(source, "Hello Alice\n");
     assert_eq!(result.rules_fired, 1, "expected exactly 1 rule to fire");
     assert_eq!(result.fact_count, 1, "expected 1 fact in working memory");
 }
@@ -290,7 +306,7 @@ fn test_harness_smoke_simple_assert() {
 fn test_harness_smoke_no_rules() {
     // Only deffacts, no rules — nothing should fire.
     let source = "(deffacts startup (data 42))";
-    let result = run_clips_compat(source);
+    let result = run_ferric_semantic_regression(source);
     assert_eq!(result.rules_fired, 0, "expected 0 rules to fire");
     assert_eq!(result.fact_count, 1, "expected 1 fact in working memory");
     assert_eq!(result.output, "", "expected no output");
@@ -312,7 +328,7 @@ fn test_harness_smoke_chain() {
     =>
     (printout t "chain fired" crlf))
 "#;
-    let result = run_clips_compat(source);
+    let result = run_ferric_semantic_regression(source);
     assert_eq!(result.rules_fired, 2, "expected both rules to fire");
     assert_eq!(result.output, "chain fired\n");
 }
@@ -320,33 +336,33 @@ fn test_harness_smoke_chain() {
 #[test]
 fn test_harness_smoke_fixture_file() {
     // Load the trivial smoke.clp fixture and verify the output.
-    let result = run_clips_compat_file("smoke.clp");
+    let result = run_ferric_semantic_regression_file("smoke.clp");
     assert_eq!(result.rules_fired, 1, "expected 1 rule from smoke.clp");
     assert_eq!(result.output, "Got: hello\n");
 }
 
 #[test]
-fn test_harness_compat_engine_fact_count() {
+fn test_harness_regression_engine_fact_count() {
     let source = r"
 (deffacts startup (a 1) (b 2) (c 3))
 (defrule noop (a ?x) => )
 ";
-    let compat = run_clips_compat_full(source);
-    assert_eq!(compat.rules_fired, 1);
-    assert_eq!(compat.fact_count(), 3);
+    let regression = run_ferric_semantic_regression_full(source);
+    assert_eq!(regression.rules_fired, 1);
+    assert_eq!(regression.fact_count(), 3);
 }
 
 #[test]
-fn test_harness_compat_engine_has_fact() {
+fn test_harness_regression_engine_has_fact() {
     let source = r"
 (deffacts startup (person Alice) (city London))
 (defrule noop (person ?x) => )
 ";
-    let compat = run_clips_compat_full(source);
-    assert!(compat.has_fact("person"), "expected 'person' fact");
-    assert!(compat.has_fact("city"), "expected 'city' fact");
+    let regression = run_ferric_semantic_regression_full(source);
+    assert!(regression.has_fact("person"), "expected 'person' fact");
+    assert!(regression.has_fact("city"), "expected 'city' fact");
     assert!(
-        !compat.has_fact("country"),
+        !regression.has_fact("country"),
         "should not have 'country' fact"
     );
 }
@@ -357,17 +373,17 @@ fn test_harness_assertion_helpers() {
 (deffacts startup (item x) (item y))
 (defrule count-items (item ?x) => (printout t ?x crlf))
 ";
-    let result = run_clips_compat(source);
+    let result = run_ferric_semantic_regression(source);
     assert_rules_fired(&result, 2);
-    assert_fact_count_compat(&result, 2);
+    assert_fact_count(&result, 2);
 }
 
 #[test]
 fn test_harness_fixture_subdirectory() {
-    // Verify that subdirectory paths work with run_clips_compat_file.
+    // Verify that subdirectory paths work with run_ferric_semantic_regression_file.
     // Since core/ only has .gitkeep, exercise the path-join logic via
     // the existing smoke.clp at the top level.
-    let result = run_clips_compat_file("smoke.clp");
+    let result = run_ferric_semantic_regression_file("smoke.clp");
     assert_eq!(result.output, "Got: hello\n");
 }
 
@@ -376,11 +392,11 @@ fn test_harness_fixture_subdirectory() {
 // ---------------------------------------------------------------------------
 
 /// Run and assert output, returning the full result for further inspection.
-fn assert_clips_compat_returns(source: &str, expected: &str) -> CompatResult {
-    let result = run_clips_compat(source);
+fn assert_ferric_semantic_regression_returns(source: &str, expected: &str) -> RegressionResult {
+    let result = run_ferric_semantic_regression(source);
     assert_eq!(
         result.output, expected,
-        "CLIPS compat output mismatch\n  expected: {expected:?}\n  actual:   {:?}",
+        "Ferric semantic regression output mismatch\n  expected: {expected:?}\n  actual:   {:?}",
         result.output,
     );
     result
@@ -391,40 +407,40 @@ fn assert_fixture_output(
     fixture_name: &str,
     expected_rules_fired: usize,
     expected_output: &str,
-) -> CompatResult {
-    let result = run_clips_compat_file(fixture_name);
+) -> RegressionResult {
+    let result = run_ferric_semantic_regression_file(fixture_name);
     assert_rules_fired(&result, expected_rules_fired);
     assert_output_exact(&result, expected_output);
     result
 }
 
 // ===========================================================================
-// Module domain compatibility tests
+// Module-domain semantic regression tests
 // ===========================================================================
 
 #[test]
-fn test_compat_modules_basic_module() {
+fn test_semantic_regression_modules_basic_module() {
     let _ = assert_fixture_output("modules/basic_module.clp", 1, "Sensor temp = 72\n");
 }
 
 #[test]
-fn test_compat_modules_global_scope() {
+fn test_semantic_regression_modules_global_scope() {
     // Both items fire; counter increments 0->1 then 1->2.
     let _ = assert_fixture_output("modules/global_scope.clp", 2, "count = 1\ncount = 2\n");
 }
 
 #[test]
-fn test_compat_modules_qualified_names() {
+fn test_semantic_regression_modules_qualified_names() {
     let _ = assert_fixture_output("modules/qualified_names.clp", 1, "sum: 7\nthreshold: 10\n");
 }
 
 // ===========================================================================
-// Generic domain compatibility tests
+// Generic-domain semantic regression tests
 // ===========================================================================
 
 #[test]
-fn test_compat_generics_basic_dispatch() {
-    let result = run_clips_compat_file("generics/basic_dispatch.clp");
+fn test_semantic_regression_generics_basic_dispatch() {
+    let result = run_ferric_semantic_regression_file("generics/basic_dispatch.clp");
     assert_eq!(result.rules_fired, 2, "expected 2 rules to fire");
     // Both lines must appear; order depends on conflict resolution strategy.
     assert!(
@@ -440,16 +456,16 @@ fn test_compat_generics_basic_dispatch() {
 }
 
 #[test]
-fn test_compat_generics_specificity() {
+fn test_semantic_regression_generics_specificity() {
     let _ = assert_fixture_output("generics/specificity.clp", 1, "integer\n");
 }
 
 // ===========================================================================
-// Callable return compatibility tests
+// Callable-return semantic regression tests
 // ===========================================================================
 
 #[test]
-fn test_compat_return_unwinds_only_the_current_callable() {
+fn test_semantic_regression_return_unwinds_only_the_current_callable() {
     // Pinned against the repository's CLIPS 6.30 reference image. This covers
     // deffunction and defmethod callables, nested calls, structured control
     // forms, every source-constructible Ferric value kind, and side effects
@@ -537,12 +553,12 @@ fn test_compat_return_unwinds_only_the_current_callable() {
         "multifield=(alpha 2 3.5)\n",
         "method=5\n",
     );
-    let result = assert_clips_compat_returns(source, expected);
+    let result = assert_ferric_semantic_regression_returns(source, expected);
     assert_eq!(result.rules_fired, 1);
 }
 
 #[test]
-fn test_compat_action_loop_budget_preserves_boundary_and_stops_overrun() {
+fn test_semantic_regression_action_loop_budget_preserves_boundary_and_stops_overrun() {
     let mut config = EngineConfig::utf8();
     config.max_action_loop_iterations = 3;
 
@@ -601,7 +617,7 @@ fn test_compat_action_loop_budget_preserves_boundary_and_stops_overrun() {
 }
 
 #[test]
-fn test_compat_return_stops_the_current_rule_rhs() {
+fn test_semantic_regression_return_stops_the_current_rule_rhs() {
     // CLIPS permits `return` in a rule RHS and uses it to stop the remaining
     // action sequence. Its value is discarded; it does not assert the sentinel
     // or emit an error.
@@ -613,14 +629,14 @@ fn test_compat_return_stops_the_current_rule_rhs() {
     (printout t "rhs-after|" crlf)
     (assert (rhs-after)))
 "#;
-    let result = run_clips_compat_full(source);
+    let result = run_ferric_semantic_regression_full(source);
     assert_eq!(result.output, "rhs-before|\n");
     assert_eq!(result.rules_fired, 1);
     assert!(!result.has_fact("rhs-after"));
 }
 
 #[test]
-fn test_compat_return_argument_error_preserves_diagnostic_class() {
+fn test_semantic_regression_return_argument_error_preserves_diagnostic_class() {
     let source = r#"
 (deffunction return-error ()
     (return (/ 1 0))
@@ -630,7 +646,7 @@ fn test_compat_return_argument_error_preserves_diagnostic_class() {
     =>
     (printout t (return-error) crlf))
 "#;
-    let result = run_clips_compat_full(source);
+    let result = run_ferric_semantic_regression_full(source);
     assert_eq!(result.output, "");
     assert!(matches!(
         result.engine().action_diagnostics(),
@@ -639,7 +655,7 @@ fn test_compat_return_argument_error_preserves_diagnostic_class() {
 }
 
 #[test]
-fn test_compat_rhs_error_stops_run_and_retains_later_activation() {
+fn test_semantic_regression_rhs_error_stops_run_and_retains_later_activation() {
     // Pinned CLIPS 6.30 behavior: an RHS evaluation error consumes the
     // failing activation, stops its remaining actions and the current run,
     // and leaves lower-priority activations available to a later run.
@@ -703,11 +719,11 @@ fn test_compat_rhs_error_stops_run_and_retains_later_activation() {
 }
 
 // ===========================================================================
-// Stdlib domain compatibility tests
+// Stdlib-domain semantic regression tests
 // ===========================================================================
 
 #[test]
-fn test_compat_stdlib_math_ops() {
+fn test_semantic_regression_stdlib_math_ops() {
     let _ = assert_fixture_output(
         "stdlib/math_ops.clp",
         1,
@@ -717,7 +733,7 @@ fn test_compat_stdlib_math_ops() {
 }
 
 #[test]
-fn test_compat_stdlib_string_ops() {
+fn test_semantic_regression_stdlib_string_ops() {
     let _ = assert_fixture_output(
         "stdlib/string_ops.clp",
         1,
@@ -726,7 +742,7 @@ fn test_compat_stdlib_string_ops() {
 }
 
 #[test]
-fn test_compat_stdlib_multifield_ops() {
+fn test_semantic_regression_stdlib_multifield_ops() {
     let _ = assert_fixture_output(
         "stdlib/multifield_ops.clp",
         1,
@@ -736,7 +752,7 @@ fn test_compat_stdlib_multifield_ops() {
 }
 
 #[test]
-fn test_compat_stdlib_predicate_ops() {
+fn test_semantic_regression_stdlib_predicate_ops() {
     let _ = assert_fixture_output(
         "stdlib/predicate_ops.clp",
         1,
@@ -745,11 +761,11 @@ fn test_compat_stdlib_predicate_ops() {
 }
 
 // ===========================================================================
-// Core domain compatibility tests
+// Core-domain semantic regression tests
 // ===========================================================================
 
 #[test]
-fn test_compat_core_basic_match() {
+fn test_semantic_regression_core_basic_match() {
     let _ = assert_fixture_output(
         "core/basic_match.clp",
         3,
@@ -759,28 +775,28 @@ fn test_compat_core_basic_match() {
 }
 
 #[test]
-fn test_compat_core_retract_cycle() {
+fn test_semantic_regression_core_retract_cycle() {
     let result = assert_fixture_output("core/retract_cycle.clp", 1, "");
     assert_eq!(result.fact_count, 1); // processed fact remains
 }
 
 #[test]
-fn test_compat_core_salience_order() {
+fn test_semantic_regression_core_salience_order() {
     let _ = assert_fixture_output("core/salience_order.clp", 2, "high\nlow\n");
 }
 
 #[test]
-fn test_compat_core_chain_rules() {
+fn test_semantic_regression_core_chain_rules() {
     let _ = assert_fixture_output("core/chain_rules.clp", 3, "1->2\n2->3\ndone\n");
 }
 
 #[test]
-fn test_compat_core_modify_duplicate() {
+fn test_semantic_regression_core_modify_duplicate() {
     let _ = assert_fixture_output("core/modify_duplicate.clp", 1, "Alice is now 31\n");
 }
 
 #[test]
-fn test_compat_core_fact_duplication_policy() {
+fn test_semantic_regression_core_fact_duplication_policy() {
     // Pinned against CLIPS 6.30: duplicate assertions are rejected by
     // default, allowed after enabling, and rejected immediately after
     // disabling again. The setter reports the prior policy.
@@ -792,16 +808,16 @@ fn test_compat_core_fact_duplication_policy() {
 }
 
 // ===========================================================================
-// Negation domain compatibility tests
+// Negation-domain semantic regression tests
 // ===========================================================================
 
 #[test]
-fn test_compat_negation_simple_not() {
+fn test_semantic_regression_negation_simple_not() {
     let _ = assert_fixture_output("negation/simple_not.clp", 1, "lamp is safe\n");
 }
 
 #[test]
-fn test_compat_negation_not_retract() {
+fn test_semantic_regression_negation_not_retract() {
     let _ = assert_fixture_output(
         "negation/not_retract.clp",
         2,
@@ -810,7 +826,7 @@ fn test_compat_negation_not_retract() {
 }
 
 #[test]
-fn fr_rete_002_clips_leading_not_transition_fixture() {
+fn fr_rete_002_ferric_regression_leading_not_transition_fixture() {
     // Pinned against the repository's CLIPS 6.30 reference image.
     let _ = assert_fixture_output(
         "negation/leading_not_transitions.clp",
@@ -820,17 +836,17 @@ fn fr_rete_002_clips_leading_not_transition_fixture() {
 }
 
 #[test]
-fn test_compat_negation_exists() {
+fn test_semantic_regression_negation_exists() {
     let _ = assert_fixture_output("negation/exists_ce.clp", 1, "signal detected\n");
 }
 
 #[test]
-fn test_compat_negation_forall_basic() {
+fn test_semantic_regression_negation_forall_basic() {
     let _ = assert_fixture_output("negation/forall_basic.clp", 1, "all items checked\n");
 }
 
 #[test]
-fn test_compat_negation_forall_fail() {
+fn test_semantic_regression_negation_forall_fail() {
     let _ = assert_fixture_output("negation/forall_fail.clp", 0, "");
 }
 
@@ -839,10 +855,10 @@ fn test_compat_negation_forall_fail() {
 // ===========================================================================
 
 #[test]
-fn fr_rete_003_clips_staged_late_rule_backfill_fixture() {
-    // These two files are also run sequentially against the pinned CLIPS 6.30
-    // image. Keeping assertion and rule-definition stages separate is essential:
-    // a single load would compile all Ferric rules before processing assertions.
+fn fr_rete_003_ferric_regression_staged_late_rule_backfill_fixture() {
+    // Keeping assertion and rule-definition stages separate is essential: a
+    // single load would compile all Ferric rules before processing assertions.
+    // Cross-engine evidence for this behavior belongs to the differential lane.
     let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
@@ -855,7 +871,7 @@ fn fr_rete_003_clips_staged_late_rule_backfill_fixture() {
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&prelude).expect("load pre-existing WMEs");
     engine.load_str(&rules).expect("load late rules");
-    let rules_fired = run_compat_with_guard(&mut engine, "FR-RETE-003 staged fixture");
+    let rules_fired = run_regression_with_guard(&mut engine, "FR-RETE-003 staged fixture");
 
     assert_eq!(rules_fired, 3);
     assert_eq!(
@@ -865,7 +881,7 @@ fn fr_rete_003_clips_staged_late_rule_backfill_fixture() {
 }
 
 #[test]
-fn fr_rete_004_clips_match_time_transition_fixture() {
+fn fr_rete_004_ferric_regression_match_time_transition_fixture() {
     // Pinned against the repository's CLIPS 6.30 reference image. The absent
     // "historical-fired" line is significant: changing a global does not
     // retroactively admit a partial match that failed its test CE.
@@ -877,7 +893,7 @@ fn fr_rete_004_clips_match_time_transition_fixture() {
 }
 
 #[test]
-fn fr_rete_005_clips_double_not_existential_transition_fixture() {
+fn fr_rete_005_ferric_regression_double_not_existential_transition_fixture() {
     // Pinned against the repository's CLIPS 6.30 reference image. The single
     // "one" line is significant: a second support does not create a second
     // activation, and retracting only the first support keeps the match true.
@@ -889,7 +905,7 @@ fn fr_rete_005_clips_double_not_existential_transition_fixture() {
 }
 
 #[test]
-fn fr_rete_006_clips_multi_pattern_exists_transition_fixture() {
+fn fr_rete_006_ferric_regression_multi_pattern_exists_transition_fixture() {
     // Pinned against the repository's CLIPS 6.30 reference image. Complete
     // joined tuples are Boolean support for the whole exists CE, so only one
     // "one" line appears and partial tuple retraction preserves the match.
@@ -901,34 +917,157 @@ fn fr_rete_006_clips_multi_pattern_exists_transition_fixture() {
 }
 
 #[test]
-fn fr_rete_006_clips_multi_pattern_exists_nested_join_fixture() {
+fn fr_rete_006_ferric_regression_multi_pattern_exists_nested_join_fixture() {
     // Pinned against the repository's CLIPS 6.30 reference image. The test CE
     // participates in each three-pattern tuple before both complete tuples
     // collapse to one existential activation.
     let _ = assert_fixture_output("core/multi_pattern_exists_nested_join.clp", 1, "nested\n");
 }
 
+#[test]
+fn fr_rete_008_depth_and_breadth_expose_recreated_activation_chronology() {
+    // The paired traces are pinned against CLIPS 6.30 by the differential
+    // lane. CLIPS yields N,P under depth and P,N under breadth. Ferric's
+    // fact-timestamp key currently reverses both results; retaining both here
+    // prevents either strategy branch from becoming vacuous coverage.
+    let source = r#"
+(deffacts startup
+  (start))
+
+(defrule establish-order
+  (declare (salience 100))
+  ?start <- (start)
+  =>
+  (retract ?start)
+  (assert (positive-ready))
+  (assert (blocker))
+  (assert (release-blocker)))
+
+(defrule release-negative
+  (declare (salience 90))
+  ?release <- (release-blocker)
+  ?blocker <- (blocker)
+  =>
+  (retract ?release ?blocker))
+
+(defrule positive-activation
+  (positive-ready)
+  =>
+  (printout t "P" crlf)
+  (assert (result P)))
+
+(defrule recreated-negative-activation
+  (not (blocker))
+  =>
+  (printout t "N" crlf)
+  (assert (result N)))
+"#;
+
+    let depth = run_ferric_semantic_regression_engine_with_strategy(
+        source,
+        "FR-RETE-008 depth fixture",
+        ConflictResolutionStrategy::Depth,
+    );
+    let breadth = run_ferric_semantic_regression_engine_with_strategy(
+        source,
+        "FR-RETE-008 breadth fixture",
+        ConflictResolutionStrategy::Breadth,
+    );
+
+    assert_eq!(depth.rules_fired, 4);
+    assert_eq!(depth.output, "P\nN\n");
+    assert_eq!(breadth.rules_fired, 4);
+    assert_eq!(breadth.output, "N\nP\n");
+    assert_ne!(depth.output, breadth.output);
+}
+
+#[test]
+fn fr_rete_009_lex_and_mea_expose_canonical_recency_vector_gap() {
+    // CLIPS LEX sorts each recency vector descending and yields
+    // LX,LY,MX,MY. CLIPS MEA compares the first CE before that canonical LEX
+    // fallback and yields LY,LX,MX,MY. Ferric currently compares remaining
+    // timetags in pattern order, so MY precedes MX under both strategies.
+    let source = r#"
+(deffacts startup
+  (t1)
+  (t2)
+  (t3)
+  (t4)
+  (t5))
+
+(defrule lex-X
+  (declare (salience 20))
+  (t1)
+  (t4)
+  =>
+  (printout t "LX" crlf)
+  (assert (result LX)))
+
+(defrule lex-Y
+  (declare (salience 20))
+  (t3)
+  (t2)
+  =>
+  (printout t "LY" crlf)
+  (assert (result LY)))
+
+(defrule mea-X
+  (declare (salience 10))
+  (t1)
+  (t2)
+  (t5)
+  =>
+  (printout t "MX" crlf)
+  (assert (result MX)))
+
+(defrule mea-Y
+  (declare (salience 10))
+  (t1)
+  (t4)
+  (t3)
+  =>
+  (printout t "MY" crlf)
+  (assert (result MY)))
+"#;
+
+    let lex = run_ferric_semantic_regression_engine_with_strategy(
+        source,
+        "FR-RETE-009 LEX fixture",
+        ConflictResolutionStrategy::Lex,
+    );
+    let mea = run_ferric_semantic_regression_engine_with_strategy(
+        source,
+        "FR-RETE-009 MEA fixture",
+        ConflictResolutionStrategy::Mea,
+    );
+
+    assert_eq!(lex.rules_fired, 4);
+    assert_eq!(lex.output, "LY\nLX\nMY\nMX\n");
+    assert_eq!(mea.rules_fired, 4);
+    assert_eq!(mea.output, "LY\nLX\nMY\nMX\n");
+}
+
 /// Multi-pattern join: a rule with two patterns joined by a shared variable.
 #[test]
-fn test_compat_core_multi_pattern_join() {
-    let result = run_clips_compat_file("core/multi_pattern_join.clp");
+fn test_semantic_regression_core_multi_pattern_join() {
+    let result = run_ferric_semantic_regression_file("core/multi_pattern_join.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "Alice is 30\n");
-    assert_fact_count_compat(&result, 2);
+    assert_fact_count(&result, 2);
 }
 
 /// Refraction: a rule fires at most once per token even if re-run would match.
 #[test]
-fn test_compat_core_refraction() {
-    let result = run_clips_compat_file("core/refraction.clp");
+fn test_semantic_regression_core_refraction() {
+    let result = run_ferric_semantic_regression_file("core/refraction.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "processed a\n");
 }
 
 /// Depth conflict-resolution strategy fires the most recently asserted fact first.
 #[test]
-fn test_compat_core_multiple_activations_depth() {
-    let result = run_clips_compat_file("core/multiple_activations_depth.clp");
+fn test_semantic_regression_core_multiple_activations_depth() {
+    let result = run_ferric_semantic_regression_file("core/multiple_activations_depth.clp");
     assert_rules_fired(&result, 3);
     // deffacts asserts a, b, c in order; depth fires most recent first: c, b, a
     assert_output_exact(&result, "c\nb\na\n");
@@ -936,27 +1075,27 @@ fn test_compat_core_multiple_activations_depth() {
 
 /// Chained retraction: higher-salience rule retracts a fact before the lower rule can fire.
 #[test]
-fn test_compat_core_retract_chain() {
-    let result = run_clips_compat_file("core/retract_chain.clp");
+fn test_semantic_regression_core_retract_chain() {
+    let result = run_ferric_semantic_regression_file("core/retract_chain.clp");
     // rule-a fires (salience 10), retracts (a 1); rule-b never fires
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "retracted a\n");
     // (b 1) remains in WM; (a 1) was retracted
-    assert_fact_count_compat(&result, 1);
+    assert_fact_count(&result, 1);
 }
 
 /// Halt stops the run loop: step2 must not fire after step1 halts.
 #[test]
-fn test_compat_core_halt_stops_execution() {
-    let result = run_clips_compat_file("core/halt_stops_execution.clp");
+fn test_semantic_regression_core_halt_stops_execution() {
+    let result = run_ferric_semantic_regression_file("core/halt_stops_execution.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "step1\n");
 }
 
 /// Bind action in RHS: bind runs without error and subsequent actions still execute.
 #[test]
-fn test_compat_core_bind_in_rhs() {
-    let result = run_clips_compat_file("core/bind_in_rhs.clp");
+fn test_semantic_regression_core_bind_in_rhs() {
+    let result = run_ferric_semantic_regression_file("core/bind_in_rhs.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "computed\n");
 }
@@ -967,8 +1106,8 @@ fn test_compat_core_bind_in_rhs() {
 
 /// Not with variable binding: only persons not listed in banned are allowed.
 #[test]
-fn test_compat_negation_not_multiple_patterns() {
-    let result = run_clips_compat_file("negation/not_multiple_patterns.clp");
+fn test_semantic_regression_negation_not_multiple_patterns() {
+    let result = run_ferric_semantic_regression_file("negation/not_multiple_patterns.clp");
     // Alice is not banned → fires; Bob is banned → does not fire
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "Alice allowed\n");
@@ -976,24 +1115,24 @@ fn test_compat_negation_not_multiple_patterns() {
 
 /// Exists fires exactly once regardless of how many facts satisfy the pattern.
 #[test]
-fn test_compat_negation_exists_count() {
-    let result = run_clips_compat_file("negation/exists_count.clp");
+fn test_semantic_regression_negation_exists_count() {
+    let result = run_ferric_semantic_regression_file("negation/exists_count.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "signal present\n");
 }
 
 /// Forall with empty quantified set is vacuously true and the rule fires.
 #[test]
-fn test_compat_negation_forall_vacuous_truth() {
-    let result = run_clips_compat_file("negation/forall_vacuous_truth.clp");
+fn test_semantic_regression_negation_forall_vacuous_truth() {
+    let result = run_ferric_semantic_regression_file("negation/forall_vacuous_truth.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "all done\n");
 }
 
 /// Negated conjunction (NCC): rule fires when it is NOT the case that both (a) and (b) exist.
 #[test]
-fn test_compat_negation_ncc_basic() {
-    let result = run_clips_compat_file("negation/ncc_basic.clp");
+fn test_semantic_regression_negation_ncc_basic() {
+    let result = run_ferric_semantic_regression_file("negation/ncc_basic.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "no a+b pair\n");
 }
@@ -1001,8 +1140,8 @@ fn test_compat_negation_ncc_basic() {
 /// Forall retract invalidation: forall fires when satisfied, then retraction of a supporting
 /// fact fires the remove-check rule but does NOT re-fire check-all (refraction prevents it).
 #[test]
-fn test_compat_negation_forall_retract_invalidation() {
-    let result = run_clips_compat_file("negation/forall_retract_invalidation.clp");
+fn test_semantic_regression_negation_forall_retract_invalidation() {
+    let result = run_ferric_semantic_regression_file("negation/forall_retract_invalidation.clp");
     assert_rules_fired(&result, 2);
     assert_output_exact(&result, "all checked\nremoved check\n");
 }
@@ -1014,16 +1153,16 @@ fn test_compat_negation_forall_retract_invalidation() {
 /// Focus stack drives execution order across modules.
 /// MAIN fires first (default module), then A, then B after focus is pushed.
 #[test]
-fn test_compat_modules_multi_module_focus() {
-    let result = run_clips_compat_file("modules/multi_module_focus.clp");
+fn test_semantic_regression_modules_multi_module_focus() {
+    let result = run_ferric_semantic_regression_file("modules/multi_module_focus.clp");
     assert_rules_fired(&result, 3);
     assert_output_exact(&result, "MAIN\nA\nB\n");
 }
 
 /// Global variable incremented from RHS across multiple rule firings.
 #[test]
-fn test_compat_modules_global_bind() {
-    let result = run_clips_compat_file("modules/global_bind.clp");
+fn test_semantic_regression_modules_global_bind() {
+    let result = run_ferric_semantic_regression_file("modules/global_bind.clp");
     assert_rules_fired(&result, 3);
     // Each of the 3 item facts fires the rule; counter increments 0->1->2->3.
     assert_output_exact(&result, "count now 1\ncount now 2\ncount now 3\n");
@@ -1031,16 +1170,16 @@ fn test_compat_modules_global_bind() {
 
 /// User-defined function (deffunction) called from rule RHS.
 #[test]
-fn test_compat_modules_deffunction_call() {
-    let result = run_clips_compat_file("modules/deffunction_call.clp");
+fn test_semantic_regression_modules_deffunction_call() {
+    let result = run_ferric_semantic_regression_file("modules/deffunction_call.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "double: 42\n");
 }
 
 /// Deffunction using str-cat for string construction, called from rule RHS.
 #[test]
-fn test_compat_modules_deffunction_str() {
-    let result = run_clips_compat_file("modules/deffunction_str.clp");
+fn test_semantic_regression_modules_deffunction_str() {
+    let result = run_ferric_semantic_regression_file("modules/deffunction_str.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "Hello Alice!\n");
 }
@@ -1051,16 +1190,16 @@ fn test_compat_modules_deffunction_str() {
 
 /// Multiple methods on a generic dispatch by type: INTEGER and SYMBOL.
 #[test]
-fn test_compat_generics_multi_method() {
-    let result = run_clips_compat_file("generics/multi_method.clp");
+fn test_semantic_regression_generics_multi_method() {
+    let result = run_ferric_semantic_regression_file("generics/multi_method.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "int:42\nsym:hello\n");
 }
 
 /// Generic called from within a deffunction; deffunction called from rule RHS.
 #[test]
-fn test_compat_generics_method_with_deffunction() {
-    let result = run_clips_compat_file("generics/method_with_deffunction.clp");
+fn test_semantic_regression_generics_method_with_deffunction() {
+    let result = run_ferric_semantic_regression_file("generics/method_with_deffunction.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "integer value\nfloat value\nsymbol value\n");
 }
@@ -1071,8 +1210,8 @@ fn test_compat_generics_method_with_deffunction() {
 
 /// Advanced math: integer division, type conversion, abs on negative.
 #[test]
-fn test_compat_stdlib_math_advanced() {
-    let result = run_clips_compat_file("stdlib/math_advanced.clp");
+fn test_semantic_regression_stdlib_math_advanced() {
+    let result = run_ferric_semantic_regression_file("stdlib/math_advanced.clp");
     assert_rules_fired(&result, 1);
     // div returns integer; float conversion of 42 gives 42.0; integer(3) stays 3; abs(-99)=99
     assert_output_exact(
@@ -1083,8 +1222,8 @@ fn test_compat_stdlib_math_advanced() {
 
 /// String functions: sym-cat, str-length, sub-string.
 #[test]
-fn test_compat_stdlib_string_advanced() {
-    let result = run_clips_compat_file("stdlib/string_advanced.clp");
+fn test_semantic_regression_stdlib_string_advanced() {
+    let result = run_ferric_semantic_regression_file("stdlib/string_advanced.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "sym-cat: abcdef\nstr-len: 11\nsub-str: hello\n");
 }
@@ -1092,8 +1231,8 @@ fn test_compat_stdlib_string_advanced() {
 /// Comparison operators: >, <, >=, <=, <>, eq.
 /// Note: numeric `=` cannot be used as a function call expression (lexer limitation).
 #[test]
-fn test_compat_stdlib_comparison_ops() {
-    let result = run_clips_compat_file("stdlib/comparison_ops.clp");
+fn test_semantic_regression_stdlib_comparison_ops() {
+    let result = run_ferric_semantic_regression_file("stdlib/comparison_ops.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(
         &result,
@@ -1103,8 +1242,8 @@ fn test_compat_stdlib_comparison_ops() {
 
 /// Logical operations: and, or, not.
 #[test]
-fn test_compat_stdlib_logical_ops() {
-    let result = run_clips_compat_file("stdlib/logical_ops.clp");
+fn test_semantic_regression_stdlib_logical_ops() {
+    let result = run_ferric_semantic_regression_file("stdlib/logical_ops.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(
         &result,
@@ -1114,8 +1253,8 @@ fn test_compat_stdlib_logical_ops() {
 
 /// Type predicate functions: evenp, oddp, lexemep.
 #[test]
-fn test_compat_stdlib_type_predicates() {
-    let result = run_clips_compat_file("stdlib/type_predicates.clp");
+fn test_semantic_regression_stdlib_type_predicates() {
+    let result = run_ferric_semantic_regression_file("stdlib/type_predicates.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(
         &result,
@@ -1130,8 +1269,8 @@ fn test_compat_stdlib_type_predicates() {
 /// Module-qualified global variable: read and write using `?*MODULE::name*` syntax.
 /// CONFIG exports its global; MAIN imports it and binds via the qualified name.
 #[test]
-fn test_compat_modules_qualified_global_bind() {
-    let result = run_clips_compat_file("modules/qualified_global_bind.clp");
+fn test_semantic_regression_modules_qualified_global_bind() {
+    let result = run_ferric_semantic_regression_file("modules/qualified_global_bind.clp");
     assert_rules_fired(&result, 1);
     // base-value starts at 10, bind sets it to 10*3=30.
     assert_output_exact(&result, "value: 30\n");
@@ -1139,8 +1278,8 @@ fn test_compat_modules_qualified_global_bind() {
 
 /// Cross-module function import: UTILS exports deffunction; MAIN imports and calls it.
 #[test]
-fn test_compat_modules_cross_module_import() {
-    let result = run_clips_compat_file("modules/cross_module_import.clp");
+fn test_semantic_regression_modules_cross_module_import() {
+    let result = run_ferric_semantic_regression_file("modules/cross_module_import.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "square-5: 25\nsquare-9: 81\n");
 }
@@ -1148,7 +1287,7 @@ fn test_compat_modules_cross_module_import() {
 /// Visibility boundary: loading a function from a non-exporting module via
 /// qualified call should produce an action diagnostic (not silently succeed).
 #[test]
-fn test_compat_modules_visibility_boundary_not_exported() {
+fn test_semantic_regression_modules_visibility_boundary_not_exported() {
     let source = r"
 (defmodule MATH (export ?NONE))
 (deffunction add (?x ?y) (+ ?x ?y))
@@ -1157,9 +1296,9 @@ fn test_compat_modules_visibility_boundary_not_exported() {
 (defrule call-hidden (go) => (printout t (MATH::add 1 2) crlf))
 (deffacts startup (go))
 ";
-    let compat = run_clips_compat_full(source);
+    let regression = run_ferric_semantic_regression_full(source);
     // The rule fires (the call executes), but a visibility error must be recorded.
-    let diagnostics = compat.engine().action_diagnostics();
+    let diagnostics = regression.engine().action_diagnostics();
     assert!(
         !diagnostics.is_empty(),
         "expected a visibility diagnostic for unexported MATH::add, got none"
@@ -1176,7 +1315,7 @@ fn test_compat_modules_visibility_boundary_not_exported() {
 
 /// Unsupported top-level form: loading `defclass` produces a source-located `LoadError`.
 #[test]
-fn test_compat_modules_unsupported_form_diagnostic() {
+fn test_semantic_regression_modules_unsupported_form_diagnostic() {
     let mut engine = Engine::new(EngineConfig::utf8());
     let source = "(defclass Point (is-a USER) (slot x) (slot y))";
     let errors = engine
@@ -1215,8 +1354,8 @@ fn test_compat_modules_unsupported_form_diagnostic() {
 
 /// Generic dispatch ordering: most specific type wins (INTEGER > NUMBER > any).
 #[test]
-fn test_compat_generics_dispatch_ordering() {
-    let result = run_clips_compat_file("generics/dispatch_ordering.clp");
+fn test_semantic_regression_generics_dispatch_ordering() {
+    let result = run_ferric_semantic_regression_file("generics/dispatch_ordering.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "int: integer\nfloat: float\nsym: any\n");
 }
@@ -1224,8 +1363,8 @@ fn test_compat_generics_dispatch_ordering() {
 /// call-next-method: INTEGER method calls next-less-specific NUMBER method,
 /// composing the results.
 #[test]
-fn test_compat_generics_call_next_method() {
-    let result = run_clips_compat_file("generics/call_next_method.clp");
+fn test_semantic_regression_generics_call_next_method() {
+    let result = run_ferric_semantic_regression_file("generics/call_next_method.clp");
     assert_rules_fired(&result, 1);
     // Integer 7: INTEGER method prepends "int+" then delegates to NUMBER method → "int+num(7)"
     // Float 2.5: only NUMBER method applies → "num(2.5)"
@@ -1238,8 +1377,8 @@ fn test_compat_generics_call_next_method() {
 
 /// Advanced multifield: create$, length$, nth$ (1-based), member$ (returns position).
 #[test]
-fn test_compat_stdlib_multifield_advanced() {
-    let result = run_clips_compat_file("stdlib/multifield_advanced.clp");
+fn test_semantic_regression_stdlib_multifield_advanced() {
+    let result = run_ferric_semantic_regression_file("stdlib/multifield_advanced.clp");
     assert_rules_fired(&result, 1);
     // create$(a b c d e): length=5, 2nd=b, member$(c)=3 (1-based), member$(z)=FALSE
     assert_output_exact(&result, "len: 5\n2nd: b\npos-c: 3\npos-z: FALSE\n");
@@ -1248,16 +1387,16 @@ fn test_compat_stdlib_multifield_advanced() {
 /// format function: printf-style formatting returns a string, printed via printout.
 /// Note: format does not write to the router; the result must be passed to printout.
 #[test]
-fn test_compat_stdlib_format_output() {
-    let result = run_clips_compat_file("stdlib/format_output.clp");
+fn test_semantic_regression_stdlib_format_output() {
+    let result = run_ferric_semantic_regression_file("stdlib/format_output.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(&result, "num=42\nstr=hello\nflt=3.5\n");
 }
 
 /// Math edge cases: multi-arg min/max, abs, integer division, modulus.
 #[test]
-fn test_compat_stdlib_math_edge_cases() {
-    let result = run_clips_compat_file("stdlib/math_edge_cases.clp");
+fn test_semantic_regression_stdlib_math_edge_cases() {
+    let result = run_ferric_semantic_regression_file("stdlib/math_edge_cases.clp");
     assert_rules_fired(&result, 1);
     assert_output_exact(
         &result,
@@ -1284,10 +1423,10 @@ fn engagement_rules() -> String {
 }
 
 /// Run the engagement rules with scenario-specific deffacts.
-fn run_engagement(deffacts: &str) -> CompatResult {
+fn run_engagement(deffacts: &str) -> RegressionResult {
     let rules = engagement_rules();
     let source = format!("{deffacts}\n{rules}");
-    run_clips_compat(&source)
+    run_ferric_semantic_regression(&source)
 }
 
 /// Brand-new free user (2 sessions) → signup incentive.

@@ -1,0 +1,3 @@
+; Loading a named deffacts after reset changes definitions, not working memory.
+(deffacts late-definition
+  (late))

@@ -1,0 +1,12 @@
+; The first construct is valid and the second is not. The lane records whether
+; the source unit is retained incrementally or rolled back atomically.
+(defrule transaction-leak
+  (seed)
+  =>
+  (printout t "leaked" crlf)
+  (assert (result leaked)))
+
+(defrule transaction-invalid
+  (seed)
+  =>
+  (ferric-missing-function))

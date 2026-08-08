@@ -289,15 +289,64 @@ jobs:
           uv run ruff check src/ tests/
           uv run pytest -v
 
-  clips-compat:
-    name: CLIPS Compat
+  ferric-semantic-regressions:
+    name: Ferric Semantic Regressions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo test -p ferric-rules --test clips_compat
+      - run: cargo test -p ferric-rules --test ferric_semantic_regressions
+
+  clips-semantic-differential:
+    name: Pinned CLIPS Semantic Differential
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Build pinned CLIPS reference image
+        timeout-minutes: 10
+        run: |
+          for attempt in 1 2 3; do
+            if docker build -t ferric-rules/clips-reference:latest docker/clips-reference/; then
+              exit 0
+            fi
+
+            if [[ "$attempt" -eq 3 ]]; then
+              echo "::error::Docker build failed after ${attempt} attempts"
+              exit 1
+            fi
+
+            retry_delay=$((attempt * 10))
+            echo "::warning::Docker build attempt ${attempt} failed; retrying in ${retry_delay} seconds"
+            sleep "$retry_delay"
+          done
+      - name: Build Ferric observer
+        run: cargo build --release -p ferric-rules-cli
+      - name: Scan semantic matrix
+        run: uv run --project tools/ferric-tools ferric-compat-scan
+      - name: Run pinned differential matrix
+        run: |
+          uv run --project tools/ferric-tools ferric-compat-run \
+            --all --source ferric-semantic --workers 4 --timeout 30
+      - name: Enforce exact semantic policy
+        run: uv run --project tools/ferric-tools ferric-compat-semantic-gate
+      - name: Upload semantic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clips-semantic-differential-manifest
+          retention-days: 30
+          path: tests/examples/compat-manifest.json
 
   users-guide-examples:
     name: Users Guide Examples

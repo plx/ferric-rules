@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from ferric_tools._manifest import load_manifest, save_manifest
 from ferric_tools._paths import repo_root
 from ferric_tools.compat import run as run_module
 from ferric_tools.compat.clips_oracle import NATIVE_RECORD_PREFIX
+from ferric_tools.compat.oracle import canonical_scenario_plan
 
 
 def _resolved_harness(
@@ -96,6 +98,50 @@ def _oracle_declaration(digest: str, *, composed_digest: str | None = None) -> d
             "globals": None,
         },
         "normalizers": ["fact-ids"],
+    }
+
+
+def _scenario_declaration(primary_digest: str, library_digest: str) -> dict:
+    declaration = _oracle_declaration(primary_digest)
+    declaration.update(
+        {
+            "version": 2,
+            "sources": [
+                {"name": "primary", "path": "fixture.clp", "sha256": primary_digest},
+                {
+                    "name": "library",
+                    "path": "shared/library.clp",
+                    "sha256": library_digest,
+                },
+            ],
+            "setup": {
+                "steps": [
+                    {"operation": "load", "source": "library", "on_error": "stop"},
+                    {"operation": "reset", "on_error": "continue"},
+                    {"operation": "load", "source": "primary", "on_error": "stop"},
+                    {"operation": "reset", "on_error": "stop"},
+                    {"operation": "run", "limit": None, "on_error": "stop"},
+                ]
+            },
+        }
+    )
+    declaration["composed_sha256"] = sha256_bytes(canonical_scenario_plan(declaration))
+    return declaration
+
+
+def _reference_provenance() -> dict[str, object]:
+    return {
+        "schema": "ferric.clips-reference-provenance",
+        "version": 1,
+        "engine": "clips",
+        "engine_version": "6.30",
+        "package": "clips",
+        "package_version": "6.30-4.1",
+        "platform": "linux/arm64",
+        "binary_sha256": "a" * 64,
+        "library_sha256": "b" * 64,
+        "base_image": "debian:bookworm-slim@sha256:" + "c" * 64,
+        "image_id": "sha256:" + "d" * 64,
     }
 
 
@@ -547,6 +593,39 @@ def test_run_ferric_observer_retains_partial_timeout_output(monkeypatch, tmp_pat
     assert result["termination"]["kind"] == "timeout"
 
 
+def test_reference_provenance_is_strictly_validated(monkeypatch, tmp_path):
+    reference = _reference_provenance()
+    stdout = (json.dumps(reference, separators=(",", ":")) + "\n").encode()
+    monkeypatch.setattr(
+        run_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout=stdout, stderr=b""),
+    )
+
+    assert (
+        run_module.load_reference_provenance(
+            "scripts/clips-reference.sh",
+            root=str(tmp_path),
+        )
+        == reference
+    )
+
+
+def test_reference_provenance_rejects_duplicate_fields(monkeypatch, tmp_path):
+    stdout = b'{"schema":"ferric.clips-reference-provenance","schema":"forged"}\n'
+    monkeypatch.setattr(
+        run_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout=stdout, stderr=b""),
+    )
+
+    with pytest.raises(run_module.ReferenceProvenanceError, match="duplicate field"):
+        run_module.load_reference_provenance(
+            "scripts/clips-reference.sh",
+            root=str(tmp_path),
+        )
+
+
 def test_run_ferric_observer_converts_permission_error_to_spawn_failure(monkeypatch, tmp_path):
     def denied(*_args, **_kwargs):
         raise PermissionError("permission denied")
@@ -571,6 +650,30 @@ def test_run_ferric_observer_converts_permission_error_to_spawn_failure(monkeypa
     }
     assert result["spawn_error"] is True
     assert "permission denied" in result["stderr"]
+
+
+def test_ferric_scenario_invocation_replaces_legacy_positional_source(monkeypatch, tmp_path):
+    captured: list[str] = []
+
+    def completed(command, **_kwargs):
+        captured.extend(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"{}\n", stderr=b"")
+
+    monkeypatch.setattr(run_module.subprocess, "run", completed)
+    run_module.run_ferric_observer(
+        "legacy.clp",
+        "ferric",
+        str(tmp_path),
+        1,
+        fixture_id="fixture.scenario",
+        nonce="0" * 32,
+        source_sha256="a" * 64,
+        composed_sha256="b" * 64,
+        scenario_path="scenario.plan",
+    )
+
+    assert captured[-2:] == ["--scenario", "scenario.plan"]
+    assert "legacy.clp" not in captured
 
 
 def test_run_ferric_observer_preserves_signal_without_complete_json(monkeypatch, tmp_path):
@@ -634,6 +737,36 @@ def test_run_clips_observer_converts_permission_error_to_spawn_failure(monkeypat
     }
     assert result["spawn_error"] is True
     assert "permission denied" in result["stderr"]
+
+
+def test_clips_scenario_invocation_replaces_legacy_file_option(monkeypatch, tmp_path):
+    plan = tmp_path / "scenario.plan"
+    plan.write_text("FERRIC-COMPAT-SCENARIO|1\nEND\n", encoding="utf-8")
+    captured: list[str] = []
+
+    def completed(command, **_kwargs):
+        captured.extend(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(run_module, "_run_clips_process", completed)
+    monkeypatch.setattr(run_module, "parse_probe_output", lambda *_args, **_kwargs: {})
+    run_module.run_clips_observer(
+        "legacy.clp",
+        str(tmp_path),
+        "scripts/clips-reference.sh",
+        1,
+        fixture_id="fixture.scenario",
+        nonce="0" * 32,
+        source_sha256="a" * 64,
+        composed_sha256="b" * 64,
+        globals_to_capture=(),
+        harnessed=False,
+        scenario_path=str(plan),
+        expected_phases=("load", "reset", "run"),
+    )
+
+    assert "--file" not in captured
+    assert captured[captured.index("--scenario") + 1] == str(plan.resolve())
 
 
 @pytest.mark.parametrize(
@@ -1463,6 +1596,154 @@ def test_structured_process_binds_actual_bytes_and_fresh_nonce(tmp_path, monkeyp
     assert declaration["nonce"] == "0" * 32
 
 
+def test_v2_process_materializes_one_exact_plan_for_both_adapters(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    primary = root / "tests" / "examples" / "fixture.clp"
+    library = root / "tests" / "examples" / "shared" / "library.clp"
+    library.parent.mkdir(parents=True)
+    primary.write_bytes(b"(defrule compute => (assert (result 42)))\n")
+    library.write_bytes(b"(deftemplate shared (slot value))\n")
+    declaration = _scenario_declaration(
+        sha256_bytes(primary.read_bytes()),
+        sha256_bytes(library.read_bytes()),
+    )
+    expected_plan = canonical_scenario_plan(declaration)
+    invocations: list[tuple[str, Path, bytes]] = []
+
+    def fake_ferric(
+        _path,
+        _ferric,
+        _root,
+        _timeout,
+        *,
+        scenario_path,
+        **identity,
+    ):
+        plan_path = Path(scenario_path)
+        invocations.append(("ferric", plan_path, plan_path.read_bytes()))
+        return {**_engine_result(), "observation": {"identity": identity}}
+
+    def fake_clips(
+        _path,
+        _root,
+        _script,
+        _timeout,
+        *,
+        globals_to_capture,
+        harnessed,
+        scenario_path,
+        expected_phases,
+        **identity,
+    ):
+        assert globals_to_capture == ()
+        assert harnessed is False
+        assert expected_phases == ("load", "reset", "load", "reset", "run")
+        plan_path = Path(scenario_path)
+        invocations.append(("clips", plan_path, plan_path.read_bytes()))
+        return {**_engine_result(), "observation": {"identity": identity}}
+
+    monkeypatch.setattr(run_module, "run_ferric_observer", fake_ferric)
+    monkeypatch.setattr(run_module, "run_clips_observer", fake_clips)
+    monkeypatch.setattr(
+        run_module,
+        "project_ferric_observation",
+        lambda raw, **_kwargs: _canonical_observation(
+            raw["identity"], fact_id=11, rule="counted-firing-1"
+        ),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "project_clips_observation",
+        lambda raw, **_kwargs: _canonical_observation(
+            raw["identity"], fact_id=2, rule="counted-firing-1"
+        ),
+    )
+
+    with run_module._compatibility_run_workspace(root) as (run_workspace, failures_dir):
+        result = run_module.process_file(
+            _structured_work_item(
+                source=primary,
+                root=root,
+                run_workspace=run_workspace,
+                failures_dir=failures_dir,
+                declaration=declaration,
+            )
+        )
+        assert list(run_workspace.iterdir()) == []
+
+    _, ferric_result, clips_result, classification, reason = result
+    assert (classification, reason) == ("equivalent", "oracle-v2-match")
+    assert [engine for engine, _path, _content in invocations] == ["ferric", "clips"]
+    assert invocations[0][1] == invocations[1][1]
+    assert all(content == expected_plan for _engine, _path, content in invocations)
+    assert not invocations[0][1].exists()
+    expected_metadata = {
+        "sha256": sha256_bytes(expected_plan),
+        "size_bytes": len(expected_plan),
+    }
+    assert ferric_result["scenario_plan"] == expected_metadata
+    assert clips_result["scenario_plan"] == expected_metadata
+
+
+def test_v2_process_revalidates_every_source_between_adapters(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    primary = root / "tests" / "examples" / "fixture.clp"
+    library = root / "tests" / "examples" / "shared" / "library.clp"
+    library.parent.mkdir(parents=True)
+    primary.write_bytes(b"(defrule compute => (assert (result 42)))\n")
+    library.write_bytes(b"(deftemplate shared (slot value))\n")
+    declaration = _scenario_declaration(
+        sha256_bytes(primary.read_bytes()),
+        sha256_bytes(library.read_bytes()),
+    )
+
+    def mutating_ferric(
+        _path,
+        _ferric,
+        _root,
+        _timeout,
+        *,
+        scenario_path,
+        **identity,
+    ):
+        assert Path(scenario_path).read_bytes() == canonical_scenario_plan(declaration)
+        library.write_bytes(b"tampered\n")
+        return {**_engine_result(), "observation": {"identity": identity}}
+
+    monkeypatch.setattr(run_module, "run_ferric_observer", mutating_ferric)
+    monkeypatch.setattr(
+        run_module,
+        "run_clips_observer",
+        lambda *_args, **_kwargs: pytest.fail("CLIPS must not see a mutated scenario bundle"),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "project_ferric_observation",
+        lambda raw, **_kwargs: _canonical_observation(
+            raw["identity"], fact_id=11, rule="counted-firing-1"
+        ),
+    )
+
+    with (
+        pytest.raises(run_module.CompatibilityWorkspaceError, match="source 1 changed"),
+        run_module._compatibility_run_workspace(root) as (run_workspace, failures_dir),
+    ):
+        run_module.process_file(
+            _structured_work_item(
+                source=primary,
+                root=root,
+                run_workspace=run_workspace,
+                failures_dir=failures_dir,
+                declaration=declaration,
+            )
+        )
+
+    retained_plan = (
+        root / ".ferric-compat" / "failures" / (f"{declaration['composed_sha256']}.plan")
+    )
+    assert retained_plan.read_bytes() == canonical_scenario_plan(declaration)
+
+
 def test_nonzero_structured_observer_is_invalid_and_retains_source(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     source = root / "tests" / "examples" / "fixture.clp"
@@ -1851,6 +2132,11 @@ def test_runner_persists_invalid_evidence_before_nonzero_exit(
         "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0),
     )
+    monkeypatch.setattr(
+        run_module,
+        "load_reference_provenance",
+        lambda *_args, **_kwargs: _reference_provenance(),
+    )
 
     result = CliRunner().invoke(
         run_module.app,
@@ -1867,6 +2153,7 @@ def test_runner_persists_invalid_evidence_before_nonzero_exit(
     assert result.exit_code == 1
     assert heading in result.output
     persisted = load_manifest(manifest_path)
+    assert persisted["reference"] == _reference_provenance()
     persisted_entry = persisted["files"]["fixture.clp"]
     assert persisted_entry["classification"] == "pending"
     assert persisted_entry["reason"] == reason

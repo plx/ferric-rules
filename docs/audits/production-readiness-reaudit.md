@@ -366,7 +366,7 @@ Explicitly retain regression fixtures for:
 Run the maintained focused suite and external-example assessment:
 
 ```sh
-cargo test -p ferric-rules --test clips_compat -- --nocapture
+cargo test -p ferric-rules --test ferric_semantic_regressions -- --nocapture
 just compat-scan
 just harness-gen
 just compat-run
