@@ -73,7 +73,11 @@ jobs:
       - name: Assess base branch
         run: |
           git checkout ${{ inputs.base_sha }}
-          git checkout ${{ inputs.head_sha }} -- tools/ferric-tools/
+          # Assess both revisions through the head observer protocol.
+          git checkout ${{ inputs.head_sha }} -- \
+            tools/ferric-tools/ \
+            scripts/clips-reference.sh \
+            crates/ferric-rules-cli/src/commands/compat_observe.rs
           cargo build --release -p ferric-rules-cli
           uv run --project tools/ferric-tools ferric-compat-scan
           # Materialize head-format harnesses for base sources without modifying
