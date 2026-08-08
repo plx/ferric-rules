@@ -192,6 +192,67 @@ fn configuration_custom() -> Result<JsonValue, String> {
     }))
 }
 
+fn configuration_observation(
+    fixture_name: &str,
+    config: EngineConfig,
+) -> Result<JsonValue, String> {
+    let mut engine = Engine::with_rules_config(&fixture(fixture_name)?, config)
+        .map_err(|error| format!("init failed: {error}"))?;
+    let unicode = engine
+        .create_string("é")
+        .map(|_| "accepted")
+        .unwrap_or("rejected");
+    let run = engine
+        .run(RunLimit::Unlimited)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({
+        "halt_reason": halt_reason(run.halt_reason),
+        "unicode": unicode
+    }))
+}
+
+fn configuration_strategy_fired(config: EngineConfig) -> Result<usize, String> {
+    let mut engine =
+        Engine::with_rules_config(&fixture("configuration-strategy-order.clp")?, config)
+            .map_err(|error| format!("init failed: {error}"))?;
+    let run = engine
+        .run(RunLimit::Unlimited)
+        .map_err(|error| error.to_string())?;
+    Ok(run.rules_fired)
+}
+
+fn configuration_isolation() -> Result<JsonValue, String> {
+    let mut encoding_ascii = EngineConfig::default();
+    encoding_ascii.string_encoding = StringEncoding::Ascii;
+
+    let mut strategy_breadth = EngineConfig::default();
+    strategy_breadth.strategy = ConflictResolutionStrategy::Breadth;
+
+    let mut depth_one = EngineConfig::default();
+    depth_one.max_call_depth = 1;
+
+    let mut depth_256 = EngineConfig::default();
+    depth_256.max_call_depth = 256;
+
+    let strategy_fired = configuration_strategy_fired(strategy_breadth.clone())?;
+    let mut strategy_observation =
+        configuration_observation("configuration-default-depth.clp", strategy_breadth)?;
+    strategy_observation["strategy_fired"] = json!(strategy_fired);
+
+    Ok(json!({
+        "depth_1_only": configuration_observation("custom-config.clp", depth_one)?,
+        "depth_256_only": configuration_observation(
+            "configuration-default-depth.clp",
+            depth_256
+        )?,
+        "encoding_ascii_only": configuration_observation(
+            "configuration-default-depth.clp",
+            encoding_ascii
+        )?,
+        "strategy_breadth_only": strategy_observation
+    }))
+}
+
 fn error_case(case_id: &str) -> Result<JsonValue, String> {
     let mut engine = Engine::new(EngineConfig::default());
     let family = match case_id {
@@ -385,6 +446,7 @@ fn run_case(case_id: &str) -> Result<JsonValue, String> {
     match case_id {
         "configuration.default" => Ok(configuration_default()),
         "configuration.custom" => configuration_custom(),
+        "configuration.isolation" => configuration_isolation(),
         "fact.lifecycle" => fact_lifecycle(),
         "execution.run-limits" => execution_run_limits(),
         "execution.step" => execution_step(),

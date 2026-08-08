@@ -9,6 +9,8 @@
 
 #define HIGH_ID_ITERATIONS 1048577U
 
+static const char *halt_reason_name(enum FerricHaltReason reason);
+
 static char *read_fixture(const char *name) {
     const char *root = getenv("FERRIC_BINDINGS_CONFORMANCE_ROOT");
     char path[4096];
@@ -326,6 +328,123 @@ static bool configuration_custom(void) {
     return true;
 }
 
+struct ConfigurationObservation {
+    const char *halt_reason;
+    const char *unicode;
+};
+
+static bool observe_configuration(const char *fixture_name,
+                                  const struct FerricConfig *config,
+                                  struct ConfigurationObservation *observation) {
+    char *source = read_fixture(fixture_name);
+    struct FerricEngine *engine;
+    struct FerricValue value;
+    uint64_t fact_id = 0;
+    uint64_t fired = 0;
+    enum FerricHaltReason reason = FERRIC_HALT_REASON_AGENDA_EMPTY;
+    enum FerricError unicode_code;
+    enum FerricError run_code;
+
+    if (source == NULL) {
+        return false;
+    }
+    engine = ferric_engine_new_with_source_config(source, config);
+    free(source);
+    if (engine == NULL) {
+        return false;
+    }
+
+    value = ferric_value_string("é");
+    unicode_code =
+        ferric_engine_assert_ordered(engine, "unicode", &value, 1U, &fact_id);
+    ferric_value_free(&value);
+    run_code = ferric_engine_run_ex(engine, -1, &fired, &reason);
+    ferric_engine_free(engine);
+    if (run_code != FERRIC_ERROR_OK || halt_reason_name(reason) == NULL) {
+        return false;
+    }
+
+    observation->halt_reason = halt_reason_name(reason);
+    observation->unicode =
+        unicode_code == FERRIC_ERROR_OK ? "accepted" : "rejected";
+    return true;
+}
+
+static void print_configuration_observation(
+    const struct ConfigurationObservation *observation) {
+    printf("{\"halt_reason\":\"%s\",\"unicode\":\"%s\"}",
+           observation->halt_reason,
+           observation->unicode);
+}
+
+static bool observe_strategy_breadth_fired(const struct FerricConfig *config,
+                                           uint64_t *fired) {
+    char *source = read_fixture("configuration-strategy-order.clp");
+    struct FerricEngine *engine;
+    enum FerricHaltReason reason = FERRIC_HALT_REASON_AGENDA_EMPTY;
+
+    if (source == NULL) {
+        return false;
+    }
+    engine = ferric_engine_new_with_source_config(source, config);
+    free(source);
+    if (engine == NULL) {
+        return false;
+    }
+    if (ferric_engine_run_ex(engine, -1, fired, &reason) != FERRIC_ERROR_OK ||
+        reason != FERRIC_HALT_REASON_AGENDA_EMPTY) {
+        ferric_engine_free(engine);
+        return false;
+    }
+    ferric_engine_free(engine);
+    return true;
+}
+
+static bool configuration_isolation(void) {
+    struct FerricConfig encoding_ascii = {
+        FERRIC_STRING_ENCODING_ASCII, FERRIC_CONFLICT_STRATEGY_DEPTH, 64U};
+    struct FerricConfig strategy_breadth = {
+        FERRIC_STRING_ENCODING_UTF8, FERRIC_CONFLICT_STRATEGY_BREADTH, 64U};
+    struct FerricConfig depth_one = {
+        FERRIC_STRING_ENCODING_UTF8, FERRIC_CONFLICT_STRATEGY_DEPTH, 1U};
+    struct FerricConfig depth_256 = {
+        FERRIC_STRING_ENCODING_UTF8, FERRIC_CONFLICT_STRATEGY_DEPTH, 256U};
+    struct ConfigurationObservation encoding_ascii_observation;
+    struct ConfigurationObservation strategy_breadth_observation;
+    struct ConfigurationObservation depth_one_observation;
+    struct ConfigurationObservation depth_256_observation;
+    uint64_t strategy_fired = 0;
+
+    if (!observe_configuration("configuration-default-depth.clp",
+                               &encoding_ascii,
+                               &encoding_ascii_observation) ||
+        !observe_configuration("configuration-default-depth.clp",
+                               &strategy_breadth,
+                               &strategy_breadth_observation) ||
+        !observe_configuration(
+            "custom-config.clp", &depth_one, &depth_one_observation) ||
+        !observe_configuration("configuration-default-depth.clp",
+                               &depth_256,
+                               &depth_256_observation) ||
+        !observe_strategy_breadth_fired(&strategy_breadth, &strategy_fired)) {
+        return false;
+    }
+
+    fputs("{\"depth_1_only\":", stdout);
+    print_configuration_observation(&depth_one_observation);
+    fputs(",\"depth_256_only\":", stdout);
+    print_configuration_observation(&depth_256_observation);
+    fputs(",\"encoding_ascii_only\":", stdout);
+    print_configuration_observation(&encoding_ascii_observation);
+    printf(",\"strategy_breadth_only\":{\"halt_reason\":\"%s\","
+           "\"strategy_fired\":%" PRIu64 ",\"unicode\":\"%s\"}",
+           strategy_breadth_observation.halt_reason,
+           strategy_fired,
+           strategy_breadth_observation.unicode);
+    putchar('}');
+    return true;
+}
+
 static bool error_case(const char *case_id) {
     struct FerricEngine *engine = ferric_engine_new();
     enum FerricError code;
@@ -623,6 +742,9 @@ static bool run_case(const char *case_id) {
     }
     if (strcmp(case_id, "configuration.custom") == 0) {
         return configuration_custom();
+    }
+    if (strcmp(case_id, "configuration.isolation") == 0) {
+        return configuration_isolation();
     }
     if (strcmp(case_id, "fact.lifecycle") == 0) {
         return fact_lifecycle();

@@ -152,6 +152,57 @@ function configurationCustom(): unknown {
   }
 }
 
+function configurationObservation(
+  source: string,
+  options: { encoding?: Encoding; strategy?: Strategy; maxCallDepth?: number },
+): Record<string, string> {
+  const engine = Engine.fromSource(source, options);
+  let unicode = "accepted";
+  try {
+    try {
+      engine.assertFact("unicode", "é");
+    } catch {
+      unicode = "rejected";
+    }
+    const run = engine.run();
+    return { halt_reason: reason(run.haltReason), unicode };
+  } finally {
+    engine.close();
+  }
+}
+
+function configurationStrategyFired(source: string): number {
+  const engine = Engine.fromSource(source, { strategy: Strategy.Breadth });
+  try {
+    return engine.run().rulesFired;
+  } finally {
+    engine.close();
+  }
+}
+
+function configurationIsolation(): unknown {
+  const defaultDepthSource = fixture("configuration-default-depth.clp");
+  const customDepthSource = fixture("custom-config.clp");
+  const strategySource = fixture("configuration-strategy-order.clp");
+  return {
+    depth_1_only: configurationObservation(customDepthSource, {
+      maxCallDepth: 1,
+    }),
+    depth_256_only: configurationObservation(defaultDepthSource, {
+      maxCallDepth: 256,
+    }),
+    encoding_ascii_only: configurationObservation(defaultDepthSource, {
+      encoding: Encoding.Ascii,
+    }),
+    strategy_breadth_only: {
+      ...configurationObservation(defaultDepthSource, {
+        strategy: Strategy.Breadth,
+      }),
+      strategy_fired: configurationStrategyFired(strategySource),
+    },
+  };
+}
+
 function errorCase(caseId: string): unknown {
   const engine = new Engine();
   let family = "";
@@ -380,6 +431,8 @@ async function runCase(caseId: string): Promise<unknown> {
       return configurationDefault();
     case "configuration.custom":
       return configurationCustom();
+    case "configuration.isolation":
+      return configurationIsolation();
     case "fact.lifecycle":
       return factLifecycle();
     case "execution.run-limits":

@@ -49,6 +49,28 @@ def test_case_ids_are_unique_and_all_adapters_are_required() -> None:
     assert all(case.required_bindings == frozenset(REQUIRED_BINDINGS) for case in corpus.cases)
 
 
+def test_configuration_isolation_uses_behavioral_observations() -> None:
+    corpus = load_corpus(CORPUS)
+    case = next(case for case in corpus.cases if case.id == "configuration.isolation")
+
+    assert case.semantic == "configuration.isolation"
+    assert case.required_bindings == frozenset(REQUIRED_BINDINGS)
+    assert set(case.deviations) == {"python"}
+    assert case.canonical["encoding_ascii_only"] == {
+        "halt_reason": "action_error",
+        "unicode": "rejected",
+    }
+    assert case.canonical["strategy_breadth_only"] == {
+        "halt_reason": "action_error",
+        "strategy_fired": 2,
+        "unicode": "accepted",
+    }
+    assert case.canonical["depth_256_only"] == {
+        "halt_reason": "agenda_empty",
+        "unicode": "accepted",
+    }
+
+
 def test_unknown_semantic_drift_fails() -> None:
     corpus = _single_case_corpus()
 

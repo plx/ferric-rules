@@ -31,16 +31,22 @@ type Engine struct {
 // The caller is responsible for ensuring thread affinity
 // (e.g., via runtime.LockOSThread).
 func NewEngine(opts ...EngineOption) (*Engine, error) {
-	cfg := engineConfig{
-		maxCallDepth: 256,
-	}
+	cfg := defaultEngineConfig()
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 
+	// Build and validate the complete effective configuration before invoking
+	// any native constructor. Snapshot restoration does not currently apply
+	// these overrides, but explicitly supplied values must still be validated.
+	config, err := makeConfig(&cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	var h ffi.EngineHandle
 
-	if cfg.snapshot != nil {
+	if cfg.hasSnapshot() {
 		// Deserialize from snapshot — skips parse/compile.
 		ffiFormat, err := formatToFFI(cfg.snapshotFormat)
 		if err != nil {
@@ -55,13 +61,8 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 			return nil, &FerricError{Message: "failed to create engine from snapshot"}
 		}
 	} else {
-		config, err := makeConfig(&cfg)
-		if err != nil {
-			return nil, err
-		}
-
-		if cfg.source != "" {
-			if cfg.strategy != 0 || cfg.encoding != 0 || cfg.maxCallDepth != 256 {
+		if cfg.hasSource() {
+			if cfg.hasEngineConfig() {
 				h = ffiEngineNewWithSourceConfig(cfg.source, config)
 			} else {
 				h = ffiEngineNewWithSource(cfg.source)
@@ -74,7 +75,7 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 				return nil, &ParseError{FerricError{Message: msg}}
 			}
 		} else {
-			if cfg.strategy != 0 || cfg.encoding != 0 || cfg.maxCallDepth != 256 {
+			if cfg.hasEngineConfig() {
 				h = ffiEngineNewWithConfig(config)
 			} else {
 				h = ffiEngineNew()

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "suite_version": "1.0.0",
+  "suite_version": "1.1.0",
   "bindings": ["rust", "c", "go", "node", "python"],
   "cases": [
     {
@@ -134,6 +134,55 @@
           },
           "rationale": "Python construction does not yet expose max_call_depth.",
           "since": "1.0.0",
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/187"
+        }
+      }
+    },
+    {
+      "id": "configuration.isolation",
+      "semantic": "configuration.isolation",
+      "canonical": {
+        "depth_1_only": {
+          "halt_reason": "action_error",
+          "unicode": "accepted"
+        },
+        "depth_256_only": {
+          "halt_reason": "agenda_empty",
+          "unicode": "accepted"
+        },
+        "encoding_ascii_only": {
+          "halt_reason": "action_error",
+          "unicode": "rejected"
+        },
+        "strategy_breadth_only": {
+          "halt_reason": "action_error",
+          "strategy_fired": 2,
+          "unicode": "accepted"
+        }
+      },
+      "deviations": {
+        "python": {
+          "expected": {
+            "depth_1_only": {
+              "halt_reason": "unavailable",
+              "unicode": "unavailable"
+            },
+            "depth_256_only": {
+              "halt_reason": "unavailable",
+              "unicode": "unavailable"
+            },
+            "encoding_ascii_only": {
+              "halt_reason": "action_error",
+              "unicode": "rejected"
+            },
+            "strategy_breadth_only": {
+              "halt_reason": "action_error",
+              "strategy_fired": 2,
+              "unicode": "accepted"
+            }
+          },
+          "rationale": "Python construction does not yet expose max_call_depth, so it cannot run the two depth-only isolation probes.",
+          "since": "1.1.0",
           "tracking_issue": "https://github.com/plx/ferric-rules/issues/187"
         }
       }
