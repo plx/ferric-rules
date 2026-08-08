@@ -130,6 +130,52 @@ def configuration_custom() -> Any:
     }
 
 
+def configuration_observation(
+    source: str,
+    *,
+    encoding: ferric.Encoding | None = None,
+    strategy: ferric.Strategy | None = None,
+) -> Any:
+    engine = ferric.Engine.from_source(source, encoding=encoding, strategy=strategy)
+    unicode = "accepted"
+    try:
+        try:
+            engine.assert_fact("unicode", ferric.String("é"))
+        except ferric.FerricEncodingError:
+            unicode = "rejected"
+        run = engine.run()
+        return {"halt_reason": reason(run.halt_reason), "unicode": unicode}
+    finally:
+        engine.close()
+
+
+def configuration_strategy_fired(source: str) -> int:
+    engine = ferric.Engine.from_source(source, strategy=ferric.Strategy.BREADTH)
+    try:
+        return engine.run().rules_fired
+    finally:
+        engine.close()
+
+
+def configuration_isolation() -> Any:
+    default_depth_source = fixture("configuration-default-depth.clp")
+    strategy_source = fixture("configuration-strategy-order.clp")
+    unavailable = {"halt_reason": "unavailable", "unicode": "unavailable"}
+    return {
+        "depth_1_only": unavailable,
+        "depth_256_only": unavailable,
+        "encoding_ascii_only": configuration_observation(
+            default_depth_source, encoding=ferric.Encoding.ASCII
+        ),
+        "strategy_breadth_only": {
+            **configuration_observation(
+                default_depth_source, strategy=ferric.Strategy.BREADTH
+            ),
+            "strategy_fired": configuration_strategy_fired(strategy_source),
+        },
+    }
+
+
 def error_case(case_id: str) -> Any:
     engine = ferric.Engine()
     family = ""
@@ -305,6 +351,8 @@ def run_case(case_id: str) -> Any:
         return configuration_default()
     if case_id == "configuration.custom":
         return configuration_custom()
+    if case_id == "configuration.isolation":
+        return configuration_isolation()
     if case_id == "fact.lifecycle":
         return fact_lifecycle()
     if case_id == "execution.run-limits":

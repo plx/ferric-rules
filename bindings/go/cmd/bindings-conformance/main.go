@@ -203,6 +203,102 @@ func configurationCustom() (any, error) {
 	}, nil
 }
 
+func configurationObservation(source string, options ...ferric.EngineOption) (map[string]any, error) {
+	options = append([]ferric.EngineOption{ferric.WithSource(source)}, options...)
+	engine, err := withEngine(options...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = engine.Close() }()
+
+	_, unicodeErr := engine.AssertFact("unicode", "é")
+	unicode := "accepted"
+	if unicodeErr != nil {
+		unicode = "rejected"
+	}
+	run, err := engine.Run(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"halt_reason": reason(run.HaltReason),
+		"unicode":     unicode,
+	}, nil
+}
+
+func configurationStrategyFired(source string) (int, error) {
+	engine, err := withEngine(
+		ferric.WithSource(source),
+		ferric.WithStrategy(ferric.StrategyBreadth),
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = engine.Close() }()
+
+	run, err := engine.Run(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	return run.RulesFired, nil
+}
+
+func configurationIsolation() (any, error) {
+	defaultDepthSource, err := fixture("configuration-default-depth.clp")
+	if err != nil {
+		return nil, err
+	}
+	customDepthSource, err := fixture("custom-config.clp")
+	if err != nil {
+		return nil, err
+	}
+	strategySource, err := fixture("configuration-strategy-order.clp")
+	if err != nil {
+		return nil, err
+	}
+
+	encodingASCII, err := configurationObservation(
+		defaultDepthSource,
+		ferric.WithEncoding(ferric.EncodingASCII),
+	)
+	if err != nil {
+		return nil, err
+	}
+	strategyBreadth, err := configurationObservation(
+		defaultDepthSource,
+		ferric.WithStrategy(ferric.StrategyBreadth),
+	)
+	if err != nil {
+		return nil, err
+	}
+	strategyFired, err := configurationStrategyFired(strategySource)
+	if err != nil {
+		return nil, err
+	}
+	strategyBreadth["strategy_fired"] = strategyFired
+	depthOne, err := configurationObservation(
+		customDepthSource,
+		ferric.WithMaxCallDepth(1),
+	)
+	if err != nil {
+		return nil, err
+	}
+	depth256, err := configurationObservation(
+		defaultDepthSource,
+		ferric.WithMaxCallDepth(256),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"depth_1_only":          depthOne,
+		"depth_256_only":        depth256,
+		"encoding_ascii_only":   encodingASCII,
+		"strategy_breadth_only": strategyBreadth,
+	}, nil
+}
+
 func errorCase(caseID string) (any, error) {
 	engine, err := withEngine()
 	if err != nil {
@@ -501,6 +597,8 @@ func runCase(caseID string) (any, error) {
 		return configurationDefault()
 	case "configuration.custom":
 		return configurationCustom()
+	case "configuration.isolation":
+		return configurationIsolation()
 	case "fact.lifecycle":
 		return factLifecycle()
 	case "execution.run-limits":

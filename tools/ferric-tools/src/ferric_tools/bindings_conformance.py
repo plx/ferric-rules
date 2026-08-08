@@ -26,6 +26,7 @@ REQUIRED_SEMANTICS = (
     "value.external_address",
     "configuration.default",
     "configuration.custom",
+    "configuration.isolation",
     "error.parse",
     "error.compile",
     "error.runtime",

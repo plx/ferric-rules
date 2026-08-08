@@ -10,32 +10,69 @@ import (
 type EngineOption func(*engineConfig)
 
 type engineConfig struct {
-	strategy       Strategy
-	encoding       Encoding
-	maxCallDepth   int
-	source         string // if non-empty, load+reset at creation
-	snapshot       []byte // if non-nil, deserialize instead of creating fresh
-	snapshotFormat Format // format of snapshot data
+	strategy        Strategy
+	strategySet     bool
+	encoding        Encoding
+	encodingSet     bool
+	maxCallDepth    int
+	maxCallDepthSet bool
+	source          string // if non-empty, load+reset at creation
+	sourceSet       bool
+	snapshot        []byte // if non-nil, deserialize instead of creating fresh
+	snapshotSet     bool
+	snapshotFormat  Format // format of snapshot data
+}
+
+func defaultEngineConfig() engineConfig {
+	return engineConfig{
+		strategy:     StrategyDepth,
+		encoding:     EncodingUTF8,
+		maxCallDepth: 64,
+	}
+}
+
+func (c *engineConfig) hasEngineConfig() bool {
+	return c.strategySet || c.encodingSet || c.maxCallDepthSet
+}
+
+func (c *engineConfig) hasSource() bool {
+	return c.sourceSet && c.source != ""
+}
+
+func (c *engineConfig) hasSnapshot() bool {
+	return c.snapshotSet && c.snapshot != nil
 }
 
 // WithStrategy sets the conflict resolution strategy.
 func WithStrategy(s Strategy) EngineOption {
-	return func(c *engineConfig) { c.strategy = s }
+	return func(c *engineConfig) {
+		c.strategy = s
+		c.strategySet = true
+	}
 }
 
 // WithEncoding sets the string encoding mode.
 func WithEncoding(e Encoding) EngineOption {
-	return func(c *engineConfig) { c.encoding = e }
+	return func(c *engineConfig) {
+		c.encoding = e
+		c.encodingSet = true
+	}
 }
 
 // WithMaxCallDepth sets the maximum call depth.
 func WithMaxCallDepth(n int) EngineOption {
-	return func(c *engineConfig) { c.maxCallDepth = n }
+	return func(c *engineConfig) {
+		c.maxCallDepth = n
+		c.maxCallDepthSet = true
+	}
 }
 
 // WithSource loads CLIPS source and resets the engine at creation time.
 func WithSource(clips string) EngineOption {
-	return func(c *engineConfig) { c.source = clips }
+	return func(c *engineConfig) {
+		c.source = clips
+		c.sourceSet = true
+	}
 }
 
 // WithSnapshot creates the engine by deserializing a snapshot previously
@@ -45,6 +82,7 @@ func WithSource(clips string) EngineOption {
 func WithSnapshot(data []byte, format Format) EngineOption {
 	return func(c *engineConfig) {
 		c.snapshot = data
+		c.snapshotSet = true
 		c.snapshotFormat = format
 	}
 }
