@@ -26,8 +26,6 @@ jobs:
     name: MSRV (Rust 1.75)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -202,8 +200,13 @@ jobs:
       - run: just test-go-stress 10
 
   python-bindings:
-    name: Python Bindings
+    name: Python Bindings (CPython ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -211,14 +214,61 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-      - name: Build and test Python bindings
+      - name: Build and test Python bindings from source
         working-directory: crates/ferric-rules-python
         run: |
-          uv sync
-          uv run pytest tests/ -v
+          python_path="$(command -v python)"
+          uv sync --locked --python "$python_path"
+          uv run --locked --python "$python_path" maturin develop --quiet
+          uv run --locked --python "$python_path" pytest tests/ -v
+      - name: Build and smoke-test an isolated wheel
+        working-directory: crates/ferric-rules-python
+        env:
+          EXPECTED_PYTHON: ${{ matrix.python-version }}
+        run: |
+          python_path="$(command -v python)"
+          smoke_dir="$(mktemp -d "$RUNNER_TEMP/ferric-python-wheel.XXXXXX")"
+          wheel_dir="$smoke_dir/wheels"
+          mkdir "$wheel_dir"
+          uv run --locked --python "$python_path" \
+            maturin build --release --locked --interpreter "$python_path" --out "$wheel_dir"
+          artifacts=()
+          while IFS= read -r artifact; do
+            artifacts+=("$artifact")
+          done < <(find "$wheel_dir" -mindepth 1 -maxdepth 1 -print)
+          if [[ "${#artifacts[@]}" -ne 1 || ! -f "${artifacts[0]:-}" \
+              || "${artifacts[0]}" != *.whl ]]; then
+            printf 'expected exactly one wheel, found %s artifact(s)\n' \
+              "${#artifacts[@]}" >&2
+            exit 1
+          fi
+          "$python_path" -m venv "$smoke_dir/venv"
+          "$smoke_dir/venv/bin/python" -m pip install --no-index --no-deps "${artifacts[0]}"
+          cd "$smoke_dir"
+          "$smoke_dir/venv/bin/python" - <<'PY'
+          import ferric
+          import os
+          import pathlib
+          import sys
+
+          expected = tuple(int(part) for part in os.environ["EXPECTED_PYTHON"].split("."))
+          assert sys.version_info[:2] == expected
+          module_path = pathlib.Path(ferric.__file__).resolve()
+          assert pathlib.Path(sys.prefix).resolve() in module_path.parents
+
+          engine = ferric.Engine()
+          engine.load(
+              "(deffacts startup (ready)) "
+              "(defrule smoke (ready) => (assert (complete)))"
+          )
+          engine.reset()
+          result = engine.run()
+          assert result.rules_fired == 1
+          engine.close()
+          PY
 
   node-bindings:
     name: Node.js Bindings

@@ -871,8 +871,9 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
   §16.13 for the C contract.
 - **Go**: `bindings/go` provides an idiomatic façade (`Engine`,
   `Coordinator`, `Manager`) plus a Temporal activity wrapper.
-- **Python**: `crates/ferric-rules-python` ships a PyO3 extension module; build
-  it with `maturin` and `import ferric` from Python.
+- **Python**: `crates/ferric-rules-python` ships a PyO3 extension module for
+  CPython 3.9 through 3.13; build it with `maturin` and `import ferric` from
+  Python. Python 3.14 is not currently supported.
 - **CLI**: the `ferric` binary (`crates/ferric-rules-cli`) runs `.clp` files
   batch-style or drops you into a REPL. `ferric check [--json] file.clp`
   validates without running; `ferric run` executes.
