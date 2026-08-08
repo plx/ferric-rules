@@ -50,6 +50,10 @@ def test_build_matrix_exactly_matches_the_checked_in_contract():
     contract = json.loads(TARGETS.read_text(encoding="utf-8"))
     rows = _producer_matrix(_job(workflow, "build-wheels"))
     wheels = {wheel["id"]: wheel for wheel in contract["wheels"]}
+    pinned_containers = {
+        "musllinux1_2-x86_64": "ghcr.io/rust-cross/rust-musl-cross:x86_64-musl@sha256:ce75e9174325d4fbb3de85c309e2d7ca29f7500169bc4b5d2c611ff7e86d549a",
+        "musllinux1_2-aarch64": "ghcr.io/rust-cross/rust-musl-cross:aarch64-musl@sha256:ecae5dd62d1c938c14f8071d36c16fa699860aace03bfb5284fb1216474d2643",
+    }
 
     assert len(rows) == 7
     assert rows.keys() == wheels.keys()
@@ -59,6 +63,7 @@ def test_build_matrix_exactly_matches_the_checked_in_contract():
         assert row["rust_target"] == wheel["rust_target"]
         assert row["family"] == wheel["compatibility"]["family"]
         assert row["compatibility"] == wheel["compatibility"]["maturin"]
+        assert row.get("container_image", "") == pinned_containers.get(target, "")
         expected_cli = (
             ""
             if row["family"] in {"manylinux", "musllinux"}
@@ -84,6 +89,7 @@ def test_path_filters_cover_every_artifact_contract_input():
         '      - "LICENSE-MIT"',
         '      - "crates/ferric-*/**"',
         '      - "scripts/python_package_lib.py"',
+        '      - "scripts/musl_static_libgcc_linker.py"',
         '      - "scripts/test-python-sdist-artifact.py"',
         '      - "scripts/test-python-wheel-artifact.py"',
         '      - "scripts/validate-python-package.py"',
@@ -135,6 +141,7 @@ def test_builds_are_pinned_repaired_audited_and_uploaded_exactly_once():
         'DELOCATE_VERSION: "0.13.0"',
         'DELVEWHEEL_VERSION: "1.13.0"',
         'MATURIN_VERSION: "1.12.6"',
+        'PYTHON_AUDIT_IMAGE: "python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df"',
         'RUST_TOOLCHAIN: "1.93.0"',
         'UV_VERSION: "0.12.3"',
     ]:
@@ -146,17 +153,36 @@ def test_builds_are_pinned_repaired_audited_and_uploaded_exactly_once():
     assert job.count('compatibility_args: ""') == 4
     assert job.count('compatibility_args: "--compatibility pypi"') == 3
     assert "manylinux: ${{ matrix.container_policy }}" in job
+    assert "container: ${{ matrix.container_image }}" in job
     assert "Install the abi3 baseline interpreter for Windows linking" in job
     assert "uses: actions/setup-python@v5" in job
     assert 'python-version: "3.9"' in job
     assert job.count('PYO3_NO_PYTHON: "1"') == 1
+    assert "Configure the pinned static musl unwind linker" in job
+    assert "CARGO_FERRIC_MUSL_LINKER" in job
+    assert "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER" in job
+    assert "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER" in job
+    assert "scripts/musl_static_libgcc_linker.py" in job
     assert "--auditwheel ${{ matrix.auditwheel_mode }}" in job
     assert job.count("auditwheel_mode: repair") == 4
     assert "auditwheel show" in job
+    assert "uv pip install" in job
+    assert '--target "$auditwheel_root"' in job
+    assert '"$PYTHON_AUDIT_IMAGE"' in job
+    assert "python -m auditwheel show" in job
+    assert "auditwheel did not report exact policy" in job
+    assert "musllinux_1_2_${{ matrix.required_arch }}" in job
+    assert "--network none" in job
+    assert "--read-only" in job
     assert "delocate-wheel" in job
     assert "delvewheel repair" in job
     assert job.count("abi3audit") >= 4
     assert job.count("abi3audit --strict") == 3
+    assert job.count("scripts/validate-python-package.py") == 3
+    assert job.count("trap 'status=$?") == 3
+    assert "steps.linux-audit.outcome != 'skipped'" in job
+    assert "steps.macos-audit.outcome != 'skipped'" in job
+    assert "steps.windows-audit.outcome != 'skipped'" in job
     assert 'deployment_target: "10.12"' in job
     assert 'deployment_target: "11.0"' in job
     assert "*-cp39-abi3-*.whl" in job

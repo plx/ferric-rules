@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_ROOT = REPO_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_ROOT))
 
+import musl_static_libgcc_linker as musl_linker  # noqa: E402
 import python_package_lib as package_lib  # noqa: E402
 
 
@@ -380,6 +381,40 @@ def _complete_artifact_set(root, contract, version):
 
 def test_repository_metadata_and_abi_contract_is_valid():
     assert package_lib.validate_repository_contract() == "0.1.0"
+
+
+def test_musl_linker_replaces_only_the_dynamic_gcc_runtime_and_libc_name(
+    tmp_path,
+):
+    original = ["-shared", "input.o", "-lgcc_s", "-lc", "-o", "ferric.so"]
+    assert musl_linker.rewrite_linker_arguments(
+        original,
+        alias_dir=tmp_path,
+        canonical_libc="libc.musl-x86_64.so.1",
+    ) == [
+        "-shared",
+        "input.o",
+        "-Wl,-Bstatic",
+        "-lgcc_eh",
+        "-Wl,-Bdynamic",
+        f"-L{tmp_path}",
+        "-l:libc.musl-x86_64.so.1",
+        "-o",
+        "ferric.so",
+    ]
+
+
+@pytest.mark.parametrize(
+    "dynamic_arguments",
+    [[], ["-lgcc_s", "-lgcc_s", "-lc"], ["-lgcc_s", "-lc", "-lc"]],
+)
+def test_musl_linker_rejects_toolchain_argument_drift(dynamic_arguments, tmp_path):
+    with pytest.raises(ValueError, match="exactly one dynamic -lgcc_s and one -lc"):
+        musl_linker.rewrite_linker_arguments(
+            dynamic_arguments,
+            alias_dir=tmp_path,
+            canonical_libc="libc.musl-x86_64.so.1",
+        )
 
 
 def test_clean_venv_uses_platform_safe_python_layout(tmp_path):

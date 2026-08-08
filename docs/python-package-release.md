@@ -47,6 +47,26 @@ overrides that setting with `strip = "none"`, and Maturin also has
 malformed Mach-O string-table alignment with an Apple linker. Native import and
 dependency inspection remain mandatory on both macOS architectures.
 
+Rust's dynamically loaded musl target normally requests `libgcc_s.so.1`. The
+release workflow pins each architecture's `rust-musl-cross` image index by
+digest, then replaces that toolchain's single dynamic linker argument with its
+static `libgcc_eh` archive. It also links the same pinned musl libc through its
+architecture-canonical runtime name (`libc.musl-*.so.1`) instead of the sysroot
+file's bare `libc.so` name. This keeps each musllinux wheel self-contained apart
+from musl itself, makes the runtime dependency portable and auditable, and
+preserves the exact one-native-module archive contract. The wrapper fails if
+Rust stops emitting exactly one `-lgcc_s` or one `-lc` argument, so toolchain
+drift cannot silently change this linkage policy.
+
+The repaired musllinux wheel is audited inside a digest-pinned,
+matching-architecture Alpine container. Running `auditwheel show` directly on
+the glibc host can mistake musl's `libc.so` linker script for an ELF object.
+The container receives a read-only wheel and a pinned, host-prepared
+`auditwheel` environment, runs without network access, and writes only to a
+temporary filesystem. The workflow requires `auditwheel` to report the exact
+contracted `musllinux_1_2` architecture tag; its exit status alone is not
+accepted because the tool can successfully report a weaker generic Linux tag.
+
 Maturin's package configuration sets `locked = true`. This makes every Cargo
 invocation reject dependency drift even though Maturin's standalone `sdist`
 command has no `--locked` CLI option. Because Maturin relocates and prunes the

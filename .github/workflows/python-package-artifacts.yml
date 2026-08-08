@@ -13,6 +13,7 @@ on:
       - "LICENSE-MIT"
       - "crates/ferric-*/**"
       - "scripts/python_package_lib.py"
+      - "scripts/musl_static_libgcc_linker.py"
       - "scripts/test-python-sdist-artifact.py"
       - "scripts/test-python-wheel-artifact.py"
       - "scripts/validate-python-package.py"
@@ -29,6 +30,7 @@ on:
       - "LICENSE-MIT"
       - "crates/ferric-*/**"
       - "scripts/python_package_lib.py"
+      - "scripts/musl_static_libgcc_linker.py"
       - "scripts/test-python-sdist-artifact.py"
       - "scripts/test-python-wheel-artifact.py"
       - "scripts/validate-python-package.py"
@@ -45,6 +47,7 @@ env:
   DELOCATE_VERSION: "0.13.0"
   DELVEWHEEL_VERSION: "1.13.0"
   MATURIN_VERSION: "1.12.6"
+  PYTHON_AUDIT_IMAGE: "python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df"
   RUSTFLAGS: "-D warnings"
   RUST_TOOLCHAIN: "1.93.0"
   UV_VERSION: "0.12.3"
@@ -90,6 +93,7 @@ jobs:
             runner: ubuntu-24.04
             rust_target: x86_64-unknown-linux-musl
             family: musllinux
+            container_image: ghcr.io/rust-cross/rust-musl-cross:x86_64-musl@sha256:ce75e9174325d4fbb3de85c309e2d7ca29f7500169bc4b5d2c611ff7e86d549a
             container_policy: musllinux_1_2
             compatibility: musllinux_1_2
             compatibility_args: ""
@@ -100,6 +104,7 @@ jobs:
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-musl
             family: musllinux
+            container_image: ghcr.io/rust-cross/rust-musl-cross:aarch64-musl@sha256:ecae5dd62d1c938c14f8071d36c16fa699860aace03bfb5284fb1216474d2643
             container_policy: musllinux_1_2
             compatibility: musllinux_1_2
             compatibility_args: ""
@@ -141,6 +146,29 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
     steps:
       - uses: actions/checkout@v4
+      - name: Configure the pinned static musl unwind linker
+        if: matrix.family == 'musllinux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case '${{ matrix.rust_target }}' in
+            x86_64-unknown-linux-musl)
+              cargo_linker_env=CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER
+              ;;
+            aarch64-unknown-linux-musl)
+              cargo_linker_env=CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER
+              ;;
+            *)
+              printf 'unsupported musl Rust target: %s\n' \
+                '${{ matrix.rust_target }}' >&2
+              exit 1
+              ;;
+          esac
+          wrapper="$GITHUB_WORKSPACE/scripts/musl_static_libgcc_linker.py"
+          test -x "$wrapper"
+          printf 'CARGO_FERRIC_MUSL_LINKER=%s\n' \
+            '/usr/local/musl/bin/${{ matrix.rust_target }}-gcc' >>"$GITHUB_ENV"
+          printf '%s=%s\n' "$cargo_linker_env" "$wrapper" >>"$GITHUB_ENV"
       - name: Install the abi3 baseline interpreter for Windows linking
         if: matrix.family == 'windows'
         uses: actions/setup-python@v5
@@ -160,6 +188,7 @@ jobs:
             --auditwheel ${{ matrix.auditwheel_mode }}
             --out python-wheel-staging
           manylinux: ${{ matrix.container_policy }}
+          container: ${{ matrix.container_image }}
           maturin-version: v${{ env.MATURIN_VERSION }}
           rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
           target: ${{ matrix.rust_target }}
@@ -184,6 +213,7 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
       - name: Promote and audit repaired Linux wheel
+        id: linux-audit
         if: matrix.family == 'manylinux' || matrix.family == 'musllinux'
         shell: bash
         working-directory: crates/ferric-rules-python
@@ -203,17 +233,56 @@ jobs:
           cp -- "${staged[0]}" python-wheel-final/
           final="python-wheel-final/${staged[0]##*/}"
           report="python-audit/audit-${{ matrix.target }}.txt"
+          trap 'status=$?; trap - EXIT; cat "$report" 2>/dev/null || true; exit "$status"' EXIT
           {
             printf 'target=%s\n' '${{ matrix.target }}'
             printf 'rust_target=%s\n' '${{ matrix.rust_target }}'
             printf 'compatibility=%s\n' '${{ matrix.compatibility }}'
+            python3 ../../scripts/validate-python-package.py \
+              --wheel "$final" \
+              --target '${{ matrix.target }}'
             printf 'auditwheel=%s\n' "$AUDITWHEEL_VERSION"
-            uvx --from "auditwheel==$AUDITWHEEL_VERSION" auditwheel show "$final"
+            if [[ '${{ matrix.family }}' == musllinux ]]; then
+              auditwheel_root="$RUNNER_TEMP/auditwheel-${{ matrix.target }}"
+              uv pip install \
+                --target "$auditwheel_root" \
+                --python "$(command -v python3)" \
+                "auditwheel==$AUDITWHEEL_VERSION"
+              docker run --rm \
+                --network none \
+                --read-only \
+                --tmpfs /tmp:exec \
+                --env PYTHONDONTWRITEBYTECODE=1 \
+                --env PYTHONPATH=/opt/auditwheel \
+                --volume "$auditwheel_root:/opt/auditwheel:ro" \
+                --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+                "$PYTHON_AUDIT_IMAGE" \
+                sh -ceu '
+                  output="$(python -m auditwheel show "$1")"
+                  printf "%s\n" "$output"
+                  normalized="$(printf "%s\n" "$output" | tr "\n" " " | tr -s " ")"
+                  expected="is consistent with the following platform tag: \"$2\"."
+                  case "$normalized" in
+                    *"$expected"*) ;;
+                    *)
+                      printf "auditwheel did not report exact policy %s\n" "$2" >&2
+                      exit 1
+                      ;;
+                  esac
+                ' audit-musllinux \
+                "/workspace/crates/ferric-rules-python/$final" \
+                'musllinux_1_2_${{ matrix.required_arch }}'
+            else
+              uvx --from "auditwheel==$AUDITWHEEL_VERSION" \
+                auditwheel show "$final"
+            fi
             printf '\nabi3audit=%s\n' "$ABI3AUDIT_VERSION"
             uvx --from "abi3audit==$ABI3AUDIT_VERSION" abi3audit --strict "$final"
           } >"$report" 2>&1
           cat "$report"
+          trap - EXIT
       - name: Repair and audit macOS wheel
+        id: macos-audit
         if: matrix.family == 'macos'
         shell: bash
         working-directory: crates/ferric-rules-python
@@ -231,6 +300,7 @@ jobs:
             exit 1
           fi
           report="python-audit/audit-${{ matrix.target }}.txt"
+          trap 'status=$?; trap - EXIT; cat "$report" 2>/dev/null || true; exit "$status"' EXIT
           {
             printf 'target=%s\n' '${{ matrix.target }}'
             printf 'rust_target=%s\n' '${{ matrix.rust_target }}'
@@ -257,12 +327,17 @@ jobs:
           {
             uvx --from "delocate==$DELOCATE_VERSION" \
               delocate-listdeps --all "${repaired[0]}"
+            python3 ../../scripts/validate-python-package.py \
+              --wheel "${repaired[0]}" \
+              --target '${{ matrix.target }}'
             printf '\nabi3audit=%s\n' "$ABI3AUDIT_VERSION"
             uvx --from "abi3audit==$ABI3AUDIT_VERSION" \
               abi3audit --strict "${repaired[0]}"
           } >>"$report" 2>&1
           cat "$report"
+          trap - EXIT
       - name: Repair and audit Windows wheel
+        id: windows-audit
         if: matrix.family == 'windows'
         shell: bash
         working-directory: crates/ferric-rules-python
@@ -280,6 +355,7 @@ jobs:
             exit 1
           fi
           report="python-audit/audit-${{ matrix.target }}.txt"
+          trap 'status=$?; trap - EXIT; cat "$report" 2>/dev/null || true; exit "$status"' EXIT
           {
             printf 'target=%s\n' '${{ matrix.target }}'
             printf 'rust_target=%s\n' '${{ matrix.rust_target }}'
@@ -304,11 +380,15 @@ jobs:
           {
             uvx --from "delvewheel==$DELVEWHEEL_VERSION" \
               delvewheel show "${repaired[0]}"
+            python ../../scripts/validate-python-package.py \
+              --wheel "${repaired[0]}" \
+              --target '${{ matrix.target }}'
             printf '\nabi3audit=%s\n' "$ABI3AUDIT_VERSION"
             uvx --from "abi3audit==$ABI3AUDIT_VERSION" \
               abi3audit --strict "${repaired[0]}"
           } >>"$report" 2>&1
           cat "$report"
+          trap - EXIT
       - name: Select the exact final wheel
         id: final-wheel
         shell: bash
@@ -342,6 +422,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload exact repair and ABI audit report
+        if: >-
+          ${{ always() &&
+              (steps.linux-audit.outcome != 'skipped' ||
+               steps.macos-audit.outcome != 'skipped' ||
+               steps.windows-audit.outcome != 'skipped') }}
         uses: actions/upload-artifact@v4
         with:
           name: python-audit-${{ matrix.target }}

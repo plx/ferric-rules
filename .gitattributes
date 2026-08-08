@@ -16,3 +16,4 @@ crates/ferric-rules-python/LICENSE-MIT text eol=lf
 crates/ferric-rules-python/LICENSE-APACHE text eol=lf
 crates/ferric-rules-python/wheel-targets.json text eol=lf
 docs/python-package-release.md text eol=lf
+scripts/musl_static_libgcc_linker.py text eol=lf
