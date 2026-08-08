@@ -56,6 +56,7 @@ jobs:
         working-directory: packages/ferric
         run: |
           npm ci
+          npm run build
           ./node_modules/.bin/tsx --test \
             test/conformance/package/loader-paths.test.ts \
             test/conformance/package/node-target-matrix.test.ts

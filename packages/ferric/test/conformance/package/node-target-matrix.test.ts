@@ -154,6 +154,23 @@ test("G-001 generated platform manifests preserve every canonical target selecto
 });
 
 test("G-001 Node artifact workflow covers the exact native target matrix", () => {
+  const contractJob = artifactWorkflow.match(
+    /\n  validate-artifact-contract:\n([\s\S]*?)\n  pack-and-smoke:/,
+  )?.[1];
+  assert.ok(contractJob, "Node artifact workflow must validate clean checkout state");
+  const installOffset = contractJob.indexOf("npm ci");
+  const buildOffset = contractJob.indexOf("npm run build");
+  const testOffset = contractJob.indexOf("./node_modules/.bin/tsx --test");
+  assert.ok(installOffset >= 0, "artifact contract job must install dependencies");
+  assert.ok(
+    buildOffset > installOffset,
+    "artifact contract job must build dist after installing dependencies",
+  );
+  assert.ok(
+    testOffset > buildOffset,
+    "artifact contract job must build dist before running loader tests",
+  );
+
   const rows = workflowTargetRows();
   assert.deepStrictEqual(rows, [
     {
