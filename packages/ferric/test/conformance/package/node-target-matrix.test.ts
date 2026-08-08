@@ -25,6 +25,10 @@ const artifactWorkflow = readFileSync(
   ),
   "utf8",
 );
+const ciWorkflow = readFileSync(
+  resolve(__dirname, "../../../../../.github/workflows/ci.yml"),
+  "utf8",
+);
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
@@ -224,6 +228,23 @@ test("G-001 Node artifact workflow covers the exact native target matrix", () =>
       "ubuntu-24.04-arm",
     );
   }
+});
+
+test("G-001 Node CI preserves the version-locked package metadata", () => {
+  const nodeBindingsJob = ciWorkflow.match(
+    /\n  node-bindings:\n([\s\S]*?)\n  bindings-conformance:/,
+  )?.[1];
+  assert.ok(nodeBindingsJob, "CI must contain the Node bindings job");
+  assert.strictEqual(
+    [...nodeBindingsJob.matchAll(/^\s+npm ci$/gm)].length,
+    2,
+    "Node binding installs must use the immutable lockfile path",
+  );
+  assert.strictEqual(
+    [...nodeBindingsJob.matchAll(/^\s+npm install$/gm)].length,
+    0,
+    "Node binding installs must not rewrite the locked native matrix",
+  );
 });
 
 test("G-001 musl artifact lanes build and smoke in matching Alpine runtimes", () => {
