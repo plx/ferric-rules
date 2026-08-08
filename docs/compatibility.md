@@ -5,8 +5,36 @@ Production System). Each section covers a major CLIPS language area and
 documents supported features, behavioral differences, and any restrictions.
 
 Ferric targets semantic compatibility with the CLIPS Basic Programming Guide
-for the supported subset. Rules written for CLIPS within this subset should
-execute identically in Ferric without modification.
+for the supported subset. "Supported" means that the language area is
+implemented, not that every rule set in that area has been proven equivalent.
+Exact CLIPS compatibility claims are limited to the reviewed differential
+policy cases and are qualified by the known gaps below.
+
+## Known Differential Gaps
+
+The blocking pinned-CLIPS lane currently retains the following known
+differences as exact, issue-linked deviations. They are not accepted as
+equivalent: the gate fails if their observed fields or semantic fingerprints
+change, and it rejects every unexplained divergence.
+
+| Area | Current difference from pinned CLIPS | Policy cases | Tracking |
+|------|--------------------------------------|--------------|----------|
+| Depth and breadth agenda order | Recreated activations use different chronology in an order-sensitive case. | `FR-RETE-008` depth activation chronology; `FR-RETE-008-BREADTH` breadth activation chronology | [#154](https://github.com/plx/ferric-rules/issues/154) |
+| LEX and MEA agenda order | Recency vectors and the MEA tiebreak differ for selected multi-pattern activations. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
+| Reset ordering | `deffacts`-derived and `initial-fact` activations are inserted in the opposite order. | `FR-RETE-010` reset bootstrap ordering | [#156](https://github.com/plx/ferric-rules/issues/156) |
+| Rule replacement | A superseded same-name rule can remain live and fire alongside its replacement. | `FR-RETE-011` same-name rule replacement | [#157](https://github.com/plx/ferric-rules/issues/157) |
+| Template redefinition | A rejected live-template redefinition can corrupt later load state. | `FR-RETE-012` in-use template redefinition | [#158](https://github.com/plx/ferric-rules/issues/158) |
+| Module imports | An import from a module that exports nothing can be accepted and leak a qualified fact. | `FR-RETE-015` module export visibility | [#160](https://github.com/plx/ferric-rules/issues/160) |
+| Immediate focus-stack reporting | `list-focus-stack` can omit a module that was just focused. | `FR-RETE-016` immediate focus changes | [#192](https://github.com/plx/ferric-rules/issues/192) |
+| Drained focus stack | Ferric can retain `MAIN` after pinned CLIPS reports an empty stack. | `FR-RETE-017` focus-stack draining | [#193](https://github.com/plx/ferric-rules/issues/193) |
+| Late `deffacts` loading | A `deffacts` construct loaded after reset is asserted without another reset. | `FR-RETE-018` deffacts reset lifecycle | [#161](https://github.com/plx/ferric-rules/issues/161) |
+
+The reviewed differential policy covers 22 scenarios for 20 production-audit
+IDs plus one generated-harness control. It does not turn undeclared corpus
+fixtures into compatibility claims; those remain pending or incompatible
+until they receive a structured oracle and reviewed policy entry. See
+[Compatibility assessment oracles](compatibility-assessment.md) for the exact
+evidence boundary.
 
 ---
 
@@ -72,9 +100,10 @@ round-trips.
 
 ### initial-fact
 
-On `(reset)`, the engine asserts `(initial-fact)` before processing any
-`deffacts` groups. This matches CLIPS behavior and is required for
-standalone negation and `forall` patterns to activate correctly.
+On `(reset)`, Ferric currently reasserts registered `deffacts` before
+`(initial-fact)`. The bootstrap fact enables standalone negation and `forall`
+patterns, but this ordering differs from pinned CLIPS and can reverse activation
+order; see [#156](https://github.com/plx/ferric-rules/issues/156).
 
 ### Behavioral Notes
 
@@ -275,8 +304,10 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
 
 ### Semantics
 
-- All `deffacts` groups are processed during `(reset)`, after `(initial-fact)`
-  is asserted.
+- All `deffacts` groups are processed during `(reset)`. Ferric currently
+  processes them before asserting `(initial-fact)`; pinned CLIPS uses the
+  opposite bootstrap order, as tracked in
+  [#156](https://github.com/plx/ferric-rules/issues/156).
 - Multiple `deffacts` groups may exist; all are processed.
 - `deffacts` groups are module-scoped. Use `MODULE::name` syntax to define
   deffacts in a specific module context.

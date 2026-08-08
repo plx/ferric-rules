@@ -367,11 +367,15 @@ Run the maintained focused suite and external-example assessment:
 
 ```sh
 cargo test -p ferric-rules --test ferric_semantic_regressions -- --nocapture
-just compat-scan
-just harness-gen
-just compat-run
-just compat-report
+just compat-semantic-lane
+just assess-compatibility
 ```
+
+`just assess-compatibility` is the complete blocking sequence: it builds the
+candidate and pinned reference, scans, generates and independently verifies
+harnesses, runs every declared fixture through both engines, enforces the exact
+policy, and reports. Do not substitute the lower-level scan/run/report commands
+without the generation, verification, and policy-gate steps.
 
 Require the manifest to identify the exact candidate and CLIPS digest. Manually
 sample at least:
