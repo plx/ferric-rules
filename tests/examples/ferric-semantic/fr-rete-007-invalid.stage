@@ -1,0 +1,5 @@
+; The unknown RHS function must fail without installing a zombie terminal.
+(defrule zombie
+  (trigger)
+  =>
+  (ferric-missing-function))

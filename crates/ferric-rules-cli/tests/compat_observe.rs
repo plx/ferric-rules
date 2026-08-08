@@ -1,6 +1,7 @@
 //! Black-box tests for the dedicated structured compatibility observation.
 
 use std::io::Write as _;
+use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::Value;
@@ -32,6 +33,14 @@ const SOURCE: &str = r#"
 
 fn run_ferric(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ferric"))
+        .args(args)
+        .output()
+        .expect("execute ferric binary")
+}
+
+fn run_ferric_in(current_dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_ferric"))
+        .current_dir(current_dir)
         .args(args)
         .output()
         .expect("execute ferric binary")
@@ -89,6 +98,55 @@ fn observe_with_digests(
 
 fn observe(source: &str, composed_sha256: &str) -> std::process::Output {
     observe_with_digests(source, &sha256(source.as_bytes()), composed_sha256)
+}
+
+fn observe_scenario_with_digests(
+    repo: &Path,
+    plan: &str,
+    source_sha256: &str,
+    composed_sha256: &str,
+) -> Output {
+    let plan_path = repo.join("scenario.plan");
+    std::fs::write(&plan_path, plan).expect("write scenario plan");
+    run_ferric_in(
+        repo,
+        &[
+            "compat-observe",
+            "--fixture-id",
+            FIXTURE_ID,
+            "--nonce",
+            NONCE,
+            "--source-sha256",
+            source_sha256,
+            "--composed-sha256",
+            composed_sha256,
+            "--scenario",
+            plan_path.to_str().expect("UTF-8 scenario path"),
+        ],
+    )
+}
+
+fn observe_scenario(repo: &Path, plan: &str, source_sha256: &str) -> Output {
+    observe_scenario_with_digests(repo, plan, source_sha256, &sha256(plan.as_bytes()))
+}
+
+fn write_scenario_source(repo: &Path, relative_path: &str, source: &str) {
+    let path = repo.join(relative_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create scenario source directory");
+    }
+    std::fs::write(path, source).expect("write scenario source");
+}
+
+fn channel_text<'a>(observation: &'a Value, name: &str) -> &'a str {
+    observation["channels"]
+        .as_array()
+        .expect("channel array")
+        .iter()
+        .find(|channel| channel["name"] == name)
+        .unwrap_or_else(|| panic!("missing channel {name}"))["text"]
+        .as_str()
+        .expect("channel text")
 }
 
 fn parse_single_observation(output: &std::process::Output) -> Value {
@@ -245,7 +303,7 @@ fn digest_mismatch_emits_completed_harness_failure_observation() {
 }
 
 #[test]
-fn distinct_source_and_composed_digests_remain_bound_without_false_verification() {
+fn v1_positional_input_remains_compatible_and_does_not_claim_source_verification() {
     let source_sha256 = "1".repeat(64);
     let composed_sha256 = sha256(SOURCE.as_bytes());
     let output = observe_with_digests(SOURCE, &source_sha256, &composed_sha256);
@@ -350,6 +408,27 @@ fn multiple_modules_leave_fact_ownership_explicitly_unavailable() {
 }
 
 #[test]
+fn template_facts_report_qualified_ownership_when_another_module_is_current() {
+    let source = r"
+(defmodule A (export ?ALL))
+(defmodule B (import A ?ALL))
+(deftemplate A::secret (slot value))
+(deffacts B::startup (secret (value 7)))
+";
+    let digest = sha256(source.as_bytes());
+    let output = observe(source, &digest);
+    assert_exit_code(&output, 0);
+
+    let observation = parse_single_observation(&output);
+    assert_eq!(observation["capabilities"]["fact_modules"], true);
+    let facts = observation["facts"].as_array().expect("facts array");
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0]["kind"], "template");
+    assert_eq!(facts[0]["module"], "A");
+    assert_eq!(facts[0]["name"], "secret");
+}
+
+#[test]
 fn action_error_stops_before_halt_and_is_captured_without_output_leakage() {
     let source = r#"
 (deffacts seed (channel t))
@@ -411,4 +490,324 @@ fn cli_rejects_noncanonical_digest_before_execution() {
     assert_exit_code(&output, 2);
     assert!(stdout_str(&output).is_empty());
     assert!(stderr_str(&output).contains("64 lowercase hexadecimal"));
+}
+
+#[test]
+fn scenario_stages_a_late_source_before_reset_and_run() {
+    let repo = tempfile::tempdir().expect("create scenario repository");
+    let primary_path = "tests/examples/primary.clp";
+    let late_path = "tests/examples/late.clp";
+    let primary = r"
+(deftemplate marker (slot value))
+(defrule report
+  (marker (value ?value))
+  =>
+  (printout t ?value crlf))
+";
+    let late = "(deffacts late-seed (marker (value late)))\n";
+    write_scenario_source(repo.path(), primary_path, primary);
+    write_scenario_source(repo.path(), late_path, late);
+    let primary_digest = sha256(primary.as_bytes());
+    let plan = format!(
+        "FERRIC-COMPAT-SCENARIO|1\n\
+         SOURCE|primary|{primary_digest}|{primary_path}\n\
+         SOURCE|late|{}|{late_path}\n\
+         STEP|1|LOAD|primary|stop\n\
+         STEP|2|LOAD|late|stop\n\
+         STEP|3|RESET|-|stop\n\
+         STEP|4|RUN|-1|stop\n\
+         END\n",
+        sha256(late.as_bytes())
+    );
+
+    let output = observe_scenario(repo.path(), &plan, &primary_digest);
+    assert_exit_code(&output, 0);
+    assert!(stderr_str(&output).is_empty());
+    let observation = parse_single_observation(&output);
+    let plan_digest = sha256(plan.as_bytes());
+    assert_eq!(
+        observation["fixture"]["source_sha256"],
+        primary_digest.as_str()
+    );
+    assert_eq!(
+        observation["fixture"]["composed_sha256"],
+        plan_digest.as_str()
+    );
+    for record in observation["lifecycle"]
+        .as_array()
+        .expect("lifecycle array")
+    {
+        assert_eq!(record["source_sha256"], primary_digest.as_str());
+        assert_eq!(record["composed_sha256"], plan_digest.as_str());
+    }
+    assert_eq!(observation["phase_reached"], "post-run");
+    assert_eq!(observation["run"]["rules_fired"], 1);
+    assert_eq!(channel_text(&observation, "t"), "late\n");
+    assert_eq!(
+        observation["capabilities"]["source_digest_verification"],
+        true
+    );
+}
+
+#[test]
+fn scenario_late_definition_replaces_a_callable_in_the_same_engine() {
+    let repo = tempfile::tempdir().expect("create scenario repository");
+    let primary_path = "tests/examples/primary.clp";
+    let replacement_path = "tests/examples/replacement.clp";
+    let primary = r"
+(deffunction answer () 1)
+(deffacts seed (go))
+(defrule report (go) => (printout t (answer) crlf))
+";
+    let replacement = "(deffunction answer () 2)\n";
+    write_scenario_source(repo.path(), primary_path, primary);
+    write_scenario_source(repo.path(), replacement_path, replacement);
+    let primary_digest = sha256(primary.as_bytes());
+    let plan = format!(
+        "FERRIC-COMPAT-SCENARIO|1\n\
+         SOURCE|primary|{primary_digest}|{primary_path}\n\
+         SOURCE|replacement|{}|{replacement_path}\n\
+         STEP|1|LOAD|primary|stop\n\
+         STEP|2|LOAD|replacement|stop\n\
+         STEP|3|RESET|-|stop\n\
+         STEP|4|RUN|-1|stop\n\
+         END\n",
+        sha256(replacement.as_bytes())
+    );
+
+    let output = observe_scenario(repo.path(), &plan, &primary_digest);
+    assert_exit_code(&output, 0);
+    let observation = parse_single_observation(&output);
+    assert_eq!(observation["run"]["rules_fired"], 1);
+    assert_eq!(channel_text(&observation, "t"), "2\n");
+}
+
+#[test]
+fn scenario_expected_load_error_can_continue_to_reset_and_run() {
+    let repo = tempfile::tempdir().expect("create scenario repository");
+    let primary_path = "tests/examples/primary.clp";
+    let broken_path = "tests/examples/broken.clp";
+    let primary = "(deffacts seed (go))\n(defrule report (go) => (printout t ok crlf))\n";
+    let broken = "(not-a-clips-construct)\n";
+    write_scenario_source(repo.path(), primary_path, primary);
+    write_scenario_source(repo.path(), broken_path, broken);
+    let primary_digest = sha256(primary.as_bytes());
+    let plan = format!(
+        "FERRIC-COMPAT-SCENARIO|1\n\
+         SOURCE|primary|{primary_digest}|{primary_path}\n\
+         SOURCE|broken|{}|{broken_path}\n\
+         STEP|1|LOAD|primary|stop\n\
+         STEP|2|LOAD|broken|continue\n\
+         STEP|3|RESET|-|stop\n\
+         STEP|4|RUN|-1|stop\n\
+         END\n",
+        sha256(broken.as_bytes())
+    );
+
+    let output = observe_scenario(repo.path(), &plan, &primary_digest);
+    assert_exit_code(&output, 0);
+    let observation = parse_single_observation(&output);
+    assert_eq!(observation["phase_reached"], "post-run");
+    assert_eq!(channel_text(&observation, "t"), "ok\n");
+    let diagnostic = observation["diagnostics"]
+        .as_array()
+        .expect("diagnostic array")
+        .iter()
+        .find(|diagnostic| diagnostic["phase"] == "load")
+        .expect("continued load diagnostic");
+    assert_eq!(diagnostic["severity"], "error");
+    assert_eq!(diagnostic["category"], "construct-error");
+    assert_eq!(diagnostic["continued"], true);
+}
+
+#[test]
+fn scenario_stop_policy_terminates_on_load_error() {
+    let repo = tempfile::tempdir().expect("create scenario repository");
+    let primary_path = "tests/examples/primary.clp";
+    let primary = "(not-a-clips-construct)\n";
+    write_scenario_source(repo.path(), primary_path, primary);
+    let primary_digest = sha256(primary.as_bytes());
+    let plan = format!(
+        "FERRIC-COMPAT-SCENARIO|1\n\
+         SOURCE|primary|{primary_digest}|{primary_path}\n\
+         STEP|1|LOAD|primary|stop\n\
+         STEP|2|RESET|-|stop\n\
+         STEP|3|RUN|-1|stop\n\
+         END\n"
+    );
+
+    let output = observe_scenario(repo.path(), &plan, &primary_digest);
+    assert_exit_code(&output, 1);
+    let observation = parse_single_observation(&output);
+    assert_eq!(observation["phase_reached"], "load");
+    assert!(observation["run"].is_null());
+    assert_eq!(observation["diagnostics"][0]["category"], "construct-error");
+    assert_eq!(observation["diagnostics"][0]["continued"], false);
+}
+
+#[test]
+fn scenario_applies_the_declared_conflict_strategy() {
+    let repo = tempfile::tempdir().expect("create scenario repository");
+    let primary_path = "tests/examples/strategy.clp";
+    let primary = r"
+(deffacts seed (go))
+(defrule first (go) => (printout t first crlf))
+(defrule second (go) => (printout t second crlf))
+";
+    write_scenario_source(repo.path(), primary_path, primary);
+    let primary_digest = sha256(primary.as_bytes());
+    let plan = format!(
+        "FERRIC-COMPAT-SCENARIO|1\n\
+         SOURCE|primary|{primary_digest}|{primary_path}\n\
+         STEP|1|LOAD|primary|stop\n\
+         STEP|2|RESET|-|stop\n\
+         STEP|3|SET-STRATEGY|breadth|stop\n\
+         STEP|4|RUN|-1|stop\n\
+         END\n"
+    );
+
+    let output = observe_scenario(repo.path(), &plan, &primary_digest);
+    assert_exit_code(&output, 0);
+    let observation = parse_single_observation(&output);
+    assert_eq!(observation["run"]["rules_fired"], 2);
+    assert_eq!(channel_text(&observation, "t"), "second\nfirst\n");
+}
+
+#[test]
+fn scenario_rejects_malformed_sequence_before_execution() {
+    let repo = tempfile::tempdir().expect("create scenario repository");
+    let primary_path = "tests/examples/primary.clp";
+    let primary = "(deffacts seed (must-not-run))\n";
+    write_scenario_source(repo.path(), primary_path, primary);
+    let primary_digest = sha256(primary.as_bytes());
+    let plan = format!(
+        "FERRIC-COMPAT-SCENARIO|1\n\
+         SOURCE|primary|{primary_digest}|{primary_path}\n\
+         STEP|2|LOAD|primary|stop\n\
+         STEP|3|RUN|-1|stop\n\
+         END\n"
+    );
+
+    let output = observe_scenario(repo.path(), &plan, &primary_digest);
+    assert_exit_code(&output, 1);
+    let observation = parse_single_observation(&output);
+    assert!(observation["run"].is_null());
+    assert_eq!(observation["diagnostics"][0]["phase"], "harness");
+    assert_eq!(observation["diagnostics"][0]["category"], "harness-error");
+    assert!(observation["diagnostics"][0]["message"]
+        .as_str()
+        .expect("diagnostic message")
+        .contains("sequence"));
+}
+
+#[test]
+fn scenario_rejects_absolute_and_parent_traversal_source_paths() {
+    for escaped_path in [
+        "../outside.clp",
+        "/tmp/outside.clp",
+        "tests/examples/nested/../outside.clp",
+        "tests/examples/./outside.clp",
+    ] {
+        let repo = tempfile::tempdir().expect("create scenario repository");
+        let declared_digest = "0".repeat(64);
+        let plan = format!(
+            "FERRIC-COMPAT-SCENARIO|1\n\
+             SOURCE|primary|{declared_digest}|{escaped_path}\n\
+             STEP|1|LOAD|primary|stop\n\
+             STEP|2|RESET|-|stop\n\
+             STEP|3|RUN|-1|stop\n\
+             END\n"
+        );
+
+        let output = observe_scenario(repo.path(), &plan, &declared_digest);
+        assert_exit_code(&output, 1);
+        let observation = parse_single_observation(&output);
+        assert_eq!(observation["diagnostics"][0]["phase"], "harness");
+        assert!(observation["diagnostics"][0]["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("repo-relative"));
+    }
+}
+
+#[test]
+fn scenario_rejects_a_stale_declared_source_digest_before_execution() {
+    let repo = tempfile::tempdir().expect("create scenario repository");
+    let primary_path = "tests/examples/primary.clp";
+    let primary = "(deffacts seed (must-not-run))\n";
+    write_scenario_source(repo.path(), primary_path, primary);
+    let stale_digest = "0".repeat(64);
+    let plan = format!(
+        "FERRIC-COMPAT-SCENARIO|1\n\
+         SOURCE|primary|{stale_digest}|{primary_path}\n\
+         STEP|1|LOAD|primary|stop\n\
+         STEP|2|RESET|-|stop\n\
+         STEP|3|RUN|-1|stop\n\
+         END\n"
+    );
+
+    let output = observe_scenario(repo.path(), &plan, &stale_digest);
+    assert_exit_code(&output, 1);
+    let observation = parse_single_observation(&output);
+    assert!(observation["run"].is_null());
+    assert_eq!(observation["diagnostics"][0]["phase"], "harness");
+    assert!(observation["diagnostics"][0]["message"]
+        .as_str()
+        .expect("diagnostic message")
+        .contains("digest mismatch"));
+}
+
+#[test]
+fn scenario_rejects_a_primary_digest_that_disagrees_with_the_invocation() {
+    let repo = tempfile::tempdir().expect("create scenario repository");
+    let primary_path = "tests/examples/primary.clp";
+    let primary = "(deffacts seed (must-not-run))\n";
+    write_scenario_source(repo.path(), primary_path, primary);
+    let primary_digest = sha256(primary.as_bytes());
+    let plan = format!(
+        "FERRIC-COMPAT-SCENARIO|1\n\
+         SOURCE|primary|{primary_digest}|{primary_path}\n\
+         STEP|1|LOAD|primary|stop\n\
+         STEP|2|RESET|-|stop\n\
+         STEP|3|RUN|-1|stop\n\
+         END\n"
+    );
+
+    let output = observe_scenario(repo.path(), &plan, &"1".repeat(64));
+    assert_exit_code(&output, 1);
+    let observation = parse_single_observation(&output);
+    assert!(observation["run"].is_null());
+    assert_eq!(observation["diagnostics"][0]["phase"], "harness");
+    assert!(observation["diagnostics"][0]["message"]
+        .as_str()
+        .expect("diagnostic message")
+        .contains("primary source digest mismatch"));
+}
+
+#[test]
+fn scenario_rejects_a_stale_composed_plan_digest_before_parsing() {
+    let repo = tempfile::tempdir().expect("create scenario repository");
+    let primary_path = "tests/examples/primary.clp";
+    let primary = "(deffacts seed (must-not-run))\n";
+    write_scenario_source(repo.path(), primary_path, primary);
+    let primary_digest = sha256(primary.as_bytes());
+    let plan = format!(
+        "FERRIC-COMPAT-SCENARIO|1\n\
+         SOURCE|primary|{primary_digest}|{primary_path}\n\
+         STEP|1|LOAD|primary|stop\n\
+         STEP|2|RESET|-|stop\n\
+         STEP|3|RUN|-1|stop\n\
+         END\n"
+    );
+
+    let output =
+        observe_scenario_with_digests(repo.path(), &plan, &primary_digest, &"0".repeat(64));
+    assert_exit_code(&output, 1);
+    let observation = parse_single_observation(&output);
+    assert!(observation["run"].is_null());
+    assert_eq!(observation["diagnostics"][0]["phase"], "harness");
+    assert!(observation["diagnostics"][0]["message"]
+        .as_str()
+        .expect("diagnostic message")
+        .contains("scenario plan digest mismatch"));
 }

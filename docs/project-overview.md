@@ -81,7 +81,8 @@ Engine, loader, execution loop, evaluator, modules, I/O.
 
 Thin re-export crate: `ferric_rules::core`, `ferric_rules::parser`, `ferric_rules::runtime`.
 
-- `tests/clips_compat.rs` — CLIPS-compat suite (engagement scenarios, etc.).
+- `tests/ferric_semantic_regressions.rs` — Ferric-only semantic regression
+  suite (engagement scenarios, etc.).
 - `tests/scaling_tests.rs` — `#[ignore]` asymptotic scaling regression tests
   (join propagation, engine run, retraction cascade, churn, alpha fanout),
   run via `just scaling-check`.
@@ -290,7 +291,7 @@ thresholds). Scaling regression: `just scaling-check` runs facade-crate
   `bench-manners`, `bench-join`, `bench-churn`, `bench-negation`,
   `bench-thresholds`, `bench-compare`, `scaling-check`.
 - Compat: `compat-scan`, `compat-run`, `compat-report`, `compat-diff`,
-  `assess-compatibility`.
+  `compat-semantic-gate`, `compat-semantic-lane`, `assess-compatibility`.
 - Bat processing: `bat-analyze`, `bat-extract`, `bat-convert`,
   `harness-gen`, `segment-check`.
 - Perf: `perf-collect`, `perf-report`, `perf-diff`, `assess-performance`.

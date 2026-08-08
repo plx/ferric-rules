@@ -260,7 +260,7 @@ Total tests passing: **1223** across the workspace (1220 unit/integration + 3 do
 | `cargo check --workspace --all-targets` | Compilation check | Blocking |
 | `cargo fmt --all -- --check` | Formatting | Blocking |
 | `cargo clippy --workspace --all-targets -D warnings` | Lint | Blocking |
-| `cargo test -p ferric-rules --test clips_compat` | Compatibility suite | Blocking (Phase 6) |
+| `cargo test -p ferric-rules --test ferric_semantic_regressions` | Ferric semantic regression suite | Blocking (Phase 6) |
 | `cargo bench -p ferric` | Benchmark suite | Advisory -> Blocking |
 
 ---

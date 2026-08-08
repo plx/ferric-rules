@@ -275,6 +275,18 @@ compat-report *args:
 compat-diff *args:
     just _uv ferric-compat-diff {{args}}
 
+# Enforce the exact pinned-CLIPS result policy for the semantic matrix
+compat-semantic-gate *args:
+    just _uv ferric-compat-semantic-gate {{args}}
+
+# Rebuild and execute the complete pinned-CLIPS semantic differential lane
+compat-semantic-lane:
+    docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+    just build-cli-release
+    just compat-scan
+    just compat-run --all --source ferric-semantic
+    just compat-semantic-gate
+
 # Full compatibility assessment: scan, run, report
 assess-compatibility: compat-scan compat-run compat-report
 

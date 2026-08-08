@@ -2106,6 +2106,32 @@ mod tests {
     }
 
     #[test]
+    fn qualified_template_records_its_declared_module_when_another_module_is_current() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (defmodule A (export ?ALL))
+            (defmodule B (import A ?ALL))
+            (deftemplate A::secret (slot value))
+            (deffacts B::startup (secret (value 7)))
+        ",
+        );
+
+        let template_id = engine
+            .facts()
+            .expect("enumerate facts")
+            .find_map(|(_, fact)| match fact {
+                ferric_rules_core::Fact::Template(template) => Some(template.template_id),
+                ferric_rules_core::Fact::Ordered(_) => None,
+            })
+            .expect("template fact from imported A::secret");
+        assert_eq!(engine.current_module(), "B");
+        assert_eq!(engine.template_name_by_id(template_id), Some("A::secret"));
+        assert_eq!(engine.template_module_name_by_id(template_id), Some("A"));
+    }
+
+    #[test]
     fn module_without_explicit_export_defaults_to_export_all() {
         let mut engine = new_utf8_engine();
         load_ok(

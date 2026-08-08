@@ -1,0 +1,13 @@
+; Importing A's unexported template must be rejected.
+(defmodule B
+  (import A deftemplate ?ALL))
+
+(deffacts B::startup
+  (secret (value 7)))
+
+(defrule B::leak
+  (declare (auto-focus TRUE))
+  ?secret <- (secret (value ?value))
+  =>
+  (printout t "leak=" ?value crlf)
+  (retract ?secret))

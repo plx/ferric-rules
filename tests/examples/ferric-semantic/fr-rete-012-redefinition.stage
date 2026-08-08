@@ -1,0 +1,4 @@
+; CLIPS rejects this in-use template redefinition and preserves the original.
+(deftemplate t
+  (slot x)
+  (slot y (default replacement)))

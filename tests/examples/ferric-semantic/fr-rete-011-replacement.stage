@@ -1,0 +1,6 @@
+; Same module-qualified name: only this new RHS may remain live.
+(defrule replace-me
+  (ready)
+  =>
+  (printout t "new" crlf)
+  (assert (result new)))

@@ -989,6 +989,13 @@ impl Engine {
         template: &TemplateConstruct,
         result: &mut LoadResult,
     ) -> Result<(), LoadError> {
+        let owning_module = parse_qualified_name(&template.name)
+            .ok()
+            .and_then(|name| {
+                name.module_name()
+                    .and_then(|module| self.module_registry.get_by_name(module))
+            })
+            .unwrap_or_else(|| self.module_registry.current_module());
         let slot_count = template.slots.len();
         let mut slot_names = Vec::with_capacity(slot_count);
         let mut slot_index = HashMap::default();
@@ -1019,8 +1026,7 @@ impl Engine {
 
         self.template_ids
             .insert(template.name.clone().into_boxed_str(), template_id);
-        self.template_modules
-            .insert(template_id, self.module_registry.current_module());
+        self.template_modules.insert(template_id, owning_module);
 
         Ok(())
     }

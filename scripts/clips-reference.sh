@@ -9,6 +9,7 @@ QUIET=0
 CLIPS_FILES=()
 OPS=()
 OPS_FILE=""
+SCENARIO_FILE=""
 OBSERVER_NONCE=""
 OBSERVER_FIXTURE_ID=""
 OBSERVER_SOURCE_SHA256=""
@@ -22,10 +23,12 @@ usage() {
 Usage:
   scripts/clips-reference.sh build [options]
   scripts/clips-reference.sh run [options]
+  scripts/clips-reference.sh provenance [options]
 
 Commands:
   build                 Build a multi-platform CLIPS image.
   run                   Start CLIPS in Docker and execute files/operations.
+  provenance            Print measured CLIPS image provenance as JSON.
 
 Build options:
   --image <name>        Docker image name (default: ferric-rules/clips-reference)
@@ -38,6 +41,7 @@ Run options:
   --image <name>        Docker image name (default: ferric-rules/clips-reference)
   --tag <tag>           Docker image tag (default: latest)
   --file <path>         CLIPS source file to batch* load (repeatable)
+  --scenario <path>     Canonical structured-observer scenario plan
   --ops-file <path>     Text file containing CLIPS expressions (one per line)
   --op <expr>           CLIPS expression to execute (repeatable)
   --observer-nonce <n>  Enable nonce-bound native run metadata (internal)
@@ -60,6 +64,7 @@ Examples:
   scripts/clips-reference.sh build --load
   scripts/clips-reference.sh run --file examples/rules.clp --op '(reset)' --op '(run)'
   scripts/clips-reference.sh run --file a.clp --file b.clp --ops-file scripts/sequence.clp
+  scripts/clips-reference.sh provenance
 USAGE
 }
 
@@ -128,6 +133,63 @@ build_command() {
   fi
 }
 
+provenance_command() {
+  require_command docker
+
+  if [[ "$LOAD_LOCAL" -ne 0 || "$QUIET" -ne 0 ||
+        "${#CLIPS_FILES[@]}" -ne 0 || "${#OPS[@]}" -ne 0 ||
+        -n "$OPS_FILE" || -n "$SCENARIO_FILE" || -n "$OBSERVER_NONCE" ||
+        -n "$OBSERVER_FIXTURE_ID" || -n "$OBSERVER_SOURCE_SHA256" ||
+        -n "$OBSERVER_COMPOSED_SHA256" || -n "$OBSERVER_AUTH_KEY" ||
+        -n "$OBSERVER_CONTAINER_NAME" || "$PLATFORMS" != "linux/amd64,linux/arm64" ]]; then
+    echo "error: provenance accepts only --image and --tag" >&2
+    exit 1
+  fi
+
+  local full_image="${IMAGE_NAME}:${IMAGE_TAG}"
+  local measured
+  local image_id
+  measured="$(docker run --rm "$full_image" --ferric-provenance)"
+  image_id="$(docker image inspect --format '{{.Id}}' "$full_image")"
+
+  if [[ "$measured" == *$'\n'* ]]; then
+    echo "error: image provenance contains multiple lines" >&2
+    exit 1
+  fi
+
+  local marker
+  local format_version
+  local engine_version
+  local package_version
+  local platform
+  local binary_sha256
+  local library_sha256
+  local base_image
+  local extra
+  local separators="${measured//[!|]/}"
+  IFS='|' read -r marker format_version engine_version package_version \
+    platform binary_sha256 library_sha256 base_image extra <<< "$measured"
+
+  if [[ "${#separators}" -ne 7 ||
+        "$marker" != "FERRIC-CLIPS-PROVENANCE" || "$format_version" != "1" ||
+        "$engine_version" != "6.30" || "$package_version" != "6.30-4.1" ||
+        ! "$platform" =~ ^linux/(amd64|arm64)$ ||
+        ! "$binary_sha256" =~ ^[0-9a-f]{64}$ ||
+        ! "$library_sha256" =~ ^[0-9a-f]{64}$ ||
+        ! "$base_image" =~ ^debian:bookworm-slim@sha256:[0-9a-f]{64}$ ||
+        -n "$extra" || ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "error: image provenance is malformed" >&2
+    exit 1
+  fi
+
+  printf '{"schema":"ferric.clips-reference-provenance","version":1,'
+  printf '"engine":"clips","engine_version":"%s",' "$engine_version"
+  printf '"package":"clips","package_version":"%s",' "$package_version"
+  printf '"platform":"%s","binary_sha256":"%s",' "$platform" "$binary_sha256"
+  printf '"library_sha256":"%s","base_image":"%s",' "$library_sha256" "$base_image"
+  printf '"image_id":"%s"}\n' "$image_id"
+}
+
 run_command() {
   require_command docker
 
@@ -136,8 +198,22 @@ run_command() {
   repo_root="$(git rev-parse --show-toplevel)"
   repo_root="$(cd "$repo_root" && pwd -P)"
 
+  if [[ -n "$SCENARIO_FILE" && "${#CLIPS_FILES[@]}" -ne 0 ]]; then
+    echo "error: --scenario and --file are mutually exclusive" >&2
+    exit 1
+  fi
+  if [[ -n "$SCENARIO_FILE" && -n "$OPS_FILE" ]]; then
+    echo "error: --scenario and --ops-file are mutually exclusive" >&2
+    exit 1
+  fi
+  if [[ -n "$SCENARIO_FILE" && -z "$OBSERVER_NONCE" ]]; then
+    echo "error: --scenario requires the structured observer" >&2
+    exit 1
+  fi
+
   local commands=()
   local container_files=()
+  local container_scenario=""
   local file
   for file in ${CLIPS_FILES[@]+"${CLIPS_FILES[@]}"}; do
     local abs
@@ -160,6 +236,21 @@ run_command() {
     fi
   done
 
+  if [[ -n "$SCENARIO_FILE" ]]; then
+    local abs_scenario
+    abs_scenario="$(resolve_path "$SCENARIO_FILE")"
+    if [[ "$abs_scenario" != "$repo_root"/* ]]; then
+      echo "error: --scenario path must be inside repository: $SCENARIO_FILE" >&2
+      exit 1
+    fi
+    local scenario_rel="${abs_scenario:$(( ${#repo_root} + 1 ))}"
+    if [[ "$scenario_rel" =~ [[:cntrl:]] ]]; then
+      echo "error: --scenario path contains an unsupported control character" >&2
+      exit 1
+    fi
+    container_scenario="${WORKDIR_IN_CONTAINER}/${scenario_rel}"
+  fi
+
   if [[ -n "$OPS_FILE" ]]; then
     local abs_ops
     abs_ops="$(resolve_path "$OPS_FILE")"
@@ -175,7 +266,7 @@ run_command() {
   done
 
   if [[ -n "$OBSERVER_NONCE" ]]; then
-    if [[ "${#container_files[@]}" -ne 1 ]]; then
+    if [[ -z "$container_scenario" && "${#container_files[@]}" -ne 1 ]]; then
       echo "error: structured observer requires exactly one --file" >&2
       exit 1
     fi
@@ -220,11 +311,12 @@ run_command() {
       echo "error: structured observer requires a protocol-safe container name" >&2
       exit 1
     fi
-    observer_args+=(
-      "--ferric-observer"
-      "--source"
-      "${container_files[0]}"
-    )
+    observer_args+=("--ferric-observer")
+    if [[ -n "$container_scenario" ]]; then
+      observer_args+=("--scenario" "$container_scenario")
+    else
+      observer_args+=("--source" "${container_files[0]}")
+    fi
     container_name_args+=("--name" "$OBSERVER_CONTAINER_NAME")
   elif [[ -n "$OBSERVER_FIXTURE_ID" || -n "$OBSERVER_SOURCE_SHA256" ||
           -n "$OBSERVER_COMPOSED_SHA256" || -n "$OBSERVER_AUTH_KEY" ||
@@ -284,6 +376,10 @@ while [[ $# -gt 0 ]]; do
       CLIPS_FILES+=("$2")
       shift 2
       ;;
+    --scenario)
+      SCENARIO_FILE="$2"
+      shift 2
+      ;;
     --ops-file)
       OPS_FILE="$2"
       shift 2
@@ -338,6 +434,9 @@ case "$COMMAND" in
     ;;
   run)
     run_command
+    ;;
+  provenance)
+    provenance_command
     ;;
   *)
     echo "error: unknown command: $COMMAND" >&2

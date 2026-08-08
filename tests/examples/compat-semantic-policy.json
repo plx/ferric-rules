@@ -1,0 +1,373 @@
+{
+  "schema_version": 1,
+  "suite_version": "1.1.0",
+  "source": "ferric-semantic",
+  "reference": {
+    "schema": "ferric.clips-reference-provenance",
+    "version": 1,
+    "engine": "clips",
+    "engine_version": "6.30",
+    "package": "clips",
+    "package_version": "6.30-4.1",
+    "base_image": "debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241",
+    "platforms": {
+      "linux/amd64": {
+        "binary_sha256": "39e6bb1465ec0fdf342b21b244f4d2ac182b4849be2ce46c079648611b83fcf0",
+        "library_sha256": "78a49ecf81a6c8339b81ee93734d1a0b87934ad17930045886acd6b61e21923f"
+      },
+      "linux/arm64": {
+        "binary_sha256": "a9fca5ca7d0f9a71626553245bb7fe9d4cde9ea79c4afcb7c6ec3b6607247450",
+        "library_sha256": "55d42c4054f29f551be33e2662c71e5f2e47b96df87a21b8acadfec88d0f5bcb"
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "FR-LANG-001",
+      "issue": "https://github.com/plx/ferric-rules/issues/98",
+      "fixture": "ferric-semantic/fr-lang-001.clp",
+      "family": "callable control flow",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-LANG-002",
+      "issue": "https://github.com/plx/ferric-rules/issues/99",
+      "fixture": "ferric-semantic/fr-lang-002.clp",
+      "family": "RHS evaluation",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-RETE-001",
+      "issue": "https://github.com/plx/ferric-rules/issues/103",
+      "fixture": "ferric-semantic/fr-rete-001.clp",
+      "family": "fact duplication",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-RETE-002",
+      "issue": "https://github.com/plx/ferric-rules/issues/104",
+      "fixture": "ferric-semantic/fr-rete-002.clp",
+      "family": "negative conditional elements",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-RETE-003",
+      "issue": "https://github.com/plx/ferric-rules/issues/105",
+      "fixture": "ferric-semantic/fr-rete-003.clp",
+      "family": "online rule compilation",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-RETE-004",
+      "issue": "https://github.com/plx/ferric-rules/issues/106",
+      "fixture": "ferric-semantic/fr-rete-004.clp",
+      "family": "test conditional elements",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-RETE-005",
+      "issue": "https://github.com/plx/ferric-rules/issues/107",
+      "fixture": "ferric-semantic/fr-rete-005.clp",
+      "family": "double-negation semantics",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-RETE-006",
+      "issue": "https://github.com/plx/ferric-rules/issues/108",
+      "fixture": "ferric-semantic/fr-rete-006.clp",
+      "family": "existential conditional elements",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-RETE-007",
+      "issue": "https://github.com/plx/ferric-rules/issues/109",
+      "fixture": "ferric-semantic/fr-rete-007.clp",
+      "family": "failure-atomic rule loading",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-RETE-008",
+      "issue": "https://github.com/plx/ferric-rules/issues/154",
+      "fixture": "ferric-semantic/fr-rete-008.clp",
+      "family": "depth activation chronology",
+      "expected": {
+        "classification": "divergent",
+        "reason": "oracle-effects-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "channels.stdout" },
+          { "scope": "engines", "field": "effects" },
+          { "scope": "engines", "field": "facts" },
+          { "scope": "ferric", "field": "channels.stdout" },
+          { "scope": "ferric", "field": "effects" },
+          { "scope": "ferric", "field": "facts" }
+        ],
+        "ferric_fingerprint": "72364162f06296fc843278944ee963608ce3bc40144612aa295613a5edc35f05",
+        "rationale": "Ferric schedules the positive activation before the negative activation under depth strategy; pinned CLIPS fires negative then positive.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/154"
+      }
+    },
+    {
+      "id": "FR-RETE-008-BREADTH",
+      "issue": "https://github.com/plx/ferric-rules/issues/154",
+      "fixture": "ferric-semantic/fr-rete-008-breadth.clp",
+      "family": "breadth activation chronology",
+      "expected": {
+        "classification": "divergent",
+        "reason": "oracle-effects-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "channels.stdout" },
+          { "scope": "engines", "field": "effects" },
+          { "scope": "engines", "field": "facts" },
+          { "scope": "ferric", "field": "channels.stdout" },
+          { "scope": "ferric", "field": "effects" },
+          { "scope": "ferric", "field": "facts" }
+        ],
+        "ferric_fingerprint": "87b31493f4b4795a68c08ee349b671d29f2e8b9da63368b75aa01b11bf750385",
+        "rationale": "Ferric schedules the recreated negative activation before the older positive activation under breadth strategy; pinned CLIPS fires positive then negative.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/154"
+      }
+    },
+    {
+      "id": "FR-RETE-009",
+      "issue": "https://github.com/plx/ferric-rules/issues/155",
+      "fixture": "ferric-semantic/fr-rete-009.clp",
+      "family": "LEX recency-vector ordering",
+      "expected": {
+        "classification": "divergent",
+        "reason": "oracle-effects-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "channels.stdout" },
+          { "scope": "engines", "field": "effects" },
+          { "scope": "engines", "field": "facts" },
+          { "scope": "ferric", "field": "channels.stdout" },
+          { "scope": "ferric", "field": "effects" },
+          { "scope": "ferric", "field": "facts" }
+        ],
+        "ferric_fingerprint": "73756ebb852452e8486201145677cbc04cefe1ae0b2d8e68fd000e8aebcd1bbd",
+        "rationale": "Ferric compares matched fact recency in pattern order, producing LY before LX and MY before MX; pinned CLIPS uses canonical descending LEX recency vectors and produces LX before LY and MX before MY.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/155"
+      }
+    },
+    {
+      "id": "FR-RETE-009-MEA",
+      "issue": "https://github.com/plx/ferric-rules/issues/155",
+      "fixture": "ferric-semantic/fr-rete-009-mea.clp",
+      "family": "MEA recency-vector ordering",
+      "expected": {
+        "classification": "divergent",
+        "reason": "oracle-effects-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "channels.stdout" },
+          { "scope": "engines", "field": "effects" },
+          { "scope": "engines", "field": "facts" },
+          { "scope": "ferric", "field": "channels.stdout" },
+          { "scope": "ferric", "field": "effects" },
+          { "scope": "ferric", "field": "facts" }
+        ],
+        "ferric_fingerprint": "73756ebb852452e8486201145677cbc04cefe1ae0b2d8e68fd000e8aebcd1bbd",
+        "rationale": "Ferric's pattern-order fallback schedules MY before MX when the MEA first-pattern key is tied; pinned CLIPS applies canonical LEX fallback and fires MX before MY.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/155"
+      }
+    },
+    {
+      "id": "FR-RETE-010",
+      "issue": "https://github.com/plx/ferric-rules/issues/156",
+      "fixture": "ferric-semantic/fr-rete-010.clp",
+      "family": "reset bootstrap ordering",
+      "expected": {
+        "classification": "divergent",
+        "reason": "oracle-effects-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "channels.stdout" },
+          { "scope": "engines", "field": "effects" },
+          { "scope": "engines", "field": "facts" },
+          { "scope": "ferric", "field": "channels.stdout" },
+          { "scope": "ferric", "field": "effects" },
+          { "scope": "ferric", "field": "facts" }
+        ],
+        "ferric_fingerprint": "0699c8c3569bcab62e653125e53e0ba59611dc39e4b7c7e4f61274a76a5035d0",
+        "rationale": "Ferric fires the deffacts-derived activation before the initial-fact activation; pinned CLIPS uses the opposite reset insertion order.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/156"
+      }
+    },
+    {
+      "id": "FR-RETE-011",
+      "issue": "https://github.com/plx/ferric-rules/issues/157",
+      "fixture": "ferric-semantic/fr-rete-011.clp",
+      "family": "same-name rule replacement",
+      "expected": {
+        "classification": "divergent",
+        "reason": "oracle-firings-count-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "channels.stdout" },
+          { "scope": "engines", "field": "effects" },
+          { "scope": "engines", "field": "facts" },
+          { "scope": "engines", "field": "firings.count" },
+          { "scope": "ferric", "field": "channels.stdout" },
+          { "scope": "ferric", "field": "effects" },
+          { "scope": "ferric", "field": "facts" },
+          { "scope": "ferric", "field": "firings.count" }
+        ],
+        "ferric_fingerprint": "df533fbb1240be5e884a566956a603ab9148784372e5217d1377cbd3d5f12daf",
+        "rationale": "Ferric retains and fires the superseded rule after same-name replacement; pinned CLIPS fires only the replacement.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/157"
+      }
+    },
+    {
+      "id": "FR-RETE-012",
+      "issue": "https://github.com/plx/ferric-rules/issues/158",
+      "fixture": "ferric-semantic/fr-rete-012.clp",
+      "family": "in-use template redefinition",
+      "expected": {
+        "classification": "divergent",
+        "reason": "diagnostic-phase-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "channels.stdout" },
+          { "scope": "engines", "field": "diagnostic.category" },
+          { "scope": "engines", "field": "diagnostic.phase" },
+          { "scope": "engines", "field": "effects" },
+          { "scope": "engines", "field": "facts" },
+          { "scope": "engines", "field": "firings.count" },
+          { "scope": "ferric", "field": "channels.stdout" },
+          { "scope": "ferric", "field": "diagnostic.category" },
+          { "scope": "ferric", "field": "diagnostic.phase" },
+          { "scope": "ferric", "field": "effects" },
+          { "scope": "ferric", "field": "facts" },
+          { "scope": "ferric", "field": "firings.count" }
+        ],
+        "ferric_fingerprint": "66ad31615d0eaaf3daac94ba66fe31db74683947b3fd6dbd51ae7fa3b5244a3b",
+        "rationale": "Ferric leaves the live template state corrupted during the staged redefinition and reports only the later seed-load failure; pinned CLIPS rejects the redefinition and preserves the original template for the seed.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/158"
+      }
+    },
+    {
+      "id": "FR-RETE-013",
+      "issue": "https://github.com/plx/ferric-rules/issues/159",
+      "fixture": "ferric-semantic/fr-rete-013.clp",
+      "family": "transactional source loading",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-RETE-014",
+      "issue": "https://github.com/plx/ferric-rules/issues/191",
+      "fixture": "ferric-semantic/fr-rete-014.clp",
+      "family": "undefrule activation removal and shared-prefix preservation (observable subset; internal reclamation remains tracked by FR-RETE-014)",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "FR-RETE-015",
+      "issue": "https://github.com/plx/ferric-rules/issues/160",
+      "fixture": "ferric-semantic/fr-rete-015.clp",
+      "family": "module export visibility",
+      "expected": {
+        "classification": "divergent",
+        "reason": "diagnostic-phase-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "diagnostic.category" },
+          { "scope": "engines", "field": "diagnostic.phase" },
+          { "scope": "engines", "field": "effects" },
+          { "scope": "engines", "field": "facts" },
+          { "scope": "ferric", "field": "diagnostic.category" },
+          { "scope": "ferric", "field": "diagnostic.phase" },
+          { "scope": "ferric", "field": "effects" },
+          { "scope": "ferric", "field": "facts" }
+        ],
+        "ferric_fingerprint": "424e73942f575f5528f0883548495070ba92d268a13fcb30ba82b87086843477",
+        "rationale": "Ferric accepts an import from a module that exports nothing and leaks an A::secret fact; pinned CLIPS rejects the staged constructs.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/160"
+      }
+    },
+    {
+      "id": "FR-RETE-016",
+      "issue": "https://github.com/plx/ferric-rules/issues/192",
+      "fixture": "ferric-semantic/fr-rete-016.clp",
+      "family": "immediate focus changes",
+      "expected": {
+        "classification": "divergent",
+        "reason": "oracle-effects-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "channels.stdout" },
+          { "scope": "engines", "field": "effects" },
+          { "scope": "ferric", "field": "channels.stdout" },
+          { "scope": "ferric", "field": "effects" }
+        ],
+        "ferric_fingerprint": "86346170f7806e5c176656fe40cf59248b6e1b876f7b79a1a97ebebf6d472aa5",
+        "rationale": "Ferric's immediately following list-focus-stack omits the newly focused A module and reports only MAIN; pinned CLIPS reports A then MAIN, while both engines later fire A::worker.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/192"
+      }
+    },
+    {
+      "id": "FR-RETE-017",
+      "issue": "https://github.com/plx/ferric-rules/issues/193",
+      "fixture": "ferric-semantic/fr-rete-017.clp",
+      "family": "focus-stack draining",
+      "expected": {
+        "classification": "divergent",
+        "reason": "oracle-focus-stack-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "focus_stack" },
+          { "scope": "ferric", "field": "focus_stack" }
+        ],
+        "ferric_fingerprint": "1807b73f31f49a8f23032108fe64005e3f115df26ee95766711d37262739e46a",
+        "rationale": "Ferric retains MAIN on the focus stack after the agenda drains; pinned CLIPS leaves the stack empty.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/193"
+      }
+    },
+    {
+      "id": "FR-RETE-018",
+      "issue": "https://github.com/plx/ferric-rules/issues/161",
+      "fixture": "ferric-semantic/fr-rete-018.clp",
+      "family": "deffacts reset lifecycle",
+      "expected": {
+        "classification": "divergent",
+        "reason": "oracle-firings-count-mismatch",
+        "mismatches": [
+          { "scope": "engines", "field": "channels.stdout" },
+          { "scope": "engines", "field": "effects" },
+          { "scope": "engines", "field": "facts" },
+          { "scope": "engines", "field": "firings.count" },
+          { "scope": "ferric", "field": "channels.stdout" },
+          { "scope": "ferric", "field": "effects" },
+          { "scope": "ferric", "field": "facts" },
+          { "scope": "ferric", "field": "firings.count" }
+        ],
+        "ferric_fingerprint": "c9b939b2401e80cd84ed42f8d99f1261f6c5dd456a1aab9d24ead07b0eaeb0e5",
+        "rationale": "Ferric asserts a deffacts construct loaded after reset without another reset; pinned CLIPS leaves it dormant.",
+        "since": "0.1.0",
+        "tracking_issue": "https://github.com/plx/ferric-rules/issues/161"
+      }
+    }
+  ]
+}

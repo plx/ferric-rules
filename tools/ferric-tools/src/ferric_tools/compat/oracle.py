@@ -8,14 +8,30 @@ other.  Callers retain responsibility for producing trustworthy observations.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import PurePosixPath
 
 from ferric_tools.compat.diagnostics import SEMANTIC_DIAGNOSTIC_PAIRS
 
 DECLARATION_VERSION = 1
+SCENARIO_DECLARATION_VERSION = 2
 OBSERVATION_VERSION = 1
+# Schema-v3 manifests advertise this canonical observation/evaluation protocol.
+# Individual declarations remain independently versioned as v1 or v2.
+ORACLE_PROTOCOL_VERSION = OBSERVATION_VERSION
+
+SCENARIO_PLAN_VERSION = 1
+SCENARIO_SOURCE_PREFIX = "tests/examples"
+MAX_SCENARIO_PLAN_BYTES = 1024 * 1024
+MAX_SCENARIO_LINE_BYTES = 4095
+MAX_SCENARIO_SOURCES = 64
+MAX_SCENARIO_STEPS = 256
+MAX_SCENARIO_SOURCE_BYTES = 16 * 1024 * 1024
+MAX_SCENARIO_BUNDLE_BYTES = 64 * 1024 * 1024
 
 NORMALIZE_FACT_IDS = "fact-ids"
 NORMALIZE_FACT_ORDER = "fact-order"
@@ -45,6 +61,8 @@ _HALT_REASONS = frozenset(
     }
 )
 _V1_SETUP = ("load", "reset", "run")
+_SCENARIO_STRATEGIES = frozenset({"depth", "breadth", "lex", "mea"})
+_SCENARIO_ON_ERROR = frozenset({"stop", "continue"})
 
 
 class EvidenceStatus(StrEnum):
@@ -189,8 +207,34 @@ class Expectations:
 
 
 @dataclass(frozen=True)
+class ScenarioSource:
+    """One digest-bound, examples-relative source in a v2 scenario bundle."""
+
+    name: str
+    path: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ScenarioStep:
+    """One canonical v2 setup operation."""
+
+    sequence: int
+    operation: str
+    argument: str
+    on_error: str
+
+
+@dataclass(frozen=True)
+class ScenarioSetup:
+    """The ordered setup plan for a v2 declaration."""
+
+    steps: tuple[ScenarioStep, ...]
+
+
+@dataclass(frozen=True)
 class OracleDeclaration:
-    """A validated version-1 fixture declaration."""
+    """A validated version-1 or version-2 fixture declaration."""
 
     version: int
     id: str
@@ -198,9 +242,10 @@ class OracleDeclaration:
     source_sha256: str
     composed_sha256: str
     nonce: str
-    setup: tuple[str, ...]
+    setup: tuple[str, ...] | ScenarioSetup
     expectations: Expectations
     normalizers: tuple[str, ...]
+    sources: tuple[ScenarioSource, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -691,6 +736,275 @@ def _normalizers(raw: object, *, field: str) -> tuple[str, ...]:
     return normalizers
 
 
+def _scenario_path(raw: object, *, field: str) -> str:
+    value = _string(raw, field=field)
+    if "|" in value or "\\" in value:
+        _fail(field, "must not contain '|' or backslash")
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute()
+        or path.as_posix() != value
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        _fail(field, "must be a normalized examples-relative POSIX path")
+    repo_relative = f"{SCENARIO_SOURCE_PREFIX}/{value}"
+    if len(repo_relative.encode("utf-8")) > MAX_SCENARIO_LINE_BYTES:
+        _fail(field, f"repo-relative UTF-8 path must be at most {MAX_SCENARIO_LINE_BYTES} bytes")
+    return value
+
+
+def _scenario_sources(raw: object, *, field: str) -> tuple[ScenarioSource, ...]:
+    items = _strict_list(raw, field=field)
+    if not items:
+        _fail(field, "must contain at least the primary source")
+    if len(items) > MAX_SCENARIO_SOURCES:
+        _fail(field, f"must contain at most {MAX_SCENARIO_SOURCES} sources")
+
+    sources: list[ScenarioSource] = []
+    for index, item in enumerate(items):
+        item_field = f"{field}[{index}]"
+        source_object = _strict_dict(
+            item,
+            field=item_field,
+            required=frozenset({"name", "path", "sha256"}),
+        )
+        sources.append(
+            ScenarioSource(
+                name=_protocol_token(source_object["name"], field=f"{item_field}.name"),
+                path=_scenario_path(source_object["path"], field=f"{item_field}.path"),
+                sha256=_digest(source_object["sha256"], field=f"{item_field}.sha256"),
+            )
+        )
+
+    if sources[0].name != "primary":
+        _fail(f"{field}[0].name", "the first source must be named 'primary'")
+    names = [source.name for source in sources]
+    if len(names) != len(set(names)):
+        _fail(field, "must not contain duplicate source names")
+    paths = [source.path for source in sources]
+    if len(paths) != len(set(paths)):
+        _fail(field, "must not contain duplicate source paths")
+    return tuple(sources)
+
+
+def _scenario_on_error(raw: object, *, field: str, allow_continue: bool) -> str:
+    value = _string(raw, field=field)
+    allowed = _SCENARIO_ON_ERROR if allow_continue else frozenset({"stop"})
+    if value not in allowed:
+        expected = "'stop' or 'continue'" if allow_continue else "'stop'"
+        _fail(field, f"must be {expected}")
+    return value
+
+
+def _scenario_setup(
+    raw: object,
+    *,
+    field: str,
+    sources: tuple[ScenarioSource, ...],
+) -> ScenarioSetup:
+    setup_object = _strict_dict(
+        raw,
+        field=field,
+        required=frozenset({"steps"}),
+    )
+    items = _strict_list(setup_object["steps"], field=f"{field}.steps")
+    if not items:
+        _fail(f"{field}.steps", "must not be empty")
+    if len(items) > MAX_SCENARIO_STEPS:
+        _fail(f"{field}.steps", f"must contain at most {MAX_SCENARIO_STEPS} steps")
+
+    source_names = {source.name for source in sources}
+    steps: list[ScenarioStep] = []
+    loaded_sources: set[str] = set()
+    load_seen = False
+    reset_seen = False
+    strategy_seen = False
+    for index, item in enumerate(items):
+        item_field = f"{field}.steps[{index}]"
+        if type(item) is not dict:
+            _fail(item_field, "must be an object")
+        assert isinstance(item, dict)
+        operation = _string(item.get("operation"), field=f"{item_field}.operation")
+        sequence = index + 1
+
+        if operation == "load":
+            step_object = _strict_dict(
+                item,
+                field=item_field,
+                required=frozenset({"operation", "source", "on_error"}),
+            )
+            source = _protocol_token(step_object["source"], field=f"{item_field}.source")
+            if source not in source_names:
+                _fail(f"{item_field}.source", "must name a declared source")
+            on_error = _scenario_on_error(
+                step_object["on_error"],
+                field=f"{item_field}.on_error",
+                allow_continue=True,
+            )
+            load_seen = True
+            loaded_sources.add(source)
+            steps.append(ScenarioStep(sequence, operation, source, on_error))
+        elif operation == "reset":
+            step_object = _strict_dict(
+                item,
+                field=item_field,
+                required=frozenset({"operation", "on_error"}),
+            )
+            if not load_seen:
+                _fail(item_field, "reset must follow a load step")
+            on_error = _scenario_on_error(
+                step_object["on_error"],
+                field=f"{item_field}.on_error",
+                allow_continue=True,
+            )
+            reset_seen = True
+            steps.append(ScenarioStep(sequence, operation, "-", on_error))
+        elif operation == "set-strategy":
+            step_object = _strict_dict(
+                item,
+                field=item_field,
+                required=frozenset({"operation", "strategy", "on_error"}),
+            )
+            if strategy_seen:
+                _fail(item_field, "at most one set-strategy step is allowed")
+            strategy = _string(step_object["strategy"], field=f"{item_field}.strategy")
+            if strategy not in _SCENARIO_STRATEGIES:
+                _fail(
+                    f"{item_field}.strategy",
+                    "must be depth, breadth, lex, or mea",
+                )
+            on_error = _scenario_on_error(
+                step_object["on_error"],
+                field=f"{item_field}.on_error",
+                allow_continue=False,
+            )
+            strategy_seen = True
+            steps.append(ScenarioStep(sequence, operation, strategy, on_error))
+        elif operation == "run":
+            step_object = _strict_dict(
+                item,
+                field=item_field,
+                required=frozenset({"operation", "limit", "on_error"}),
+            )
+            if index != len(items) - 1:
+                _fail(item_field, "run must be the final setup step")
+            if step_object["limit"] is not None:
+                _fail(f"{item_field}.limit", "must be null for an unlimited run")
+            on_error = _scenario_on_error(
+                step_object["on_error"],
+                field=f"{item_field}.on_error",
+                allow_continue=False,
+            )
+            steps.append(ScenarioStep(sequence, operation, "-1", on_error))
+        else:
+            _fail(
+                f"{item_field}.operation",
+                "must be load, reset, set-strategy, or run",
+            )
+
+    if not steps or steps[-1].operation != "run":
+        _fail(f"{field}.steps", "must end with exactly one run step")
+    if not load_seen:
+        _fail(f"{field}.steps", "must contain a load step")
+    if not reset_seen:
+        _fail(f"{field}.steps", "must contain a reset step after a load")
+    if "primary" not in loaded_sources:
+        _fail(f"{field}.steps", "must load the primary source")
+    return ScenarioSetup(tuple(steps))
+
+
+def _scenario_plan_from_parts(
+    sources: tuple[ScenarioSource, ...],
+    setup: ScenarioSetup,
+) -> bytes:
+    lines = [f"FERRIC-COMPAT-SCENARIO|{SCENARIO_PLAN_VERSION}"]
+    lines.extend(
+        f"SOURCE|{source.name}|{source.sha256}|{SCENARIO_SOURCE_PREFIX}/{source.path}"
+        for source in sources
+    )
+    for step in setup.steps:
+        operation = step.operation.upper()
+        lines.append(f"STEP|{step.sequence}|{operation}|{step.argument}|{step.on_error}")
+    lines.append("END")
+    for line in lines:
+        if len(line.encode("utf-8")) > MAX_SCENARIO_LINE_BYTES:
+            _fail("scenario_plan", f"line exceeds {MAX_SCENARIO_LINE_BYTES} UTF-8 bytes")
+    plan = ("\n".join(lines) + "\n").encode("utf-8")
+    if len(plan) > MAX_SCENARIO_PLAN_BYTES:
+        _fail("scenario_plan", f"must be at most {MAX_SCENARIO_PLAN_BYTES} bytes")
+    return plan
+
+
+def canonical_scenario_plan(raw: object | OracleDeclaration) -> bytes:
+    """Return the exact LF-terminated wire plan for a v2 declaration."""
+    if isinstance(raw, OracleDeclaration):
+        if raw.version != SCENARIO_DECLARATION_VERSION:
+            raise ValueError("canonical scenario plans require a version-2 declaration")
+        assert raw.sources is not None
+        assert isinstance(raw.setup, ScenarioSetup)
+        return _scenario_plan_from_parts(raw.sources, raw.setup)
+
+    declaration_object = _strict_dict(
+        raw,
+        field="$",
+        required=frozenset(
+            {
+                "version",
+                "id",
+                "feature",
+                "source_sha256",
+                "composed_sha256",
+                "nonce",
+                "sources",
+                "setup",
+                "expectations",
+                "normalizers",
+            }
+        ),
+    )
+    _version(
+        declaration_object["version"],
+        field="version",
+        expected=SCENARIO_DECLARATION_VERSION,
+    )
+    sources = _scenario_sources(declaration_object["sources"], field="sources")
+    setup = _scenario_setup(declaration_object["setup"], field="setup", sources=sources)
+    return _scenario_plan_from_parts(sources, setup)
+
+
+def scenario_plan_sha256(raw: object | OracleDeclaration) -> str:
+    """Hash the exact canonical bytes accepted by both scenario adapters."""
+    return hashlib.sha256(canonical_scenario_plan(raw)).hexdigest()
+
+
+def validate_scenario_source_sizes(sizes: tuple[int, ...]) -> None:
+    """Enforce the cross-adapter per-source and aggregate byte caps."""
+    total = 0
+    for index, size in enumerate(sizes):
+        if type(size) is not int or size < 0:
+            _fail(f"sources[{index}]", "source size must be a non-negative integer")
+        if size > MAX_SCENARIO_SOURCE_BYTES:
+            _fail(
+                f"sources[{index}]",
+                f"source exceeds {MAX_SCENARIO_SOURCE_BYTES} bytes",
+            )
+        total += size
+        if total > MAX_SCENARIO_BUNDLE_BYTES:
+            _fail("sources", f"aggregate source bytes exceed {MAX_SCENARIO_BUNDLE_BYTES}")
+
+
+def scenario_native_phases(declaration: OracleDeclaration) -> tuple[str, ...]:
+    """Return the native phase sequence authenticated for one declaration."""
+    if declaration.version == DECLARATION_VERSION:
+        return _V1_SETUP
+    assert isinstance(declaration.setup, ScenarioSetup)
+    return tuple(
+        step.operation
+        for step in declaration.setup.steps
+        if step.operation in {"load", "reset", "run"}
+    )
+
+
 def _parse_declaration(
     raw: object,
     *,
@@ -705,23 +1019,31 @@ def _parse_declaration(
         expected_composed_sha256,
         field="expected_composed_sha256",
     )
-    declaration_object = _strict_dict(
-        raw,
-        field="$",
-        required=frozenset(
-            {
-                "version",
-                "id",
-                "feature",
-                "source_sha256",
-                "composed_sha256",
-                "nonce",
-                "setup",
-                "expectations",
-                "normalizers",
-            }
-        ),
-    )
+    if type(raw) is not dict:
+        _fail("$", "must be an object")
+    assert isinstance(raw, dict)
+    raw_version = raw.get("version")
+    if type(raw_version) is not int or raw_version not in {
+        DECLARATION_VERSION,
+        SCENARIO_DECLARATION_VERSION,
+    }:
+        _fail("version", f"unsupported version: {raw_version!r}")
+    if raw_version == SCENARIO_DECLARATION_VERSION and "sources" not in raw:
+        _fail("version", "version 2 requires scenario sources and object setup")
+    required = {
+        "version",
+        "id",
+        "feature",
+        "source_sha256",
+        "composed_sha256",
+        "nonce",
+        "setup",
+        "expectations",
+        "normalizers",
+    }
+    if raw_version == SCENARIO_DECLARATION_VERSION:
+        required.add("sources")
+    declaration_object = _strict_dict(raw, field="$", required=frozenset(required))
     source_digest = _digest(
         declaration_object["source_sha256"],
         field="source_sha256",
@@ -734,18 +1056,26 @@ def _parse_declaration(
     )
     if composed_digest != expected_composed_digest:
         _fail("composed_sha256", "composed input digest is stale")
-    raw_setup = _strict_list(declaration_object["setup"], field="setup")
-    setup = tuple(
-        _string(operation, field=f"setup[{index}]") for index, operation in enumerate(raw_setup)
-    )
-    if setup != _V1_SETUP:
-        _fail("setup", "version 1 requires exactly: load, reset, run")
+    sources: tuple[ScenarioSource, ...] | None
+    setup: tuple[str, ...] | ScenarioSetup
+    if raw_version == DECLARATION_VERSION:
+        raw_setup = _strict_list(declaration_object["setup"], field="setup")
+        setup = tuple(
+            _string(operation, field=f"setup[{index}]") for index, operation in enumerate(raw_setup)
+        )
+        if setup != _V1_SETUP:
+            _fail("setup", "version 1 requires exactly: load, reset, run")
+        sources = None
+    else:
+        sources = _scenario_sources(declaration_object["sources"], field="sources")
+        if sources[0].sha256 != source_digest:
+            _fail("sources[0].sha256", "must equal source_sha256")
+        setup = _scenario_setup(declaration_object["setup"], field="setup", sources=sources)
+        actual_plan_digest = hashlib.sha256(_scenario_plan_from_parts(sources, setup)).hexdigest()
+        if composed_digest != actual_plan_digest:
+            _fail("composed_sha256", "does not bind the canonical scenario plan")
     return OracleDeclaration(
-        version=_version(
-            declaration_object["version"],
-            field="version",
-            expected=DECLARATION_VERSION,
-        ),
+        version=raw_version,
         id=_protocol_token(declaration_object["id"], field="id"),
         feature=_string(declaration_object["feature"], field="feature"),
         source_sha256=source_digest,
@@ -760,6 +1090,7 @@ def _parse_declaration(
             declaration_object["normalizers"],
             field="normalizers",
         ),
+        sources=sources,
     )
 
 
@@ -769,7 +1100,7 @@ def validate_declaration(
     expected_source_sha256: str,
     expected_composed_sha256: str,
 ) -> Evidence[OracleDeclaration]:
-    """Validate a v1 declaration without raising for missing or invalid evidence."""
+    """Validate a v1/v2 declaration without raising for missing or invalid evidence."""
     if raw is None:
         return Evidence(status=EvidenceStatus.MISSING)
     try:
@@ -1174,6 +1505,66 @@ def _normalized_globals(
         (global_value.name, _normalized_value(global_value.value, normalizers))
         for global_value in globals_values
     )
+
+
+def normalized_observation_semantics(
+    raw: object,
+    *,
+    declaration: OracleDeclaration,
+) -> tuple[object, ...]:
+    """Validate and return deterministic, hashable semantic observation content.
+
+    Invocation identity, nonces, lifecycle markers, and instrumentation-only
+    firings/effects are deliberately excluded. Optional focus/global state is
+    included only when the declaration selected it for comparison.
+    """
+    evidence = validate_observation(raw, declaration=declaration)
+    if evidence.status is not EvidenceStatus.VALID or evidence.value is None:
+        detail = "; ".join(f"{issue.field}: {issue.message}" for issue in evidence.issues)
+        raise ValueError(f"invalid canonical observation: {detail}")
+
+    observation = evidence.value
+    normalizers = frozenset(declaration.normalizers)
+    content: list[object] = [
+        ("phase", observation.phase),
+        (
+            "fixture_firings",
+            tuple(firing.rule for firing in observation.firings if firing.origin == "fixture"),
+        ),
+        ("effects", _normalized_observed_effects(observation.effects, normalizers)),
+        ("facts", _normalized_facts(observation.facts, normalizers)),
+        ("channels", observation.channels),
+        (
+            "diagnostic",
+            (
+                observation.diagnostic.phase,
+                observation.diagnostic.category,
+                observation.diagnostic.continued,
+            ),
+        ),
+        ("run", (observation.run.limit, observation.run.halt_reason)),
+    ]
+    if declaration.expectations.focus_stack is not None:
+        content.append(("focus_stack", observation.focus_stack))
+    if declaration.expectations.globals is not None:
+        content.append(("globals", _normalized_globals(observation.globals, normalizers)))
+    return tuple(content)
+
+
+def observation_semantic_fingerprint(
+    raw: object,
+    *,
+    declaration: OracleDeclaration,
+) -> str:
+    """SHA-256 the stable semantic content selected by a declaration."""
+    content = normalized_observation_semantics(raw, declaration=declaration)
+    serialized = json.dumps(
+        content,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
 
 
 def _append_mismatch(

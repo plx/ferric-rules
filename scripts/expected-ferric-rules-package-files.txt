@@ -21,7 +21,7 @@ benches/serialization_bench.rs
 benches/strategy_bench.rs
 benches/waltz_bench.rs
 src/lib.rs
-tests/clips_compat.rs
+tests/ferric_semantic_regressions.rs
 tests/fixtures/README.md
 tests/fixtures/core/.gitkeep
 tests/fixtures/core/basic_match.clp

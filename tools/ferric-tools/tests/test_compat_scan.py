@@ -31,6 +31,7 @@ from ferric_tools._manifest import load_manifest, save_manifest
 from ferric_tools._paths import repo_root
 from ferric_tools.bat import harness as harness_module
 from ferric_tools.compat import run as run_module
+from ferric_tools.compat.oracle import canonical_scenario_plan
 from ferric_tools.compat.scan import (
     OracleRegistryError,
     build_summary,
@@ -1128,6 +1129,33 @@ def _oracle_declaration(digest: str, *, composed_digest: str | None = None) -> d
     }
 
 
+def _scenario_declaration(primary_digest: str, library_digest: str) -> dict:
+    declaration = _oracle_declaration(primary_digest)
+    declaration.update(
+        {
+            "version": 2,
+            "sources": [
+                {"name": "primary", "path": "fixture.clp", "sha256": primary_digest},
+                {
+                    "name": "library",
+                    "path": "shared/library.clp",
+                    "sha256": library_digest,
+                },
+            ],
+            "setup": {
+                "steps": [
+                    {"operation": "load", "source": "library", "on_error": "stop"},
+                    {"operation": "load", "source": "primary", "on_error": "stop"},
+                    {"operation": "reset", "on_error": "stop"},
+                    {"operation": "run", "limit": None, "on_error": "stop"},
+                ]
+            },
+        }
+    )
+    declaration["composed_sha256"] = sha256_bytes(canonical_scenario_plan(declaration))
+    return declaration
+
+
 def _canonical_observation(identity: dict, *, fact_id: int) -> dict:
     integer = {"type": "integer", "value": 1}
     return {
@@ -1203,6 +1231,100 @@ def test_scan_attaches_digest_bound_oracle_declaration(tmp_path):
         "normalizations": ["fact-ids"],
         "violations": [],
     }
+
+
+def test_scan_attaches_v2_scenario_after_validating_every_bundle_source(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    primary = examples / "fixture.clp"
+    library = examples / "shared" / "library.clp"
+    library.parent.mkdir(parents=True)
+    primary.write_bytes(b"(defrule effect => (assert (result 1)))\n")
+    library.write_bytes(b"(deftemplate shared (slot value))\n")
+    declaration = _scenario_declaration(
+        sha256_bytes(primary.read_bytes()),
+        sha256_bytes(library.read_bytes()),
+    )
+    (examples / "compat-oracles.json").write_text(
+        json.dumps({"version": 1, "fixtures": {"fixture.clp": declaration}}),
+        encoding="utf-8",
+    )
+
+    files = scan_examples(examples, root=root)
+
+    assert files["fixture.clp"]["oracle"] == declaration
+    assert files["fixture.clp"]["oracle_evidence"]["version"] == 2
+
+
+def test_scan_accepts_mixed_v1_and_v2_declaration_registry(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    legacy = examples / "legacy.clp"
+    primary = examples / "fixture.clp"
+    library = examples / "shared" / "library.clp"
+    library.parent.mkdir(parents=True)
+    legacy.write_bytes(b"(defrule legacy => (assert (result 1)))\n")
+    primary.write_bytes(b"(defrule scenario => (assert (result 1)))\n")
+    library.write_bytes(b"(deftemplate shared (slot value))\n")
+    scenario = _scenario_declaration(
+        sha256_bytes(primary.read_bytes()),
+        sha256_bytes(library.read_bytes()),
+    )
+    scenario["id"] = "fixture.scenario"
+    declarations = {
+        "legacy.clp": _oracle_declaration(sha256_bytes(legacy.read_bytes())),
+        "fixture.clp": scenario,
+    }
+    (examples / "compat-oracles.json").write_text(
+        json.dumps({"version": 1, "fixtures": declarations}),
+        encoding="utf-8",
+    )
+
+    files = scan_examples(examples, root=root)
+
+    assert files["legacy.clp"]["oracle_evidence"]["version"] == 1
+    assert files["fixture.clp"]["oracle_evidence"]["version"] == 2
+
+
+def test_scan_rejects_stale_secondary_v2_source_digest(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    primary = examples / "fixture.clp"
+    library = examples / "shared" / "library.clp"
+    library.parent.mkdir(parents=True)
+    primary.write_bytes(b"(defrule effect =>)\n")
+    library.write_bytes(b"(deftemplate shared)\n")
+    declaration = _scenario_declaration(sha256_bytes(primary.read_bytes()), "f" * 64)
+    (examples / "compat-oracles.json").write_text(
+        json.dumps({"version": 1, "fixtures": {"fixture.clp": declaration}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OracleRegistryError, match=r"sources\[1\].sha256"):
+        scan_examples(examples, root=root)
+
+
+def test_scan_rejects_v2_secondary_source_symlink_escape(tmp_path):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    primary = examples / "fixture.clp"
+    library = examples / "shared" / "library.clp"
+    outside = tmp_path / "outside.clp"
+    library.parent.mkdir(parents=True)
+    primary.write_bytes(b"(defrule effect =>)\n")
+    outside.write_bytes(b"(defrule escaped =>)\n")
+    library.symlink_to(outside)
+    declaration = _scenario_declaration(
+        sha256_bytes(primary.read_bytes()),
+        sha256_bytes(outside.read_bytes()),
+    )
+    (examples / "compat-oracles.json").write_text(
+        json.dumps({"version": 1, "fixtures": {"fixture.clp": declaration}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OracleRegistryError, match="must not be a symlink"):
+        scan_examples(examples, root=root)
 
 
 def test_scan_rejects_stale_oracle_source_digest(tmp_path):

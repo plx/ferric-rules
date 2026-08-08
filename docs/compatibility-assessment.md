@@ -10,7 +10,7 @@ compatibility evidence by itself.
 Executable evidence starts in
 `tests/examples/compat-oracles.json`. The registry is versioned, rejects
 duplicate JSON fields and duplicate fixture identities, and maps normalized
-paths relative to `tests/examples/` to oracle-v1 declarations.
+paths relative to `tests/examples/` to version-1 or version-2 declarations.
 
 Each declaration binds:
 
@@ -42,6 +42,19 @@ significant.
 When a fixture or generated harness changes, update both digests in its
 declaration. `just compat-scan` rejects a stale declaration before an engine is
 started.
+
+Version 2 adds a strict, digest-bound scenario for regressions that cannot be
+represented by one `load`, `reset`, `run` sequence. Its ordered `sources` array
+names examples-relative regular files; its setup steps may load those sources,
+reset, select `depth`, `breadth`, `lex`, or `mea`, and finish with exactly one
+unlimited run. Canonical plan bytes are UTF-8 with LF endings and a final
+newline. Both adapters independently enforce path containment, SHA-256
+identity, at most 64 sources and 256 steps, a 1 MiB plan, 16 MiB per source,
+and 64 MiB across the source bundle. A step may continue after a semantic
+load/reset error, but malformed plans, harness errors, and the final run always
+stop. The manifest's top-level `oracle_protocol_version: 1` continues to name
+the shared observation/evaluation protocol; each declaration and evidence
+record carries its own version.
 
 ## Observation boundary
 
@@ -80,6 +93,12 @@ docker build -t ferric-rules/clips-reference:latest docker/clips-reference
 
 Do not use `just clips-build` for a local-only rebuild: that recipe publishes
 unless invoked with its explicitly local options.
+
+The image pins Debian by manifest digest and CLIPS by package version. Before
+execution, the runner obtains one strict provenance record containing the
+engine/package versions, platform, measured CLIPS executable and library
+SHA-256 digests, base-image digest, and local image ID. That record is stored as
+top-level manifest `reference` evidence.
 
 Generated verifier records, facts, and firings are instrumentation, not
 fixture effects. If either adapter cannot separate instrumentation from
@@ -132,6 +151,24 @@ just compat-scan
 just compat-run
 just compat-report
 ```
+
+The release-blocking matrix of 22 scenarios covering 20 audit IDs has an
+additional exact policy gate:
+
+```console
+just compat-semantic-lane
+```
+
+`compat-semantic-lane` rescans, runs every `ferric-semantic` scenario against
+both engines, and then enforces
+`tests/examples/compat-semantic-policy.json`. Every required scenario ID must be
+present exactly once; the 22 scenarios cover 20 audit IDs. Equivalence is
+accepted only with valid, mismatch-free evidence. A temporary known divergence
+must match its issue-linked reason,
+exact mismatch fields, and normalized Ferric semantic fingerprint; changed
+behavior fails, and newly equivalent behavior fails until the stale deviation
+is removed. The policy also checks the measured reference binary/library
+digests for the active platform.
 
 `compat-report` exposes declaration, lifecycle, effect, oracle version,
 normalization, diagnostic phase/category/continuation, and process termination
