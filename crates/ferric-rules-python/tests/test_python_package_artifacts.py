@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -157,6 +158,8 @@ def _write_wheel(
     native_wrong_format=False,
     license_drift=False,
     sbom_override=None,
+    directory_entries=None,
+    member_modes=None,
 ):
     platform_tags = platform_tags or target["platform_tags"]
     wheel_tags = wheel_tags or platform_tags
@@ -215,10 +218,15 @@ def _write_wheel(
     members[record_path] = record
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in (directory_entries or {}).items():
+            info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_STORED
+            info.external_attr = (stat.S_IFDIR | 0o755) << 16
+            archive.writestr(info, data)
         for name, data in members.items():
             info = zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = 0o100644 << 16
+            info.external_attr = (member_modes or {}).get(name, 0o100644) << 16
             archive.writestr(info, data)
     return path
 
@@ -447,6 +455,48 @@ def test_each_exact_wheel_shape_is_accepted(tmp_path, contract, version, target_
     assert inspection.target_id == target_id
 
 
+def test_canonical_empty_wheel_directory_entries_are_accepted(
+    tmp_path, contract, version
+):
+    target = package_lib.contract_target(contract, "macos-arm64")
+    dist_info = f"ferric-{version}.dist-info"
+    wheel = _write_wheel(
+        tmp_path,
+        contract,
+        version,
+        target,
+        directory_entries={
+            "ferric/": b"",
+            f"{dist_info}/": b"",
+            f"{dist_info}/licenses/": b"",
+            f"{dist_info}/sboms/": b"",
+        },
+    )
+
+    inspection = package_lib.validate_wheel(wheel, contract, version)
+
+    assert inspection.target_id == "macos-arm64"
+
+
+@pytest.mark.parametrize(
+    ("directory_entries", "message"),
+    [
+        ({"unreferenced/": b""}, "not canonical parents"),
+        ({"ferric/": b"not empty"}, "directory entry is not empty"),
+    ],
+)
+def test_noncanonical_wheel_directory_entries_are_rejected(
+    tmp_path, contract, version, directory_entries, message
+):
+    target = package_lib.contract_target(contract, "macos-arm64")
+    wheel = _write_wheel(
+        tmp_path, contract, version, target, directory_entries=directory_entries
+    )
+
+    with pytest.raises(package_lib.PackageValidationError, match=message):
+        package_lib.validate_wheel(wheel, contract, version)
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
@@ -462,6 +512,10 @@ def test_each_exact_wheel_shape_is_accepted(tmp_path, contract, version, target_
         ({"native_wrong_format": True}, "not an ELF"),
         ({"license_drift": True}, "checked-in license"),
         ({"sbom_override": b"not-json"}, "CycloneDX JSON"),
+        (
+            {"member_modes": {"ferric/__init__.py": stat.S_IFIFO | 0o644}},
+            "not a regular file",
+        ),
     ],
 )
 def test_wheel_adversarial_mutations_are_rejected(

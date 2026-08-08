@@ -1105,13 +1105,12 @@ def validate_wheel(
     with archive:
         infos = archive.infolist()
         _require(infos, f"wheel is empty: {path.name}")
+        archive_names: list[str] = []
+        directory_names: list[str] = []
+        regular_infos: list[zipfile.ZipInfo] = []
         names: list[str] = []
         for info in infos:
             _safe_archive_name(info.filename, f"wheel {path.name}")
-            _require(
-                not info.is_dir(),
-                f"wheel contains an unexpected directory entry: {info.filename}",
-            )
             _require(
                 not (info.flag_bits & 0x1),
                 f"wheel contains an encrypted member: {info.filename}",
@@ -1121,13 +1120,52 @@ def validate_wheel(
                 not stat.S_ISLNK(mode),
                 f"wheel contains a symbolic link: {info.filename}",
             )
+            archive_names.append(info.filename)
+            if info.is_dir():
+                _require(
+                    mode == (stat.S_IFDIR | 0o755),
+                    f"wheel directory mode is not canonical: {info.filename}",
+                )
+                _require(
+                    info.compress_type == zipfile.ZIP_STORED
+                    and info.file_size == 0
+                    and info.compress_size == 0
+                    and info.CRC == 0
+                    and info.flag_bits == 0
+                    and info.create_system == 3
+                    and not info.extra
+                    and not info.comment,
+                    f"wheel directory entry is not empty: {info.filename}",
+                )
+                try:
+                    directory_payload = archive.read(info)
+                except (
+                    OSError,
+                    RuntimeError,
+                    NotImplementedError,
+                    zipfile.BadZipFile,
+                ) as exc:
+                    raise _error(
+                        f"cannot verify wheel directory entry {info.filename}: {exc}"
+                    ) from exc
+                _require(
+                    directory_payload == b"",
+                    f"wheel directory entry is not empty: {info.filename}",
+                )
+                directory_names.append(info.filename)
+                continue
+            _require(
+                stat.S_ISREG(mode),
+                f"wheel member is not a regular file: {info.filename}",
+            )
             _require(
                 info.file_size <= 256 * 1024 * 1024,
                 f"wheel member is unreasonably large: {info.filename}",
             )
+            regular_infos.append(info)
             names.append(info.filename)
         _require(
-            len(names) == len(set(names)),
+            len(archive_names) == len(set(archive_names)),
             f"wheel contains duplicate archive paths: {path.name}",
         )
 
@@ -1180,6 +1218,18 @@ def validate_wheel(
         allowed = set(required)
         unexpected = sorted(set(names) - allowed)
         _require(not unexpected, f"wheel contains unexpected members: {unexpected}")
+        allowed_directories = {
+            f"{parent.as_posix()}/"
+            for name in allowed
+            for parent in PurePosixPath(name).parents
+            if parent != PurePosixPath(".")
+        }
+        unexpected_directories = sorted(set(directory_names) - allowed_directories)
+        _require(
+            not unexpected_directories,
+            "wheel contains directory entries that are not canonical parents of "
+            f"allowed members: {unexpected_directories}",
+        )
 
         _metadata_contract(
             archive.read(metadata_path), contract, version, metadata_path
@@ -1235,7 +1285,7 @@ def validate_wheel(
             by_name[record_path] == ["", ""],
             "RECORD must leave its own hash and size empty",
         )
-        for info in infos:
+        for info in regular_infos:
             if info.filename == record_path:
                 continue
             digest_text, size_text = by_name[info.filename]

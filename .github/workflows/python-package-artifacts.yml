@@ -336,7 +336,31 @@ jobs:
             exit 1
           fi
           report="python-audit/audit-${{ matrix.target }}.txt"
-          trap 'status=$?; trap - EXIT; cat "$report" 2>/dev/null || true; exit "$status"' EXIT
+          print_audit_report() {
+            if [[ ! -f "$report" ]]; then
+              return
+            fi
+            report_bytes="$(wc -c <"$report" | tr -d '[:space:]')"
+            printf 'macOS audit report bytes=%s\n' "$report_bytes"
+            if [[ "$report_bytes" -gt 1048576 ]]; then
+              bounded_report="${report}.bounded"
+              {
+                printf 'audit output truncated; original_report_bytes=%s; retained_tail_bytes=1048576\n' \
+                  "$report_bytes"
+                tail -c 1048576 -- "$report"
+              } >"$bounded_report"
+              mv -- "$bounded_report" "$report"
+              printf 'stored only the final 1048576 report bytes\n'
+            fi
+            cat "$report"
+          }
+          trap 'status=$?; trap - EXIT; print_audit_report || true; exit "$status"' EXIT
+          # Bound every file created by the external audit tools to 512 MiB. The
+          # expected wheel is about 3 MiB; this prevents runaway diagnostics or
+          # repair output from exhausting the hosted runner before evidence is
+          # printed and uploaded.
+          ulimit -f 524288
+          printf 'starting delocate repair audit for %s\n' '${{ matrix.target }}'
           {
             printf 'target=%s\n' '${{ matrix.target }}'
             printf 'rust_target=%s\n' '${{ matrix.rust_target }}'
@@ -360,6 +384,7 @@ jobs:
               "${#repaired[@]}" >&2
             exit 1
           fi
+          printf 'delocate repair complete; starting strict wheel validation\n'
           {
             uvx --from "delocate==$DELOCATE_VERSION" \
               delocate-listdeps --all "${repaired[0]}"
@@ -370,7 +395,8 @@ jobs:
             uvx --from "abi3audit==$ABI3AUDIT_VERSION" \
               abi3audit --strict "${repaired[0]}"
           } >>"$report" 2>&1
-          cat "$report"
+          printf 'strict wheel and ABI validation complete\n'
+          print_audit_report
           trap - EXIT
       - name: Repair and audit Windows wheel
         id: windows-audit

@@ -194,6 +194,20 @@ def test_builds_are_pinned_repaired_audited_and_uploaded_exactly_once():
     assert "--network none" in job
     assert "--read-only" in job
     assert "delocate-wheel" in job
+    mac_audit = job[job.index("Repair and audit macOS wheel") :]
+    mac_audit = mac_audit[: mac_audit.index("Repair and audit Windows wheel")]
+    assert "ulimit -f 524288" in mac_audit
+    assert "print_audit_report" in mac_audit
+    assert "tail -c 1048576" in mac_audit
+    assert "audit output truncated; original_report_bytes=" in mac_audit
+    assert "retained_tail_bytes=1048576" in mac_audit
+    assert 'mv -- "$bounded_report" "$report"' in mac_audit
+    assert "stored only the final 1048576 report bytes" in mac_audit
+    assert 'cat "$report"' in mac_audit
+    assert "trap 'status=$?; trap - EXIT; print_audit_report" in mac_audit
+    assert "starting delocate repair audit" in mac_audit
+    assert "delocate repair complete; starting strict wheel validation" in mac_audit
+    assert "strict wheel and ABI validation complete" in mac_audit
     assert "delvewheel repair" in job
     assert job.count("abi3audit") >= 4
     assert job.count("abi3audit --strict") == 3
