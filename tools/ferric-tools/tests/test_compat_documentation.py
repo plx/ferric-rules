@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -11,6 +12,7 @@ PUBLIC_COMPATIBILITY_DOCS = (
     ROOT / "docs" / "compatibility.md",
     ROOT / "site" / "src" / "content" / "docs" / "docs" / "compatibility.md",
 )
+POLICY_CASE_TOKEN = re.compile(r"`(FR-[A-Z0-9-]+)`")
 
 
 def test_policy_known_divergences_are_disclosed_in_public_compatibility_docs():
@@ -28,6 +30,16 @@ def test_policy_known_divergences_are_disclosed_in_public_compatibility_docs():
         assert separator
         section, _, _ = tail.partition("\n## ")
         table_rows = tuple(line for line in section.splitlines() if line.startswith("|"))
+        documented_cases = {
+            match.group(1) for row in table_rows for match in POLICY_CASE_TOKEN.finditer(row)
+        }
+
+        expected_cases = set(divergences)
+        assert documented_cases == expected_cases, (
+            f"{path.relative_to(ROOT)} policy case drift: "
+            f"missing={sorted(expected_cases - documented_cases)}, "
+            f"stale={sorted(documented_cases - expected_cases)}"
+        )
 
         missing = {
             case_id: {"issue": issue_url, "family": family}
