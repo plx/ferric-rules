@@ -13,14 +13,18 @@ from rich.console import Console
 from ferric_tools._manifest import load_manifest
 from ferric_tools._paths import examples_dir as default_examples_dir
 from ferric_tools.compat.diagnostics import result_diagnostic_view
-from ferric_tools.compat.oracle import SUPPORTED_NORMALIZERS
+from ferric_tools.compat.oracle import (
+    DECLARATION_VERSION,
+    SCENARIO_DECLARATION_VERSION,
+    SUPPORTED_NORMALIZERS,
+)
 
 app = typer.Typer(help="Generate compatibility assessment reports.")
 console = Console(stderr=True)
 
 ORACLE_STATUSES = ("valid", "missing", "invalid")
 ORACLE_COVERAGE_FIELDS = ("declaration", "reached", "completed", "effect")
-ORACLE_EVIDENCE_VERSION = 1
+ORACLE_EVIDENCE_VERSIONS = frozenset({DECLARATION_VERSION, SCENARIO_DECLARATION_VERSION})
 
 
 def oracle_evidence_view(info: dict) -> dict:
@@ -41,7 +45,7 @@ def oracle_evidence_view(info: dict) -> dict:
         malformed = True
 
     version = evidence.get("version")
-    if selected and (type(version) is not int or version != ORACLE_EVIDENCE_VERSION):
+    if selected and (type(version) is not int or version not in ORACLE_EVIDENCE_VERSIONS):
         malformed = True
 
     coverage: dict[str, bool] = {}
@@ -61,7 +65,7 @@ def oracle_evidence_view(info: dict) -> dict:
         normalizations = sorted(set(raw_normalizations))
         if (
             selected
-            and version == ORACLE_EVIDENCE_VERSION
+            and version in ORACLE_EVIDENCE_VERSIONS
             and any(normalization not in SUPPORTED_NORMALIZERS for normalization in normalizations)
         ):
             malformed = True
@@ -158,6 +162,36 @@ def _format_counter(counter: dict[str, int]) -> str:
     return ", ".join(f"{name}: {count:,}" for name, count in sorted(counter.items()))
 
 
+def _provenance_view(manifest: dict) -> dict[str, str]:
+    """Return report-safe candidate and reference identity fields."""
+    candidate = manifest.get("candidate")
+    reference = manifest.get("reference")
+    candidate = candidate if isinstance(candidate, dict) else {}
+    reference = reference if isinstance(reference, dict) else {}
+    return {
+        "candidate_commit": str(candidate.get("commit_sha", "")),
+        "candidate_binary": str(candidate.get("binary_sha256", "")),
+        "reference_platform": str(reference.get("platform", "")),
+        "reference_binary": str(reference.get("binary_sha256", "")),
+        "reference_library": str(reference.get("library_sha256", "")),
+        "reference_image": str(reference.get("image_id", "")),
+        "reference_base": str(reference.get("base_image", "")),
+    }
+
+
+def _print_provenance(manifest: dict) -> None:
+    provenance = _provenance_view(manifest)
+    print()
+    print("Provenance:")
+    print(f"  Candidate commit:       {provenance['candidate_commit'] or '(missing)'}")
+    print(f"  Candidate binary SHA:   {provenance['candidate_binary'] or '(missing)'}")
+    print(f"  Reference platform:     {provenance['reference_platform'] or '(missing)'}")
+    print(f"  Reference binary SHA:   {provenance['reference_binary'] or '(missing)'}")
+    print(f"  Reference library SHA:  {provenance['reference_library'] or '(missing)'}")
+    print(f"  Reference image ID:     {provenance['reference_image'] or '(missing)'}")
+    print(f"  Reference base image:   {provenance['reference_base'] or '(missing)'}")
+
+
 def _termination_view(result: dict) -> dict:
     raw = result.get("termination")
     if not isinstance(raw, dict):
@@ -217,6 +251,7 @@ def print_summary(manifest: dict) -> None:
     print("CLIPS Compatibility Assessment Report")
     print("=" * 40)
     print(f"Generated: {generated}")
+    _print_provenance(manifest)
     print()
 
     print(f"Total files: {total:,}")
@@ -438,6 +473,26 @@ def write_report(
         lines.append(f"Commit: {commit_link} | Generated: {generated}")
     else:
         lines.append(f"Generated: {generated}")
+    lines.append("")
+
+    provenance = _provenance_view(manifest)
+    lines.append("### Candidate and reference provenance")
+    lines.append("")
+    lines.append("| Artifact | Identity |")
+    lines.append("|---|---|")
+    lines.append(f"| Ferric candidate commit | `{provenance['candidate_commit'] or '(missing)'}` |")
+    lines.append(
+        f"| Ferric candidate binary SHA-256 | `{provenance['candidate_binary'] or '(missing)'}` |"
+    )
+    lines.append(
+        f"| CLIPS reference platform | `{provenance['reference_platform'] or '(missing)'}` |"
+    )
+    lines.append(
+        f"| CLIPS executable SHA-256 | `{provenance['reference_binary'] or '(missing)'}` |"
+    )
+    lines.append(f"| CLIPS library SHA-256 | `{provenance['reference_library'] or '(missing)'}` |")
+    lines.append(f"| CLIPS image ID | `{provenance['reference_image'] or '(missing)'}` |")
+    lines.append(f"| CLIPS base image | `{provenance['reference_base'] or '(missing)'}` |")
     lines.append("")
 
     lines.append("| Classification | Count | % |")

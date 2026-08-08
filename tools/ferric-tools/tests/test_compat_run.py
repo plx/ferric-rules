@@ -15,7 +15,12 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from ferric_tools._harness import HARNESS_GENERATION_VERSION, ResolvedHarness, sha256_bytes
+from ferric_tools._harness import (
+    HARNESS_GENERATION_VERSION,
+    ResolvedHarness,
+    harness_verifier_identity,
+    sha256_bytes,
+)
 from ferric_tools._manifest import load_manifest, save_manifest
 from ferric_tools._paths import repo_root
 from ferric_tools.compat import run as run_module
@@ -42,6 +47,7 @@ def _resolved_harness(
         path=harness_path,
         source_bytes=source_bytes,
         harness_bytes=harness_bytes,
+        verifier_identity=harness_verifier_identity(f"{name}.clp", source_bytes),
         metadata={
             "path": f"tests/harnesses/{name}-harness.clp",
             "source_sha256": sha256_bytes(source_bytes),
@@ -699,7 +705,7 @@ def test_run_ferric_observer_preserves_signal_without_complete_json(monkeypatch,
         source_sha256="a" * 64,
         composed_sha256="a" * 64,
     )
-    projected = run_module._project_result(result, engine="ferric", harnessed=False)
+    projected = run_module._project_result(result, engine="ferric", harness_identity=None)
 
     assert result["stdout"] == ""
     assert result["stderr"] == "partial native stderr"
@@ -728,7 +734,7 @@ def test_run_clips_observer_converts_permission_error_to_spawn_failure(monkeypat
         source_sha256="a" * 64,
         composed_sha256="a" * 64,
         globals_to_capture=(),
-        harnessed=False,
+        harness_identity=None,
     )
 
     assert result["termination"] == {
@@ -761,7 +767,7 @@ def test_clips_scenario_invocation_replaces_legacy_file_option(monkeypatch, tmp_
         source_sha256="a" * 64,
         composed_sha256="b" * 64,
         globals_to_capture=(),
-        harnessed=False,
+        harness_identity=None,
         scenario_path=str(plan),
         expected_phases=("load", "reset", "run"),
     )
@@ -805,7 +811,7 @@ def test_clips_wrapper_preserves_signal_and_internal_failure_status(
         source_sha256="a" * 64,
         composed_sha256="a" * 64,
         globals_to_capture=(),
-        harnessed=False,
+        harness_identity=None,
     )
 
     assert result["stdout"] == "partial stdout"
@@ -819,7 +825,7 @@ def test_clips_wrapper_preserves_signal_and_internal_failure_status(
     else:
         assert result["harness_error"] is True
         assert "status 127" in result["observation_error"]
-        projected = run_module._project_result(result, engine="clips", harnessed=False)
+        projected = run_module._project_result(result, engine="clips", harness_identity=None)
         assert projected == {"observation_error": result["observation_error"]}
         assert result["diagnostic"] == run_module.diagnostic(
             "harness", "harness-error", continued=False
@@ -931,9 +937,9 @@ def test_interrupted_clips_parse_failure_preserves_process_termination(
         source_sha256="a" * 64,
         composed_sha256="a" * 64,
         globals_to_capture=(),
-        harnessed=False,
+        harness_identity=None,
     )
-    projected = run_module._project_result(result, engine="clips", harnessed=False)
+    projected = run_module._project_result(result, engine="clips", harness_identity=None)
 
     assert result["stdout"] == "partial stdout"
     assert result["stderr"] == "partial stderr"
@@ -989,12 +995,12 @@ def test_signal_during_initial_native_record_remains_process_signal(
         source_sha256=source_digest,
         composed_sha256=source_digest,
         globals_to_capture=(),
-        harnessed=False,
+        harness_identity=None,
     )
     projected = run_module._project_result(
         result,
         engine="clips",
-        harnessed=False,
+        harness_identity=None,
         expected_fixture={
             "id": fixture_id,
             "nonce": nonce,
@@ -1030,7 +1036,7 @@ def test_interrupted_clips_retains_invalid_utf8_bytes_losslessly(monkeypatch, tm
         source_sha256="a" * 64,
         composed_sha256="a" * 64,
         globals_to_capture=(),
-        harnessed=False,
+        harness_identity=None,
     )
 
     assert result["stdout"] == "stdout \ufffd"
@@ -1066,9 +1072,9 @@ def test_interrupted_clips_hard_protocol_corruption_is_harness_failure(
         source_sha256="a" * 64,
         composed_sha256="a" * 64,
         globals_to_capture=(),
-        harnessed=False,
+        harness_identity=None,
     )
-    projected = run_module._project_result(result, engine="clips", harnessed=False)
+    projected = run_module._project_result(result, engine="clips", harness_identity=None)
 
     assert result["termination"]["kind"] == "timeout"
     assert result["harness_error"] is True
@@ -1092,7 +1098,7 @@ def test_partial_timeout_preserves_authenticated_active_phase():
     projected = run_module._project_result(
         result,
         engine="clips",
-        harnessed=False,
+        harness_identity=None,
     )
 
     assert projected == {"observation_error": "observer timed out before terminal evidence"}
@@ -1134,7 +1140,7 @@ def test_signal_before_or_during_native_start_remains_process_signal(extra_issue
     projected = run_module._project_result(
         result,
         engine="clips",
-        harnessed=False,
+        harness_identity=None,
         expected_fixture=expected_fixture,
     )
 
@@ -1186,7 +1192,7 @@ def test_signal_after_lifecycle_start_before_phase_begin_remains_process_signal(
     projected = run_module._project_result(
         result,
         engine="clips",
-        harnessed=False,
+        harness_identity=None,
         expected_fixture=expected_fixture,
     )
 
@@ -1229,7 +1235,7 @@ def test_interrupted_authenticated_protocol_corruption_is_harness_failure():
     projected = run_module._project_result(
         result,
         engine="clips",
-        harnessed=False,
+        harness_identity=None,
         expected_fixture=expected_fixture,
     )
 
@@ -1290,7 +1296,7 @@ def test_projection_failure_preserves_trusted_bound_semantic_diagnostic(monkeypa
     projected = run_module._project_result(
         result,
         engine="ferric",
-        harnessed=False,
+        harness_identity=None,
         expected_fixture=expected_fixture,
     )
 
@@ -1344,7 +1350,7 @@ def test_projection_does_not_preserve_diagnostic_contradicted_by_run_state():
     projected = run_module._project_result(
         result,
         engine="ferric",
-        harnessed=False,
+        harness_identity=None,
         expected_fixture=expected_fixture,
     )
 
@@ -1404,7 +1410,7 @@ def test_interruption_preserves_prior_trusted_semantic_diagnostic(exit_code, tim
     projected = run_module._project_result(
         result,
         engine="clips",
-        harnessed=False,
+        harness_identity=None,
         expected_fixture=expected_fixture,
     )
 
@@ -1465,7 +1471,7 @@ def test_unknown_trusted_semantic_taxonomy_stays_unknown_not_harness(monkeypatch
     projected = run_module._project_result(
         result,
         engine="clips",
-        harnessed=False,
+        harness_identity=None,
         expected_fixture=expected_fixture,
     )
 
@@ -1503,7 +1509,7 @@ def test_unbound_semantic_diagnostic_is_harness_failure():
     projected = run_module._project_result(
         result,
         engine="ferric",
-        harnessed=False,
+        harness_identity=None,
         expected_fixture=expected_fixture,
     )
 
@@ -1535,11 +1541,11 @@ def test_structured_process_binds_actual_bytes_and_fresh_nonce(tmp_path, monkeyp
         _timeout,
         *,
         globals_to_capture,
-        harnessed,
+        harness_identity,
         **identity,
     ):
         assert globals_to_capture == ()
-        assert harnessed is False
+        assert harness_identity is None
         candidate = Path(path)
         invocations.append(("clips", candidate, candidate.read_bytes(), identity))
         return {**_engine_result(stdout="protocol\n"), "observation": {"identity": identity}}
@@ -1631,13 +1637,13 @@ def test_v2_process_materializes_one_exact_plan_for_both_adapters(tmp_path, monk
         _timeout,
         *,
         globals_to_capture,
-        harnessed,
+        harness_identity,
         scenario_path,
         expected_phases,
         **identity,
     ):
         assert globals_to_capture == ()
-        assert harnessed is False
+        assert harness_identity is None
         assert expected_phases == ("load", "reset", "load", "reset", "run")
         plan_path = Path(scenario_path)
         invocations.append(("clips", plan_path, plan_path.read_bytes()))
@@ -1767,11 +1773,11 @@ def test_nonzero_structured_observer_is_invalid_and_retains_source(tmp_path, mon
         _timeout,
         *,
         globals_to_capture,
-        harnessed,
+        harness_identity,
         **identity,
     ):
         assert globals_to_capture == ()
-        assert harnessed is False
+        assert harness_identity is None
         return {**_engine_result(), "observation": {"identity": identity}}
 
     monkeypatch.setattr(run_module, "run_ferric_observer", failed_ferric)
@@ -1865,6 +1871,211 @@ def test_runner_persists_missing_oracle_state_without_engine_preflight(
     assert persisted["files"]["fixture.clp"]["oracle_evidence"]["status"] == "missing"
     assert persisted["files"]["fixture.clp"]["ferric"] is None
     assert persisted["files"]["fixture.clp"]["clips"] is None
+
+
+def test_runner_required_selection_rejects_zero_oracle_backed_files(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    source = examples / "fixture.clp"
+    source.parent.mkdir(parents=True)
+    source.write_text("(defrule noop =>)\n", encoding="utf-8")
+    manifest_path = examples / "compat-manifest.json"
+    files = {
+        "fixture.clp": {
+            "source": "",
+            "classification": "pending",
+            "reason": "testable",
+            "runability": "standalone",
+            "features": ["defrule"],
+            "unsupported_features": [],
+            "ferric": None,
+            "clips": None,
+            "notes": "",
+            "source_sha256": sha256_bytes(source.read_bytes()),
+        }
+    }
+    save_manifest(
+        manifest_path,
+        {
+            "version": 3,
+            "oracle_protocol_version": 1,
+            "summary": build_summary(files),
+            "files": files,
+        },
+    )
+    monkeypatch.setattr(run_module, "repo_root", lambda: root)
+    monkeypatch.setattr(run_module, "default_examples_dir", lambda: examples)
+
+    result = CliRunner().invoke(
+        run_module.app,
+        [
+            "--manifest",
+            str(manifest_path),
+            "--all",
+            "--require-selected",
+            "--candidate-sha",
+            "a" * 40,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "required compatibility selection is empty" in result.output
+
+
+def test_runner_persists_candidate_before_missing_reference_image_failure(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    source = examples / "fixture.clp"
+    source.parent.mkdir(parents=True)
+    source.write_text("(defrule noop =>)\n", encoding="utf-8")
+    ferric = root / "target" / "release" / "ferric"
+    ferric.parent.mkdir(parents=True)
+    ferric.write_bytes(b"candidate-binary")
+    digest = sha256_bytes(source.read_bytes())
+    files = {
+        "fixture.clp": {
+            "source": "",
+            "classification": "pending",
+            "reason": "testable",
+            "runability": "standalone",
+            "features": ["defrule"],
+            "unsupported_features": [],
+            "ferric": None,
+            "clips": None,
+            "notes": "",
+            "source_sha256": digest,
+            "oracle": _oracle_declaration(digest),
+        }
+    }
+    manifest_path = examples / "compat-manifest.json"
+    save_manifest(
+        manifest_path,
+        {
+            "version": 3,
+            "oracle_protocol_version": 1,
+            "summary": build_summary(files),
+            "files": files,
+        },
+    )
+    monkeypatch.setattr(run_module, "repo_root", lambda: root)
+    monkeypatch.setattr(run_module, "default_examples_dir", lambda: examples)
+    monkeypatch.setattr(
+        run_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1),
+    )
+
+    result = CliRunner().invoke(
+        run_module.app,
+        [
+            "--manifest",
+            str(manifest_path),
+            "--ferric-bin",
+            str(ferric),
+            "--candidate-sha",
+            "a" * 40,
+            "--require-selected",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Docker CLIPS image not found" in result.output
+    persisted = load_manifest(manifest_path)
+    assert persisted["candidate"] == {
+        "schema": "ferric.compat-candidate-provenance",
+        "version": 1,
+        "commit_sha": "a" * 40,
+        "binary_sha256": sha256_bytes(b"candidate-binary"),
+    }
+
+
+def test_runner_rejects_malformed_worker_result_and_persists_preflight_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "repo"
+    examples = root / "tests" / "examples"
+    source = examples / "fixture.clp"
+    source.parent.mkdir(parents=True)
+    source.write_text("(defrule noop =>)\n", encoding="utf-8")
+    ferric = root / "target" / "release" / "ferric"
+    ferric.parent.mkdir(parents=True)
+    ferric.write_bytes(b"candidate-binary")
+    digest = sha256_bytes(source.read_bytes())
+    files = {
+        "fixture.clp": {
+            "source": "",
+            "classification": "pending",
+            "reason": "testable",
+            "runability": "standalone",
+            "features": ["defrule"],
+            "unsupported_features": [],
+            "ferric": None,
+            "clips": None,
+            "notes": "",
+            "source_sha256": digest,
+            "oracle": _oracle_declaration(digest),
+        }
+    }
+    manifest_path = examples / "compat-manifest.json"
+    save_manifest(
+        manifest_path,
+        {
+            "version": 3,
+            "oracle_protocol_version": 1,
+            "summary": build_summary(files),
+            "files": files,
+        },
+    )
+
+    def malformed_parallel(_function, _items, *, workers):
+        assert workers == 1
+        yield ("fixture.clp",)
+
+    monkeypatch.setattr(run_module, "repo_root", lambda: root)
+    monkeypatch.setattr(run_module, "default_examples_dir", lambda: examples)
+    monkeypatch.setattr(run_module, "parallel_run", malformed_parallel)
+    monkeypatch.setattr(
+        run_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0),
+    )
+    monkeypatch.setattr(
+        run_module,
+        "load_reference_provenance",
+        lambda *_args, **_kwargs: _reference_provenance(),
+    )
+
+    result = CliRunner().invoke(
+        run_module.app,
+        [
+            "--manifest",
+            str(manifest_path),
+            "--ferric-bin",
+            str(ferric),
+            "--candidate-sha",
+            "a" * 40,
+            "--require-selected",
+            "--workers",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "compatibility execution failed" in result.output
+    assert "compatibility worker" in result.output
+    assert "malformed" in result.output
+    persisted = load_manifest(manifest_path)
+    assert persisted["candidate"]["binary_sha256"] == sha256_bytes(b"candidate-binary")
+    assert persisted["reference"] == _reference_provenance()
+    assert persisted["files"]["fixture.clp"]["ferric"] is None
+    assert persisted["summary"] == build_summary(files)
 
 
 def test_runner_rejects_explicit_unknown_runability_before_oracle_or_engine_preflight(
@@ -2274,11 +2485,11 @@ def test_structured_divergence_retains_artifact_and_cleans_temp(
         _timeout,
         *,
         globals_to_capture,
-        harnessed,
+        harness_identity,
         **identity,
     ):
         assert globals_to_capture == ()
-        assert harnessed is True
+        assert harness_identity == harness.verifier_identity
         candidate = Path(path)
         invocations.append(("clips", candidate, candidate.read_bytes()))
         return {
@@ -2348,6 +2559,10 @@ def test_concurrent_unicode_workspace_uses_unique_files_without_crosstalk(tmp_pa
     expected_contents = {
         harness.source_bytes + b"\n" + harness.harness_bytes for _, harness in cases
     }
+    expected_identities = {
+        harness.source_bytes + b"\n" + harness.harness_bytes: harness.verifier_identity
+        for _, harness in cases
+    }
 
     def fake_ferric(path, _ferric, _root, _timeout, **identity):
         candidate = Path(path)
@@ -2376,14 +2591,14 @@ def test_concurrent_unicode_workspace_uses_unique_files_without_crosstalk(tmp_pa
         _timeout,
         *,
         globals_to_capture,
-        harnessed,
+        harness_identity,
         **identity,
     ):
         assert globals_to_capture == ()
-        assert harnessed is True
         candidate = Path(path)
         assert candidate.exists()
         content = candidate.read_bytes()
+        assert harness_identity == expected_identities[content]
         with lock:
             engine_bytes.setdefault(candidate, []).append(content)
         return {**_engine_result(), "observation": {"identity": identity}}
@@ -2566,11 +2781,11 @@ def test_windows_mode_keeps_composed_file_writable_for_cleanup(tmp_path, monkeyp
         _timeout,
         *,
         globals_to_capture,
-        harnessed,
+        harness_identity,
         **identity,
     ):
         assert globals_to_capture == ()
-        assert harnessed is True
+        assert harness_identity == harness.verifier_identity
         candidate = Path(path)
         invocation_paths.append(candidate)
         assert candidate.stat().st_mode & 0o200
@@ -2629,7 +2844,7 @@ def test_run_clips_observer_rejects_leaf_symlink_escape_before_subprocess(
             source_sha256="0" * 64,
             composed_sha256="0" * 64,
             globals_to_capture=(),
-            harnessed=False,
+            harness_identity=None,
         )
 
 

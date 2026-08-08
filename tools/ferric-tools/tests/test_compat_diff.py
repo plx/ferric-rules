@@ -9,6 +9,7 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from ferric_tools.compat.diagnostics import diagnostic
@@ -529,20 +530,50 @@ def test_compat_compare_workflow_retains_native_pre_run_scans_and_artifacts():
     base_capture = "cp tests/examples/compat-manifest.json /tmp/base-compat-scan-manifest.json"
     head_overlay = "git checkout ${{ inputs.head_sha }} --"
     head_capture = "cp tests/examples/compat-manifest.json /tmp/head-compat-scan-manifest.json"
-    head_run = "uv run --project tools/ferric-tools ferric-compat-run --workers 4 --timeout 30"
     scanner_generation = workflow.index("- name: Generate retained scanner comparison")
+    harness_generation = workflow.index("- name: Generate head compatibility harnesses")
+    harness_verification = workflow.index("- name: Verify head compatibility harnesses")
+    head_run = workflow.index("- name: Run compat assessment")
+    head_gate = workflow.index("- name: Enforce head compatibility policy")
     assert workflow.index(base_capture) < workflow.index(head_overlay)
-    assert workflow.index(head_capture) < scanner_generation < workflow.rindex(head_run)
+    assert (
+        workflow.index(head_capture)
+        < scanner_generation
+        < harness_generation
+        < harness_verification
+        < head_run
+        < head_gate
+    )
+    base_step = workflow.split("- name: Assess base branch", maxsplit=1)[1]
+    base_step = base_step.split("# ── Head assessment", maxsplit=1)[0]
+    assert base_step.index("ferric-compat-scan") < base_step.index("ferric-harness-gen")
+    assert base_step.index("ferric-harness-gen") < base_step.index("--check")
+    assert base_step.index("--check") < base_step.index("ferric-compat-run")
+    assert "--require-selected" in base_step
+    assert "crates/ferric-rules-cli" not in base_step
+    assert "crates/ferric-rules-runtime" not in base_step
     assert "--scanner-only" in workflow
     assert "cat /tmp/compat-scanner-diff-report.md >> /tmp/compat-diff-report.md" in workflow
     scanner_step = workflow.split("- name: Generate retained scanner comparison", maxsplit=1)[1]
-    scanner_step = scanner_step.split("- name: Run compat assessment", maxsplit=1)[0]
+    scanner_step = scanner_step.split("- name: Generate head compatibility harnesses", maxsplit=1)[
+        0
+    ]
     assert "continue-on-error" not in scanner_step
-    append_step = workflow.split("- name: Append retained scanner comparison", maxsplit=1)[1]
-    append_step = append_step.split("- name: Copy head manifest", maxsplit=1)[0]
-    assert "if: always()" in append_step
+    comparison_step = workflow.split("- name: Generate comparison report", maxsplit=1)[1]
+    comparison_step = comparison_step.split("- name: Finalize compatibility evidence", maxsplit=1)[
+        0
+    ]
+    assert "continue-on-error" not in comparison_step
+    finalize_step = workflow.split("- name: Finalize compatibility evidence", maxsplit=1)[1]
+    finalize_step = finalize_step.split("- name: Upload artifacts", maxsplit=1)[0]
+    assert "if: always()" in finalize_step
+    assert "/tmp/head-assessment-checkout" in finalize_step
+    assert "base-intermediate-compat-manifest.json" in finalize_step
+    assert "compat-ci-gate.json" in finalize_step
+    assert "compat-ci-gate.md" in finalize_step
     upload_step = workflow.split("- name: Upload artifacts", maxsplit=1)[1]
     assert "if: always()" in upload_step
+    assert "if-no-files-found: error" in upload_step
     for artifact in (
         "/tmp/compat-scanner-diff.tsv",
         "/tmp/compat-scanner-diff.json",
@@ -551,6 +582,84 @@ def test_compat_compare_workflow_retains_native_pre_run_scans_and_artifacts():
         "/tmp/head-compat-scan-manifest.json",
     ):
         assert artifact in workflow
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "scan_step", "run_step", "gate_step"),
+    [
+        (
+            "compat-standalone.yml",
+            "- name: Run compat scan",
+            "- name: Run compat assessment",
+            "- name: Enforce compatibility policy",
+        ),
+        (
+            "ci.yml",
+            "- name: Scan claimed compatibility subset",
+            "- name: Run pinned differential assessment",
+            "- name: Enforce exact compatibility policy",
+        ),
+    ],
+)
+def test_required_compatibility_workflows_generate_verify_gate_and_always_upload(
+    workflow_name,
+    scan_step,
+    run_step,
+    gate_step,
+):
+    workflow_path = Path(__file__).parents[3] / ".github" / "workflows" / workflow_name
+    workflow = workflow_path.read_text(encoding="utf-8")
+    scan = workflow.index(scan_step)
+    generate = workflow.index("- name: Generate compatibility harnesses", scan)
+    verify = workflow.index("- name: Verify compatibility harnesses", generate)
+    run = workflow.index(run_step, verify)
+    gate = workflow.index(gate_step, run)
+    finalize = workflow.index("- name: Finalize compatibility evidence", gate)
+    upload = workflow.index("- name: Upload", finalize)
+
+    assert scan < generate < verify < run < gate < finalize < upload
+    core = workflow[scan:finalize]
+    assert "--check" in core
+    assert "--all --require-selected" in core
+    assert "--candidate-sha" in core
+    assert "continue-on-error" not in core
+    assert "if: always()" in workflow[finalize:upload]
+    assert "compat-ci-gate.json" in workflow[finalize:upload]
+    assert "compat-ci-gate.md" in workflow[finalize:upload]
+    assert "if: always()" in workflow[upload:]
+    assert "if-no-files-found: error" in workflow[upload:]
+
+
+def test_pr_assessment_exposes_stable_required_compatibility_context():
+    workflow_path = Path(__file__).parents[3] / ".github" / "workflows" / "pr-assessment.yml"
+    workflow = workflow_path.read_text(encoding="utf-8")
+    required = workflow.split("compatibility-required:", maxsplit=1)[1]
+    required = required.split("\n  comment:", maxsplit=1)[0]
+
+    assert "name: PR Compatibility Gate" in required
+    assert "needs: compat-compare" in required
+    assert "if: always()" in required
+    assert "${{ needs.compat-compare.result }}" in required
+    assert 'test "$COMPAT_RESULT" = success' in required
+
+
+def test_local_assessment_recipe_runs_the_complete_blocking_lane():
+    justfile = (Path(__file__).parents[3] / "justfile").read_text(encoding="utf-8")
+    recipe = justfile.split("\nassess-compatibility:", maxsplit=1)[1]
+    recipe = recipe.split("\n# ── Bat processing", maxsplit=1)[0]
+
+    ordered = [
+        "just build-cli-release",
+        "docker build",
+        "just compat-scan",
+        "just harness-gen --output-dir",
+        "--check",
+        "just compat-run --all --require-selected --candidate-sha",
+        "just compat-ci-gate --expected-commit-sha",
+        "just compat-report",
+    ]
+    positions = [recipe.index(fragment) for fragment in ordered]
+    assert positions == sorted(positions)
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +947,7 @@ def test_compute_diff_refuses_new_equivalent_claim_with_unsupported_evidence_ver
         {
             "claim.clp": _file_entry(
                 "equivalent",
-                oracle=_oracle(version=2),
+                oracle=_oracle(version=3),
             )
         }
     )
@@ -848,6 +957,24 @@ def test_compute_diff_refuses_new_equivalent_claim_with_unsupported_evidence_ver
     assert improvements == []
     assert len(regressions) == 1
     assert "unverified equivalent claim" in regressions[0][4]
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_compute_diff_accepts_supported_verified_equivalent_versions(version):
+    base = _manifest({"claim.clp": _file_entry("divergent")})
+    head = _manifest(
+        {
+            "claim.clp": _file_entry(
+                "equivalent",
+                oracle=_oracle(version=version),
+            )
+        }
+    )
+
+    _bc, _hc, regressions, improvements, _reason_changes = compute_diff(base, head)
+
+    assert regressions == []
+    assert len(improvements) == 1
 
 
 def test_compute_diff_schema_migration_reason_change_is_neutral():

@@ -18,7 +18,13 @@ from ferric_tools.compat.diagnostics import (
 
 _OBSERVATION_SCHEMA = "ferric.compat-observation"
 _OBSERVATION_VERSION = 1
-_HARNESS_LINE_RE = re.compile(r"^FERRIC-HARNESS\|\d+\|.*(?:\r?\n)?$")
+_HARNESS_LINE_RE = re.compile(r"^FERRIC-HARNESS\|(?P<version>\d+)\|(?P<record>.*?)(?:\r?\n)?$")
+_HARNESS_ID_RE = re.compile(r"ferric-harness-[0-9a-f]{64}(?:-[1-9][0-9]*)?")
+_HARNESS_RECORD_RE = re.compile(
+    r"^(?P<identity>ferric-harness-[0-9a-f]{64}(?:-[1-9][0-9]*)?)\|"
+    r"(?P<body>START|STATE\|focus=[^|\r\n]+|COMPLETE)$"
+)
+_HARNESS_GENERATION_VERSION = 2
 _FACT_ID_RE = re.compile(r"(?:0|[1-9][0-9]*)")
 _INTEGER_RE = re.compile(r"-?(?:0|[1-9][0-9]*)")
 _HALT_REASONS = frozenset(
@@ -99,7 +105,7 @@ def _fact_id(raw: object, *, engine: str) -> int:
     return int(raw)
 
 
-def _canonical_fact(raw: object, *, engine: str, harnessed: bool) -> dict:
+def _canonical_fact(raw: object, *, engine: str) -> dict:
     if type(raw) is not dict:
         raise ObservationProjectionError(f"{engine} fact is not an object")
     assert isinstance(raw, dict)
@@ -114,12 +120,9 @@ def _canonical_fact(raw: object, *, engine: str, harnessed: bool) -> dict:
         )
 
     kind = raw.get("kind")
-    fact_name = raw.get("relation", raw.get("name"))
-    origin = (
-        "instrumentation"
-        if harnessed and type(fact_name) is str and fact_name.startswith("ferric-harness-")
-        else "fixture"
-    )
+    # Generation-v2 harnesses assert no facts. A fixture remains free to use a
+    # relation whose name resembles the reserved verifier rule identity.
+    origin = "fixture"
     if kind == "ordered":
         fields = raw.get("fields")
         relation = raw.get("relation")
@@ -193,15 +196,67 @@ def _stdout_effect(text: str) -> dict | None:
     }
 
 
-def _strip_harness_output(text: str) -> tuple[str, list[str]]:
+def split_generated_harness_output(text: str) -> tuple[str, list[dict[str, object]]]:
+    """Separate exact generated-verifier lines from semantic channel text."""
     semantic_lines: list[str] = []
-    instrumentation: list[str] = []
+    instrumentation: list[dict[str, object]] = []
     for line in text.splitlines(keepends=True):
-        if _HARNESS_LINE_RE.fullmatch(line):
-            instrumentation.append(line.rstrip("\r\n"))
+        if match := _HARNESS_LINE_RE.fullmatch(line):
+            instrumentation.append(
+                {
+                    "version": int(match.group("version")),
+                    "record": match.group("record"),
+                }
+            )
         else:
             semantic_lines.append(line)
     return "".join(semantic_lines), instrumentation
+
+
+def _validated_harness_firing_count(
+    records: object,
+    *,
+    engine: str,
+    expected_identity: str,
+) -> int:
+    """Prove one complete generated verifier firing from its isolated records."""
+    if type(expected_identity) is not str or _HARNESS_ID_RE.fullmatch(expected_identity) is None:
+        raise ObservationProjectionError(
+            f"{engine} expected generated harness identity is malformed"
+        )
+    if type(records) is not list or len(records) != 3:
+        raise ObservationProjectionError(
+            f"{engine} generated harness did not emit exactly three verifier records"
+        )
+    parsed: list[tuple[str, str]] = []
+    for index, raw in enumerate(records):
+        if type(raw) is not dict or set(raw) != {"version", "record"}:
+            raise ObservationProjectionError(
+                f"{engine} generated harness record {index} is malformed"
+            )
+        if raw.get("version") != _HARNESS_GENERATION_VERSION:
+            raise ObservationProjectionError(
+                f"{engine} generated harness record {index} has an unsupported version"
+            )
+        record = raw.get("record")
+        if type(record) is not str or (match := _HARNESS_RECORD_RE.fullmatch(record)) is None:
+            raise ObservationProjectionError(
+                f"{engine} generated harness record {index} is malformed"
+            )
+        parsed.append((match.group("identity"), match.group("body")))
+    identities = {identity for identity, _body in parsed}
+    if len(identities) != 1:
+        raise ObservationProjectionError(f"{engine} generated harness identities disagree")
+    if identities != {expected_identity}:
+        raise ObservationProjectionError(
+            f"{engine} generated harness identity does not match the deterministic verifier"
+        )
+    bodies = [body for _identity, body in parsed]
+    if bodies != ["START", "STATE|focus=MAIN", "COMPLETE"]:
+        raise ObservationProjectionError(
+            f"{engine} generated harness verifier records are incomplete or out of order"
+        )
+    return 1
 
 
 def _canonical_diagnostic(
@@ -550,7 +605,6 @@ def _base_projection(
     raw: dict,
     *,
     engine: str,
-    harnessed: bool,
 ) -> tuple[dict, list[dict]]:
     _validate_raw_envelope(raw, engine=engine)
     fixture = raw.get("fixture")
@@ -584,11 +638,10 @@ def _base_projection(
         run_projection = {"limit": None, "halt_reason": "not-run"}
     else:
         assert isinstance(run, dict)
-        facts = [_canonical_fact(fact, engine=engine, harnessed=harnessed) for fact in raw_facts]
+        facts = [_canonical_fact(fact, engine=engine) for fact in raw_facts]
         fact_ids = [fact["id"] for fact in facts]
         if len(fact_ids) != len(set(fact_ids)):
             raise ObservationProjectionError(f"{engine} observation contains a duplicate fact id")
-        facts = [fact for fact in facts if fact["origin"] != "instrumentation"]
         halt_reason = _halt_reason(run.get("halt_reason"))
         run_projection = {"limit": None, "halt_reason": halt_reason}
         if diagnostic["phase"] == "none":
@@ -640,7 +693,7 @@ def _base_projection(
 def project_ferric_observation(
     raw: object,
     *,
-    harnessed: bool,
+    harness_identity: str | None,
     require_firing_names: bool = False,
     require_globals: bool = False,
 ) -> dict:
@@ -654,8 +707,13 @@ def project_ferric_observation(
         require_firing_names=require_firing_names,
         require_globals=require_globals,
     )
-    projected, _facts = _base_projection(raw, engine="ferric", harnessed=harnessed)
+    projected, _facts = _base_projection(raw, engine="ferric")
     run = raw.get("run")
+    channel_map = _channel_map(raw, engine="ferric")
+    stdout = channel_map["t"]
+    harness_records: list[dict[str, object]] = []
+    if harness_identity is not None:
+        stdout, harness_records = split_generated_harness_output(stdout)
     if run is None:
         rules_fired = 0
     else:
@@ -663,18 +721,20 @@ def project_ferric_observation(
         rules_fired = run.get("rules_fired")
         if type(rules_fired) is not int or rules_fired < 0:
             raise ObservationProjectionError("Ferric firing count is unavailable")
-    if harnessed and run is not None:
-        raise ObservationProjectionError(
-            "Ferric cannot separate harness firings from fixture firings"
-        )
+        if harness_identity is not None:
+            rules_fired -= _validated_harness_firing_count(
+                harness_records,
+                engine="Ferric",
+                expected_identity=harness_identity,
+            )
+            if rules_fired < 0:
+                raise ObservationProjectionError(
+                    "Ferric generated harness firing exceeds the observed firing count"
+                )
     projected["firings"] = [
         {"rule": f"counted-firing-{index + 1}", "origin": "fixture"} for index in range(rules_fired)
     ]
 
-    channel_map = _channel_map(raw, engine="ferric")
-    stdout = channel_map["t"]
-    if harnessed:
-        stdout, _instrumentation = _strip_harness_output(stdout)
     projected["channels"] = {
         "stdout": stdout,
         "stderr": channel_map["stderr"],
@@ -688,7 +748,7 @@ def project_ferric_observation(
 def project_clips_observation(
     raw: object,
     *,
-    harnessed: bool,
+    harness_identity: str | None,
     require_firing_names: bool = False,
 ) -> dict:
     """Project one parsed reference-CLIPS observation envelope."""
@@ -700,8 +760,10 @@ def project_clips_observation(
         engine="clips",
         require_firing_names=require_firing_names,
     )
-    projected, _facts = _base_projection(raw, engine="clips", harnessed=harnessed)
+    projected, _facts = _base_projection(raw, engine="clips")
     run = raw.get("run")
+    channel_map = _channel_map(raw, engine="clips")
+    stdout = channel_map["t"]
     if run is None:
         rules_fired = 0
     else:
@@ -709,12 +771,26 @@ def project_clips_observation(
         rules_fired = run.get("rules_fired")
         if type(rules_fired) is not int or rules_fired < 0:
             raise ObservationProjectionError("CLIPS firing count is unavailable")
-    if harnessed and run is not None:
-        raise ObservationProjectionError(
-            "CLIPS cannot separate harness firings from fixture firings"
-        )
+        if harness_identity is not None:
+            instrumentation = raw.get("instrumentation")
+            records = (
+                instrumentation.get("harness_records") if type(instrumentation) is dict else None
+            )
+            rules_fired -= _validated_harness_firing_count(
+                records,
+                engine="CLIPS",
+                expected_identity=harness_identity,
+            )
+            if rules_fired < 0:
+                raise ObservationProjectionError(
+                    "CLIPS generated harness firing exceeds the observed firing count"
+                )
     fired_rules = raw.get("fired_rules")
     if require_firing_names and run is not None:
+        if harness_identity is not None:
+            raise ObservationProjectionError(
+                "CLIPS cannot separate generated harness names from the fired-rule trace"
+            )
         if type(fired_rules) is not list or not all(
             type(rule) is str and rule for rule in fired_rules
         ):
@@ -728,10 +804,6 @@ def project_clips_observation(
             for index in range(rules_fired)
         ]
 
-    channel_map = _channel_map(raw, engine="clips")
-    stdout = channel_map["t"]
-    if harnessed:
-        stdout, _instrumentation = _strip_harness_output(stdout)
     projected["channels"] = {
         "stdout": stdout,
         "stderr": channel_map["stderr"],

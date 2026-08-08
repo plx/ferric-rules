@@ -27,6 +27,17 @@ jobs:
       base_sha: ${{ github.event.pull_request.base.sha }}
       head_sha: ${{ github.sha }}
 
+  compatibility-required:
+    name: PR Compatibility Gate
+    needs: compat-compare
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require blocking compatibility assessment
+        env:
+          COMPAT_RESULT: ${{ needs.compat-compare.result }}
+        run: test "$COMPAT_RESULT" = success
+
   comment:
     name: Post PR Comment
     needs: [compat-compare, perf-compare]

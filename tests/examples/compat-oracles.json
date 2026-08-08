@@ -4,9 +4,9 @@
     "ferric-oracle/empty-output-state.clp": {
       "version": 1,
       "id": "ferric-oracle.empty-output-state",
-      "feature": "ordered fact state transition with intentionally empty output",
-      "source_sha256": "cae413047bc57c27241dc9567f3728114f498b27115c106eaa0d0f6d7035c09f",
-      "composed_sha256": "cae413047bc57c27241dc9567f3728114f498b27115c106eaa0d0f6d7035c09f",
+      "feature": "library-only ordered fact state with intentionally empty output",
+      "source_sha256": "c8352226d04b5d9fc037392278592cfcce88a4800c0e71e82bcc20316175c5d1",
+      "composed_sha256": "1cb73761e6318f1c8b322f73ae47d748dec2aaff8766600b4c69f9febb4fdfa3",
       "nonce": "00000000000000000000000000000000",
       "setup": [
         "load",
@@ -16,7 +16,7 @@
       "expectations": {
         "phase": "run-complete",
         "firings": {
-          "count": 1,
+          "count": 0,
           "names": null
         },
         "effects": [
