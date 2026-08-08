@@ -236,12 +236,12 @@ jobs:
       - name: Build native addon
         working-directory: crates/ferric-rules-napi
         run: |
-          npm install
+          npm ci
           napi build --release
       - name: Build and lint TypeScript
         working-directory: packages/ferric
         run: |
-          npm install
+          npm ci
           npm run build
           npm run lint
       - name: Run TypeScript binding tests

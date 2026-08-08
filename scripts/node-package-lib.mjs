@@ -24,6 +24,70 @@ export const nativeCrateDirectory = join(
   "ferric-rules-napi",
 );
 export const nativeBinaryName = "ferric-rules-napi.node";
+export const DETECT_LIBC_VERSION = "2.1.2";
+
+export const CANONICAL_NODE_TARGETS = Object.freeze([
+  {
+    id: "darwin-arm64",
+    packageName: "@ferric-rules/napi-darwin-arm64",
+    platform: "darwin",
+    arch: "arm64",
+    os: ["darwin"],
+    cpu: ["arm64"],
+  },
+  {
+    id: "darwin-x64",
+    packageName: "@ferric-rules/napi-darwin-x64",
+    platform: "darwin",
+    arch: "x64",
+    os: ["darwin"],
+    cpu: ["x64"],
+  },
+  {
+    id: "linux-x64-gnu",
+    packageName: "@ferric-rules/napi-linux-x64-gnu",
+    platform: "linux",
+    arch: "x64",
+    os: ["linux"],
+    cpu: ["x64"],
+    libc: ["glibc"],
+  },
+  {
+    id: "linux-arm64-gnu",
+    packageName: "@ferric-rules/napi-linux-arm64-gnu",
+    platform: "linux",
+    arch: "arm64",
+    os: ["linux"],
+    cpu: ["arm64"],
+    libc: ["glibc"],
+  },
+  {
+    id: "linux-x64-musl",
+    packageName: "@ferric-rules/napi-linux-x64-musl",
+    platform: "linux",
+    arch: "x64",
+    os: ["linux"],
+    cpu: ["x64"],
+    libc: ["musl"],
+  },
+  {
+    id: "linux-arm64-musl",
+    packageName: "@ferric-rules/napi-linux-arm64-musl",
+    platform: "linux",
+    arch: "arm64",
+    os: ["linux"],
+    cpu: ["arm64"],
+    libc: ["musl"],
+  },
+  {
+    id: "win32-x64-msvc",
+    packageName: "@ferric-rules/napi-win32-x64-msvc",
+    platform: "win32",
+    arch: "x64",
+    os: ["win32"],
+    cpu: ["x64"],
+  },
+]);
 
 const targetsPath = join(mainPackageDirectory, "native", "targets.json");
 
@@ -37,6 +101,196 @@ async function writeJson(path, value) {
 
 export async function loadTargets() {
   return readJson(targetsPath);
+}
+
+function sameSequence(actual, expected) {
+  return (
+    actual.length === expected.length &&
+    actual.every((value, index) => value === expected[index])
+  );
+}
+
+function formatValue(value) {
+  return JSON.stringify(value) ?? String(value);
+}
+
+export function targetDetectionKey(target) {
+  const libc =
+    Array.isArray(target.libc) && target.libc.length === 1
+      ? target.libc[0]
+      : "none";
+  return `${String(target.platform)}/${String(target.arch)}/${String(libc)}`;
+}
+
+function validateVersionMap({ errors, label, actual, expectedNames, version }) {
+  if (actual === null || typeof actual !== "object" || Array.isArray(actual)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+
+  const actualNames = Object.keys(actual);
+  if (!sameSequence(actualNames, expectedNames)) {
+    errors.push(
+      `${label} must follow canonical target order: ${expectedNames.join(", ")}`,
+    );
+  }
+
+  for (const packageName of expectedNames) {
+    if (actual[packageName] !== version) {
+      errors.push(`${packageName} must be an exact ${label} at ${version}`);
+    }
+  }
+  for (const packageName of actualNames) {
+    if (!expectedNames.includes(packageName)) {
+      errors.push(`unexpected ${label} ${packageName}`);
+    }
+  }
+}
+
+export function collectNodeTargetValidationErrors({
+  targets,
+  version,
+  dependencies = {},
+  optionalDependencies = {},
+  lockedDependencies = {},
+  lockedOptionalDependencies = {},
+  lockedPackages = {},
+}) {
+  const errors = [];
+  const expectedIds = CANONICAL_NODE_TARGETS.map((target) => target.id);
+  const expectedPackageNames = CANONICAL_NODE_TARGETS.map(
+    (target) => target.packageName,
+  );
+  const canonicalById = new Map(
+    CANONICAL_NODE_TARGETS.map((target) => [target.id, target]),
+  );
+
+  if (!Array.isArray(targets)) {
+    return ["native/targets.json must contain an array"];
+  }
+
+  if (targets.length !== CANONICAL_NODE_TARGETS.length) {
+    errors.push(
+      `native/targets.json must declare exactly ${CANONICAL_NODE_TARGETS.length} targets, found ${targets.length}`,
+    );
+  }
+
+  const actualIds = targets.map((target) => target?.id);
+  if (!sameSequence(actualIds, expectedIds)) {
+    errors.push(
+      `native targets must follow canonical order: ${expectedIds.join(", ")}`,
+    );
+  }
+
+  const ids = new Set();
+  const packageNames = new Set();
+  const detectionKeys = new Set();
+  for (const target of targets) {
+    if (
+      target === null ||
+      typeof target !== "object" ||
+      Array.isArray(target)
+    ) {
+      errors.push(
+        `native target rows must be objects, found ${formatValue(target)}`,
+      );
+      continue;
+    }
+
+    const id = String(target.id);
+    const packageName = String(target.packageName);
+    const detectionKey = targetDetectionKey(target);
+    if (ids.has(id)) errors.push(`duplicate target id ${id}`);
+    if (packageNames.has(packageName)) {
+      errors.push(`duplicate native package ${packageName}`);
+    }
+    if (detectionKeys.has(detectionKey)) {
+      errors.push(`ambiguous target detection key ${detectionKey}`);
+    }
+    ids.add(id);
+    packageNames.add(packageName);
+    detectionKeys.add(detectionKey);
+
+    const canonical = canonicalById.get(id);
+    if (!canonical) {
+      errors.push(`unexpected native target id ${id}`);
+      continue;
+    }
+
+    const actualKeys = Object.keys(target).sort();
+    const expectedKeys = Object.keys(canonical).sort();
+    if (!sameSequence(actualKeys, expectedKeys)) {
+      errors.push(
+        `${id} must contain exactly these fields: ${expectedKeys.join(", ")}`,
+      );
+    }
+    for (const [field, expected] of Object.entries(canonical)) {
+      if (formatValue(target[field]) !== formatValue(expected)) {
+        errors.push(
+          `${id}.${field} must be ${formatValue(expected)}, found ${formatValue(target[field])}`,
+        );
+      }
+    }
+  }
+
+  for (const id of expectedIds) {
+    if (!ids.has(id)) errors.push(`missing native target ${id}`);
+  }
+
+  validateVersionMap({
+    errors,
+    label: "optional dependency",
+    actual: optionalDependencies,
+    expectedNames: expectedPackageNames,
+    version,
+  });
+  validateVersionMap({
+    errors,
+    label: "locked optional dependency",
+    actual: lockedOptionalDependencies,
+    expectedNames: expectedPackageNames,
+    version,
+  });
+
+  if (dependencies["detect-libc"] !== DETECT_LIBC_VERSION) {
+    errors.push(
+      `detect-libc must be an exact runtime dependency at ${DETECT_LIBC_VERSION}`,
+    );
+  }
+  if (lockedDependencies["detect-libc"] !== DETECT_LIBC_VERSION) {
+    errors.push(
+      `detect-libc must be version-locked at ${DETECT_LIBC_VERSION} in package-lock.json`,
+    );
+  }
+
+  const expectedLockedPackagePaths = new Set(
+    expectedPackageNames.map((name) => `node_modules/${name}`),
+  );
+  const lockedNativePackagePaths = Object.keys(lockedPackages).filter((path) =>
+    path.startsWith("node_modules/@ferric-rules/napi-"),
+  );
+  for (const path of expectedLockedPackagePaths) {
+    if (lockedPackages[path]?.optional !== true) {
+      errors.push(`${path} must be present and optional in package-lock.json`);
+    }
+  }
+  for (const path of lockedNativePackagePaths) {
+    if (!expectedLockedPackagePaths.has(path)) {
+      errors.push(`unexpected locked native package ${path}`);
+    }
+  }
+
+  const lockedDetectLibc = lockedPackages["node_modules/detect-libc"];
+  if (lockedDetectLibc?.version !== DETECT_LIBC_VERSION) {
+    errors.push(
+      `node_modules/detect-libc must be locked at ${DETECT_LIBC_VERSION}`,
+    );
+  }
+  if (lockedDetectLibc?.dev === true || lockedDetectLibc?.optional === true) {
+    errors.push("detect-libc must be a regular runtime dependency");
+  }
+
+  return errors;
 }
 
 export function npmArchiveName(packageName, version) {
@@ -63,6 +317,7 @@ export async function validateNodePackage() {
     nativeEntries,
     mainPackageText,
     nativeLoaderText,
+    runtimeTargetText,
     targetsText,
   ] = await Promise.all([
     readJson(join(mainPackageDirectory, "package.json")),
@@ -73,13 +328,16 @@ export async function validateNodePackage() {
     readdir(join(mainPackageDirectory, "native")),
     readFile(join(mainPackageDirectory, "package.json"), "utf8"),
     readFile(join(mainPackageDirectory, "native", "index.js"), "utf8"),
+    readFile(join(mainPackageDirectory, "native", "runtime-target.js"), "utf8"),
     readFile(targetsPath, "utf8"),
   ]);
 
   const errors = [];
   const version = mainPackage.version;
   const cargoVersion = workspaceVersion(cargoManifest);
+  const dependencies = mainPackage.dependencies ?? {};
   const optionalDependencies = mainPackage.optionalDependencies ?? {};
+  const lockedDependencies = mainLock.packages?.[""]?.dependencies ?? {};
   const lockedOptionalDependencies =
     mainLock.packages?.[""]?.optionalDependencies ?? {};
 
@@ -114,6 +372,10 @@ export async function validateNodePackage() {
       contents: nativeLoaderText,
     },
     {
+      path: "packages/ferric/native/runtime-target.js",
+      contents: runtimeTargetText,
+    },
+    {
       path: "packages/ferric/native/targets.json",
       contents: targetsText,
     },
@@ -133,44 +395,17 @@ export async function validateNodePackage() {
     );
   }
 
-  const ids = new Set();
-  const packageNames = new Set();
-  const detectionKeys = new Set();
-  for (const target of targets) {
-    const detectionKey = `${target.platform}-${target.arch}`;
-    if (ids.has(target.id)) errors.push(`duplicate target id ${target.id}`);
-    if (packageNames.has(target.packageName)) {
-      errors.push(`duplicate native package ${target.packageName}`);
-    }
-    if (detectionKeys.has(detectionKey)) {
-      errors.push(`ambiguous target detection key ${detectionKey}`);
-    }
-    ids.add(target.id);
-    packageNames.add(target.packageName);
-    detectionKeys.add(detectionKey);
-
-    if (optionalDependencies[target.packageName] !== version) {
-      errors.push(
-        `${target.packageName} must be an exact optional dependency at ${version}`,
-      );
-    }
-    if (lockedOptionalDependencies[target.packageName] !== version) {
-      errors.push(
-        `${target.packageName} must be version-locked in package-lock.json`,
-      );
-    }
-  }
-
-  for (const packageName of Object.keys(optionalDependencies)) {
-    if (!packageNames.has(packageName)) {
-      errors.push(`unexpected optional dependency ${packageName}`);
-    }
-  }
-  for (const packageName of Object.keys(lockedOptionalDependencies)) {
-    if (!packageNames.has(packageName)) {
-      errors.push(`unexpected locked optional dependency ${packageName}`);
-    }
-  }
+  errors.push(
+    ...collectNodeTargetValidationErrors({
+      targets,
+      version,
+      dependencies,
+      optionalDependencies,
+      lockedDependencies,
+      lockedOptionalDependencies,
+      lockedPackages: mainLock.packages ?? {},
+    }),
+  );
 
   if (errors.length !== 0) {
     throw new Error(
@@ -181,6 +416,28 @@ export async function validateNodePackage() {
   }
 
   return { mainPackage, targets, version };
+}
+
+export function createPlatformManifest({ target, mainPackage, version }) {
+  return {
+    name: target.packageName,
+    version,
+    description: `Native Ferric addon for ${target.id}`,
+    main: nativeBinaryName,
+    files: [nativeBinaryName],
+    os: target.os,
+    cpu: target.cpu,
+    ...(target.libc ? { libc: target.libc } : {}),
+    engines: mainPackage.engines,
+    repository: {
+      type: "git",
+      url: "git+https://github.com/plx/ferric-rules.git",
+    },
+    license: mainPackage.license,
+    publishConfig: {
+      access: "public",
+    },
+  };
 }
 
 export async function stagePlatformPackage({
@@ -211,25 +468,11 @@ export async function stagePlatformPackage({
     );
   }
 
-  const platformManifest = {
-    name: target.packageName,
+  const platformManifest = createPlatformManifest({
+    target,
+    mainPackage,
     version,
-    description: `Native Ferric addon for ${target.id}`,
-    main: nativeBinaryName,
-    files: [nativeBinaryName],
-    os: target.os,
-    cpu: target.cpu,
-    ...(target.libc ? { libc: target.libc } : {}),
-    engines: mainPackage.engines,
-    repository: {
-      type: "git",
-      url: "git+https://github.com/plx/ferric-rules.git",
-    },
-    license: mainPackage.license,
-    publishConfig: {
-      access: "public",
-    },
-  };
+  });
 
   await Promise.all([
     copyFile(binaryPath, join(outputDirectory, nativeBinaryName)),

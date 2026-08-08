@@ -25,6 +25,33 @@
     "libc": ["glibc"]
   },
   {
+    "id": "linux-arm64-gnu",
+    "packageName": "@ferric-rules/napi-linux-arm64-gnu",
+    "platform": "linux",
+    "arch": "arm64",
+    "os": ["linux"],
+    "cpu": ["arm64"],
+    "libc": ["glibc"]
+  },
+  {
+    "id": "linux-x64-musl",
+    "packageName": "@ferric-rules/napi-linux-x64-musl",
+    "platform": "linux",
+    "arch": "x64",
+    "os": ["linux"],
+    "cpu": ["x64"],
+    "libc": ["musl"]
+  },
+  {
+    "id": "linux-arm64-musl",
+    "packageName": "@ferric-rules/napi-linux-arm64-musl",
+    "platform": "linux",
+    "arch": "arm64",
+    "os": ["linux"],
+    "cpu": ["arm64"],
+    "libc": ["musl"]
+  },
+  {
     "id": "win32-x64-msvc",
     "packageName": "@ferric-rules/napi-win32-x64-msvc",
     "platform": "win32",

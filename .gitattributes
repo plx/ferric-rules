@@ -7,4 +7,5 @@
 # Keep checked-in text shipped by the Node package byte-identical on Windows.
 packages/ferric/package.json text eol=lf
 packages/ferric/native/index.js text eol=lf
+packages/ferric/native/runtime-target.js text eol=lf
 packages/ferric/native/targets.json text eol=lf

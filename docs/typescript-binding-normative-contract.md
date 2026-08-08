@@ -187,13 +187,20 @@ interface WorkerResponse {
 5. Every native addon `MUST` embed its Ferric package version. The loader
    `MUST` reject mismatched main-package metadata, native-package metadata, or
    embedded addon versions before exposing an engine.
-6. Unsupported targets and missing optional packages `MUST` fail with an
-   actionable error that names the detected target and expected package.
+6. Unsupported targets `MUST` fail with an actionable error that names the
+   detected OS and architecture, the detected libc on Linux, and the supported
+   target alternatives. A missing optional package `MUST` name the full
+   detected target and exact expected package.
 7. CI `MUST` pack, install, and execute the exact main and native tarballs from
    a clean consumer directory without a source checkout or native build.
 8. The declared target set is the versioned `native/targets.json` file.
    Extending the platform, architecture, or libc matrix requires the
-   FR-DIST-002 contract and its validation.
+   validation in this contract.
+9. Every declared Linux target `MUST` name exactly one npm libc selector. The
+   loader and release-artifact smoke `MUST` distinguish glibc from musl and
+   fail before loading a native package when libc detection is inconclusive.
+10. CI `MUST` build, pack, install, load, and run the exact artifact for every
+    declared OS, architecture, and libc combination on a matching runtime.
 
 ## 10. Required Test Gating
 
