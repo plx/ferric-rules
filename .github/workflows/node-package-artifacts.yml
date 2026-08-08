@@ -42,27 +42,64 @@ env:
   RUST_TOOLCHAIN: "1.93.0"
 
 jobs:
+  validate-artifact-contract:
+    name: Validate Node artifact contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate package metadata
+        run: node scripts/validate-node-package.mjs
+      - name: Test packaged runtime target selection
+        working-directory: packages/ferric
+        run: |
+          npm ci
+          ./node_modules/.bin/tsx --test \
+            test/conformance/package/loader-paths.test.ts \
+            test/conformance/package/node-target-matrix.test.ts
+
   pack-and-smoke:
     name: Pack and smoke (${{ matrix.target }})
+    needs: validate-artifact-contract
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: darwin-arm64
             runner: macos-15
+            rust_target: aarch64-apple-darwin
           - target: darwin-x64
             runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
           - target: linux-x64-gnu
             runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+          - target: linux-x64-musl
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-musl
+            libc: musl
+          - target: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+            libc: musl
           - target: win32-x64-msvc
             runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        if: matrix.libc != 'musl'
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.rust_target }}
       - uses: actions/setup-node@v4
+        if: matrix.libc != 'musl'
         with:
           node-version: "22"
           cache: npm
@@ -70,21 +107,57 @@ jobs:
             crates/ferric-rules-napi/package-lock.json
             packages/ferric/package-lock.json
       - name: Build native addon
+        if: matrix.libc != 'musl'
         working-directory: crates/ferric-rules-napi
         run: |
           npm ci
-          npm run build
+          npm run build -- --target ${{ matrix.rust_target }}
       - name: Install and build JavaScript package
+        if: matrix.libc != 'musl'
         working-directory: packages/ferric
         run: |
           npm ci --omit=optional
           npm run build
       - name: Pack and smoke exact release artifacts
+        if: matrix.libc != 'musl'
         run: >-
           node scripts/test-node-package-artifact.mjs
           --target ${{ matrix.target }}
           --binary crates/ferric-rules-napi/ferric-rules-napi.node
           --artifacts-dir node-release-artifacts
+      - name: Build, pack, and smoke in matching-architecture musl runtime
+        if: matrix.libc == 'musl'
+        shell: bash
+        run: |
+          docker run --rm \
+            --env CARGO_TERM_COLOR \
+            --env RUSTFLAGS \
+            --env RUST_TOOLCHAIN \
+            --env RUST_TARGET="${{ matrix.rust_target }}" \
+            --env TARGET_ID="${{ matrix.target }}" \
+            --volume "${{ github.workspace }}:/workspace" \
+            --workdir /workspace \
+            node:22-alpine \
+            sh -euxc '
+              apk add --no-cache build-base curl
+              curl --proto "=https" --tlsv1.2 -sSf \
+                https://sh.rustup.rs \
+                --output /tmp/rustup-init.sh
+              sh /tmp/rustup-init.sh -y --profile minimal \
+                --default-toolchain "$RUST_TOOLCHAIN"
+              export PATH="/root/.cargo/bin:$PATH"
+              cd crates/ferric-rules-napi
+              npm ci
+              npm run build -- --target "$RUST_TARGET"
+              cd ../../packages/ferric
+              npm ci --omit=optional
+              npm run build
+              cd ../..
+              node scripts/test-node-package-artifact.mjs \
+                --target "$TARGET_ID" \
+                --binary crates/ferric-rules-napi/ferric-rules-napi.node \
+                --artifacts-dir node-release-artifacts
+            '
       - uses: actions/upload-artifact@v4
         with:
           name: node-package-${{ matrix.target }}

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   mainPackageDirectory,
@@ -14,6 +15,16 @@ import {
   stagePlatformPackage,
   validateNodePackage,
 } from "./node-package-lib.mjs";
+
+const requireFromMainPackage = createRequire(
+  join(mainPackageDirectory, "package.json"),
+);
+const {
+  detectRuntimeTarget,
+  formatRuntimeTarget,
+  selectDeclaredTarget,
+  targetMatchesRuntime,
+} = requireFromMainPackage("./native/runtime-target.js");
 
 function parseArguments(argv) {
   const options = {};
@@ -30,31 +41,16 @@ function parseArguments(argv) {
   return options;
 }
 
-function currentTargetId() {
-  const key = `${process.platform}-${process.arch}`;
-  const targets = {
-    "darwin-arm64": "darwin-arm64",
-    "darwin-x64": "darwin-x64",
-    "linux-x64": "linux-x64-gnu",
-    "win32-x64": "win32-x64-msvc",
-  };
-  return targets[key];
-}
-
 const options = parseArguments(process.argv.slice(2));
-const targetId = options.target ?? currentTargetId();
-if (!targetId) {
-  throw new Error(
-    `No declared native package target for ${process.platform}-${process.arch}`,
-  );
-}
-
-const { targets } = await validateNodePackage();
+const { mainPackage, targets } = await validateNodePackage();
+const runtime = detectRuntimeTarget();
+const detectedTarget = selectDeclaredTarget(targets, runtime);
+const targetId = options.target ?? detectedTarget.id;
 const target = targets.find((candidate) => candidate.id === targetId);
 if (!target) throw new Error(`Unknown target ${targetId}`);
-if (target.platform !== process.platform || target.arch !== process.arch) {
+if (!targetMatchesRuntime(target, runtime)) {
   throw new Error(
-    `Cannot smoke-test ${targetId} on ${process.platform}-${process.arch}`,
+    `Cannot smoke-test ${targetId} on ${formatRuntimeTarget(runtime)}`,
   );
 }
 
@@ -62,6 +58,10 @@ const workDirectory = await mkdtemp(join(tmpdir(), "ferric-node-package-"));
 const artifactsDirectory = options.artifactsDirectory
   ? resolve(options.artifactsDirectory)
   : join(workDirectory, "artifacts");
+const dependencyArtifactsDirectory = join(
+  workDirectory,
+  "dependency-artifacts",
+);
 const platformStage = join(workDirectory, "platform-package");
 const consumerDirectory = join(workDirectory, "consumer");
 const binaryPath = resolve(
@@ -81,6 +81,23 @@ try {
     artifactsDirectory,
     runScripts: false,
   });
+  const detectLibcDirectory = dirname(
+    requireFromMainPackage.resolve("detect-libc/package.json"),
+  );
+  const detectLibcPack = await packPackage({
+    packageDirectory: detectLibcDirectory,
+    artifactsDirectory: dependencyArtifactsDirectory,
+    runScripts: false,
+  });
+  if (
+    detectLibcPack.record.name !== "detect-libc" ||
+    detectLibcPack.record.version !== mainPackage.dependencies?.["detect-libc"]
+  ) {
+    throw new Error(
+      `Packed detect-libc ${String(detectLibcPack.record.version)}, expected ` +
+        String(mainPackage.dependencies?.["detect-libc"]),
+    );
+  }
   const mainPack = await packPackage({
     packageDirectory: mainPackageDirectory,
     artifactsDirectory,
@@ -90,7 +107,11 @@ try {
   const mainNativeFiles = mainPack.files
     .filter((path) => path.startsWith("native/"))
     .sort();
-  const expectedMainNativeFiles = ["native/index.js", "native/targets.json"];
+  const expectedMainNativeFiles = [
+    "native/index.js",
+    "native/runtime-target.js",
+    "native/targets.json",
+  ];
   if (
     JSON.stringify(mainNativeFiles) !== JSON.stringify(expectedMainNativeFiles)
   ) {
@@ -129,6 +150,7 @@ try {
       "--no-audit",
       "--no-fund",
       "--package-lock=false",
+      detectLibcPack.archivePath,
       platformPack.archivePath,
       mainPack.archivePath,
     ],

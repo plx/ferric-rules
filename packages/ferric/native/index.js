@@ -5,12 +5,14 @@ const { resolve } = require("node:path");
 
 const targets = require("./targets.json");
 const packageMetadata = require("../package.json");
+const {
+  detectRuntimeTarget,
+  selectDeclaredTarget,
+} = require("./runtime-target");
 
 const expectedVersion = packageMetadata.version;
-const detectedTarget = targets.find(
-  (target) =>
-    target.platform === process.platform && target.arch === process.arch,
-);
+const detectedRuntime = detectRuntimeTarget();
+const detectedTarget = selectDeclaredTarget(targets, detectedRuntime);
 
 function formatCause(error) {
   return String(error);
@@ -39,16 +41,6 @@ function verifyBindingVersion(binding, source) {
 }
 
 function loadNativeBinding() {
-  if (!detectedTarget) {
-    const supported = targets
-      .map((target) => `${target.platform}-${target.arch} (${target.id})`)
-      .join(", ");
-    throw new Error(
-      `[ferric] Unsupported native target ${process.platform}-${process.arch}. ` +
-        `Supported targets: ${supported}.`,
-    );
-  }
-
   // A source checkout keeps the development binary in crates/ferric-rules-napi.
   // This path cannot exist in a normal npm consumer install.
   const developmentBinary = resolve(

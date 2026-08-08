@@ -30,10 +30,16 @@
   "publishConfig": {
     "access": "public"
   },
+  "dependencies": {
+    "detect-libc": "2.1.2"
+  },
   "optionalDependencies": {
     "@ferric-rules/napi-darwin-arm64": "0.1.0",
     "@ferric-rules/napi-darwin-x64": "0.1.0",
     "@ferric-rules/napi-linux-x64-gnu": "0.1.0",
+    "@ferric-rules/napi-linux-arm64-gnu": "0.1.0",
+    "@ferric-rules/napi-linux-x64-musl": "0.1.0",
+    "@ferric-rules/napi-linux-arm64-musl": "0.1.0",
     "@ferric-rules/napi-win32-x64-msvc": "0.1.0"
   },
   "devDependencies": {

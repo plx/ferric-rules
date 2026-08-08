@@ -63,6 +63,7 @@ packages/ferric/
 │   └── types.ts
 ├── native/
 │   ├── index.js
+│   ├── runtime-target.js
 │   └── targets.json
 └── dist/
 ```
@@ -75,9 +76,11 @@ and the loader verifies both package metadata and the version embedded in the
 Rust addon before exposing it. No host-specific binary is committed to or
 packed inside the main package.
 
-The currently declared targets are macOS arm64, macOS x64, Linux x64 with
-glibc, and Windows x64 with MSVC. Expanding and refining this matrix is owned
-by FR-DIST-002 rather than by the base packaging mechanism.
+The declared targets are macOS arm64 and x64; Linux arm64 and x64 with glibc;
+Linux arm64 and x64 with musl; and Windows x64 with MSVC. Linux runtime
+selection includes libc as well as OS and architecture. Future matrix changes
+must extend the same target metadata, loader selection, package validation, and
+per-runtime artifact-smoke contract.
 
 ## Ownership Boundaries
 - Rust owns engine correctness and low-level conversion primitives.
