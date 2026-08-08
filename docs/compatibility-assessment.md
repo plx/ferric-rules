@@ -45,9 +45,11 @@ started.
 
 ## Observation boundary
 
-Every run receives a fresh 128-bit nonce. Both engines must produce exactly one
-nonce- and digest-bound `START`/`COMPLETE` lifecycle and a complete post-run
-observation.
+Every run receives a fresh 128-bit nonce. Successful observations must produce
+exactly one nonce- and digest-bound `START`/`COMPLETE` lifecycle and a complete
+post-run observation. A semantic load, reset, or run failure may instead end at
+its authenticated terminal phase record; incomplete or out-of-order protocol
+evidence remains invalid.
 
 Ferric exposes this through the hidden `ferric compat-observe` command, leaving
 the public `ferric run --json` contract unchanged. Reference CLIPS is loaded by
@@ -60,6 +62,13 @@ identity, and authentication binding are consumed before the CLIPS environment
 is created and never enter the fixture-visible environment or command stream.
 Parsing uses byte offsets, so UTF-8 values are framed by their encoded byte
 length.
+
+The native adapter installs a dedicated CLIPS error router and emits explicit
+authenticated `load`, `reset`, and `run` phase boundaries. Router bytes are
+teed immediately to raw stderr, while CLIPS load/evaluation/halt state decides
+whether they become a diagnostic; fixture text alone cannot create one.
+Diagnostic payloads are length-framed so native messages containing delimiters
+or newlines remain exact.
 
 The native observer is built into `ferric-rules/clips-reference:latest` from
 `docker/clips-reference/`. Rebuild that local image after changing the
@@ -90,8 +99,24 @@ A valid semantic mismatch is `divergent`. A missing declaration is
 `pending/oracle-missing`. Missing, stale, malformed, incomplete, spoofed, or
 unsupported evidence is `pending/oracle-invalid:*`; the exact composed input
 is retained under `.ferric-compat/failures/`, when one exists, and
-`compat-run` exits nonzero. Expected diagnostics remain invalid until
-phase-aware diagnostic classification is implemented.
+`compat-run` exits nonzero.
+
+Diagnostics use taxonomy version 1 and retain their engine-native message
+alongside the canonical fields `phase`, `category`, and `continued`. The
+semantic mappings are `parse/syntax-error`, `load/construct-error`, and
+`reset|run/evaluation-error`. Multiple native diagnostics may collapse only
+when all canonical fields agree. Unknown categories, versions, or mixed
+diagnostic states fail closed. A known phase, category, or continuation
+mismatch is `divergent`; matching terminal diagnostics without a complete
+semantic oracle are `incompatible`, never `equivalent`.
+
+Process termination is recorded independently as `exit`, `timeout`, `signal`,
+or `spawn-error`, with exit status and signal number where available. It does
+not overwrite authenticated engine diagnostics. Timeout and signal evidence
+also retains the last authenticated active phase when one was observed. Raw
+stdout and stderr bytes remain losslessly encoded under each result's
+`raw_output` field, while readable channel text and observation envelopes
+remain in the manifest for audit.
 
 Manifest-v2 output-based results are deliberately reset during schema-v3
 migration. Undeclared fixtures remain pending instead of preserving legacy
@@ -108,8 +133,9 @@ just compat-run
 just compat-report
 ```
 
-`compat-report` exposes declaration, lifecycle, effect, version, and
-normalization coverage. Compare a baseline and candidate with:
+`compat-report` exposes declaration, lifecycle, effect, oracle version,
+normalization, diagnostic phase/category/continuation, and process termination
+evidence. Compare a baseline and candidate with:
 
 ```console
 just compat-diff BASE_MANIFEST HEAD_MANIFEST

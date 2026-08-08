@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import subprocess
+import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -195,6 +198,1122 @@ def test_classify_results_rejects_matching_empty_output_without_oracle():
     assert result == ("pending", "oracle-missing")
 
 
+@pytest.mark.parametrize(
+    ("field", "ferric_value", "clips_value", "reason"),
+    [
+        ("continued", False, True, "diagnostic-continued-mismatch"),
+    ],
+)
+def test_classify_results_treats_known_diagnostic_mismatches_as_divergent(
+    field,
+    ferric_value,
+    clips_value,
+    reason,
+):
+    ferric_diagnostic = run_module.diagnostic("parse", "syntax-error", continued=False)
+    clips_diagnostic = run_module.diagnostic("parse", "syntax-error", continued=False)
+    ferric_diagnostic[field] = ferric_value
+    clips_diagnostic[field] = clips_value
+
+    result = run_module.classify_results(
+        {**_engine_result(), "diagnostic": ferric_diagnostic},
+        {**_engine_result(), "diagnostic": clips_diagnostic},
+    )
+
+    assert result == ("divergent", reason)
+
+
+def test_classify_results_treats_known_phase_mismatch_as_divergent():
+    result = run_module.classify_results(
+        {
+            **_engine_result(),
+            "diagnostic": run_module.diagnostic("parse", "syntax-error", continued=False),
+        },
+        {
+            **_engine_result(),
+            "diagnostic": run_module.diagnostic("run", "evaluation-error", continued=False),
+        },
+    )
+
+    assert result == ("divergent", "diagnostic-phase-mismatch")
+
+
+def test_classify_results_never_calls_matching_terminal_diagnostics_equivalent():
+    terminal = run_module.diagnostic("run", "evaluation-error", continued=False)
+
+    result = run_module.classify_results(
+        {**_engine_result(), "diagnostic": terminal},
+        {**_engine_result(), "diagnostic": terminal},
+    )
+
+    assert result == ("incompatible", "diagnostic-match-without-complete-oracle")
+
+
+def test_matching_pre_run_terminal_diagnostics_override_oracle_mismatches():
+    digest = "a" * 64
+    declaration = _oracle_declaration(digest)
+    identity = {
+        "fixture_id": declaration["id"],
+        "nonce": declaration["nonce"],
+        "source_sha256": digest,
+        "composed_sha256": digest,
+    }
+    observation = _canonical_observation(identity, fact_id=1, rule="compute")
+    observation.update(
+        {
+            "phase": "load",
+            "firings": [],
+            "effects": [],
+            "facts": [],
+            "diagnostic": {
+                "phase": "load",
+                "category": "construct-error",
+                "continued": False,
+            },
+            "run": {"limit": None, "halt_reason": "not-run"},
+        }
+    )
+    evaluation = run_module.evaluate_oracle(
+        declaration,
+        observation,
+        observation,
+        expected_source_sha256=digest,
+        expected_composed_sha256=digest,
+    )
+    terminal = run_module.diagnostic("load", "construct-error", continued=False)
+    result = {**_engine_result(exit_code=1), "diagnostic": terminal}
+    result["termination"] = run_module.termination(exit_code=1, timed_out=False)
+
+    assert evaluation.status is run_module.EvidenceStatus.VALID
+    assert not evaluation.equivalent
+    assert run_module._oracle_outcome(evaluation)[2]["completed"] is False
+    assert run_module.classify_results(result, dict(result), evaluation) == (
+        "incompatible",
+        "diagnostic-match-without-complete-oracle",
+    )
+
+
+def test_complete_action_error_oracle_can_still_be_equivalent():
+    digest = "a" * 64
+    declaration = _oracle_declaration(digest)
+    declaration["expectations"]["phase"] = "run"
+    declaration["expectations"]["diagnostic"] = {
+        "phase": "run",
+        "category": "evaluation-error",
+        "continued": False,
+    }
+    declaration["expectations"]["run"]["halt_reason"] = "action-error"
+    identity = {
+        "fixture_id": declaration["id"],
+        "nonce": declaration["nonce"],
+        "source_sha256": digest,
+        "composed_sha256": digest,
+    }
+    observation = _canonical_observation(identity, fact_id=1, rule="compute")
+    observation["phase"] = "run"
+    observation["diagnostic"] = {
+        "phase": "run",
+        "category": "evaluation-error",
+        "continued": False,
+    }
+    observation["run"]["halt_reason"] = "action-error"
+    evaluation = run_module.evaluate_oracle(
+        declaration,
+        observation,
+        observation,
+        expected_source_sha256=digest,
+        expected_composed_sha256=digest,
+    )
+    terminal = run_module.diagnostic("run", "evaluation-error", continued=False)
+    result = {**_engine_result(), "diagnostic": terminal}
+    result["termination"] = run_module.termination(exit_code=0, timed_out=False)
+
+    assert evaluation.equivalent
+    assert run_module._oracle_outcome(evaluation)[2]["completed"] is True
+    assert run_module.classify_results(result, dict(result), evaluation) == (
+        "equivalent",
+        "oracle-v1-match",
+    )
+
+
+def test_matching_continued_diagnostics_still_require_oracle_evidence():
+    continued = run_module.diagnostic("reset", "evaluation-error", continued=True)
+
+    result = run_module.classify_results(
+        {**_engine_result(), "diagnostic": continued},
+        {**_engine_result(), "diagnostic": continued},
+    )
+
+    assert result == ("pending", "oracle-missing")
+
+
+def test_matching_timeout_remains_terminal_after_a_continued_diagnostic():
+    continued = run_module.diagnostic("reset", "evaluation-error", continued=True)
+    result = {
+        **_engine_result(exit_code=-1),
+        "diagnostic": continued,
+        "termination": {
+            **run_module.termination(exit_code=None, timed_out=True),
+            "active_phase": "run",
+        },
+    }
+
+    assert run_module.classify_results(result, dict(result)) == (
+        "incompatible",
+        "termination-match-without-complete-oracle",
+    )
+
+
+def test_matching_nonzero_exit_cannot_be_equivalent_after_continued_diagnostic():
+    continued = run_module.diagnostic("reset", "evaluation-error", continued=True)
+    result = {
+        **_engine_result(exit_code=7),
+        "diagnostic": continued,
+        "termination": run_module.termination(exit_code=7, timed_out=False),
+    }
+
+    assert run_module.classify_results(result, dict(result)) == (
+        "incompatible",
+        "termination-nonzero-exit-match",
+    )
+
+
+@pytest.mark.parametrize(
+    ("untrusted", "expected"),
+    [
+        (run_module.diagnostic("unknown", "unknown", continued=False), "diagnostic-invalid"),
+        (
+            run_module.diagnostic("harness", "harness-error", continued=False),
+            "harness-failure",
+        ),
+    ],
+)
+def test_untrusted_diagnostic_never_becomes_semantic_divergence(untrusted, expected):
+    semantic = run_module.diagnostic("run", "evaluation-error", continued=False)
+
+    result = run_module.classify_results(
+        {**_engine_result(), "diagnostic": untrusted},
+        {**_engine_result(), "diagnostic": semantic},
+    )
+
+    assert result == ("pending", expected)
+
+
+def test_explicit_harness_failure_takes_precedence_over_semantic_diagnostic():
+    semantic = run_module.diagnostic("run", "evaluation-error", continued=False)
+
+    result = run_module.classify_results(
+        {**_engine_result(), "diagnostic": semantic, "harness_error": True},
+        {**_engine_result(), "diagnostic": semantic},
+    )
+
+    assert result == ("pending", "harness-failure")
+
+
+def test_matching_semantic_diagnostics_preserve_termination_mismatch():
+    semantic = run_module.diagnostic("run", "evaluation-error", continued=False)
+    ferric = {
+        **_engine_result(exit_code=1),
+        "diagnostic": semantic,
+        "termination": run_module.termination(exit_code=1, timed_out=False),
+    }
+    clips = {
+        **_engine_result(exit_code=-9),
+        "diagnostic": semantic,
+        "termination": run_module.termination(exit_code=-9, timed_out=False),
+    }
+
+    assert run_module.classify_results(ferric, clips) == (
+        "divergent",
+        "termination-kind-mismatch",
+    )
+
+
+def test_timeout_active_phase_mismatch_is_divergent():
+    timeout = run_module.diagnostic("process", "timeout", continued=False)
+    ferric = {
+        **_engine_result(exit_code=-1),
+        "diagnostic": timeout,
+        "termination": {
+            **run_module.termination(exit_code=-1, timed_out=True),
+            "active_phase": "load",
+        },
+    }
+    clips = {
+        **_engine_result(exit_code=-1),
+        "diagnostic": timeout,
+        "termination": {
+            **run_module.termination(exit_code=-1, timed_out=True),
+            "active_phase": "run",
+        },
+    }
+
+    assert run_module.classify_results(ferric, clips) == (
+        "divergent",
+        "termination-active-phase-mismatch",
+    )
+
+
+def test_process_metadata_distinguishes_timeout_signal_exit_and_spawn_failure():
+    timeout_result = {
+        **_engine_result(exit_code=-1),
+        "timed_out": True,
+        "termination": run_module.termination(exit_code=-1, timed_out=True),
+        "observation_error": "timed out",
+    }
+    signal_result = {
+        **_engine_result(exit_code=-9),
+        "termination": run_module.termination(exit_code=-9, timed_out=False),
+    }
+    exit_result = {
+        **_engine_result(exit_code=7),
+        "termination": run_module.termination(exit_code=7, timed_out=False),
+    }
+    spawn_result = {
+        **_engine_result(exit_code=-1),
+        "spawn_error": True,
+        "termination": run_module.termination(
+            exit_code=-1,
+            timed_out=False,
+            spawn_error=True,
+        ),
+    }
+
+    assert timeout_result["termination"] == {
+        "kind": "timeout",
+        "exit_code": None,
+        "signal": None,
+    }
+    assert signal_result["termination"] == {
+        "kind": "signal",
+        "exit_code": None,
+        "signal": 9,
+    }
+    assert exit_result["termination"] == {
+        "kind": "exit",
+        "exit_code": 7,
+        "signal": None,
+    }
+    assert spawn_result["termination"] == {
+        "kind": "spawn-error",
+        "exit_code": None,
+        "signal": None,
+    }
+    assert run_module.process_diagnostic(timeout_result)["category"] == "timeout"
+    assert run_module.process_diagnostic(signal_result)["category"] == "signal"
+    assert run_module.process_diagnostic(exit_result)["category"] == "nonzero-exit"
+    assert run_module.process_diagnostic(spawn_result)["category"] == "harness-error"
+    assert (
+        run_module.process_diagnostic(
+            {"exit_code": -1, "timed_out": False, "stderr": "synthetic not-run result"}
+        )
+        is None
+    )
+    assert (
+        run_module.process_diagnostic(
+            {"exit_code": None, "observation_error": "skipped", "not_run": True}
+        )
+        is None
+    )
+
+
+def test_run_ferric_observer_retains_partial_timeout_output(monkeypatch, tmp_path):
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=["ferric"],
+            timeout=1,
+            output=b'{"partial":true}',
+            stderr=b"partial diagnostic",
+        )
+
+    monkeypatch.setattr(run_module.subprocess, "run", timeout)
+
+    result = run_module.run_ferric_observer(
+        str(tmp_path / "fixture.clp"),
+        "ferric",
+        str(tmp_path),
+        1,
+        fixture_id="fixture.timeout",
+        nonce="0" * 32,
+        source_sha256="a" * 64,
+        composed_sha256="a" * 64,
+    )
+
+    assert result["stdout"] == '{"partial":true}'
+    assert result["stderr"] == "partial diagnostic"
+    assert base64.b64decode(result["raw_output"]["stdout"]) == b'{"partial":true}'
+    assert base64.b64decode(result["raw_output"]["stderr"]) == b"partial diagnostic"
+    assert result["termination"]["kind"] == "timeout"
+
+
+def test_run_ferric_observer_converts_permission_error_to_spawn_failure(monkeypatch, tmp_path):
+    def denied(*_args, **_kwargs):
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(run_module.subprocess, "run", denied)
+
+    result = run_module.run_ferric_observer(
+        "fixture.clp",
+        "./target/debug/ferric",
+        str(tmp_path),
+        1,
+        fixture_id="fixture.spawn",
+        nonce="0" * 32,
+        source_sha256="a" * 64,
+        composed_sha256="a" * 64,
+    )
+
+    assert result["termination"] == {
+        "kind": "spawn-error",
+        "exit_code": None,
+        "signal": None,
+    }
+    assert result["spawn_error"] is True
+    assert "permission denied" in result["stderr"]
+
+
+def test_run_ferric_observer_preserves_signal_without_complete_json(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        run_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=-9,
+            stdout="",
+            stderr="partial native stderr",
+        ),
+    )
+
+    result = run_module.run_ferric_observer(
+        "fixture.clp",
+        "./target/debug/ferric",
+        str(tmp_path),
+        1,
+        fixture_id="fixture.signal",
+        nonce="0" * 32,
+        source_sha256="a" * 64,
+        composed_sha256="a" * 64,
+    )
+    projected = run_module._project_result(result, engine="ferric", harnessed=False)
+
+    assert result["stdout"] == ""
+    assert result["stderr"] == "partial native stderr"
+    assert result["termination"] == {"kind": "signal", "exit_code": None, "signal": 9}
+    assert result.get("harness_error") is None
+    assert projected == {"observation_error": "observer was signaled before terminal evidence"}
+    assert result["diagnostic"] == run_module.diagnostic("process", "signal", continued=False)
+
+
+def test_run_clips_observer_converts_permission_error_to_spawn_failure(monkeypatch, tmp_path):
+    source = tmp_path / "fixture.clp"
+    source.write_text("(deffacts startup (ready))\n")
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(run_module, "_run_clips_process", denied)
+
+    result = run_module.run_clips_observer(
+        str(source),
+        str(tmp_path),
+        "scripts/clips-reference.sh",
+        1,
+        fixture_id="fixture.spawn",
+        nonce="0" * 32,
+        source_sha256="a" * 64,
+        composed_sha256="a" * 64,
+        globals_to_capture=(),
+        harnessed=False,
+    )
+
+    assert result["termination"] == {
+        "kind": "spawn-error",
+        "exit_code": None,
+        "signal": None,
+    }
+    assert result["spawn_error"] is True
+    assert "permission denied" in result["stderr"]
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected_kind", "expected_signal"),
+    [(137, "signal", 9), (163, "signal", 35), (127, "exit", None)],
+)
+def test_clips_wrapper_preserves_signal_and_internal_failure_status(
+    monkeypatch,
+    tmp_path,
+    returncode,
+    expected_kind,
+    expected_signal,
+):
+    source = tmp_path / "fixture.clp"
+    source.write_text("(deffacts startup (ready))\n")
+
+    def completed(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=returncode,
+            stdout=b"partial stdout",
+            stderr=b"partial stderr",
+        )
+
+    monkeypatch.setattr(run_module, "_run_clips_process", completed)
+    monkeypatch.setattr(run_module, "parse_probe_output", lambda *_args, **_kwargs: {})
+
+    result = run_module.run_clips_observer(
+        str(source),
+        str(tmp_path),
+        "scripts/clips-reference.sh",
+        1,
+        fixture_id="fixture.process",
+        nonce="0" * 32,
+        source_sha256="a" * 64,
+        composed_sha256="a" * 64,
+        globals_to_capture=(),
+        harnessed=False,
+    )
+
+    assert result["stdout"] == "partial stdout"
+    assert result["stderr"] == "partial stderr"
+    assert base64.b64decode(result["raw_output"]["stdout"]) == b"partial stdout"
+    assert base64.b64decode(result["raw_output"]["stderr"]) == b"partial stderr"
+    assert result["termination"]["kind"] == expected_kind
+    if expected_signal is not None:
+        assert result["termination"]["signal"] == expected_signal
+        assert result.get("harness_error") is None
+    else:
+        assert result["harness_error"] is True
+        assert "status 127" in result["observation_error"]
+        projected = run_module._project_result(result, engine="clips", harnessed=False)
+        assert projected == {"observation_error": result["observation_error"]}
+        assert result["diagnostic"] == run_module.diagnostic(
+            "harness", "harness-error", continued=False
+        )
+
+
+@pytest.mark.skipif(run_module.IS_WINDOWS, reason="POSIX process-group regression")
+def test_run_clips_process_kills_descendants_holding_capture_fds(tmp_path):
+    child = "import time; time.sleep(30)"
+    parent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child!r}]); "
+        "print('ready', flush=True); time.sleep(30)"
+    )
+
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        run_module._run_clips_process(
+            [sys.executable, "-c", parent],
+            timeout_secs=0.1,
+            root=str(tmp_path),
+        )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2
+    assert b"ready" in (caught.value.stdout or b"")
+
+
+def test_run_clips_process_force_removes_named_container_on_timeout(monkeypatch, tmp_path):
+    class FakeProcess:
+        pid = 4242
+        returncode = -9
+
+        def __init__(self):
+            self.communications = 0
+
+        def communicate(self, *, timeout):
+            self.communications += 1
+            if self.communications == 1:
+                raise subprocess.TimeoutExpired([], timeout, output=b"partial")
+            return b"partial", b"diagnostic"
+
+    process = FakeProcess()
+    removed: list[str] = []
+    monkeypatch.setattr(run_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(run_module, "_terminate_process_tree", lambda _process: None)
+    monkeypatch.setattr(run_module, "_remove_clips_container", removed.append)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_module._run_clips_process(
+            ["clips-reference"],
+            timeout_secs=1,
+            root=str(tmp_path),
+            container_name="ferric-compat-" + "a" * 32,
+        )
+
+    assert removed == ["ferric-compat-" + "a" * 32]
+
+
+@pytest.mark.parametrize(
+    ("process_result", "expected_kind", "expected_category"),
+    [
+        (
+            subprocess.CompletedProcess([], 137, b"partial stdout", b"partial stderr"),
+            "signal",
+            "signal",
+        ),
+        (
+            subprocess.TimeoutExpired(
+                [],
+                1,
+                output=b"partial stdout",
+                stderr=b"partial stderr",
+            ),
+            "timeout",
+            "timeout",
+        ),
+    ],
+)
+def test_interrupted_clips_parse_failure_preserves_process_termination(
+    monkeypatch,
+    tmp_path,
+    process_result,
+    expected_kind,
+    expected_category,
+):
+    source = tmp_path / "fixture.clp"
+    source.write_text("(deffacts startup (ready))\n")
+
+    def run_process(*_args, **_kwargs):
+        if isinstance(process_result, BaseException):
+            raise process_result
+        return process_result
+
+    monkeypatch.setattr(run_module, "_run_clips_process", run_process)
+    monkeypatch.setattr(
+        run_module,
+        "parse_probe_output",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("truncated record")),
+    )
+
+    result = run_module.run_clips_observer(
+        str(source),
+        str(tmp_path),
+        "scripts/clips-reference.sh",
+        1,
+        fixture_id="fixture.interrupted",
+        nonce="0" * 32,
+        source_sha256="a" * 64,
+        composed_sha256="a" * 64,
+        globals_to_capture=(),
+        harnessed=False,
+    )
+    projected = run_module._project_result(result, engine="clips", harnessed=False)
+
+    assert result["stdout"] == "partial stdout"
+    assert result["stderr"] == "partial stderr"
+    assert result["termination"]["kind"] == expected_kind
+    assert result.get("harness_error") is None
+    assert projected == {
+        "observation_error": "reference observer timed out before terminal evidence"
+        if expected_kind == "timeout"
+        else "reference observer was interrupted before parsable terminal evidence"
+    }
+    assert result["diagnostic"] == run_module.diagnostic(
+        "process", expected_category, continued=False
+    )
+
+
+def test_interrupted_clips_retains_invalid_utf8_bytes_losslessly(monkeypatch, tmp_path):
+    source = tmp_path / "fixture.clp"
+    source.write_text("(deffacts startup (ready))\n")
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired([], 1, output=b"stdout \xc3", stderr=b"stderr \xff")
+
+    monkeypatch.setattr(run_module, "_run_clips_process", timeout)
+
+    result = run_module.run_clips_observer(
+        str(source),
+        str(tmp_path),
+        "scripts/clips-reference.sh",
+        1,
+        fixture_id="fixture.invalid-utf8",
+        nonce="0" * 32,
+        source_sha256="a" * 64,
+        composed_sha256="a" * 64,
+        globals_to_capture=(),
+        harnessed=False,
+    )
+
+    assert result["stdout"] == "stdout \ufffd"
+    assert result["stderr"] == "stderr \ufffd"
+    assert base64.b64decode(result["raw_output"]["stdout"]) == b"stdout \xc3"
+    assert base64.b64decode(result["raw_output"]["stderr"]) == b"stderr \xff"
+    assert result["termination"]["kind"] == "timeout"
+
+
+def test_interrupted_clips_hard_protocol_corruption_is_harness_failure(
+    monkeypatch,
+    tmp_path,
+):
+    source = tmp_path / "fixture.clp"
+    source.write_text("(deffacts startup (ready))\n")
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired([], 1, output=b"partial", stderr=b"corrupt")
+
+    def corrupt(*_args, **_kwargs):
+        raise run_module.ClipsOracleProtocolError("authenticated payload is invalid UTF-8")
+
+    monkeypatch.setattr(run_module, "_run_clips_process", timeout)
+    monkeypatch.setattr(run_module, "parse_probe_output", corrupt)
+
+    result = run_module.run_clips_observer(
+        str(source),
+        str(tmp_path),
+        "scripts/clips-reference.sh",
+        1,
+        fixture_id="fixture.corrupt",
+        nonce="0" * 32,
+        source_sha256="a" * 64,
+        composed_sha256="a" * 64,
+        globals_to_capture=(),
+        harnessed=False,
+    )
+    projected = run_module._project_result(result, engine="clips", harnessed=False)
+
+    assert result["termination"]["kind"] == "timeout"
+    assert result["harness_error"] is True
+    assert projected == {"observation_error": "authenticated payload is invalid UTF-8"}
+    assert result["diagnostic"] == run_module.diagnostic(
+        "harness", "harness-error", continued=False
+    )
+
+
+def test_partial_timeout_preserves_authenticated_active_phase():
+    result = {
+        **_engine_result(exit_code=-1),
+        "timed_out": True,
+        "observation_error": "observer timed out before terminal evidence",
+        "termination": run_module.termination(exit_code=-1, timed_out=True),
+        "observation": {
+            "instrumentation": {"active_phase": "reset"},
+        },
+    }
+
+    projected = run_module._project_result(
+        result,
+        engine="clips",
+        harnessed=False,
+    )
+
+    assert projected == {"observation_error": "observer timed out before terminal evidence"}
+    assert result["diagnostic"]["category"] == "timeout"
+    assert result["termination"]["active_phase"] == "reset"
+
+
+def test_signal_before_native_start_remains_process_signal():
+    expected_fixture = {
+        "id": "fixture.early-signal",
+        "nonce": "0" * 32,
+        "source_sha256": "a" * 64,
+        "composed_sha256": "b" * 64,
+    }
+    result = {
+        **_engine_result(exit_code=-9),
+        "observation": {
+            "schema": "ferric.compat-observation",
+            "version": 1,
+            "engine": {"name": "clips", "version": "test"},
+            "fixture": dict(expected_fixture),
+            "lifecycle": [],
+            "diagnostics": [],
+            "active_phase": None,
+            "instrumentation": {"active_phase": None},
+            "protocol_issues": [
+                "native-phase-records-missing",
+                "lifecycle-cardinality-or-order",
+                "native-run-metadata-missing",
+                "phase-cardinality-or-order",
+                "module-cardinality",
+            ],
+        },
+        "termination": run_module.termination(exit_code=-9, timed_out=False),
+    }
+
+    projected = run_module._project_result(
+        result,
+        engine="clips",
+        harnessed=False,
+        expected_fixture=expected_fixture,
+    )
+
+    assert projected == {"observation_error": "clips observer terminated as signal"}
+    assert result["diagnostic"] == run_module.diagnostic("process", "signal", continued=False)
+
+
+def test_signal_after_lifecycle_start_before_phase_begin_remains_process_signal():
+    expected_fixture = {
+        "id": "fixture.start-only",
+        "nonce": "0" * 32,
+        "source_sha256": "a" * 64,
+        "composed_sha256": "b" * 64,
+    }
+    result = {
+        **_engine_result(exit_code=-9),
+        "observation": {
+            "schema": "ferric.compat-observation",
+            "version": 1,
+            "engine": {"name": "clips", "version": "test"},
+            "fixture": dict(expected_fixture),
+            "phase_reached": "load",
+            "lifecycle": [
+                {
+                    "sequence": 0,
+                    "event": "start",
+                    "fixture_id": expected_fixture["id"],
+                    "nonce": expected_fixture["nonce"],
+                    "source_sha256": expected_fixture["source_sha256"],
+                    "composed_sha256": expected_fixture["composed_sha256"],
+                }
+            ],
+            "diagnostics": [],
+            "active_phase": None,
+            "instrumentation": {"active_phase": None},
+            "protocol_issues": [
+                "native-phase-records-missing",
+                "lifecycle-cardinality-or-order",
+                "lifecycle-sequence-order",
+                "native-run-metadata-missing",
+                "phase-cardinality-or-order",
+                "module-cardinality",
+            ],
+            "diagnostic_protocol_issues": [],
+        },
+        "termination": run_module.termination(exit_code=-9, timed_out=False),
+    }
+
+    projected = run_module._project_result(
+        result,
+        engine="clips",
+        harnessed=False,
+        expected_fixture=expected_fixture,
+    )
+
+    assert projected == {"observation_error": "clips observer terminated as signal"}
+    assert result["diagnostic"] == run_module.diagnostic("process", "signal", continued=False)
+
+
+def test_interrupted_authenticated_protocol_corruption_is_harness_failure():
+    expected_fixture = {
+        "id": "fixture.corrupt",
+        "nonce": "0" * 32,
+        "source_sha256": "a" * 64,
+        "composed_sha256": "b" * 64,
+    }
+    result = {
+        **_engine_result(exit_code=-9),
+        "observation": {
+            "schema": "ferric.compat-observation",
+            "version": 1,
+            "engine": {"name": "clips", "version": "test"},
+            "fixture": dict(expected_fixture),
+            "lifecycle": [
+                {
+                    "sequence": 0,
+                    "event": "start",
+                    "fixture_id": expected_fixture["id"],
+                    "nonce": expected_fixture["nonce"],
+                    "source_sha256": expected_fixture["source_sha256"],
+                    "composed_sha256": expected_fixture["composed_sha256"],
+                }
+            ],
+            "diagnostics": [],
+            "active_phase": "load",
+            "instrumentation": {"active_phase": "load"},
+            "protocol_issues": ["truncated-native-record"],
+        },
+        "termination": run_module.termination(exit_code=-9, timed_out=False),
+    }
+
+    projected = run_module._project_result(
+        result,
+        engine="clips",
+        harnessed=False,
+        expected_fixture=expected_fixture,
+    )
+
+    assert "truncated-native-record" in projected["observation_error"]
+    assert result["diagnostic"] == run_module.diagnostic(
+        "harness", "harness-error", continued=False
+    )
+    assert result["termination"]["active_phase"] == "load"
+
+
+def test_projection_failure_preserves_trusted_bound_semantic_diagnostic(monkeypatch):
+    expected_fixture = {
+        "id": "fixture.diagnostic",
+        "nonce": "0" * 32,
+        "source_sha256": "a" * 64,
+        "composed_sha256": "b" * 64,
+    }
+    observation = {
+        "schema": "ferric.compat-observation",
+        "version": 1,
+        "engine": {"name": "ferric", "version": "test"},
+        "fixture": dict(expected_fixture),
+        "phase_reached": "parse",
+        "run": None,
+        "lifecycle": [
+            {
+                "sequence": sequence,
+                "event": event,
+                "fixture_id": expected_fixture["id"],
+                "nonce": expected_fixture["nonce"],
+                "source_sha256": expected_fixture["source_sha256"],
+                "composed_sha256": expected_fixture["composed_sha256"],
+            }
+            for sequence, event in ((0, "start"), (1, "complete"))
+        ],
+        "diagnostics": [
+            {
+                "taxonomy_version": 1,
+                "phase": "parse",
+                "category": "syntax-error",
+                "continued": False,
+                "severity": "error",
+                "message": "raw parse message",
+            }
+        ],
+    }
+    result = {
+        **_engine_result(exit_code=1),
+        "observation": observation,
+        "termination": run_module.termination(exit_code=1, timed_out=False),
+    }
+
+    def incomplete_projection(*_args, **_kwargs):
+        raise run_module.ObservationProjectionError("terminal state is incomplete")
+
+    monkeypatch.setattr(run_module, "project_ferric_observation", incomplete_projection)
+
+    projected = run_module._project_result(
+        result,
+        engine="ferric",
+        harnessed=False,
+        expected_fixture=expected_fixture,
+    )
+
+    assert projected == {"observation_error": "terminal state is incomplete"}
+    assert result["diagnostic"] == run_module.diagnostic("parse", "syntax-error", continued=False)
+    assert result["observation"]["diagnostics"][0]["message"] == "raw parse message"
+
+
+def test_projection_does_not_preserve_diagnostic_contradicted_by_run_state():
+    expected_fixture = {
+        "id": "fixture.contradiction",
+        "nonce": "0" * 32,
+        "source_sha256": "a" * 64,
+        "composed_sha256": "b" * 64,
+    }
+    observation = {
+        "schema": "ferric.compat-observation",
+        "version": 1,
+        "engine": {"name": "ferric", "version": "test"},
+        "fixture": dict(expected_fixture),
+        "phase_reached": "run",
+        "run": {"halt_reason": "agenda_empty"},
+        "lifecycle": [
+            {
+                "sequence": sequence,
+                "event": event,
+                "fixture_id": expected_fixture["id"],
+                "nonce": expected_fixture["nonce"],
+                "source_sha256": expected_fixture["source_sha256"],
+                "composed_sha256": expected_fixture["composed_sha256"],
+            }
+            for sequence, event in ((0, "start"), (1, "complete"))
+        ],
+        "diagnostics": [
+            {
+                "taxonomy_version": 1,
+                "phase": "run",
+                "category": "evaluation-error",
+                "continued": False,
+                "severity": "error",
+                "message": "claimed action failure",
+            }
+        ],
+    }
+    result = {
+        **_engine_result(),
+        "observation": observation,
+        "termination": run_module.termination(exit_code=0, timed_out=False),
+    }
+
+    projected = run_module._project_result(
+        result,
+        engine="ferric",
+        harnessed=False,
+        expected_fixture=expected_fixture,
+    )
+
+    assert "lacks an action-error halt" in projected["observation_error"]
+    assert result["diagnostic"] == run_module.diagnostic(
+        "harness", "harness-error", continued=False
+    )
+
+
+@pytest.mark.parametrize(("exit_code", "timed_out"), [(-1, True), (-15, False)])
+def test_interruption_preserves_prior_trusted_semantic_diagnostic(exit_code, timed_out):
+    expected_fixture = {
+        "id": "fixture.interrupted",
+        "nonce": "0" * 32,
+        "source_sha256": "a" * 64,
+        "composed_sha256": "b" * 64,
+    }
+    observation = {
+        "schema": "ferric.compat-observation",
+        "version": 1,
+        "engine": {"name": "clips", "version": "test"},
+        "fixture": dict(expected_fixture),
+        "lifecycle": [
+            {
+                "sequence": 0,
+                "event": "start",
+                "fixture_id": expected_fixture["id"],
+                "nonce": expected_fixture["nonce"],
+                "source_sha256": expected_fixture["source_sha256"],
+                "composed_sha256": expected_fixture["composed_sha256"],
+            }
+        ],
+        "diagnostics": [
+            {
+                "taxonomy_version": 1,
+                "phase": "reset",
+                "category": "evaluation-error",
+                "continued": True,
+                "channel": "stderr",
+                "message": "reset evaluation error",
+            }
+        ],
+        "phase_reached": "run",
+        "active_phase": "run",
+        "run": None,
+        "instrumentation": {"active_phase": "run"},
+        "protocol_issues": ["lifecycle-cardinality-or-order"],
+    }
+    result = {
+        **_engine_result(exit_code=exit_code),
+        "timed_out": timed_out,
+        "observation": observation,
+        "observation_error": "observer was interrupted",
+        "termination": run_module.termination(exit_code=exit_code, timed_out=timed_out),
+    }
+
+    projected = run_module._project_result(
+        result,
+        engine="clips",
+        harnessed=False,
+        expected_fixture=expected_fixture,
+    )
+
+    assert projected == {"observation_error": "observer was interrupted"}
+    assert result["diagnostic"] == run_module.diagnostic(
+        "reset", "evaluation-error", continued=True
+    )
+    assert result["termination"]["kind"] == ("timeout" if timed_out else "signal")
+    assert result["termination"]["active_phase"] == "run"
+
+
+def test_unknown_trusted_semantic_taxonomy_stays_unknown_not_harness(monkeypatch):
+    expected_fixture = {
+        "id": "fixture.unknown",
+        "nonce": "0" * 32,
+        "source_sha256": "a" * 64,
+        "composed_sha256": "b" * 64,
+    }
+    observation = {
+        "schema": "ferric.compat-observation",
+        "version": 1,
+        "engine": {"name": "clips", "version": "test"},
+        "fixture": dict(expected_fixture),
+        "lifecycle": [
+            {
+                "sequence": sequence,
+                "event": event,
+                "fixture_id": expected_fixture["id"],
+                "nonce": expected_fixture["nonce"],
+                "source_sha256": expected_fixture["source_sha256"],
+                "composed_sha256": expected_fixture["composed_sha256"],
+            }
+            for sequence, event in ((0, "start"), (3, "complete"))
+        ],
+        "diagnostics": [
+            {
+                "taxonomy_version": 1,
+                "phase": "unknown",
+                "category": "unknown",
+                "continued": False,
+                "channel": "stderr",
+                "message": "[NEWCODE1] unclassified native diagnostic",
+            }
+        ],
+        "protocol_issues": [],
+    }
+    result = {
+        **_engine_result(exit_code=1),
+        "observation": observation,
+        "termination": run_module.termination(exit_code=1, timed_out=False),
+    }
+
+    def incomplete_projection(*_args, **_kwargs):
+        raise run_module.ObservationProjectionError("unknown diagnostic taxonomy")
+
+    monkeypatch.setattr(run_module, "project_clips_observation", incomplete_projection)
+
+    projected = run_module._project_result(
+        result,
+        engine="clips",
+        harnessed=False,
+        expected_fixture=expected_fixture,
+    )
+
+    assert projected == {"observation_error": "unknown diagnostic taxonomy"}
+    assert result["diagnostic"] == run_module.diagnostic("unknown", "unknown", continued=False)
+
+
+def test_unbound_semantic_diagnostic_is_harness_failure():
+    expected_fixture = {
+        "id": "fixture.expected",
+        "nonce": "0" * 32,
+        "source_sha256": "a" * 64,
+        "composed_sha256": "b" * 64,
+    }
+    observation = {
+        "schema": "ferric.compat-observation",
+        "version": 1,
+        "engine": {"name": "ferric", "version": "test"},
+        "fixture": {**expected_fixture, "id": "fixture.spoofed"},
+        "diagnostics": [
+            {
+                "taxonomy_version": 1,
+                "phase": "run",
+                "category": "evaluation-error",
+                "continued": False,
+            }
+        ],
+    }
+    result = {
+        **_engine_result(exit_code=1),
+        "observation": observation,
+        "termination": run_module.termination(exit_code=1, timed_out=False),
+    }
+
+    projected = run_module._project_result(
+        result,
+        engine="ferric",
+        harnessed=False,
+        expected_fixture=expected_fixture,
+    )
+
+    assert "does not match the invocation" in projected["observation_error"]
+    assert result["diagnostic"] == run_module.diagnostic(
+        "harness", "harness-error", continued=False
+    )
+
+
 def test_structured_process_binds_actual_bytes_and_fresh_nonce(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     source = root / "tests" / "examples" / "fixture.clp"
@@ -333,7 +1452,7 @@ def test_nonzero_structured_observer_is_invalid_and_retains_source(tmp_path, mon
 
     _, ferric_result, clips_result, classification, reason = result
     assert classification == "pending"
-    assert reason == "oracle-invalid:evidence"
+    assert reason == "harness-failure"
     assert ferric_result["oracle_evidence"]["status"] == "invalid"
     assert clips_result is not None
     assert clips_result["oracle_evidence"] == ferric_result["oracle_evidence"]
@@ -583,7 +1702,23 @@ def test_runner_persists_missing_source_as_invalid_before_engine_preflight(
     assert persisted_entry["clips"] is None
 
 
-def test_runner_persists_invalid_evidence_before_nonzero_exit(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("reason", "heading"),
+    [
+        ("oracle-invalid:markers", "Invalid oracle evidence (1)"),
+        ("diagnostic-invalid", "Invalid runtime evidence (1)"),
+        ("diagnostic-missing", "Invalid runtime evidence (1)"),
+        ("harness-failure", "Invalid runtime evidence (1)"),
+        ("termination-invalid", "Invalid runtime evidence (1)"),
+        ("termination-missing", "Invalid runtime evidence (1)"),
+    ],
+)
+def test_runner_persists_invalid_evidence_before_nonzero_exit(
+    tmp_path,
+    monkeypatch,
+    reason,
+    heading,
+):
     root = tmp_path / "repo"
     examples = root / "tests" / "examples"
     source = examples / "fixture.clp"
@@ -640,7 +1775,7 @@ def test_runner_persists_invalid_evidence_before_nonzero_exit(tmp_path, monkeypa
             {**_engine_result(exit_code=1), "oracle_evidence": evidence},
             {**_engine_result(), "oracle_evidence": evidence},
             "pending",
-            "oracle-invalid:markers",
+            reason,
         )
 
     monkeypatch.setattr(run_module, "repo_root", lambda: root)
@@ -665,11 +1800,11 @@ def test_runner_persists_invalid_evidence_before_nonzero_exit(tmp_path, monkeypa
     )
 
     assert result.exit_code == 1
-    assert "Invalid oracle evidence (1)" in result.output
+    assert heading in result.output
     persisted = load_manifest(manifest_path)
     persisted_entry = persisted["files"]["fixture.clp"]
     assert persisted_entry["classification"] == "pending"
-    assert persisted_entry["reason"] == "oracle-invalid:markers"
+    assert persisted_entry["reason"] == reason
     assert persisted_entry["oracle_evidence"] == evidence
 
 
@@ -1169,6 +2304,7 @@ def test_clips_reference_script_preserves_unicode_quotes_and_rejects_symlink(
 
     observer_nonce = "0123456789abcdef0123456789abcdef"
     observer_auth_key = "c" * 64
+    observer_container_name = "ferric-compat-" + "d" * 32
     observer_result = subprocess.run(
         [
             str(script),
@@ -1184,6 +2320,8 @@ def test_clips_reference_script_preserves_unicode_quotes_and_rejects_symlink(
             "b" * 64,
             "--observer-auth-key",
             observer_auth_key,
+            "--observer-container-name",
+            observer_container_name,
             "--file",
             str(fixture),
         ],
@@ -1197,6 +2335,7 @@ def test_clips_reference_script_preserves_unicode_quotes_and_rejects_symlink(
     observer_args = captured_args.read_text(encoding="utf-8").splitlines()
     assert "--ferric-observer" in observer_args
     assert "--source" in observer_args
+    assert observer_args[observer_args.index("--name") + 1] == observer_container_name
     assert '/workspace/fixtures/rules space Ω "quoted".clp' in observer_args
     assert observer_nonce not in observer_args
     assert observer_auth_key not in observer_args

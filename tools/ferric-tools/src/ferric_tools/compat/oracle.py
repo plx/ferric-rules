@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from ferric_tools.compat.diagnostics import SEMANTIC_DIAGNOSTIC_PAIRS
+
 DECLARATION_VERSION = 1
 OBSERVATION_VERSION = 1
 
@@ -506,12 +508,22 @@ def _diagnostic(raw: object, *, field: str) -> DiagnosticState:
     )
     phase = _string(diagnostic_object["phase"], field=f"{field}.phase")
     category = _string(diagnostic_object["category"], field=f"{field}.category")
-    if phase == "unknown" or category == "unknown":
-        _fail(field, "unknown diagnostic evidence is not valid")
     continued = diagnostic_object["continued"]
     if type(continued) is not bool:
         _fail(f"{field}.continued", "must be a boolean")
     assert isinstance(continued, bool)
+    pair = (phase, category)
+    if pair == ("none", "none"):
+        if not continued:
+            _fail(
+                f"{field}.continued",
+                "must be true when no diagnostic was observed",
+            )
+    elif pair not in SEMANTIC_DIAGNOSTIC_PAIRS:
+        _fail(
+            field,
+            f"unsupported semantic diagnostic phase/category pair: {phase!r}/{category!r}",
+        )
     return DiagnosticState(phase=phase, category=category, continued=continued)
 
 

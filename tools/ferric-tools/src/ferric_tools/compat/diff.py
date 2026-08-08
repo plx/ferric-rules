@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 
 from ferric_tools._manifest import load_manifest
+from ferric_tools.compat.diagnostics import result_diagnostic_view
 from ferric_tools.compat.report import compute_oracle_coverage, oracle_evidence_view
 
 app = typer.Typer(help="Compare two compat manifests.")
@@ -37,6 +38,62 @@ LEGACY_RUNNER_CLASSIFICATIONS = {
     "float-normalized-match": frozenset({"equivalent"}),
     "output-mismatch": frozenset({"divergent"}),
 }
+
+
+def _termination_snapshot(result: object) -> tuple[object, object, object, object]:
+    if not isinstance(result, dict):
+        return ("unknown", None, None, None)
+    raw = result.get("termination")
+    if not isinstance(raw, dict):
+        return ("unknown", result.get("exit_code"), None, None)
+    return (
+        raw.get("kind"),
+        raw.get("exit_code"),
+        raw.get("signal"),
+        raw.get("active_phase"),
+    )
+
+
+def _engine_diagnostic_snapshot(result: object) -> tuple[object, ...]:
+    view = result_diagnostic_view(result)
+    return (
+        view["version"],
+        view["phase"],
+        view["category"],
+        view["continued"],
+        *_termination_snapshot(result),
+    )
+
+
+def _diagnostic_snapshot(info: object) -> tuple[tuple[object, ...], ...]:
+    if not isinstance(info, dict):
+        return tuple(_engine_diagnostic_snapshot(None) for _engine in ("ferric", "clips"))
+    return tuple(_engine_diagnostic_snapshot(info.get(engine)) for engine in ("ferric", "clips"))
+
+
+def _diagnostic_label(info: dict) -> str:
+    labels: list[str] = []
+    for engine in ("ferric", "clips"):
+        result = info.get(engine)
+        view = result_diagnostic_view(result)
+        termination_kind, exit_code, signal, active_phase = _termination_snapshot(result)
+        termination_label = str(termination_kind)
+        if signal is not None:
+            termination_label += f"({signal})"
+        elif exit_code is not None:
+            termination_label += f"({exit_code})"
+        if active_phase is not None:
+            termination_label += f"@{active_phase}"
+        labels.append(
+            f"{engine}={view['phase']}/{view['category']}/"
+            f"continued:{str(view['continued']).lower()};termination:{termination_label}"
+        )
+    return ", ".join(labels)
+
+
+def _reason_with_diagnostics(reason: str, info: dict) -> str:
+    detail = f"diagnostics: {_diagnostic_label(info)}"
+    return f"{reason}; {detail}" if reason else detail
 
 
 def fmt_delta(n: int) -> str:
@@ -226,7 +283,14 @@ def compute_diff(base: dict, head: dict) -> tuple[dict, dict, list, list, list]:
         ):
             continue
 
-        entry = (key, b_cls, b_reason, h_cls, h_reason)
+        diagnostics_changed = _diagnostic_snapshot(b) != _diagnostic_snapshot(h)
+        entry = (
+            key,
+            b_cls,
+            _reason_with_diagnostics(b_reason, b) if diagnostics_changed else b_reason,
+            h_cls,
+            _reason_with_diagnostics(h_reason, h) if diagnostics_changed else h_reason,
+        )
         oracle_losses = _oracle_loss_details(
             b,
             h,
@@ -238,19 +302,27 @@ def compute_diff(base: dict, head: dict) -> tuple[dict, dict, list, list, list]:
                 (
                     key,
                     b_cls,
-                    b_reason,
+                    entry[2],
                     h_cls,
-                    _reason_with_oracle_loss(h_reason, oracle_losses),
+                    _reason_with_oracle_loss(entry[4], oracle_losses),
                 )
             )
             continue
 
         if b_cls == h_cls:
-            if b_reason != h_reason:
+            if b_reason != h_reason or diagnostics_changed:
                 # A reason change within the same semantic classification is
                 # neutral. This is especially important during manifest and
                 # oracle schema migrations, where legacy reasons are replaced.
-                reason_changes.append((key, b_cls, b_reason, h_cls, h_reason))
+                reason_changes.append(
+                    (
+                        key,
+                        b_cls,
+                        entry[2],
+                        h_cls,
+                        entry[4],
+                    )
+                )
             continue
 
         if _is_v3_oracle_reset(
@@ -448,7 +520,9 @@ def _change_kind(
     base_classification = base_info["classification"]
     head_classification = head_info["classification"]
     if base_classification == head_classification:
-        if base_info.get("reason", "") != head_info.get("reason", ""):
+        if base_info.get("reason", "") != head_info.get("reason", "") or _diagnostic_snapshot(
+            base_info
+        ) != _diagnostic_snapshot(head_info):
             return "reason-changed", []
         return "unchanged", []
 
@@ -466,6 +540,28 @@ def _change_kind(
     return change, []
 
 
+def _tsv_diagnostic_fields(prefix: str, info: dict | None) -> dict[str, object]:
+    fields: dict[str, object] = {}
+    for engine in ("ferric", "clips"):
+        result = info.get(engine) if info is not None else None
+        view = result_diagnostic_view(result)
+        termination_kind, exit_code, signal, active_phase = _termination_snapshot(result)
+        stem = f"{prefix}_{engine}"
+        fields.update(
+            {
+                f"{stem}_diagnostic_version": view["version"],
+                f"{stem}_diagnostic_phase": view["phase"],
+                f"{stem}_diagnostic_category": view["category"],
+                f"{stem}_diagnostic_continued": view["continued"],
+                f"{stem}_termination": termination_kind,
+                f"{stem}_exit": exit_code,
+                f"{stem}_signal": signal,
+                f"{stem}_active_phase": active_phase,
+            }
+        )
+    return fields
+
+
 def write_tsv(base: dict, head: dict, tsv_path: str) -> None:
     """Write per-file raw data as TSV."""
     base_files = base.get("files", {})
@@ -479,6 +575,38 @@ def write_tsv(base: dict, head: dict, tsv_path: str) -> None:
         "base_reason",
         "head_classification",
         "head_reason",
+        "base_ferric_diagnostic_version",
+        "base_ferric_diagnostic_phase",
+        "base_ferric_diagnostic_category",
+        "base_ferric_diagnostic_continued",
+        "base_ferric_termination",
+        "base_ferric_exit",
+        "base_ferric_signal",
+        "base_ferric_active_phase",
+        "head_ferric_diagnostic_version",
+        "head_ferric_diagnostic_phase",
+        "head_ferric_diagnostic_category",
+        "head_ferric_diagnostic_continued",
+        "head_ferric_termination",
+        "head_ferric_exit",
+        "head_ferric_signal",
+        "head_ferric_active_phase",
+        "base_clips_diagnostic_version",
+        "base_clips_diagnostic_phase",
+        "base_clips_diagnostic_category",
+        "base_clips_diagnostic_continued",
+        "base_clips_termination",
+        "base_clips_exit",
+        "base_clips_signal",
+        "base_clips_active_phase",
+        "head_clips_diagnostic_version",
+        "head_clips_diagnostic_phase",
+        "head_clips_diagnostic_category",
+        "head_clips_diagnostic_continued",
+        "head_clips_termination",
+        "head_clips_exit",
+        "head_clips_signal",
+        "head_clips_active_phase",
         "base_oracle_status",
         "head_oracle_status",
         "base_oracle_version",
@@ -519,6 +647,8 @@ def write_tsv(base: dict, head: dict, tsv_path: str) -> None:
                     "base_reason": b_reason,
                     "head_classification": h_cls,
                     "head_reason": h_reason,
+                    **_tsv_diagnostic_fields("base", b),
+                    **_tsv_diagnostic_fields("head", h),
                     "base_oracle_status": base_oracle["status"] if base_oracle else "",
                     "head_oracle_status": head_oracle["status"] if head_oracle else "",
                     "base_oracle_version": (

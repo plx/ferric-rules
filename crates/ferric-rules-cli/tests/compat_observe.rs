@@ -226,7 +226,7 @@ fn successful_observation_captures_typed_state_and_lifecycle() {
 }
 
 #[test]
-fn digest_mismatch_emits_parseable_start_only_partial_observation() {
+fn digest_mismatch_emits_completed_harness_failure_observation() {
     let output = observe(SOURCE, &"0".repeat(64));
     assert_exit_code(&output, 1);
     assert!(stderr_str(&output).is_empty());
@@ -234,10 +234,13 @@ fn digest_mismatch_emits_parseable_start_only_partial_observation() {
     let observation = parse_single_observation(&output);
     assert_eq!(observation["phase_reached"], "load");
     assert!(observation["run"].is_null());
-    assert_eq!(observation["lifecycle"].as_array().unwrap().len(), 1);
+    assert_eq!(observation["lifecycle"].as_array().unwrap().len(), 2);
     assert_eq!(observation["lifecycle"][0]["event"], "START");
-    assert_eq!(observation["diagnostics"][0]["phase"], "load");
-    assert_eq!(observation["diagnostics"][0]["category"], "digest-mismatch");
+    assert_eq!(observation["lifecycle"][1]["event"], "COMPLETE");
+    assert_eq!(observation["diagnostics"][0]["taxonomy_version"], 1);
+    assert_eq!(observation["diagnostics"][0]["phase"], "harness");
+    assert_eq!(observation["diagnostics"][0]["category"], "harness-error");
+    assert_eq!(observation["diagnostics"][0]["continued"], false);
     assert_eq!(observation["modules"]["current"], "MAIN");
 }
 
@@ -272,8 +275,29 @@ fn distinct_source_and_composed_digests_remain_bound_without_false_verification(
 }
 
 #[test]
-fn load_failure_emits_parseable_start_only_partial_observation() {
+fn parse_failure_emits_completed_versioned_syntax_diagnostic() {
     let invalid_source = "(defrule incomplete";
+    let digest = sha256(invalid_source.as_bytes());
+    let output = observe(invalid_source, &digest);
+    assert_exit_code(&output, 1);
+    assert!(stderr_str(&output).is_empty());
+
+    let observation = parse_single_observation(&output);
+    assert_eq!(observation["phase_reached"], "parse");
+    assert!(observation["run"].is_null());
+    assert_eq!(observation["lifecycle"].as_array().unwrap().len(), 2);
+    assert_eq!(observation["lifecycle"][0]["event"], "START");
+    assert_eq!(observation["lifecycle"][1]["event"], "COMPLETE");
+    assert_eq!(observation["diagnostics"][0]["taxonomy_version"], 1);
+    assert_eq!(observation["diagnostics"][0]["phase"], "parse");
+    assert_eq!(observation["diagnostics"][0]["severity"], "error");
+    assert_eq!(observation["diagnostics"][0]["category"], "syntax-error");
+    assert_eq!(observation["diagnostics"][0]["continued"], false);
+}
+
+#[test]
+fn construct_failure_is_distinct_from_parse_failure() {
+    let invalid_source = "(not-a-clips-construct)";
     let digest = sha256(invalid_source.as_bytes());
     let output = observe(invalid_source, &digest);
     assert_exit_code(&output, 1);
@@ -282,10 +306,28 @@ fn load_failure_emits_parseable_start_only_partial_observation() {
     let observation = parse_single_observation(&output);
     assert_eq!(observation["phase_reached"], "load");
     assert!(observation["run"].is_null());
-    assert_eq!(observation["lifecycle"].as_array().unwrap().len(), 1);
-    assert_eq!(observation["lifecycle"][0]["event"], "START");
-    assert_eq!(observation["diagnostics"][0]["severity"], "error");
-    assert_eq!(observation["diagnostics"][0]["category"], "parse-error");
+    assert_eq!(observation["lifecycle"][1]["event"], "COMPLETE");
+    assert_eq!(observation["diagnostics"][0]["taxonomy_version"], 1);
+    assert_eq!(observation["diagnostics"][0]["phase"], "load");
+    assert_eq!(observation["diagnostics"][0]["category"], "construct-error");
+    assert_eq!(observation["diagnostics"][0]["continued"], false);
+}
+
+#[test]
+fn nonfatal_load_diagnostic_records_that_execution_continued() {
+    let source = "42";
+    let digest = sha256(source.as_bytes());
+    let output = observe(source, &digest);
+    assert_exit_code(&output, 0);
+
+    let observation = parse_single_observation(&output);
+    assert_eq!(observation["phase_reached"], "post-run");
+    assert_eq!(observation["run"]["halt_reason"], "agenda-empty");
+    assert_eq!(observation["diagnostics"][0]["taxonomy_version"], 1);
+    assert_eq!(observation["diagnostics"][0]["phase"], "load");
+    assert_eq!(observation["diagnostics"][0]["severity"], "warning");
+    assert_eq!(observation["diagnostics"][0]["category"], "construct-error");
+    assert_eq!(observation["diagnostics"][0]["continued"], true);
 }
 
 #[test]
@@ -328,16 +370,19 @@ fn action_error_stops_before_halt_and_is_captured_without_output_leakage() {
     assert!(stderr_str(&output).is_empty());
 
     let observation = parse_single_observation(&output);
+    assert_eq!(observation["phase_reached"], "run");
     assert_eq!(observation["run"]["rules_fired"], 1);
     assert_eq!(observation["run"]["halt_reason"], "action-error");
     assert_eq!(observation["run"]["agenda_size"], 1);
     assert_eq!(observation["run"]["halted"], false);
     assert_eq!(observation["diagnostics"][0]["phase"], "run");
     assert_eq!(observation["diagnostics"][0]["severity"], "warning");
+    assert_eq!(observation["diagnostics"][0]["taxonomy_version"], 1);
     assert_eq!(
         observation["diagnostics"][0]["category"],
         "evaluation-error"
     );
+    assert_eq!(observation["diagnostics"][0]["continued"], false);
     assert!(observation["channels"]
         .as_array()
         .unwrap()

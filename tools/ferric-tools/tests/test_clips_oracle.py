@@ -12,6 +12,7 @@ from ferric_tools.compat.clips_oracle import (
     NATIVE_EMIT_FUNCTION,
     NATIVE_RECORD_PREFIX,
     RECORD_PREFIX,
+    ClipsOracleProtocolError,
     build_probe_operations,
     parse_probe_output,
 )
@@ -41,6 +42,30 @@ def _probe(payload: str, *, nonce: str = NONCE) -> bytes:
     return _authenticated(
         f"PROBE|{len(encoded)}|".encode() + encoded,
         nonce=nonce,
+    )
+
+
+def _phase(sequence: int, phase: str, event: str, status: str | None = None) -> bytes:
+    fields: tuple[object, ...] = (sequence, phase, event)
+    if status is not None:
+        fields += (status,)
+    return _native_record("PHASE", *fields)
+
+
+def _diagnostic(
+    phase: str,
+    message: str,
+    *,
+    continued: bool,
+    taxonomy_version: int = 1,
+) -> bytes:
+    payload = message.encode()
+    return _authenticated(
+        (
+            f"DIAGNOSTIC|{taxonomy_version}|{phase}|{int(continued)}|{len(payload)}|".encode()
+            + payload
+        ),
+        nonce=NONCE,
     )
 
 
@@ -77,6 +102,12 @@ def _observation_stderr(
 ) -> bytes:
     records = [
         _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+        _phase(1, "load", "BEGIN"),
+        _phase(2, "load", "END", "OK"),
+        _phase(3, "reset", "BEGIN"),
+        _phase(4, "reset", "END", "OK"),
+        _phase(5, "run", "BEGIN"),
+        _phase(6, "run", "END", "OK"),
         run_metadata if run_metadata is not None else _native_run_metadata(),
         _probe("PHASE|1|RESET_COMPLETE"),
         _probe("PHASE|2|RUN_COMPLETE"),
@@ -96,6 +127,7 @@ def _parse(
     *,
     harnessed: bool = False,
     raw_stderr: bytes | None = None,
+    interrupted: bool = False,
 ) -> dict:
     return parse_probe_output(
         raw_stdout,
@@ -106,6 +138,7 @@ def _parse(
         composed_sha256=DIGEST,
         auth_key=AUTH_KEY,
         harnessed=harnessed,
+        interrupted=interrupted,
     )
 
 
@@ -152,6 +185,35 @@ def test_fixture_watch_shaped_output_remains_semantic_and_cannot_change_count():
     assert observation["run"]["rules_fired"] == 1
     assert observation["fired_rules"] is None
     assert observation["channels"][0]["text"] == output
+
+
+def test_bracketed_user_output_is_not_inferred_to_be_a_diagnostic():
+    output = "[EXPRNPSR3] this is fixture output, not an engine diagnostic\n"
+
+    observation = _parse(output)
+
+    assert observation["protocol_issues"] == []
+    assert observation["diagnostics"] == []
+    assert observation["channels"][0]["text"] == output
+
+    stderr_observation = _parse(raw_stderr=_observation_stderr(semantic_stderr=output.encode()))
+    assert stderr_observation["protocol_issues"] == []
+    assert stderr_observation["diagnostics"] == []
+    assert stderr_observation["channels"][1]["text"] == output
+
+
+def test_user_werror_output_remains_semantic_on_a_successful_run():
+    output = b"[USER123] fixture-selected werror output\n"
+
+    observation = _parse(raw_stderr=_observation_stderr(semantic_stderr=output))
+
+    assert observation["protocol_issues"] == []
+    assert observation["phase_reached"] == "post_run"
+    assert observation["diagnostics"] == []
+    assert observation["channels"][1] == {
+        "name": "stderr",
+        "text": output.decode(),
+    }
 
 
 def test_native_metadata_distinguishes_halt_on_last_activation_from_agenda_empty():
@@ -205,6 +267,7 @@ def test_fixture_cannot_supply_native_metadata_with_another_nonce():
     )
 
     assert "unexpected-native-reserved-prefix" in observation["protocol_issues"]
+    assert "unexpected-native-reserved-prefix" in observation["diagnostic_protocol_issues"]
     assert observation["phase_reached"] == "run"
 
 
@@ -226,7 +289,53 @@ def test_same_nonce_record_with_invalid_authentication_is_rejected():
     observation = _parse(raw_stderr=_observation_stderr(extra_before_complete=forged))
 
     assert "native-authentication-failed" in observation["protocol_issues"]
+    assert "native-authentication-failed" in observation["diagnostic_protocol_issues"]
     assert observation["phase_reached"] == "run"
+
+
+@pytest.mark.parametrize("kind", ["PROBE", "RUN"])
+def test_same_nonce_bare_record_is_authentication_corruption(kind):
+    bare = f"\n{NATIVE_RECORD_PREFIX}{NONCE}|{kind}\n".encode()
+    observation = _parse(
+        raw_stderr=_observation_stderr(complete=False, extra_before_complete=bare),
+        interrupted=True,
+    )
+
+    assert "native-authentication-malformed" in observation["protocol_issues"]
+    assert "native-authentication-malformed" in observation["diagnostic_protocol_issues"]
+
+
+def test_interrupted_semantic_utf8_tail_is_retained_with_replacement():
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            b"partial UTF-8: \xe2",
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr, interrupted=True)
+
+    assert observation["protocol_issues"] == []
+    assert observation["channels"][1]["text"] == "partial UTF-8: \ufffd"
+
+
+def test_authenticated_invalid_utf8_is_hard_protocol_corruption_when_interrupted():
+    payload = b"\xff"
+    invalid = _authenticated(
+        f"DIAGNOSTIC|1|load|0|{len(payload)}|".encode() + payload,
+        nonce=NONCE,
+    )
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            invalid,
+        ]
+    )
+
+    with pytest.raises(ClipsOracleProtocolError, match="DIAGNOSTIC payload"):
+        _parse(raw_stderr=stderr, interrupted=True)
 
 
 def test_extra_native_run_violates_exact_setup():
@@ -273,6 +382,340 @@ def test_semantic_stderr_is_preserved_around_native_records():
         "name": "stderr",
         "text": "feature warning\n",
     }
+
+
+def test_load_parser_diagnostic_is_a_completed_parse_failure():
+    message = "\n[PRNTUTIL2] Syntax Error: Check appropriate syntax for defrule.\n"
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            message.encode(),
+            _diagnostic("load", message, continued=False),
+            _phase(2, "load", "END", "ERROR"),
+            _native_record("LIFECYCLE", 3, "COMPLETE", FIXTURE_ID, DIGEST, DIGEST),
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert observation["protocol_issues"] == []
+    assert observation["phase_reached"] == "parse"
+    assert observation["run"] is None
+    assert observation["diagnostics"] == [
+        {
+            "taxonomy_version": 1,
+            "phase": "parse",
+            "category": "syntax-error",
+            "continued": False,
+            "channel": "stderr",
+            "message": message,
+        }
+    ]
+    assert observation["channels"][1]["text"] == message
+
+
+def test_load_construct_diagnostic_is_distinct_from_parser_failure():
+    message = "\n[EXPRNPSR3] Missing function declaration for missing-function.\n"
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            message.encode(),
+            _diagnostic("load", message, continued=False),
+            _phase(2, "load", "END", "ERROR"),
+            _native_record("LIFECYCLE", 3, "COMPLETE", FIXTURE_ID, DIGEST, DIGEST),
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert observation["protocol_issues"] == []
+    assert observation["phase_reached"] == "load"
+    assert observation["diagnostics"][0]["category"] == "construct-error"
+    assert observation["diagnostics"][0]["continued"] is False
+    assert observation["diagnostics"][0]["message"] == message
+
+
+def test_completed_load_diagnostic_survives_interruption_before_lifecycle_complete():
+    message = "\n[EXPRNPSR3] Missing function declaration for missing-function.\n"
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            message.encode(),
+            _diagnostic("load", message, continued=False),
+            _phase(2, "load", "END", "ERROR"),
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert observation["protocol_issues"] == []
+    assert observation["phase_reached"] == "load"
+    assert observation["lifecycle"] == [
+        {
+            "sequence": 0,
+            "event": "start",
+            "fixture_id": FIXTURE_ID,
+            "nonce": NONCE,
+            "source_sha256": DIGEST,
+            "composed_sha256": DIGEST,
+        }
+    ]
+    assert observation["diagnostics"][0]["category"] == "construct-error"
+
+
+def test_authenticated_diagnostic_survives_interruption_before_phase_end():
+    message = "\n[EXPRNPSR3] Missing function declaration for missing-function.\n"
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            message.encode(),
+            _diagnostic("load", message, continued=False),
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert observation["protocol_issues"] == []
+    assert observation["active_phase"] == "load"
+    assert observation["phase_reached"] == "load"
+    assert observation["diagnostics"][0]["category"] == "construct-error"
+
+
+def test_reset_diagnostic_can_continue_to_a_successful_run():
+    message = "\n[PRNTUTIL7] Attempt to divide by zero in / function.\n"
+    stderr = _observation_stderr().replace(
+        _phase(4, "reset", "END", "OK"),
+        message.encode()
+        + _diagnostic("reset", message, continued=True)
+        + _phase(4, "reset", "END", "CONTINUED"),
+        1,
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert observation["protocol_issues"] == []
+    assert observation["phase_reached"] == "post_run"
+    assert observation["run"]["halt_reason"] == "agenda_empty"
+    assert observation["diagnostics"] == [
+        {
+            "taxonomy_version": 1,
+            "phase": "reset",
+            "category": "evaluation-error",
+            "continued": True,
+            "channel": "stderr",
+            "message": message,
+        }
+    ]
+    assert observation["channels"][1]["text"] == message
+
+
+def test_reset_terminal_diagnostic_is_valid_without_run_records():
+    message = "\n[PRNTUTIL7] Reset evaluation failed.\n"
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            _phase(2, "load", "END", "OK"),
+            _phase(3, "reset", "BEGIN"),
+            message.encode(),
+            _diagnostic("reset", message, continued=False),
+            _phase(4, "reset", "END", "ERROR"),
+            _native_record("LIFECYCLE", 3, "COMPLETE", FIXTURE_ID, DIGEST, DIGEST),
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert observation["protocol_issues"] == []
+    assert observation["phase_reached"] == "reset"
+    assert observation["run"] is None
+    assert observation["diagnostics"][0]["category"] == "evaluation-error"
+    assert observation["diagnostics"][0]["continued"] is False
+
+
+def test_run_diagnostic_is_terminal_and_retains_run_metadata():
+    message = (
+        "[ARGACCES5] Function + expected argument #1 to be of type integer or float\n"
+        "[PRCCODE4] Execution halted during the actions of defrule first.\n"
+    )
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            _phase(2, "load", "END", "OK"),
+            _phase(3, "reset", "BEGIN"),
+            _phase(4, "reset", "END", "OK"),
+            _phase(5, "run", "BEGIN"),
+            message.encode(),
+            _diagnostic("run", message, continued=False),
+            _phase(6, "run", "END", "ERROR"),
+            _native_run_metadata(evaluation_error=1),
+            _native_record("LIFECYCLE", 3, "COMPLETE", FIXTURE_ID, DIGEST, DIGEST),
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert observation["protocol_issues"] == ["post-run-state-missing"]
+    assert observation["phase_reached"] == "run"
+    assert observation["run"]["halt_reason"] == "error"
+    assert observation["diagnostics"][0] == {
+        "taxonomy_version": 1,
+        "phase": "run",
+        "category": "evaluation-error",
+        "continued": False,
+        "channel": "stderr",
+        "message": message,
+    }
+
+
+def test_completed_run_diagnostic_survives_interruption_before_run_metadata():
+    message = "[PRCCODE4] Execution halted during the actions of defrule first.\n"
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            _phase(2, "load", "END", "OK"),
+            _phase(3, "reset", "BEGIN"),
+            _phase(4, "reset", "END", "OK"),
+            _phase(5, "run", "BEGIN"),
+            message.encode(),
+            _diagnostic("run", message, continued=False),
+            _phase(6, "run", "END", "ERROR"),
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert observation["protocol_issues"] == [
+        "native-run-metadata-missing",
+        "post-run-state-missing",
+        "native-run-diagnostic-state",
+    ]
+    assert observation["phase_reached"] == "run"
+    assert observation["diagnostics"][0]["category"] == "evaluation-error"
+
+
+def test_native_run_metadata_must_follow_run_phase_end():
+    message = "[PRCCODE4] Execution halted during the actions of defrule first.\n"
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _native_run_metadata(evaluation_error=1),
+            _phase(1, "load", "BEGIN"),
+            _phase(2, "load", "END", "OK"),
+            _phase(3, "reset", "BEGIN"),
+            _phase(4, "reset", "END", "OK"),
+            _phase(5, "run", "BEGIN"),
+            message.encode(),
+            _diagnostic("run", message, continued=False),
+            _phase(6, "run", "END", "ERROR"),
+            _native_record("LIFECYCLE", 3, "COMPLETE", FIXTURE_ID, DIGEST, DIGEST),
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert "native-run-record-order" in observation["protocol_issues"]
+
+
+def test_unknown_load_diagnostic_is_retained_as_fail_closed_evidence():
+    message = "\n[MYSTERY1] An unrecognized CLIPS diagnostic family.\n"
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            message.encode(),
+            _diagnostic("load", message, continued=False),
+            _phase(2, "load", "END", "ERROR"),
+            _native_record("LIFECYCLE", 3, "COMPLETE", FIXTURE_ID, DIGEST, DIGEST),
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert observation["protocol_issues"] == []
+    assert observation["phase_reached"] == "load"
+    assert observation["diagnostics"][0]["phase"] == "unknown"
+    assert observation["diagnostics"][0]["category"] == "unknown"
+    assert observation["diagnostics"][0]["message"] == message
+
+
+def test_malformed_diagnostic_metadata_fails_closed():
+    payload = b"[CSTRCPSR2] malformed record"
+    malformed = _authenticated(
+        f"DIAGNOSTIC|1|load|maybe|{len(payload)}|".encode() + payload,
+        nonce=NONCE,
+    )
+    stderr = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+            malformed,
+            _phase(2, "load", "END", "ERROR"),
+            _native_record("LIFECYCLE", 3, "COMPLETE", FIXTURE_ID, DIGEST, DIGEST),
+        ]
+    )
+
+    observation = _parse(raw_stderr=stderr)
+
+    assert "native-diagnostic-continued" in observation["protocol_issues"]
+    assert observation["phase_reached"] != "post_run"
+
+
+def test_diagnostic_payload_length_mismatch_is_a_protocol_error():
+    malformed = _authenticated(
+        b"DIAGNOSTIC|1|load|0|999|[CSTRCPSR2] truncated",
+        nonce=NONCE,
+    )
+
+    observation = _parse(raw_stderr=malformed)
+
+    assert "truncated-native-record" in observation["protocol_issues"]
+    assert observation["phase_reached"] != "post_run"
+
+
+@pytest.mark.parametrize("phase", ["load", "reset", "run"])
+def test_authenticated_active_phase_is_retained_for_interrupted_invocation(phase):
+    phase_index = ("load", "reset", "run").index(phase)
+    records = [_native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST)]
+    sequence = 1
+    for completed_phase in ("load", "reset", "run")[:phase_index]:
+        records.extend(
+            [
+                _phase(sequence, completed_phase, "BEGIN"),
+                _phase(sequence + 1, completed_phase, "END", "OK"),
+            ]
+        )
+        sequence += 2
+    records.append(_phase(sequence, phase, "BEGIN"))
+
+    observation = _parse(raw_stderr=b"".join(records))
+
+    assert observation["protocol_issues"] == []
+    assert observation["active_phase"] == phase
+    assert observation["phase_reached"] == phase
+    assert observation["run"] is None
+
+
+def test_truncated_trailing_record_does_not_erase_authenticated_active_phase():
+    authenticated_prefix = b"".join(
+        [
+            _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),
+            _phase(1, "load", "BEGIN"),
+        ]
+    )
+    truncated = f"\n{NATIVE_RECORD_PREFIX}{NONCE}|DIAGNOSTIC|1|load|0|999|partial".encode()
+
+    observation = _parse(raw_stderr=authenticated_prefix + truncated)
+
+    assert observation["active_phase"] == "load"
+    assert observation["phase_reached"] == "load"
+    assert observation["protocol_issues"] == ["truncated-native-record"]
 
 
 @pytest.mark.parametrize(

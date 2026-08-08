@@ -24,6 +24,7 @@ use slotmap::Key as _;
 
 const SCHEMA_NAME: &str = "ferric.compat-observation";
 const SCHEMA_VERSION: u8 = 1;
+const DIAGNOSTIC_TAXONOMY_VERSION: u8 = 1;
 const MAX_FIXTURE_ID_BYTES: usize = 128;
 const MIN_NONCE_HEX_BYTES: usize = 32;
 const MAX_NONCE_HEX_BYTES: usize = 128;
@@ -103,8 +104,8 @@ pub fn execute(
         Ok(source) => source,
         Err(error) => {
             observation.diagnostics.push(Diagnostic::error(
-                Phase::Load,
-                "io-error",
+                Phase::Harness,
+                "harness-error",
                 format!("failed to read {}: {error}", file_path.display()),
             ));
             return emit_failed_observation(observation, &engine);
@@ -114,8 +115,8 @@ pub fn execute(
     let actual_composed_sha256 = lowercase_sha256(&source_bytes);
     if actual_composed_sha256 != observation.fixture.composed_sha256 {
         observation.diagnostics.push(Diagnostic::error(
-            Phase::Load,
-            "digest-mismatch",
+            Phase::Harness,
+            "harness-error",
             format!(
                 "composed input digest mismatch: expected {}, observed {actual_composed_sha256}",
                 observation.fixture.composed_sha256
@@ -128,8 +129,8 @@ pub fn execute(
         Ok(source) => source,
         Err(error) => {
             observation.diagnostics.push(Diagnostic::error(
-                Phase::Load,
-                "encoding-error",
+                Phase::Harness,
+                "harness-error",
                 format!("composed input is not valid UTF-8: {error}"),
             ));
             return emit_failed_observation(observation, &engine);
@@ -139,6 +140,7 @@ pub fn execute(
     let load_result = match engine.load_str(source) {
         Ok(result) => result,
         Err(errors) => {
+            observation.phase_reached = load_failure_phase(&errors);
             observation
                 .diagnostics
                 .extend(errors.iter().map(load_error_diagnostic));
@@ -149,14 +151,14 @@ pub fn execute(
         load_result
             .warnings
             .into_iter()
-            .map(|message| Diagnostic::warning(Phase::Load, "load-warning", message)),
+            .map(|message| Diagnostic::warning(Phase::Load, "construct-error", message, true)),
     );
 
     observation.phase_reached = Phase::Reset;
     if let Err(error) = engine.reset() {
         observation.diagnostics.push(Diagnostic::error(
             Phase::Reset,
-            "runtime-error",
+            "evaluation-error",
             format!("reset failed: {error}"),
         ));
         return emit_failed_observation(observation, &engine);
@@ -168,14 +170,18 @@ pub fn execute(
         Err(error) => {
             observation.diagnostics.push(Diagnostic::error(
                 Phase::Run,
-                "runtime-error",
+                "evaluation-error",
                 format!("execution failed: {error}"),
             ));
             return emit_failed_observation(observation, &engine);
         }
     };
 
-    observation.phase_reached = Phase::PostRun;
+    observation.phase_reached = if matches!(run_result.halt_reason, HaltReason::ActionError) {
+        Phase::Run
+    } else {
+        Phase::PostRun
+    };
     match capture_state(&engine, Some(run_result)) {
         Ok(state) => {
             observation.apply_capture(state);
@@ -189,7 +195,7 @@ pub fn execute(
         Err(error) => {
             observation
                 .diagnostics
-                .push(Diagnostic::error(Phase::PostRun, "capture-error", error));
+                .push(Diagnostic::error(Phase::Harness, "harness-error", error));
             emit_observation(&observation, 1)
         }
     }
@@ -198,12 +204,17 @@ pub fn execute(
 fn emit_failed_observation(mut observation: Observation, engine: &Engine) -> i32 {
     match capture_state(engine, None) {
         Ok(state) => observation.apply_capture(state),
-        Err(error) => observation.diagnostics.push(Diagnostic::error(
-            observation.phase_reached,
-            "capture-error",
-            error,
-        )),
+        Err(error) => {
+            observation
+                .diagnostics
+                .push(Diagnostic::error(Phase::Harness, "harness-error", error));
+        }
     }
+    // COMPLETE attests that the adapter finished capturing the terminal
+    // envelope; it does not imply that the fixture reached or completed run.
+    observation
+        .lifecycle
+        .push(LifecycleRecord::complete(&observation.fixture));
     emit_observation(&observation, 1)
 }
 
@@ -263,10 +274,12 @@ fn capture_state(engine: &Engine, run_result: Option<RunResult>) -> Result<Captu
         })
         .collect();
 
+    let action_diagnostic_continued =
+        !run_result.is_some_and(|result| matches!(result.halt_reason, HaltReason::ActionError));
     let action_diagnostics = engine
         .action_diagnostics()
         .iter()
-        .map(action_error_diagnostic)
+        .map(|error| action_error_diagnostic(error, action_diagnostic_continued))
         .collect();
 
     let run = run_result.map(|result| RunObservation {
@@ -407,32 +420,33 @@ fn canonical_float(value: f64) -> String {
 }
 
 fn load_error_diagnostic(error: &LoadError) -> Diagnostic {
-    let category = match error {
-        LoadError::Parse(_) => "parse-error",
-        LoadError::Interpret(_) => "interpret-error",
-        LoadError::UnsupportedForm { .. } => "unsupported-form",
-        LoadError::InvalidAssert(_) => "invalid-assert",
-        LoadError::InvalidDefrule(_) => "invalid-defrule",
-        LoadError::Compile(_) => "compile-error",
-        LoadError::Validation(_) => "validation-error",
-        LoadError::Engine(_) => "engine-error",
-        LoadError::Io(_) => "io-error",
+    let (phase, category) = match error {
+        LoadError::Parse(_) => (Phase::Parse, "syntax-error"),
+        LoadError::Interpret(_)
+        | LoadError::UnsupportedForm { .. }
+        | LoadError::InvalidAssert(_)
+        | LoadError::InvalidDefrule(_)
+        | LoadError::Compile(_)
+        | LoadError::Validation(_)
+        | LoadError::Engine(_)
+        | LoadError::Io(_) => (Phase::Load, "construct-error"),
     };
-    Diagnostic::error(Phase::Load, category, error.to_string())
+    Diagnostic::error(phase, category, error.to_string())
 }
 
-fn action_error_diagnostic(error: &ActionError) -> Diagnostic {
-    let category = match error {
-        ActionError::UnknownAction(_) => "unknown-action",
-        ActionError::UnboundVariable(_) => "unbound-variable",
-        ActionError::FactNotFound(_) => "fact-not-found",
-        ActionError::InvalidAssert => "invalid-assert",
-        ActionError::InvalidRetract => "invalid-retract",
-        ActionError::Encoding(_) => "encoding-error",
-        ActionError::EvalError(_) | ActionError::Evaluator(_) => "evaluation-error",
-        ActionError::RuleReturn => "control-flow",
-    };
-    Diagnostic::warning(Phase::Run, category, error.to_string())
+fn load_failure_phase(errors: &[LoadError]) -> Phase {
+    if errors
+        .iter()
+        .all(|error| matches!(error, LoadError::Parse(_)))
+    {
+        Phase::Parse
+    } else {
+        Phase::Load
+    }
+}
+
+fn action_error_diagnostic(error: &ActionError, continued: bool) -> Diagnostic {
+    Diagnostic::warning(Phase::Run, "evaluation-error", error.to_string(), continued)
 }
 
 #[derive(Serialize)]
@@ -518,10 +532,12 @@ struct FixtureIdentity {
 #[serde(rename_all = "kebab-case")]
 enum Phase {
     Start,
+    Parse,
     Load,
     Reset,
     Run,
     PostRun,
+    Harness,
 }
 
 #[derive(Serialize)]
@@ -626,27 +642,33 @@ struct ChannelObservation {
 
 #[derive(Serialize)]
 struct Diagnostic {
+    taxonomy_version: u8,
     phase: Phase,
     severity: Severity,
     category: &'static str,
+    continued: bool,
     message: String,
 }
 
 impl Diagnostic {
     fn error(phase: Phase, category: &'static str, message: String) -> Self {
         Self {
+            taxonomy_version: DIAGNOSTIC_TAXONOMY_VERSION,
             phase,
             severity: Severity::Error,
             category,
+            continued: false,
             message,
         }
     }
 
-    fn warning(phase: Phase, category: &'static str, message: String) -> Self {
+    fn warning(phase: Phase, category: &'static str, message: String, continued: bool) -> Self {
         Self {
+            taxonomy_version: DIAGNOSTIC_TAXONOMY_VERSION,
             phase,
             severity: Severity::Warning,
             category,
+            continued,
             message,
         }
     }

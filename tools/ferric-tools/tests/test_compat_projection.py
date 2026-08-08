@@ -11,6 +11,7 @@ from ferric_tools.compat.projection import (
     ObservationProjectionError,
     project_clips_observation,
     project_ferric_observation,
+    project_observation_diagnostic,
 )
 
 FIXTURE_ID = "ferric-oracle.empty-output-state"
@@ -70,6 +71,28 @@ def _raw_fact(
             }
         ],
     }
+
+
+def _raw_diagnostic(
+    engine: str,
+    *,
+    phase: str,
+    category: str,
+    continued: bool,
+    message: str = "fixture diagnostic",
+) -> dict[str, object]:
+    diagnostic: dict[str, object] = {
+        "taxonomy_version": 1,
+        "phase": phase,
+        "category": category,
+        "continued": continued,
+        "message": message,
+    }
+    if engine == "ferric":
+        diagnostic["severity"] = "warning" if continued else "error"
+    else:
+        diagnostic["channel"] = "stderr"
+    return diagnostic
 
 
 def _raw_observation(engine: str) -> dict[str, object]:
@@ -208,8 +231,26 @@ def test_seed_ordered_result_projects_to_equivalent_non_vacuous_evidence():
 def test_action_error_halt_reason_is_canonical_across_adapters():
     ferric_raw = _raw_observation("ferric")
     ferric_raw["run"]["halt_reason"] = "action-error"
+    ferric_raw["phase_reached"] = "run"
+    ferric_raw["diagnostics"] = [
+        _raw_diagnostic(
+            "ferric",
+            phase="run",
+            category="evaluation-error",
+            continued=False,
+        )
+    ]
     clips_raw = _raw_observation("clips")
     clips_raw["run"]["halt_reason"] = "error"
+    clips_raw["phase_reached"] = "run"
+    clips_raw["diagnostics"] = [
+        _raw_diagnostic(
+            "clips",
+            phase="run",
+            category="evaluation-error",
+            continued=False,
+        )
+    ]
 
     ferric = project_ferric_observation(ferric_raw, harnessed=False)
     clips = project_clips_observation(clips_raw, harnessed=False)
@@ -218,6 +259,12 @@ def test_action_error_halt_reason_is_canonical_across_adapters():
     assert clips["firings"] == [{"rule": "counted-firing-1", "origin": "fixture"}]
 
     declaration = _declaration()
+    declaration["expectations"]["phase"] = "run"
+    declaration["expectations"]["diagnostic"] = {
+        "phase": "run",
+        "category": "evaluation-error",
+        "continued": False,
+    }
     declaration["expectations"]["run"]["halt_reason"] = "action-error"
     evaluation = evaluate_oracle(
         declaration,
@@ -230,6 +277,24 @@ def test_action_error_halt_reason_is_canonical_across_adapters():
     assert evaluation.status is EvidenceStatus.VALID
     assert evaluation.equivalent
     assert evaluation.mismatches == ()
+
+
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+def test_terminal_run_diagnostic_requires_action_error_halt(engine):
+    raw = _raw_observation(engine)
+    raw["phase_reached"] = "run"
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            engine,
+            phase="run",
+            category="evaluation-error",
+            continued=False,
+        )
+    ]
+    projector = project_ferric_observation if engine == "ferric" else project_clips_observation
+
+    with pytest.raises(ObservationProjectionError, match="lacks an action-error halt"):
+        projector(raw, harnessed=False)
 
 
 def test_generated_clips_harness_activity_fails_when_firings_cannot_be_attributed():
@@ -353,6 +418,12 @@ def test_clips_protocol_issue_fails_closed():
 
     with pytest.raises(ObservationProjectionError, match="protocol violations"):
         project_clips_observation(raw, harnessed=False)
+    with pytest.raises(ObservationProjectionError, match="protocol violations"):
+        project_observation_diagnostic(
+            raw,
+            engine="clips",
+            expected_fixture=_identity(),
+        )
 
 
 def test_unavailable_declared_ferric_capability_fails_closed():
@@ -380,39 +451,413 @@ def test_unavailable_declared_ferric_capability_fails_closed():
         )
 
 
-def test_expected_diagnostic_projection_remains_invalid_until_structured_support():
-    ferric_raw = _raw_observation("ferric")
-    clips_raw = _raw_observation("clips")
-    ferric_raw["diagnostics"] = [
-        {
-            "phase": "load",
-            "severity": "error",
-            "category": "parse-error",
-            "message": "fixture diagnostic",
-        }
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+@pytest.mark.parametrize(
+    ("phase", "category"),
+    [
+        ("parse", "syntax-error"),
+        ("load", "construct-error"),
+        ("reset", "evaluation-error"),
+    ],
+)
+def test_completed_pre_run_diagnostic_projects_without_partial_state(
+    engine,
+    phase,
+    category,
+):
+    raw = _raw_observation(engine)
+    raw["phase_reached"] = phase
+    raw["run"] = None
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            engine,
+            phase=phase,
+            category=category,
+            continued=False,
+        )
     ]
+    raw["channels"][0]["text"] = "diagnostic output\n"
+    if engine == "ferric":
+        raw["channels"][0]["present"] = True
+
+    projector = project_ferric_observation if engine == "ferric" else project_clips_observation
+    projected = projector(raw, harnessed=False)
+
+    assert projected["phase"] == phase
+    assert projected["diagnostic"] == {
+        "phase": phase,
+        "category": category,
+        "continued": False,
+    }
+    assert projected["run"] == {"limit": None, "halt_reason": "not-run"}
+    assert projected["firings"] == []
+    assert projected["effects"] == []
+    assert projected["facts"] == []
+    assert projected["channels"]["stdout"] == "diagnostic output\n"
+    assert [marker["kind"] for marker in projected["markers"]] == ["START", "COMPLETE"]
+
+
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+def test_homogeneous_diagnostics_collapse_but_heterogeneous_diagnostics_fail(engine):
+    raw = _raw_observation(engine)
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            engine,
+            phase="load",
+            category="construct-error",
+            continued=True,
+            message="first construct diagnostic",
+        ),
+        _raw_diagnostic(
+            engine,
+            phase="load",
+            category="construct-error",
+            continued=True,
+            message="second construct diagnostic",
+        ),
+    ]
+    projector = project_ferric_observation if engine == "ferric" else project_clips_observation
+
+    projected = projector(raw, harnessed=False)
+    assert projected["diagnostic"] == {
+        "phase": "load",
+        "category": "construct-error",
+        "continued": True,
+    }
+
+    raw["diagnostics"][1] = _raw_diagnostic(
+        engine,
+        phase="run",
+        category="evaluation-error",
+        continued=True,
+    )
+    with pytest.raises(ObservationProjectionError, match="heterogeneous"):
+        projector(raw, harnessed=False)
+
+
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("taxonomy_version", 2, "taxonomy version"),
+        ("phase", "unknown", "phase is unsupported"),
+        ("category", "unknown", "category is unsupported"),
+        ("category", "evaluation-error", "phase/category pair"),
+        ("continued", "unknown", "continuation is malformed"),
+        ("message", 7, "message is malformed"),
+    ],
+)
+def test_unknown_or_malformed_diagnostic_taxonomy_fails_closed(
+    engine,
+    field,
+    value,
+    message,
+):
+    raw = _raw_observation(engine)
+    diagnostic = _raw_diagnostic(
+        engine,
+        phase="parse",
+        category="syntax-error",
+        continued=True,
+    )
+    diagnostic[field] = value
+    raw["diagnostics"] = [diagnostic]
+    projector = project_ferric_observation if engine == "ferric" else project_clips_observation
+
+    with pytest.raises(ObservationProjectionError, match=message):
+        projector(raw, harnessed=False)
+
+
+@pytest.mark.parametrize(
+    ("engine", "field", "value", "message"),
+    [
+        ("ferric", "severity", "fatal", "severity is unsupported"),
+        ("clips", "channel", "t", "channel is unsupported"),
+    ],
+)
+def test_engine_specific_diagnostic_metadata_fails_closed(engine, field, value, message):
+    raw = _raw_observation(engine)
+    diagnostic = _raw_diagnostic(
+        engine,
+        phase="run",
+        category="evaluation-error",
+        continued=False,
+    )
+    diagnostic[field] = value
+    raw["diagnostics"] = [diagnostic]
+    projector = project_ferric_observation if engine == "ferric" else project_clips_observation
+
+    with pytest.raises(ObservationProjectionError, match=message):
+        projector(raw, harnessed=False)
+
+
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+def test_harness_diagnostic_is_not_projected_as_semantic_evidence(engine):
+    raw = _raw_observation(engine)
+    raw["phase_reached"] = "load"
+    raw["run"] = None
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            engine,
+            phase="harness",
+            category="harness-error",
+            continued=False,
+        )
+    ]
+    projector = project_ferric_observation if engine == "ferric" else project_clips_observation
+
+    with pytest.raises(ObservationProjectionError, match="phase is unsupported"):
+        projector(raw, harnessed=False)
+
+
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+def test_bound_diagnostic_subset_survives_unrelated_projection_failure(engine):
+    raw = _raw_observation(engine)
+    raw["phase_reached"] = "parse"
+    raw["run"] = None
+    raw["facts"] = "malformed partial state"
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            engine,
+            phase="parse",
+            category="syntax-error",
+            continued=False,
+        )
+    ]
+    projector = project_ferric_observation if engine == "ferric" else project_clips_observation
+
+    assert project_observation_diagnostic(
+        raw,
+        engine=engine,
+        expected_fixture=_identity(),
+    ) == {
+        "phase": "parse",
+        "category": "syntax-error",
+        "continued": False,
+    }
+    with pytest.raises(ObservationProjectionError, match="facts are malformed"):
+        projector(raw, harnessed=False)
+
+
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+def test_diagnostic_subset_rejects_wrong_invocation_binding(engine):
+    raw = _raw_observation(engine)
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            engine,
+            phase="load",
+            category="construct-error",
+            continued=True,
+        )
+    ]
+    expected_fixture = _identity()
+    expected_fixture["nonce"] = "f" * 32
+
+    with pytest.raises(ObservationProjectionError, match=r"nonce.*does not match"):
+        project_observation_diagnostic(
+            raw,
+            engine=engine,
+            expected_fixture=expected_fixture,
+        )
+
+
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+def test_diagnostic_subset_preserves_unknown_evidence_for_fail_closed_classification(engine):
+    raw = _raw_observation(engine)
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            engine,
+            phase="unknown",
+            category="unknown",
+            continued=False,
+        )
+    ]
+
+    assert project_observation_diagnostic(
+        raw,
+        engine=engine,
+        expected_fixture=_identity(),
+    ) == {"phase": "unknown", "category": "unknown", "continued": False}
+
+
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+def test_diagnostic_subset_rejects_harness_evidence(engine):
+    raw = _raw_observation(engine)
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            engine,
+            phase="harness",
+            category="harness-error",
+            continued=False,
+        )
+    ]
+
+    with pytest.raises(ObservationProjectionError, match="phase is unsupported"):
+        project_observation_diagnostic(raw, engine=engine, expected_fixture=_identity())
+
+
+@pytest.mark.parametrize("engine", ["ferric", "clips"])
+def test_diagnostic_subset_rejects_spoofed_lifecycle_binding(engine):
+    raw = _raw_observation(engine)
+    raw["lifecycle"][0]["nonce"] = "f" * 32
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            engine,
+            phase="run",
+            category="evaluation-error",
+            continued=False,
+        )
+    ]
+
+    with pytest.raises(ObservationProjectionError, match=r"lifecycle marker 0.*nonce"):
+        project_observation_diagnostic(raw, engine=engine, expected_fixture=_identity())
+
+
+def test_interrupted_run_diagnostic_rejects_contradictory_native_run_state():
+    raw = _raw_observation("clips")
+    raw["lifecycle"] = raw["lifecycle"][:1]
+    raw["phase_reached"] = "run"
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            "clips",
+            phase="run",
+            category="evaluation-error",
+            continued=False,
+        )
+    ]
+    raw["protocol_issues"] = ["native-run-diagnostic-state"]
+
+    with pytest.raises(ObservationProjectionError, match="native-run-diagnostic-state"):
+        project_observation_diagnostic(
+            raw,
+            engine="clips",
+            expected_fixture=_identity(),
+            interrupted=True,
+        )
+
+    raw["protocol_issues"].append("native-run-metadata-missing")
+    raw["run"] = None
+    assert project_observation_diagnostic(
+        raw,
+        engine="clips",
+        expected_fixture=_identity(),
+        interrupted=True,
+    ) == {"phase": "run", "category": "evaluation-error", "continued": False}
+
+
+def test_interrupted_diagnostic_subset_ignores_only_unrelated_partial_probe_tail():
+    raw = _raw_observation("clips")
+    raw["lifecycle"] = raw["lifecycle"][:1]
+    raw["phase_reached"] = "run"
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            "clips",
+            phase="reset",
+            category="evaluation-error",
+            continued=True,
+        )
+    ]
+    raw["protocol_issues"] = [
+        "lifecycle-cardinality-or-order",
+        "fact-slot-count",
+        "slot-item-positions",
+    ]
+    raw["diagnostic_protocol_issues"] = []
+
+    assert project_observation_diagnostic(
+        raw,
+        engine="clips",
+        expected_fixture=_identity(),
+        interrupted=True,
+    ) == {"phase": "reset", "category": "evaluation-error", "continued": True}
+
+
+def test_interrupted_terminal_diagnostic_is_trusted_before_phase_end():
+    raw = _raw_observation("clips")
+    raw["lifecycle"] = raw["lifecycle"][:1]
+    raw["phase_reached"] = "load"
+    raw["run"] = None
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            "clips",
+            phase="load",
+            category="construct-error",
+            continued=False,
+        )
+    ]
+    raw["protocol_issues"] = []
+    raw["diagnostic_protocol_issues"] = []
+
+    assert project_observation_diagnostic(
+        raw,
+        engine="clips",
+        expected_fixture=_identity(),
+        interrupted=True,
+    ) == {"phase": "load", "category": "construct-error", "continued": False}
+
+
+def test_terminal_run_diagnostic_without_post_run_state_is_not_complete_oracle():
+    raw = _raw_observation("clips")
+    raw["phase_reached"] = "run"
+    raw["run"]["halt_reason"] = "error"
+    raw["diagnostics"] = [
+        _raw_diagnostic(
+            "clips",
+            phase="run",
+            category="evaluation-error",
+            continued=False,
+        )
+    ]
+    raw["protocol_issues"] = ["post-run-state-missing"]
+    raw["diagnostic_protocol_issues"] = []
+
+    assert project_observation_diagnostic(
+        raw,
+        engine="clips",
+        expected_fixture=_identity(),
+    ) == {"phase": "run", "category": "evaluation-error", "continued": False}
+    with pytest.raises(ObservationProjectionError, match="post-run-state-missing"):
+        project_clips_observation(raw, harnessed=False)
+
+
+def test_ferric_and_clips_diagnostic_phase_category_mismatch_remains_divergent():
+    ferric_raw = _raw_observation("ferric")
+    ferric_raw["diagnostics"] = [
+        _raw_diagnostic(
+            "ferric",
+            phase="parse",
+            category="syntax-error",
+            continued=True,
+        )
+    ]
+    clips_raw = _raw_observation("clips")
     clips_raw["diagnostics"] = [
-        {
-            "phase": "unknown",
-            "category": "[EXPRNPSR3]",
-            "continuation": "unknown",
-            "channel": "stdout",
-        }
+        _raw_diagnostic(
+            "clips",
+            phase="load",
+            category="construct-error",
+            continued=True,
+        )
     ]
 
     ferric = project_ferric_observation(ferric_raw, harnessed=False)
     clips = project_clips_observation(clips_raw, harnessed=False)
-    assert ferric["diagnostic"]["phase"] == clips["diagnostic"]["phase"] == "unknown"
-
+    declaration = _declaration()
+    declaration["expectations"]["diagnostic"] = {
+        "phase": "parse",
+        "category": "syntax-error",
+        "continued": True,
+    }
     evaluation = evaluate_oracle(
-        _declaration(),
+        declaration,
         ferric,
         clips,
         expected_source_sha256=SOURCE_DIGEST,
         expected_composed_sha256=COMPOSED_DIGEST,
     )
 
-    assert evaluation.status is EvidenceStatus.INVALID
+    mismatch_fields = {(mismatch.scope, mismatch.field) for mismatch in evaluation.mismatches}
+    assert evaluation.status is EvidenceStatus.VALID
     assert not evaluation.equivalent
-    assert evaluation.ferric.issues[0].field == "diagnostic"
-    assert evaluation.clips.issues[0].field == "diagnostic"
+    assert ("engines", "diagnostic.phase") in mismatch_fields
+    assert ("engines", "diagnostic.category") in mismatch_fields
