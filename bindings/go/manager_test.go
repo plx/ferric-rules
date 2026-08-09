@@ -327,8 +327,8 @@ func TestManagerEvaluateCancelBeforeDispatch(t *testing.T) {
 
 // TestManagerDoCancelDuringRun verifies that a context canceled while
 // the engine is running surfaces through Run's periodic cancellation check.
-// Uses Do (not Evaluate) to avoid the pre-existing Evaluate closure race
-// between the caller and the worker on context cancellation.
+// The callback cooperatively observes ctx, so its worker response may wrap the
+// deadline even though a started arbitrary callback cannot be abandoned.
 func TestManagerDoCancelDuringRun(t *testing.T) {
 	mgr, err := NewManager(WithSource(`
 		(defrule chain

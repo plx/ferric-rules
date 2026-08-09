@@ -617,8 +617,7 @@ func TestManualCoordinatorWorkerAndManagerErrorBranches(t *testing.T) {
 	w := &worker{
 		specs:    map[string][]EngineOption{"bad": {WithSource("(defrule bad")}},
 		engines:  make(map[string]*Engine),
-		requests: make(chan workerRequest, 1),
-		stop:     make(chan struct{}),
+		requests: newRequestQueue[workerRequest](1),
 		done:     make(chan struct{}),
 		obs:      o,
 	}
@@ -632,10 +631,12 @@ func TestManualCoordinatorWorkerAndManagerErrorBranches(t *testing.T) {
 		t.Fatalf("expected cold-start failure log, got %q", buf.String())
 	}
 
-	resp := make(chan error, 1)
-	w.handle(workerRequest{specName: "missing", resp: resp})
-	if err := <-resp; !errors.Is(err, errUnknownEngineSpec) {
-		t.Fatalf("worker handle missing spec = %v", err)
+	call, responses := newWorkerCall(func(*Engine) (struct{}, error) {
+		return struct{}{}, nil
+	})
+	w.handle(workerRequest{specName: "missing", call: call})
+	if response := <-responses; !errors.Is(response.err, errUnknownEngineSpec) {
+		t.Fatalf("worker handle missing spec = %v", response.err)
 	}
 
 	mgr, err := NewManager(WithSource(`(defrule r => (assert (ok)))`))
@@ -740,8 +741,8 @@ func TestManualAssertWireFactsAndEvaluateNativeErrors(t *testing.T) {
 }
 
 func TestManualPinnedEngineCancellationAndSerializationFile(t *testing.T) {
-	// PinnedEngine should forward file serialization and respect cancellation
-	// while waiting for an already-dispatched worker operation to finish.
+	// PinnedEngine should forward file serialization and preserve the real
+	// callback result once an already-dispatched operation has started.
 	p, err := NewPinnedEngine(WithSource(`(defrule r => (assert (ok)))`))
 	if err != nil {
 		t.Fatal(err)
@@ -760,6 +761,12 @@ func TestManualPinnedEngineCancellationAndSerializationFile(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
 	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- p.Do(ctx, func(*Engine) error {
@@ -770,10 +777,20 @@ func TestManualPinnedEngineCancellationAndSerializationFile(t *testing.T) {
 	}()
 	<-started
 	cancel()
-	err = <-errCh
+	select {
+	case earlyErr := <-errCh:
+		t.Fatalf("started PinnedEngine.Do returned before its callback settled: %v", earlyErr)
+	case <-time.After(25 * time.Millisecond):
+	}
 	close(release)
-	if err == nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("PinnedEngine.Do canceled while waiting = %v", err)
+	released = true
+	select {
+	case err = <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("started PinnedEngine.Do did not settle after callback release")
+	}
+	if err != nil {
+		t.Fatalf("started PinnedEngine.Do result after cancellation = %v, want callback result", err)
 	}
 
 	if err := p.Close(); err != nil {
@@ -784,13 +801,14 @@ func TestManualPinnedEngineCancellationAndSerializationFile(t *testing.T) {
 	}
 
 	blocked := &PinnedEngine{
-		requests: make(chan pinnedRequest),
+		requests: newRequestQueue[pinnedRequest](0),
 		done:     make(chan struct{}),
 	}
 	blockedCtx, blockedCancel := context.WithCancel(context.Background())
 	blockedErr := make(chan error, 1)
 	go func() {
-		blockedErr <- blocked.tryEnqueue(blockedCtx, pinnedRequest{resp: make(chan error, 1)})
+		_, err := blocked.tryEnqueue(blockedCtx, pinnedRequest{})
+		blockedErr <- err
 	}()
 	blockedCancel()
 	if err := <-blockedErr; err == nil || !errors.Is(err, context.Canceled) {
@@ -1271,8 +1289,8 @@ func TestManualHookedEvaluateAndPinnedEdges(t *testing.T) {
 		withFFIHooks(t)
 		done := make(chan struct{})
 		close(done)
-		p := &PinnedEngine{requests: make(chan pinnedRequest), done: make(chan struct{})}
-		err := p.tryEnqueue(doneOnlyContext{done: done}, pinnedRequest{resp: make(chan error, 1)})
+		p := &PinnedEngine{requests: newRequestQueue[pinnedRequest](0), done: make(chan struct{})}
+		_, err := p.tryEnqueue(doneOnlyContext{done: done}, pinnedRequest{})
 		if err == nil {
 			t.Fatal("tryEnqueue should return an error from ctx.Done")
 		}
