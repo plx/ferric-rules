@@ -1,7 +1,7 @@
 # TypeScript Binding Test Specification (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-007 bounded EnginePool thread counts)
+Updated: 2026-08-09 (FR-NODE-008 atomic request-send rollback)
 Status: Required for reimplementation
 
 Companion documents:
@@ -25,13 +25,14 @@ This is not optional guidance. The implementation is incomplete until this speci
 
 ### 2.3 Worker Runtime Unit Tests (`EngineHandle`)
 - Exercise wire conversion, cancellation, worker protocol, error
-  reconstruction, and failed-construction Worker ownership.
+  reconstruction, failed-construction Worker ownership, and atomic ordinary
+  request-send rollback.
 
 ### 2.4 Pool Runtime Unit Tests (`EnginePool`)
 - Exercise construction bounds, queueing, dispatch, cancellation states,
   worker-slot lease isolation, proxy lifetime and ordering, same-pool
-  reentrancy, terminal Worker faults, `close()` behavior, and stateless
-  evaluation behavior.
+  reentrancy, terminal Worker faults, synchronous send rollback, `close()`
+  behavior, and stateless evaluation behavior.
 
 ### 2.5 Package/Load Tests
 - Validate native load behavior and package entrypoint surface guarantees.
@@ -85,7 +86,7 @@ Must include:
 - Lifecycle semantics (`F-001`, `F-002`, `A-005` where applicable).
 - Snapshot round-trip behavior.
 
-### 4.3 Worker Runtime Tests (minimum 30 cases)
+### 4.3 Worker Runtime Tests (minimum 35 cases)
 Must include:
 - Symbol input/output round-trip across worker boundary (`B-002`, `B-004`).
 - Snapshot transport using worker path (`D-002`, `D-007`).
@@ -125,11 +126,25 @@ Must include:
   - a successful construction control proving ownership transfers without
     failed-create teardown.
 
-The synchronous-send case above applies only to initialization cleanup.
-Ordinary handle/pool send rollback remains FR-NODE-008, and concurrent public
-`close()` completion-barrier coverage remains FR-NODE-010.
+The D-010 synchronous-send case above applies to initialization ownership.
 
-### 4.4 Pool Runtime Tests (minimum 50 cases)
+- Ordinary `EngineHandle` send rollback (`D-011`, `N-13`), including:
+  - a real uncloneable ordinary argument and injected throws from the shared
+    ordinary-call path and the separately implemented `run` path;
+  - calls returning Promises rather than leaking a synchronous public throw,
+    with rejection preserving the exact thrown value by identity;
+  - the exact pending entry removed before rejection is observable, while the
+    failed request ID remains consumed;
+  - `run` AbortSignal listener count returning to baseline exactly once and
+    ordinary message/error/exit Worker listener counts remaining unchanged;
+  - no Worker termination or handle closure, followed by a valid request that
+    succeeds on the same Worker; and
+  - synchronous response, error, and exit before a later send throw, proving
+    the first settlement wins without duplicate rejection or cleanup.
+
+Concurrent public `close()` completion-barrier coverage remains FR-NODE-010.
+
+### 4.4 Pool Runtime Tests (minimum 60 cases)
 Must include:
 - Evaluate lifecycle (`E-002`).
 - Cancellation for pre-abort, queued abort, and in-flight abort (`E-003`,
@@ -151,6 +166,30 @@ Must include:
   - a timeout-guarded real-process invalid-count probe that catches the
     synchronous error, observes no Worker-resource increase, and exits
     naturally without `process.exit()` or `unref()`.
+- Atomic pool request-send rollback (`E-015`, `N-13`), including:
+  - injected synchronous throws after registration for pool initialization,
+    immediate root dispatch, queued root dispatch, immediate lease dispatch,
+    and queued lease dispatch;
+  - real uncloneable `evaluate` and proxy arguments, plus direct assertions
+    that those public/proxy calls return rejecting Promises rather than throw;
+  - exact thrown-value identity and exactly-once settlement after the matching
+    pending entry, in-flight unit, request abort listener, lease pending-call
+    unit, and satisfied close waiter return to baseline;
+  - pool initialization rejecting without publication and terminating every
+    Worker constructed by that attempt;
+  - request-local failure leaving the slot and pool healthy, with no terminal
+    error, termination, respawn, replay, cross-slot retry, request-ID reuse, or
+    round-robin rewind;
+  - root FIFO and active lease-private FIFO progress through consecutive
+    failed queued sends until a later valid request succeeds;
+  - a failed proxy call leaving its lease active while later already-accepted
+    owner calls drain in invocation order and normal callback release still
+    occurs once;
+  - pre-aborted queued work retaining `AbortError` precedence without a send,
+    while an abort after a send attempt cannot replace its send failure; and
+  - synchronous response, ordinary response error, Worker error, and exit
+    before a later send throw, proving exact-entry first-settlement behavior and
+    preservation of N-11's primary terminal error.
 - `FactId` structured-clone response/request round-trip through a proxy
   (`E-010`).
 - Logical-run parity for both `evaluate` and proxy/direct run paths (`E-011`,
@@ -209,11 +248,11 @@ Must include:
 Cancellation-time proxy invalidation, mutation by work accepted before abort,
 and cancellation-triggered lease release are FR-NODE-009 coverage. E-012 covers
 the lease and normal callback-settlement boundary without preempting that work.
-Atomic rollback after an ordinary synchronous `postMessage` throw remains
-FR-NODE-008. Generic queue-listener cleanup remains FR-NODE-006; bounded queue
-capacity remains FR-NODE-011; and concurrent close calls sharing one completion
-Promise remains FR-NODE-010. E-013 covers those resources only on a Worker
-terminal transition.
+E-015 removes an abort listener from a request whose send fails; generic
+queue-listener cleanup after a successful dispatch remains FR-NODE-006.
+Bounded queue capacity remains FR-NODE-011, and concurrent close calls sharing
+one completion Promise remains FR-NODE-010. E-013 covers corresponding
+resources only on a Worker terminal transition.
 E-014 bounds Worker construction only; bounded queued work, overflow policy,
 and queue metrics remain FR-NODE-011.
 

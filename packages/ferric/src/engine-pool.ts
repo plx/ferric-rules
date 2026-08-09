@@ -104,7 +104,7 @@ export interface EngineProxy {
 
 interface PendingEntry {
   resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
+  reject: (error: unknown) => void;
 }
 
 /** A request waiting to be dispatched to a worker. */
@@ -525,15 +525,20 @@ export class EnginePool {
   private static initSlot(slot: WorkerSlot, init: PoolWorkerInit): Promise<void> {
     const id = slot.nextId++;
     const req: WorkerRequest = { id, method: "__init", args: [init] };
-    const promise = new Promise<void>((resolve, reject) => {
-      slot.pending.set(id, {
-        resolve: () => resolve(),
-        reject,
-      });
+    return new Promise<void>((resolve, reject) => {
+      const queued: QueuedRequest = {
+        kind: "request",
+        req,
+        entry: {
+          resolve: () => resolve(),
+          reject,
+        },
+      };
+
+      if (!EnginePool.dispatchRequest(slot, queued)) {
+        EnginePool.drainQueue(slot);
+      }
     });
-    slot.inflight++;
-    slot.worker.postMessage(req);
-    return promise;
   }
 
   /** Pick the next worker slot via round-robin. */
@@ -577,13 +582,34 @@ export class EnginePool {
   ): void {
     if (queued.signal && queued.onAbort) {
       queued.signal.removeEventListener("abort", queued.onAbort);
+      queued.onAbort = undefined;
     }
   }
 
-  private static dispatchRequest(slot: WorkerSlot, queued: QueuedRequest): void {
+  /** Register and send once; false means this call owned and rolled back a throw. */
+  private static dispatchRequest(slot: WorkerSlot, queued: QueuedRequest): boolean {
     slot.pending.set(queued.req.id, queued.entry);
     slot.inflight++;
-    slot.worker.postMessage(queued.req);
+
+    try {
+      slot.worker.postMessage(queued.req);
+      return true;
+    } catch (error) {
+      // A queued request's dequeue-cancellation listener is no longer useful
+      // after any attempted send, including when a synchronous Worker event
+      // settled the request before postMessage threw.
+      EnginePool.removeAbortListener(queued);
+
+      // Preserve first settlement across synchronous response/error/exit
+      // seams. Those paths already reconciled the counter and any owned work.
+      if (slot.pending.get(queued.req.id) !== queued.entry) return true;
+
+      slot.pending.delete(queued.req.id);
+      slot.inflight--;
+      queued.entry.reject(error);
+      EnginePool.notifyPendingDrained(slot);
+      return false;
+    }
   }
 
   private static settleLeaseCall(lease: WorkerLease): void {
@@ -634,8 +660,7 @@ export class EnginePool {
         // method-specific in-flight cancellation (notably batched run) remains
         // independently wired by the proxy.
         EnginePool.removeAbortListener(queued);
-        EnginePool.dispatchRequest(slot, queued);
-        return;
+        if (EnginePool.dispatchRequest(slot, queued)) return;
       }
 
       // An exclusive callback retains the worker even while it is between
@@ -674,8 +699,7 @@ export class EnginePool {
         continue;
       }
 
-      EnginePool.dispatchRequest(slot, request);
-      return;
+      if (EnginePool.dispatchRequest(slot, request)) return;
     }
   }
 
@@ -772,9 +796,15 @@ export class EnginePool {
         slot.queue.length === 0
       ) {
         // Dispatch immediately.
-        slot.pending.set(id, entry);
-        slot.inflight++;
-        slot.worker.postMessage(req);
+        const queued: QueuedRequest = {
+          kind: "request",
+          req,
+          entry,
+          signal,
+        };
+        if (!EnginePool.dispatchRequest(slot, queued)) {
+          EnginePool.drainQueue(slot);
+        }
       } else {
         // Queue and set up abort listener for queued cancellation.
         const queued: QueuedRequest = {
@@ -828,7 +858,9 @@ export class EnginePool {
       };
 
       if (slot.inflight === 0 && lease.queue.length === 0) {
-        EnginePool.dispatchRequest(slot, queued);
+        if (!EnginePool.dispatchRequest(slot, queued)) {
+          EnginePool.drainQueue(slot);
+        }
       } else {
         if (signal) {
           queued.onAbort = () => {

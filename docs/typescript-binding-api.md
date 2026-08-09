@@ -460,9 +460,15 @@ while a successful create retains the normal listeners and transfers the live
 Worker to the returned handle.
 
 This failed-create rule includes cleanup after an initialization
-`postMessage` throw. Atomic rollback for ordinary handle and pool sends remains
-the FR-NODE-008 contract, and the completion barrier shared by concurrent
-public `close()` calls remains FR-NODE-010.
+`postMessage` throw. Ordinary handle sends use the request-local rollback rule
+in the Worker Communication Protocol below. The completion barrier shared by
+concurrent public `close()` calls remains FR-NODE-010.
+
+After a returned handle registers an ordinary request, a synchronous
+`postMessage` failure rejects that request's Promise with the exact thrown
+value only after removing its pending entry and any request-owned abort
+listener. It does not close or terminate the handle, detach its shared Worker
+listeners, reuse the failed request ID, or prevent a later valid request.
 
 ```typescript
 export interface EngineHandleOptions extends EngineOptions {
@@ -716,6 +722,10 @@ export interface EngineProxy {
   `do()` delivers the callback's value or error. Calls already accepted drain
   before the lease releases. Every call after that boundary rejects with one
   deterministic lifetime error without reaching the worker.
+- A synchronous `postMessage` failure rejects only that proxy operation. It
+  does not release or invalidate the lease, and already-accepted later owner
+  calls continue through the lease-private FIFO after the failed send is
+  rolled back.
 - The callback return value stays on the main thread and does not need to be
   structured-clonable. Only proxy arguments and results cross the worker
   boundary.
@@ -761,13 +771,15 @@ the existing admitted-callback release barrier remains in force until the
 callback settles. `close()` therefore still observes the documented callback
 lifetime while no pool-generated request or close waiter remains stranded.
 
-An ordinary response error from a live Worker rejects only its matching
-request and does not poison the pool. An exit caused after `close()`
-deliberately starts Worker termination is also expected, not a fault.
-Synchronous ordinary `postMessage` rollback is FR-NODE-008; general
-queued-listener cleanup is FR-NODE-006; abort-time proxy semantics are
-FR-NODE-009; bounded backpressure is FR-NODE-011; and the Promise shared by
-concurrent close callers is FR-NODE-010.
+An ordinary response error or synchronous request-side `postMessage` failure
+from a live Worker rejects only its matching request and does not poison the
+pool. A failed send restores the selected slot's capacity and continues its
+root or lease-private FIFO without replaying the request on another Worker. An
+exit caused after `close()` deliberately starts Worker termination is also
+expected, not a fault. General listener cleanup after a successful queued
+dispatch is FR-NODE-006; abort-time proxy semantics are FR-NODE-009; bounded
+backpressure is FR-NODE-011; and the Promise shared by concurrent close callers
+is FR-NODE-010.
 
 ## Value Conversion Details
 
@@ -866,6 +878,55 @@ interface WorkerResponse {
 ```
 
 Values like `FerricSymbol` and `Fact` are serialized as plain objects for `postMessage` and reconstructed on the receiving side. `Buffer` arguments (snapshots) use `ArrayBuffer` transfer for zero-copy.
+
+### Synchronous request-send failures
+
+Main-to-Worker request submission is transactional from pending registration
+through `postMessage` acceptance. This applies to ordinary `EngineHandle`
+methods and `run()`, pool initialization, immediate and queued `evaluate()`
+dispatch, and immediate and queued `EngineProxy` dispatch. `EngineHandle`
+initialization uses the stronger failed-create ownership rule described above.
+
+If `postMessage` throws synchronously while the exact registered request entry
+is still pending, Ferric rolls back that request before its Promise rejection
+can be observed:
+
+- remove the exact pending entry and decrement its pool in-flight count once;
+- remove only abort listeners owned by that failed request;
+- reject with the exact thrown value, without reconstruction or replacement;
+- wake pool close bookkeeping and continue the applicable root or
+  lease-private FIFO until another request is accepted or that FIFO is empty;
+  and
+- keep the returned handle, Worker slot, pool terminal state, and active lease
+  otherwise unchanged.
+
+The request is neither replayed nor moved to another Worker. Its monotonically
+allocated request ID and any completed round-robin selection remain consumed.
+A later valid request therefore uses normal forward progress rather than
+reusing transport history.
+
+The rollback is conditional on ownership of the same `(id, pending entry)`.
+A deterministic Worker seam can synchronously emit a response, `error`, or
+`exit` before throwing from `postMessage`; if that event already settled and
+removed the entry, it wins and the catch path must not settle, decrement, or
+drain it again. Conversely, when send rollback wins first, a later terminal
+Worker event cannot replace that request's send error, although it still
+governs remaining and future pool work under the terminal-failure policy.
+
+Existing pre-dispatch gates retain precedence: closed/terminal/lifetime
+checks, argument validation, and a dequeuable pre-abort fail before request
+submission and do not call `postMessage`. Once a send is attempted, its
+synchronous failure is the request outcome; a later abort cannot replace it.
+Pool initialization failure rejects the creation Promise with that exact value
+and the existing failed-create transaction terminates every unpublished Worker
+it constructed.
+
+This rule covers main-to-Worker sends that own host request bookkeeping.
+Worker-to-main response sends create no such registration and remain governed
+by the response protocol and Worker error/exit lifecycle. It also does not add
+generic cleanup after a *successful* queued dispatch (FR-NODE-006), redefine
+abort-time proxy lifetime or mutation (FR-NODE-009), add queue bounds
+(FR-NODE-011), or make concurrent close calls share a Promise (FR-NODE-010).
 
 The worker script:
 
@@ -1084,6 +1145,9 @@ Values passed via `postMessage` must be structured-clonable. The binding provide
 - `FerricSymbol` → `{ __type: "FerricSymbol", value: string }` (tagged for reconstruction).
 - `Fact` → plain object whose `bigint` ID is preserved by structured clone.
 - `Buffer` (snapshots) → transferred as `ArrayBuffer` (zero-copy).
+
+An uncloneable main-to-Worker request rejects under the synchronous send rule
+above without retaining request bookkeeping or disabling the Worker.
 
 This is handled in the TypeScript layer, not in Rust.
 
