@@ -190,7 +190,12 @@ func EngineAssertOrdered(h EngineHandle, relation string, fields []Value) (uint6
 }
 
 // EngineAssertTemplate asserts a template fact with named slots.
+// It rejects unequal slot-name and slot-value counts before entering C.
 func EngineAssertTemplate(h EngineHandle, templateName string, slotNames []string, slotValues []Value) (uint64, ErrorCode) {
+	if len(slotNames) != len(slotValues) {
+		return 0, ErrInvalidArgument
+	}
+
 	ctmpl, err := checkedCString("templateName", templateName)
 	if err != nil {
 		return 0, ErrInvalidArgument
