@@ -1,7 +1,7 @@
 # TypeScript Binding Test Specification (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-004 failed EngineHandle creation cleanup)
+Updated: 2026-08-09 (FR-NODE-005 terminal EnginePool worker faults)
 Status: Required for reimplementation
 
 Companion documents:
@@ -29,8 +29,8 @@ This is not optional guidance. The implementation is incomplete until this speci
 
 ### 2.4 Pool Runtime Unit Tests (`EnginePool`)
 - Exercise queueing, dispatch, cancellation states, worker-slot lease isolation,
-  proxy lifetime and ordering, same-pool reentrancy, `close()` behavior, and
-  stateless evaluation behavior.
+  proxy lifetime and ordering, same-pool reentrancy, terminal Worker faults,
+  `close()` behavior, and stateless evaluation behavior.
 
 ### 2.5 Package/Load Tests
 - Validate native load behavior and package entrypoint surface guarantees.
@@ -163,10 +163,44 @@ Must include:
   - `close()` waiting through an admitted callback's idle await and accepted
     proxy calls; and
   - seeded randomized-await stress whose failure identifies the seed.
+- Terminal pool Worker state (`E-013`, `N-11`), including:
+  - Worker `error`, unexpected nonzero exit, unexpected zero exit, and the
+    normal error-followed-by-exit duplicate signal sequence;
+  - first-event-wins preservation of the exact emitted error object or one
+    stable synthesized exit error across every affected rejection and every
+    later root admission, including local cleanup after a second slot faults;
+  - one or more failed-slot pending requests together with ordinary root FIFO
+    work, queued lease admissions, and active-lease proxy work, all settling
+    exactly once;
+  - failed-slot pending, in-flight, root-queue, lease-queue, lease-call,
+    request-listener, and abort-listener bookkeeping returning to its terminal
+    baseline;
+  - a multi-worker failure proving already accepted healthy-slot FIFO work and
+    active-lease owner work remain eligible to finish, while later
+    `evaluate()` and `do()` admissions reject before round-robin selection,
+    request allocation, listener registration, or dispatch;
+  - no Worker reconstruction, failed-work replay, or post-failure dispatch to
+    the failed slot;
+  - ordinary response errors leaving the pool healthy and an exit caused by
+    deliberate close-time termination not establishing a failure;
+  - an admitted failed-slot callback whose proxy calls reject while unrelated
+    callback JavaScript is not forcibly settled and its existing release
+    barrier remains intact;
+  - close-before-fault and close-after-fault races proving cleared pending
+    bookkeeping wakes close, every owned Worker is terminated, and no
+    temporary waiter/listener remains; and
+  - a timeout-guarded real-Worker subprocess that injects a terminal exit with
+    pending and queued work, closes the pool, returns active Worker resources
+    to baseline, and exits naturally without `process.exit()` or `unref()`.
 
 Cancellation-time proxy invalidation, mutation by work accepted before abort,
 and cancellation-triggered lease release are FR-NODE-009 coverage. E-012 covers
 the lease and normal callback-settlement boundary without preempting that work.
+Atomic rollback after an ordinary synchronous `postMessage` throw remains
+FR-NODE-008. Generic queue-listener cleanup remains FR-NODE-006; bounded queue
+capacity remains FR-NODE-011; and concurrent close calls sharing one completion
+Promise remains FR-NODE-010. E-013 covers those resources only on a Worker
+terminal transition.
 
 ### 4.5 Package Tests (minimum 10 cases)
 Must include:

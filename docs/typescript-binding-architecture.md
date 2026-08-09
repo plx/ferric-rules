@@ -1,7 +1,7 @@
 # TypeScript Binding Architecture (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-004 failed EngineHandle creation cleanup)
+Updated: 2026-08-09 (FR-NODE-005 terminal EnginePool worker faults)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -55,6 +55,21 @@ This document is intentionally descriptive. If this document conflicts with the 
 - TypeScript orchestration over multiple workers.
 - Dispatches work round-robin across worker slots.
 - Supports stateless one-shot evaluation plus stateful proxy operations.
+- Gives every slot an explicit running, failed, terminating, or closed state.
+  The first unexpected Worker `error` or `exit` observed by a returned pool
+  establishes one pool-wide terminal failure; an `error` retains the exact
+  emitted object, while an unexpected exit creates one stable error for its
+  code. Later terminal signals cannot replace that primary failure.
+- Does not respawn a failed Worker. Recreating a slot would silently discard
+  the mutable engines owned by that Worker, so recovery requires constructing
+  a new pool explicitly.
+- Rejects every request and lease already assigned to the failed slot,
+  including its undispatched root and lease-private queues. Work already
+  accepted on another healthy slot remains eligible to finish through that
+  slot's existing FIFO, and an already-admitted healthy active lease may keep
+  accepting owner calls until its callback settles. All later `evaluate` and
+  `do` admissions fail before round-robin selection, request allocation,
+  listener registration, or Worker dispatch.
 - Gives each `do` callback an exclusive, FIFO lease over its selected worker
   slot and serializes that callback's proxy operations for the lease lifetime.
 - Defines normal callback completion at the pool's registered settlement
@@ -62,6 +77,15 @@ This document is intentionally descriptive. If this document conflicts with the 
   lease and the proxy is invalid before `do` delivers the callback outcome.
 - Treats the lease as scheduling isolation only: state mutations persist and
   are not rolled back when a callback rejects.
+- Does not forcibly settle arbitrary JavaScript performed by an admitted `do`
+  callback on the failed slot. Its pending or queued proxy operations reject,
+  later proxy sends through that callback fail fast, and the existing callback
+  release barrier remains in force until the callback itself settles.
+
+An ordinary Worker response containing an engine/protocol error rejects only
+the matching request and leaves the pool usable. An `exit` caused after
+`EnginePool.close()` deliberately starts Worker termination is likewise an
+expected lifecycle transition, not a pool failure.
 
 ## Package Layout
 
@@ -107,6 +131,11 @@ per-runtime artifact-smoke contract.
   through successful initialization. A failed transaction tears down that
   unpublished Worker before rejecting; a successful transaction transfers the
   live Worker and its ordinary listeners to the returned handle.
+- `EnginePool` owns every returned pool slot until close completes. A terminal
+  slot transition clears pending counters and all root/lease work assigned to
+  that slot, removes its request and abort listeners, and wakes any close
+  waiter. The pool retains failed Worker objects only so explicit close can
+  finish their lifecycle alongside the remaining healthy Workers.
 - Public API typing is owned by TypeScript package surface (`dist/index.d.ts`), not by generated native d.ts alone.
 
 Pre-Worker argument validation and a synchronous Worker-constructor throw do
@@ -116,6 +145,13 @@ ordinary handle and pool requests remains FR-NODE-008. The shared completion
 barrier for concurrent public `close()` calls remains FR-NODE-010; unpublished
 failed-create teardown does not define that behavior.
 
+EnginePool terminal cleanup removes abort listeners from work discarded by a
+Worker fault, as FR-NODE-005 requires. Generic queued-listener cleanup remains
+FR-NODE-006; abort-driven proxy lifetime and mutation semantics remain
+FR-NODE-009; queue capacity and metrics remain FR-NODE-011. FR-NODE-005 must
+wake a close already waiting for a failed request, but it does not add the
+shared concurrent-close completion Promise assigned to FR-NODE-010.
+
 ## Design Constraints
 1. Canonical value wire schema must be single-source-of-truth.
 2. Sync and async layers must not diverge semantically unless explicitly documented.
@@ -124,6 +160,9 @@ failed-create teardown does not define that behavior.
 5. One worker slot is the isolation unit: unrelated pool work must not execute
    there while a `do` callback owns its lease, even when it targets another
    named engine.
+6. One unexpected Worker terminal event poisons future admission for the whole
+   pool; silent slot replacement and partially available round-robin behavior
+   are not recovery mechanisms.
 
 ## Risk Seams (Must Receive Focused Review)
 1. Symbol/value conversion across worker boundaries.
@@ -132,9 +171,11 @@ failed-create teardown does not define that behavior.
 4. `EngineHandle.create()` ownership transfer and exactly-once failed-init
    cleanup, including secondary termination failure reporting.
 5. `EnginePool.do()` lease admission, proxy lifetime, and reentrant calls.
-6. `EnginePool.close()` behavior under active callbacks and concurrency.
-7. Public TS API shape drift (`undefined` exports, mismatched unions).
-8. JavaScript/native package version skew or a missing optional native package.
+6. First-event-wins EnginePool Worker failure cleanup across pending requests,
+   both queue levels, leases, listeners, counters, and close waiters.
+7. `EnginePool.close()` behavior under active callbacks and concurrency.
+8. Public TS API shape drift (`undefined` exports, mismatched unions).
+9. JavaScript/native package version skew or a missing optional native package.
 
 ## Delivery Model
 Reimplementation should be staged and gated:
