@@ -575,7 +575,9 @@ Each worker lazily creates engines from named specs. Requests are dispatched rou
 Work assigned to one worker slot is admitted FIFO. A `do()` callback receives
 an exclusive lease over its selected slot before the callback begins, so no
 unrelated task can use that worker until the pool processes the callback's
-normal settlement and its accepted proxy calls drain.
+normal settlement and its accepted proxy calls drain. Cancellation closes
+future proxy admission promptly but does not preempt that callback or shorten
+its lease.
 
 Pool construction defaults to one Worker when `threads` is omitted or
 `undefined`. An explicit count must be a JavaScript safe integer in the
@@ -631,8 +633,10 @@ export class EnginePool {
    * Dispatch a function to run on a pooled engine.
    * The callback receives a proxy object for the named engine and exclusively
    * leases the selected worker slot for its whole asynchronous lifetime.
-   * Proxy calls execute serially in invocation order. The proxy must not be
-   * retained after `do()` delivers the callback's value or error.
+   * Proxy calls execute serially in invocation order. Aborting before callback
+   * settlement rejects `do()` promptly and makes later proxy calls reject with
+   * `AbortError`; calls already accepted remain eligible to drain. The proxy
+   * must not be retained after `do()` delivers the callback's value or error.
    *
    * @param specName Engine spec to use.
    * @param fn Callback receiving an EngineHandle-like proxy.
@@ -673,8 +677,8 @@ export class EnginePool {
  * Proxy object passed to EnginePool.do() callbacks.
  * Has the same shape as EngineHandle but operations are
  * dispatched to a specific worker's engine. Calls are serialized in invocation
- * order and reject deterministically before `do()` delivers the callback's
- * value or error.
+ * order. New calls reject deterministically after cancellation or callback
+ * settlement without reaching the Worker.
  */
 export interface EngineProxy {
   load(source: string): Promise<void>;
@@ -722,6 +726,27 @@ export interface EngineProxy {
   `do()` delivers the callback's value or error. Calls already accepted drain
   before the lease releases. Every call after that boundary rejects with one
   deterministic lifetime error without reaching the worker.
+- A proxy request is accepted when its final active-lease, slot-state, and
+  signal gate passes immediately before request-ID allocation. Proxy methods
+  apply the same gate before method validation and the send path rechecks it
+  after preprocessing, closing an abort-during-validation race. Calls accepted
+  before abort remain accepted even if they are waiting in the lease-private
+  FIFO; they drain in order, keep their own response/send/terminal outcomes,
+  and may mutate engine state after cancellation. Abort does not dequeue them
+  or roll them back.
+- If the `do()` signal aborts before the pool observes callback settlement, the
+  outer Promise promptly rejects with a `DOMException` whose name is
+  `AbortError` and message is `The operation was aborted`. Every proxy method
+  invoked afterward returns that rejection before method validation, ID
+  allocation, accounting, listener registration, queue insertion, or
+  `postMessage`.
+- Cancellation does not interrupt arbitrary callback JavaScript or release its
+  worker-slot lease. Unrelated work remains excluded until the callback really
+  settles and every accepted call drains; that path releases the lease exactly
+  once. The prompt outer rejection does not wait for this barrier.
+- Callback settlement observed before abort wins even while accepted calls are
+  still draining. Its outer listener is removed, the callback outcome remains
+  fixed, and a later abort cannot replace the normal lifetime error.
 - A synchronous `postMessage` failure rejects only that proxy operation. It
   does not release or invalidate the lease, and already-accepted later owner
   calls continue through the lease-private FIFO after the failed send is
@@ -738,9 +763,11 @@ export interface EngineProxy {
   idle await between proxy calls. A callback still waiting to acquire a lease
   is rejected as not-yet-admitted work.
 
-Abort-driven proxy invalidation and the state effects of an operation accepted
-before abort are reserved for FR-NODE-009. An outer `do()` rejection does not
-allow unrelated work onto a slot while its callback is still running.
+While the callback remains active, an already-failed slot's retained terminal
+error takes precedence over `AbortError`; after callback settlement, the
+lifetime error takes precedence over either. An accepted request that has
+started `postMessage` keeps the synchronous-send/first-settlement rules below,
+independently of the outer cancellation outcome.
 
 #### Worker terminal failure policy
 
@@ -761,8 +788,9 @@ Once the failure is observed, new `evaluate()` and `do()` calls reject with the
 same primary error before round-robin selection or request bookkeeping. Work
 already accepted on another healthy slot remains eligible to finish through
 that slot's FIFO. An already-admitted healthy `do()` lease may continue its
-owner proxy operations until the callback settles. Recovery is explicit:
-close the failed pool and create a new one.
+owner proxy operations until the callback settles unless its own signal has
+already closed future proxy admission. Recovery is explicit: close the failed
+pool and create a new one.
 
 A failed-slot callback's pending and queued proxy operations reject, and later
 proxy sends fail fast. The pool cannot forcibly settle arbitrary JavaScript in
@@ -776,10 +804,10 @@ from a live Worker rejects only its matching request and does not poison the
 pool. A failed send restores the selected slot's capacity and continues its
 root or lease-private FIFO without replaying the request on another Worker. An
 exit caused after `close()` deliberately starts Worker termination is also
-expected, not a fault. General listener cleanup after a successful queued
-dispatch is FR-NODE-006; abort-time proxy semantics are FR-NODE-009; bounded
-backpressure is FR-NODE-011; and the Promise shared by concurrent close callers
-is FR-NODE-010.
+expected, not a fault. FR-NODE-009 owns the `do` outer listener and proxy-`run`
+listener described here. General root-queue listener cleanup after a successful
+queued dispatch is FR-NODE-006; bounded backpressure is FR-NODE-011; and the
+Promise shared by concurrent close callers is FR-NODE-010.
 
 ## Value Conversion Details
 
@@ -913,8 +941,10 @@ drain it again. Conversely, when send rollback wins first, a later terminal
 Worker event cannot replace that request's send error, although it still
 governs remaining and future pool work under the terminal-failure policy.
 
-Existing pre-dispatch gates retain precedence: closed/terminal/lifetime
-checks, argument validation, and a dequeuable pre-abort fail before request
+Existing pre-dispatch gates retain precedence. For a callback proxy those are,
+in order: inactive/released lifetime, failed slot, non-running/closed slot,
+aborted active lease, and then method validation. Other closed/terminal checks,
+argument validation, and a dequeuable pre-abort likewise fail before request
 submission and do not call `postMessage`. Once a send is attempted, its
 synchronous failure is the request outcome; a later abort cannot replace it.
 Pool initialization failure rejects the creation Promise with that exact value
@@ -924,9 +954,9 @@ it constructed.
 This rule covers main-to-Worker sends that own host request bookkeeping.
 Worker-to-main response sends create no such registration and remain governed
 by the response protocol and Worker error/exit lifecycle. It also does not add
-generic cleanup after a *successful* queued dispatch (FR-NODE-006), redefine
-abort-time proxy lifetime or mutation (FR-NODE-009), add queue bounds
-(FR-NODE-011), or make concurrent close calls share a Promise (FR-NODE-010).
+generic cleanup after a *successful* queued root dispatch (FR-NODE-006), alter
+the callback cancellation boundary above, add queue bounds (FR-NODE-011), or
+make concurrent close calls share a Promise (FR-NODE-010).
 
 The worker script:
 
@@ -955,20 +985,34 @@ parentPort!.on("message", (req: WorkerRequest) => {
 
 ### EnginePool.evaluate() / EnginePool.do()
 
-- **Before dispatch**: Reject immediately if aborted.
-- **Waiting for worker**: If aborted while queued, the request is dequeued (if possible) and rejected.
+- **Before dispatch**: After the existing reentry, closed, and terminal guards,
+  an otherwise-admissible call rejects immediately if already aborted.
+- **Waiting for worker**: A queued `evaluate()` root request or a `do()` lease
+  admission that has not begun its callback is removed and rejected if abort
+  wins. This does not apply to a proxy request already accepted into the
+  callback's lease-private FIFO; accepted owner work remains eligible to drain.
 - **During execution**: The run phase follows the same fresh-run, continuation,
   exact-boundary, and out-of-band cancellation contract as `EngineHandle`.
-- **Callback lease**: Rejecting the outer `do()` promise does not release a
-  worker slot that is still owned by a running callback. Unrelated work remains
-  queued until the pool-observed callback settlement boundary and accepted-call
-  drain.
+- **Callback admission**: For `do()`, abort observed before callback settlement
+  promptly rejects the outer Promise and makes every later active-proxy method
+  return `AbortError` before validation or request bookkeeping. A request whose
+  final gate passed before abort remains accepted, even while lease-queued, and
+  keeps its normal outcome and possible state effects.
+- **Callback lease**: Rejecting the outer `do()` Promise does not release a
+  worker slot still owned by a running callback. Unrelated work remains queued
+  until the pool-observed callback settlement boundary and accepted-call drain,
+  which release the lease exactly once.
+- **Retained proxy**: While the aborted callback is still active, its healthy
+  proxy rejects with `AbortError`. After callback settlement it rejects with
+  the ordinary lifetime error. An active failed-slot error takes precedence;
+  callback settlement observed before abort makes a later abort irrelevant.
 
 The partial `HaltRequested` result is the existing JavaScript API projection of
 host cancellation; it does not imply that the native engine halt latch was set.
 A later `run()` always starts fresh and clears the documented execution state.
-FR-NODE-009 separately defines abort-time proxy invalidation and whether work
-accepted before abort may finish mutating engine state.
+An accepted proxy `run()` receives the same out-of-band abort flag and normally
+resolves its partial result even though the independently returned outer
+`do()` Promise rejects with `AbortError`.
 
 ## Usage Examples
 

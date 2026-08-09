@@ -69,7 +69,9 @@ export type { EngineSpec, EvaluateRequest, EvaluateResult };
  * observes the callback's returned Promise settle, every later method rejects
  * with a deterministic lifetime error. Promise reactions that the callback
  * registers before returning can run before that observation and remain inside
- * the lease.
+ * the lease. If the callback's AbortSignal fires first, later method calls
+ * reject with AbortError while calls already accepted by the lease drain in
+ * invocation order.
  */
 export interface EngineProxy {
   load(source: string): Promise<void>;
@@ -188,6 +190,7 @@ interface WorkerSlot {
 
 const INACTIVE_PROXY_MESSAGE =
   "EngineProxy is no longer valid outside its EnginePool.do callback";
+const ABORTED_OPERATION_MESSAGE = "The operation was aborted";
 const REENTRANT_POOL_MESSAGE =
   "EnginePool.do, EnginePool.evaluate, and EnginePool.close cannot be called " +
   "from within an active EnginePool.do callback on the same pool";
@@ -845,6 +848,11 @@ export class EnginePool {
     if (slot.state.kind !== "running") {
       return Promise.reject(new Error("EnginePool has been closed"));
     }
+    if (signal?.aborted) {
+      return Promise.reject(
+        new DOMException(ABORTED_OPERATION_MESSAGE, "AbortError"),
+      );
+    }
 
     const id = slot.nextId++;
     const req: WorkerRequest = { id, method, args };
@@ -854,7 +862,6 @@ export class EnginePool {
         kind: "request",
         req,
         entry,
-        signal,
       };
 
       if (slot.inflight === 0 && lease.queue.length === 0) {
@@ -862,16 +869,6 @@ export class EnginePool {
           EnginePool.drainQueue(slot);
         }
       } else {
-        if (signal) {
-          queued.onAbort = () => {
-            const idx = lease.queue.indexOf(queued);
-            if (idx !== -1) {
-              lease.queue.splice(idx, 1);
-              reject(new DOMException("The operation was aborted", "AbortError"));
-            }
-          };
-          signal.addEventListener("abort", queued.onAbort, { once: true });
-        }
         lease.queue.push(queued);
       }
     });
@@ -901,6 +898,11 @@ export class EnginePool {
       }
       if (slot.state.kind !== "running") {
         return Promise.reject(new Error("EnginePool has been closed"));
+      }
+      if (signal?.aborted) {
+        return Promise.reject(
+          new DOMException(ABORTED_OPERATION_MESSAGE, "AbortError"),
+        );
       }
       return operation();
     };
@@ -1087,8 +1089,9 @@ export class EnginePool {
    * registered Promise reaction observes the callback outcome, before `do()`
    * delivers that value or error. Promise reactions registered by the callback
    * before it returns can run first and remain inside the lease. An AbortSignal
-   * can reject the public Promise earlier, but the lease remains exclusive until
-   * the pool observes the callback outcome.
+   * can reject the public Promise earlier and immediately prevents new proxy
+   * calls. Calls accepted before abort retain their outcomes and drain in order;
+   * the lease remains exclusive until the pool observes the callback outcome.
    *
    * Calling `do()`, `evaluate()`, or `close()` on this same pool from inside an
    * active callback rejects; use the supplied proxy instead. Other pools remain

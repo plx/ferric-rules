@@ -1,7 +1,7 @@
 /**
  * EnginePool defensive-branch tests with fake Worker slots.
  */
-import { EventEmitter } from "node:events";
+import { EventEmitter, getEventListeners } from "node:events";
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
@@ -261,17 +261,13 @@ test("E-012 lease release and terminal marking are idempotent", async () => {
   await pool.close();
 });
 
-test("E-012 dispatch removes a queued owner abort listener", async () => {
+test("E-016 accepted queued owner work does not add an abort listener", async () => {
   const { pool, worker, slot } = makePool();
   const abortController = new AbortController();
-  let removed = false;
-  const originalRemove = abortController.signal.removeEventListener.bind(
+  const listenerBaseline = getEventListeners(
     abortController.signal,
-  );
-  abortController.signal.removeEventListener = ((type, listener, options) => {
-    if (type === "abort") removed = true;
-    return originalRemove(type, listener, options);
-  }) as typeof abortController.signal.removeEventListener;
+    "abort",
+  ).length;
   const lease = await (pool as any).acquireLease(slot);
   const proxy = (pool as any).makeProxy(
     "rules",
@@ -287,17 +283,20 @@ test("E-012 dispatch removes a queued owner abort listener", async () => {
   const firstMessage = worker.messages[0];
   worker.emit("message", { id: firstMessage.id, result: [] });
   assert.deepStrictEqual(await first, []);
-  assert.strictEqual(removed, true);
   assert.strictEqual(worker.messages.length, 2);
 
   const secondMessage = worker.messages[1];
   worker.emit("message", { id: secondMessage.id, result: [] });
   assert.deepStrictEqual(await second, []);
+  assert.strictEqual(
+    getEventListeners(abortController.signal, "abort").length,
+    listenerBaseline,
+  );
   await (pool as any).releaseLease(slot, lease);
   await pool.close();
 });
 
-test("E-012 abort listener removes a queued owner request", async () => {
+test("E-016 abort preserves an already-accepted queued owner request", async () => {
   const { pool, worker, slot } = makePool();
   const abortController = new AbortController();
   const lease = await (pool as any).acquireLease(slot);
@@ -313,12 +312,26 @@ test("E-012 abort listener removes a queued owner request", async () => {
   assert.strictEqual(lease.queue.length, 1);
 
   abortController.abort();
-  await assert.rejects(queued, (error: any) => error?.name === "AbortError");
-  assert.strictEqual(lease.queue.length, 0);
+  assert.strictEqual(lease.queue.length, 1);
 
-  const message = worker.messages[0];
-  worker.emit("message", { id: message.id, result: [] });
+  const firstMessage = worker.messages[0];
+  worker.emit("message", { id: firstMessage.id, result: [] });
   assert.deepStrictEqual(await inflight, []);
+  assert.strictEqual(worker.messages.length, 2);
+  const secondMessage = worker.messages[1];
+  worker.emit("message", { id: secondMessage.id, result: [] });
+  assert.deepStrictEqual(await queued, []);
+
+  const nextId = slot.nextId;
+  const posts = worker.messages.length;
+  await assert.rejects(() => proxy.facts(), (error: any) => {
+    assert.ok(error instanceof DOMException);
+    assert.strictEqual(error.name, "AbortError");
+    assert.strictEqual(error.message, "The operation was aborted");
+    return true;
+  });
+  assert.strictEqual(slot.nextId, nextId);
+  assert.strictEqual(worker.messages.length, posts);
   await (pool as any).releaseLease(slot, lease);
   await pool.close();
 });
@@ -543,25 +556,24 @@ test("F-004 EnginePool.do rejects after close", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// D-006 manual proxy run: already-aborted signal sets abort buffer before send
+// E-016 manual proxy run: active cancellation wins before validation or send
 // ---------------------------------------------------------------------------
-test("D-006 EnginePool proxy run honors already-aborted retained signal", async () => {
+test("E-016 EnginePool proxy run rejects an already-aborted retained signal", async () => {
   const { pool, worker, slot } = makePool();
   const ac = new AbortController();
   ac.abort();
   const lease = await (pool as any).acquireLease(slot);
   const proxy = (pool as any).makeProxy("rules", slot, lease, ac.signal);
 
-  const pending = proxy.run({ limit: 3 });
-  const message = worker.messages[0];
-  const abortBuffer = new Int32Array(message.args[2]);
-  assert.strictEqual(Atomics.load(abortBuffer, 0), 1);
-
-  worker.emit("message", {
-    id: message.id,
-    result: { rulesFired: 0, haltReason: 2 },
+  const nextId = slot.nextId;
+  await assert.rejects(() => proxy.run({ limit: Number.NaN }), (error: any) => {
+    assert.ok(error instanceof DOMException);
+    assert.strictEqual(error.name, "AbortError");
+    assert.strictEqual(error.message, "The operation was aborted");
+    return true;
   });
-  assert.deepStrictEqual(await pending, { rulesFired: 0, haltReason: 2 });
+  assert.strictEqual(slot.nextId, nextId);
+  assert.strictEqual(worker.messages.length, 0);
   await (pool as any).releaseLease(slot, lease);
   await pool.close();
 });

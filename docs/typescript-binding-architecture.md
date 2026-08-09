@@ -1,7 +1,7 @@
 # TypeScript Binding Architecture (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-008 atomic request-send rollback)
+Updated: 2026-08-09 (FR-NODE-009 callback-proxy cancellation boundary)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -75,14 +75,31 @@ This document is intentionally descriptive. If this document conflicts with the 
   including its undispatched root and lease-private queues. Work already
   accepted on another healthy slot remains eligible to finish through that
   slot's existing FIFO, and an already-admitted healthy active lease may keep
-  accepting owner calls until its callback settles. All later `evaluate` and
-  `do` admissions fail before round-robin selection, request allocation,
-  listener registration, or Worker dispatch.
+  accepting owner calls until its callback settles unless its own signal has
+  already canceled that proxy. All later `evaluate` and `do` admissions fail
+  before round-robin selection, request allocation, listener registration, or
+  Worker dispatch.
 - Gives each `do` callback an exclusive, FIFO lease over its selected worker
   slot and serializes that callback's proxy operations for the lease lifetime.
 - Defines normal callback completion at the pool's registered settlement
   reaction, so callback-pre-registered Promise reactions remain inside the
   lease and the proxy is invalid before `do` delivers the callback outcome.
+- Treats each proxy method invocation whose admission gate succeeds as accepted
+  lease work. Calls accepted before cancellation, including lease-private
+  queued calls, keep their FIFO position and may still mutate engine state.
+- Applies the signal gate before method validation and again at the request
+  admission point immediately before ID allocation. Abort that fires during
+  synchronous preprocessing therefore cannot become accepted Worker work.
+- When a callback signal aborts before normal settlement is observed, rejects
+  the outer `do` Promise promptly and closes proxy admission synchronously.
+  Every later proxy call returns a rejected Promise before method validation,
+  request-ID allocation, listener registration, queue insertion, or Worker
+  dispatch. Cancellation does not revoke already-accepted work or preempt the
+  arbitrary JavaScript callback.
+- Keeps the FR-NODE-003 lease exclusion barrier after cancellation: the slot is
+  released exactly once only after the callback actually settles and all of
+  its accepted calls drain. The prompt outer rejection does not wait for that
+  barrier.
 - Treats the lease as scheduling isolation only: state mutations persist and
   are not rolled back when a callback rejects.
 - Does not forcibly settle arbitrary JavaScript performed by an admitted `do`
@@ -169,6 +186,11 @@ per-runtime artifact-smoke contract.
   rollback settles it. Rollback is allowed only while the map still contains
   the same entry for that ID, so a synchronously emitted response or terminal
   event wins without double cleanup.
+- A `do` signal owns callback admission, one outer-completion listener, and any
+  active proxy `run` flag listener. It is checked before every proxy invocation
+  but is not a dequeue token for owner calls already accepted into the
+  lease-private FIFO. The outer listener is removed when abort or callback
+  settlement wins; accepted work retains its ordinary request ownership.
 - Public API typing is owned by TypeScript package surface (`dist/index.d.ts`), not by generated native d.ts alone.
 
 Pre-Worker argument validation and a synchronous Worker-constructor throw do
@@ -181,13 +203,15 @@ failed-create teardown does not define that behavior.
 
 EnginePool terminal cleanup removes abort listeners from work discarded by a
 Worker fault, as FR-NODE-005 requires. FR-NODE-008 removes a queued listener
-when that request's dispatch itself throws; generic listener cleanup after a
-successful queued dispatch remains FR-NODE-006. Abort-driven proxy lifetime and
-mutation semantics remain FR-NODE-009; queue capacity and metrics remain
-FR-NODE-011. FR-NODE-005 and FR-NODE-008 must wake a close waiting on
-bookkeeping they clear, but neither adds the shared concurrent-close completion
-Promise assigned to FR-NODE-010. Worker-to-main response sends own no host
-request registration and are outside FR-NODE-008.
+when that request's dispatch itself throws. FR-NODE-009 owns only the `do`
+lifetime listener, proxy admission checks, and proxy-`run` cancellation
+listener described above; generic listener cleanup after a successful root
+dispatch remains FR-NODE-006. Queue capacity and metrics remain FR-NODE-011.
+FR-NODE-005 and FR-NODE-008 must wake a close waiting on bookkeeping they
+clear, but FR-NODE-009 preserves the existing admitted-callback close barrier
+and none adds the shared concurrent-close completion Promise assigned to
+FR-NODE-010. Worker-to-main response sends own no host request registration and
+are outside FR-NODE-008.
 The `1..64` construction bound limits one pool's Worker allocation; it does not
 bound queued work or define the backpressure policy assigned to FR-NODE-011.
 
@@ -207,6 +231,9 @@ bound queued work or define the backpressure policy assigned to FR-NODE-011.
 8. Every registered main-to-Worker request has an exactly-once settlement path
    when `postMessage` throws synchronously; transport admission history is never
    rewound or replayed.
+9. `EnginePool.do()` cancellation closes only future proxy admission. It does
+   not roll back accepted calls, replace their own outcomes, interrupt arbitrary
+   callback JavaScript, or shorten the callback's exclusive lease.
 
 ## Risk Seams (Must Receive Focused Review)
 1. Symbol/value conversion across worker boundaries.
@@ -224,6 +251,10 @@ bound queued work or define the backpressure policy assigned to FR-NODE-011.
 11. Synchronous request-send rollback across handle run listeners, pool
     initialization, both pool FIFOs, in-flight counts, lease calls, terminal
     races, and close waiters.
+12. `EnginePool.do()` abort versus callback-settlement ordering, all-method
+    proxy gating before validation and allocation, accepted owner-call drain,
+    failed-slot/send precedence, exact-once lease release, and signal-listener
+    return to baseline.
 
 ## Delivery Model
 Reimplementation should be staged and gated:
