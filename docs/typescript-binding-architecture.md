@@ -1,7 +1,7 @@
 # TypeScript Binding Architecture (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-007 bounded EnginePool thread counts)
+Updated: 2026-08-09 (FR-NODE-008 atomic request-send rollback)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -49,6 +49,10 @@ This document is intentionally descriptive. If this document conflicts with the 
   writable/configurable cause property. Attachment is best-effort for errors
   that reject that descriptor update and for non-`Error` primaries because
   preserving exact identity takes precedence.
+- Treats every ordinary request registration plus main-to-Worker send as one
+  transaction. A synchronous send failure removes only that request and its
+  abort listener, rejects with the exact thrown value, and leaves the returned
+  handle and its shared Worker listeners usable.
 - Provides Promise-based API matching `Engine` semantics where applicable.
 
 ### Layer 3: `EnginePool` (multi-worker concurrency)
@@ -90,6 +94,23 @@ An ordinary Worker response containing an engine/protocol error rejects only
 the matching request and leaves the pool usable. An `exit` caused after
 `EnginePool.close()` deliberately starts Worker termination is likewise an
 expected lifecycle transition, not a pool failure.
+
+A synchronous main-to-Worker send failure is also request-local, not a Worker
+terminal event. The pool conditionally removes the exact pending entry,
+restores its in-flight capacity, removes that request's abort listener, wakes
+pending-drain waiters, and continues the active lease-private or root FIFO. It
+does not respawn, replay, or move the request to another slot, release an active
+lease, or rewind request-ID and round-robin admission history. Repeated failed
+queued sends are skipped until one request is accepted or the applicable FIFO
+is empty.
+
+The internal pool dispatch primitive is total with respect to synchronous
+`postMessage` failure. It returns `false` only when that invocation still owned
+the exact pending entry and performed rollback; it returns `true` when the send
+was accepted or an earlier synchronous settlement already removed the entry.
+An immediate caller applies the normal queue-drain transition after `false`.
+The queue drainer handles `false` by iteration, not recursive redispatch, so
+consecutive failed sends cannot escape the dispatcher or grow the call stack.
 
 ## Package Layout
 
@@ -142,21 +163,31 @@ per-runtime artifact-smoke contract.
   finish their lifecycle alongside the remaining healthy Workers.
 - Invalid EnginePool thread counts are rejected before any Worker is
   constructed, so no pool Worker ownership or failed-create cleanup begins.
+- Once a host request is registered, its pending-map entry, pool in-flight unit,
+  and request-owned abort listener form one ownership unit until a response,
+  terminal event, close path, abort-before-dispatch, or synchronous send
+  rollback settles it. Rollback is allowed only while the map still contains
+  the same entry for that ID, so a synchronously emitted response or terminal
+  event wins without double cleanup.
 - Public API typing is owned by TypeScript package surface (`dist/index.d.ts`), not by generated native d.ts alone.
 
 Pre-Worker argument validation and a synchronous Worker-constructor throw do
 not establish `EngineHandle` ownership. Failed-create cleanup covers an
-initialization send that throws, but generic atomic `postMessage` rollback for
-ordinary handle and pool requests remains FR-NODE-008. The shared completion
+initialization send that throws. FR-NODE-008 adds request-local rollback to
+ordinary handle sends and every pool send, including pool initialization, but
+does not change failed-create termination ownership. The shared completion
 barrier for concurrent public `close()` calls remains FR-NODE-010; unpublished
 failed-create teardown does not define that behavior.
 
 EnginePool terminal cleanup removes abort listeners from work discarded by a
-Worker fault, as FR-NODE-005 requires. Generic queued-listener cleanup remains
-FR-NODE-006; abort-driven proxy lifetime and mutation semantics remain
-FR-NODE-009; queue capacity and metrics remain FR-NODE-011. FR-NODE-005 must
-wake a close already waiting for a failed request, but it does not add the
-shared concurrent-close completion Promise assigned to FR-NODE-010.
+Worker fault, as FR-NODE-005 requires. FR-NODE-008 removes a queued listener
+when that request's dispatch itself throws; generic listener cleanup after a
+successful queued dispatch remains FR-NODE-006. Abort-driven proxy lifetime and
+mutation semantics remain FR-NODE-009; queue capacity and metrics remain
+FR-NODE-011. FR-NODE-005 and FR-NODE-008 must wake a close waiting on
+bookkeeping they clear, but neither adds the shared concurrent-close completion
+Promise assigned to FR-NODE-010. Worker-to-main response sends own no host
+request registration and are outside FR-NODE-008.
 The `1..64` construction bound limits one pool's Worker allocation; it does not
 bound queued work or define the backpressure policy assigned to FR-NODE-011.
 
@@ -173,6 +204,9 @@ bound queued work or define the backpressure policy assigned to FR-NODE-011.
    are not recovery mechanisms.
 7. EnginePool Worker count is a fixed, non-overridable safe-integer range of
    `1..64`, validated synchronously before Worker construction.
+8. Every registered main-to-Worker request has an exactly-once settlement path
+   when `postMessage` throws synchronously; transport admission history is never
+   rewound or replayed.
 
 ## Risk Seams (Must Receive Focused Review)
 1. Symbol/value conversion across worker boundaries.
@@ -187,6 +221,9 @@ bound queued work or define the backpressure policy assigned to FR-NODE-011.
 8. Public TS API shape drift (`undefined` exports, mismatched unions).
 9. JavaScript/native package version skew or a missing optional native package.
 10. EnginePool construction limits and validation-before-ownership ordering.
+11. Synchronous request-send rollback across handle run listeners, pool
+    initialization, both pool FIFOs, in-flight counts, lease calls, terminal
+    races, and close waiters.
 
 ## Delivery Model
 Reimplementation should be staged and gated:

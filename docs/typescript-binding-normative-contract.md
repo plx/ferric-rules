@@ -1,7 +1,7 @@
 # TypeScript Binding Normative Contract (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-007 bounded EnginePool thread counts)
+Updated: 2026-08-09 (FR-NODE-008 atomic request-send rollback)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -121,11 +121,10 @@ If this contract conflicts with legacy design docs, this contract wins.
 7. Successful initialization `MUST` transfer the live Worker and its ordinary
    request listeners to the returned `EngineHandle`; failed-create cleanup
    `MUST NOT` run on that success path.
-8. The initialization-send case in item 5 defines only failed-create
-   ownership. Atomic synchronous-`postMessage` rollback for ordinary handle
-   requests and pool requests remains FR-NODE-008. Items 5-7 also do not
-   define the completion barrier for concurrent public `close()` calls, which
-   remains FR-NODE-010.
+8. The initialization-send case in item 5 defines failed-create ownership.
+   Ordinary request-send rollback is governed by section 8.1. Items 5-7 also
+   do not define the completion barrier for concurrent public `close()` calls,
+   which remains FR-NODE-010.
 9. `EngineHandle.close()` `MUST` be idempotent.
 10. `EngineHandle` `MUST` support `[Symbol.asyncDispose]()` and delegate to `close()`.
 
@@ -195,12 +194,13 @@ If this contract conflicts with legacy design docs, this contract wins.
     it `MUST NOT` wait forever on pending bookkeeping cleared by the fault.
     This requirement does not define the shared completion barrier for
     concurrent public close calls.
-13. Atomic rollback when an ordinary `postMessage` throws synchronously remains
-    FR-NODE-008. Generic queued AbortSignal-listener cleanup remains
-    FR-NODE-006; cancellation-time proxy invalidation remains FR-NODE-009;
-    bounded queue capacity remains FR-NODE-011; and concurrent close callers
-    sharing one completion Promise remains FR-NODE-010. FR-NODE-005 owns the
-    corresponding cleanup only when a Worker terminal event occurs.
+13. Synchronous main-to-Worker request-send rollback `MUST` follow section 8.1.
+    Generic queued AbortSignal-listener cleanup after a successful dispatch
+    remains FR-NODE-006; cancellation-time proxy invalidation remains
+    FR-NODE-009; bounded queue capacity remains FR-NODE-011; and concurrent
+    close callers sharing one completion Promise remains FR-NODE-010.
+    FR-NODE-005 owns the corresponding cleanup only when a Worker terminal
+    event occurs.
     The fixed Worker-count bound in item 1 does not define or satisfy the queue
     capacity and overload policy assigned to FR-NODE-011.
 
@@ -396,6 +396,70 @@ interface WorkerResponse {
 
 3. Request IDs `MUST` be unique per worker slot among in-flight requests.
 4. Snapshot payload transfers `SHOULD` use `ArrayBuffer` transfer for zero-copy.
+
+### 8.1 Synchronous Main-to-Worker Request-Send Failure
+
+1. Main-to-Worker submission `MUST` be treated as a transaction from host
+   request registration until `postMessage` accepts the request. This section
+   governs ordinary `EngineHandle` methods, `EngineHandle.run`, every
+   `EnginePool` initialization/root/lease request, and both immediate and
+   queued pool dispatch. `EngineHandle` initialization remains additionally
+   governed by the failed-create ownership requirements in section 4.2.
+2. Existing checks that run before registration retain their existing
+   precedence. A closed or terminal object, inactive proxy, invalid argument,
+   or dequeuable pre-abort `MUST` fail without calling `postMessage`. For every
+   valid ordinary or proxy call that reaches request submission, a synchronous
+   `postMessage` failure `MUST` reject its Promise; it `MUST NOT` escape as a
+   separate synchronous public throw. A valid-thread `EnginePool.create()`
+   whose initialization send fails `MUST` return a Promise that rejects.
+3. If `postMessage` throws synchronously while the pending map still associates
+   that request ID with the same registered entry, rollback `MUST`, before the
+   rejection is observable:
+   - delete that exact pending entry;
+   - decrement that request's pool in-flight unit exactly once, when present;
+   - remove every abort listener owned by that request;
+   - reject the registered Promise exactly once with the exact thrown value,
+     preserving its identity without reconstruction or wrapping; and
+   - notify any pending-drain waiter whose condition is now satisfied.
+4. Rollback `MUST` be conditional on ownership of that same `(request ID,
+   entry)`. If a synchronous response, Worker terminal event, close path, or
+   other settlement has already removed or replaced it, that first settlement
+   `MUST` win and the send catch `MUST NOT` reject, decrement, notify, or drain
+   the request a second time. If send rollback wins and a later terminal event
+   occurs, that request retains the send failure while the terminal event
+   governs remaining and future work under section 4.3.
+5. An ordinary send failure on a returned `EngineHandle` `MUST NOT` close or
+   terminate its Worker or detach the handle's shared Worker listeners.
+   `EngineHandle.run` `MUST` remove its request-owned AbortSignal listener. A
+   subsequent valid handle request `MUST` remain eligible to succeed.
+6. An ordinary pool send failure `MUST` be request-local. It `MUST NOT` mark the
+   slot failed, establish or replace the pool terminal error, terminate or
+   respawn a Worker, replay the request, or move it to another slot. The
+   allocated request ID and completed round-robin selection `MUST NOT` be
+   rewound or reused.
+7. After an owned pool rollback restores capacity, the pool `MUST` continue the
+   same scheduling transition as an immediate rejected response: while a lease
+   is active, continue its lease-private FIFO; otherwise continue the root
+   FIFO. Repeated queued send failures `MUST` be rolled back without escaping
+   the dispatcher until a request is accepted or the applicable FIFO is empty.
+   A failed proxy operation settles only that operation; it `MUST NOT` release
+   or invalidate the lease, and later already-accepted owner operations remain
+   eligible to drain in invocation order.
+8. A pool initialization send failure `MUST` reject pool creation with the
+   exact thrown value and enter the existing failed-create transaction, which
+   terminates every unpublished Worker constructed by that attempt. It
+   `MUST NOT` publish a partially initialized or terminal pool.
+9. Once a send attempt begins, its synchronous failure wins over an abort that
+   occurs later. This section requires listener removal for a request whose
+   send failed; generic listener cleanup after a successful queued dispatch
+   remains FR-NODE-006. Abort-time proxy validity and accepted-mutation
+   semantics remain FR-NODE-009, and a send failure alone does not alter them.
+10. Worker-to-main response `postMessage` calls create no host pending entry and
+    are outside this rollback contract. Their failure remains governed by the
+    response protocol and Worker error/exit lifecycle. This section also does
+    not add queue bounds (FR-NODE-011) or the Promise shared by concurrent
+    public close callers (FR-NODE-010), though rollback `MUST` wake existing
+    close waiters whose pending condition it satisfies.
 
 ## 9. Packaging and Runtime Load Contract
 

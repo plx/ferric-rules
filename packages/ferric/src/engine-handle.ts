@@ -244,12 +244,6 @@ export class EngineHandle {
   // Internal helpers
   // ---------------------------------------------------------------------------
 
-  private makePromise(id: number): Promise<unknown> {
-    return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-    });
-  }
-
   /** Send the factory-only initialization request with atomic send rollback. */
   private initialize(
     init: WorkerInit,
@@ -332,14 +326,29 @@ export class EngineHandle {
   }
 
   private call(method: string, args: unknown[]): Promise<unknown> {
-    if (this.closed || !this.worker) {
+    const worker = this.worker;
+    if (this.closed || !worker) {
       return Promise.reject(new Error("EngineHandle has been closed"));
     }
     const id = this.nextId++;
     const req: WorkerRequest = { id, method, args };
-    const promise = this.makePromise(id);
-    this.worker.postMessage(req);
-    return promise;
+
+    return new Promise<unknown>((resolve, reject) => {
+      const entry: PendingEntry = { resolve, reject };
+      this.pending.set(id, entry);
+
+      try {
+        worker.postMessage(req);
+      } catch (error) {
+        // A synchronous response or terminal Worker event may already have
+        // settled this entry. Only the path that still owns the exact
+        // registration may roll it back and reject with the send failure.
+        if (this.pending.get(id) === entry) {
+          this.pending.delete(id);
+          entry.reject(error);
+        }
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -427,7 +436,8 @@ export class EngineHandle {
    * @param options.signal - AbortSignal for cancellation.
    */
   async run(options?: { limit?: number; signal?: AbortSignal }): Promise<RunResult> {
-    if (this.closed || !this.worker) {
+    const worker = this.worker;
+    if (this.closed || !worker) {
       throw new Error("EngineHandle has been closed");
     }
 
@@ -452,11 +462,13 @@ export class EngineHandle {
       args: [limit ?? null, sab],
     };
 
+    let entry!: PendingEntry;
     const promise = new Promise<RunResult>((resolve, reject) => {
-      this.pending.set(id, {
+      entry = {
         resolve: (val) => resolve(val as RunResult),
         reject,
-      });
+      };
+      this.pending.set(id, entry);
     });
 
     // Wire up cancellation BEFORE posting the message so there's no race.
@@ -468,14 +480,29 @@ export class EngineHandle {
       signal.addEventListener("abort", onAbort, { once: true });
     }
 
-    this.worker.postMessage(req);
+    const stopListening = (): void => {
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+        onAbort = undefined;
+      }
+    };
+
+    try {
+      worker.postMessage(req);
+    } catch (error) {
+      // The in-flight abort listener belongs to this send attempt even if a
+      // synchronous Worker event won the request's first settlement.
+      stopListening();
+      if (this.pending.get(id) === entry) {
+        this.pending.delete(id);
+        entry.reject(error);
+      }
+    }
 
     try {
       return await promise;
     } finally {
-      if (signal && onAbort) {
-        signal.removeEventListener("abort", onAbort);
-      }
+      stopListening();
     }
   }
 
