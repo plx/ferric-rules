@@ -1358,11 +1358,11 @@ packages/ferric/
 
 | Aspect | Python | Go | TypeScript |
 |--------|--------|----|------------|
-| Thread safety | Creator-thread-affine operations; any-thread cleanup | LockOSThread / Coordinator | Worker threads |
+| Thread safety | Creator-thread-affine ordinary operations; selected native work releases the GIL | LockOSThread / Coordinator | Worker threads |
 | Sync API | All methods sync | All methods sync | `Engine` (sync) |
 | Async API | N/A | `context.Context` on Run | `EngineHandle` (Promise + AbortSignal) |
-| Concurrency | N/A | Coordinator + Manager | `EnginePool` |
-| Cancellation | N/A | `context.Context` | `AbortSignal` |
+| Concurrency | No cross-thread queue | Coordinator + Manager | `EnginePool` |
+| Cancellation | Active-run halt / close | `context.Context` | `AbortSignal` |
 | Resource cleanup | Any-thread `close()` / context exit + final-reference drop | `Close()` (io.Closer) | `close()` + `Symbol.dispose` |
 | Value distinction | `Symbol` class / `ClipsString` class | `Symbol` type alias | `FerricSymbol` class |
 | String default | str → Symbol | string → String | string → String |
