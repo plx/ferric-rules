@@ -143,7 +143,9 @@ contract covers GIL-enabled CPython 3.9 through 3.13 across seven native wheel
 targets; see [`python-package-release.md`](python-package-release.md). Located
 in `crates/ferric-rules-python/`; tests are in `tests/*.py`.
 
-- `engine.rs` — `PyEngine`.
+- `engine.rs` — `PyEngine`; ordinary access remains creator-thread-affine,
+  while a mutex-guarded destruction-only ownership path makes synchronous
+  `close()` and final-reference cleanup exact from any supported Python thread.
 - `fact.rs` — `Fact`, `FactType`.
 - `value.rs` — `Symbol`, `ClipsString` (preserves symbol/string distinction).
 - `config.rs` — `Strategy`, `Encoding`, `Format` (serde feature).

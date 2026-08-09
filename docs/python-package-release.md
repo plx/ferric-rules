@@ -25,9 +25,12 @@ claim to complete that work.
 - ABI: PyO3 `abi3-py39`, producing `cp39-abi3` wheels.
 
 Python 3.14 is not admitted merely because the stable ABI may be loadable on a
-newer interpreter. PyPy, GraalPy, free-threaded CPython, macOS universal2,
-Windows Arm64, and unlisted platforms and architectures are unsupported. Their
-absence is intentional, not missing CI coverage.
+newer interpreter. PyPy, GraalPy, free-threaded CPython, CPython
+subinterpreters, macOS universal2, Windows Arm64, and unlisted platforms and
+architectures are unsupported. Their absence is intentional, not missing CI
+coverage. Supported main-interpreter shutdown includes Rust-only, exactly-once
+cleanup of `Engine` objects regardless of the Python thread that releases the
+final reference; it does not imply extension loading in a subinterpreter.
 
 ## ABI decision
 
