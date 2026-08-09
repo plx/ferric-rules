@@ -84,6 +84,12 @@ function attachCreateCleanupCause(primary: unknown, cleanupFailure: unknown): vo
 
   try {
     const errorWithCause = primary as Error & { cause?: unknown };
+    const ownCause = Object.getOwnPropertyDescriptor(errorWithCause, "cause");
+    // Defining a new own cause needs an extensible object. Redefining one needs
+    // its existing descriptor to be configurable; otherwise identity wins.
+    if (ownCause?.configurable === false) return;
+    if (ownCause === undefined && !Object.isExtensible(errorWithCause)) return;
+
     const cause =
       "cause" in errorWithCause
         ? new AggregateError(

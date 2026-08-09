@@ -472,14 +472,38 @@ test("D-010 create rejection waits for failed-init termination", async () => {
 });
 
 test("D-010 termination failure is attached without replacing init failure", async (t) => {
-  for (const hasExistingCause of [false, true]) {
+  const cases: Array<{
+    name: string;
+    existingCause?: Error;
+    preventExtensions?: boolean;
+  }> = [
+    { name: "without an existing cause" },
+    {
+      name: "with an existing cause",
+      existingCause: new Error("existing initialization context"),
+    },
+    {
+      name: "with a configurable cause on a non-extensible Error",
+      existingCause: new Error("existing non-extensible context"),
+      preventExtensions: true,
+    },
+  ];
+
+  for (const item of cases) {
     await t.test(
-      `D-010 termination cause attachment with${hasExistingCause ? "" : "out"} an existing cause`,
+      `D-010 termination cause attachment ${item.name}`,
       async () => {
-        const existingCause = new Error("existing initialization context");
-        const primary = hasExistingCause
-          ? new Error("worker init error", { cause: existingCause })
+        const primary = item.existingCause
+          ? new Error("worker init error", { cause: item.existingCause })
           : new Error("worker init error");
+        if (item.preventExtensions) {
+          assert.strictEqual(
+            Object.getOwnPropertyDescriptor(primary, "cause")?.configurable,
+            true,
+          );
+          Object.preventExtensions(primary);
+          assert.strictEqual(Object.isExtensible(primary), false);
+        }
         const terminationError = new Error("terminate failed");
 
         await withMockWorker(
@@ -498,11 +522,11 @@ test("D-010 termination failure is attached without replacing init failure", asy
               assert.strictEqual(error, primary);
 
               const attached = (primary as Error & { cause?: unknown }).cause;
-              if (hasExistingCause) {
+              if (item.existingCause) {
                 assert.ok(attached instanceof AggregateError);
                 assert.deepStrictEqual(
                   [...attached.errors],
-                  [existingCause, terminationError],
+                  [item.existingCause, terminationError],
                 );
               } else {
                 assert.strictEqual(attached, terminationError);
