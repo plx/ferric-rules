@@ -1,7 +1,7 @@
 # TypeScript Binding Normative Contract (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-003 worker-slot callback leases)
+Updated: 2026-08-09 (FR-NODE-004 failed EngineHandle creation cleanup)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -93,8 +93,41 @@ If this contract conflicts with legacy design docs, this contract wins.
 1. `EngineHandle.create({ source })` `MUST` load and reset source before resolve.
 2. `EngineHandle.create({ snapshot })` `MUST` restore from snapshot before resolve.
 3. `source` and `snapshot` `MUST` be mutually exclusive; passing both `MUST` reject with argument error.
-4. `EngineHandle.close()` `MUST` be idempotent.
-5. `EngineHandle` `MUST` support `[Symbol.asyncDispose]()` and delegate to `close()`.
+4. Pre-Worker validation and a synchronous Worker-constructor throw `MUST`
+   reject without establishing `EngineHandle` ownership of a Worker. The
+   constructor failure `MUST` be propagated unchanged because no Worker was
+   returned to the handle for cleanup.
+5. Once Worker construction succeeds, `EngineHandle.create()` `MUST` own that
+   Worker until initialization either succeeds or its failed-create cleanup
+   completes. Any setup or initialization failure after that point `MUST`:
+   - remove any registered initialization request from pending bookkeeping and
+     settle that request exactly once,
+   - remove the response, error, and exit listeners registered for the
+     unpublished handle,
+   - invoke `terminate()` exactly once and await it before rejecting, and
+   - leave no live Worker owned by the rejected creation attempt.
+6. The primary setup or initialization error object `MUST` remain the
+   `create()` rejection, preserving its identity, class, and message. A
+   simultaneous termination failure `MUST NOT` replace it. When the primary is
+   an `Error` on which cleanup can define or redefine an own writable and
+   configurable `cause` property, the termination failure `MUST` be attached as
+   its `cause`; if the primary already has a replaceable cause, that cause and
+   the termination failure `MUST` both remain available through an aggregate
+   cause. For an `Error` that does not permit that descriptor update (including
+   a frozen error or one with a non-configurable own cause), or a non-`Error`
+   thrown value, cause attachment is best-effort and falls outside that
+   guarantee. Preserving the exact primary identity `MUST` take precedence when
+   attachment is impossible.
+7. Successful initialization `MUST` transfer the live Worker and its ordinary
+   request listeners to the returned `EngineHandle`; failed-create cleanup
+   `MUST NOT` run on that success path.
+8. The initialization-send case in item 5 defines only failed-create
+   ownership. Atomic synchronous-`postMessage` rollback for ordinary handle
+   requests and pool requests remains FR-NODE-008. Items 5-7 also do not
+   define the completion barrier for concurrent public `close()` calls, which
+   remains FR-NODE-010.
+9. `EngineHandle.close()` `MUST` be idempotent.
+10. `EngineHandle` `MUST` support `[Symbol.asyncDispose]()` and delegate to `close()`.
 
 ### 4.3 EnginePool
 1. `EnginePool.create(..., { threads })` `MUST` default to `threads = 1` when omitted.

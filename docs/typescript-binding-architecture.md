@@ -1,7 +1,7 @@
 # TypeScript Binding Architecture (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-003 worker-slot callback leases)
+Updated: 2026-08-09 (FR-NODE-004 failed EngineHandle creation cleanup)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -40,6 +40,15 @@ This document is intentionally descriptive. If this document conflicts with the 
 ### Layer 2: `EngineHandle` (worker-backed async)
 - TypeScript wrapper over a dedicated worker thread.
 - Owns request/response transport, cancellation handling, and result/error reconstruction.
+- Owns a constructed Worker throughout asynchronous initialization and
+  transfers that ownership to the caller only after initialization succeeds.
+- On any post-construction setup or initialization failure, clears the init
+  request and registered listeners, awaits exactly one termination attempt,
+  and preserves the primary failure while attaching a termination failure as
+  the cause of an `Error` that permits cleanup to define or redefine an own
+  writable/configurable cause property. Attachment is best-effort for errors
+  that reject that descriptor update and for non-`Error` primaries because
+  preserving exact identity takes precedence.
 - Provides Promise-based API matching `Engine` semantics where applicable.
 
 ### Layer 3: `EnginePool` (multi-worker concurrency)
@@ -94,7 +103,18 @@ per-runtime artifact-smoke contract.
 - Rust owns engine correctness and low-level conversion primitives.
 - TypeScript owns worker protocol, worker-slot leasing, cancellation
   orchestration, and high-level lifecycle semantics.
+- `EngineHandle.create()` owns a Worker from successful Worker construction
+  through successful initialization. A failed transaction tears down that
+  unpublished Worker before rejecting; a successful transaction transfers the
+  live Worker and its ordinary listeners to the returned handle.
 - Public API typing is owned by TypeScript package surface (`dist/index.d.ts`), not by generated native d.ts alone.
+
+Pre-Worker argument validation and a synchronous Worker-constructor throw do
+not establish `EngineHandle` ownership. Failed-create cleanup covers an
+initialization send that throws, but generic atomic `postMessage` rollback for
+ordinary handle and pool requests remains FR-NODE-008. The shared completion
+barrier for concurrent public `close()` calls remains FR-NODE-010; unpublished
+failed-create teardown does not define that behavior.
 
 ## Design Constraints
 1. Canonical value wire schema must be single-source-of-truth.
@@ -109,10 +129,12 @@ per-runtime artifact-smoke contract.
 1. Symbol/value conversion across worker boundaries.
 2. Error class mapping across native and workers.
 3. Cancellation semantics for queued vs in-flight operations.
-4. `EnginePool.do()` lease admission, proxy lifetime, and reentrant calls.
-5. `EnginePool.close()` behavior under active callbacks and concurrency.
-6. Public TS API shape drift (`undefined` exports, mismatched unions).
-7. JavaScript/native package version skew or a missing optional native package.
+4. `EngineHandle.create()` ownership transfer and exactly-once failed-init
+   cleanup, including secondary termination failure reporting.
+5. `EnginePool.do()` lease admission, proxy lifetime, and reentrant calls.
+6. `EnginePool.close()` behavior under active callbacks and concurrency.
+7. Public TS API shape drift (`undefined` exports, mismatched unions).
+8. JavaScript/native package version skew or a missing optional native package.
 
 ## Delivery Model
 Reimplementation should be staged and gated:

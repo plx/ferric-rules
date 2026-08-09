@@ -1,7 +1,7 @@
 # TypeScript Binding Conformance Matrix
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-003 worker-slot callback leases)
+Updated: 2026-08-09 (FR-NODE-004 failed EngineHandle creation cleanup)
 
 Companion documents:
 - [TypeScript Binding Architecture (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-architecture.md)
@@ -98,6 +98,7 @@ A release is conformant only if all are true:
 | `D-007` | Buffer snapshot transfer across worker boundary functions correctly. | `serialize()` and `fromSnapshot` path via worker. | Worker protocol (Buffer transfer) | TSB-001 | PASS |
 | `D-008` | `EngineHandle` preserves `FactId` bigint values through structured clone in responses and ID-taking requests. | High-generation worker assert/get/retract round-trip. | Worker boundary + N-07 | FR-NODE-001 | PASS |
 | `D-009` | `EngineHandle.run` uses one fresh chunk followed by continuation chunks and is observationally equivalent to synchronous execution at halt boundaries `1`, batch size, batch size + 1, and twice batch size. | Compare total/result, halted state, agenda, diagnostics, exact-limit precedence, and a later fresh run; D-005 covers cancellation between chunks. | Logical-run batching + N-08/N-09 | FR-NODE-002 | PASS |
+| `D-010` | Once Worker construction succeeds, every rejected `EngineHandle.create()` clears its initialization bookkeeping and registered listeners, invokes and awaits `terminate()` exactly once before rejecting, and preserves the primary failure by identity. A termination failure is attached when cleanup can define or redefine an own writable/configurable cause property on the primary `Error`; attachment is best-effort when that descriptor update is rejected and for non-`Error` primaries because identity takes precedence. Successful initialization transfers the live Worker unchanged. Pre-Worker validation and Worker-constructor throws own no Worker; generic send rollback and concurrent public close barriers remain FR-NODE-008 and FR-NODE-010. | Real invalid-source subprocess exits naturally with active resources back at baseline; injected source/snapshot protocol failures, synchronous init send failure, delayed/rejected termination, replaceable/immutable/locked-cause primary failures, duplicate terminal signals, constructor/pre-spawn failures, and successful construction controls. | EngineHandle failed-create ownership | FR-NODE-004 | PASS |
 
 ### E) EnginePool Semantics
 
@@ -148,6 +149,6 @@ Each test should include the matrix ID in its title, for example `E-004 queued e
 
 Recommended remediation sequence aligned with risk:
 1. `A-001` / `A-002` / `A-003` / `B-002` / `B-004` / `C-*`
-2. `D-003` / `D-006` / `D-009` / `E-004` / `E-006` / `E-008` / `E-011` / `E-012`
+2. `D-003` / `D-006` / `D-009` / `D-010` / `E-004` / `E-006` / `E-008` / `E-011` / `E-012`
 3. `A-005` / `F-*`
 4. `G-*` hardening and CI gating
