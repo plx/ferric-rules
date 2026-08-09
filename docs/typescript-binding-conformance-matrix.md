@@ -1,7 +1,7 @@
 # TypeScript Binding Conformance Matrix
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-002 logical-run semantics)
+Updated: 2026-08-09 (FR-NODE-003 worker-slot callback leases)
 
 Companion documents:
 - [TypeScript Binding Architecture (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-architecture.md)
@@ -18,7 +18,7 @@ Each item is:
 - Traceable (spec reference + remediation linkage)
 
 ## Status Legend
-- `PASS`: Verified conformant in the 2026-04-11 audit.
+- `PASS`: Verified conformant by the current conformance suite.
 - `FAIL`: Verified non-conformant in the 2026-04-11 audit.
 - `UNKNOWN`: Not yet verified by direct probe.
 
@@ -35,6 +35,7 @@ Each item is:
 | `N-07` | Fact IDs have one canonical output representation, `FactId = bigint`; ID-taking APIs additionally accept only legacy safe-integer `number` values through `FactIdInput`. This is separate from CLIPS integer values and run counts/limits. |
 | `N-08` | A worker-backed run starts one fresh logical run and uses continuation for later chunks. Absent host cancellation it matches synchronous fired count, halt reason, halted state, agenda, and diagnostics, including exact batch-boundary halts. Caller-limit exhaustion has synchronous precedence over a pending boundary halt. |
 | `N-09` | Host abort is an out-of-band worker outcome. Existing APIs retain their partial `HaltRequested` projection, but the worker does not call native `halt()` merely to represent host cancellation; every later public run starts fresh. |
+| `N-10` | `EnginePool.do` acquires a FIFO, slot-wide exclusive lease before callback invocation. The callback's proxy serializes calls in invocation order. Normal settlement is the pool's registered reaction to the returned Promise: callback-pre-registered reactions remain within the lease, accepted calls drain before release, and the proxy is invalid before `do` delivers the callback outcome. The lease does not roll back state. Same-pool `do`/`evaluate`/`close` reentry rejects, other-pool calls remain allowed, and `close` waits for an admitted callback. Abort-driven invalidation and accepted-operation semantics remain assigned to FR-NODE-009. |
 
 ## Release Gates
 
@@ -113,6 +114,7 @@ A release is conformant only if all are true:
 | `E-009` | `close()` is idempotent. | Multiple `close()` calls succeed. | EnginePool lifecycle | TSB-005 | PASS |
 | `E-010` | `EngineProxy` preserves `FactId` bigint values through pool structured clone in responses and ID-taking requests. | High-generation pool assert/get/retract round-trip. | Worker boundary + N-07 | FR-NODE-001 | PASS |
 | `E-011` | Pool `evaluate` and proxy runs preserve one logical run across chunks and match synchronous exact-boundary results and state. | Exercise proxy/direct runs at `1`, batch size, batch size + 1, and twice batch size, plus `evaluate` at an exact batch boundary; compare totals/state/diagnostics, exact-limit precedence, and a later fresh run. E-005 covers cancellation. | Logical-run batching + N-08/N-09 | FR-NODE-002 | PASS |
+| `E-012` | A `do` callback exclusively leases its whole worker slot through the pool-observed normal-settlement boundary and accepted-call drain, with per-slot FIFO admission, serial proxy calls, deterministic invalidation before `do` delivers the outcome, no rollback, topology-independent same-pool reentry rejection, and close waiting for admitted callbacks. | One- and multi-thread delayed callbacks across same and different specs; FIFO and parallel-call ordering; callback-pre-registered Promise reaction ordering; fulfillment/rejection release; retained-proxy method table after the `do` barrier; same-pool `do`/`evaluate`/`close` versus other-pool nesting; close during an idle callback gap; seeded randomized-await stress. | EnginePool worker-slot lease + N-10 | FR-NODE-003 | PASS |
 
 ### F) Lifecycle and Closed-State Behavior
 
@@ -146,6 +148,6 @@ Each test should include the matrix ID in its title, for example `E-004 queued e
 
 Recommended remediation sequence aligned with risk:
 1. `A-001` / `A-002` / `A-003` / `B-002` / `B-004` / `C-*`
-2. `D-003` / `D-006` / `D-009` / `E-004` / `E-006` / `E-008` / `E-011`
+2. `D-003` / `D-006` / `D-009` / `E-004` / `E-006` / `E-008` / `E-011` / `E-012`
 3. `A-005` / `F-*`
 4. `G-*` hardening and CI gating

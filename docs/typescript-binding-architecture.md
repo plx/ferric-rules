@@ -1,6 +1,7 @@
 # TypeScript Binding Architecture (Revised)
 
 Date: 2026-04-11
+Updated: 2026-08-09 (FR-NODE-003 worker-slot callback leases)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -45,6 +46,13 @@ This document is intentionally descriptive. If this document conflicts with the 
 - TypeScript orchestration over multiple workers.
 - Dispatches work round-robin across worker slots.
 - Supports stateless one-shot evaluation plus stateful proxy operations.
+- Gives each `do` callback an exclusive, FIFO lease over its selected worker
+  slot and serializes that callback's proxy operations for the lease lifetime.
+- Defines normal callback completion at the pool's registered settlement
+  reaction, so callback-pre-registered Promise reactions remain inside the
+  lease and the proxy is invalid before `do` delivers the callback outcome.
+- Treats the lease as scheduling isolation only: state mutations persist and
+  are not rolled back when a callback rejects.
 
 ## Package Layout
 
@@ -84,7 +92,8 @@ per-runtime artifact-smoke contract.
 
 ## Ownership Boundaries
 - Rust owns engine correctness and low-level conversion primitives.
-- TypeScript owns worker protocol, cancellation orchestration, and high-level lifecycle semantics.
+- TypeScript owns worker protocol, worker-slot leasing, cancellation
+  orchestration, and high-level lifecycle semantics.
 - Public API typing is owned by TypeScript package surface (`dist/index.d.ts`), not by generated native d.ts alone.
 
 ## Design Constraints
@@ -92,20 +101,24 @@ per-runtime artifact-smoke contract.
 2. Sync and async layers must not diverge semantically unless explicitly documented.
 3. Error behavior must be class-stable across boundaries.
 4. Lifecycle behavior (`close`, dispose, post-close failures) must be deterministic.
+5. One worker slot is the isolation unit: unrelated pool work must not execute
+   there while a `do` callback owns its lease, even when it targets another
+   named engine.
 
 ## Risk Seams (Must Receive Focused Review)
 1. Symbol/value conversion across worker boundaries.
 2. Error class mapping across native and workers.
 3. Cancellation semantics for queued vs in-flight operations.
-4. `EnginePool.close()` behavior under concurrency.
-5. Public TS API shape drift (`undefined` exports, mismatched unions).
-6. JavaScript/native package version skew or a missing optional native package.
+4. `EnginePool.do()` lease admission, proxy lifetime, and reentrant calls.
+5. `EnginePool.close()` behavior under active callbacks and concurrency.
+6. Public TS API shape drift (`undefined` exports, mismatched unions).
+7. JavaScript/native package version skew or a missing optional native package.
 
 ## Delivery Model
 Reimplementation should be staged and gated:
 1. Native sync correctness and typing.
 2. EngineHandle transport and cancellation.
-3. EnginePool concurrency semantics.
+3. EnginePool concurrency semantics, including exclusive callback leases.
 4. Packaging and distribution hardening.
 
 Each stage is complete only when its corresponding rows in the Conformance Matrix are `PASS` and required tests from the Test Specification are green.
