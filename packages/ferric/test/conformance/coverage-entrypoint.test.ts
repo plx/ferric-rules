@@ -23,6 +23,7 @@ import "./package/wire-property.test.ts";
 import "./package/worker-entrypoint-guards.test.ts";
 
 import "./runtime/pool/additional.test.ts";
+import "./runtime/pool/backpressure.test.ts";
 import "./runtime/pool/cancellation.test.ts";
 import "./runtime/pool/close-semantics.test.ts";
 import "./runtime/pool/create-cleanup.test.ts";

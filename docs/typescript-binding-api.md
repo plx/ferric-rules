@@ -235,6 +235,15 @@ export class FerricSlotNotFoundError extends FerricError {}
 export class FerricModuleNotFoundError extends FerricError {}
 export class FerricEncodingError extends FerricError {}
 export class FerricSerializationError extends FerricError {}
+
+/** Host-side EnginePool admission failure; never crosses the Worker wire. */
+export class EnginePoolQueueFullError extends FerricError {
+  readonly capacity: number;
+  readonly queued: number;
+  readonly slotIndex: number;
+
+  constructor(capacity: number, queued: number, slotIndex: number);
+}
 ```
 
 ### Engine (synchronous, native)
@@ -585,6 +594,13 @@ inclusive range `1..64`; Ferric does not coerce, clamp, or provide an override
 for larger values. Invalid counts throw `RangeError` synchronously from
 `EnginePool.create()` before it returns a Promise or constructs any Worker.
 
+Each selected worker slot also has one shared finite waiting budget. The
+default `queueCapacity` is `1024` entries per slot; the budget covers queued
+root evaluations, queued `do()` lease admissions, and accepted lease-private
+proxy calls together. Work that can dispatch immediately and the admitted
+callback/lease itself do not consume a queue entry. A full selected slot rejects
+immediately rather than waiting, probing another slot, or replaying work.
+
 ```typescript
 export interface EngineSpec {
   name: string;
@@ -617,16 +633,43 @@ export interface EvaluateResult {
   readonly output: Readonly<Record<string, string>>;
 }
 
+export interface EnginePoolOptions {
+  /** Number of worker threads. Default: 1; range: 1..64. */
+  threads?: number;
+  /** Maximum waiting entries on each worker slot. Default: 1024; range: >= 0. */
+  queueCapacity?: number;
+}
+
+export interface EnginePoolSlotMetrics {
+  readonly slotIndex: number;
+  readonly queued: number;
+  readonly inFlight: number;
+  /** Queue-full admission rejections on this slot since pool creation. */
+  readonly rejected: number;
+}
+
+export interface EnginePoolMetrics {
+  /** Configured waiting capacity of each slot, not a pool-wide capacity. */
+  readonly queueCapacity: number;
+  /** Sum of queued entries across all slots. */
+  readonly queued: number;
+  /** Sum of dispatched requests across all slots. */
+  readonly inFlight: number;
+  /** Sum of queue-full admission rejections since pool creation. */
+  readonly rejected: number;
+  readonly slots: readonly EnginePoolSlotMetrics[];
+}
+
 export class EnginePool {
   /**
-   * Create a pool with the given engine specs and thread count.
+   * Create a pool with the given engine specs and pool options.
    * @param specs Named engine configurations.
-   * @param options.threads Number of worker threads. Default: 1; range: 1..64.
-   * @throws RangeError synchronously if threads is not a safe integer in range.
+   * @param options Pool construction and per-slot queue limits.
+   * @throws RangeError synchronously if threads or queueCapacity is invalid.
    */
   static create(
     specs: EngineSpec[],
-    options?: { threads?: number },
+    options?: EnginePoolOptions,
   ): Promise<EnginePool>;
 
   /**
@@ -663,6 +706,13 @@ export class EnginePool {
     request: EvaluateRequest,
     options?: { signal?: AbortSignal },
   ): Promise<EvaluateResult>;
+
+  /**
+   * Return a fresh, detached point-in-time scheduling snapshot.
+   * This method is synchronous and remains available during callbacks,
+   * terminal failure, shutdown, and after close.
+   */
+  metrics(): EnginePoolMetrics;
 
   /**
    * Shut down all workers. Blocks until in-flight requests and callbacks that
@@ -769,6 +819,71 @@ lifetime error takes precedence over either. An accepted request that has
 started `postMessage` keeps the synchronous-send/first-settlement rules below,
 independently of the outer cancellation outcome.
 
+#### Bounded queue backpressure and metrics
+
+- `queueCapacity` is a per-slot waiting limit. It defaults to `1024` only when
+  omitted or `undefined`; an explicit value must be a nonnegative safe integer.
+  Zero disables waiting while still allowing work that can dispatch or acquire
+  a lease immediately. JavaScript `-0` is normalized to `0`.
+- `EnginePool.create()` validates `threads` first and then `queueCapacity`.
+  Invalid capacity throws
+  `RangeError("EnginePool.create: 'queueCapacity' must be a non-negative safe integer")`
+  synchronously, before spec inspection, Promise creation, Worker construction,
+  or initialization bookkeeping.
+- One selected slot's shared budget counts its root FIFO entries (`evaluate()`
+  requests and waiting `do()` leases) plus its active lease's private FIFO
+  entries. Its dispatched request and active callback/lease do not count. The
+  pool-wide maximum waiting count is therefore `threads * queueCapacity`.
+- If work must wait and the selected slot already retains `queueCapacity`
+  entries, its Promise rejects with `EnginePoolQueueFullError`. The error has
+  name `EnginePoolQueueFullError`, code `FERRIC_POOL_QUEUE_FULL`, exact message
+  `EnginePool queue is full`, and readonly `capacity`, `queued`, and
+  `slotIndex` fields describing the selected slot at rejection.
+- Overflow is reject-only. Ferric does not wait, time out, scan another slot,
+  retry, replay, or rewind the completed round-robin selection. The rejected
+  item never enters either FIFO and consumes no request ID, lease,
+  pending/lease-call unit, queue entry, or Worker post. An already-full slot
+  rejects before installing any request listener, and no overflow retains one.
+- Existing guards and validation retain precedence. Capacity is tested only
+  after the applicable reentry, lifetime, closed, terminal, abort, argument,
+  and preprocessing gates. `evaluate()` and proxy `run()` then install their
+  cooperative-cancellation listener before request-ID allocation and Worker
+  send. Because `signal.addEventListener` is replaceable JavaScript, that hook
+  may synchronously admit other work; Ferric rechecks lifecycle, abort, current
+  scheduling state, and capacity afterward. If the hook filled the slot, that
+  nested work linearizes first and the outer call rejects with
+  `EnginePoolQueueFullError`; its transient cooperative listener is removed and
+  it still owns no ID, accounting, queue entry, or Worker post. Public and proxy
+  overload failures are rejected Promises rather than synchronous public
+  throws.
+- After final admission, a signaled root request or waiting lease structurally
+  enters its FIFO before its replaceable dequeue-cancellation listener is
+  registered. Reentrant work therefore observes that reserved capacity. If
+  registration throws while the entry is still queued, Ferric removes it,
+  rejects with the exact thrown value, releases a waiting lease once, and
+  continues the FIFO. If hook reentry already dispatched, admitted, faulted,
+  or close-rejected the entry, that earlier outcome wins and the now-stale
+  listener is detached; the hook cannot roll it back or settle it twice. This
+  reconciliation retries a synchronous-abort detachment if a replaceable
+  removal hook throws, without replacing the owned outcome; persistently
+  hostile removal remains best-effort. It does not implement FR-NODE-006's
+  general successful-root-dispatch listener cleanup.
+- A queue unit is reclaimed when its entry is removed or dequeued. Abort frees
+  a queued root request or not-yet-admitted lease; it does not dequeue a proxy
+  call already accepted under the callback-cancellation contract. Dispatch
+  frees the unit before `postMessage`, so synchronous send rollback must not
+  free it twice. Worker terminal cleanup frees both queue levels. Close frees
+  the root FIFO while an admitted callback's accepted owner FIFO retains its
+  existing drain contract. Response completion changes only `inFlight`, since
+  its queue unit was reclaimed at dispatch.
+- `metrics()` is synchronous, side-effect-free, and independent of admission
+  and same-pool callback reentrancy. Each call returns fresh detached objects:
+  `queueCapacity` is the configured per-slot limit; `queued`, `inFlight`, and
+  `rejected` are pool-wide sums; and stable `slotIndex` entries report the same
+  three counters per slot. `rejected` counts queue-full admissions only, not
+  abort, close, terminal, response, or send failures. Readonly typing prevents
+  supported mutation; no live internal queue reference is exposed.
+
 #### Worker terminal failure policy
 
 Each pool slot has an explicit lifecycle. The first Worker `error` or
@@ -801,13 +916,14 @@ lifetime while no pool-generated request or close waiter remains stranded.
 
 An ordinary response error or synchronous request-side `postMessage` failure
 from a live Worker rejects only its matching request and does not poison the
-pool. A failed send restores the selected slot's capacity and continues its
-root or lease-private FIFO without replaying the request on another Worker. An
-exit caused after `close()` deliberately starts Worker termination is also
-expected, not a fault. FR-NODE-009 owns the `do` outer listener and proxy-`run`
-listener described here. General root-queue listener cleanup after a successful
-queued dispatch is FR-NODE-006; bounded backpressure is FR-NODE-011; and the
-Promise shared by concurrent close callers is FR-NODE-010.
+pool. A failed send restores the selected slot's in-flight capacity and
+continues its root or lease-private FIFO without replaying the request on
+another Worker. An exit caused after `close()` deliberately starts Worker
+termination is also expected, not a fault. FR-NODE-009 owns the `do` outer
+listener and proxy-`run` listener described here. General root-queue listener
+cleanup after a successful queued dispatch is FR-NODE-006, and the Promise
+shared by concurrent close callers is FR-NODE-010. FR-NODE-011 owns only the
+bounded admission and metrics contract above.
 
 ## Value Conversion Details
 
@@ -955,8 +1071,10 @@ This rule covers main-to-Worker sends that own host request bookkeeping.
 Worker-to-main response sends create no such registration and remain governed
 by the response protocol and Worker error/exit lifecycle. It also does not add
 generic cleanup after a *successful* queued root dispatch (FR-NODE-006), alter
-the callback cancellation boundary above, add queue bounds (FR-NODE-011), or
-make concurrent close calls share a Promise (FR-NODE-010).
+the callback cancellation boundary above, or make concurrent close calls share
+a Promise (FR-NODE-010). For FR-NODE-011, a queued unit is already reclaimed
+when the entry is removed for dispatch; send rollback must not reclaim it a
+second time and continues the same FIFO as described above.
 
 The worker script:
 

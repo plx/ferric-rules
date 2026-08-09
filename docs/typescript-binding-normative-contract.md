@@ -1,7 +1,7 @@
 # TypeScript Binding Normative Contract (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-009 callback-proxy cancellation boundary)
+Updated: 2026-08-09 (FR-NODE-011 bounded pool backpressure)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -22,6 +22,7 @@ If this contract conflicts with legacy design docs, this contract wins.
    - `FerricSymbol` (class)
    - `EngineHandle` (class)
    - `EnginePool` (class)
+   - `EnginePoolQueueFullError` (class)
 2. These exports `MUST NOT` be typed as possibly `undefined` in public `.d.ts`.
 3. Enums in public package declarations `MUST` be regular TS enums, not `const enum`.
 
@@ -31,6 +32,9 @@ If this contract conflicts with legacy design docs, this contract wins.
 3. Public API examples from this contract `MUST` compile under `tsc --strict`.
 4. The package `MUST` export `FactId = bigint` and
    `FactIdInput = FactId | number`.
+5. The package `MUST` export `EnginePoolOptions`, `EnginePoolMetrics`, and
+   `EnginePoolSlotMetrics` as the public construction and scheduling-snapshot
+   types defined in section 4.5.
 
 ## 3. Value Conversion Contract
 
@@ -198,12 +202,10 @@ If this contract conflicts with legacy design docs, this contract wins.
 13. Synchronous main-to-Worker request-send rollback `MUST` follow section 8.1.
     Cancellation-time proxy admission and ownership `MUST` follow section 7.3.
     Generic queued AbortSignal-listener cleanup after a successful root
-    dispatch remains FR-NODE-006; bounded queue capacity remains FR-NODE-011;
-    and concurrent close callers sharing one completion Promise remains
-    FR-NODE-010. FR-NODE-005 owns the corresponding cleanup only when a Worker
-    terminal event occurs.
-    The fixed Worker-count bound in item 1 does not define or satisfy the queue
-    capacity and overload policy assigned to FR-NODE-011.
+    dispatch remains FR-NODE-006; concurrent close callers sharing one
+    completion Promise remains FR-NODE-010; and bounded admission and metrics
+    follow section 4.5. FR-NODE-005 owns the corresponding cleanup only when a
+    Worker terminal event occurs.
 
 ### 4.4 EnginePool.do Worker-Slot Lease
 
@@ -249,6 +251,153 @@ If this contract conflicts with legacy design docs, this contract wins.
     a callback-settlement boundary. It `MUST NOT` shorten this lease: until the
     callback actually settles and its accepted calls drain, the slot `MUST NOT`
     run unrelated work and the release transition `MUST` occur exactly once.
+
+### 4.5 EnginePool Bounded Admission and Metrics
+
+1. The public pool options type `MUST` be:
+
+```ts
+interface EnginePoolOptions {
+  threads?: number;
+  queueCapacity?: number;
+}
+```
+
+   `EnginePool.create(specs, options?)` `MUST` use `queueCapacity = 1024` only
+   when the field is omitted or `undefined`. Every explicit value `MUST`
+   satisfy `Number.isSafeInteger(queueCapacity)` and be nonnegative. Zero is a
+   valid no-wait configuration; JavaScript `-0` `MUST` normalize to `0`.
+2. Construction `MUST` validate `threads` first under section 4.3 item 1 and
+   then `queueCapacity`. Invalid capacity `MUST` throw
+   `RangeError("EnginePool.create: 'queueCapacity' must be a non-negative safe integer")`
+   synchronously, before spec inspection, Promise creation, Worker
+   construction, or initialization bookkeeping.
+3. Capacity is per selected worker slot, not pool-wide. One slot `MUST` share
+   its configured budget across:
+   - queued root `evaluate` requests;
+   - queued, not-yet-admitted `do` lease requests; and
+   - queued requests already accepted by that slot's active lease.
+
+   A dispatched request and the admitted callback/lease itself `MUST NOT`
+   consume a queue unit. Therefore at most `threads * queueCapacity` entries
+   may be waiting across a pool, apart from already-dispatched work and
+   arbitrary JavaScript retained by a callback.
+4. Work that can dispatch immediately or acquire an idle lease immediately
+   `MUST` remain admissible when `queueCapacity` is zero or the selected slot's
+   waiting budget is otherwise full. Only work that would add a waiting entry
+   is capacity-gated.
+5. If waiting work selects a slot whose combined root and lease-private queue
+   depth equals `queueCapacity`, its public or proxy call `MUST` return a
+   rejected Promise containing the section 6.1 `EnginePoolQueueFullError`.
+   Overflow `MUST NOT` escape as a synchronous public throw.
+6. Overflow is reject-only. The pool `MUST NOT` wait, time out, probe another
+   slot, retry, replay, reschedule, or rewind the completed round-robin
+   selection. Selection therefore advances normally even when admission
+   rejects, and available capacity on another slot does not rescue the call.
+7. Existing API-specific gates retain precedence over overflow, including
+   same-pool reentry, inactive proxy lifetime, closed or non-running state,
+   pool terminal failure, abort, argument validation, and synchronous payload
+   preprocessing. Only after those applicable gates succeed may a call that
+   needs to wait test capacity. An already-full slot `MUST` reject before
+   request-ID allocation, lease construction, abort-listener registration,
+   pending or lease-call accounting, queue mutation, or `postMessage`.
+
+   `evaluate` and proxy `run` `MUST` install their method-specific cooperative
+   cancellation listener only after that capacity gate and before request-ID
+   allocation or `postMessage`. Because `signal.addEventListener` is
+   replaceable JavaScript, the listener hook may synchronously change pool
+   state or admit nested work. The outer call `MUST` then reapply its applicable
+   lifetime, closed/non-running, terminal, and abort gates, recompute whether it
+   would dispatch or wait, and retest current capacity before allocating an ID.
+   Nested work that consumed the available position during that hook linearizes
+   first; the outer call `MUST` reject with the section 6.1 queue-full error and
+   remove its transient cooperative listener. Abort observed by the post-hook
+   signal gate retains precedence over that later capacity test.
+8. An overflow rejection `MUST` increment exactly one lifetime queue-full
+   rejection count for the selected slot. It `MUST NOT` enter either FIFO or
+   alter the relative order of work already accepted there. It owns no request,
+   lease, pending or lease-call unit, queue entry, waiter, or Worker send. An
+   already-full rejection `MUST NOT` install a request listener. The post-hook
+   overflow exception in item 7 may install and then remove its cooperative
+   listener, but no overflow `MUST` retain a listener after settlement.
+9. The source of truth for current capacity usage `MUST` be structural queue
+   ownership: the root queue length plus the active lease-private queue length.
+   After final admission, a queued root request or queued lease admission with
+   a signal `MUST` enter its FIFO before invoking the replaceable registration
+   hook for its dequeue-cancellation listener. That structural reservation
+   linearizes first, counts toward capacity, and preserves FIFO while the hook
+   synchronously reenters the pool.
+
+   If registration throws while the entry remains queued, Ferric `MUST` remove
+   and reclaim it, reject its Promise with the exact thrown value, release a
+   queued lease exactly once, and continue eligible FIFO work. If hook reentry
+   has already dequeued, dispatched, admitted, terminally discarded, or
+   close-rejected the entry, that earlier transition and its own outcome
+   `MUST` win; the registration throw `MUST NOT` roll it back or settle it
+   again. Ferric `MUST` attempt to detach any listener made stale by that
+   synchronous window. A replaceable removal hook's throw `MUST NOT` replace
+   the entry's already-owned outcome; post-registration reconciliation `MUST`
+   retry a detach attempted during synchronous abort, while persistently
+   hostile removal remains best-effort. An abort observed while the entry is
+   still queued `MUST` remove and reclaim it with `AbortError`. This hook-window
+   reconciliation is part of FR-NODE-011 admission; it does not add
+   FR-NODE-006's generic listener cleanup after an ordinary successful queued
+   root dispatch.
+
+   One queue unit is reclaimed exactly when its entry is removed or dequeued:
+   - dispatch reclaims before its `postMessage` attempt;
+   - abort removes and reclaims a queued root request or queued lease
+     admission;
+   - section 7.3 cancellation `MUST NOT` remove or reclaim a lease-private
+     owner request already accepted before abort;
+   - Worker terminal cleanup reclaims every discarded entry in both queues;
+   - close reclaims rejected root work, while an admitted callback's accepted
+     owner work retains sections 4.4 and 7.3 and reclaims as it dispatches or
+     is terminally discarded; and
+   - response settlement changes in-flight work, not queue depth, because the
+     matching unit was reclaimed at dispatch.
+10. Section 8.1 send rollback `MUST NOT` reclaim a queue unit a second time.
+    Its request-local pending/in-flight cleanup and applicable FIFO progress
+    remain required after the queued entry was already removed for dispatch.
+11. The public scheduling snapshot types `MUST` be:
+
+```ts
+interface EnginePoolSlotMetrics {
+  readonly slotIndex: number;
+  readonly queued: number;
+  readonly inFlight: number;
+  readonly rejected: number;
+}
+
+interface EnginePoolMetrics {
+  readonly queueCapacity: number;
+  readonly queued: number;
+  readonly inFlight: number;
+  readonly rejected: number;
+  readonly slots: readonly EnginePoolSlotMetrics[];
+}
+```
+
+12. `EnginePool.metrics(): EnginePoolMetrics` `MUST` be synchronous and
+    side-effect-free. Each invocation `MUST` return a fresh detached snapshot;
+    casting around readonly types and mutating that value `MUST NOT` mutate the
+    pool or a later snapshot. Runtime `Object.freeze` is not required.
+13. Snapshot `queueCapacity` is the configured per-slot limit. Top-level
+    `queued`, `inFlight`, and `rejected` are sums of the corresponding stable
+    `slotIndex` entries. `rejected` counts only queue-full admissions since
+    successful pool creation, not abort, response, send, terminal, or close
+    failures.
+14. `metrics()` is observation, not admission. It `MUST` remain callable from
+    an active callback, during shutdown, after a Worker terminal failure, and
+    after close without triggering the same-pool reentrancy or lifecycle
+    guards. A completed close snapshot `MUST` report zero queued and in-flight
+    work.
+15. This section bounds retained queue-entry count, not request payload bytes,
+    arbitrary callback-owned JavaScript, or Worker/native memory. It adds no
+    admission wait, timeout, caller-selected policy, cancellation semantics,
+    generic successful-dispatch listener cleanup, or concurrent-close Promise
+    sharing beyond the contracts owned by FR-NODE-006, FR-NODE-009, and
+    FR-NODE-010.
 
 ## 5. Run Limit Semantics
 
@@ -310,6 +459,14 @@ The following classes `MUST` exist and be constructible in JS:
 - `FerricModuleNotFoundError`
 - `FerricEncodingError`
 - `FerricSerializationError`
+- `EnginePoolQueueFullError`
+
+`EnginePoolQueueFullError` `MUST` extend `FerricError`, set `name` to
+`EnginePoolQueueFullError`, set `code` to `FERRIC_POOL_QUEUE_FULL`, and use the
+exact message `EnginePool queue is full`. Its public constructor `MUST` be
+`(capacity: number, queued: number, slotIndex: number)`, and it `MUST` expose
+those three values as readonly fields describing the selected slot at the
+rejection point. Under the section 4.5 invariant, `queued` equals `capacity`.
 
 ### 6.2 Mapping Rules
 1. Native failures `MUST` map to the correct class above.
@@ -328,6 +485,9 @@ The following classes `MUST` exist and be constructible in JS:
 
 3. Worker-side reconstruction `MUST` instantiate the class identified by `name`.
 4. Unknown error names `MUST` degrade to `FerricError` while preserving `code` and `message`.
+5. `EnginePoolQueueFullError` is a main-thread scheduler error. It `MUST NOT`
+   be added to or reconstructed through the Worker `ERROR_REGISTRY` merely to
+   satisfy section 4.5.
 
 ## 7. Cancellation Contract
 
@@ -432,8 +592,9 @@ The following classes `MUST` exist and be constructible in JS:
     baseline exactly once.
 12. Items 1-11 do not require generic cleanup of a root request's queue
     listener after successful dispatch (FR-NODE-006), do not change concurrent
-    `close()` Promise sharing (FR-NODE-010), and do not add queue capacity,
-    overflow behavior, or metrics (FR-NODE-011).
+    `close()` Promise sharing (FR-NODE-010), and do not let abort dequeue owner
+    work already accepted under section 4.5. Capacity admission for a later
+    proxy call occurs only after this section's gates succeed.
 
 ## 8. Worker Protocol Contract
 
@@ -505,11 +666,14 @@ interface WorkerResponse {
    respawn a Worker, replay the request, or move it to another slot. The
    allocated request ID and completed round-robin selection `MUST NOT` be
    rewound or reused.
-7. After an owned pool rollback restores capacity, the pool `MUST` continue the
-   same scheduling transition as an immediate rejected response: while a lease
-   is active, continue its lease-private FIFO; otherwise continue the root
-   FIFO. Repeated queued send failures `MUST` be rolled back without escaping
-   the dispatcher until a request is accepted or the applicable FIFO is empty.
+7. After an owned pool rollback restores its pending/in-flight ownership, the
+   pool `MUST` continue the same scheduling transition as an immediate rejected
+   response: while a lease is active, continue its lease-private FIFO;
+   otherwise continue the root FIFO. A queued entry's section 4.5 capacity unit
+   was already reclaimed when it was removed for dispatch and `MUST NOT` be
+   reclaimed twice. Repeated queued send failures `MUST` be rolled back without
+   escaping the dispatcher until a request is accepted or the applicable FIFO
+   is empty.
    A failed proxy operation settles only that operation; it `MUST NOT` release
    or invalidate the lease, and later already-accepted owner operations remain
    eligible to drain in invocation order.
@@ -524,10 +688,10 @@ interface WorkerResponse {
    accepted-mutation semantics, and a send failure alone does not alter them.
 10. Worker-to-main response `postMessage` calls create no host pending entry and
     are outside this rollback contract. Their failure remains governed by the
-    response protocol and Worker error/exit lifecycle. This section also does
-    not add queue bounds (FR-NODE-011) or the Promise shared by concurrent
-    public close callers (FR-NODE-010), though rollback `MUST` wake existing
-    close waiters whose pending condition it satisfies.
+    response protocol and Worker error/exit lifecycle. Queue admission and
+    structural capacity reclamation follow section 4.5; the Promise shared by
+    concurrent public close callers remains FR-NODE-010. Rollback `MUST` still
+    wake existing close waiters whose pending condition it satisfies.
 
 ## 9. Packaging and Runtime Load Contract
 

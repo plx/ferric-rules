@@ -1,7 +1,7 @@
 # TypeScript Binding Architecture (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-009 callback-proxy cancellation boundary)
+Updated: 2026-08-09 (FR-NODE-011 bounded pool backpressure)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -28,6 +28,9 @@ This document is intentionally descriptive. If this document conflicts with the 
 2. Deno/Bun compatibility as a release target.
 3. Rule-firing streaming callbacks in v1.
 4. Rete internals exposure.
+5. Queue-admission waits, timeouts, caller-selected overload strategies, or a
+   byte-size quota. FR-NODE-011 bounds retained entry count with reject-only
+   admission; it does not bound one caller-supplied payload's size.
 
 ## Layered Design
 
@@ -62,6 +65,24 @@ This document is intentionally descriptive. If this document conflicts with the 
   asynchronous creation transaction or Worker ownership begins; counts are
   never coerced or clamped, and there is no large-pool override.
 - Dispatches work round-robin across worker slots.
+- Gives each slot one shared finite waiting budget. The default capacity is
+  `1024`; an explicit `queueCapacity` is a nonnegative safe integer, including
+  zero. The budget combines the root FIFO and the active lease-private FIFO,
+  while a dispatched request and the active callback/lease do not count.
+- Rejects work that must wait on a full selected slot with the exported local
+  `EnginePoolQueueFullError`. Admission does not probe another slot, wait,
+  replay, or rewind round-robin history, so existing per-slot FIFO topology is
+  preserved and the pool retains at most `threads * queueCapacity` waiting
+  entries.
+- Revalidates lifecycle, cancellation, scheduling state, and capacity after the
+  replaceable cooperative-listener hook used by `evaluate` and proxy `run`.
+  Reentrant work admitted by that hook may linearize first; a resulting outer
+  overflow removes its transient listener before settlement and retains no
+  request bookkeeping.
+- Exposes synchronous `metrics()` snapshots with aggregate and stable per-slot
+  queued, in-flight, and lifetime queue-full rejection counts. A snapshot is a
+  fresh detached value, remains available through failure and close, and owns
+  no live queue reference.
 - Supports stateless one-shot evaluation plus stateful proxy operations.
 - Gives every slot an explicit running, failed, terminating, or closed state.
   The first unexpected Worker `error` or `exit` observed by a returned pool
@@ -180,6 +201,29 @@ per-runtime artifact-smoke contract.
   finish their lifecycle alongside the remaining healthy Workers.
 - Invalid EnginePool thread counts are rejected before any Worker is
   constructed, so no pool Worker ownership or failed-create cleanup begins.
+- Invalid EnginePool queue capacity is likewise rejected synchronously after
+  thread-count validation but before spec inspection, Promise creation, Worker
+  construction, or initialization bookkeeping. JavaScript `-0` is normalized
+  to the accepted zero-capacity configuration.
+- A selected slot owns one queue-capacity unit for each retained root request,
+  waiting lease admission, or lease-private owner request until that exact
+  entry is removed or dequeued. Structural root and active-lease queue lengths
+  are the source of truth; dispatched calls and an admitted callback own no
+  queue unit. Overflow owns only one cumulative rejection-metric increment and
+  no request, lease, pending entry, or Worker send. An already-full rejection
+  installs no listener; a cooperative-listener hook that synchronously fills
+  the slot is rechecked and its transient listener is removed, so no overflow
+  retains one.
+- A finally accepted signaled root request or waiting lease enters the
+  structural FIFO before its replaceable dequeue-listener registration hook.
+  Reentrant admission therefore sees the reserved unit. Post-hook
+  reconciliation removes an aborted or registration-failed queued entry, but
+  preserves any dispatch, lease admission, terminal cleanup, or close outcome
+  that already removed it; stale hook-window listeners are detached without
+  double settlement. A replaceable removal-hook failure cannot replace that
+  outcome; synchronous-abort reconciliation retries detachment, with repeated
+  hostile removal best-effort. This is not generic FR-NODE-006 cleanup after an
+  ordinary successful root dispatch.
 - Once a host request is registered, its pending-map entry, pool in-flight unit,
   and request-owned abort listener form one ownership unit until a response,
   terminal event, close path, abort-before-dispatch, or synchronous send
@@ -206,14 +250,17 @@ Worker fault, as FR-NODE-005 requires. FR-NODE-008 removes a queued listener
 when that request's dispatch itself throws. FR-NODE-009 owns only the `do`
 lifetime listener, proxy admission checks, and proxy-`run` cancellation
 listener described above; generic listener cleanup after a successful root
-dispatch remains FR-NODE-006. Queue capacity and metrics remain FR-NODE-011.
+dispatch remains FR-NODE-006. FR-NODE-011 owns bounded admission, structural
+queue-depth reclamation, its local overflow error, and detached metrics; it
+does not complete FR-NODE-006's successful-dispatch listener cleanup.
 FR-NODE-005 and FR-NODE-008 must wake a close waiting on bookkeeping they
 clear, but FR-NODE-009 preserves the existing admitted-callback close barrier
 and none adds the shared concurrent-close completion Promise assigned to
 FR-NODE-010. Worker-to-main response sends own no host request registration and
 are outside FR-NODE-008.
-The `1..64` construction bound limits one pool's Worker allocation; it does not
-bound queued work or define the backpressure policy assigned to FR-NODE-011.
+The `1..64` construction bound limits one pool's Worker allocation. The
+independent per-slot `queueCapacity` bounds waiting entries, not bytes retained
+by one request and not arbitrary JavaScript retained by an admitted callback.
 
 ## Design Constraints
 1. Canonical value wire schema must be single-source-of-truth.
@@ -234,6 +281,10 @@ bound queued work or define the backpressure policy assigned to FR-NODE-011.
 9. `EnginePool.do()` cancellation closes only future proxy admission. It does
    not roll back accepted calls, replace their own outcomes, interrupt arbitrary
    callback JavaScript, or shorten the callback's exclusive lease.
+10. EnginePool overload is selected-slot, reject-only backpressure over one
+    shared root/lease-private waiting budget. Capacity admission occurs after
+    existing lifecycle, cancellation, and argument gates but before queue-owned
+    bookkeeping; rejected work cannot perturb FIFO or transport allocation.
 
 ## Risk Seams (Must Receive Focused Review)
 1. Symbol/value conversion across worker boundaries.
@@ -255,6 +306,10 @@ bound queued work or define the backpressure policy assigned to FR-NODE-011.
     proxy gating before validation and allocation, accepted owner-call drain,
     failed-slot/send precedence, exact-once lease release, and signal-listener
     return to baseline.
+13. Per-slot queue bounds across mixed root and lease-private traffic,
+    zero-capacity immediate admission, overflow precedence and error fidelity,
+    exact reclamation on dequeue/abort/fault/close/send rollback, and detached
+    metrics under callback, terminal, and closed states.
 
 ## Delivery Model
 Reimplementation should be staged and gated:

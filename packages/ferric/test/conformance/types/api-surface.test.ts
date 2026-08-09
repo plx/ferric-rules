@@ -18,6 +18,7 @@ import {
   FerricSymbol,
   EngineHandle,
   EnginePool,
+  EnginePoolQueueFullError,
   Strategy,
   Encoding,
   HaltReason,
@@ -45,6 +46,9 @@ import type {
   EngineHandleOptions,
   EngineSpec,
   EngineProxy,
+  EnginePoolOptions,
+  EnginePoolMetrics,
+  EnginePoolSlotMetrics,
   NativeEngine,
   EvaluateRequest,
   EvaluateResult,
@@ -188,9 +192,49 @@ test("A-001 EngineHandle API signatures compile", () => {
 // ---------------------------------------------------------------------------
 // EnginePool API signatures compile
 // ---------------------------------------------------------------------------
-test("A-001 EnginePool API signatures compile", () => {
+test("A-001 C-006 E-017 EnginePool backpressure API signatures compile", () => {
+  const options: EnginePoolOptions = { threads: 2, queueCapacity: 3 };
+  const slot: EnginePoolSlotMetrics = {
+    slotIndex: 0,
+    queued: 1,
+    inFlight: 1,
+    rejected: 2,
+  };
+  const metrics: EnginePoolMetrics = {
+    queueCapacity: options.queueCapacity ?? 0,
+    queued: slot.queued,
+    inFlight: slot.inFlight,
+    rejected: slot.rejected,
+    slots: [slot],
+  };
+  const signatureChecks: true[] = [
+    true as Equal<Parameters<typeof EnginePool.create>[0], EngineSpec[]>,
+    true as Equal<
+      Parameters<typeof EnginePool.create>[1],
+      EnginePoolOptions | undefined
+    >,
+    true as Equal<
+      ReturnType<typeof EnginePool.create>,
+      Promise<EnginePool>
+    >,
+    true as Equal<ReturnType<EnginePool["metrics"]>, EnginePoolMetrics>,
+    true as Equal<EnginePoolMetrics["slots"], readonly EnginePoolSlotMetrics[]>,
+  ];
+
   assert.strictEqual(typeof EnginePool, "function");
   assert.strictEqual(typeof EnginePool.create, "function");
+  assert.strictEqual(typeof EnginePool.prototype.metrics, "function");
+  assert.strictEqual(metrics.slots[0], slot);
+  assert.strictEqual(signatureChecks.length, 5);
+
+  const error = new EnginePoolQueueFullError(3, 3, 0);
+  assert.ok(error instanceof FerricError);
+  assert.strictEqual(error.name, "EnginePoolQueueFullError");
+  assert.strictEqual(error.code, "FERRIC_POOL_QUEUE_FULL");
+  assert.strictEqual(error.message, "EnginePool queue is full");
+  assert.strictEqual(error.capacity, 3);
+  assert.strictEqual(error.queued, 3);
+  assert.strictEqual(error.slotIndex, 0);
 });
 
 // ---------------------------------------------------------------------------
