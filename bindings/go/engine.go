@@ -13,6 +13,16 @@ import (
 
 var errIntOverflow = fmt.Errorf("ferric: integer overflow")
 
+func validateCStringArgument(argument, value string) error {
+	if err := ffi.ValidateCString(argument, value); err != nil {
+		return &InvalidArgumentError{FerricError{
+			Code:    int(ffi.ErrInvalidArgument),
+			Message: err.Error(),
+		}}
+	}
+	return nil
+}
+
 // runBatchSize bounds the number of rule firings between host-side
 // cancellation or interruption checks in a chunked run.
 const runBatchSize = 100
@@ -72,17 +82,9 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 		}
 	} else {
 		if cfg.hasSource() {
-			if cfg.hasEngineConfig() {
-				h = ffiEngineNewWithSourceConfig(cfg.source, config)
-			} else {
-				h = ffiEngineNewWithSource(cfg.source)
-			}
-			if h == nil {
-				msg := ffiLastErrorGlobal()
-				if msg == "" {
-					msg = "failed to create engine from source"
-				}
-				return nil, &ParseError{FerricError{Message: msg}}
+			h, err = newEngineFromSource(&cfg, config)
+			if err != nil {
+				return nil, err
 			}
 		} else {
 			if cfg.hasEngineConfig() {
@@ -99,6 +101,26 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 	e := &Engine{handle: h}
 	runtime.SetFinalizer(e, finalizeEngine)
 	return e, nil
+}
+
+func newEngineFromSource(cfg *engineConfig, config *ffi.Config) (ffi.EngineHandle, error) {
+	if err := validateCStringArgument("source", cfg.source); err != nil {
+		return nil, err
+	}
+	var handle ffi.EngineHandle
+	if cfg.hasEngineConfig() {
+		handle = ffiEngineNewWithSourceConfig(cfg.source, config)
+	} else {
+		handle = ffiEngineNewWithSource(cfg.source)
+	}
+	if handle == nil {
+		msg := ffiLastErrorGlobal()
+		if msg == "" {
+			msg = "failed to create engine from source"
+		}
+		return nil, &ParseError{FerricError{Message: msg}}
+	}
+	return handle, nil
 }
 
 func finalizeEngine(e *Engine) {
@@ -245,6 +267,9 @@ func (e *Engine) Load(source string) error {
 		return err
 	}
 	defer release()
+	if err = validateCStringArgument("source", source); err != nil {
+		return err
+	}
 
 	rc := ffiEngineLoadString(handle, source)
 	if rc != ffi.ErrOK {
@@ -263,6 +288,9 @@ func (e *Engine) AssertString(source string) (uint64, error) {
 		return 0, err
 	}
 	defer release()
+	if err = validateCStringArgument("source", source); err != nil {
+		return 0, err
+	}
 
 	id, rc := ffiEngineAssertString(handle, source)
 	if rc != ffi.ErrOK {
@@ -281,6 +309,9 @@ func (e *Engine) AssertFact(relation string, fields ...any) (uint64, error) {
 		return 0, err
 	}
 	defer release()
+	if err = validateCStringArgument("relation", relation); err != nil {
+		return 0, err
+	}
 
 	vals := make([]ffi.Value, len(fields))
 	defer func() {
@@ -289,7 +320,7 @@ func (e *Engine) AssertFact(relation string, fields ...any) (uint64, error) {
 		}
 	}()
 	for i, f := range fields {
-		v, conversionErr := goToFFIValue(f)
+		v, conversionErr := goToFFIValueAtPath(f, fmt.Sprintf("fields[%d]", i), 0)
 		if conversionErr != nil {
 			return 0, conversionErr
 		}
@@ -313,6 +344,9 @@ func (e *Engine) AssertTemplate(templateName string, slots map[string]any) (uint
 		return 0, err
 	}
 	defer release()
+	if err = validateCStringArgument("template name", templateName); err != nil {
+		return 0, err
+	}
 
 	names := make([]string, 0, len(slots))
 	vals := make([]ffi.Value, 0, len(slots))
@@ -322,7 +356,10 @@ func (e *Engine) AssertTemplate(templateName string, slots map[string]any) (uint
 		}
 	}()
 	for k, v := range slots {
-		fv, conversionErr := goToFFIValue(v)
+		if err = validateCStringArgument(fmt.Sprintf("slot name %q", k), k); err != nil {
+			return 0, err
+		}
+		fv, conversionErr := goToFFIValueAtPath(v, fmt.Sprintf("slots[%q]", k), 0)
 		if conversionErr != nil {
 			return 0, conversionErr
 		}
@@ -397,6 +434,9 @@ func (e *Engine) FindFacts(relation string) ([]Fact, error) {
 		return nil, err
 	}
 	defer release()
+	if err = validateCStringArgument("relation", relation); err != nil {
+		return nil, err
+	}
 
 	ids, rc := ffiEngineFindFactIDs(handle, relation)
 	if rc != ffi.ErrOK {
@@ -707,6 +747,9 @@ func (e *Engine) GetGlobal(name string) (any, error) {
 		return nil, err
 	}
 	defer release()
+	if err = validateCStringArgument("global name", name); err != nil {
+		return nil, err
+	}
 
 	val, rc := ffiEngineGetGlobal(handle, name)
 	if rc != ffi.ErrOK {
@@ -771,38 +814,84 @@ func (e *Engine) IsHalted() bool {
 
 // --- I/O ---
 
-// GetOutput retrieves captured output for a named channel.
-// Returns the output string and true, or empty string and false if no output.
+// GetOutput retrieves captured output for a named channel. It returns the
+// output string and true, or empty string and false if no output. For backward
+// compatibility it discards validation, closed-state, and native errors; use
+// GetOutputE when the error must be observed.
 func (e *Engine) GetOutput(channel string) (string, bool) {
-	handle, release, err := e.leaseHandle()
-	if err != nil {
-		return "", false
-	}
-	defer release()
-
-	return ffiEngineGetOutput(handle, channel)
+	value, ok, _ := e.GetOutputE(channel)
+	return value, ok
 }
 
-// ClearOutput clears a specific output channel. It is a no-op after Close.
+// GetOutputE retrieves captured output for a named channel and reports
+// validation, closed-state, or native errors.
+func (e *Engine) GetOutputE(channel string) (string, bool, error) {
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return "", false, err
+	}
+	defer release()
+	if err = validateCStringArgument("output channel", channel); err != nil {
+		return "", false, err
+	}
+
+	value, ok, rc := ffiEngineGetOutputCopy(handle, channel)
+	if rc != ffi.ErrOK {
+		return "", false, errorFromFFI(rc, handle)
+	}
+	return value, ok, nil
+}
+
+// ClearOutput clears a specific output channel. For backward compatibility it
+// discards validation, closed-state, and native errors; use ClearOutputE when
+// the error must be observed.
 func (e *Engine) ClearOutput(channel string) {
-	handle, release, err := e.leaseHandle()
-	if err != nil {
-		return
-	}
-	defer release()
-
-	ffiEngineClearOutput(handle, channel)
+	_ = e.ClearOutputE(channel)
 }
 
-// PushInput pushes an input line for read/readline. It is a no-op after Close.
-func (e *Engine) PushInput(line string) {
+// ClearOutputE clears a specific output channel and reports validation,
+// closed-state, or native errors.
+func (e *Engine) ClearOutputE(channel string) error {
 	handle, release, err := e.leaseHandle()
 	if err != nil {
-		return
+		return err
 	}
 	defer release()
+	if err = validateCStringArgument("output channel", channel); err != nil {
+		return err
+	}
 
-	ffiEnginePushInput(handle, line)
+	rc := ffiEngineClearOutput(handle, channel)
+	if rc != ffi.ErrOK {
+		return errorFromFFI(rc, handle)
+	}
+	return nil
+}
+
+// PushInput pushes an input line for read/readline. For backward compatibility
+// it discards validation, closed-state, and native errors; use PushInputE when
+// the error must be observed.
+func (e *Engine) PushInput(line string) {
+	_ = e.PushInputE(line)
+}
+
+// PushInputE pushes an input line for read/readline and reports validation,
+// closed-state, or native errors.
+func (e *Engine) PushInputE(line string) error {
+	handle, release, err := e.leaseHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err = validateCStringArgument("input line", line); err != nil {
+		return err
+	}
+
+	rc := ffiEnginePushInput(handle, line)
+	if rc != ffi.ErrOK {
+		return errorFromFFI(rc, handle)
+	}
+	return nil
 }
 
 // --- Diagnostics ---
@@ -1030,28 +1119,8 @@ func (e *Engine) buildFact(handle ffi.EngineHandle, factID uint64) (*Fact, error
 
 	if ft == ffi.FactTypeTemplate {
 		fact.Type = FactTemplate
-		name, rc := ffiEngineGetFactTemplateName(handle, factID)
-		if rc != ffi.ErrOK {
-			return nil, errorFromFFI(rc, handle)
-		}
-		fact.TemplateName = name
-
-		// Build slot map by querying template slot names.
-		slotCount, rc := ffiEngineTemplateSlotCount(handle, name)
-		if rc != ffi.ErrOK {
-			return nil, fmt.Errorf("ferric: failed to get slot count for template %q: %w", name, errorFromFFI(rc, handle))
-		}
-		if slotCount > 0 {
-			fact.Slots = make(map[string]any, slotCount)
-			for i := range slotCount {
-				slotName, rc := ffiEngineTemplateSlotName(handle, name, i)
-				if rc != ffi.ErrOK {
-					return nil, fmt.Errorf("ferric: failed to get slot name %d for template %q: %w", i, name, errorFromFFI(rc, handle))
-				}
-				if i < fieldCount {
-					fact.Slots[slotName] = fields[i]
-				}
-			}
+		if err := e.populateTemplateFact(handle, fact, fields, fieldCount); err != nil {
+			return nil, err
 		}
 	} else {
 		fact.Type = FactOrdered
@@ -1063,4 +1132,40 @@ func (e *Engine) buildFact(handle ffi.EngineHandle, factID uint64) (*Fact, error
 	}
 
 	return fact, nil
+}
+
+func (e *Engine) populateTemplateFact(
+	handle ffi.EngineHandle,
+	fact *Fact,
+	fields []any,
+	fieldCount uintptr,
+) error {
+	name, rc := ffiEngineGetFactTemplateName(handle, fact.ID)
+	if rc != ffi.ErrOK {
+		return errorFromFFI(rc, handle)
+	}
+	fact.TemplateName = name
+	if err := validateCStringArgument("template name", name); err != nil {
+		return err
+	}
+
+	// Build the slot map by querying template slot names.
+	slotCount, rc := ffiEngineTemplateSlotCount(handle, name)
+	if rc != ffi.ErrOK {
+		return fmt.Errorf("ferric: failed to get slot count for template %q: %w", name, errorFromFFI(rc, handle))
+	}
+	if slotCount == 0 {
+		return nil
+	}
+	fact.Slots = make(map[string]any, slotCount)
+	for i := range slotCount {
+		slotName, rc := ffiEngineTemplateSlotName(handle, name, i)
+		if rc != ffi.ErrOK {
+			return fmt.Errorf("ferric: failed to get slot name %d for template %q: %w", i, name, errorFromFFI(rc, handle))
+		}
+		if i < fieldCount {
+			fact.Slots[slotName] = fields[i]
+		}
+	}
+	return nil
 }

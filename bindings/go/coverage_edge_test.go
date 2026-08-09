@@ -53,7 +53,7 @@ func resetFFIHooks() {
 	ffiEngineFocusStackEntry = ffi.EngineFocusStackEntry
 	ffiEngineAgendaCount = ffi.EngineAgendaCount
 	ffiEngineIsHalted = ffi.EngineIsHalted
-	ffiEngineGetOutput = ffi.EngineGetOutput
+	ffiEngineGetOutputCopy = ffi.EngineGetOutputCopy
 	ffiEngineClearOutput = ffi.EngineClearOutput
 	ffiEnginePushInput = ffi.EnginePushInput
 	ffiEngineActionDiagnosticCount = ffi.EngineActionDiagnosticCount
@@ -66,6 +66,8 @@ func resetFFIHooks() {
 	ffiEngineTemplateSlotCount = ffi.EngineTemplateSlotCount
 	ffiEngineTemplateSlotName = ffi.EngineTemplateSlotName
 	ffiEngineGetFactRelation = ffi.EngineGetFactRelation
+	ffiValueSymbolBytes = ffi.ValueSymbolBytes
+	ffiValueStringBytes = ffi.ValueStringBytes
 	ffiValueMultifieldCopy = ffi.ValueMultifieldCopy
 	ffiValueFree = ffi.ValueFree
 	factsToWire = FactsToWire
@@ -1686,6 +1688,9 @@ func TestManagerCoordinatorPinnedSurface(t *testing.T) {
 func TestPropertyErrorSentinelsAndFFIValueConversions(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		text := rapid.String().Draw(t, "text")
+		ffiText := rapid.String().Filter(func(value string) bool {
+			return !strings.ContainsRune(value, '\x00')
+		}).Draw(t, "ffi_text")
 		i := rapid.Int64().Draw(t, "integer")
 		i32 := rapid.Int32().Draw(t, "integer32")
 		f := rapid.Float64().Filter(func(v float64) bool { return !math.IsNaN(v) }).Draw(t, "float")
@@ -1720,12 +1725,12 @@ func TestPropertyErrorSentinelsAndFFIValueConversions(t *testing.T) {
 			i32,
 			f,
 			float32(f),
-			Symbol(text),
-			text,
+			Symbol(ffiText),
+			ffiText,
 			true,
 			false,
 			nil,
-			[]any{i, Symbol(text), text},
+			[]any{i, Symbol(ffiText), ffiText},
 		}
 		for _, value := range values {
 			fv, err := goToFFIValue(value)

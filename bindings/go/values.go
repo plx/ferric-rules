@@ -22,10 +22,10 @@ type Symbol string
 // to the FFI layer. Recursive multifields are constructed through Ferric's
 // copy API; no Go- or C-allocated value array is transferred to Rust cleanup.
 func goToFFIValue(v any) (ffi.Value, error) {
-	return goToFFIValueAtDepth(v, 0)
+	return goToFFIValueAtPath(v, "value", 0)
 }
 
-func goToFFIValueAtDepth(v any, depth int) (ffi.Value, error) {
+func goToFFIValueAtPath(v any, path string, depth int) (ffi.Value, error) {
 	switch val := v.(type) {
 	case int:
 		return ffi.ValueInteger(int64(val)), nil
@@ -38,27 +38,28 @@ func goToFFIValueAtDepth(v any, depth int) (ffi.Value, error) {
 	case float32:
 		return ffi.ValueFloat(float64(val)), nil
 	case Symbol:
-		return ffi.ValueSymbol(string(val)), nil
+		return goStringToFFIValue(path, string(val), ffiValueSymbolBytes)
 	case string:
-		return ffi.ValueString(val), nil
+		return goStringToFFIValue(path, val, ffiValueStringBytes)
 	case bool:
 		if val {
-			return ffi.ValueSymbol("TRUE"), nil
+			return goStringToFFIValue(path, "TRUE", ffiValueSymbolBytes)
 		}
-		return ffi.ValueSymbol("FALSE"), nil
+		return goStringToFFIValue(path, "FALSE", ffiValueSymbolBytes)
 	case nil:
 		return ffi.ValueVoid(), nil
 	case []any:
 		if depth >= maxMultifieldNestingDepth {
 			return ffi.Value{}, fmt.Errorf(
-				"%w: multifield nesting exceeds %d levels",
+				"%w: %s multifield nesting exceeds %d levels",
 				ErrInvalidArgument,
+				path,
 				maxMultifieldNestingDepth,
 			)
 		}
 		elements := make([]ffi.Value, len(val))
 		for i, elem := range val {
-			ev, err := goToFFIValueAtDepth(elem, depth+1)
+			ev, err := goToFFIValueAtPath(elem, fmt.Sprintf("%s[%d]", path, i), depth+1)
 			if err != nil {
 				// Free the elements converted before this failure. Goes through
 				// the ffiValueFree seam (as AssertFact/AssertTemplate do) so the
@@ -79,8 +80,23 @@ func goToFFIValueAtDepth(v any, depth int) (ffi.Value, error) {
 		}
 		return result, nil
 	default:
-		return ffi.Value{}, fmt.Errorf("%w: %T", errUnsupportedGoTypeForFFI, v)
+		return ffi.Value{}, fmt.Errorf("%w at %s: %T", errUnsupportedGoTypeForFFI, path, v)
 	}
+}
+
+func goStringToFFIValue(
+	path string,
+	value string,
+	constructor func(string) (ffi.Value, ffi.ErrorCode),
+) (ffi.Value, error) {
+	if err := validateCStringArgument(path, value); err != nil {
+		return ffi.Value{}, err
+	}
+	result, rc := constructor(value)
+	if rc != ffi.ErrOK {
+		return ffi.Value{}, fmt.Errorf("%s: %w", path, errorFromFFI(rc, nil))
+	}
+	return result, nil
 }
 
 // ffiValueToGo converts a C FerricValue to a native Go value.

@@ -406,28 +406,51 @@ func (p *PinnedEngine) IsHalted() bool {
 // I/O
 // ---------------------------------------------------------------------------
 
-// GetOutput retrieves captured output for a named channel.
+// GetOutput retrieves captured output for a named channel. For backward
+// compatibility it discards validation, dispatch, closed-state, and native
+// errors; use GetOutputE when the error must be observed.
 func (p *PinnedEngine) GetOutput(channel string) (string, bool) {
+	value, ok, _ := p.GetOutputE(channel)
+	return value, ok
+}
+
+// GetOutputE retrieves captured output for a named channel and reports
+// validation, dispatch, closed-state, or native errors.
+func (p *PinnedEngine) GetOutputE(channel string) (string, bool, error) {
 	response := pinnedCall(context.Background(), p, func(e *Engine) (valueOK[string], error) {
-		value, ok := e.GetOutput(channel)
-		return valueOK[string]{value: value, ok: ok}, nil
+		value, ok, err := e.GetOutputE(channel)
+		return valueOK[string]{value: value, ok: ok}, err
 	})
-	return response.value.value, response.value.ok
+	return response.value.value, response.value.ok, response.err
 }
 
-// ClearOutput clears a specific output channel.
+// ClearOutput clears a specific output channel. For backward compatibility it
+// discards validation, dispatch, closed-state, and native errors; use
+// ClearOutputE when the error must be observed.
 func (p *PinnedEngine) ClearOutput(channel string) {
-	_ = p.do(func(e *Engine) error {
-		e.ClearOutput(channel)
-		return nil
+	_ = p.ClearOutputE(channel)
+}
+
+// ClearOutputE clears a specific output channel and reports validation,
+// dispatch, closed-state, or native errors.
+func (p *PinnedEngine) ClearOutputE(channel string) error {
+	return p.do(func(e *Engine) error {
+		return e.ClearOutputE(channel)
 	})
 }
 
-// PushInput pushes an input line for read/readline.
+// PushInput pushes an input line for read/readline. For backward compatibility
+// it discards validation, dispatch, closed-state, and native errors; use
+// PushInputE when the error must be observed.
 func (p *PinnedEngine) PushInput(line string) {
-	_ = p.do(func(e *Engine) error {
-		e.PushInput(line)
-		return nil
+	_ = p.PushInputE(line)
+}
+
+// PushInputE pushes an input line for read/readline and reports validation,
+// dispatch, closed-state, or native errors.
+func (p *PinnedEngine) PushInputE(line string) error {
+	return p.do(func(e *Engine) error {
+		return e.PushInputE(line)
 	})
 }
 

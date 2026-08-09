@@ -265,13 +265,13 @@ func TestEmptySnapshotValidationFailsBeforeNativeConstruction(t *testing.T) {
 }
 
 func TestSnapshotInputsReachDeserializerUnchanged(t *testing.T) {
-	directData := []byte("direct snapshot")
+	directData := []byte("direct\x00snapshot")
 	assertSnapshotInput(t, directData, FormatMessagePack, func() error {
 		_, err := NewEngine(WithSnapshot(directData, FormatMessagePack))
 		return err
 	})
 
-	fileData := []byte("file snapshot")
+	fileData := []byte("file\x00snapshot")
 	path := t.TempDir() + "/snapshot.cbor"
 	if err := os.WriteFile(path, fileData, 0o600); err != nil {
 		t.Fatal(err)

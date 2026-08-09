@@ -556,7 +556,11 @@ func lifecycleClose() (any, error) {
 }
 
 func embeddedNUL() (any, error) {
-	return assertedField("a\x00b")
+	_, err := assertedField("a\x00b")
+	if !errors.Is(err, ferric.ErrInvalidArgument) {
+		return nil, fmt.Errorf("embedded NUL should return ErrInvalidArgument: %w", err)
+	}
+	return map[string]any{"error": "invalid_argument"}, nil
 }
 
 func highFactID() (any, error) {

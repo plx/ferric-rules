@@ -9,7 +9,17 @@ package ffi
 #include <stdlib.h>
 */
 import "C"
-import "unsafe"
+import (
+	"fmt"
+	"unsafe"
+)
+
+func checkedCString(argument, value string) (*C.char, error) {
+	if err := ValidateCString(argument, value); err != nil {
+		return nil, err
+	}
+	return C.CString(value), nil
+}
 
 // ---------------------------------------------------------------------------
 // Engine lifecycle
@@ -38,14 +48,20 @@ func EngineNewWithConfigHelper(encoding StringEncoding, strategy ConflictStrateg
 
 // EngineNewWithSource creates an engine from CLIPS source (load + reset).
 func EngineNewWithSource(source string) EngineHandle {
-	cs := C.CString(source)
+	cs, err := checkedCString("source", source)
+	if err != nil {
+		return nil
+	}
 	defer C.free(unsafe.Pointer(cs))
 	return C.ferric_engine_new_with_source(cs)
 }
 
 // EngineNewWithSourceConfig creates an engine from CLIPS source with config.
 func EngineNewWithSourceConfig(source string, config *Config) EngineHandle {
-	cs := C.CString(source)
+	cs, err := checkedCString("source", source)
+	if err != nil {
+		return nil
+	}
 	defer C.free(unsafe.Pointer(cs))
 	return C.ferric_engine_new_with_source_config(cs, config)
 }
@@ -67,7 +83,10 @@ func EngineFreeUnchecked(h EngineHandle) ErrorCode {
 
 // EngineLoadString loads CLIPS source into the engine.
 func EngineLoadString(h EngineHandle, source string) ErrorCode {
-	cs := C.CString(source)
+	cs, err := checkedCString("source", source)
+	if err != nil {
+		return ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(cs))
 	return ErrorCode(C.ferric_engine_load_string(h, cs))
 }
@@ -140,7 +159,10 @@ func EngineIsHalted(h EngineHandle) (bool, ErrorCode) {
 
 // EngineAssertString asserts a fact from a CLIPS source string.
 func EngineAssertString(h EngineHandle, source string) (uint64, ErrorCode) {
-	cs := C.CString(source)
+	cs, err := checkedCString("source", source)
+	if err != nil {
+		return 0, ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(cs))
 	var factID C.uint64_t
 	rc := ErrorCode(C.ferric_engine_assert_string(h, cs, &factID))
@@ -149,7 +171,10 @@ func EngineAssertString(h EngineHandle, source string) (uint64, ErrorCode) {
 
 // EngineAssertOrdered asserts an ordered fact from structured values.
 func EngineAssertOrdered(h EngineHandle, relation string, fields []Value) (uint64, ErrorCode) {
-	crel := C.CString(relation)
+	crel, err := checkedCString("relation", relation)
+	if err != nil {
+		return 0, ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(crel))
 
 	var fieldsPtr *C.struct_FerricValue
@@ -166,21 +191,27 @@ func EngineAssertOrdered(h EngineHandle, relation string, fields []Value) (uint6
 
 // EngineAssertTemplate asserts a template fact with named slots.
 func EngineAssertTemplate(h EngineHandle, templateName string, slotNames []string, slotValues []Value) (uint64, ErrorCode) {
-	ctmpl := C.CString(templateName)
+	ctmpl, err := checkedCString("templateName", templateName)
+	if err != nil {
+		return 0, ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(ctmpl))
 
 	count := len(slotNames)
 
 	// Allocate C strings for slot names.
 	cnames := make([]*C.char, count)
-	for i, name := range slotNames {
-		cnames[i] = C.CString(name)
-	}
 	defer func() {
 		for _, cn := range cnames {
 			C.free(unsafe.Pointer(cn))
 		}
 	}()
+	for i, name := range slotNames {
+		cnames[i], err = checkedCString(fmt.Sprintf("slotNames[%d]", i), name)
+		if err != nil {
+			return 0, ErrInvalidArgument
+		}
+	}
 
 	var namesPtr **C.char
 	if count > 0 {
@@ -234,7 +265,10 @@ func EngineFactIDs(h EngineHandle) ([]uint64, ErrorCode) {
 
 // EngineFindFactIDs finds fact IDs by relation name.
 func EngineFindFactIDs(h EngineHandle, relation string) ([]uint64, ErrorCode) {
-	crel := C.CString(relation)
+	crel, err := checkedCString("relation", relation)
+	if err != nil {
+		return nil, ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(crel))
 
 	return uint64IDsFromTwoCall(func(dst []uint64) (uintptr, ErrorCode) {
@@ -317,7 +351,10 @@ func EngineGetFactTemplateName(h EngineHandle, factID uint64) (string, ErrorCode
 // EngineGetFactSlotByName retrieves a slot value from a template fact by name.
 // The caller owns the returned Value and must free it with ValueFree.
 func EngineGetFactSlotByName(h EngineHandle, factID uint64, slotName string) (Value, ErrorCode) {
-	cs := C.CString(slotName)
+	cs, err := checkedCString("slotName", slotName)
+	if err != nil {
+		return ValueVoid(), ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(cs))
 	var val C.struct_FerricValue
 	//nolint:gocritic // false positive from cgo pointer argument pattern.
@@ -333,7 +370,10 @@ func EngineGetFactSlotByName(h EngineHandle, factID uint64, slotName string) (Va
 // EngineGetGlobal retrieves a global variable's value by name.
 // The caller owns the returned Value and must free it with ValueFree.
 func EngineGetGlobal(h EngineHandle, name string) (Value, ErrorCode) {
-	cn := C.CString(name)
+	cn, err := checkedCString("name", name)
+	if err != nil {
+		return ValueVoid(), ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(cn))
 	var val C.struct_FerricValue
 	//nolint:gocritic // false positive from cgo pointer argument pattern.
@@ -349,7 +389,10 @@ func EngineGetGlobal(h EngineHandle, name string) (Value, ErrorCode) {
 // EngineGetOutput retrieves captured output for a named channel.
 // Returns empty string and false if no output.
 func EngineGetOutput(h EngineHandle, channel string) (string, bool) {
-	cc := C.CString(channel)
+	cc, err := checkedCString("channel", channel)
+	if err != nil {
+		return "", false
+	}
 	defer C.free(unsafe.Pointer(cc))
 	ptr := C.ferric_engine_get_output(h, cc)
 	if ptr == nil {
@@ -358,16 +401,44 @@ func EngineGetOutput(h EngineHandle, channel string) (string, bool) {
 	return C.GoString(ptr), true
 }
 
+// EngineGetOutputCopy retrieves a caller-owned copy of captured output for a
+// named channel. The length-bearing copy preserves embedded NUL bytes. Missing
+// or empty output is reported as empty, false, ErrOK.
+func EngineGetOutputCopy(h EngineHandle, channel string) (string, bool, ErrorCode) {
+	cc, err := checkedCString("channel", channel)
+	if err != nil {
+		return "", false, ErrInvalidArgument
+	}
+	defer C.free(unsafe.Pointer(cc))
+
+	value, rc := getString(func(buf *C.char, bufLen C.uintptr_t, outLen *C.uintptr_t) ErrorCode {
+		return ErrorCode(C.ferric_engine_get_output_copy(h, cc, buf, bufLen, outLen))
+	})
+	if rc == ErrNotFound {
+		return "", false, ErrOK
+	}
+	if rc != ErrOK {
+		return "", false, rc
+	}
+	return value, true, ErrOK
+}
+
 // EngineClearOutput clears a specific output channel.
 func EngineClearOutput(h EngineHandle, channel string) ErrorCode {
-	cc := C.CString(channel)
+	cc, err := checkedCString("channel", channel)
+	if err != nil {
+		return ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(cc))
 	return ErrorCode(C.ferric_engine_clear_output(h, cc))
 }
 
 // EnginePushInput pushes an input line for read/readline.
 func EnginePushInput(h EngineHandle, line string) ErrorCode {
-	cl := C.CString(line)
+	cl, err := checkedCString("line", line)
+	if err != nil {
+		return ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(cl))
 	return ErrorCode(C.ferric_engine_push_input(h, cl))
 }
@@ -415,7 +486,10 @@ func EngineTemplateName(h EngineHandle, index uintptr) (string, ErrorCode) {
 
 // EngineTemplateSlotCount returns the number of slots in a named template.
 func EngineTemplateSlotCount(h EngineHandle, templateName string) (uintptr, ErrorCode) {
-	ct := C.CString(templateName)
+	ct, err := checkedCString("templateName", templateName)
+	if err != nil {
+		return 0, ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(ct))
 	var count C.uintptr_t
 	rc := ErrorCode(C.ferric_engine_template_slot_count(h, ct, &count))
@@ -424,7 +498,10 @@ func EngineTemplateSlotCount(h EngineHandle, templateName string) (uintptr, Erro
 
 // EngineTemplateSlotName retrieves a slot name by template name and slot index.
 func EngineTemplateSlotName(h EngineHandle, templateName string, slotIndex uintptr) (string, ErrorCode) {
-	ct := C.CString(templateName)
+	ct, err := checkedCString("templateName", templateName)
+	if err != nil {
+		return "", ErrInvalidArgument
+	}
 	defer C.free(unsafe.Pointer(ct))
 	return getString(func(buf *C.char, bufLen C.uintptr_t, outLen *C.uintptr_t) ErrorCode {
 		return ErrorCode(C.ferric_engine_template_slot_name(h, ct, C.uintptr_t(slotIndex), buf, bufLen, outLen))
@@ -572,18 +649,48 @@ func ValueFloat(v float64) Value {
 	return Value(C.ferric_value_float(C.double(v)))
 }
 
+// ValueSymbolBytes creates a symbol FerricValue from an explicit byte span.
+func ValueSymbolBytes(name string) (Value, ErrorCode) {
+	var value C.struct_FerricValue
+	var data *C.uint8_t
+	if len(name) > 0 {
+		data = (*C.uint8_t)(unsafe.Pointer(unsafe.StringData(name)))
+	}
+	//nolint:gocritic // dupSubExpr false positive in cgo-generated code.
+	rc := ErrorCode(C.ferric_value_symbol_bytes(data, C.uintptr_t(len(name)), &value))
+	return Value(value), rc
+}
+
 // ValueSymbol creates a symbol FerricValue (heap-copies the string).
+// It returns Void when the checked byte-span constructor rejects the value.
 func ValueSymbol(name string) Value {
-	cs := C.CString(name)
-	defer C.free(unsafe.Pointer(cs))
-	return Value(C.ferric_value_symbol(cs))
+	value, rc := ValueSymbolBytes(name)
+	if rc != ErrOK {
+		return ValueVoid()
+	}
+	return value
+}
+
+// ValueStringBytes creates a string FerricValue from an explicit byte span.
+func ValueStringBytes(s string) (Value, ErrorCode) {
+	var value C.struct_FerricValue
+	var data *C.uint8_t
+	if len(s) > 0 {
+		data = (*C.uint8_t)(unsafe.Pointer(unsafe.StringData(s)))
+	}
+	//nolint:gocritic // dupSubExpr false positive in cgo-generated code.
+	rc := ErrorCode(C.ferric_value_string_bytes(data, C.uintptr_t(len(s)), &value))
+	return Value(value), rc
 }
 
 // ValueString creates a string FerricValue (heap-copies the string).
+// It returns Void when the checked byte-span constructor rejects the value.
 func ValueString(s string) Value {
-	cs := C.CString(s)
-	defer C.free(unsafe.Pointer(cs))
-	return Value(C.ferric_value_string(cs))
+	value, rc := ValueStringBytes(s)
+	if rc != ErrOK {
+		return ValueVoid()
+	}
+	return value
 }
 
 // ValueVoid creates a void FerricValue.
