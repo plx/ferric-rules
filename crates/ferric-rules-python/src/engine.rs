@@ -1,13 +1,13 @@
 //! Python Engine wrapper.
 //!
-//! Engine instances live in a thread-local registry on their creator thread.
-//! `PyEngine` is a lightweight handle (engine ID + thread ID) that is naturally
-//! `Send + Sync` — no `unsafe` required.
+//! Engine operations remain pinned to the creator thread. `PyEngine` owns the
+//! engine behind a mutex so explicit close or Python's final-reference cleanup
+//! can destroy it synchronously on another thread without transferring runtime
+//! access.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::thread::{self, ThreadId};
 
 use pyo3::prelude::*;
@@ -34,9 +34,63 @@ static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
 #[cfg(feature = "testing")]
 static ENGINE_INSTANCE_COUNT: AtomicU64 = AtomicU64::new(0);
 
-thread_local! {
-    /// Thread-local registry of engines owned by this thread.
-    static ENGINES: RefCell<HashMap<u64, Engine>> = RefCell::new(HashMap::new());
+/// Exclusive ownership of a thread-affine engine which may be sent solely so
+/// the whole engine can be destroyed on the thread that releases Python's
+/// final reference.
+struct OwnedThreadAffineEngine {
+    // Rust drops struct fields in declaration order. Keep the native engine
+    // before the testing guard so the live count changes only after Engine's
+    // destructor has completed.
+    engine: Box<Engine>,
+    #[cfg(feature = "testing")]
+    _instance_count: EngineInstanceCount,
+}
+
+#[cfg(feature = "testing")]
+struct EngineInstanceCount;
+
+#[cfg(feature = "testing")]
+impl EngineInstanceCount {
+    fn new() -> Self {
+        ENGINE_INSTANCE_COUNT.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+#[cfg(feature = "testing")]
+impl Drop for EngineInstanceCount {
+    fn drop(&mut self) {
+        ENGINE_INSTANCE_COUNT.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl OwnedThreadAffineEngine {
+    fn new(engine: Engine) -> Self {
+        Self {
+            engine: Box::new(engine),
+            #[cfg(feature = "testing")]
+            _instance_count: EngineInstanceCount::new(),
+        }
+    }
+
+    fn get_mut(&mut self) -> &mut Engine {
+        &mut self.engine
+    }
+}
+
+// SAFETY: `OwnedThreadAffineEngine` is private and is only stored behind
+// `PyEngine`'s mutex. Runtime access is granted only after checking that the
+// current thread is the engine's creator, and the mutex prevents that access
+// from overlapping destruction. Sending the wrapper is therefore used only
+// to drop the whole, exclusively owned engine. This is the same
+// destruction-only exception documented by `ferric_engine_free_unchecked`;
+// it does not make engine operations transferable between threads.
+unsafe impl Send for OwnedThreadAffineEngine {}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Build an `EngineConfig` from optional Python args.
@@ -51,32 +105,31 @@ fn make_config(strategy: Option<Strategy>, encoding: Option<Encoding>) -> Engine
     config
 }
 
-/// Register a newly-created engine in the thread-local registry.
-fn register_engine(engine: Engine) -> (u64, ThreadId) {
-    let engine_id = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
-    ENGINES.with(|engines| {
-        engines.borrow_mut().insert(engine_id, engine);
-    });
-    #[cfg(feature = "testing")]
-    ENGINE_INSTANCE_COUNT.fetch_add(1, Ordering::Relaxed);
-    (engine_id, thread::current().id())
-}
-
 /// The Ferric rules engine.
 ///
 /// Thread-affine: must be used only from the thread that created it.
 /// Cross-thread access raises `FerricRuntimeError` (not a panic).
 ///
-/// The actual engine data lives in a thread-local registry on the creator
-/// thread.  This struct is a lightweight handle that is naturally `Send + Sync`.
+/// The actual engine data remains creator-thread-only for runtime access, but
+/// the handle owns it directly so the final Python reference can destroy it on
+/// any supported Python thread.
 #[pyclass(name = "Engine", module = "ferric")]
 pub struct PyEngine {
     engine_id: u64,
     creator_thread: ThreadId,
+    engine: Mutex<Option<OwnedThreadAffineEngine>>,
 }
 
 impl PyEngine {
-    /// Check thread + look up engine in TLS; run closure with `&mut Engine`.
+    fn from_engine(engine: Engine) -> Self {
+        Self {
+            engine_id: NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed),
+            creator_thread: thread::current().id(),
+            engine: Mutex::new(Some(OwnedThreadAffineEngine::new(engine))),
+        }
+    }
+
+    /// Check thread, lock the live engine, and run a closure with mutable access.
     fn with_engine<F, R>(&self, f: F) -> PyResult<R>
     where
         F: FnOnce(&mut Engine) -> PyResult<R>,
@@ -88,45 +141,26 @@ impl PyEngine {
                 self.creator_thread, current,
             )));
         }
-        ENGINES.with(|engines| {
-            let mut map = engines.borrow_mut();
-            let engine = map
-                .get_mut(&self.engine_id)
-                .ok_or_else(|| FerricRuntimeError::new_err("engine has been closed"))?;
-            f(engine)
-        })
+        let mut state = lock_unpoisoned(&self.engine);
+        let engine = state
+            .as_mut()
+            .ok_or_else(|| FerricRuntimeError::new_err("engine has been closed"))?;
+        f(engine.get_mut())
     }
 
-    /// Remove engine from registry.  Returns `true` if it was present.
-    fn remove_engine(&self) -> bool {
-        if thread::current().id() != self.creator_thread {
-            return false;
-        }
-        let removed =
-            ENGINES.with(|engines| engines.borrow_mut().remove(&self.engine_id).is_some());
-        #[cfg(feature = "testing")]
-        if removed {
-            ENGINE_INSTANCE_COUNT.fetch_sub(1, Ordering::Relaxed);
-        }
-        removed
+    /// Destroy the engine exactly once while holding the state mutex so every
+    /// concurrent close observes completion only after native destruction.
+    fn destroy_engine(&self) {
+        let mut state = lock_unpoisoned(&self.engine);
+        let engine = state.take();
+        drop(engine);
+        drop(state);
     }
 }
 
 impl Drop for PyEngine {
     fn drop(&mut self) {
-        if thread::current().id() == self.creator_thread {
-            // Try to remove from TLS.  `try_with` handles TLS-already-destroyed
-            // during interpreter shutdown.
-            let _removed = ENGINES
-                .try_with(|engines| engines.borrow_mut().remove(&self.engine_id).is_some())
-                .unwrap_or(false);
-            #[cfg(feature = "testing")]
-            if _removed {
-                ENGINE_INSTANCE_COUNT.fetch_sub(1, Ordering::Relaxed);
-            }
-        }
-        // Foreign thread: no-op.  Engine stays in creator thread's TLS and is
-        // cleaned up when that thread exits (TLS destructors run).
+        self.destroy_engine();
     }
 }
 
@@ -142,11 +176,7 @@ impl PyEngine {
     #[pyo3(signature = (*, strategy=None, encoding=None))]
     fn new(strategy: Option<Strategy>, encoding: Option<Encoding>) -> Self {
         let config = make_config(strategy, encoding);
-        let (engine_id, creator_thread) = register_engine(Engine::new(config));
-        Self {
-            engine_id,
-            creator_thread,
-        }
+        Self::from_engine(Engine::new(config))
     }
 
     /// Create an engine from CLIPS source, loading and resetting in one step.
@@ -159,17 +189,14 @@ impl PyEngine {
     ) -> PyResult<Self> {
         let config = make_config(strategy, encoding);
         let engine = Engine::with_rules_config(source, config).map_err(init_error_to_pyerr)?;
-        let (engine_id, creator_thread) = register_engine(engine);
-        Ok(Self {
-            engine_id,
-            creator_thread,
-        })
+        Ok(Self::from_engine(engine))
     }
 
     // -- Context manager --
 
-    fn __enter__(slf: Py<Self>) -> Py<Self> {
-        slf
+    fn __enter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {
+        slf.bind(py).borrow().with_engine(|_| Ok(()))?;
+        Ok(slf)
     }
 
     #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
@@ -178,25 +205,17 @@ impl PyEngine {
         _exc_type: Option<&Bound<'_, PyAny>>,
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<bool> {
-        self.close()?;
-        Ok(false) // don't suppress exceptions
+    ) -> bool {
+        self.close();
+        false // don't suppress exceptions
     }
 
-    /// Explicitly close and destroy this engine.
+    /// Explicitly close and destroy this engine from any supported Python thread.
     ///
-    /// After calling `close()`, any further method calls will raise
-    /// `FerricRuntimeError`.  This is idempotent.
-    fn close(&self) -> PyResult<()> {
-        let current = thread::current().id();
-        if current != self.creator_thread {
-            return Err(FerricRuntimeError::new_err(format!(
-                "engine called from wrong thread (created on {:?}, called from {:?})",
-                self.creator_thread, current,
-            )));
-        }
-        self.remove_engine();
-        Ok(())
+    /// After calling `close()`, later ordinary engine operations raise
+    /// `FerricRuntimeError`; close and context-manager exit remain idempotent.
+    fn close(&self) {
+        self.destroy_engine();
     }
 
     // -- Loading --
@@ -608,11 +627,7 @@ impl PyEngine {
         let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
         let engine = Engine::deserialize(data, fmt)
             .map_err(|e| crate::error::FerricError::new_err(e.to_string()))?;
-        let (engine_id, creator_thread) = register_engine(engine);
-        Ok(Self {
-            engine_id,
-            creator_thread,
-        })
+        Ok(Self::from_engine(engine))
     }
 
     /// Save a serialized engine snapshot to a file.
@@ -650,11 +665,7 @@ impl PyEngine {
         let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
         let engine = Engine::deserialize(&data, fmt)
             .map_err(|e| crate::error::FerricError::new_err(e.to_string()))?;
-        let (engine_id, creator_thread) = register_engine(engine);
-        Ok(Self {
-            engine_id,
-            creator_thread,
-        })
+        Ok(Self::from_engine(engine))
     }
 
     // -- Python protocols --

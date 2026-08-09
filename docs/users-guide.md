@@ -873,8 +873,13 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
   `Coordinator`, `Manager`) plus a Temporal activity wrapper.
 - **Python**: `crates/ferric-rules-python` exposes `import ferric` through
   `cp39-abi3` wheels for GIL-enabled CPython 3.9 through 3.13. Python 3.14,
-  free-threaded CPython, and other interpreters are not currently supported;
-  see the [Python package release contract](python-package-release.md).
+  free-threaded CPython, subinterpreters, and other interpreters are not
+  currently supported. Ordinary `Engine` operations remain bound to their
+  creator thread; synchronous, idempotent `close()` and final-reference cleanup
+  may run on any supported Python thread and destroy the native engine exactly
+  once. See the package
+  [threading and lifecycle contract](../crates/ferric-rules-python/README.md#threading-and-lifecycle-contract)
+  and [Python package release contract](python-package-release.md).
 - **CLI**: the `ferric` binary (`crates/ferric-rules-cli`) runs `.clp` files
   batch-style or drops you into a REPL. `ferric check [--json] file.clp`
   validates without running; `ferric run` executes.
