@@ -26,6 +26,7 @@ import "./runtime/pool/additional.test.ts";
 import "./runtime/pool/cancellation.test.ts";
 import "./runtime/pool/close-semantics.test.ts";
 import "./runtime/pool/create-cleanup.test.ts";
+import "./runtime/pool/exclusive-lease.test.ts";
 import "./runtime/pool/fact-id.test.ts";
 import "./runtime/pool/logical-run.test.ts";
 import "./runtime/pool/pool-internals.test.ts";

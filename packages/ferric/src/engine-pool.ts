@@ -12,9 +12,11 @@
  * This is efficient and safe for concurrent use.
  *
  * ### Stateful operations
- * `do()` dispatches a callback that receives an `EngineProxy`. Each proxy method
- * sends one round-trip message to the worker. The callback runs on the main
- * thread; only individual operations cross the thread boundary.
+ * `do()` reserves one whole worker slot in the slot's root FIFO and invokes a
+ * callback with an `EngineProxy`. The callback runs on the main thread; proxy
+ * operations cross the worker boundary one at a time in invocation order. No
+ * unrelated pool work can use that worker until the pool observes the
+ * callback's returned Promise settle and its accepted proxy operations drain.
  *
  * ## Cooperative cancellation
  *
@@ -27,6 +29,7 @@
  */
 
 import { Worker } from "node:worker_threads";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, PoolWorkerInit } from "./wire";
 import { ABORT_BUFFER_SIZE, ABORT_FLAG_INDEX, toWire, fromWire } from "./wire";
@@ -56,7 +59,11 @@ export type { EngineSpec, EvaluateRequest, EvaluateResult };
  * Proxy object passed to EnginePool.do() callbacks.
  *
  * Each method dispatches a single round-trip message to the pool worker.
- * Do not retain the proxy beyond the lifetime of the callback.
+ * Calls are serialized on the callback's exclusive worker lease. Once the pool
+ * observes the callback's returned Promise settle, every later method rejects
+ * with a deterministic lifetime error. Promise reactions that the callback
+ * registers before returning can run before that observation and remain inside
+ * the lease.
  */
 export interface EngineProxy {
   load(source: string): Promise<void>;
@@ -96,6 +103,7 @@ interface PendingEntry {
 
 /** A request waiting to be dispatched to a worker. */
 interface QueuedRequest {
+  kind: "request";
   req: WorkerRequest;
   entry: PendingEntry;
   signal?: AbortSignal;
@@ -104,15 +112,59 @@ interface QueuedRequest {
   transferList?: ArrayBuffer[];
 }
 
+interface WorkerLease {
+  /** Whether the callback may still submit new proxy operations. */
+  active: boolean;
+  /** Whether this lease has reached its single terminal release. */
+  released: boolean;
+  /** Proxy requests accepted by this lease, in invocation order. */
+  queue: QueuedRequest[];
+  /** Accepted proxy requests that have not settled yet. */
+  pendingCalls: number;
+  /**
+   * Waiters used after the pool observes settlement with accepted work
+   * outstanding.
+   */
+  drainWaiters: Array<() => void>;
+  /** Completion barrier used by close() for an already-admitted callback. */
+  releasedPromise: Promise<void>;
+  resolveReleased: () => void;
+  releasePromise?: Promise<void>;
+}
+
+interface QueuedLease {
+  kind: "lease";
+  lease: WorkerLease;
+  resolve: (lease: WorkerLease) => void;
+  reject: (error: Error) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}
+
+type QueuedWork = QueuedRequest | QueuedLease;
+
+interface PoolCallbackContext {
+  /** Mutable so descendants stop being reentrant at pool-observed settlement. */
+  active: boolean;
+}
+
 interface WorkerSlot {
   worker: Worker;
   nextId: number;
   pending: Map<number, PendingEntry>;
   /** Number of requests currently being processed by the worker. */
   inflight: number;
-  /** Requests waiting for the worker to become available. */
-  queue: QueuedRequest[];
+  /** Root requests and lease admissions waiting in per-slot FIFO order. */
+  queue: QueuedWork[];
+  /** Exclusive callback lease currently admitted on this whole worker slot. */
+  activeLease?: WorkerLease;
 }
+
+const INACTIVE_PROXY_MESSAGE =
+  "EngineProxy is no longer valid outside its EnginePool.do callback";
+const REENTRANT_POOL_MESSAGE =
+  "EnginePool.do, EnginePool.evaluate, and EnginePool.close cannot be called " +
+  "from within an active EnginePool.do callback on the same pool";
 
 // ---------------------------------------------------------------------------
 // Error reconstruction
@@ -160,6 +212,7 @@ function reconstructError(payload: WorkerResponse["error"]): Error {
  */
 export class EnginePool {
   private readonly slots: WorkerSlot[];
+  private readonly callbackContext = new AsyncLocalStorage<PoolCallbackContext>();
   private roundRobin = 0;
   private closed = false;
 
@@ -258,6 +311,10 @@ export class EnginePool {
     worker.on("error", (err: Error) => {
       const snapshot = [...slot.pending.values()];
       slot.pending.clear();
+      // Reject owner work already accepted behind the failed in-flight call so
+      // callback cleanup can drain and release its lease. Full terminal slot
+      // cleanup remains the responsibility of FR-NODE-005.
+      EnginePool.rejectActiveLeaseQueue(slot, err);
       for (const entry of snapshot) {
         entry.reject(err);
       }
@@ -275,6 +332,7 @@ export class EnginePool {
         );
         const snapshot = [...slot.pending.values()];
         slot.pending.clear();
+        EnginePool.rejectActiveLeaseQueue(slot, err);
         for (const entry of snapshot) {
           entry.reject(err);
         }
@@ -305,27 +363,214 @@ export class EnginePool {
     return slot;
   }
 
-  /** Dispatch queued requests for a slot until it's busy or queue is empty. */
+  private assertNotInActiveCallback(): void {
+    if (this.callbackContext.getStore()?.active) {
+      throw new Error(REENTRANT_POOL_MESSAGE);
+    }
+  }
+
+  private static createLease(): WorkerLease {
+    let resolveReleased!: () => void;
+    const releasedPromise = new Promise<void>((resolve) => {
+      resolveReleased = resolve;
+    });
+    return {
+      active: false,
+      released: false,
+      queue: [],
+      pendingCalls: 0,
+      drainWaiters: [],
+      releasedPromise,
+      resolveReleased,
+    };
+  }
+
+  private static markLeaseReleased(lease: WorkerLease): void {
+    if (lease.released) return;
+    lease.active = false;
+    lease.released = true;
+    lease.resolveReleased();
+  }
+
+  private static removeAbortListener(
+    queued: Pick<QueuedRequest, "signal" | "onAbort">,
+  ): void {
+    if (queued.signal && queued.onAbort) {
+      queued.signal.removeEventListener("abort", queued.onAbort);
+    }
+  }
+
+  private static dispatchRequest(slot: WorkerSlot, queued: QueuedRequest): void {
+    slot.pending.set(queued.req.id, queued.entry);
+    slot.inflight++;
+    slot.worker.postMessage(queued.req);
+  }
+
+  private static rejectActiveLeaseQueue(slot: WorkerSlot, error: Error): void {
+    const lease = slot.activeLease;
+    if (!lease) return;
+    const snapshot = lease.queue.splice(0);
+    for (const queued of snapshot) {
+      EnginePool.removeAbortListener(queued);
+      queued.entry.reject(error);
+    }
+  }
+
+  private static settleLeaseCall(lease: WorkerLease): void {
+    lease.pendingCalls--;
+    if (lease.pendingCalls !== 0) return;
+    const waiters = lease.drainWaiters.splice(0);
+    for (const resolve of waiters) resolve();
+  }
+
+  private static trackLeaseCall<T>(
+    lease: WorkerLease,
+    promise: Promise<T>,
+  ): Promise<T> {
+    lease.pendingCalls++;
+    promise.then(
+      () => EnginePool.settleLeaseCall(lease),
+      () => EnginePool.settleLeaseCall(lease),
+    );
+    return promise;
+  }
+
+  private static waitForLeaseCalls(lease: WorkerLease): Promise<void> {
+    if (lease.pendingCalls === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      lease.drainWaiters.push(resolve);
+    });
+  }
+
+  /** Dispatch the next owner request or root FIFO item for an idle slot. */
   private static drainQueue(slot: WorkerSlot): void {
-    while (slot.queue.length > 0 && slot.inflight === 0) {
+    if (slot.inflight !== 0) return;
+
+    const lease = slot.activeLease;
+    if (lease) {
+      while (lease.queue.length > 0) {
+        const queued = lease.queue.shift()!;
+
+        if (queued.signal?.aborted) {
+          EnginePool.removeAbortListener(queued);
+          queued.entry.reject(
+            new DOMException("The operation was aborted", "AbortError"),
+          );
+          continue;
+        }
+
+        // This request is no longer dequeue-cancellable once dispatched. Its
+        // method-specific in-flight cancellation (notably batched run) remains
+        // independently wired by the proxy.
+        EnginePool.removeAbortListener(queued);
+        EnginePool.dispatchRequest(slot, queued);
+        return;
+      }
+
+      // An exclusive callback retains the worker even while it is between
+      // awaits and has no native request in flight.
+      return;
+    }
+
+    while (slot.queue.length > 0) {
       const queued = slot.queue.shift()!;
 
-      // If the request was aborted while queued, reject it immediately.
-      if (queued.signal?.aborted) {
-        if (queued.onAbort) {
-          queued.signal.removeEventListener("abort", queued.onAbort);
+      if (queued.kind === "lease") {
+        if (queued.signal?.aborted) {
+          EnginePool.removeAbortListener(queued);
+          EnginePool.markLeaseReleased(queued.lease);
+          queued.reject(
+            new DOMException("The operation was aborted", "AbortError"),
+          );
+          continue;
         }
-        queued.entry.reject(
-          new DOMException("The operation was aborted", "AbortError")
+
+        EnginePool.removeAbortListener(queued);
+        slot.activeLease = queued.lease;
+        queued.lease.active = true;
+        queued.resolve(queued.lease);
+        return;
+      }
+
+      const request = queued as QueuedRequest;
+
+      // If the request was aborted while queued, reject it immediately.
+      if (request.signal?.aborted) {
+        EnginePool.removeAbortListener(request);
+        request.entry.reject(
+          new DOMException("The operation was aborted", "AbortError"),
         );
         continue;
       }
 
-      // Dispatch the request.
-      slot.pending.set(queued.req.id, queued.entry);
-      slot.inflight++;
-      slot.worker.postMessage(queued.req);
+      EnginePool.dispatchRequest(slot, request);
+      return;
     }
+  }
+
+  /** Reserve a whole worker slot in root FIFO order for one do() callback. */
+  private acquireLease(
+    slot: WorkerSlot,
+    signal?: AbortSignal,
+  ): Promise<WorkerLease> {
+    if (this.closed) {
+      return Promise.reject(new Error("EnginePool has been closed"));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(
+        new DOMException("The operation was aborted", "AbortError"),
+      );
+    }
+
+    const lease = EnginePool.createLease();
+    return new Promise<WorkerLease>((resolve, reject) => {
+      if (
+        slot.inflight === 0 &&
+        slot.activeLease === undefined &&
+        slot.queue.length === 0
+      ) {
+        slot.activeLease = lease;
+        lease.active = true;
+        resolve(lease);
+        return;
+      }
+
+      const queued: QueuedLease = {
+        kind: "lease",
+        lease,
+        resolve,
+        reject,
+        signal,
+      };
+      if (signal) {
+        queued.onAbort = () => {
+          const idx = slot.queue.indexOf(queued);
+          if (idx !== -1) {
+            slot.queue.splice(idx, 1);
+            EnginePool.markLeaseReleased(lease);
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          }
+        };
+        signal.addEventListener("abort", queued.onAbort, { once: true });
+      }
+      slot.queue.push(queued);
+    });
+  }
+
+  /** Invalidate one callback proxy, drain accepted owner work, and release once. */
+  private releaseLease(slot: WorkerSlot, lease: WorkerLease): Promise<void> {
+    if (lease.releasePromise) return lease.releasePromise;
+
+    lease.active = false;
+    lease.releasePromise = (async () => {
+      await EnginePool.waitForLeaseCalls(lease);
+      if (slot.activeLease === lease) {
+        slot.activeLease = undefined;
+      }
+      EnginePool.markLeaseReleased(lease);
+      EnginePool.drainQueue(slot);
+    })();
+    return lease.releasePromise;
   }
 
   /** Send a request to a specific slot, queueing if busy. */
@@ -344,14 +589,23 @@ export class EnginePool {
     return new Promise<unknown>((resolve, reject) => {
       const entry: PendingEntry = { resolve, reject };
 
-      if (slot.inflight === 0) {
+      if (
+        slot.inflight === 0 &&
+        slot.activeLease === undefined &&
+        slot.queue.length === 0
+      ) {
         // Dispatch immediately.
         slot.pending.set(id, entry);
         slot.inflight++;
         slot.worker.postMessage(req);
       } else {
         // Queue and set up abort listener for queued cancellation.
-        const queued: QueuedRequest = { req, entry, signal };
+        const queued: QueuedRequest = {
+          kind: "request",
+          req,
+          entry,
+          signal,
+        };
         if (signal) {
           queued.onAbort = () => {
             const idx = slot.queue.indexOf(queued);
@@ -367,6 +621,49 @@ export class EnginePool {
     });
   }
 
+  /** Send an owner request through its lease-private FIFO. */
+  private sendOnLease(
+    slot: WorkerSlot,
+    lease: WorkerLease,
+    method: string,
+    args: unknown[],
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (!lease.active || lease.released || slot.activeLease !== lease) {
+      return Promise.reject(new Error(INACTIVE_PROXY_MESSAGE));
+    }
+
+    const id = slot.nextId++;
+    const req: WorkerRequest = { id, method, args };
+    const promise = new Promise<unknown>((resolve, reject) => {
+      const entry: PendingEntry = { resolve, reject };
+      const queued: QueuedRequest = {
+        kind: "request",
+        req,
+        entry,
+        signal,
+      };
+
+      if (slot.inflight === 0 && lease.queue.length === 0) {
+        EnginePool.dispatchRequest(slot, queued);
+      } else {
+        if (signal) {
+          queued.onAbort = () => {
+            const idx = lease.queue.indexOf(queued);
+            if (idx !== -1) {
+              lease.queue.splice(idx, 1);
+              reject(new DOMException("The operation was aborted", "AbortError"));
+            }
+          };
+          signal.addEventListener("abort", queued.onAbort, { once: true });
+        }
+        lease.queue.push(queued);
+      }
+    });
+
+    return EnginePool.trackLeaseCall(lease, promise);
+  }
+
   // ---------------------------------------------------------------------------
   // EngineProxy builder
   // ---------------------------------------------------------------------------
@@ -374,65 +671,109 @@ export class EnginePool {
   private makeProxy(
     specName: string,
     slot: WorkerSlot,
+    lease: WorkerLease,
     signal?: AbortSignal,
   ): EngineProxy {
     const send = (method: string, args: unknown[]): Promise<unknown> =>
-      this.sendToSlot(slot, method, [specName, ...args], signal);
+      this.sendOnLease(slot, lease, method, [specName, ...args], signal);
 
-    const runWithAbort = async (options?: { limit?: number }): Promise<RunResult> => {
-      const limit = normalizeRunLimit(
-        (options as { limit?: unknown } | undefined)?.limit,
-        "EngineProxy.run",
-      );
-
-      // Allocate a per-call abort buffer for out-of-band host cancellation;
-      // the worker polls it between logical-run continuation chunks.
-      const sab = new SharedArrayBuffer(
-        ABORT_BUFFER_SIZE * Int32Array.BYTES_PER_ELEMENT,
-      );
-      const abortFlag = new Int32Array(sab);
-
-      let onAbort: (() => void) | undefined;
-      if (signal) {
-        if (signal.aborted) {
-          Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1);
-        } else {
-          onAbort = () => { Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1); };
-          signal.addEventListener("abort", onAbort, { once: true });
-        }
+    const withActiveLease = <T>(operation: () => Promise<T>): Promise<T> => {
+      if (!lease.active || lease.released || slot.activeLease !== lease) {
+        return Promise.reject(new Error(INACTIVE_PROXY_MESSAGE));
       }
-
-      try {
-        return (await send("__batched_run", [
-          limit ?? null,
-          sab,
-        ])) as RunResult;
-      } finally {
-        if (signal && onAbort) {
-          signal.removeEventListener("abort", onAbort);
-        }
-      }
+      return operation();
     };
 
+    const runWithAbort = (options?: { limit?: number }): Promise<RunResult> =>
+      withActiveLease(async () => {
+        const limit = normalizeRunLimit(
+          (options as { limit?: unknown } | undefined)?.limit,
+          "EngineProxy.run",
+        );
+
+        // Allocate a per-call abort buffer for out-of-band host cancellation;
+        // the worker polls it between logical-run continuation chunks.
+        const sab = new SharedArrayBuffer(
+          ABORT_BUFFER_SIZE * Int32Array.BYTES_PER_ELEMENT,
+        );
+        const abortFlag = new Int32Array(sab);
+
+        let onAbort: (() => void) | undefined;
+        if (signal) {
+          if (signal.aborted) {
+            Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1);
+          } else {
+            onAbort = () => { Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1); };
+            signal.addEventListener("abort", onAbort, { once: true });
+          }
+        }
+
+        try {
+          return (await send("__batched_run", [
+            limit ?? null,
+            sab,
+          ])) as RunResult;
+        } finally {
+          if (signal && onAbort) {
+            signal.removeEventListener("abort", onAbort);
+          }
+        }
+      });
+
     return {
-      load: (source) => send("load", [source]) as Promise<void>,
-      assertString: (source) => send("assertString", [source]) as Promise<FactId[]>,
+      load: (source) =>
+        withActiveLease(() => send("load", [source]) as Promise<void>),
+      assertString: (source) =>
+        withActiveLease(
+          () => send("assertString", [source]) as Promise<FactId[]>,
+        ),
       assertFact: (relation, ...fields) =>
-        send("assertFact", [relation, ...fields.map(toWire)]) as Promise<FactId>,
+        withActiveLease(
+          () => send(
+            "assertFact",
+            [relation, ...fields.map(toWire)],
+          ) as Promise<FactId>,
+        ),
       assertTemplate: (templateName, slots) =>
-        send("assertTemplate", [templateName, toWire(slots)]) as Promise<FactId>,
-      retract: (factId) => send("retract", [factId]) as Promise<void>,
-      getFact: (factId) => send("getFact", [factId]) as Promise<Fact | null>,
-      facts: () => send("facts", []) as Promise<Fact[]>,
-      findFacts: (relation) => send("findFacts", [relation]) as Promise<Fact[]>,
+        withActiveLease(
+          () => send(
+            "assertTemplate",
+            [templateName, toWire(slots)],
+          ) as Promise<FactId>,
+        ),
+      retract: (factId) =>
+        withActiveLease(() => send("retract", [factId]) as Promise<void>),
+      getFact: (factId) =>
+        withActiveLease(
+          () => send("getFact", [factId]) as Promise<Fact | null>,
+        ),
+      facts: () =>
+        withActiveLease(() => send("facts", []) as Promise<Fact[]>),
+      findFacts: (relation) =>
+        withActiveLease(
+          () => send("findFacts", [relation]) as Promise<Fact[]>,
+        ),
       run: runWithAbort,
-      step: () => send("step", []) as Promise<FiredRule | null>,
-      halt: () => send("halt", []) as Promise<void>,
-      reset: () => send("reset", []) as Promise<void>,
-      clear: () => send("clear", []) as Promise<void>,
-      getOutput: (channel) => send("getOutput", [channel]) as Promise<string | null>,
-      clearOutput: (channel) => send("clearOutput", [channel]) as Promise<void>,
-      pushInput: (line) => send("pushInput", [line]) as Promise<void>,
+      step: () =>
+        withActiveLease(
+          () => send("step", []) as Promise<FiredRule | null>,
+        ),
+      halt: () =>
+        withActiveLease(() => send("halt", []) as Promise<void>),
+      reset: () =>
+        withActiveLease(() => send("reset", []) as Promise<void>),
+      clear: () =>
+        withActiveLease(() => send("clear", []) as Promise<void>),
+      getOutput: (channel) =>
+        withActiveLease(
+          () => send("getOutput", [channel]) as Promise<string | null>,
+        ),
+      clearOutput: (channel) =>
+        withActiveLease(
+          () => send("clearOutput", [channel]) as Promise<void>,
+        ),
+      pushInput: (line) =>
+        withActiveLease(() => send("pushInput", [line]) as Promise<void>),
     };
   }
 
@@ -459,6 +800,7 @@ export class EnginePool {
     request: EvaluateRequest,
     options?: { signal?: AbortSignal },
   ): Promise<EvaluateResult> {
+    this.assertNotInActiveCallback();
     if (this.closed) throw new Error("EnginePool has been closed");
 
     const signal = options?.signal;
@@ -511,27 +853,38 @@ export class EnginePool {
   }
 
   /**
-   * Dispatch a function to run using a pooled engine.
+   * Run a callback with an exclusive lease on one pooled worker slot.
    *
-   * The callback receives an `EngineProxy` whose methods each send a single
-   * round-trip to the worker. The callback executes on the main thread —
-   * only individual operations cross the thread boundary.
+   * Root work enters each selected slot in FIFO order. While this callback's
+   * Promise is pending, no unrelated `do()` or `evaluate()` work can execute on
+   * that worker, even when the callback is between proxy calls. Concurrent
+   * proxy calls are serialized in invocation order.
    *
-   * The proxy must not be retained beyond the callback's return value.
+   * This is scheduling isolation, not rollback: successful mutations remain if
+   * the callback later rejects. The proxy becomes invalid when the pool's
+   * registered Promise reaction observes the callback outcome, before `do()`
+   * delivers that value or error. Promise reactions registered by the callback
+   * before it returns can run first and remain inside the lease. An AbortSignal
+   * can reject the public Promise earlier, but the lease remains exclusive until
+   * the pool observes the callback outcome.
+   *
+   * Calling `do()`, `evaluate()`, or `close()` on this same pool from inside an
+   * active callback rejects; use the supplied proxy instead. Other pools remain
+   * independent.
    *
    * @param specName Engine spec to use.
    * @param fn Callback receiving an EngineProxy.
    * @param options.signal AbortSignal for cancellation.
    *
-   * Note: `T` must be structured-clonable (or a primitive) because the
-   * return value of individual proxy methods crosses the thread boundary.
-   * The callback itself returns its value directly on the main thread.
+   * Only proxy arguments and results cross the worker boundary. The callback's
+   * `T` value remains on the main thread and need not be structured-clonable.
    */
   async do<T>(
     specName: string,
     fn: (engine: EngineProxy) => Promise<T>,
     options?: { signal?: AbortSignal },
   ): Promise<T> {
+    this.assertNotInActiveCallback();
     if (this.closed) throw new Error("EnginePool has been closed");
 
     const signal = options?.signal;
@@ -540,29 +893,70 @@ export class EnginePool {
     }
 
     const slot = this.pickSlot();
-    const proxy = this.makeProxy(specName, slot, signal);
+    const lease = await this.acquireLease(slot, signal);
 
-    // E-006: If the signal aborts during fn execution, reject with AbortError.
-    if (signal) {
-      return new Promise<T>((resolve, reject) => {
-        const onAbort = () => {
-          reject(new DOMException("The operation was aborted", "AbortError"));
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-        fn(proxy).then(
-          (val) => {
-            signal.removeEventListener("abort", onAbort);
-            resolve(val);
-          },
-          (err) => {
-            signal.removeEventListener("abort", onAbort);
-            reject(err);
-          },
-        );
-      });
+    // Abort can race with admission after the queued listener is removed but
+    // before this async continuation resumes. Such a callback never starts.
+    if (signal?.aborted) {
+      await this.releaseLease(slot, lease);
+      throw new DOMException("The operation was aborted", "AbortError");
     }
 
-    return fn(proxy);
+    const proxy = this.makeProxy(specName, slot, lease, signal);
+    const context: PoolCallbackContext = { active: true };
+    let callbackPromise: Promise<T>;
+    try {
+      callbackPromise = Promise.resolve(
+        this.callbackContext.run(context, () => fn(proxy)),
+      );
+    } catch (error) {
+      callbackPromise = Promise.reject(error);
+    }
+
+    // Cleanup follows the pool-observed callback lifetime, not the
+    // caller-visible AbortError race. Promise reactions registered by callback
+    // code before it returns may run before this reaction and remain inside the
+    // lease. Once this reaction begins, the proxy is invalidated before accepted
+    // work drains and before do() delivers the callback's value or error.
+    const completion = callbackPromise.then(
+      async (value) => {
+        context.active = false;
+        await this.releaseLease(slot, lease);
+        return value;
+      },
+      async (error: unknown) => {
+        context.active = false;
+        await this.releaseLease(slot, lease);
+        throw error;
+      },
+    );
+
+    if (!signal) return completion;
+
+    // E-006: abort rejects the public do() promise promptly, but completion
+    // above remains attached and owns the eventual lease cleanup.
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => {
+        reject(new DOMException("The operation was aborted", "AbortError"));
+      };
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+      const stopListening = () => {
+        signal.removeEventListener("abort", onAbort);
+      };
+      // The cancellation contract is phrased against pool-observed callback
+      // completion, not the later accepted-work drain barrier. Once the pool's
+      // callback reaction runs, a subsequent signal change cannot replace the
+      // callback result with AbortError.
+      callbackPromise.then(stopListening, stopListening);
+      completion.then(
+        (value) => resolve(value),
+        (error: unknown) => reject(error),
+      );
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -573,12 +967,14 @@ export class EnginePool {
    * Gracefully shut down all worker threads.
    *
    * - New requests are rejected immediately after close() is called.
-   * - Queued (not yet dispatched) requests are rejected with "EnginePool closed".
-   * - Already-dispatched in-flight requests are allowed to settle.
+   * - Queued requests and not-yet-admitted leases reject with "EnginePool closed".
+   * - Already-admitted callbacks retain owner dispatch access and may settle.
+   * - Already-dispatched ordinary requests are allowed to settle.
    * - Workers are terminated after all in-flight requests complete.
    * - Idempotent — safe to call multiple times.
    */
   async close(): Promise<void> {
+    this.assertNotInActiveCallback();
     if (this.closed) return;
     this.closed = true;
 
@@ -588,12 +984,24 @@ export class EnginePool {
       this.slots.map(async (slot) => {
         // Reject all queued (not yet dispatched) requests.
         for (const queued of slot.queue) {
-          if (queued.onAbort && queued.signal) {
-            queued.signal.removeEventListener("abort", queued.onAbort);
+          EnginePool.removeAbortListener(queued);
+          if (queued.kind === "lease") {
+            EnginePool.markLeaseReleased(queued.lease);
+            queued.reject(closeErr);
+          } else {
+            queued.entry.reject(closeErr);
           }
-          queued.entry.reject(closeErr);
         }
         slot.queue.length = 0;
+
+        // A do() callback is admitted work even while it has no native request
+        // in flight. Its owner calls remain valid after close starts, and close
+        // waits for pool-observed callback settlement plus accepted-call
+        // draining.
+        const activeLease = slot.activeLease;
+        if (activeLease) {
+          await activeLease.releasedPromise;
+        }
 
         // Wait for in-flight requests to settle. The existing message
         // handler installed in createSlot() clears slot.pending as

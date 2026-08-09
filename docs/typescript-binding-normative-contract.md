@@ -1,7 +1,7 @@
 # TypeScript Binding Normative Contract (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-002 logical-run semantics)
+Updated: 2026-08-09 (FR-NODE-003 worker-slot callback leases)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -101,10 +101,55 @@ If this contract conflicts with legacy design docs, this contract wins.
 2. `evaluate(spec, req)` `MUST` perform: `reset -> assert facts -> run -> collect facts/output`.
 3. `EnginePool.close()` `MUST`:
    - reject new requests after close starts,
-   - allow already-dispatched requests to settle,
+   - allow already-dispatched requests and admitted `do` callbacks to settle,
    - then terminate workers.
 4. `EnginePool.close()` `MUST` be idempotent.
 5. `EnginePool` `MUST` support `[Symbol.asyncDispose]()` and delegate to `close()`.
+
+### 4.4 EnginePool.do Worker-Slot Lease
+
+1. Before invoking a `do` callback, the pool `MUST` acquire an exclusive lease
+   on the selected worker slot. The lease covers the whole slot, including all
+   named engines hosted by that worker, rather than only the requested spec.
+2. From callback invocation until the pool's registered reaction to its
+   returned Promise begins, no unrelated `do`, `evaluate`, or other pool task
+   `MAY` execute on the leased worker. Time spent awaiting non-Ferric work and
+   callbacks that issue no proxy calls remain inside the lease lifetime.
+3. Lease acquisitions and ordinary work assigned to one worker slot `MUST` be
+   admitted in FIFO order. The pool does not guarantee global start or
+   completion order across different worker slots.
+4. Calls made through the active callback's proxy `MUST` execute serially in
+   invocation order, including calls submitted concurrently without awaiting
+   the preceding call.
+5. Normal callback settlement is the pool-observed boundary at which the
+   pool's registered fulfillment or rejection reaction to the returned Promise
+   begins. Promise reactions that the callback registered on that Promise
+   before returning it execute first under JavaScript's FIFO reaction ordering
+   and `MUST` remain inside the lease. Proxy calls they invoke are accepted as
+   callback work.
+6. At the pool-observed settlement boundary, the proxy `MUST` become invalid
+   before `do` delivers the callback's value or error. Every proxy method call
+   after that boundary `MUST` reject with the same deterministic lifetime error
+   before allocating, validating, or enqueueing a worker request.
+7. Proxy calls accepted before the pool-observed settlement boundary `MUST`
+   drain in invocation order before the worker-slot lease is released. The
+   callback's result or exception is delivered only after that release barrier
+   completes.
+8. A lease is an execution-isolation boundary, not a database transaction.
+   Engine mutations persist after callback fulfillment or rejection; the pool
+   performs no automatic rollback.
+9. While a callback is active, reentering the same `EnginePool` through
+   `do`, `evaluate`, or `close` `MUST` reject deterministically rather than
+   wait for the callback's own lease. Calling another `EnginePool` from the
+   callback remains supported.
+10. A callback whose lease was acquired before `close()` began is admitted
+   work. `close()` `MUST` wait for that callback and its accepted proxy calls;
+   those proxy calls remain permitted as part of the admitted callback. A
+   queued callback that has not acquired a lease is new work and `MUST` reject.
+11. Abort-driven proxy invalidation and the settlement rule for work accepted
+    before an abort are specified by FR-NODE-009. This lease contract does not
+    redefine that cancellation boundary; until the callback actually settles,
+    its slot nevertheless `MUST NOT` run unrelated work.
 
 ## 5. Run Limit Semantics
 
@@ -211,11 +256,19 @@ The following classes `MUST` exist and be constructible in JS:
 
 ### 7.3 EnginePool.do
 1. If already aborted before dispatch, `MUST` reject with `AbortError`.
-2. If aborted before callback completes, returned promise `MUST` reject with `AbortError`.
+2. If aborted before the pool observes the callback settlement boundary,
+   the returned promise `MUST` reject with `AbortError`.
 3. Proxy `run` operations issued during `do` `MUST` use the same fresh-run and
    continuation contract when cancellation is active.
 4. Rejecting the outer `do` promise for host cancellation `MUST NOT` require
    setting the proxied native engine's halt latch.
+5. Rejection of the outer promise does not by itself end the callback's
+   worker-slot lease. Unrelated work `MUST` remain excluded until the
+   pool-observed callback settlement boundary and accepted-call drain.
+6. FR-NODE-009 defines when abort invalidates the proxy, whether an operation
+   accepted before abort may mutate engine state, and when cancellation may
+   release the lease. FR-NODE-003 defines only the lease and normal
+   callback-settlement lifetime rules.
 
 ## 8. Worker Protocol Contract
 

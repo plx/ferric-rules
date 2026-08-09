@@ -545,6 +545,10 @@ export class EngineHandle {
 `EnginePool` manages multiple Worker threads for concurrent, stateless evaluation. It is the TypeScript equivalent of Go's `Coordinator` + `Manager` pattern.
 
 Each worker lazily creates engines from named specs. Requests are dispatched round-robin across workers.
+Work assigned to one worker slot is admitted FIFO. A `do()` callback receives
+an exclusive lease over its selected slot before the callback begins, so no
+unrelated task can use that worker until the pool processes the callback's
+normal settlement and its accepted proxy calls drain.
 
 ```typescript
 export interface EngineSpec {
@@ -591,15 +595,14 @@ export class EnginePool {
 
   /**
    * Dispatch a function to run on a pooled engine.
-   * The callback receives a proxy object for the named engine.
-   * The proxy must not be retained beyond the callback's return.
+   * The callback receives a proxy object for the named engine and exclusively
+   * leases the selected worker slot for its whole asynchronous lifetime.
+   * Proxy calls execute serially in invocation order. The proxy must not be
+   * retained after `do()` delivers the callback's value or error.
    *
    * @param specName Engine spec to use.
    * @param fn Callback receiving an EngineHandle-like proxy.
    * @param options.signal AbortSignal for cancellation.
-   *
-   * Note: `T` must be structured-clonable because results cross the
-   * worker-thread boundary.
    */
   do<T>(
     specName: string,
@@ -623,7 +626,10 @@ export class EnginePool {
     options?: { signal?: AbortSignal },
   ): Promise<EvaluateResult>;
 
-  /** Shut down all workers. Blocks until in-flight requests complete. */
+  /**
+   * Shut down all workers. Blocks until in-flight requests and callbacks that
+   * already acquired a worker-slot lease complete.
+   */
   close(): Promise<void>;
 
   [Symbol.asyncDispose](): Promise<void>;
@@ -632,7 +638,9 @@ export class EnginePool {
 /**
  * Proxy object passed to EnginePool.do() callbacks.
  * Has the same shape as EngineHandle but operations are
- * dispatched to a specific worker's engine.
+ * dispatched to a specific worker's engine. Calls are serialized in invocation
+ * order and reject deterministically before `do()` delivers the callback's
+ * value or error.
  */
 export interface EngineProxy {
   load(source: string): Promise<void>;
@@ -660,6 +668,41 @@ export interface EngineProxy {
   pushInput(line: string): Promise<void>;
 }
 ```
+
+#### `EnginePool.do()` lease and proxy lifetime
+
+- The lease covers the entire selected worker slot, not only the named engine.
+  A task for a different spec cannot execute on that worker during the callback.
+- Admission is FIFO within each slot. Different slots remain concurrent, so the
+  pool does not promise global start or completion order.
+- The callback begins only after acquiring its lease. External awaits and a
+  callback that makes no proxy calls still retain it.
+- Proxy methods are serialized in invocation order, including calls started in
+  parallel.
+- Normal callback settlement is observed when the pool's registered reaction
+  to the returned Promise begins. Promise reactions that the callback itself
+  registered before returning that Promise run first under JavaScript's FIFO
+  reaction ordering and remain inside the lease; proxy calls they invoke are
+  accepted and drain in order.
+- At the pool-observed settlement boundary, the proxy becomes invalid before
+  `do()` delivers the callback's value or error. Calls already accepted drain
+  before the lease releases. Every call after that boundary rejects with one
+  deterministic lifetime error without reaching the worker.
+- The callback return value stays on the main thread and does not need to be
+  structured-clonable. Only proxy arguments and results cross the worker
+  boundary.
+- A lease supplies isolation, not rollback. Facts, rules, output, and other
+  engine state changed by the callback remain changed if it rejects.
+- Calling `do()`, `evaluate()`, or `close()` on the same pool from inside its
+  active callback rejects rather than waiting on the callback's own lease.
+  Calling another pool is supported.
+- `close()` waits for a callback that already acquired its lease, including an
+  idle await between proxy calls. A callback still waiting to acquire a lease
+  is rejected as not-yet-admitted work.
+
+Abort-driven proxy invalidation and the state effects of an operation accepted
+before abort are reserved for FR-NODE-009. An outer `do()` rejection does not
+allow unrelated work onto a slot while its callback is still running.
 
 ## Value Conversion Details
 
@@ -790,10 +833,16 @@ parentPort!.on("message", (req: WorkerRequest) => {
 - **Waiting for worker**: If aborted while queued, the request is dequeued (if possible) and rejected.
 - **During execution**: The run phase follows the same fresh-run, continuation,
   exact-boundary, and out-of-band cancellation contract as `EngineHandle`.
+- **Callback lease**: Rejecting the outer `do()` promise does not release a
+  worker slot that is still owned by a running callback. Unrelated work remains
+  queued until the pool-observed callback settlement boundary and accepted-call
+  drain.
 
 The partial `HaltRequested` result is the existing JavaScript API projection of
 host cancellation; it does not imply that the native engine halt latch was set.
 A later `run()` always starts fresh and clears the documented execution state.
+FR-NODE-009 separately defines abort-time proxy invalidation and whether work
+accepted before abort may finish mutating engine state.
 
 ## Usage Examples
 

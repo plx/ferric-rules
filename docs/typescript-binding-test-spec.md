@@ -1,7 +1,7 @@
 # TypeScript Binding Test Specification (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-002 logical-run semantics)
+Updated: 2026-08-09 (FR-NODE-003 worker-slot callback leases)
 Status: Required for reimplementation
 
 Companion documents:
@@ -27,7 +27,9 @@ This is not optional guidance. The implementation is incomplete until this speci
 - Exercise wire conversion, cancellation, worker protocol, and error reconstruction.
 
 ### 2.4 Pool Runtime Unit Tests (`EnginePool`)
-- Exercise queueing, dispatch, cancellation states, `close()` behavior, and stateless evaluation behavior.
+- Exercise queueing, dispatch, cancellation states, worker-slot lease isolation,
+  proxy lifetime and ordering, same-pool reentrancy, `close()` behavior, and
+  stateless evaluation behavior.
 
 ### 2.5 Package/Load Tests
 - Validate native load behavior and package entrypoint surface guarantees.
@@ -100,14 +102,15 @@ Must include:
 - Error payload and reconstruction correctness (`C-001` to `C-005`).
 - `FactId` structured-clone response/request round-trip (`D-008`).
 
-### 4.4 Pool Runtime Tests (minimum 35 cases)
+### 4.4 Pool Runtime Tests (minimum 45 cases)
 Must include:
 - Evaluate lifecycle (`E-002`).
 - Cancellation for pre-abort, queued abort, and in-flight abort (`E-003`,
   `E-004`, `E-005`), including the no-synthetic-native-halt assertion.
 - `do()` cancellation behavior (`E-006`).
 - Proxy behavior parity (`E-007`).
-- `close()` contract (in-flight completion and idempotency) (`E-008`, `E-009`).
+- `close()` contract (in-flight completion, admitted-callback completion, and
+  idempotency) (`E-008`, `E-009`, `E-012`).
 - Thread default behavior (`E-001`).
 - `FactId` structured-clone response/request round-trip through a proxy
   (`E-010`).
@@ -116,6 +119,28 @@ Must include:
   diagnostics, accumulated totals, explicit-limit precedence, and a later
   fresh run. E-005 covers cancellation between chunks without a synthetic
   native halt.
+- Exclusive `do` worker-slot leases (`E-012`, `N-10`), including:
+  - deterministic one-thread and multi-thread delayed callbacks;
+  - exclusion across both the same spec and different specs on one worker;
+  - per-slot FIFO callback admission and serialization of parallel proxy calls
+    in invocation order;
+  - lease release after callback fulfillment, synchronous throw, and
+    asynchronous rejection;
+  - callback-pre-registered Promise reactions remaining inside the lease,
+    followed by invalidation at the pool's registered settlement reaction;
+  - draining calls accepted before that pool-observed settlement boundary;
+  - a retained-proxy method table proving the same lifetime error and no new
+    request allocation or dispatch after `do` delivers the callback outcome;
+  - persistent state after rejection, proving that leases do not roll back;
+  - deterministic rejection for same-pool `do`, `evaluate`, and `close`
+    reentry with one or multiple threads, while another pool remains usable;
+  - `close()` waiting through an admitted callback's idle await and accepted
+    proxy calls; and
+  - seeded randomized-await stress whose failure identifies the seed.
+
+Cancellation-time proxy invalidation, mutation by work accepted before abort,
+and cancellation-triggered lease release are FR-NODE-009 coverage. E-012 covers
+the lease and normal callback-settlement boundary without preempting that work.
 
 ### 4.5 Package Tests (minimum 10 cases)
 Must include:
@@ -147,6 +172,10 @@ Must include:
 4. Logical-run routing tests `MUST` use deterministic seams or direct worker
    protocol observation to distinguish fresh-run, continuation, halt-query, and
    host-abort paths.
+5. Lease tests `MUST` use explicit callback-entry and release barriers rather
+   than sleeps as their correctness oracle.
+6. Randomized-await lease stress `MUST` use a recorded deterministic seed and
+   bounded iteration count.
 
 ## 7. CI and Local Gates
 
