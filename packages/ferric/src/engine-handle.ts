@@ -78,7 +78,7 @@ function reconstructError(payload: WorkerResponse["error"]): Error {
   return err;
 }
 
-/** Preserve a create failure while retaining a secondary teardown failure. */
+/** Preserve a create failure, retaining a secondary teardown failure when possible. */
 function attachCreateCleanupCause(primary: unknown, cleanupFailure: unknown): void {
   if (!(primary instanceof Error)) return;
 
@@ -180,7 +180,8 @@ export class EngineHandle {
    * If `options.snapshot` is provided, the engine is restored from the snapshot.
    * If initialization fails after the Worker starts, create() awaits termination
    * before rejecting with the original error. A termination failure is attached
-   * to that error as its cause rather than replacing it.
+   * as the cause of an extensible Error; immutable or non-Error primaries retain
+   * exact identity even when cleanup metadata cannot be attached.
    */
   static async create(options?: EngineHandleOptions): Promise<EngineHandle> {
     const source = options?.source;

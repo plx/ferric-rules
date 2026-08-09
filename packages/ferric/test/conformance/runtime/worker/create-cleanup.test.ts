@@ -519,7 +519,7 @@ test("D-010 termination failure is attached without replacing init failure", asy
   }
 });
 
-test("D-010 teardown faults preserve frozen and non-Error init failures", async (t) => {
+test("D-010 immutable and non-Error init failures retain identity when cleanup cause attachment is impossible", async (t) => {
   const cases: Array<{ name: string; primary: unknown }> = [
     {
       name: "frozen Error",
@@ -532,7 +532,7 @@ test("D-010 teardown faults preserve frozen and non-Error init failures", async 
   ];
 
   for (const item of cases) {
-    await t.test(`D-010 ${item.name} remains the primary rejection`, async () => {
+    await t.test(`D-010 ${item.name} remains primary when cleanup metadata cannot be attached`, async () => {
       const terminationError = new Error("terminate failed");
       await withMockWorker(
         {
@@ -549,6 +549,8 @@ test("D-010 teardown faults preserve frozen and non-Error init failures", async 
             );
             assert.strictEqual(error, item.primary);
             if (item.primary instanceof Error) {
+              // Frozen errors cannot accept cause metadata without replacing
+              // the exact primary object, so identity deliberately wins.
               assert.strictEqual(
                 (item.primary as Error & { cause?: unknown }).cause,
                 undefined,

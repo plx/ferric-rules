@@ -45,7 +45,9 @@ This document is intentionally descriptive. If this document conflicts with the 
 - On any post-construction setup or initialization failure, clears the init
   request and registered listeners, awaits exactly one termination attempt,
   and preserves the primary failure while attaching a termination failure as
-  its cause.
+  the cause of an extensible `Error`. Cause attachment is best-effort for
+  immutable or non-`Error` primaries because preserving exact identity takes
+  precedence.
 - Provides Promise-based API matching `Engine` semantics where applicable.
 
 ### Layer 3: `EnginePool` (multi-worker concurrency)
