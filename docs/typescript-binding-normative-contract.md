@@ -28,6 +28,8 @@ If this contract conflicts with legacy design docs, this contract wins.
 1. `ClipsValue` `MUST` include `FerricSymbol` in the public API type union.
 2. Wire-only transport types `MUST NOT` replace public API value types.
 3. Public API examples from this contract `MUST` compile under `tsc --strict`.
+4. The package `MUST` export `FactId = bigint` and
+   `FactIdInput = FactId | number`.
 
 ## 3. Value Conversion Contract
 
@@ -49,8 +51,23 @@ If this contract conflicts with legacy design docs, this contract wins.
 6. CLIPS Multifield -> `ClipsValue[]` recursively.
 7. CLIPS Void and ExternalAddress -> `null`.
 
-### 3.3 Worker Boundary
-1. Worker transport `MUST` preserve the semantics in 3.1 and 3.2.
+### 3.3 Fact Identifiers
+1. Every fact ID returned by `assertString`, `assertFact`, or `assertTemplate`,
+   and every `Fact.id` snapshot property, `MUST` be a `FactId` (`bigint`),
+   regardless of magnitude.
+2. Every API that accepts a fact ID `MUST` accept `FactIdInput` and apply the
+   same conversion rules.
+3. A `bigint` input `MUST` be accepted only when it is in the unsigned 64-bit
+   range.
+4. A legacy `number` input `MUST` be accepted only when it is finite,
+   integral, non-negative, and no greater than `Number.MAX_SAFE_INTEGER`.
+5. Invalid and unsafe numeric inputs `MUST` fail with a targeted argument
+   error and `MUST NOT` be rounded or truncated.
+6. Fact-ID representation is distinct from the adaptive `number`/`bigint`
+   representation for CLIPS integer values and from run counts and limits.
+
+### 3.4 Worker Boundary
+1. Worker transport `MUST` preserve the semantics in 3.1, 3.2, and 3.3.
 2. Canonical symbol wire representation `MUST` be:
 
 ```ts
@@ -59,6 +76,8 @@ If this contract conflicts with legacy design docs, this contract wins.
 
 3. Transport layers `MUST` convert to/from this wire representation transparently.
 4. Callers of `EngineHandle` and `EnginePool` `MUST NOT` need manual symbol marshalling.
+5. `EngineHandle` and `EnginePool` `MUST` preserve `FactId` values as `bigint`
+   through structured clone in both request and response directions.
 
 ## 4. API Semantics
 

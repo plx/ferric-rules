@@ -40,7 +40,7 @@ test("B-002 FerricSymbol in ordered fact fields via EngineHandle", async () => {
   try {
     await handle.reset();
     const id = await handle.assertFact("color", new FerricSymbol("red"));
-    assert.strictEqual(typeof id, "number");
+    assert.strictEqual(typeof id, "bigint");
     const result = await handle.run();
     assert.strictEqual(result.rulesFired, 1);
   } finally {
@@ -57,7 +57,7 @@ test("B-002 FerricSymbol in template slots via EngineHandle", async () => {
       age: 30,
       active: new FerricSymbol("TRUE"),
     });
-    assert.strictEqual(typeof id, "number");
+    assert.strictEqual(typeof id, "bigint");
     const result = await handle.run();
     assert.strictEqual(result.rulesFired, 1);
   } finally {
@@ -77,7 +77,7 @@ test("B-002 FerricSymbol in nested arrays/multifields via EngineHandle", async (
       new FerricSymbol("b"),
       new FerricSymbol("c"),
     );
-    assert.strictEqual(typeof id, "number");
+    assert.strictEqual(typeof id, "bigint");
   } finally {
     await handle.close();
   }

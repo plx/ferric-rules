@@ -20,6 +20,8 @@
 
 export type {
   ClipsValue,
+  FactId,
+  FactIdInput,
   WireSymbolObject,
   RunResult,
   FiredRule,

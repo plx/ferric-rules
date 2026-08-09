@@ -25,7 +25,7 @@ import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, PoolWorkerInit } from "./wire";
 import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, fromWireToNative, extractFerricError } from "./wire";
 import type { NativeEngine } from "./native";
-import type { EvaluateRequest, EvaluateResult } from "./types";
+import type { EvaluateRequest, EvaluateResult, FactIdInput } from "./types";
 import { normalizeEvaluateLimit, normalizeRunLimit } from "./limit-validation";
 
 if (!parentPort) {
@@ -202,10 +202,10 @@ function handleMethod(specName: string, method: string, args: unknown[]): unknow
     case "assertTemplate":
       return engine.assertTemplate(args[0] as string, wireToNative(args[1]) as Record<string, unknown>);
     case "retract":
-      engine.retract(args[0] as number);
+      engine.retract(args[0] as FactIdInput);
       return undefined;
     case "getFact":
-      return engine.getFact(args[0] as number);
+      return engine.getFact(args[0] as FactIdInput);
     case "facts":
       return engine.facts();
     case "findFacts":

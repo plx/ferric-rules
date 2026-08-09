@@ -42,7 +42,7 @@ test("D-001 EngineHandle public methods cover loadFile/step/halt/clear/introspec
     const id = await handle.assertTemplate("person", {
       name: new FerricSymbol("Ada"),
     });
-    assert.strictEqual(typeof id, "number");
+    assert.strictEqual(typeof id, "bigint");
 
     assert.strictEqual(await handle.getFactCount(), 1);
     assert.strictEqual(await handle.getIsHalted(), false);

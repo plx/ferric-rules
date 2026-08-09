@@ -60,7 +60,7 @@ function assertedField(value: unknown): unknown {
   const engine = new Engine();
   try {
     const id = engine.assertFact("probe", value);
-    const fact = engine.getFact(id) as { fields: unknown[] } | null;
+    const fact = engine.getFact(id);
     if (!fact || fact.fields.length !== 1) {
       throw new Error("asserted fact did not retain one field");
     }
@@ -241,17 +241,13 @@ function factLifecycle(): unknown {
   const engine = Engine.fromSource(fixture("template.clp"));
   try {
     const orderedId = engine.assertFact("ordered", 7);
-    const ordered = engine.getFact(orderedId) as {
-      relation?: string;
-      fields: unknown[];
-    };
+    const ordered = engine.getFact(orderedId);
+    if (!ordered) throw new Error("ordered fact was not returned");
     engine.retract(orderedId);
 
     const templateId = engine.assertTemplate("person", { name: "Ada" });
-    const template = engine.getFact(templateId) as {
-      templateName?: string;
-      slots?: Record<string, unknown>;
-    };
+    const template = engine.getFact(templateId);
+    if (!template) throw new Error("template fact was not returned");
     engine.retract(templateId);
 
     return {
@@ -398,7 +394,7 @@ function highFactId(): unknown {
     if (roundtrip) {
       const id = engine.assertFact("generation");
       roundtrip =
-        id > Number.MAX_SAFE_INTEGER &&
+        id > BigInt(Number.MAX_SAFE_INTEGER) &&
         engine.getFact(id) !== null;
     }
   } finally {

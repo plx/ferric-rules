@@ -64,11 +64,15 @@ At minimum, test suite `MUST` include all items below.
 8. `using`/`await using` signatures compile (`Symbol.dispose`, `Symbol.asyncDispose`).
 9. Error classes are importable and constructible.
 10. All code snippets from normative docs compile unchanged.
+11. `A-007` `FactId`/`FactIdInput` exports and sync, worker, and pool fact-ID
+    signatures compile with `bigint` outputs and safe-number-compatible inputs.
 
 ### 4.2 Sync Runtime Tests (minimum 30 cases)
 Must include:
 - Value conversions (`B-001`, `B-003`, `B-005`, `B-006`, `B-007`).
 - Fact shape and retrieval (`B-008`, `B-009`).
+- Lossless fact-ID boundaries and high-generation lifecycle round-trip
+  (`B-010`, `B-011`), including every sync ID-taking API.
 - Run semantics including `limit` behavior (`D-006` sync side, `N-01`).
 - Error mappings for all documented error subclasses (`C-001` to `C-003`).
 - Lifecycle semantics (`F-001`, `F-002`, `A-005` where applicable).
@@ -82,6 +86,7 @@ Must include:
 - Cancellation pre-abort and in-flight abort (`D-004`, `D-005`).
 - Run limit behavior parity with sync (`D-006`, `N-01`).
 - Error payload and reconstruction correctness (`C-001` to `C-005`).
+- `FactId` structured-clone response/request round-trip (`D-008`).
 
 ### 4.4 Pool Runtime Tests (minimum 35 cases)
 Must include:
@@ -91,6 +96,8 @@ Must include:
 - Proxy behavior parity (`E-007`).
 - `close()` contract (in-flight completion and idempotency) (`E-008`, `E-009`).
 - Thread default behavior (`E-001`).
+- `FactId` structured-clone response/request round-trip through a proxy
+  (`E-010`).
 
 ### 4.5 Package Tests (minimum 10 cases)
 Must include:
@@ -107,6 +114,9 @@ Must include:
    - Module/focus behavior,
    - Serialization round-trip.
 2. Fixtures `MUST` be deterministic and avoid flaky timing assumptions.
+3. A Node subprocess `MUST` drive a real engine generation above
+   `Number.MAX_SAFE_INTEGER` and prove assert/get/retract round-trip without
+   relying only on synthetic conversion helpers.
 
 ## 6. Determinism and Flake Controls
 

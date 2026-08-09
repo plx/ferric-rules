@@ -115,16 +115,16 @@ export declare class Engine {
   /**
    * Assert one or more facts from CLIPS syntax (e.g. `"(color red)"`).
    *
-   * Returns an array of fact IDs (as `number`) for all asserted facts.
+   * Returns an array of fact IDs (as `bigint`) for all asserted facts.
    */
-  assertString(source: string): Array<number>
+  assertString(source: string): Array<bigint>
   /**
    * Assert an ordered fact with the given relation name and field values.
    *
    * Field values may be `null`, `boolean`, `number`, `bigint`, `string`,
    * `FerricSymbol`, or `Array`.
    */
-  assertFact(relation: string, ...fields: unknown[]): number
+  assertFact(relation: string, ...fields: unknown[]): bigint
   /**
    * Assert a template fact by template name and slot values.
    *
@@ -132,17 +132,26 @@ export declare class Engine {
    * CLIPS values (`null`, `boolean`, `number`, `bigint`, `string`,
    * `FerricSymbol`, or `Array`).
    */
-  assertTemplate(templateName: string, slots: object): number
-  /** Retract a fact by its ID. */
-  retract(factId: number): void
-  /** Get a fact by its ID, or `null` if it does not exist. */
-  getFact(factId: number): unknown
+  assertTemplate(templateName: string, slots: object): bigint
+  /**
+   * Retract a fact by its ID. Canonical IDs are `bigint`; safe legacy
+   * `number` IDs are also accepted.
+   */
+  retract(factId: bigint | number): void
+  /**
+   * Get a fact by its ID, or `null` if it does not exist. Canonical IDs are
+   * `bigint`; safe legacy `number` IDs are also accepted.
+   */
+  getFact(factId: bigint | number): unknown
   /** Return all user-visible facts as a JS array of fact objects. */
   facts(): object
   /** Find facts by relation name. Returns a JS array of fact objects. */
   findFacts(relation: string): object
-  /** Get the value of a template fact slot by name. */
-  getFactSlot(factId: number, slotName: string): unknown
+  /**
+   * Get the value of a template fact slot by name. Canonical IDs are
+   * `bigint`; safe legacy `number` IDs are also accepted.
+   */
+  getFactSlot(factId: bigint | number, slotName: string): unknown
   /**
    * Run the engine, optionally limiting the number of rule firings.
    *

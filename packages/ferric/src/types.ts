@@ -65,6 +65,24 @@ export type ClipsValue =
   | ClipsValue[]
   | null;
 
+/**
+ * Canonical identifier for a fact.
+ *
+ * Fact IDs are 64-bit generational values and are therefore always exposed as
+ * `bigint`, including when the current value would fit in a JavaScript safe
+ * integer.
+ */
+export type FactId = bigint;
+
+/**
+ * Value accepted by APIs that look up or retract a fact.
+ *
+ * `number` is retained for migration compatibility, but it must be a finite,
+ * non-negative safe integer. Use `FactId` for new code and for every ID
+ * returned by Ferric.
+ */
+export type FactIdInput = FactId | number;
+
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
@@ -130,7 +148,7 @@ export interface RuleInfo {
 
 /** Snapshot of a single fact. */
 export interface Fact {
-  readonly id: number;
+  readonly id: FactId;
   readonly type: FactType;
   /** Relation name (ordered facts only). */
   readonly relation?: string;

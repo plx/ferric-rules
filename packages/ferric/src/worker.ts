@@ -22,6 +22,7 @@ import { resolve } from "node:path";
 import type { WorkerRequest, WorkerResponse, WorkerInit } from "./wire";
 import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, fromWireToNative, extractFerricError } from "./wire";
 import type { NativeEngine } from "./native";
+import type { FactIdInput } from "./types";
 import { normalizeRunLimit } from "./limit-validation";
 
 if (!parentPort) {
@@ -161,16 +162,16 @@ function handleMethod(method: string, args: unknown[]): unknown {
     case "assertTemplate":
       return engine.assertTemplate(args[0] as string, wireToNative(args[1]) as Record<string, unknown>);
     case "retract":
-      engine.retract(args[0] as number);
+      engine.retract(args[0] as FactIdInput);
       return undefined;
     case "getFact":
-      return engine.getFact(args[0] as number);
+      return engine.getFact(args[0] as FactIdInput);
     case "facts":
       return engine.facts();
     case "findFacts":
       return engine.findFacts(args[0] as string);
     case "getFactSlot":
-      return engine.getFactSlot(args[0] as number, args[1] as string);
+      return engine.getFactSlot(args[0] as FactIdInput, args[1] as string);
 
     // Execution
     case "run":

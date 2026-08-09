@@ -177,8 +177,17 @@ export interface RuleInfo {
   readonly salience: number;
 }
 
+/** Canonical, lossless 64-bit generational fact identifier. */
+export type FactId = bigint;
+
+/**
+ * Accepted fact-ID input. Legacy numbers must be non-negative safe integers;
+ * use FactId for new code and all IDs returned by Ferric.
+ */
+export type FactIdInput = FactId | number;
+
 export interface Fact {
-  readonly id: number;
+  readonly id: FactId;
   readonly type: FactType;
   /** Relation name (ordered facts only). */
   readonly relation?: string;
@@ -266,14 +275,14 @@ export class Engine {
    * @returns Array of fact IDs for the asserted facts.
    * @example engine.assertString("(color red) (color blue)")
    */
-  assertString(source: string): number[];
+  assertString(source: string): FactId[];
 
   /**
    * Assert an ordered fact.
    * @returns The fact ID.
    * @example engine.assertFact("color", new FerricSymbol("red"))
    */
-  assertFact(relation: string, ...fields: ClipsValue[]): number;
+  assertFact(relation: string, ...fields: ClipsValue[]): FactId;
 
   /**
    * Assert a template fact with named slots.
@@ -283,13 +292,13 @@ export class Engine {
   assertTemplate(
     templateName: string,
     slots: Record<string, ClipsValue>,
-  ): number;
+  ): FactId;
 
   /** Retract a fact by ID. */
-  retract(factId: number): void;
+  retract(factId: FactIdInput): void;
 
   /** Get a snapshot of a single fact, or null if not found. */
-  getFact(factId: number): Fact | null;
+  getFact(factId: FactIdInput): Fact | null;
 
   /** Get snapshots of all user-visible facts. */
   facts(): Fact[];
@@ -298,7 +307,7 @@ export class Engine {
   findFacts(relation: string): Fact[];
 
   /** Get a template fact's slot value by name. */
-  getFactSlot(factId: number, slotName: string): ClipsValue;
+  getFactSlot(factId: FactIdInput, slotName: string): ClipsValue;
 
   // --- Execution ---
 
@@ -447,14 +456,14 @@ export class EngineHandle {
   loadFile(path: string): Promise<void>;
 
   // --- Fact Operations ---
-  assertString(source: string): Promise<number[]>;
-  assertFact(relation: string, ...fields: ClipsValue[]): Promise<number>;
+  assertString(source: string): Promise<FactId[]>;
+  assertFact(relation: string, ...fields: ClipsValue[]): Promise<FactId>;
   assertTemplate(
     templateName: string,
     slots: Record<string, ClipsValue>,
-  ): Promise<number>;
-  retract(factId: number): Promise<void>;
-  getFact(factId: number): Promise<Fact | null>;
+  ): Promise<FactId>;
+  retract(factId: FactIdInput): Promise<void>;
+  getFact(factId: FactIdInput): Promise<Fact | null>;
   facts(): Promise<Fact[]>;
   findFacts(relation: string): Promise<Fact[]>;
 
@@ -609,14 +618,14 @@ export class EnginePool {
  */
 export interface EngineProxy {
   load(source: string): Promise<void>;
-  assertString(source: string): Promise<number[]>;
-  assertFact(relation: string, ...fields: ClipsValue[]): Promise<number>;
+  assertString(source: string): Promise<FactId[]>;
+  assertFact(relation: string, ...fields: ClipsValue[]): Promise<FactId>;
   assertTemplate(
     templateName: string,
     slots: Record<string, ClipsValue>,
-  ): Promise<number>;
-  retract(factId: number): Promise<void>;
-  getFact(factId: number): Promise<Fact | null>;
+  ): Promise<FactId>;
+  retract(factId: FactIdInput): Promise<void>;
+  getFact(factId: FactIdInput): Promise<Fact | null>;
   facts(): Promise<Fact[]>;
   findFacts(relation: string): Promise<Fact[]>;
   run(options?: { limit?: number }): Promise<RunResult>;
@@ -666,6 +675,41 @@ CLIPS integers are `i64`. JavaScript `number` is a 64-bit IEEE 754 float with 53
 - Accepts both `number` and `bigint` for assertion.
 
 This avoids silent precision loss while keeping the common case (small integers) ergonomic.
+
+### Fact Identifier Representation and Migration
+
+Fact identifiers are not CLIPS integer values. They are unsigned 64-bit,
+generational engine handles, so Ferric exposes every returned ID as the
+canonical `FactId = bigint` representation even when its current value would
+fit in a JavaScript safe integer. This applies to `assertString`, `assertFact`,
+`assertTemplate`, and the `id` property returned by `getFact`, `facts`, and
+`findFacts`.
+
+ID-accepting APIs use `FactIdInput = FactId | number` as a deliberate migration
+bridge. A `number` is accepted only when it is finite, integral, non-negative,
+and no greater than `Number.MAX_SAFE_INTEGER`; unsafe numeric inputs are
+rejected with an argument error that directs callers to use `bigint`. A
+`bigint` must fit the unsigned 64-bit range.
+
+Existing callers should migrate as follows:
+
+- Treat the output change from `number` to `bigint` as a source-level breaking
+  change; code and declarations that annotate returned IDs as `number` must be
+  updated.
+- Treat returned IDs as `bigint` and update type assertions from `number` to
+  `FactId`.
+- Use bigint literals such as `123n` for new ID inputs. Existing safe numeric
+  inputs remain accepted during migration.
+- Never convert a returned ID with `Number(id)`, because doing so can discard
+  its generation bits.
+- `bigint` is supported by Node's structured-clone algorithm, so IDs pass
+  unchanged through `EngineHandle` and `EnginePool`. For JSON, encode an ID as
+  decimal text with `id.toString()` and reconstruct it with `BigInt(text)`;
+  `JSON.stringify` does not serialize `bigint` by default.
+
+This fact-ID rule is intentionally separate from the adaptive
+`number`/`bigint` representation used for CLIPS integer field values and from
+run limits and fired counts.
 
 ## Worker Communication Protocol
 
@@ -896,7 +940,7 @@ The worker thread script needs access to the native addon. napi-rs addons work i
 Values passed via `postMessage` must be structured-clonable. The binding provides transparent serialization for:
 
 - `FerricSymbol` → `{ __type: "FerricSymbol", value: string }` (tagged for reconstruction).
-- `Fact` → plain object (already structured-clonable).
+- `Fact` → plain object whose `bigint` ID is preserved by structured clone.
 - `Buffer` (snapshots) → transferred as `ArrayBuffer` (zero-copy).
 
 This is handled in the TypeScript layer, not in Rust.

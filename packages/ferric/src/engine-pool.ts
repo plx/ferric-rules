@@ -34,6 +34,8 @@ import type {
   RunResult,
   FiredRule,
   Fact,
+  FactId,
+  FactIdInput,
   EvaluateRequest,
   EvaluateResult,
   EngineSpec,
@@ -55,14 +57,14 @@ export type { EngineSpec, EvaluateRequest, EvaluateResult };
  */
 export interface EngineProxy {
   load(source: string): Promise<void>;
-  assertString(source: string): Promise<number[]>;
-  assertFact(relation: string, ...fields: ClipsValue[]): Promise<number>;
+  assertString(source: string): Promise<FactId[]>;
+  assertFact(relation: string, ...fields: ClipsValue[]): Promise<FactId>;
   assertTemplate(
     templateName: string,
     slots: Record<string, ClipsValue>,
-  ): Promise<number>;
-  retract(factId: number): Promise<void>;
-  getFact(factId: number): Promise<Fact | null>;
+  ): Promise<FactId>;
+  retract(factId: FactIdInput): Promise<void>;
+  getFact(factId: FactIdInput): Promise<Fact | null>;
   facts(): Promise<Fact[]>;
   findFacts(relation: string): Promise<Fact[]>;
   run(options?: { limit?: number }): Promise<RunResult>;
@@ -406,11 +408,11 @@ export class EnginePool {
 
     return {
       load: (source) => send("load", [source]) as Promise<void>,
-      assertString: (source) => send("assertString", [source]) as Promise<number[]>,
+      assertString: (source) => send("assertString", [source]) as Promise<FactId[]>,
       assertFact: (relation, ...fields) =>
-        send("assertFact", [relation, ...fields.map(toWire)]) as Promise<number>,
+        send("assertFact", [relation, ...fields.map(toWire)]) as Promise<FactId>,
       assertTemplate: (templateName, slots) =>
-        send("assertTemplate", [templateName, toWire(slots)]) as Promise<number>,
+        send("assertTemplate", [templateName, toWire(slots)]) as Promise<FactId>,
       retract: (factId) => send("retract", [factId]) as Promise<void>,
       getFact: (factId) => send("getFact", [factId]) as Promise<Fact | null>,
       facts: () => send("facts", []) as Promise<Fact[]>,
