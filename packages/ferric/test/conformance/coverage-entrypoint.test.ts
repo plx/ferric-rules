@@ -32,6 +32,7 @@ import "./runtime/pool/logical-run.test.ts";
 import "./runtime/pool/pool-internals.test.ts";
 import "./runtime/pool/pool-smoke.test.ts";
 import "./runtime/pool/postmessage-rollback.test.ts";
+import "./runtime/pool/proxy-cancellation.test.ts";
 import "./runtime/pool/protocol-direct.test.ts";
 import "./runtime/pool/run-limit.test.ts";
 import "./runtime/pool/terminal-state.test.ts";

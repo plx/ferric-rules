@@ -1,7 +1,7 @@
 # TypeScript Binding Normative Contract (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-008 atomic request-send rollback)
+Updated: 2026-08-09 (FR-NODE-009 callback-proxy cancellation boundary)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -179,9 +179,10 @@ If this contract conflicts with legacy design docs, this contract wins.
 10. Work accepted on another still-running slot before the failure was
     observed, including that slot's existing root FIFO, `MUST` remain eligible
     to finish normally. An already-admitted healthy active lease `MUST` retain
-    its N-10 owner-dispatch rights until its callback settles. The pool
-    `MUST NOT` replay failed-slot work on that healthy slot, and the healthy
-    slot remains owned by the pool until close.
+    its N-10 owner-dispatch rights until its callback settles, except that its
+    own cancellation signal closes future proxy admission under section 7.3.
+    The pool `MUST NOT` replay failed-slot work on that healthy slot, and the
+    healthy slot remains owned by the pool until close.
 11. A Worker fault `MUST` reject in-flight and queued proxy operations of an
     admitted `do` callback on the failed slot and make any later proxy send
     through that callback fail with the retained pool failure. It `MUST NOT`
@@ -195,12 +196,12 @@ If this contract conflicts with legacy design docs, this contract wins.
     This requirement does not define the shared completion barrier for
     concurrent public close calls.
 13. Synchronous main-to-Worker request-send rollback `MUST` follow section 8.1.
-    Generic queued AbortSignal-listener cleanup after a successful dispatch
-    remains FR-NODE-006; cancellation-time proxy invalidation remains
-    FR-NODE-009; bounded queue capacity remains FR-NODE-011; and concurrent
-    close callers sharing one completion Promise remains FR-NODE-010.
-    FR-NODE-005 owns the corresponding cleanup only when a Worker terminal
-    event occurs.
+    Cancellation-time proxy admission and ownership `MUST` follow section 7.3.
+    Generic queued AbortSignal-listener cleanup after a successful root
+    dispatch remains FR-NODE-006; bounded queue capacity remains FR-NODE-011;
+    and concurrent close callers sharing one completion Promise remains
+    FR-NODE-010. FR-NODE-005 owns the corresponding cleanup only when a Worker
+    terminal event occurs.
     The fixed Worker-count bound in item 1 does not define or satisfy the queue
     capacity and overload policy assigned to FR-NODE-011.
 
@@ -244,10 +245,10 @@ If this contract conflicts with legacy design docs, this contract wins.
    work. `close()` `MUST` wait for that callback and its accepted proxy calls;
    those proxy calls remain permitted as part of the admitted callback. A
    queued callback that has not acquired a lease is new work and `MUST` reject.
-11. Abort-driven proxy invalidation and the settlement rule for work accepted
-    before an abort are specified by FR-NODE-009. This lease contract does not
-    redefine that cancellation boundary; until the callback actually settles,
-    its slot nevertheless `MUST NOT` run unrelated work.
+11. Section 7.3's abort boundary is an additional proxy-admission boundary, not
+    a callback-settlement boundary. It `MUST NOT` shorten this lease: until the
+    callback actually settles and its accepted calls drain, the slot `MUST NOT`
+    run unrelated work and the release transition `MUST` occur exactly once.
 
 ## 5. Run Limit Semantics
 
@@ -353,20 +354,86 @@ The following classes `MUST` exist and be constructible in JS:
    native halt latch merely to represent that cancellation.
 
 ### 7.3 EnginePool.do
-1. If already aborted before dispatch, `MUST` reject with `AbortError`.
-2. If aborted before the pool observes the callback settlement boundary,
-   the returned promise `MUST` reject with `AbortError`.
-3. Proxy `run` operations issued during `do` `MUST` use the same fresh-run and
-   continuation contract when cancellation is active.
-4. Rejecting the outer `do` promise for host cancellation `MUST NOT` require
-   setting the proxied native engine's halt latch.
-5. Rejection of the outer promise does not by itself end the callback's
-   worker-slot lease. Unrelated work `MUST` remain excluded until the
-   pool-observed callback settlement boundary and accepted-call drain.
-6. FR-NODE-009 defines when abort invalidates the proxy, whether an operation
-   accepted before abort may mutate engine state, and when cancellation may
-   release the lease. FR-NODE-003 defines only the lease and normal
-   callback-settlement lifetime rules.
+1. Cancellation `MUST` reject with a `DOMException` whose `name` is
+   `AbortError` and whose message is `The operation was aborted`.
+2. After the existing same-pool reentry, closed-pool, and pool-terminal
+   guards, an otherwise-admissible `do` whose signal is already aborted at
+   public entry `MUST` reject before round-robin selection, lease construction,
+   listener registration, callback invocation, request-ID allocation, or
+   Worker dispatch.
+3. If abort wins while lease admission is queued, that waiter `MUST` be removed,
+   its callback `MUST NOT` run, its lease `MUST` be marked released exactly
+   once, and its admission listener `MUST` be removed. The same result applies
+   when abort wins the admission-to-callback microtask race after an idle lease
+   was assigned but before callback invocation. A close or Worker-terminal
+   transition that already settled the waiter retains its existing first
+   settlement instead.
+4. Once the callback begins, the first event observed between the signal's
+   abort transition and the pool's registered reaction to callback settlement
+   `MUST` fix the outer `do` outcome. If callback settlement is observed first,
+   its value or error wins, the outer abort listener is removed immediately,
+   and a later signal change `MUST NOT` replace that outcome while accepted
+   calls drain. If abort is observed first, the outer Promise `MUST` reject
+   promptly with the item 1 `AbortError`; that rejection `MUST NOT` wait for
+   arbitrary callback JavaScript or already-accepted proxy calls.
+5. Abort observed first `MUST` immediately close admission through the active
+   callback proxy. Every proxy method invoked afterward `MUST` return a
+   rejected Promise with the item 1 `AbortError`; it `MUST NOT` throw that
+   public failure synchronously or reach method-specific argument validation,
+   request-ID allocation, lease-call accounting, abort-listener registration,
+   either queue, pending registration, or `postMessage`.
+   Each request-bearing method `MUST` also recheck the signal after its
+   synchronous preprocessing and immediately before request-ID allocation. If
+   abort occurs during preprocessing and that preprocessing completes, this
+   final gate `MUST` reject with the item 1 `AbortError` before the request is
+   accepted or any request bookkeeping begins.
+6. A proxy request is accepted when it passes that final lifetime, slot-state,
+   and signal gate immediately before request-ID allocation. Every request
+   accepted before abort, including work waiting in the lease-private FIFO,
+   `MUST` keep its invocation order and ordinary response, send-failure, or
+   Worker-terminal outcome. Such work `MAY` finish mutating engine state after
+   the signal has aborted and the outer Promise has rejected; cancellation
+   supplies no rollback. The `do` signal `MUST NOT` be used to dequeue or
+   replace the outcome of that accepted work.
+7. An accepted proxy `run` `MUST` additionally set its existing out-of-band
+   abort flag when the signal fires. Absent a send, response, or Worker-terminal
+   failure, it `MUST` resolve with the partial `HaltRequested` projection after
+   the worker stops continuation chunks. Host abort `MUST NOT` set the native
+   halt latch merely to represent this result.
+8. Abort is not callback preemption. The callback remains admitted work and its
+   whole worker slot `MUST` remain exclusively leased until the callback
+   actually settles and every accepted proxy call drains. That barrier owns one
+   idempotent release transition; abort `MUST NOT` release the slot early, and
+   unrelated root or lease work `MUST NOT` enter it merely because the outer
+   `do` Promise has rejected.
+9. Proxy failure precedence `MUST` be evaluated in this order:
+   - after pool-observed callback settlement or lease release, reject with
+     `Error("EngineProxy is no longer valid outside its EnginePool.do callback")`;
+   - while the lease remains active on a failed slot, reject with the exact
+     retained pool terminal failure;
+   - while the active slot is no longer running because close owns it, reject
+     with the deterministic closed-pool error;
+   - while the lease and slot remain active/running but the signal has aborted,
+     reject with the item 1 `AbortError`; and
+   - only after those gates may method validation and request acceptance occur.
+
+   Consequently an abort-first retained proxy rejects with `AbortError` while
+   its callback remains active and with the lifetime error after callback
+   settlement. A failed-slot error takes precedence while that callback is
+   active. Neither transition replaces the already-fixed outer `do` outcome.
+10. Once an accepted request begins its `postMessage` attempt, section 8.1's
+    exact-entry first-settlement and exact synchronous-send-error rules
+    `MUST` win for that request even if abort occurs during the attempt. Abort
+    may independently fix the outer `do` outcome under item 4.
+11. The pool `MUST` remove its outer `do` abort listener when abort or callback
+    settlement wins and remove each accepted `run` flag listener when that run
+    settles. Cancellation completion, callback release, and queued-admission
+    cancellation `MUST` return their owned listener and lease bookkeeping to
+    baseline exactly once.
+12. Items 1-11 do not require generic cleanup of a root request's queue
+    listener after successful dispatch (FR-NODE-006), do not change concurrent
+    `close()` Promise sharing (FR-NODE-010), and do not add queue capacity,
+    overflow behavior, or metrics (FR-NODE-011).
 
 ## 8. Worker Protocol Contract
 
@@ -406,8 +473,9 @@ interface WorkerResponse {
    queued pool dispatch. `EngineHandle` initialization remains additionally
    governed by the failed-create ownership requirements in section 4.2.
 2. Existing checks that run before registration retain their existing
-   precedence. A closed or terminal object, inactive proxy, invalid argument,
-   or dequeuable pre-abort `MUST` fail without calling `postMessage`. For every
+   precedence, including the proxy ordering in section 7.3 item 9. A closed or
+   terminal object, inactive or canceled proxy, invalid argument, or
+   dequeuable pre-abort `MUST` fail without calling `postMessage`. For every
    valid ordinary or proxy call that reaches request submission, a synchronous
    `postMessage` failure `MUST` reject its Promise; it `MUST NOT` escape as a
    separate synchronous public throw. A valid-thread `EnginePool.create()`
@@ -451,9 +519,9 @@ interface WorkerResponse {
    `MUST NOT` publish a partially initialized or terminal pool.
 9. Once a send attempt begins, its synchronous failure wins over an abort that
    occurs later. This section requires listener removal for a request whose
-   send failed; generic listener cleanup after a successful queued dispatch
-   remains FR-NODE-006. Abort-time proxy validity and accepted-mutation
-   semantics remain FR-NODE-009, and a send failure alone does not alter them.
+   send failed; generic listener cleanup after a successful queued root
+   dispatch remains FR-NODE-006. Section 7.3 governs proxy admission and
+   accepted-mutation semantics, and a send failure alone does not alter them.
 10. Worker-to-main response `postMessage` calls create no host pending entry and
     are outside this rollback contract. Their failure remains governed by the
     response protocol and Worker error/exit lifecycle. This section also does

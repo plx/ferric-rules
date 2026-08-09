@@ -1,7 +1,7 @@
 # TypeScript Binding Test Specification (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-008 atomic request-send rollback)
+Updated: 2026-08-09 (FR-NODE-009 callback-proxy cancellation boundary)
 Status: Required for reimplementation
 
 Companion documents:
@@ -30,9 +30,10 @@ This is not optional guidance. The implementation is incomplete until this speci
 
 ### 2.4 Pool Runtime Unit Tests (`EnginePool`)
 - Exercise construction bounds, queueing, dispatch, cancellation states,
-  worker-slot lease isolation, proxy lifetime and ordering, same-pool
-  reentrancy, terminal Worker faults, synchronous send rollback, `close()`
-  behavior, and stateless evaluation behavior.
+  worker-slot lease isolation, cancellation-time proxy admission and accepted
+  work, proxy lifetime and ordering, same-pool reentrancy, terminal Worker
+  faults, synchronous send rollback, `close()` behavior, and stateless
+  evaluation behavior.
 
 ### 2.5 Package/Load Tests
 - Validate native load behavior and package entrypoint surface guarantees.
@@ -144,7 +145,7 @@ The D-010 synchronous-send case above applies to initialization ownership.
 
 Concurrent public `close()` completion-barrier coverage remains FR-NODE-010.
 
-### 4.4 Pool Runtime Tests (minimum 60 cases)
+### 4.4 Pool Runtime Tests (minimum 70 cases)
 Must include:
 - Evaluate lifecycle (`E-002`).
 - Cancellation for pre-abort, queued abort, and in-flight abort (`E-003`,
@@ -190,6 +191,45 @@ Must include:
   - synchronous response, ordinary response error, Worker error, and exit
     before a later send throw, proving exact-entry first-settlement behavior and
     preservation of N-11's primary terminal error.
+- Callback-proxy cancellation (`E-016`, `N-14`), including:
+  - already-aborted public entry, queued lease cancellation, and the
+    admission-to-callback microtask race, proving the callback is not invoked,
+    the lease is released once, no round-robin/request allocation or Worker
+    dispatch occurs, and admission listeners return to baseline;
+  - a real-Worker reproduction in which the outer `do` Promise has already
+    rejected, the still-running callback attempts a new mutation, that proxy
+    call rejects with `DOMException` name `AbortError` and message
+    `The operation was aborted`, and later work proves the fact was not added;
+  - abort between callback awaits followed by every `EngineProxy` method,
+    including `run({limit: NaN})`, proving each public call returns a rejecting
+    Promise and cancellation wins before validation, request-ID allocation,
+    lease-call accounting, listener registration, either queue, pending-map
+    insertion, or Worker post;
+  - a user-observable `run` option getter that aborts after the initial proxy
+    gate but returns a valid limit, proving the final pre-allocation signal
+    recheck rejects without an ID, lease-call unit, queue entry, or Worker post;
+  - immediate and lease-private queued calls invoked before abort, proving both
+    remain accepted, serialize in invocation order, drain/apply after the outer
+    rejection, and preserve their own response or ordinary error rather than
+    being dequeued or replaced by `AbortError`;
+  - abort during an accepted native run, proving its shared flag changes, its
+    per-run listener returns to baseline, it resolves with the partial
+    `HaltRequested` projection absent another failure, and the outer `do`
+    independently rejects with `AbortError`;
+  - callback-settlement-first controls for fulfillment and rejection while an
+    accepted call still drains, proving listener removal and that a later abort
+    replaces neither callback outcome nor post-settlement lifetime error;
+  - abort-first controls proving `AbortError` while the callback remains active,
+    then the existing exact lifetime error after callback settlement;
+  - active failed-slot, closed-state, and synchronous-send race controls proving
+    exact terminal/lifetime/send outcomes retain N-11/N-13 precedence while the
+    outer cancellation result remains independently fixed;
+  - an idle callback held after outer cancellation, proving its selected slot
+    remains exclusively leased, unrelated work cannot enter, and actual
+    callback settlement plus accepted-call drain performs one release; and
+  - listener, lease queue/pending-call/waiter, slot pending/in-flight, and
+    Worker post baselines after each phase, plus bounded seeded interleaving
+    stress whose failure reports its seed.
 - `FactId` structured-clone response/request round-trip through a proxy
   (`E-010`).
 - Logical-run parity for both `evaluate` and proxy/direct run paths (`E-011`,
@@ -245,11 +285,12 @@ Must include:
     pending and queued work, closes the pool, returns active Worker resources
     to baseline, and exits naturally without `process.exit()` or `unref()`.
 
-Cancellation-time proxy invalidation, mutation by work accepted before abort,
-and cancellation-triggered lease release are FR-NODE-009 coverage. E-012 covers
-the lease and normal callback-settlement boundary without preempting that work.
+E-016 covers cancellation-time proxy admission and work accepted before abort.
+E-012 continues to own the lease and normal callback-settlement boundary:
+FR-NODE-009 invalidates new proxy calls but does not preempt the callback or
+release that lease early.
 E-015 removes an abort listener from a request whose send fails; generic
-queue-listener cleanup after a successful dispatch remains FR-NODE-006.
+root-queue listener cleanup after a successful dispatch remains FR-NODE-006.
 Bounded queue capacity remains FR-NODE-011, and concurrent close calls sharing
 one completion Promise remains FR-NODE-010. E-013 covers corresponding
 resources only on a Worker terminal transition.
@@ -292,6 +333,9 @@ Must include:
    bounded iteration count.
 7. Failed-create subprocess tests `MUST` use a parent-enforced timeout as a
    failure guard while requiring natural child exit as the passing condition.
+8. E-016 ordering tests `MUST` use controlled Worker/event seams and explicit
+   callback, abort, dispatch, response, and release barriers. A wall-clock abort
+   cannot be the sole evidence for proxy-admission or first-settlement order.
 
 ## 7. CI and Local Gates
 
