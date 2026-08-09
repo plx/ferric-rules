@@ -635,6 +635,23 @@ def test_sbom_rejects_an_unexpected_native_component(tmp_path, contract, version
         package_lib.validate_wheel(wheel, contract, version)
 
 
+def test_sdist_accepts_a_top_level_runtime_rust_integration_test(
+    tmp_path, contract, version
+):
+    sdist = _write_sdist(
+        tmp_path,
+        contract,
+        version,
+        extra_files={
+            "crates/ferric-rules-runtime/tests/smoke.rs": b"#[test]\nfn smoke() {}\n"
+        },
+    )
+
+    inspection = package_lib.validate_sdist(sdist, contract, version)
+
+    assert inspection.filename == package_lib.expected_sdist_filename(contract, version)
+
+
 @pytest.mark.parametrize(
     ("options", "message"),
     [
@@ -645,6 +662,18 @@ def test_sbom_rejects_an_unexpected_native_component(tmp_path, contract, version
         ),
         (
             {"extra_files": {"crates/unlisted/src/lib.rs": b"secret"}},
+            "unexpected publish payload",
+        ),
+        (
+            {
+                "extra_files": {
+                    "crates/ferric-rules-runtime/tests/nested/smoke.rs": b"secret"
+                }
+            },
+            "unexpected publish payload",
+        ),
+        (
+            {"extra_files": {"crates/ferric-rules-runtime/tests/smoke.txt": b"secret"}},
             "unexpected publish payload",
         ),
         ({"omit": ("LICENSE-MIT",)}, "missing members"),
