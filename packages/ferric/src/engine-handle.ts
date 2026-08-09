@@ -9,9 +9,11 @@
  *
  * EngineHandle.run() supports cancellation via AbortSignal. Cancellation uses
  * a SharedArrayBuffer flag checked by the worker between batches of
- * RUN_BATCH_SIZE rule firings. When the signal fires, the main thread sets
- * the flag to 1; the worker calls engine.halt() and returns a partial result
- * with HaltReason.HaltRequested.
+ * RUN_BATCH_SIZE rule firings. The first batch starts a fresh logical run and
+ * later batches continue it without clearing halt state or diagnostics. When
+ * the signal fires, the worker stops between batches and returns a partial
+ * result with HaltReason.HaltRequested; it does not call native halt() merely
+ * to represent host cancellation.
  *
  * ## Thread affinity
  *
@@ -288,9 +290,13 @@ export class EngineHandle {
    * Run the engine to completion or until the limit is reached.
    *
    * Cancellation is cooperative: the worker checks a SharedArrayBuffer flag
-   * between every RUN_BATCH_SIZE rule firings. When the AbortSignal fires,
-   * the main thread sets the flag; the worker halts and returns a partial
-   * RunResult with HaltReason.HaltRequested.
+   * between every RUN_BATCH_SIZE rule firings. One fresh native run starts the
+   * logical run; later batches use continuation so exact-boundary halts and
+   * diagnostics match synchronous execution. When the AbortSignal fires, the
+   * worker stops submitting chunks and returns a partial RunResult with
+   * HaltReason.HaltRequested without setting the native halt latch merely for
+   * host cancellation. A zero limit still starts a fresh run and resets the
+   * previous logical run's halt state and diagnostics while firing no rules.
    *
    * @param options.limit - Maximum rule firings. Omit for unlimited.
    * @param options.signal - AbortSignal for cancellation.

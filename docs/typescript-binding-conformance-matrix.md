@@ -1,6 +1,7 @@
 # TypeScript Binding Conformance Matrix
 
 Date: 2026-04-11
+Updated: 2026-08-09 (FR-NODE-002 logical-run semantics)
 
 Companion documents:
 - [TypeScript Binding Architecture (Revised)](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-architecture.md)
@@ -27,11 +28,13 @@ Each item is:
 |---|---|
 | `N-01` | `Engine.run(limit)` and `EngineHandle.run({limit})` interpret `limit` as: omitted/`undefined` => unlimited, `0` => zero firings, positive integer => maximum firings. |
 | `N-02` | `EvaluateRequest.limit` keeps documented convenience behavior: `0` or omitted => unlimited. |
-| `N-03` | `EnginePool.do(..., { signal })` must reject with `AbortError` if aborted before completion. In-flight `run` operations must use the same cooperative halt mechanism as `EngineHandle.run`. |
+| `N-03` | `EnginePool.do(..., { signal })` must reject with `AbortError` if aborted before completion. In-flight `run` operations must use the same logical-run batching and out-of-band host-cancellation mechanism as `EngineHandle.run`. |
 | `N-04` | `EnginePool.close()` must stop accepting new requests and wait for already-dispatched requests to settle before worker teardown. |
 | `N-05` | Worker symbol wire format is canonicalized as `{ __type: "FerricSymbol", value: string }` at the TS layer. |
 | `N-06` | Public library API exports concrete `Engine` and `FerricSymbol` classes (not optional exports). |
 | `N-07` | Fact IDs have one canonical output representation, `FactId = bigint`; ID-taking APIs additionally accept only legacy safe-integer `number` values through `FactIdInput`. This is separate from CLIPS integer values and run counts/limits. |
+| `N-08` | A worker-backed run starts one fresh logical run and uses continuation for later chunks. Absent host cancellation it matches synchronous fired count, halt reason, halted state, agenda, and diagnostics, including exact batch-boundary halts. Caller-limit exhaustion has synchronous precedence over a pending boundary halt. |
+| `N-09` | Host abort is an out-of-band worker outcome. Existing APIs retain their partial `HaltRequested` projection, but the worker does not call native `halt()` merely to represent host cancellation; every later public run starts fresh. |
 
 ## Release Gates
 
@@ -89,10 +92,11 @@ A release is conformant only if all are true:
 | `D-002` | `EngineHandle.create({snapshot})` restores from snapshot. | Snapshot round-trip and rule presence check. | EngineHandleOptions | TSB-008 | PASS |
 | `D-003` | `source` and `snapshot` are mutually exclusive; passing both throws argument error. | Construct with both and assert rejection. | EngineHandleOptions | TSB-008 | PASS |
 | `D-004` | `run({signal})` rejects immediately with `AbortError` if already aborted. | Pre-aborted signal test. | Cancellation semantics | TSB-004 | PASS |
-| `D-005` | `run({signal})` abort during execution returns partial result with `HaltReason.HaltRequested`. | Long-running rule + timed abort. | Cancellation semantics | TSB-004 | PASS |
-| `D-006` | `run({limit: 0})` follows `N-01` (`0` means zero firings). | Compare sync `Engine` and `EngineHandle`. | Engine run contract + N-01 | TSB-007 | PASS |
+| `D-005` | `run({signal})` abort during execution returns a partial result with `HaltReason.HaltRequested` without calling native `halt()` merely to represent host cancellation. | Long-running rule plus abort; deterministic worker seam asserts no native-halt call. | Cancellation semantics + N-09 | FR-NODE-002 | PASS |
+| `D-006` | `run({limit: 0})` follows `N-01`: it fires zero rules but starts a fresh native run that clears the previous halt request and diagnostics. | Compare sync `Engine` and `EngineHandle`, including post-halt/diagnostic state. | Engine run contract + N-01 | FR-NODE-002 | PASS |
 | `D-007` | Buffer snapshot transfer across worker boundary functions correctly. | `serialize()` and `fromSnapshot` path via worker. | Worker protocol (Buffer transfer) | TSB-001 | PASS |
 | `D-008` | `EngineHandle` preserves `FactId` bigint values through structured clone in responses and ID-taking requests. | High-generation worker assert/get/retract round-trip. | Worker boundary + N-07 | FR-NODE-001 | PASS |
+| `D-009` | `EngineHandle.run` uses one fresh chunk followed by continuation chunks and is observationally equivalent to synchronous execution at halt boundaries `1`, batch size, batch size + 1, and twice batch size. | Compare total/result, halted state, agenda, diagnostics, exact-limit precedence, and a later fresh run; D-005 covers cancellation between chunks. | Logical-run batching + N-08/N-09 | FR-NODE-002 | PASS |
 
 ### E) EnginePool Semantics
 
@@ -102,12 +106,13 @@ A release is conformant only if all are true:
 | `E-002` | `evaluate()` performs `reset -> assert -> run -> collect facts/output`. | Stateful contamination test across calls. | EnginePool evaluate contract | TSB-004 | PASS |
 | `E-003` | `evaluate(..., {signal})` rejects immediately if already aborted. | Pre-aborted signal test. | Cancellation semantics | TSB-004 | PASS |
 | `E-004` | `evaluate` queued-and-aborted requests reject with `AbortError` when dequeuable. | Single-thread queue test with abort while waiting. | Cancellation semantics | TSB-004 | PASS |
-| `E-005` | `evaluate` in-execution abort uses batched halt semantics. | Long-running evaluation + abort. | Cancellation semantics | TSB-004 | PASS |
+| `E-005` | `evaluate` in-execution abort uses out-of-band batched cancellation and retains the partial `HaltRequested` projection without a synthetic native halt. | Long-running evaluation plus abort; deterministic seam asserts no native-halt call. | Cancellation semantics + N-09 | FR-NODE-002 | PASS |
 | `E-006` | `do(..., {signal})` enforces cancellation through completion (per `N-03`). | Abort during callback/proxy operations; expect rejection. | Cancellation semantics + N-03 | TSB-004 | PASS |
 | `E-007` | `EngineProxy` operation semantics match documented subset. | Signature/runtime parity checks. | EngineProxy interface | TSB-004 | PASS |
 | `E-008` | `close()` waits for in-flight requests to settle before teardown (per `N-04`). | Start long run, call close, verify request completion. | EnginePool close contract | TSB-005 | PASS |
 | `E-009` | `close()` is idempotent. | Multiple `close()` calls succeed. | EnginePool lifecycle | TSB-005 | PASS |
 | `E-010` | `EngineProxy` preserves `FactId` bigint values through pool structured clone in responses and ID-taking requests. | High-generation pool assert/get/retract round-trip. | Worker boundary + N-07 | FR-NODE-001 | PASS |
+| `E-011` | Pool `evaluate` and proxy runs preserve one logical run across chunks and match synchronous exact-boundary results and state. | Exercise proxy/direct runs at `1`, batch size, batch size + 1, and twice batch size, plus `evaluate` at an exact batch boundary; compare totals/state/diagnostics, exact-limit precedence, and a later fresh run. E-005 covers cancellation. | Logical-run batching + N-08/N-09 | FR-NODE-002 | PASS |
 
 ### F) Lifecycle and Closed-State Behavior
 
@@ -141,6 +146,6 @@ Each test should include the matrix ID in its title, for example `E-004 queued e
 
 Recommended remediation sequence aligned with risk:
 1. `A-001` / `A-002` / `A-003` / `B-002` / `B-004` / `C-*`
-2. `D-003` / `D-006` / `E-004` / `E-006` / `E-008`
+2. `D-003` / `D-006` / `D-009` / `E-004` / `E-006` / `E-008` / `E-011`
 3. `A-005` / `F-*`
 4. `G-*` hardening and CI gating

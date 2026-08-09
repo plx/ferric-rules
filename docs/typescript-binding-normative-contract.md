@@ -1,6 +1,7 @@
 # TypeScript Binding Normative Contract (Revised)
 
 Date: 2026-04-11
+Updated: 2026-08-09 (FR-NODE-002 logical-run semantics)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -115,6 +116,41 @@ If this contract conflicts with legacy design docs, this contract wins.
    - omitted or `0` => unlimited,
    - positive integer => max firings.
 3. These semantics `MUST` be documented and tested explicitly.
+4. Every uncanceled public run invocation `MUST` begin with one fresh native
+   run. Starting a fresh run clears the previous halt request and action
+   diagnostics, but does not otherwise clear working memory or the agenda.
+5. `EngineHandle.run({ limit: 0 })` and `EngineProxy.run({ limit: 0 })` `MUST`
+   invoke a fresh native zero-limit run rather than synthesize a result. They
+   `MUST` fire zero rules, return `LimitReached`, and perform the same fresh-run
+   execution-state reset as `Engine.run(0)`.
+
+### 5.1 Worker Logical-Run Batching
+
+1. A worker-backed run `MAY` split one public run into bounded chunks to poll
+   for host cancellation.
+2. The first executed chunk `MUST` start the fresh logical run. Every later
+   chunk in that invocation `MUST` continue that same logical run and `MUST NOT`
+   clear its halt request or accumulated action diagnostics.
+3. Per-chunk fired counts `MUST` be accumulated into the public run total.
+4. Absent host cancellation, synchronous, `EngineHandle`, and `EnginePool`
+   execution `MUST` agree in total fired count, halt reason, halted state,
+   agenda state, and action diagnostics.
+5. If a count-limited chunk's last activation requests a halt, the worker
+   `MUST` observe the pending halt before submitting another continuation; it
+   `MUST NOT` fire a post-halt activation.
+6. After a native chunk returns a terminal reason, that reason `MUST` be
+   returned immediately. After `LimitReached`, the worker `MUST` apply this
+   precedence before continuing:
+   1. an exhausted caller limit returns `LimitReached`, matching synchronous
+      execution even if the limit-th activation also set the halt latch;
+   2. a host abort stops the logical run under section 7;
+   3. a pending native halt returns `HaltRequested`;
+   4. otherwise, the worker submits a continuation chunk.
+7. A later public `run()` invocation `MUST` start fresh, never continue a prior
+   completed or host-canceled invocation.
+8. Logical-run continuation is an internal implementation mechanism and
+   `MUST NOT` add or change a public method, result type, enum member, or
+   versioned API contract.
 
 ## 6. Error Contract
 
@@ -153,18 +189,33 @@ The following classes `MUST` exist and be constructible in JS:
 
 ### 7.1 EngineHandle.run
 1. If signal is already aborted before dispatch, `MUST` reject with `AbortError`.
-2. In-flight cancellation `MUST` use cooperative batched halting with shared abort flag.
-3. On in-flight cancellation, promise `MUST` resolve with partial `RunResult` and `haltReason = HaltRequested`.
+2. In-flight cancellation `MUST` use cooperative logical-run batching with a
+   shared, out-of-band abort flag.
+3. On in-flight cancellation, the worker `MUST` stop submitting continuation
+   chunks and `MUST NOT` call native `halt()` or otherwise set the engine halt
+   latch merely to represent host cancellation.
+4. The promise `MUST` preserve the existing public projection by resolving
+   with a partial `RunResult` and `haltReason = HaltRequested`.
+5. Host cancellation does not guarantee an unhalted engine: a completed chunk
+   may itself have executed a rule-side halt. The next public run `MUST` start
+   fresh and clear the documented execution state.
 
 ### 7.2 EnginePool.evaluate
 1. If already aborted before dispatch, `MUST` reject with `AbortError`.
 2. If aborted while queued and request is not yet dispatched, `MUST` reject with `AbortError`.
-3. If aborted during execution, `MUST` use same cooperative batched halting model.
+3. If aborted during execution, `MUST` use the same cooperative logical-run
+   batching and out-of-band cancellation model as `EngineHandle.run`.
+4. A partial `EvaluateResult.runResult` produced by in-flight host cancellation
+   `MUST` retain the existing `HaltRequested` projection without setting the
+   native halt latch merely to represent that cancellation.
 
 ### 7.3 EnginePool.do
 1. If already aborted before dispatch, `MUST` reject with `AbortError`.
 2. If aborted before callback completes, returned promise `MUST` reject with `AbortError`.
-3. Proxy `run` operations issued during `do` `MUST` use cooperative batched halting when cancellation is active.
+3. Proxy `run` operations issued during `do` `MUST` use the same fresh-run and
+   continuation contract when cancellation is active.
+4. Rejecting the outer `do` promise for host cancellation `MUST NOT` require
+   setting the proxied native engine's halt latch.
 
 ## 8. Worker Protocol Contract
 

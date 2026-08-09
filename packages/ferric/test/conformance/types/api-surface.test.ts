@@ -56,6 +56,10 @@ type Equal<Left, Right> =
     ? true
     : false;
 
+type NativeEngineHasContinuation = "__continueRun" extends keyof NativeEngine
+  ? true
+  : false;
+
 // ---------------------------------------------------------------------------
 // A-001: Engine is a concrete class
 // ---------------------------------------------------------------------------
@@ -64,6 +68,11 @@ test("A-001 Engine is a concrete class export", () => {
   const e = new Engine();
   assert.ok(e);
   e.close();
+});
+
+test("N-09 NativeEngine type excludes the worker continuation bridge", () => {
+  const hasContinuation: NativeEngineHasContinuation = false;
+  assert.strictEqual(hasContinuation, false);
 });
 
 // ---------------------------------------------------------------------------

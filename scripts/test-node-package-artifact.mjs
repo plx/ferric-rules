@@ -172,20 +172,47 @@ try {
       const rawNative = require(${JSON.stringify(target.packageName)});
       assert.equal(nativeMetadata.version, mainMetadata.version);
       assert.equal(rawNative.nativePackageVersion(), mainMetadata.version);
-      const { Engine, EngineHandle } = require("@ferric-rules/node");
+      const ferric = require("@ferric-rules/node");
+      const { Engine, EngineHandle } = ferric;
+      assert.equal(Object.hasOwn(ferric, "__continueRun"), false);
+      assert.equal(
+        Object.hasOwn(rawNative.Engine.prototype, "__continueRun"),
+        false,
+      );
+      assert.equal(typeof rawNative.__continueRun, "function");
       const engine = Engine.fromSource(
         "(defrule smoke => (assert (packaged-result 42)))"
       );
+      assert.equal(Reflect.has(engine, "__continueRun"), false);
+      for (
+        let prototype = Object.getPrototypeOf(engine);
+        prototype !== null;
+        prototype = Object.getPrototypeOf(prototype)
+      ) {
+        assert.equal(Object.hasOwn(prototype, "__continueRun"), false);
+      }
       const result = engine.run();
       assert.equal(result.rulesFired, 1);
       assert.equal(engine.findFacts("packaged-result").length, 1);
       engine.close();
 
       const handle = await EngineHandle.create({
-        source: "(defrule worker-smoke => (assert (worker-result 42)))",
+        source: \`
+          (deffacts start (position 0))
+          (defrule halt-at-boundary
+            (declare (salience 100))
+            (position 100)
+            =>
+            (halt))
+          (defrule advance
+            ?current <- (position ?n&:(< ?n 100))
+            =>
+            (retract ?current)
+            (assert (position (+ ?n 1))))
+        \`,
       });
       const workerResult = await handle.run();
-      assert.equal(workerResult.rulesFired, 1);
+      assert.deepEqual(workerResult, { rulesFired: 101, haltReason: 2 });
       await handle.close();
     })().catch((error) => {
       console.error(error);

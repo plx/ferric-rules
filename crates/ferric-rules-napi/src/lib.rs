@@ -29,3 +29,17 @@ pub mod value;
 pub fn native_package_version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
 }
+
+/// Continue one bounded chunk for the internal Node worker batching loop.
+///
+/// This is a module-level bridge rather than an `Engine` prototype method so
+/// the public synchronous API cannot continue a completed or canceled logical
+/// run without the documented fresh-run reset.
+#[doc(hidden)]
+#[napi(js_name = "__continueRun", skip_typescript)]
+pub fn continue_run(
+    mut engine: napi::bindgen_prelude::ClassInstance<engine::Engine>,
+    limit: u32,
+) -> napi::Result<result::RunResult> {
+    engine.continue_run(limit)
+}

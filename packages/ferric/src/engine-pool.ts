@@ -20,7 +20,10 @@
  *
  * `evaluate()` and `do()` accept an `AbortSignal`. Cancellation sets a
  * SharedArrayBuffer flag that the worker checks between batches of
- * RUN_BATCH_SIZE rule firings.
+ * RUN_BATCH_SIZE rule firings. The first batch starts a fresh logical run and
+ * later batches continue it. A host abort stops between batches without
+ * calling native halt() merely to represent cancellation; existing public
+ * result and rejection behavior remains unchanged.
  */
 
 import { Worker } from "node:worker_threads";
@@ -67,6 +70,11 @@ export interface EngineProxy {
   getFact(factId: FactIdInput): Promise<Fact | null>;
   facts(): Promise<Fact[]>;
   findFacts(relation: string): Promise<Fact[]>;
+  /**
+   * Start a fresh logical run. The worker uses continuation only after its
+   * first batch, preserving exact-boundary halt state and diagnostics. A zero
+   * limit still starts fresh while firing no rules.
+   */
   run(options?: { limit?: number }): Promise<RunResult>;
   step(): Promise<FiredRule | null>;
   halt(): Promise<void>;
@@ -377,8 +385,8 @@ export class EnginePool {
         "EngineProxy.run",
       );
 
-      // Allocate a per-call abort buffer for cooperative cancellation; the
-      // worker polls this between batches of RUN_BATCH_SIZE firings.
+      // Allocate a per-call abort buffer for out-of-band host cancellation;
+      // the worker polls it between logical-run continuation chunks.
       const sab = new SharedArrayBuffer(
         ABORT_BUFFER_SIZE * Int32Array.BYTES_PER_ELEMENT,
       );
@@ -436,7 +444,11 @@ export class EnginePool {
    * Stateless one-shot evaluation: reset → assert → run → return facts.
    *
    * This is the primary entry point for concurrent rule evaluation. Each call
-   * dispatches to a worker round-robin.
+   * dispatches to a worker round-robin. Its run phase starts one fresh logical
+   * run and uses continuation for later batches, preserving exact-boundary
+   * halt state and diagnostics. In-flight host abort retains the existing
+   * partial HaltRequested result without setting the native halt latch merely
+   * to represent cancellation.
    *
    * @param specName Engine spec to use.
    * @param request Facts and parameters for the evaluation.
@@ -476,7 +488,7 @@ export class EnginePool {
       }),
     };
 
-    // Set up in-flight abort: sets SharedArrayBuffer flag for cooperative halt.
+    // Set up in-flight abort: set the out-of-band host-cancellation flag.
     let onAbort: (() => void) | undefined;
     if (signal) {
       onAbort = () => { Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1); };

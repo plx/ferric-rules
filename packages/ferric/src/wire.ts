@@ -90,7 +90,8 @@ export interface PoolWorkerInit {
 /**
  * Index into the SharedArrayBuffer used for cooperative cancellation.
  * The worker checks Atomics.load(buf, ABORT_FLAG_INDEX) between batches.
- * The main thread calls Atomics.store(buf, ABORT_FLAG_INDEX, 1) to request halt.
+ * The main thread calls Atomics.store(buf, ABORT_FLAG_INDEX, 1) to request host
+ * cancellation. This flag does not itself request or set native engine halt.
  */
 export const ABORT_FLAG_INDEX = 0;
 
@@ -98,7 +99,8 @@ export const ABORT_FLAG_INDEX = 0;
 export const ABORT_BUFFER_SIZE = 1;
 
 /**
- * Batch size (rule firings) between cooperative cancellation checks in run().
+ * Batch size (rule firings) between cooperative cancellation checks in a
+ * logical run. The first batch is fresh and later batches are continuations.
  * This matches the Go implementation's batch size.
  */
 export const RUN_BATCH_SIZE = 100;

@@ -12,10 +12,15 @@ import { join, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 
 import {
+  Engine,
   FactType,
   HaltReason,
   isWireSymbol,
 } from "../../../helpers/ferric";
+import {
+  EARLY_DIAGNOSTIC_SOURCE,
+  HALT_WITH_DIAGNOSTIC_SOURCE,
+} from "../../../helpers/logical-run";
 
 interface WorkerResponse {
   id: number;
@@ -196,6 +201,7 @@ test("D-006 table-driven direct worker batched run covers limit modes", async ()
       },
       {
         label: "pre-set abort buffer returns HaltRequested",
+        expectUnhalted: true,
         prepare: async () => {
           await request(worker, "reset", []);
           await request(worker, "assertFact", ["counter", 0]);
@@ -216,6 +222,14 @@ test("D-006 table-driven direct worker batched run covers limit modes", async ()
       const args = await item.prepare();
       const result = await request(worker, "__run_batched", [...args]);
       assert.doesNotThrow(() => item.verify(result), item.label);
+      if (item.expectUnhalted) {
+        assert.strictEqual(
+          await request(worker, "getIsHalted", []),
+          false,
+          "host cancellation must not set the native rule-level halt latch",
+        );
+        assert.strictEqual(await request(worker, "getAgendaSize", []), 1);
+      }
     }
   });
 });
@@ -381,3 +395,65 @@ test("B-004 table-driven direct worker symbol outputs use canonical wire shape",
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// D-009 direct protocol: continuation retains diagnostics across native chunks
+// ---------------------------------------------------------------------------
+test(
+  "D-009 direct worker logical run retains an early diagnostic",
+  { timeout: 10_000 },
+  async () => {
+    const sync = Engine.fromSource(EARLY_DIAGNOSTIC_SOURCE);
+    try {
+      const expectedResult = sync.run();
+      const expectedDiagnostics = [...sync.diagnostics];
+      assert.strictEqual(expectedDiagnostics.length, 1);
+
+      await withWorker(async (worker) => {
+        await request(worker, "__init", [{ source: EARLY_DIAGNOSTIC_SOURCE }]);
+
+        assert.deepStrictEqual(
+          await request(worker, "__run_batched", [null, null]),
+          expectedResult,
+        );
+        assert.deepStrictEqual(
+          await request(worker, "getDiagnostics", []),
+          expectedDiagnostics,
+        );
+        assert.strictEqual(await request(worker, "getIsHalted", []), false);
+        assert.strictEqual(await request(worker, "getAgendaSize", []), 0);
+      });
+    } finally {
+      sync.close();
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// D-006 direct protocol: zero-limit is still a fresh logical run
+// ---------------------------------------------------------------------------
+test(
+  "D-006 direct worker zero-limit run clears halt and diagnostics only",
+  { timeout: 10_000 },
+  async () => {
+    await withWorker(async (worker) => {
+      await request(worker, "__init", [{ source: HALT_WITH_DIAGNOSTIC_SOURCE }]);
+
+      assert.deepStrictEqual(
+        await request(worker, "__run_batched", [null, null]),
+        { rulesFired: 1, haltReason: HaltReason.HaltRequested },
+      );
+      assert.strictEqual(await request(worker, "getIsHalted", []), true);
+      assert.strictEqual(await request(worker, "getAgendaSize", []), 1);
+      assert.ok((await request(worker, "getDiagnostics", []) as string[]).length > 0);
+
+      assert.deepStrictEqual(
+        await request(worker, "__run_batched", [0, null]),
+        { rulesFired: 0, haltReason: HaltReason.LimitReached },
+      );
+      assert.strictEqual(await request(worker, "getIsHalted", []), false);
+      assert.strictEqual(await request(worker, "getAgendaSize", []), 1);
+      assert.deepStrictEqual(await request(worker, "getDiagnostics", []), []);
+    });
+  },
+);

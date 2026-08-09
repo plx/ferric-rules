@@ -11,8 +11,9 @@
  * - The main thread passes a SharedArrayBuffer (Int32Array, length 1) in the
  *   "__run_batched" method's args.
  * - Between batches of RUN_BATCH_SIZE rule firings, this worker reads
- *   Atomics.load(abortBuf, 0). If non-zero, it calls engine.halt() and returns
- *   the partial RunResult.
+ *   Atomics.load(abortBuf, 0). If non-zero, it stops submitting continuation
+ *   chunks and maps the partial result to HaltRequested without setting the
+ *   engine's rule-level halt latch.
  * - The main thread sets the flag to 1 when its AbortSignal fires.
  */
 
@@ -24,6 +25,11 @@ import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, fromWireToNative, extractFerr
 import type { NativeEngine } from "./native";
 import type { FactIdInput } from "./types";
 import { normalizeRunLimit } from "./limit-validation";
+
+type NativeContinueRun = (
+  engine: NativeEngine,
+  limit: number,
+) => ReturnType<NativeEngine["run"]>;
 
 if (!parentPort) {
   throw new Error("worker.ts must be run as a Worker thread");
@@ -45,6 +51,7 @@ const native = loadNative();
 const NativeEngine = native["Engine"] as any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const NativeFerricSymbol = native["FerricSymbol"] as any;
+const nativeContinueRun = native["__continueRun"] as NativeContinueRun;
 
 /** Shim the shared helper with this worker's native FerricSymbol constructor. */
 const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol);
@@ -95,24 +102,35 @@ function batchedRun(
   const activeEngine = engine!;
   const normalizedLimit = normalizeRunLimit(limit, "EngineHandle.run");
 
-  // N-01: undefined/null = unlimited, 0 = zero firings, positive = max firings.
+  // N-01: undefined/null = unlimited, 0 = zero firings, positive = max
+  // firings. Even a zero-limit call starts a fresh logical run, clearing the
+  // prior run's halt request and diagnostics just like synchronous run(0).
   if (normalizedLimit === 0) {
-    return { rulesFired: 0, haltReason: 1 /* LimitReached */ };
+    return activeEngine.run(0);
   }
 
   const unlimited = normalizedLimit === undefined || normalizedLimit === null;
   let remaining = unlimited ? Infinity : normalizedLimit;
   let totalFired = 0;
+  let firstChunk = true;
+
+  const abortRequested = (): boolean =>
+    abortBuffer !== null &&
+    Atomics.load(abortBuffer, ABORT_FLAG_INDEX) !== 0;
 
   while (remaining > 0) {
-    // Check for abort before each batch.
-    if (abortBuffer !== null && Atomics.load(abortBuffer, ABORT_FLAG_INDEX) !== 0) {
-      activeEngine.halt();
-      break;
+    // Host cancellation is distinct from an engine halt. Stop submitting
+    // chunks and map it to the established partial HaltRequested result
+    // without setting the engine's halt latch.
+    if (abortRequested()) {
+      return { rulesFired: totalFired, haltReason: 2 /* HaltRequested */ };
     }
 
     const batchLimit = Math.min(remaining, RUN_BATCH_SIZE);
-    const result = activeEngine.run(batchLimit);
+    const result = firstChunk
+      ? activeEngine.run(batchLimit)
+      : nativeContinueRun(activeEngine, batchLimit);
+    firstChunk = false;
     totalFired += result.rulesFired;
 
     // Any terminal reason (AgendaEmpty, HaltRequested, or ActionError) stops batching.
@@ -122,12 +140,23 @@ function batchedRun(
 
     if (!unlimited) {
       remaining -= result.rulesFired;
+      // A completed caller limit has the same precedence as synchronous
+      // run(limit), even when its final activation set the halt latch or the
+      // host abort flag concurrently.
+      if (remaining <= 0) {
+        break;
+      }
     }
-  }
 
-  // Check if we stopped due to abort flag.
-  if (abortBuffer !== null && Atomics.load(abortBuffer, ABORT_FLAG_INDEX) !== 0) {
-    return { rulesFired: totalFired, haltReason: 2 /* HaltRequested */ };
+    if (abortRequested()) {
+      return { rulesFired: totalFired, haltReason: 2 /* HaltRequested */ };
+    }
+
+    // A rule-level (halt) on the last activation in a chunk is latent because
+    // the runtime reaches the count bound before checking the latch again.
+    if (activeEngine.isHalted) {
+      return { rulesFired: totalFired, haltReason: 2 /* HaltRequested */ };
+    }
   }
 
   return { rulesFired: totalFired, haltReason: 1 /* LimitReached */ };

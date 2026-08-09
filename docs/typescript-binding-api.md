@@ -160,6 +160,12 @@ export enum Format {
 actions were skipped, and later activations remain queued for a subsequent
 `run()`. Read `engine.diagnostics` before starting that next run.
 
+Every public `run()` invocation that reaches native execution starts a fresh
+logical run. Starting fresh clears any pending halt request and action
+diagnostics while leaving working memory and the agenda intact. Worker-backed
+APIs may split that one logical run into private continuation chunks for
+cancellation polling; those chunks do not start new logical runs.
+
 ### Result Types
 
 ```typescript
@@ -313,6 +319,9 @@ export class Engine {
 
   /**
    * Run the engine to completion or until the limit is reached.
+   * Every call starts a fresh logical run, clearing any previous halt request
+   * and action diagnostics. A limit of 0 still starts that fresh run, but fires
+   * no rules and returns LimitReached.
    * @param limit Maximum rule firings. Omit or pass undefined for unlimited.
    * @returns Result with number of rules fired and halt reason.
    */
@@ -472,9 +481,16 @@ export class EngineHandle {
   /**
    * Run the engine. Supports cancellation via AbortSignal.
    *
-   * Cancellation is cooperative: the worker runs in batches of 100 rule
-   * firings, checking for abort between batches. An aborted run returns
-   * a partial RunResult with HaltReason.HaltRequested.
+   * The worker starts one fresh logical run and uses private continuation
+   * chunks after the first batch. Without host cancellation, the result,
+   * halted state, agenda, and diagnostics match an equivalent synchronous run,
+   * including when a rule halts on an exact batch boundary.
+   *
+   * Cancellation is cooperative: the worker checks an out-of-band abort flag
+   * between batches and stops submitting continuation chunks. For API
+   * compatibility, an aborted run resolves with a partial RunResult whose
+   * haltReason is HaltRequested; host cancellation does not call native halt()
+   * or otherwise set the engine's halt latch.
    *
    * @param options.limit - Maximum rule firings (omit for unlimited).
    * @param options.signal - AbortSignal for cancellation.
@@ -594,6 +610,8 @@ export class EnginePool {
   /**
    * Stateless one-shot evaluation: reset → assert → run → return facts.
    * This is the primary entry point for concurrent rule evaluation.
+   * Its run phase uses one fresh logical run followed by private continuation
+   * chunks, with the same absent-cancellation semantics as Engine.run().
    *
    * @param specName Engine spec to use.
    * @param request Facts and parameters for the evaluation.
@@ -628,6 +646,10 @@ export interface EngineProxy {
   getFact(factId: FactIdInput): Promise<Fact | null>;
   facts(): Promise<Fact[]>;
   findFacts(relation: string): Promise<Fact[]>;
+  /**
+   * Start a fresh logical run, using private continuation chunks only for
+   * cancellation polling after the first batch.
+   */
   run(options?: { limit?: number }): Promise<RunResult>;
   step(): Promise<FiredRule | null>;
   halt(): Promise<void>;
@@ -756,16 +778,22 @@ parentPort!.on("message", (req: WorkerRequest) => {
 ### EngineHandle.run()
 
 - **Before dispatch**: If the signal is already aborted, the Promise rejects immediately with `AbortError`.
-- **During execution**: The worker runs batches of 100 rule firings. Between batches, it checks a shared `SharedArrayBuffer` flag set by the main thread when the signal fires. If set, the worker calls `engine.halt()` and returns a partial result.
+- **During execution**: The worker starts one fresh native run, then uses private continuation chunks of at most 100 rule firings. Between chunks it checks a shared `SharedArrayBuffer` flag set by the main thread. If set, it stops submitting chunks and returns the partial count with `HaltReason.HaltRequested`; it does not call native `halt()` or set the engine halt latch.
+- **Without cancellation**: Chunked execution is observationally equivalent to synchronous `Engine.run()` in total fired count, halt reason, halted state, agenda, and diagnostics. A halt produced on an exact chunk boundary is observed before another activation can fire.
+- **Caller limit**: Exhausting the public limit has the same precedence as synchronous execution. In particular, if the limit-th activation also requests a halt, the result is `LimitReached` while the engine's halted state remains observable.
+- **Zero limit**: `run({ limit: 0 })` still starts a fresh native run. It fires no rules and returns `LimitReached`, while clearing the previous logical run's halt request and diagnostics.
 - **After completion**: Signal changes are ignored.
 
 ### EnginePool.evaluate() / EnginePool.do()
 
 - **Before dispatch**: Reject immediately if aborted.
 - **Waiting for worker**: If aborted while queued, the request is dequeued (if possible) and rejected.
-- **During execution**: Same batched-halt mechanism as `EngineHandle`.
+- **During execution**: The run phase follows the same fresh-run, continuation,
+  exact-boundary, and out-of-band cancellation contract as `EngineHandle`.
 
-This matches Go's `context.Context` cancellation pattern adapted for JS idioms.
+The partial `HaltRequested` result is the existing JavaScript API projection of
+host cancellation; it does not imply that the native engine halt latch was set.
+A later `run()` always starts fresh and clears the documented execution state.
 
 ## Usage Examples
 
@@ -947,12 +975,21 @@ This is handled in the TypeScript layer, not in Rust.
 
 ### Batch Size for Cooperative Cancellation
 
-The `run()` implementation in workers uses a batch size of 100 rule firings (matching Go). Between batches, the worker:
+The `run()` implementation in workers uses a batch size of 100 rule firings
+(matching Go). The first batch starts a fresh native logical run; later batches
+continue it without clearing its halt request or diagnostics. After a chunk
+returns `LimitReached`, the worker applies this order:
 
-1. Checks a `SharedArrayBuffer` abort flag.
-2. If set, calls `engine.halt()` and returns a partial result.
+1. If the caller's total limit is exhausted, return `LimitReached`.
+2. If the `SharedArrayBuffer` abort flag is set, stop and return the existing
+   partial `HaltRequested` API result without calling native `halt()`.
+3. If the engine halt latch is set, return `HaltRequested`.
+4. Otherwise submit a continuation chunk.
 
-The main thread sets the flag when `AbortSignal` fires. This gives cancellation latency of at most ~100 rule firings, which is typically sub-millisecond.
+Native terminal reasons are returned immediately. This ordering preserves
+synchronous behavior when an explicit limit, host abort, or rule-side halt
+coincides with a batch boundary. The main thread sets the abort flag when the
+`AbortSignal` fires, giving cancellation latency of at most one batch.
 
 ### Package Layout
 

@@ -28,6 +28,11 @@ import type { NativeEngine } from "./native";
 import type { EvaluateRequest, EvaluateResult, FactIdInput } from "./types";
 import { normalizeEvaluateLimit, normalizeRunLimit } from "./limit-validation";
 
+type NativeContinueRun = (
+  engine: NativeEngine,
+  limit: number,
+) => ReturnType<NativeEngine["run"]>;
+
 if (!parentPort) {
   throw new Error("pool-worker.ts must be run as a Worker thread");
 }
@@ -48,6 +53,7 @@ const native = loadNative();
 const NativeEngineClass = native["Engine"] as any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const NativeFerricSymbol = native["FerricSymbol"] as any;
+const nativeContinueRun = native["__continueRun"] as NativeContinueRun;
 
 /** Shim the shared helper with this worker's native FerricSymbol constructor. */
 const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol);
@@ -99,23 +105,31 @@ function batchedRun(
 ): { rulesFired: number; haltReason: number } {
   const normalizedLimit = normalizeRunLimit(limit, "EngineProxy.run");
 
-  // N-01: 0 = zero firings.
+  // N-01: 0 = zero firings. It still starts a fresh logical run so halt and
+  // diagnostic lifecycle matches synchronous run(0).
   if (normalizedLimit === 0) {
-    return { rulesFired: 0, haltReason: 1 /* LimitReached */ };
+    return engine.run(0);
   }
 
   const unlimited = normalizedLimit === undefined || normalizedLimit === null;
   let remaining = unlimited ? Infinity : normalizedLimit;
   let totalFired = 0;
+  let firstChunk = true;
+
+  const abortRequested = (): boolean =>
+    abortBuffer !== null &&
+    Atomics.load(abortBuffer, ABORT_FLAG_INDEX) !== 0;
 
   while (remaining > 0) {
-    if (abortBuffer !== null && Atomics.load(abortBuffer, ABORT_FLAG_INDEX) !== 0) {
-      engine.halt();
-      break;
+    if (abortRequested()) {
+      return { rulesFired: totalFired, haltReason: 2 /* HaltRequested */ };
     }
 
     const batchLimit = Math.min(remaining, RUN_BATCH_SIZE);
-    const result = engine.run(batchLimit);
+    const result = firstChunk
+      ? engine.run(batchLimit)
+      : nativeContinueRun(engine, batchLimit);
+    firstChunk = false;
     totalFired += result.rulesFired;
 
     if (result.haltReason !== 1 /* LimitReached */) {
@@ -124,11 +138,18 @@ function batchedRun(
 
     if (!unlimited) {
       remaining -= result.rulesFired;
+      if (remaining <= 0) {
+        break;
+      }
     }
-  }
 
-  if (abortBuffer !== null && Atomics.load(abortBuffer, ABORT_FLAG_INDEX) !== 0) {
-    return { rulesFired: totalFired, haltReason: 2 /* HaltRequested */ };
+    if (abortRequested()) {
+      return { rulesFired: totalFired, haltReason: 2 /* HaltRequested */ };
+    }
+
+    if (engine.isHalted) {
+      return { rulesFired: totalFired, haltReason: 2 /* HaltRequested */ };
+    }
   }
 
   return { rulesFired: totalFired, haltReason: 1 /* LimitReached */ };
