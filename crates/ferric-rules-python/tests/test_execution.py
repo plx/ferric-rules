@@ -93,17 +93,17 @@ class TestHalt:
         result = engine.run()
         assert result.halt_reason == ferric.HaltReason.HALT_REQUESTED
 
-    def test_is_halted_property(self, engine):
+    def test_idle_halt_does_not_latch(self, engine):
         assert not engine.is_halted
-        engine.halt()
-        assert engine.is_halted
+        assert engine.halt() is None
+        assert not engine.is_halted
 
 
 class TestReset:
-    def test_reset_clears_halt(self):
+    def test_reset_after_idle_halt_remains_usable(self):
         engine = ferric.Engine()
-        engine.halt()
-        assert engine.is_halted
+        assert engine.halt() is None
+        assert not engine.is_halted
         engine.reset()
         assert not engine.is_halted
 

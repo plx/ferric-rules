@@ -118,11 +118,12 @@ fn drain_more_per_item(rx: &Receiver<Request>, engine: &mut Engine, max: usize) 
 
 /// Run the engine with cooperative cancellation.
 ///
-/// Splits a user-requested [`RunLimit`] into chunks of [`CANCEL_CHUNK_SIZE`]
-/// firings, starting with [`Engine::run`] and then continuing the same logical
-/// run between cancellation checks. The sticky `closed` flag ensures shutdown
-/// also interrupts every accepted run while the queue drains. When either
-/// flag flips to `true`, returns with
+/// Establishes fresh-run state with [`Engine::run`] and `RunLimit::Count(0)`, then
+/// splits positive work into [`CANCEL_CHUNK_SIZE`] continuation chunks between
+/// cancellation checks. The zero-fire entry clears prior halt and diagnostic
+/// state before control is observed without firing a rule. The sticky `closed`
+/// flag ensures shutdown also interrupts every accepted run while the queue
+/// drains. When either flag flips to `true`, returns with
 /// [`HaltReason::HaltRequested`] and the rules fired so far.
 ///
 /// Note: the [`HaltReason::HaltRequested`] return code is the merged
@@ -138,8 +139,12 @@ pub(crate) fn run_with_cancel(
     cancel: &AtomicBool,
     closed: &AtomicBool,
 ) -> Result<RunResult, EngineError> {
+    // Every accepted logical run enters the native fresh-run path exactly
+    // once, even when its limit is zero or external control is already set.
+    // Count(0) fires nothing while clearing prior halt and diagnostic state.
+    let entry_result = engine.run(RunLimit::Count(0))?;
     let mut total = 0usize;
-    let mut first_chunk = true;
+    let mut ran_positive_chunk = false;
     let mut remaining = match limit {
         RunLimit::Unlimited => usize::MAX,
         RunLimit::Count(n) => n,
@@ -153,30 +158,24 @@ pub(crate) fn run_with_cancel(
             });
         }
         if remaining == 0 {
-            return Ok(RunResult {
-                rules_fired: total,
-                halt_reason: HaltReason::LimitReached,
-            });
+            return if ran_positive_chunk {
+                Ok(RunResult {
+                    rules_fired: total,
+                    halt_reason: HaltReason::LimitReached,
+                })
+            } else {
+                Ok(entry_result)
+            };
         }
         let step = remaining.min(CANCEL_CHUNK_SIZE);
-        let r = if first_chunk {
-            first_chunk = false;
-            engine.run(RunLimit::Count(step))?
-        } else {
-            engine.continue_run(RunLimit::Count(step))?
-        };
+        ran_positive_chunk = true;
+        let r = engine.continue_run(RunLimit::Count(step))?;
         total = total.saturating_add(r.rules_fired);
         remaining = remaining.saturating_sub(r.rules_fired);
-        // Engine::run reports LimitReached when the limit-th firing requests
-        // a halt because the loop reaches its count bound before re-checking
-        // the flag. Preserve that rule-side halt before another chunk can
-        // clear it on entry.
-        if engine.is_halted() {
-            return Ok(RunResult {
-                rules_fired: total,
-                halt_reason: HaltReason::HaltRequested,
-            });
-        }
+        // Preserve every native terminal from the chunk which already
+        // started. Only an inner LimitReached can need repair: when its
+        // limit-th firing requested a rule-side halt, the engine's flag is the
+        // stronger terminal before another chunk can clear it on entry.
         if matches!(
             r.halt_reason,
             HaltReason::AgendaEmpty | HaltReason::HaltRequested | HaltReason::ActionError
@@ -186,6 +185,51 @@ pub(crate) fn run_with_cancel(
                 halt_reason: r.halt_reason,
             });
         }
+        if r.halt_reason == HaltReason::LimitReached && engine.is_halted() {
+            return Ok(RunResult {
+                rules_fired: total,
+                halt_reason: HaltReason::HaltRequested,
+            });
+        }
         // LimitReached on the inner chunk just means "we firedCHUNK_SIZE, loop".
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preset_cancel_still_enters_fresh_run_without_firing() {
+        let mut engine = Engine::with_rules(
+            r"
+            (deffacts initial (ready))
+            (defrule halt-then-fault
+                (declare (salience 100))
+                =>
+                (halt)
+                (/ 1 0))
+            (defrule must-remain-pending (ready) => (assert (unexpected)))
+            ",
+        )
+        .unwrap();
+
+        let first = engine.run(RunLimit::Unlimited).unwrap();
+        assert_eq!(first.rules_fired, 1);
+        assert_eq!(first.halt_reason, HaltReason::ActionError);
+        assert!(engine.is_halted());
+        assert_eq!(engine.action_diagnostics().len(), 1);
+        let pending_before = engine.agenda_len();
+        assert!(pending_before > 0);
+
+        let cancel = AtomicBool::new(true);
+        let closed = AtomicBool::new(false);
+        let canceled = run_with_cancel(&mut engine, RunLimit::Unlimited, &cancel, &closed).unwrap();
+
+        assert_eq!(canceled.rules_fired, 0);
+        assert_eq!(canceled.halt_reason, HaltReason::HaltRequested);
+        assert!(!engine.is_halted());
+        assert!(engine.action_diagnostics().is_empty());
+        assert_eq!(engine.agenda_len(), pending_before);
     }
 }

@@ -32,6 +32,15 @@ coverage. Supported main-interpreter shutdown includes Rust-only, exactly-once
 cleanup of `Engine` objects regardless of the Python thread that releases the
 final reference; it does not imply extension loading in a subinterpreter.
 
+On those supported GIL-enabled interpreters, the runtime releases the GIL only
+for the explicitly documented `Engine` load, run, snapshot, and file-operation
+cohort and while `close()` (including context-manager exit) waits for and
+destroys native state. The native engine remains on its creator OS thread, and
+ordinary calls remain creator-thread-affine. This behavior neither admits a
+free-threaded build nor expands the interpreter, ABI, or platform matrix above;
+the complete ordering and lifecycle semantics live in the package
+[threading, GIL, and lifecycle contract](../crates/ferric-rules-python/README.md#threading-gil-and-lifecycle-contract).
+
 ## ABI decision
 
 The project uses `abi3-py39` instead of per-minor CPython wheels. The baseline
