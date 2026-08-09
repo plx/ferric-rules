@@ -26,15 +26,15 @@ test("fact id with fractional part is rejected", () => {
   e.reset();
   assert.throws(
     () => e.retract(1.5),
-    /fact id must be a finite non-negative integer/,
+    /fact id number must be a non-negative safe integer; pass a bigint for 64-bit IDs/,
   );
   assert.throws(
     () => e.getFact(Number.NaN),
-    /fact id must be a finite non-negative integer/,
+    /fact id number must be a non-negative safe integer; pass a bigint for 64-bit IDs/,
   );
   assert.throws(
     () => e.retract(-1),
-    /fact id must be a finite non-negative integer/,
+    /fact id number must be a non-negative safe integer; pass a bigint for 64-bit IDs/,
   );
   e.close();
 });
@@ -44,7 +44,7 @@ test("B-001 FerricSymbol input works in sync assertFact", () => {
   e.load("(defrule sym-test (color ?c) =>)");
   e.reset();
   const id = e.assertFact("color", new FerricSymbol("red"));
-  assert.ok(typeof id === "number");
+  assert.ok(typeof id === "bigint");
   e.close();
 });
 
@@ -97,7 +97,7 @@ test("B-008 assertString returns all asserted fact IDs", () => {
   const ids = e.assertString("(a 1)(b 2)(c 3)");
   assert.strictEqual(ids.length, 3);
   for (const id of ids) {
-    assert.strictEqual(typeof id, "number");
+    assert.strictEqual(typeof id, "bigint");
   }
   e.close();
 });
@@ -111,7 +111,7 @@ test("B-009 fact shape conforms: ordered facts have relation+fields", () => {
   const [id] = e.assertString("(color red blue)");
   const fact = e.getFact(id) as any;
   assert.ok(fact);
-  assert.strictEqual(typeof fact.id, "number");
+  assert.strictEqual(typeof fact.id, "bigint");
   assert.ok(Array.isArray(fact.fields));
   e.close();
 });

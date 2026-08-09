@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use napi::{Env, JsNull, JsObject, JsUnknown, Result};
+use napi::{Env, JsBigInt, JsNull, JsNumber, JsObject, JsUnknown, Result, ValueType};
 use napi_derive::napi;
 
 use ferric_rules_core::FactId;
@@ -70,23 +70,51 @@ impl Engine {
     }
 }
 
-/// Convert a fact ID (as f64 from JS) back to a [`FactId`], rejecting
-/// non-integer or out-of-range values up front so that typos like `1.5`
-/// don't silently truncate into a different fact.
-///
-/// JS numbers are only precise up to 2^53 - 1; slotmap fact IDs fit well
-/// within that, so we only accept values in [0, 2^53 - 1] with no fractional
-/// part.
-fn fact_id_from_f64(id: f64) -> Result<FactId> {
+/// Convert a JavaScript fact ID back to a [`FactId`]. Canonical IDs are
+/// `bigint`, while safe non-negative integer `number` values remain accepted
+/// for compatibility with the original Node API.
+fn fact_id_from_js(id: JsUnknown) -> Result<FactId> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0; // 2^53 - 1
-    if !id.is_finite() || id.fract() != 0.0 || !(0.0..=MAX_SAFE_INTEGER).contains(&id) {
-        return Err(napi::Error::new(
-            napi::Status::InvalidArg,
-            format!("fact id must be a finite non-negative integer, got {id}"),
-        ));
-    }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    Ok(FactId::from(KeyData::from_ffi(id as u64)))
+
+    let raw = match id.get_type()? {
+        ValueType::Number => {
+            let js_number: JsNumber = id.try_into()?;
+            let number = js_number.get_double()?;
+            if !number.is_finite()
+                || number.fract() != 0.0
+                || !(0.0..=MAX_SAFE_INTEGER).contains(&number)
+            {
+                return Err(napi::Error::new(
+                    napi::Status::InvalidArg,
+                    "fact id number must be a non-negative safe integer; pass a bigint for 64-bit IDs",
+                ));
+            }
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                number as u64
+            }
+        }
+        ValueType::BigInt => {
+            // SAFETY: We just confirmed the type is BigInt via get_type().
+            let js_bigint: JsBigInt = unsafe { id.cast() };
+            let (value, lossless) = js_bigint.get_u64()?;
+            if !lossless {
+                return Err(napi::Error::new(
+                    napi::Status::InvalidArg,
+                    "fact id bigint must be in the unsigned 64-bit range",
+                ));
+            }
+            value
+        }
+        _ => {
+            return Err(napi::Error::new(
+                napi::Status::InvalidArg,
+                "fact id must be a bigint or number",
+            ));
+        }
+    };
+
+    Ok(FactId::from(KeyData::from_ffi(raw)))
 }
 
 #[napi]
@@ -146,9 +174,9 @@ impl Engine {
 
     /// Assert one or more facts from CLIPS syntax (e.g. `"(color red)"`).
     ///
-    /// Returns an array of fact IDs (as `number`) for all asserted facts.
+    /// Returns an array of fact IDs (as `bigint`) for all asserted facts.
     #[napi]
-    pub fn assert_string(&mut self, source: String) -> Result<Vec<f64>> {
+    pub fn assert_string(&mut self, source: String) -> Result<Vec<u64>> {
         let engine = self.engine_mut()?;
         let wrapped = format!("(assert {source})");
         let result = engine.load_str(&wrapped).map_err(load_errors_to_napi)?;
@@ -160,11 +188,7 @@ impl Engine {
         Ok(result
             .asserted_facts
             .iter()
-            .map(|fid| {
-                #[allow(clippy::cast_precision_loss)]
-                let n = fid.data().as_ffi() as f64;
-                n
-            })
+            .map(|fid| fid.data().as_ffi())
             .collect())
     }
 
@@ -178,7 +202,7 @@ impl Engine {
         env: Env,
         relation: String,
         fields: Vec<JsUnknown>,
-    ) -> Result<f64> {
+    ) -> Result<u64> {
         let engine = self.engine_mut()?;
         let mut values = Vec::with_capacity(fields.len());
         for item in fields {
@@ -187,8 +211,7 @@ impl Engine {
         let fid = engine
             .assert_ordered(&relation, values)
             .map_err(engine_error_to_napi)?;
-        #[allow(clippy::cast_precision_loss)]
-        Ok(fid.data().as_ffi() as f64)
+        Ok(fid.data().as_ffi())
     }
 
     /// Assert a template fact by template name and slot values.
@@ -202,7 +225,7 @@ impl Engine {
         env: Env,
         template_name: String,
         slots: JsObject,
-    ) -> Result<f64> {
+    ) -> Result<u64> {
         let engine = self.engine_mut()?;
         let keys = collect_object_keys(&slots)?;
 
@@ -220,22 +243,23 @@ impl Engine {
         let fid = engine
             .assert_template(&template_name, &name_refs, values)
             .map_err(engine_error_to_napi)?;
-        #[allow(clippy::cast_precision_loss)]
-        Ok(fid.data().as_ffi() as f64)
+        Ok(fid.data().as_ffi())
     }
 
-    /// Retract a fact by its ID.
-    #[napi]
-    pub fn retract(&mut self, fact_id: f64) -> Result<()> {
-        let fid = fact_id_from_f64(fact_id)?;
+    /// Retract a fact by its ID. Canonical IDs are `bigint`; safe legacy
+    /// `number` IDs are also accepted.
+    #[napi(ts_args_type = "factId: bigint | number")]
+    pub fn retract(&mut self, fact_id: JsUnknown) -> Result<()> {
+        let fid = fact_id_from_js(fact_id)?;
         let engine = self.engine_mut()?;
         engine.retract(fid).map_err(engine_error_to_napi)
     }
 
-    /// Get a fact by its ID, or `null` if it does not exist.
-    #[napi]
-    pub fn get_fact(&self, env: Env, fact_id: f64) -> Result<JsUnknown> {
-        let fid = fact_id_from_f64(fact_id)?;
+    /// Get a fact by its ID, or `null` if it does not exist. Canonical IDs are
+    /// `bigint`; safe legacy `number` IDs are also accepted.
+    #[napi(ts_args_type = "factId: bigint | number")]
+    pub fn get_fact(&self, env: Env, fact_id: JsUnknown) -> Result<JsUnknown> {
+        let fid = fact_id_from_js(fact_id)?;
         let engine = self.engine()?;
         let fact = engine.get_fact(fid).map_err(engine_error_to_napi)?;
         match fact {
@@ -276,10 +300,16 @@ impl Engine {
         Ok(arr)
     }
 
-    /// Get the value of a template fact slot by name.
-    #[napi]
-    pub fn get_fact_slot(&self, env: Env, fact_id: f64, slot_name: String) -> Result<JsUnknown> {
-        let fid = fact_id_from_f64(fact_id)?;
+    /// Get the value of a template fact slot by name. Canonical IDs are
+    /// `bigint`; safe legacy `number` IDs are also accepted.
+    #[napi(ts_args_type = "factId: bigint | number, slotName: string")]
+    pub fn get_fact_slot(
+        &self,
+        env: Env,
+        fact_id: JsUnknown,
+        slot_name: String,
+    ) -> Result<JsUnknown> {
+        let fid = fact_id_from_js(fact_id)?;
         let engine = self.engine()?;
         let val = engine
             .get_fact_slot_by_name(fid, &slot_name)

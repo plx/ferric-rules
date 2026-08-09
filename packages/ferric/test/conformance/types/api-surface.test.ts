@@ -39,12 +39,22 @@ import type {
   ClipsValue,
   RunResult,
   Fact,
+  FactId,
+  FactIdInput,
   EngineOptions,
   EngineHandleOptions,
   EngineSpec,
+  EngineProxy,
+  NativeEngine,
   EvaluateRequest,
   EvaluateResult,
 } from "../../helpers/ferric";
+
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2)
+    ? true
+    : false;
 
 // ---------------------------------------------------------------------------
 // A-001: Engine is a concrete class
@@ -187,6 +197,57 @@ test("G-003 type compilation: EngineOptions and related types are usable", () =>
   assert.ok(handleOpts !== undefined);
   assert.ok(spec !== undefined);
   assert.ok(req !== undefined);
+});
+
+// ---------------------------------------------------------------------------
+// A-007: Fact IDs are canonical bigint outputs with safe-number migration input
+// ---------------------------------------------------------------------------
+test("A-007 FactId and FactIdInput signatures are lossless and deliberate", () => {
+  const canonical: FactId = 4_294_967_297n;
+  const bigintInput: FactIdInput = canonical;
+  const legacyNumberInput: FactIdInput = Number(canonical);
+  const fact: Fact = {
+    id: canonical,
+    type: FactType.Ordered,
+    fields: [],
+  };
+
+  const signatureChecks: true[] = [
+    true as Equal<Fact["id"], FactId>,
+    true as Equal<ReturnType<NativeEngine["assertString"]>, FactId[]>,
+    true as Equal<ReturnType<NativeEngine["assertFact"]>, FactId>,
+    true as Equal<ReturnType<NativeEngine["assertTemplate"]>, FactId>,
+    true as Equal<Parameters<NativeEngine["getFact"]>[0], FactIdInput>,
+    true as Equal<ReturnType<NativeEngine["getFact"]>, Fact | null>,
+    true as Equal<ReturnType<NativeEngine["facts"]>, Fact[]>,
+    true as Equal<ReturnType<NativeEngine["findFacts"]>, Fact[]>,
+    true as Equal<Parameters<NativeEngine["getFactSlot"]>[0], FactIdInput>,
+    true as Equal<Parameters<NativeEngine["retract"]>[0], FactIdInput>,
+    true as Equal<ReturnType<EngineHandle["assertString"]>, Promise<FactId[]>>,
+    true as Equal<ReturnType<EngineHandle["assertFact"]>, Promise<FactId>>,
+    true as Equal<ReturnType<EngineHandle["assertTemplate"]>, Promise<FactId>>,
+    true as Equal<Parameters<EngineHandle["getFact"]>[0], FactIdInput>,
+    true as Equal<Parameters<EngineHandle["retract"]>[0], FactIdInput>,
+    true as Equal<ReturnType<EngineProxy["assertString"]>, Promise<FactId[]>>,
+    true as Equal<ReturnType<EngineProxy["assertFact"]>, Promise<FactId>>,
+    true as Equal<ReturnType<EngineProxy["assertTemplate"]>, Promise<FactId>>,
+    true as Equal<Parameters<EngineProxy["getFact"]>[0], FactIdInput>,
+    true as Equal<Parameters<EngineProxy["retract"]>[0], FactIdInput>,
+  ];
+
+  assert.strictEqual(fact.id, canonical);
+  assert.strictEqual(typeof fact.id, "bigint");
+  assert.ok(bigintInput === canonical);
+  assert.ok(Number.isSafeInteger(legacyNumberInput));
+  assert.ok(signatureChecks.every(Boolean));
+
+  // A migration-compatible number may be an input, but never a returned ID.
+  // @ts-expect-error - canonical FactId outputs are bigint, not number
+  const roundedOutput: FactId = 4_294_967_297;
+  // @ts-expect-error - decimal strings are not accepted fact-ID inputs
+  const stringInput: FactIdInput = "4294967297";
+  assert.strictEqual(typeof roundedOutput, "number");
+  assert.strictEqual(typeof stringInput, "string");
 });
 
 // ---------------------------------------------------------------------------

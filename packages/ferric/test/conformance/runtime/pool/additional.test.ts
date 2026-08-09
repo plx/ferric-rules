@@ -73,7 +73,7 @@ test("E-007 proxy assertFact and retract work correctly", async () => {
       const id = await proxy.assertFact("color", new FerricSymbol("red"));
       return id;
     });
-    assert.strictEqual(typeof factId, "number", "assertFact should return a number ID");
+    assert.strictEqual(typeof factId, "bigint", "assertFact should return a bigint ID");
 
     // Retract the fact in a fresh do() callback.
     await pool.do("basic", async (proxy) => {
@@ -199,7 +199,7 @@ test("E-007 proxy getFact retrieves a specific fact by ID", async () => {
       return proxy.getFact(id);
     }) as any;
     assert.ok(fact, "getFact should return a fact");
-    assert.strictEqual(typeof fact.id, "number");
+    assert.strictEqual(typeof fact.id, "bigint");
     assert.ok(Array.isArray(fact.fields));
   } finally {
     await pool.close();

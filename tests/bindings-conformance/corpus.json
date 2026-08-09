@@ -359,15 +359,7 @@
     {
       "id": "identifier.high-fact-id",
       "semantic": "identifier.high",
-      "canonical": {"roundtrip": true},
-      "deviations": {
-        "node": {
-          "expected": {"roundtrip": false},
-          "rationale": "Node fact IDs currently cross N-API as number and lose precision above Number.MAX_SAFE_INTEGER.",
-          "since": "1.0.0",
-          "tracking_issue": "https://github.com/plx/ferric-rules/issues/133"
-        }
-      }
+      "canonical": {"roundtrip": true}
     },
     {
       "id": "count.run-result-width",

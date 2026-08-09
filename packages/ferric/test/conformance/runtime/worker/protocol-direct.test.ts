@@ -103,7 +103,7 @@ test("D-001 direct worker protocol covers loadFile/introspection/focus/io/snapsh
       "person",
       { name: "Ada" },
     ]);
-    assert.strictEqual(typeof factId, "number");
+    assert.strictEqual(typeof factId, "bigint");
 
     // Template slot lookup is a worker protocol method even though it is not a
     // public EngineHandle method; this verifies the slot value crosses intact.
@@ -246,8 +246,8 @@ test("D-001 table-driven direct worker method table preserves result shapes", as
         args: ["(item 1)(item 2)"],
         verify: (value) => {
           assert.deepStrictEqual((value as unknown[]).map((v) => typeof v), [
-            "number",
-            "number",
+            "bigint",
+            "bigint",
           ]);
         },
       },

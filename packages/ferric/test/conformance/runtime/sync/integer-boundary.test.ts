@@ -44,7 +44,7 @@ test("B-007 fact ids above Number.MAX_SAFE_INTEGER are rejected", () => {
   e.reset();
   assert.throws(
     () => e.getFact(2 ** 53),
-    /fact id must be a finite non-negative integer/,
+    /fact id number must be a non-negative safe integer; pass a bigint for 64-bit IDs/,
   );
   e.close();
 });
@@ -68,7 +68,7 @@ test("B-007 bigint input is accepted", () => {
   const e = new Engine();
   e.reset();
   const id = e.assertFact("big", BigInt("9007199254740992"));
-  assert.strictEqual(typeof id, "number");
+  assert.strictEqual(typeof id, "bigint");
   e.close();
 });
 

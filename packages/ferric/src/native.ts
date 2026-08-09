@@ -11,6 +11,7 @@
 
 import { resolve } from "node:path";
 import { convertNativeError } from "./types";
+import type { Fact, FactId, FactIdInput } from "./types";
 
 // ---------------------------------------------------------------------------
 // Native class type declarations
@@ -43,14 +44,14 @@ export interface NativeEngineConstructor {
 export interface NativeEngine {
   load(source: string): void;
   loadFile(path: string): void;
-  assertString(source: string): number[];
-  assertFact(relation: string, ...fields: unknown[]): number;
-  assertTemplate(templateName: string, slots: Record<string, unknown>): number;
-  retract(factId: number): void;
-  getFact(factId: number): unknown | null;
-  facts(): unknown[];
-  findFacts(relation: string): unknown[];
-  getFactSlot(factId: number, slotName: string): unknown;
+  assertString(source: string): FactId[];
+  assertFact(relation: string, ...fields: unknown[]): FactId;
+  assertTemplate(templateName: string, slots: Record<string, unknown>): FactId;
+  retract(factId: FactIdInput): void;
+  getFact(factId: FactIdInput): Fact | null;
+  facts(): Fact[];
+  findFacts(relation: string): Fact[];
+  getFactSlot(factId: FactIdInput, slotName: string): unknown;
   run(limit?: number): { rulesFired: number; haltReason: number };
   step(): { ruleName: string } | null;
   halt(): void;

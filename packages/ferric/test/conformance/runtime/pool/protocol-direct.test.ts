@@ -91,7 +91,7 @@ test("E-007 table-driven direct pool worker method table preserves result shapes
       "item",
       { id: 1, label: { __type: "FerricSymbol", value: "widget" } },
     ]);
-    assert.strictEqual(typeof factId, "number");
+    assert.strictEqual(typeof factId, "bigint");
 
     // This table checks the same structured-clone contract across
     // the less frequently used pool-worker methods.

@@ -23,7 +23,7 @@ pub enum FactType {
 /// The resulting object has the shape:
 /// ```ts
 /// {
-///   id: number,
+///   id: bigint,
 ///   type: FactType,
 ///   // ordered facts:
 ///   relation?: string,
@@ -45,10 +45,9 @@ pub fn fact_to_js(
 ) -> Result<JsObject> {
     let mut obj = env.create_object()?;
 
-    // Fact ID as a JS number (u64 → f64; fact IDs will not exceed 2^53).
-    #[allow(clippy::cast_precision_loss)]
-    let id_num = fact_id.data().as_ffi() as f64;
-    obj.set("id", env.create_double(id_num)?)?;
+    // Fact IDs are 64-bit generational keys, so expose them losslessly as
+    // JavaScript bigint values.
+    obj.set("id", env.create_bigint_from_u64(fact_id.data().as_ffi())?)?;
 
     match fact {
         CoreFact::Ordered(ordered) => {

@@ -31,6 +31,8 @@ import type {
   RunResult,
   FiredRule,
   Fact,
+  FactId,
+  FactIdInput,
   RuleInfo,
   EngineHandleOptions,
   Format,
@@ -235,16 +237,16 @@ export class EngineHandle {
    * Assert one or more facts from a CLIPS source string.
    * @returns Array of fact IDs for the asserted facts.
    */
-  async assertString(source: string): Promise<number[]> {
-    return this.call("assertString", [source]) as Promise<number[]>;
+  async assertString(source: string): Promise<FactId[]> {
+    return this.call("assertString", [source]) as Promise<FactId[]>;
   }
 
   /**
    * Assert an ordered fact.
    * @returns The fact ID.
    */
-  async assertFact(relation: string, ...fields: ClipsValue[]): Promise<number> {
-    return this.call("assertFact", [relation, ...fields.map(toWire)]) as Promise<number>;
+  async assertFact(relation: string, ...fields: ClipsValue[]): Promise<FactId> {
+    return this.call("assertFact", [relation, ...fields.map(toWire)]) as Promise<FactId>;
   }
 
   /**
@@ -254,17 +256,17 @@ export class EngineHandle {
   async assertTemplate(
     templateName: string,
     slots: Record<string, ClipsValue>,
-  ): Promise<number> {
-    return this.call("assertTemplate", [templateName, toWire(slots)]) as Promise<number>;
+  ): Promise<FactId> {
+    return this.call("assertTemplate", [templateName, toWire(slots)]) as Promise<FactId>;
   }
 
   /** Retract a fact by ID. */
-  async retract(factId: number): Promise<void> {
+  async retract(factId: FactIdInput): Promise<void> {
     await this.call("retract", [factId]);
   }
 
   /** Get a snapshot of a single fact, or null if not found. */
-  async getFact(factId: number): Promise<Fact | null> {
+  async getFact(factId: FactIdInput): Promise<Fact | null> {
     return this.call("getFact", [factId]) as Promise<Fact | null>;
   }
 

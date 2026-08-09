@@ -31,6 +31,7 @@ Each item is:
 | `N-04` | `EnginePool.close()` must stop accepting new requests and wait for already-dispatched requests to settle before worker teardown. |
 | `N-05` | Worker symbol wire format is canonicalized as `{ __type: "FerricSymbol", value: string }` at the TS layer. |
 | `N-06` | Public library API exports concrete `Engine` and `FerricSymbol` classes (not optional exports). |
+| `N-07` | Fact IDs have one canonical output representation, `FactId = bigint`; ID-taking APIs additionally accept only legacy safe-integer `number` values through `FactIdInput`. This is separate from CLIPS integer values and run counts/limits. |
 
 ## Release Gates
 
@@ -52,6 +53,7 @@ A release is conformant only if all are true:
 | `A-004` | Public enums are regular TS enums in the package-facing API (no `const enum` in public `dist/index.d.ts` surface). | Inspect generated public d.ts and compile consumer sample. | Implementation notes (enum guidance) | TSB-002 | PASS |
 | `A-005` | `Engine` supports `[Symbol.dispose](): void` for `using`. | Runtime check + `using` integration test on supported Node. | Engine lifecycle + examples | TSB-006 | PASS |
 | `A-006` | `EngineHandle` and `EnginePool` support `[Symbol.asyncDispose](): Promise<void>`. | Runtime `await using` test. | EngineHandle/Pool lifecycle | TSB-006 | PASS |
+| `A-007` | Public declarations export `FactId = bigint` and `FactIdInput = FactId \| number`; all fact-ID producer, snapshot, and consumer signatures use them consistently. | Strict type assertions against sync, handle, and pool surfaces. | Fact identifier representation | FR-NODE-001 | PASS |
 
 ### B) Value Conversion and Fact Shape
 
@@ -66,6 +68,8 @@ A release is conformant only if all are true:
 | `B-007` | Integers in safe range return JS `number`; outside safe range return `bigint`. | Boundary tests around `2^53-1`. | Integer representation section | TSB-001 | PASS |
 | `B-008` | `assertString` returns all asserted fact IDs. | Assert multi-fact string and verify length/IDs. | Engine API | TSB-001 | PASS |
 | `B-009` | `Fact` shape conforms: ordered facts have `relation+fields`, template facts have `templateName+fields` and slot map when applicable. | Snapshot structural assertions. | Result types (`Fact`) | TSB-001 | PASS |
+| `B-010` | Sync `Engine` emits every fact ID as `bigint` and round-trips IDs below, at, and above `2^53-1` through every accepting API without loss. | Native conversion boundaries plus high-generation assert/get/retract subprocess. | Fact identifier representation + N-07 | FR-NODE-001 | PASS |
+| `B-011` | Every sync fact-ID consumer accepts `bigint` and legacy safe numbers, while rejecting unsafe numbers, negative/out-of-range bigints, and other types with targeted errors. | Input-kind and boundary matrix for `retract`, `getFact`, and `getFactSlot`. | Fact identifier representation + N-07 | FR-NODE-001 | PASS |
 
 ### C) Error Mapping and Hierarchy
 
@@ -88,6 +92,7 @@ A release is conformant only if all are true:
 | `D-005` | `run({signal})` abort during execution returns partial result with `HaltReason.HaltRequested`. | Long-running rule + timed abort. | Cancellation semantics | TSB-004 | PASS |
 | `D-006` | `run({limit: 0})` follows `N-01` (`0` means zero firings). | Compare sync `Engine` and `EngineHandle`. | Engine run contract + N-01 | TSB-007 | PASS |
 | `D-007` | Buffer snapshot transfer across worker boundary functions correctly. | `serialize()` and `fromSnapshot` path via worker. | Worker protocol (Buffer transfer) | TSB-001 | PASS |
+| `D-008` | `EngineHandle` preserves `FactId` bigint values through structured clone in responses and ID-taking requests. | High-generation worker assert/get/retract round-trip. | Worker boundary + N-07 | FR-NODE-001 | PASS |
 
 ### E) EnginePool Semantics
 
@@ -102,6 +107,7 @@ A release is conformant only if all are true:
 | `E-007` | `EngineProxy` operation semantics match documented subset. | Signature/runtime parity checks. | EngineProxy interface | TSB-004 | PASS |
 | `E-008` | `close()` waits for in-flight requests to settle before teardown (per `N-04`). | Start long run, call close, verify request completion. | EnginePool close contract | TSB-005 | PASS |
 | `E-009` | `close()` is idempotent. | Multiple `close()` calls succeed. | EnginePool lifecycle | TSB-005 | PASS |
+| `E-010` | `EngineProxy` preserves `FactId` bigint values through pool structured clone in responses and ID-taking requests. | High-generation pool assert/get/retract round-trip. | Worker boundary + N-07 | FR-NODE-001 | PASS |
 
 ### F) Lifecycle and Closed-State Behavior
 
