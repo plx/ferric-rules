@@ -1,6 +1,7 @@
 package ferric
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 )
@@ -22,19 +23,73 @@ func (e *PanicError) Error() string {
 	return fmt.Sprintf("ferric: worker callback panicked with %T", e.Value)
 }
 
-func invokeWorkerCallback(engine *Engine, fn func(*Engine) error) (err error) {
+type workerResponse[T any] struct {
+	value T
+	err   error
+}
+
+// workerCall type-erases a typed callback while its completion closure retains
+// the concrete response channel. A dequeued call is completed exactly once by
+// its worker.
+type workerCall struct {
+	complete func(*Engine, error)
+}
+
+func newWorkerCall[T any](fn func(*Engine) (T, error)) (*workerCall, <-chan workerResponse[T]) {
+	responses := make(chan workerResponse[T], 1)
+	call := &workerCall{
+		complete: func(engine *Engine, dispatchErr error) {
+			if dispatchErr != nil {
+				responses <- workerResponse[T]{err: dispatchErr}
+				return
+			}
+			responses <- invokeWorkerCallback(engine, fn)
+		},
+	}
+	return call, responses
+}
+
+func waitWorkerResponse[T any](
+	ctx context.Context,
+	cancelQueued func() bool,
+	responses <-chan workerResponse[T],
+) workerResponse[T] {
+	select {
+	case response := <-responses:
+		return response
+	case <-ctx.Done():
+		if cancelQueued() {
+			return workerResponse[T]{
+				err: fmt.Errorf(
+					"ferric: request canceled while waiting for worker: %w",
+					requestContextError(ctx),
+				),
+			}
+		}
+		// The worker won ownership. Its sole response is authoritative even if
+		// cancellation and completion became observable at the same time.
+		response := <-responses
+		return response
+	}
+}
+
+//nolint:nonamedreturns // Panic recovery must replace the typed response error.
+func invokeWorkerCallback[T any](
+	engine *Engine,
+	fn func(*Engine) (T, error),
+) (response workerResponse[T]) {
 	completed := false
 	defer func() {
-		value := recover()
+		panicValue := recover()
 		if completed {
 			return
 		}
 		stack := make([]byte, workerPanicStackSize)
 		stack = stack[:runtime.Stack(stack, false)]
-		err = &PanicError{Value: value, Stack: stack}
+		response.err = &PanicError{Value: panicValue, Stack: stack}
 	}()
 
-	err = fn(engine)
+	response.value, response.err = fn(engine)
 	completed = true
-	return err
+	return response
 }

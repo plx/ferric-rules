@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,14 +42,13 @@ func (roundRobinPolicy) PickWorker(_ RouteHint, numWorkers int, counter uint64) 
 // Coordinator manages a pool of OS threads and a fixed set of engine types.
 // Engines are lazily instantiated per-thread on first use.
 type Coordinator struct {
-	specs      map[string][]EngineOption
-	workers    []*worker
-	next       atomic.Uint64
-	policy     DispatchPolicy
-	done       chan struct{}
-	closed     atomic.Bool
-	obs        *obs
-	closeGuard sync.RWMutex // protects enqueue windows during shutdown
+	specs   map[string][]EngineOption
+	workers []*worker
+	next    atomic.Uint64
+	policy  DispatchPolicy
+	done    chan struct{}
+	closed  atomic.Bool
+	obs     *obs
 }
 
 // NewCoordinator creates a Coordinator with the given engine specs and
@@ -94,24 +92,20 @@ func (c *Coordinator) pickWorker(hint RouteHint) *worker {
 	return c.workers[idx]
 }
 
-// Close shuts down the coordinator. It stops accepting new requests, drains
-// all previously-accepted work so that every in-flight request completes with
-// its real result, and then frees all engines. Blocks until every accepted
-// request has been processed and all worker goroutines have exited.
+// Close shuts down the coordinator. It stops accepting new requests, completes
+// all non-canceled work already queued or started, and then frees all engines.
+// It blocks until the worker goroutines have exited.
 func (c *Coordinator) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
 	// Phase 1: Signal callers that no new work will be accepted.
 	close(c.done)
-	// Phase 2: Wait for all in-progress enqueue attempts to resolve,
-	// then drain and stop workers while holding the write lock.
-	// The write lock blocks until every RLock holder (tryEnqueue) exits.
-	// After this returns, no goroutine can write to any worker channel.
-	c.closeGuard.Lock()
+	// Phase 2: Closing each request queue wakes blocked submitters and lets its
+	// worker drain all remaining, non-canceled requests before exiting.
 	for _, w := range c.workers {
 		if w != nil {
-			close(w.stop)
+			w.requests.close()
 		}
 	}
 	for _, w := range c.workers {
@@ -119,7 +113,6 @@ func (c *Coordinator) Close() error {
 			<-w.done
 		}
 	}
-	c.closeGuard.Unlock()
 	return nil
 }
 
@@ -129,16 +122,14 @@ func (c *Coordinator) Close() error {
 
 type workerRequest struct {
 	specName   string
-	fn         func(*Engine) error
-	resp       chan error
+	call       *workerCall
 	enqueuedAt time.Time
 }
 
 type worker struct {
 	specs    map[string][]EngineOption
 	engines  map[string]*Engine
-	requests chan workerRequest
-	stop     chan struct{}
+	requests *requestQueue[workerRequest]
 	done     chan struct{}
 	obs      *obs
 }
@@ -147,8 +138,7 @@ func newWorker(specs map[string][]EngineOption, o *obs) *worker {
 	w := &worker{
 		specs:    specs,
 		engines:  make(map[string]*Engine),
-		requests: make(chan workerRequest, 16),
-		stop:     make(chan struct{}),
+		requests: newRequestQueue[workerRequest](workerRequestQueueCapacity),
 		done:     make(chan struct{}),
 		obs:      o,
 	}
@@ -164,13 +154,11 @@ func newWorker(specs map[string][]EngineOption, o *obs) *worker {
 		close(ready)
 
 		for {
-			select {
-			case <-w.stop:
-				w.drain()
+			request := w.requests.dequeue()
+			if !request.ok {
 				return
-			case req := <-w.requests:
-				w.handle(req)
 			}
+			w.handle(request.value)
 		}
 	}()
 
@@ -185,24 +173,7 @@ func (w *worker) handle(req workerRequest) {
 			metric.WithAttributes(specAttr))
 	}
 	engine, err := w.getOrCreateEngine(req.specName)
-	if err != nil {
-		req.resp <- err
-		return
-	}
-	req.resp <- invokeWorkerCallback(engine, req.fn)
-}
-
-// drain processes all buffered requests remaining in the channel so that
-// accepted work always completes with its real result during shutdown.
-func (w *worker) drain() {
-	for {
-		select {
-		case req := <-w.requests:
-			w.handle(req)
-		default:
-			return
-		}
-	}
+	req.call.complete(engine, err)
 }
 
 func (w *worker) getOrCreateEngine(specName string) (*Engine, error) {

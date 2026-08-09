@@ -22,13 +22,11 @@ var errPinnedEngineClosed = errors.New("ferric: pinned engine is closed")
 //
 // PinnedEngine implements io.Closer. Always defer Close() after creation.
 type PinnedEngine struct {
-	requests   chan pinnedRequest
-	stop       chan struct{}
-	done       chan struct{}
-	closeOnce  sync.Once
-	closed     atomic.Bool
-	activeRun  atomic.Pointer[pinnedRunControl]
-	closeGuard sync.RWMutex // protects enqueue windows during shutdown
+	requests  *requestQueue[pinnedRequest]
+	done      chan struct{}
+	closeOnce sync.Once
+	closed    atomic.Bool
+	activeRun atomic.Pointer[pinnedRunControl]
 }
 
 type pinnedRunControl struct {
@@ -36,8 +34,12 @@ type pinnedRunControl struct {
 }
 
 type pinnedRequest struct {
-	fn   func(*Engine) error
-	resp chan error
+	call *workerCall
+}
+
+type valueOK[T any] struct {
+	value T
+	ok    bool
 }
 
 // NewPinnedEngine creates a PinnedEngine backed by a dedicated OS-locked
@@ -45,8 +47,7 @@ type pinnedRequest struct {
 // Returns an error if engine creation fails.
 func NewPinnedEngine(opts ...EngineOption) (*PinnedEngine, error) {
 	p := &PinnedEngine{
-		requests: make(chan pinnedRequest, 16),
-		stop:     make(chan struct{}),
+		requests: newRequestQueue[pinnedRequest](workerRequestQueueCapacity),
 		done:     make(chan struct{}),
 	}
 
@@ -67,13 +68,11 @@ func NewPinnedEngine(opts ...EngineOption) (*PinnedEngine, error) {
 		close(ready) // signal success
 
 		for {
-			select {
-			case <-p.stop:
-				p.drain(eng)
+			request := p.requests.dequeue()
+			if !request.ok {
 				return
-			case req := <-p.requests:
-				req.resp <- invokeWorkerCallback(eng, req.fn)
 			}
+			request.value.call.complete(eng, nil)
 		}
 	}()
 
@@ -83,27 +82,14 @@ func NewPinnedEngine(opts ...EngineOption) (*PinnedEngine, error) {
 	return p, nil
 }
 
-// drain processes all buffered requests so that accepted work completes
-// with its real result during shutdown.
-func (p *PinnedEngine) drain(eng *Engine) {
-	for {
-		select {
-		case req := <-p.requests:
-			req.resp <- invokeWorkerCallback(eng, req.fn)
-		default:
-			return
-		}
-	}
-}
-
 // Close shuts down the PinnedEngine. It stops accepting new requests and
-// interrupts active and already-accepted queued Run requests. Close-induced
+// interrupts active and already-queued Run requests. Close-induced
 // interruption uses the same cooperative-cancellation outcome as Halt: a
 // partial (or zero) RunResult with HaltRequested and a nil error, rather than
 // errPinnedEngineClosed. Requests rejected after Close begins return
-// errPinnedEngineClosed. Other previously-accepted work is drained before the
-// underlying engine is closed. Close then blocks until the worker goroutine
-// exits.
+// errPinnedEngineClosed. Other non-canceled work already queued or started is
+// completed before the underlying engine is closed. Close then blocks until the
+// worker goroutine exits.
 //
 // Run interruption is cooperative and is observed between batches of at most
 // 100 rule firings. Close cannot preempt an arbitrary function submitted with
@@ -113,74 +99,69 @@ func (p *PinnedEngine) drain(eng *Engine) {
 func (p *PinnedEngine) Close() error {
 	p.closeOnce.Do(func() {
 		// The run loop observes this sticky flag without going through the
-		// request queue. Publish it before waiting for enqueue readers so an
-		// active run can release a full queue and let shutdown make progress.
+		// request queue. Publish it before closing the queue so an active run
+		// can make progress toward worker shutdown.
 		p.closed.Store(true)
-		// Wait for all in-progress enqueue attempts to resolve,
-		// then signal worker to stop while holding the write lock.
-		// The write lock blocks until every RLock holder (tryEnqueue) exits.
-		// After this acquires, no goroutine can write to p.requests.
-		p.closeGuard.Lock()
-		close(p.stop)
-		p.closeGuard.Unlock()
+		p.requests.close()
 	})
 	<-p.done
 	return nil
 }
 
-// tryEnqueue attempts to place req into the worker's request channel.
-// It holds a read lock on closeGuard so that Close (which takes a write
-// lock) blocks until all in-progress enqueue attempts resolve. This
-// eliminates the race where a request is enqueued after the worker's
-// drain has completed.
-func (p *PinnedEngine) tryEnqueue(ctx context.Context, req pinnedRequest) error {
-	p.closeGuard.RLock()
-	defer p.closeGuard.RUnlock()
-
+// tryEnqueue places req into the removable worker queue. The returned handle
+// owns cancellation until the worker dequeues the request.
+func (p *PinnedEngine) tryEnqueue(
+	ctx context.Context,
+	req pinnedRequest,
+) (*queuedRequest[pinnedRequest], error) {
 	if p.closed.Load() {
-		return errPinnedEngineClosed
+		return nil, errPinnedEngineClosed
 	}
 
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("ferric: request canceled before dispatch: %w", err)
+	queued, err := p.requests.enqueue(ctx, req)
+	if errors.Is(err, errRequestQueueClosed) {
+		return nil, errPinnedEngineClosed
 	}
-
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("ferric: request canceled before dispatch: %w", ctx.Err())
-	case p.requests <- req:
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("ferric: request canceled before dispatch: %w", err)
 	}
+	return queued, nil
 }
 
 // Do dispatches an arbitrary function to the pinned engine's worker thread.
 // The function runs with exclusive access to the underlying Engine.
 // The Engine must not be retained beyond the closure's return.
 // A panic in fn is recovered by the worker as *PanicError; engine changes
-// completed before the panic are not rolled back. If ctx is canceled after
-// dispatch but before the worker response is received, Do may return an error
-// wrapping ctx.Err() instead.
+// completed before the panic are not rolled back. A request is queued after it
+// enters the FIFO and becomes started when the worker dequeues it. Cancellation
+// removes a queued callback and returns an error wrapping ctx.Err(). Once
+// started, Do waits for fn's real result; cancellation does not preempt an
+// arbitrary callback.
 //
 // Returns errPinnedEngineClosed if the PinnedEngine has been closed.
 // Respects context cancellation for both dispatch and waiting.
 func (p *PinnedEngine) Do(ctx context.Context, fn func(*Engine) error) error {
+	response := pinnedCall(ctx, p, func(engine *Engine) (struct{}, error) {
+		return struct{}{}, fn(engine)
+	})
+	return response.err
+}
+
+func pinnedCall[T any](
+	ctx context.Context,
+	p *PinnedEngine,
+	fn func(*Engine) (T, error),
+) workerResponse[T] {
 	if ctx == nil {
-		return errNilContext
+		return workerResponse[T]{err: errNilContext}
 	}
 
-	resp := make(chan error, 1)
-	req := pinnedRequest{fn: fn, resp: resp}
-
-	if err := p.tryEnqueue(ctx, req); err != nil {
-		return err
+	call, responses := newWorkerCall(fn)
+	queued, err := p.tryEnqueue(ctx, pinnedRequest{call: call})
+	if err != nil {
+		return workerResponse[T]{err: err}
 	}
-
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("ferric: request canceled while waiting for worker: %w", ctx.Err())
-	case err := <-resp:
-		return err
-	}
+	return waitWorkerResponse(ctx, queued.cancel, responses)
 }
 
 // do is the internal dispatch helper used by all typed methods.
@@ -207,35 +188,26 @@ func (p *PinnedEngine) Load(source string) error {
 
 // AssertString asserts a fact from a CLIPS source string.
 func (p *PinnedEngine) AssertString(source string) (uint64, error) {
-	var id uint64
-	err := p.do(func(e *Engine) error {
-		var err error
-		id, err = e.AssertString(source)
-		return err
+	response := pinnedCall(context.Background(), p, func(e *Engine) (uint64, error) {
+		return e.AssertString(source)
 	})
-	return id, err
+	return response.value, response.err
 }
 
 // AssertFact asserts an ordered fact with the given relation and fields.
 func (p *PinnedEngine) AssertFact(relation string, fields ...any) (uint64, error) {
-	var id uint64
-	err := p.do(func(e *Engine) error {
-		var err error
-		id, err = e.AssertFact(relation, fields...)
-		return err
+	response := pinnedCall(context.Background(), p, func(e *Engine) (uint64, error) {
+		return e.AssertFact(relation, fields...)
 	})
-	return id, err
+	return response.value, response.err
 }
 
 // AssertTemplate asserts a template fact with named slot values.
 func (p *PinnedEngine) AssertTemplate(templateName string, slots map[string]any) (uint64, error) {
-	var id uint64
-	err := p.do(func(e *Engine) error {
-		var err error
-		id, err = e.AssertTemplate(templateName, slots)
-		return err
+	response := pinnedCall(context.Background(), p, func(e *Engine) (uint64, error) {
+		return e.AssertTemplate(templateName, slots)
 	})
-	return id, err
+	return response.value, response.err
 }
 
 // Retract removes a fact by its ID.
@@ -247,46 +219,34 @@ func (p *PinnedEngine) Retract(factID uint64) error {
 
 // GetFact returns a snapshot of a single fact.
 func (p *PinnedEngine) GetFact(factID uint64) (*Fact, error) {
-	var f *Fact
-	err := p.do(func(e *Engine) error {
-		var err error
-		f, err = e.GetFact(factID)
-		return err
+	response := pinnedCall(context.Background(), p, func(e *Engine) (*Fact, error) {
+		return e.GetFact(factID)
 	})
-	return f, err
+	return response.value, response.err
 }
 
 // Facts returns snapshots of all user-visible facts.
 func (p *PinnedEngine) Facts() ([]Fact, error) {
-	var facts []Fact
-	err := p.do(func(e *Engine) error {
-		var err error
-		facts, err = e.Facts()
-		return err
+	response := pinnedCall(context.Background(), p, func(e *Engine) ([]Fact, error) {
+		return e.Facts()
 	})
-	return facts, err
+	return response.value, response.err
 }
 
 // FindFacts returns snapshots of facts matching the given relation name.
 func (p *PinnedEngine) FindFacts(relation string) ([]Fact, error) {
-	var facts []Fact
-	err := p.do(func(e *Engine) error {
-		var err error
-		facts, err = e.FindFacts(relation)
-		return err
+	response := pinnedCall(context.Background(), p, func(e *Engine) ([]Fact, error) {
+		return e.FindFacts(relation)
 	})
-	return facts, err
+	return response.value, response.err
 }
 
 // FactCount returns the number of user-visible facts.
 func (p *PinnedEngine) FactCount() (int, error) {
-	var count int
-	err := p.do(func(e *Engine) error {
-		var err error
-		count, err = e.FactCount()
-		return err
+	response := pinnedCall(context.Background(), p, func(e *Engine) (int, error) {
+		return e.FactCount()
 	})
-	return count, err
+	return response.value, response.err
 }
 
 // ---------------------------------------------------------------------------
@@ -300,56 +260,34 @@ func (p *PinnedEngine) Run(ctx context.Context) (*RunResult, error) {
 }
 
 // RunWithLimit runs the engine with a maximum number of rule firings.
-// A limit of 0 means unlimited. Context cancellation before queue acceptance
-// rejects the request. Once accepted, RunWithLimit waits for the cooperative
-// worker response; context cancellation returns a partial RunResult with
-// HaltRequested and an error wrapping ctx.Err(). Halt or Close interruption
-// returns a partial (or zero) RunResult with HaltRequested and a nil error.
-// A native terminal result or completed explicit limit wins first; at an
-// internal batch boundary, caller context cancellation wins over simultaneous
-// Halt or Close interruption.
+// A limit of 0 means unlimited. Context cancellation before the worker starts
+// removes a queued run and returns a nil result with an error wrapping
+// ctx.Err(). Once started, RunWithLimit waits for the cooperative worker
+// response; context cancellation returns a partial RunResult with HaltRequested
+// and an error wrapping ctx.Err(). Halt or Close interruption returns a partial
+// (or zero) RunResult with HaltRequested and a nil error. A native terminal
+// result or completed explicit limit wins first; at an internal batch boundary,
+// caller context cancellation wins over simultaneous Halt or Close interruption.
 func (p *PinnedEngine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error) {
-	if ctx == nil {
-		return nil, errNilContext
-	}
+	response := pinnedCall(ctx, p, func(e *Engine) (*RunResult, error) {
+		control := &pinnedRunControl{}
+		p.activeRun.Store(control)
+		defer p.activeRun.CompareAndSwap(control, nil)
 
-	var result *RunResult
-	resp := make(chan error, 1)
-	req := pinnedRequest{
-		resp: resp,
-		fn: func(e *Engine) error {
-			control := &pinnedRunControl{}
-			p.activeRun.Store(control)
-			defer p.activeRun.CompareAndSwap(control, nil)
-
-			var err error
-			result, err = e.runWithLimit(ctx, limit, func() bool {
-				return control.halted.Load() || p.closed.Load()
-			})
-			return err
-		},
-	}
-	if err := p.tryEnqueue(ctx, req); err != nil {
-		return nil, err
-	}
-
-	// An accepted run observes ctx itself between chunks. Waiting for the
-	// worker's sole response gives the captured result a channel happens-before
-	// edge and prevents Do's post-dispatch cancellation select from racing it.
-	err := <-resp
-	return result, err
+		return e.runWithLimit(ctx, limit, func() bool {
+			return control.halted.Load() || p.closed.Load()
+		})
+	})
+	return response.value, response.err
 }
 
 // Step executes a single rule firing.
 // Returns nil if the agenda is empty.
 func (p *PinnedEngine) Step() (*FiredRule, error) {
-	var fr *FiredRule
-	err := p.do(func(e *Engine) error {
-		var err error
-		fr, err = e.Step()
-		return err
+	response := pinnedCall(context.Background(), p, func(e *Engine) (*FiredRule, error) {
+		return e.Step()
 	})
-	return fr, err
+	return response.value, response.err
 }
 
 // Halt requests that the currently active Run stop at the next batch boundary.
@@ -382,13 +320,10 @@ func (p *PinnedEngine) Clear() {
 
 // Serialize produces a snapshot of the engine's current state.
 func (p *PinnedEngine) Serialize(format Format) ([]byte, error) {
-	var data []byte
-	err := p.do(func(e *Engine) error {
-		var err error
-		data, err = e.Serialize(format)
-		return err
+	response := pinnedCall(context.Background(), p, func(e *Engine) ([]byte, error) {
+		return e.Serialize(format)
 	})
-	return data, err
+	return response.value, response.err
 }
 
 // SerializeToFile writes a serialized snapshot to the given file path.
@@ -404,84 +339,67 @@ func (p *PinnedEngine) SerializeToFile(path string, format Format) error {
 
 // Rules returns information about all registered rules.
 func (p *PinnedEngine) Rules() []RuleInfo {
-	var rules []RuleInfo
-	_ = p.do(func(e *Engine) error {
-		rules = e.Rules()
-		return nil
+	response := pinnedCall(context.Background(), p, func(e *Engine) ([]RuleInfo, error) {
+		return e.Rules(), nil
 	})
-	return rules
+	return response.value
 }
 
 // Templates returns the names of all registered templates.
 func (p *PinnedEngine) Templates() []string {
-	var names []string
-	_ = p.do(func(e *Engine) error {
-		names = e.Templates()
-		return nil
+	response := pinnedCall(context.Background(), p, func(e *Engine) ([]string, error) {
+		return e.Templates(), nil
 	})
-	return names
+	return response.value
 }
 
 // GetGlobal retrieves a global variable's value by name.
 func (p *PinnedEngine) GetGlobal(name string) (any, error) {
-	var val any
-	err := p.do(func(e *Engine) error {
-		var err error
-		val, err = e.GetGlobal(name)
-		return err
+	response := pinnedCall(context.Background(), p, func(e *Engine) (any, error) {
+		return e.GetGlobal(name)
 	})
-	return val, err
+	return response.value, response.err
 }
 
 // CurrentModule returns the name of the current module.
 func (p *PinnedEngine) CurrentModule() string {
-	var name string
-	_ = p.do(func(e *Engine) error {
-		name = e.CurrentModule()
-		return nil
+	response := pinnedCall(context.Background(), p, func(e *Engine) (string, error) {
+		return e.CurrentModule(), nil
 	})
-	return name
+	return response.value
 }
 
 // Focus returns the module at the top of the focus stack.
 func (p *PinnedEngine) Focus() (string, bool) {
-	var name string
-	var ok bool
-	_ = p.do(func(e *Engine) error {
-		name, ok = e.Focus()
-		return nil
+	response := pinnedCall(context.Background(), p, func(e *Engine) (valueOK[string], error) {
+		name, ok := e.Focus()
+		return valueOK[string]{value: name, ok: ok}, nil
 	})
-	return name, ok
+	return response.value.value, response.value.ok
 }
 
 // FocusStack returns the focus stack entries from bottom to top.
 func (p *PinnedEngine) FocusStack() []string {
-	var stack []string
-	_ = p.do(func(e *Engine) error {
-		stack = e.FocusStack()
-		return nil
+	response := pinnedCall(context.Background(), p, func(e *Engine) ([]string, error) {
+		return e.FocusStack(), nil
 	})
-	return stack
+	return response.value
 }
 
 // AgendaSize returns the number of activations on the agenda.
 func (p *PinnedEngine) AgendaSize() int {
-	var count int
-	_ = p.do(func(e *Engine) error {
-		count = e.AgendaSize()
-		return nil
+	response := pinnedCall(context.Background(), p, func(e *Engine) (int, error) {
+		return e.AgendaSize(), nil
 	})
-	return count
+	return response.value
 }
 
 // IsHalted returns true if the engine is halted.
 func (p *PinnedEngine) IsHalted() bool {
-	var halted bool
-	_ = p.do(func(e *Engine) error {
-		halted = e.IsHalted()
-		return nil
+	response := pinnedCall(context.Background(), p, func(e *Engine) (bool, error) {
+		return e.IsHalted(), nil
 	})
-	return halted
+	return response.value
 }
 
 // ---------------------------------------------------------------------------
@@ -490,13 +408,11 @@ func (p *PinnedEngine) IsHalted() bool {
 
 // GetOutput retrieves captured output for a named channel.
 func (p *PinnedEngine) GetOutput(channel string) (string, bool) {
-	var s string
-	var ok bool
-	_ = p.do(func(e *Engine) error {
-		s, ok = e.GetOutput(channel)
-		return nil
+	response := pinnedCall(context.Background(), p, func(e *Engine) (valueOK[string], error) {
+		value, ok := e.GetOutput(channel)
+		return valueOK[string]{value: value, ok: ok}, nil
 	})
-	return s, ok
+	return response.value.value, response.value.ok
 }
 
 // ClearOutput clears a specific output channel.
@@ -521,12 +437,10 @@ func (p *PinnedEngine) PushInput(line string) {
 
 // Diagnostics returns all action diagnostic messages from recent execution.
 func (p *PinnedEngine) Diagnostics() []string {
-	var diags []string
-	_ = p.do(func(e *Engine) error {
-		diags = e.Diagnostics()
-		return nil
+	response := pinnedCall(context.Background(), p, func(e *Engine) ([]string, error) {
+		return e.Diagnostics(), nil
 	})
-	return diags
+	return response.value
 }
 
 // ClearDiagnostics clears all stored action diagnostics.

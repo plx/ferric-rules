@@ -37,47 +37,52 @@ func (c *Coordinator) Manager(specName string) (*Manager, error) {
 	return &Manager{coord: c, specName: specName}, nil
 }
 
-// tryEnqueue attempts to place req into a worker's request channel.
-// It holds a read lock on closeGuard so that Close (which takes a write
-// lock) blocks until all in-progress enqueue attempts resolve. This
-// eliminates the race where a request is enqueued after the worker's
-// drain has completed.
-func (m *Manager) tryEnqueue(ctx context.Context, w *worker, req workerRequest) error {
-	m.coord.closeGuard.RLock()
-	defer m.coord.closeGuard.RUnlock()
-
+// tryEnqueue places req into a worker's removable request queue. The returned
+// handle owns cancellation until that worker dequeues the request.
+func (m *Manager) tryEnqueue(
+	ctx context.Context,
+	w *worker,
+	req workerRequest,
+) (*queuedRequest[workerRequest], error) {
 	if m.coord.closed.Load() {
-		return errCoordinatorClosed
+		return nil, errCoordinatorClosed
 	}
 
-	// Check for cancellation before enqueueing. Without this explicit
-	// check, a canceled ctx and a ready channel are both selectable and
-	// Go picks pseudo-randomly, allowing a request to be dispatched
-	// after the caller believes it was aborted.
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("ferric: request canceled before dispatch: %w", err)
+	queued, err := w.requests.enqueue(ctx, req)
+	if errors.Is(err, errRequestQueueClosed) {
+		return nil, errCoordinatorClosed
 	}
-
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("ferric: request canceled before dispatch: %w", ctx.Err())
-	case w.requests <- req:
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("ferric: request canceled before dispatch: %w", err)
 	}
+	return queued, nil
 }
 
 // Do dispatches a function to an engine of this Manager's type.
 // The function runs on a thread-locked worker goroutine. The Engine
 // must not be retained beyond the closure's return.
 // A panic in fn is recovered by the worker as *PanicError; engine changes
-// completed before the panic are not rolled back. If ctx is canceled after
-// dispatch but before the worker response is received, Do may return an error
-// wrapping ctx.Err() instead.
-//
-//nolint:nonamedreturns // named return needed for deferred observability recording.
-func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) (retErr error) {
+// completed before the panic are not rolled back. A request is queued after it
+// enters the worker FIFO and becomes started when that worker dequeues it.
+// Cancellation removes a queued callback and returns an error wrapping
+// ctx.Err(). Once started, Do waits for fn's real result; cancellation does not
+// preempt an arbitrary callback.
+func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) error {
+	response := managerCall(ctx, m, func(engine *Engine) (struct{}, error) {
+		return struct{}{}, fn(engine)
+	})
+	return response.err
+}
+
+//nolint:nonamedreturns // Deferred observability records the typed response error.
+func managerCall[T any](
+	ctx context.Context,
+	m *Manager,
+	fn func(*Engine) (T, error),
+) (response workerResponse[T]) {
 	if ctx == nil {
-		return errNilContext
+		response.err = errNilContext
+		return response
 	}
 
 	o := m.coord.obs
@@ -89,45 +94,39 @@ func (m *Manager) Do(ctx context.Context, fn func(*Engine) error) (retErr error)
 		dur := sinceSeconds(start)
 		o.dispatchDuration.Record(ctx, dur, metric.WithAttributes(specAttr))
 		o.dispatchTotal.Add(ctx, 1, metric.WithAttributes(specAttr))
-		if retErr != nil {
+		if response.err != nil {
 			o.dispatchErrors.Add(ctx, 1, metric.WithAttributes(specAttr))
-			o.recordError(span, retErr)
+			o.recordError(span, response.err)
 			if o.logger != nil {
 				o.logger.WarnContext(ctx, "dispatch failed",
-					"spec", m.specName, "duration_s", dur, "error", retErr)
+					"spec", m.specName, "duration_s", dur, "error", response.err)
 			}
 		}
 		span.End()
 	}()
 
 	w := m.coord.pickWorker(RouteHint{SpecName: m.specName})
-	resp := make(chan error, 1)
+	call, responses := newWorkerCall(fn)
 	req := workerRequest{
 		specName:   m.specName,
-		fn:         fn,
-		resp:       resp,
+		call:       call,
 		enqueuedAt: time.Now(),
 	}
 
-	if err := m.tryEnqueue(ctx, w, req); err != nil {
-		return err
+	queued, err := m.tryEnqueue(ctx, w, req)
+	if err != nil {
+		response.err = err
+		return response
 	}
-
-	// The worker guarantees it will drain all buffered requests before
-	// exiting, so an accepted request always gets a real response.
-	// We intentionally do NOT select on m.coord.done here: doing so
-	// would race with resp and could discard the real result.
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("ferric: request canceled while waiting for worker: %w", ctx.Err())
-	case err := <-resp:
-		return err
-	}
+	return waitWorkerResponse(ctx, queued.cancel, responses)
 }
 
 // Evaluate resets the engine, asserts the given facts, runs to completion,
 // and returns the resulting facts and output. This is the primary entry
-// point for stateless one-shot evaluation.
+// point for stateless one-shot evaluation. Cancellation while queued removes
+// the request before Reset. Once started, Evaluate waits for the worker
+// response; Reset, assertion, or run mutations completed before cancellation
+// are not rolled back.
 func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*EvaluateResult, error) {
 	if req == nil {
 		return nil, errNilEvaluateRequest
@@ -138,20 +137,19 @@ func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*Evaluate
 	ctx, span := o.tracer.Start(ctx, "ferric.evaluate", trace.WithAttributes(specAttr))
 	defer span.End()
 
-	var result *EvaluateResult
-	err := m.Do(ctx, func(e *Engine) error {
+	response := managerCall(ctx, m, func(e *Engine) (*EvaluateResult, error) {
 		if err := e.Reset(); err != nil {
-			return err
+			return nil, err
 		}
 
 		if err := assertWireFacts(e, req.Facts); err != nil {
-			return err
+			return nil, err
 		}
 
 		runStart := time.Now()
 		runResult, err := runEvaluate(ctx, e, req.Limit)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		o.runDuration.Record(ctx, sinceSeconds(runStart), metric.WithAttributes(specAttr))
 
@@ -167,14 +165,13 @@ func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*Evaluate
 				"halt_reason", runResult.HaltReason.String())
 		}
 
-		result, err = buildEvaluateResult(e, runResult)
-		return err
+		return buildEvaluateResult(e, runResult)
 	})
 
-	if err != nil {
-		o.recordError(span, err)
+	if response.err != nil {
+		o.recordError(span, response.err)
 	}
-	return result, err
+	return response.value, response.err
 }
 
 func assertWireFacts(e *Engine, facts []WireFactInput) error {

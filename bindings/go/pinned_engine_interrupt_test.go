@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,12 +66,31 @@ func waitForPinnedQueueDepth(t *testing.T, engine *PinnedEngine, depth int) {
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if len(engine.requests) >= depth {
+		if engine.requests.len() >= depth {
 			return
 		}
 		select {
 		case <-deadline.C:
 			t.Fatalf("pinned request queue depth did not reach %d", depth)
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForPinnedQueueLength(t *testing.T, engine *PinnedEngine, want int) {
+	t.Helper()
+
+	deadline := time.NewTimer(pinnedInterruptTestTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if engine.requests.len() == want {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("pinned request queue length = %d, want %d", engine.requests.len(), want)
 		case <-ticker.C:
 		}
 	}
@@ -551,8 +571,15 @@ func TestPinnedEngineContextWinsAtInterruptBoundary(t *testing.T) {
 	}
 }
 
-func TestPinnedEngineAcceptedQueuedRunWaitsForCooperativeCancellation(t *testing.T) {
+//nolint:funlen // The worker blocker proves the canceled Run remains queued and never enters FFI.
+func TestPinnedEngineQueuedRunCancellationRemovesRequest(t *testing.T) {
+	withFFIHooks(t)
 	engine := newPinnedCyclingEngine(t)
+	var nativeRunCalls atomic.Int32
+	ffiEngineRunEx = func(ffi.EngineHandle, int64) (uint64, ffi.HaltReason, ffi.ErrorCode) {
+		nativeRunCalls.Add(1)
+		return 0, ffi.HaltReasonAgendaEmpty, ffi.ErrOK
+	}
 	releaseBlocker := make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() {
@@ -581,11 +608,22 @@ func TestPinnedEngineAcceptedQueuedRunWaitsForCooperativeCancellation(t *testing
 	waitForPinnedQueueDepth(t, engine, 1)
 	cancel()
 
-	select {
-	case outcome := <-outcomes:
-		t.Fatalf("accepted queued run returned before its worker response: (%+v, %v)", outcome.result, outcome.err)
-	case <-time.After(25 * time.Millisecond):
+	outcome := receivePinnedRunOutcome(t, outcomes)
+	if outcome.result != nil || !errors.Is(outcome.err, context.Canceled) {
+		t.Fatalf("queued cancellation outcome = (%+v, %v), want nil/context.Canceled", outcome.result, outcome.err)
 	}
+	if _, ok := <-outcomes; ok {
+		t.Fatal("queued run produced more than one terminal outcome")
+	}
+	waitForPinnedQueueLength(t, engine, 0)
+
+	successorDone := make(chan error, 1)
+	go func() {
+		successorDone <- engine.Do(context.Background(), func(callbackEngine *Engine) error {
+			return callbackEngine.Reset()
+		})
+	}()
+	waitForPinnedQueueDepth(t, engine, 1)
 
 	releaseOnce.Do(func() { close(releaseBlocker) })
 	select {
@@ -596,10 +634,16 @@ func TestPinnedEngineAcceptedQueuedRunWaitsForCooperativeCancellation(t *testing
 	case <-time.After(pinnedInterruptTestTimeout):
 		t.Fatal("blocking request did not finish")
 	}
-	outcome := receivePinnedRunOutcome(t, outcomes)
-	want := RunResult{RulesFired: 0, HaltReason: HaltRequested}
-	if outcome.result == nil || *outcome.result != want || !errors.Is(outcome.err, context.Canceled) {
-		t.Fatalf("queued cancellation outcome = (%+v, %v), want %+v/context.Canceled", outcome.result, outcome.err, want)
+	select {
+	case err := <-successorDone:
+		if err != nil {
+			t.Fatalf("successor after queued run cancellation failed: %v", err)
+		}
+	case <-time.After(pinnedInterruptTestTimeout):
+		t.Fatal("successor after queued run cancellation did not settle")
+	}
+	if calls := nativeRunCalls.Load(); calls != 0 {
+		t.Fatalf("queued canceled run entered native execution %d times, want 0", calls)
 	}
 }
 

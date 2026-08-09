@@ -806,15 +806,15 @@ func TestCoordinatorCancelDuringEnqueue(t *testing.T) {
 			})
 		})
 	}
-	runtime.Gosched()
-	time.Sleep(30 * time.Millisecond)
+	waitForRequestQueueLength(t, coord.workers[0].requests, workerRequestQueueCapacity)
 
 	// Now try to enqueue with a context that will be canceled shortly.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
+	var callbackCalls atomic.Int32
 	err = mgr.Do(ctx, func(_ *Engine) error {
-		t.Fatal("callback should not run — context canceled before dispatch")
+		callbackCalls.Add(1)
 		return nil
 	})
 	if err == nil {
@@ -822,6 +822,9 @@ func TestCoordinatorCancelDuringEnqueue(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded, got: %v", err)
+	}
+	if calls := callbackCalls.Load(); calls != 0 {
+		t.Fatalf("callback canceled before admission ran %d times, want 0", calls)
 	}
 }
 
@@ -842,7 +845,8 @@ func TestCoordinatorCancelDuringWait(t *testing.T) {
 	// Block the worker with a slow request.
 	workerBusy := make(chan struct{})
 	proceed := make(chan struct{})
-	defer close(proceed)
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(proceed) }) })
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -854,19 +858,35 @@ func TestCoordinatorCancelDuringWait(t *testing.T) {
 	})
 	<-workerBusy
 
-	// Enqueue a request whose context will expire while waiting.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	// Enqueue a request, then cancel it while it is still removable.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	err = mgr.Do(ctx, func(_ *Engine) error {
-		return nil
-	})
+	var callbackCalls atomic.Int32
+	result := make(chan error, 1)
+	go func() {
+		result <- mgr.Do(ctx, func(_ *Engine) error {
+			callbackCalls.Add(1)
+			return nil
+		})
+	}()
+	waitForRequestQueueLength(t, coord.workers[0].requests, 1)
+	cancel()
+	select {
+	case err = <-result:
+	case <-time.After(requestCancellationTestTimeout):
+		t.Fatal("queued cancellation did not return while worker remained blocked")
+	}
 	if err == nil {
 		t.Fatal("expected cancellation error")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected DeadlineExceeded, got: %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
+	waitForRequestQueueLength(t, coord.workers[0].requests, 0)
+	if calls := callbackCalls.Load(); calls != 0 {
+		t.Fatalf("queued canceled callback ran %d times, want 0", calls)
+	}
+	releaseOnce.Do(func() { close(proceed) })
 }
 
 // TestCoordinatorCancelRacesWithClose verifies correctness when cancellation

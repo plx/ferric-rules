@@ -171,7 +171,7 @@ func runPinnedPanicRecoveryScenario(t *testing.T) {
 		})
 	}()
 	waitWorkerPanicCondition(t, "queued pinned successor", func() bool {
-		return len(engine.requests) == 1
+		return engine.requests.len() == 1
 	})
 	releaseOnce.Do(func() { close(release) })
 
@@ -232,7 +232,7 @@ func runCoordinatorPanicRecoveryScenario(t *testing.T) {
 		})
 	}()
 	waitWorkerPanicCondition(t, "queued coordinator successor", func() bool {
-		return len(workerBefore.requests) == 1
+		return workerBefore.requests.len() == 1
 	})
 	releaseOnce.Do(func() { close(release) })
 
@@ -357,19 +357,19 @@ func runPinnedPanicCancellationScenario(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	entered := make(chan struct{})
+	payload := &workerPanicPayload{message: "pinned canceled callback boom"}
 	panicResult := make(chan error, 1)
 	go func() {
+		defer close(panicResult)
 		panicResult <- engine.Do(ctx, func(*Engine) error {
 			close(entered)
 			<-release
-			panic("pinned canceled callback boom")
+			panic(payload)
 		})
 	}()
 	waitWorkerPanicSignal(t, entered, "pinned canceled callback entry")
 	cancel()
-	if err := waitWorkerPanicError(t, panicResult, "pinned cancellation response"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Do error = %v, want context.Canceled", err)
-	}
+	assertWorkerPanicPending(t, panicResult, "started pinned callback after cancellation")
 
 	successorResult := make(chan error, 1)
 	go func() {
@@ -378,13 +378,14 @@ func runPinnedPanicCancellationScenario(t *testing.T) {
 		})
 	}()
 	waitWorkerPanicCondition(t, "queued pinned successor after cancellation", func() bool {
-		return len(engine.requests) == 1
+		return engine.requests.len() == 1
 	})
-	// The canceled caller abandoned a capacity-one response channel. A second
-	// panic response would block the worker and keep this successor from running.
 	releaseOnce.Do(func() { close(release) })
+	panicErr := waitWorkerPanicError(t, panicResult, "pinned panic response after cancellation")
+	assertWorkerPanicError(t, panicErr, payload, "runPinnedPanicCancellationScenario")
+	assertWorkerPanicResultClosed(t, panicResult, "pinned panic response")
 	if err := waitWorkerPanicError(t, successorResult, "pinned successor after cancellation"); err != nil {
-		t.Fatalf("pinned worker wedged after abandoned panic response: %v", err)
+		t.Fatalf("pinned worker was not reusable after canceled callback panic: %v", err)
 	}
 }
 
@@ -407,19 +408,19 @@ func runCoordinatorPanicCancellationScenario(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	entered := make(chan struct{})
+	payload := &workerPanicPayload{message: "coordinator canceled callback boom"}
 	panicResult := make(chan error, 1)
 	go func() {
+		defer close(panicResult)
 		panicResult <- manager.Do(ctx, func(*Engine) error {
 			close(entered)
 			<-release
-			panic("coordinator canceled callback boom")
+			panic(payload)
 		})
 	}()
 	waitWorkerPanicSignal(t, entered, "coordinator canceled callback entry")
 	cancel()
-	if err := waitWorkerPanicError(t, panicResult, "coordinator cancellation response"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Do error = %v, want context.Canceled", err)
-	}
+	assertWorkerPanicPending(t, panicResult, "started coordinator callback after cancellation")
 
 	successorResult := make(chan error, 1)
 	go func() {
@@ -428,13 +429,14 @@ func runCoordinatorPanicCancellationScenario(t *testing.T) {
 		})
 	}()
 	waitWorkerPanicCondition(t, "queued coordinator successor after cancellation", func() bool {
-		return len(workerBefore.requests) == 1
+		return workerBefore.requests.len() == 1
 	})
-	// The canceled caller abandoned a capacity-one response channel. A second
-	// panic response would block the worker and keep this successor from running.
 	releaseOnce.Do(func() { close(release) })
+	panicErr := waitWorkerPanicError(t, panicResult, "coordinator panic response after cancellation")
+	assertWorkerPanicError(t, panicErr, payload, "runCoordinatorPanicCancellationScenario")
+	assertWorkerPanicResultClosed(t, panicResult, "coordinator panic response")
 	if err := waitWorkerPanicError(t, successorResult, "coordinator successor after cancellation"); err != nil {
-		t.Fatalf("coordinator worker wedged after abandoned panic response: %v", err)
+		t.Fatalf("coordinator worker was not reusable after canceled callback panic: %v", err)
 	}
 	assertCoordinatorWorkerAlive(t, coordinator, workerBefore)
 }
@@ -497,35 +499,59 @@ func runPinnedNilPanicScenario(t *testing.T) {
 	}
 }
 
+//nolint:funlen // The closed-queue drain must cover the blocker, panic, successor, and Close barriers.
 func runPinnedPanicDrainScenario(t *testing.T) {
 	t.Helper()
 
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	engine, err := NewEngine()
+	engine, err := NewPinnedEngine()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = engine.Close() }()
+
+	releaseBlocker := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(releaseBlocker) })
+		_ = engine.Close()
+	})
+	blockerStarted := make(chan struct{})
+	blockerResult := make(chan error, 1)
+	go func() {
+		blockerResult <- engine.Do(context.Background(), func(*Engine) error {
+			close(blockerStarted)
+			<-releaseBlocker
+			return nil
+		})
+	}()
+	waitWorkerPanicSignal(t, blockerStarted, "pinned drain blocker entry")
 
 	payload := &workerPanicPayload{message: "pinned drain callback boom"}
 	panicResult := make(chan error, 1)
 	successorResult := make(chan error, 1)
-	pinned := &PinnedEngine{requests: make(chan pinnedRequest, 2)}
-	pinned.requests <- pinnedRequest{
-		fn: func(*Engine) error {
+	go func() {
+		panicResult <- engine.Do(context.Background(), func(*Engine) error {
 			panic(payload)
-		},
-		resp: panicResult,
-	}
-	pinned.requests <- pinnedRequest{
-		fn: func(callbackEngine *Engine) error {
+		})
+	}()
+	waitWorkerPanicCondition(t, "queued pinned drain panic", func() bool {
+		return engine.requests.len() == 1
+	})
+	go func() {
+		successorResult <- engine.Do(context.Background(), func(callbackEngine *Engine) error {
 			return callbackEngine.Reset()
-		},
-		resp: successorResult,
-	}
+		})
+	}()
+	waitWorkerPanicCondition(t, "queued pinned drain successor", func() bool {
+		return engine.requests.len() == 2
+	})
 
-	pinned.drain(engine)
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- engine.Close() }()
+	waitWorkerPanicCondition(t, "pinned drain closed state", engine.closed.Load)
+	releaseOnce.Do(func() { close(releaseBlocker) })
+	if err := waitWorkerPanicError(t, blockerResult, "pinned drain blocker response"); err != nil {
+		t.Fatalf("pinned drain blocker failed: %v", err)
+	}
 	assertWorkerPanicError(
 		t,
 		waitWorkerPanicError(t, panicResult, "pinned drain panic response"),
@@ -534,6 +560,9 @@ func runPinnedPanicDrainScenario(t *testing.T) {
 	)
 	if err := waitWorkerPanicError(t, successorResult, "pinned drain successor"); err != nil {
 		t.Fatalf("pinned drain stopped after recovered callback panic: %v", err)
+	}
+	if err := waitWorkerPanicError(t, closeResult, "pinned drain Close"); err != nil {
+		t.Fatalf("pinned drain Close failed: %v", err)
 	}
 }
 
@@ -600,6 +629,27 @@ func waitWorkerPanicSignal(t *testing.T, signal <-chan struct{}, label string) {
 	case <-signal:
 	case <-time.After(workerPanicTestTimeout):
 		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+func assertWorkerPanicPending(t *testing.T, result <-chan error, label string) {
+	t.Helper()
+	select {
+	case err := <-result:
+		t.Fatalf("%s settled before its callback completed: %v", label, err)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func assertWorkerPanicResultClosed(t *testing.T, result <-chan error, label string) {
+	t.Helper()
+	select {
+	case _, ok := <-result:
+		if ok {
+			t.Fatalf("%s produced more than one result", label)
+		}
+	case <-time.After(workerPanicTestTimeout):
+		t.Fatalf("timed out waiting for %s channel to close", label)
 	}
 }
 
