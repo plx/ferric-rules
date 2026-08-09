@@ -223,9 +223,9 @@ check-examples-sync:
 
 # Check that tracing feature compiles and passes clippy + tests
 check-tracing:
-    cargo check --workspace --exclude ferric-rules-python --features tracing
-    cargo clippy --workspace --exclude ferric-rules-python --features tracing --all-targets -- -D warnings
-    cargo test --workspace --exclude ferric-rules-python --features tracing
+    cargo check --workspace --features tracing --locked
+    cargo clippy --workspace --all-targets --features tracing --locked -- -D warnings
+    cargo test --workspace --features tracing --locked
 
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 

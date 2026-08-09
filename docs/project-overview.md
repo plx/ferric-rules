@@ -293,7 +293,8 @@ thresholds). Scaling regression: `just scaling-check` runs facade-crate
   `py-lint(-fix)`, `go-lint` (auto-installs golangci-lint).
 - Composite: `check`, `preflight`, `preflight-pr` (fmt + clippy + tests +
   cargo check + Python + Go lint). **Required before any PR push.**
-- Tracing: `check-tracing` (feature gate build+clippy+test).
+- Tracing: `check-tracing` (locked full-workspace feature gate
+  check+clippy+test), validated by the `Tracing Feature` CI job.
 - Bench: `bench`, `bench-engine`, `bench-waltz`, `bench-serde`,
   `bench-manners`, `bench-join`, `bench-churn`, `bench-negation`,
   `bench-thresholds`, `bench-compare`, `scaling-check`.
@@ -322,8 +323,10 @@ thresholds). Scaling regression: `just scaling-check` runs facade-crate
 - `serde` (per crate, propagated `parser → core → runtime → ffi → facade`) —
   enables engine serialization; required for Go bindings' serialization and
   CLI snapshot commands. `slotmap`/`smallvec` serde features always on.
-- `tracing` — optional tracing spans (runtime + core); validated by
-  `just check-tracing`.
+- `tracing` — optional tracing spans and events. The facade, pinned, FFI,
+  Python, and CLI feature declarations propagate tracing into the runtime and
+  core as appropriate. The locked full-workspace `just check-tracing` command
+  and `Tracing Feature` CI job validate this configuration.
 - `testing` (ferric-rules-python only) — exposes `engine_instance_count` for
   teardown-leak tests.
 
