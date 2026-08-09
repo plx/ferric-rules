@@ -519,11 +519,29 @@ test("D-010 termination failure is attached without replacing init failure", asy
   }
 });
 
-test("D-010 immutable and non-Error init failures retain identity when cleanup cause attachment is impossible", async (t) => {
-  const cases: Array<{ name: string; primary: unknown }> = [
+test("D-010 immutable, locked-cause, and non-Error failures retain identity when cleanup cause attachment is impossible", async (t) => {
+  const lockedCause = new Error("locked initialization context");
+  const lockedCausePrimary = new Error("locked-cause init failure");
+  Object.defineProperty(lockedCausePrimary, "cause", {
+    value: lockedCause,
+    configurable: false,
+    writable: false,
+  });
+  assert.strictEqual(Object.isExtensible(lockedCausePrimary), true);
+
+  const cases: Array<{
+    name: string;
+    primary: unknown;
+    expectedCause?: unknown;
+  }> = [
     {
       name: "frozen Error",
       primary: Object.freeze(new Error("frozen init failure")),
+    },
+    {
+      name: "extensible Error with locked cause",
+      primary: lockedCausePrimary,
+      expectedCause: lockedCause,
     },
     {
       name: "non-Error",
@@ -549,11 +567,11 @@ test("D-010 immutable and non-Error init failures retain identity when cleanup c
             );
             assert.strictEqual(error, item.primary);
             if (item.primary instanceof Error) {
-              // Frozen errors cannot accept cause metadata without replacing
-              // the exact primary object, so identity deliberately wins.
+              // Frozen errors and locked cause properties cannot accept new
+              // cleanup metadata, so exact identity deliberately wins.
               assert.strictEqual(
                 (item.primary as Error & { cause?: unknown }).cause,
-                undefined,
+                item.expectedCause,
               );
             }
 

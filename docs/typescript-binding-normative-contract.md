@@ -109,13 +109,15 @@ If this contract conflicts with legacy design docs, this contract wins.
 6. The primary setup or initialization error object `MUST` remain the
    `create()` rejection, preserving its identity, class, and message. A
    simultaneous termination failure `MUST NOT` replace it. When the primary is
-   an extensible `Error`, the termination failure `MUST` be attached as its
-   `cause`; if the primary already has a cause, that cause and the termination
-   failure `MUST` both remain available through an aggregate cause. For a
-   frozen or otherwise non-extensible `Error`, or a non-`Error` thrown value,
-   cause attachment is best-effort and falls outside that guarantee.
-   Preserving the exact primary identity `MUST` take precedence when attachment
-   is impossible.
+   an `Error` on which cleanup can define or redefine an own writable and
+   configurable `cause` property, the termination failure `MUST` be attached as
+   its `cause`; if the primary already has a replaceable cause, that cause and
+   the termination failure `MUST` both remain available through an aggregate
+   cause. For an `Error` that does not permit that descriptor update (including
+   a frozen error or one with a non-configurable own cause), or a non-`Error`
+   thrown value, cause attachment is best-effort and falls outside that
+   guarantee. Preserving the exact primary identity `MUST` take precedence when
+   attachment is impossible.
 7. Successful initialization `MUST` transfer the live Worker and its ordinary
    request listeners to the returned `EngineHandle`; failed-create cleanup
    `MUST NOT` run on that success path.

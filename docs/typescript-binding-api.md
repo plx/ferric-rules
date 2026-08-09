@@ -451,12 +451,13 @@ initialization step fails, `create()` removes its initialization bookkeeping
 and Worker listeners, invokes and awaits `terminate()` exactly once, and only
 then rejects. The initialization error remains the rejection with object
 identity, class, and message intact; a simultaneous termination failure is
-attached as its `cause` rather than replacing it when the primary is an
-extensible `Error`. For a frozen or otherwise non-extensible `Error`, or a
-non-`Error` thrown value, cause attachment is best-effort and exact primary
-identity takes precedence. Pre-Worker validation and a synchronous
-Worker-constructor throw own no Worker, while a successful create retains the
-normal listeners and transfers the live Worker to the returned handle.
+attached as its `cause` rather than replacing it when cleanup can define or
+redefine an own writable/configurable cause property on the primary `Error`.
+For an error that rejects that descriptor update, or a non-`Error` thrown value,
+attachment is best-effort and exact primary identity takes precedence.
+Pre-Worker validation and a synchronous Worker-constructor throw own no Worker,
+while a successful create retains the normal listeners and transfers the live
+Worker to the returned handle.
 
 This failed-create rule includes cleanup after an initialization
 `postMessage` throw. Atomic rollback for ordinary handle and pool sends remains

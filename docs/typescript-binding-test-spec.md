@@ -114,9 +114,10 @@ Must include:
   - a delayed termination barrier proving `create()` remains unsettled until
     its single termination attempt completes;
   - a termination rejection that leaves the exact primary error as the public
-    rejection, attaches the termination error as the cause of an extensible
-    `Error`, and preserves frozen/non-extensible or non-`Error` primaries by
-    identity when cause metadata cannot be attached;
+    rejection, attaches the termination error when cleanup can define or
+    redefine an own writable/configurable cause property on the primary
+    `Error`, and preserves frozen, non-configurable-cause, or non-`Error`
+    primaries by identity when cleanup metadata cannot be attached;
   - duplicate or late protocol/error/exit signals proving request settlement
     and termination each occur exactly once;
   - pre-Worker validation and Worker-constructor throw controls; and

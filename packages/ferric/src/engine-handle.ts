@@ -98,7 +98,8 @@ function attachCreateCleanupCause(primary: unknown, cleanupFailure: unknown): vo
       writable: true,
     });
   } catch {
-    // A frozen/non-extensible primary error must still remain the rejection.
+    // Frozen errors and locked cause metadata must still leave the exact
+    // primary object as the rejection.
   }
 }
 
@@ -180,8 +181,8 @@ export class EngineHandle {
    * If `options.snapshot` is provided, the engine is restored from the snapshot.
    * If initialization fails after the Worker starts, create() awaits termination
    * before rejecting with the original error. A termination failure is attached
-   * as the cause of an extensible Error; immutable or non-Error primaries retain
-   * exact identity even when cleanup metadata cannot be attached.
+   * when cleanup can define or redefine an own writable/configurable cause on
+   * the primary Error; errors that reject that update retain exact identity.
    */
   static async create(options?: EngineHandleOptions): Promise<EngineHandle> {
     const source = options?.source;
