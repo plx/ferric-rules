@@ -714,6 +714,39 @@ test("E-012 same-pool do evaluate and close reject inside callbacks", { timeout:
   }
 });
 
+test("E-012 returned thenable assimilation preserves same-pool reentrancy guards", async () => {
+  const pool = await EnginePool.create([{ name: "rules", source: "" }], { threads: 1 });
+  let nestedOutcome!: Promise<{ status: "fulfilled" } | { status: "rejected"; error: unknown }>;
+
+  try {
+    const value = await pool.do("rules", () => ({
+      then(resolve: (value: string) => void): void {
+        nestedOutcome = pool.evaluate("rules", {}).then(
+          () => ({ status: "fulfilled" as const }),
+          (error: unknown) => ({ status: "rejected" as const, error }),
+        );
+        resolve("callback result");
+      },
+    }) as Promise<string>);
+
+    assert.strictEqual(value, "callback result");
+    const outcome = await nestedOutcome;
+    assert.strictEqual(outcome.status, "rejected");
+    if (outcome.status === "rejected") {
+      assert.match(String(outcome.error), REENTRANT_ERROR);
+    }
+
+    const reused = await pool.do("rules", async (proxy) => {
+      await proxy.reset();
+      await proxy.assertFact("thenable-reuse", 1);
+      return (await proxy.findFacts("thenable-reuse")).length;
+    });
+    assert.strictEqual(reused, 1);
+  } finally {
+    await pool.close();
+  }
+});
+
 test("E-012 a do callback may use a distinct EnginePool", async () => {
   const outerPool = await EnginePool.create([{ name: "rules", source: "" }], { threads: 1 });
   const innerPool = await EnginePool.create([{ name: "rules", source: "" }], { threads: 1 });

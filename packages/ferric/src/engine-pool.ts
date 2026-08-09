@@ -906,8 +906,9 @@ export class EnginePool {
     const context: PoolCallbackContext = { active: true };
     let callbackPromise: Promise<T>;
     try {
-      callbackPromise = Promise.resolve(
-        this.callbackContext.run(context, () => fn(proxy)),
+      callbackPromise = this.callbackContext.run(
+        context,
+        () => Promise.resolve(fn(proxy)),
       );
     } catch (error) {
       callbackPromise = Promise.reject(error);
