@@ -1,7 +1,7 @@
 # TypeScript Binding Test Specification (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-009 callback-proxy cancellation boundary)
+Updated: 2026-08-09 (FR-NODE-011 bounded pool backpressure)
 Status: Required for reimplementation
 
 Companion documents:
@@ -32,8 +32,8 @@ This is not optional guidance. The implementation is incomplete until this speci
 - Exercise construction bounds, queueing, dispatch, cancellation states,
   worker-slot lease isolation, cancellation-time proxy admission and accepted
   work, proxy lifetime and ordering, same-pool reentrancy, terminal Worker
-  faults, synchronous send rollback, `close()` behavior, and stateless
-  evaluation behavior.
+  faults, synchronous send rollback, bounded mixed-queue admission and metrics,
+  `close()` behavior, and stateless evaluation behavior.
 
 ### 2.5 Package/Load Tests
 - Validate native load behavior and package entrypoint surface guarantees.
@@ -230,6 +230,73 @@ Must include:
   - listener, lease queue/pending-call/waiter, slot pending/in-flight, and
     Worker post baselines after each phase, plus bounded seeded interleaving
     stress whose failure reports its seed.
+- Bounded pool backpressure and metrics (`C-006`, `E-017`, `N-15`), including:
+  - strict public type/entrypoint checks for `EnginePoolOptions`,
+    `EnginePoolQueueFullError`, `EnginePoolMetrics`,
+    `EnginePoolSlotMetrics`, and `metrics()`;
+  - omitted and explicit `undefined` capacity defaulting to `1024`, accepted
+    zero (including normalized `-0`) and positive safe integers, plus `NaN`,
+    both infinities, negatives, fractions, and unsafe integers rejecting with
+    the exact synchronous `RangeError` before spec access, Promise return,
+    Worker construction, or initialization bookkeeping;
+  - zero-capacity immediate root dispatch and immediate lease acquisition,
+    followed by prompt rejection of every request that would have to wait;
+  - a deterministic one-slot capacity-plus-N burst proving at most one request
+    is dispatched and exactly `queueCapacity` additional entries are retained;
+  - mixed queued `evaluate`, queued `do` lease admission, and active
+    lease-private owner work proving all three share one selected-slot budget,
+    while the dispatched request and admitted callback/lease do not count;
+  - root FIFO and lease-private invocation-order controls proving overflow is
+    never inserted and cannot reorder already-accepted work;
+  - multi-slot controls proving a full selected slot rejects without probing,
+    retrying, replaying, or rescheduling to available capacity elsewhere, while
+    the completed round-robin selection remains advanced;
+  - every root and proxy overflow path returning a rejected Promise, not a
+    synchronous throw, with exact `EnginePoolQueueFullError` prototype, name,
+    `FERRIC_POOL_QUEUE_FULL` code, `EnginePool queue is full` message, and
+    `capacity`/`queued`/`slotIndex` rejection snapshot;
+  - precedence controls for reentry, inactive lifetime, closed/non-running
+    state, terminal failure, abort, argument validation, and synchronous
+    preprocessing, followed by proof that overflow allocates no request ID,
+    lease, pending/lease-call unit, queue entry, or Worker post, retains no
+    abort listener, and installs none when the slot is already full;
+  - replaceable cooperative-listener hooks for root `evaluate` and proxy `run`
+    that synchronously fill or drain the selected FIFO, proving post-hook
+    lifecycle/signal/scheduling/capacity revalidation, nested-work-first
+    linearization on fill, prompt outer queue-full rejection after transient
+    listener removal, abort-before-ID precedence, and no stranded dispatch on
+    drain;
+  - replaceable queued-root and queued-lease dequeue-listener hooks proving the
+    accepted entry reserves structural capacity first; nested admission cannot
+    exceed the bound; synchronous abort and a registration throw reclaim it;
+    an exact hook throw rejects only while the entry remains queued; and an
+    earlier hook-driven dispatch, lease admission, terminal failure, or close
+    outcome wins without double settlement or rollback. Include a removal hook
+    that removes then throws, proving its failure cannot replace `AbortError`,
+    post-registration cleanup retries, and no stale listener remains;
+  - exact structural reclamation when queued root work or lease admission
+    aborts, a request dequeues for dispatch, Worker terminal cleanup clears
+    both queue levels, and close rejects root work while admitted owner work
+    retains its existing drain barrier;
+  - an N-14 control proving callback abort does not dequeue or reclaim owner
+    work accepted before abort, and an N-13 control proving a synchronous send
+    throw after dequeue cannot double-reclaim capacity and still advances the
+    applicable FIFO;
+  - fresh `metrics()` snapshots before/after every admission and reclamation,
+    with per-slot `slotIndex`/`queued`/`inFlight`/`rejected`, matching aggregate
+    sums, the top-level configured per-slot `queueCapacity`, queue-full-only
+    rejection counting, stable slot order, and mutation of a cast snapshot
+    unable to affect later reads;
+  - metrics called inside an active callback, during shutdown, after terminal
+    failure, and after close without admission/reentrancy errors, with completed
+    close reporting zero queued and in-flight work;
+  - a memory-limited public-API subprocess that stalls a Worker, submits a
+    bounded burst far beyond capacity, verifies prompt typed overflow and the
+    retained-count bound, closes naturally, and does not use `process.exit()`
+    or `unref()`; and
+  - deterministic mixed root/owner/abort/send/fault/close stress with explicit
+    barriers and a recorded seed, asserting queue depth never exceeds capacity
+    and all aggregate metrics equal their slot sums.
 - `FactId` structured-clone response/request round-trip through a proxy
   (`E-010`).
 - Logical-run parity for both `evaluate` and proxy/direct run paths (`E-011`,
@@ -291,11 +358,11 @@ FR-NODE-009 invalidates new proxy calls but does not preempt the callback or
 release that lease early.
 E-015 removes an abort listener from a request whose send fails; generic
 root-queue listener cleanup after a successful dispatch remains FR-NODE-006.
-Bounded queue capacity remains FR-NODE-011, and concurrent close calls sharing
-one completion Promise remains FR-NODE-010. E-013 covers corresponding
-resources only on a Worker terminal transition.
-E-014 bounds Worker construction only; bounded queued work, overflow policy,
-and queue metrics remain FR-NODE-011.
+E-017 owns structural queue-capacity reclamation but does not complete that
+successful-dispatch listener cleanup. Concurrent close calls sharing one
+completion Promise remain FR-NODE-010. E-013 covers corresponding resources
+only on a Worker terminal transition. E-014 bounds Worker construction;
+E-017 independently validates the waiting-entry limit before construction.
 
 ### 4.5 Package Tests (minimum 10 cases)
 Must include:
@@ -336,6 +403,10 @@ Must include:
 8. E-016 ordering tests `MUST` use controlled Worker/event seams and explicit
    callback, abort, dispatch, response, and release barriers. A wall-clock abort
    cannot be the sole evidence for proxy-admission or first-settlement order.
+9. E-017 overload tests `MUST` use controlled dispatch/dequeue barriers and
+   inspect both queue levels. The memory subprocess may use a parent timeout as
+   a failure guard, but retained-count, typed-overflow, cleanup, and natural
+   child exit are the passing conditions; wall-clock delay alone is not proof.
 
 ## 7. CI and Local Gates
 

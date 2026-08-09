@@ -75,9 +75,14 @@ export type {
 
 export { EngineHandle } from "./engine-handle";
 
-export { EnginePool } from "./engine-pool";
+export { EnginePool, EnginePoolQueueFullError } from "./engine-pool";
 
-export type { EngineProxy } from "./engine-pool";
+export type {
+  EngineProxy,
+  EnginePoolOptions,
+  EnginePoolMetrics,
+  EnginePoolSlotMetrics,
+} from "./engine-pool";
 
 // ---------------------------------------------------------------------------
 // Wire utilities (advanced use)

@@ -57,6 +57,52 @@ import { FerricError, ERROR_REGISTRY } from "./types";
 // Re-export types for consumers.
 export type { EngineSpec, EvaluateRequest, EvaluateResult };
 
+/** Options for creating an EnginePool. */
+export interface EnginePoolOptions {
+  /** Number of worker threads. Default: 1; range: 1..64. */
+  threads?: number;
+  /** Maximum waiting entries on each worker slot. Default: 1024. */
+  queueCapacity?: number;
+}
+
+/** Point-in-time scheduling metrics for one worker slot. */
+export interface EnginePoolSlotMetrics {
+  readonly slotIndex: number;
+  readonly queued: number;
+  readonly inFlight: number;
+  /** Queue-full admission rejections since pool creation. */
+  readonly rejected: number;
+}
+
+/** Point-in-time scheduling metrics for an EnginePool. */
+export interface EnginePoolMetrics {
+  /** Configured waiting capacity of each slot. */
+  readonly queueCapacity: number;
+  /** Waiting entries summed across all slots. */
+  readonly queued: number;
+  /** Dispatched requests summed across all slots. */
+  readonly inFlight: number;
+  /** Queue-full admission rejections summed across all slots. */
+  readonly rejected: number;
+  readonly slots: readonly EnginePoolSlotMetrics[];
+}
+
+/** A selected EnginePool slot cannot retain another waiting entry. */
+export class EnginePoolQueueFullError extends FerricError {
+  readonly capacity: number;
+  readonly queued: number;
+  readonly slotIndex: number;
+
+  constructor(capacity: number, queued: number, slotIndex: number) {
+    super("EnginePool queue is full", "FERRIC_POOL_QUEUE_FULL");
+    this.name = "EnginePoolQueueFullError";
+    this.capacity = capacity;
+    this.queued = queued;
+    this.slotIndex = slotIndex;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // EngineProxy interface
 // ---------------------------------------------------------------------------
@@ -177,6 +223,8 @@ interface WorkerSlot {
   inflight: number;
   /** Root requests and lease admissions waiting in per-slot FIFO order. */
   queue: QueuedWork[];
+  /** Lifetime queue-full admission rejections owned by this slot. */
+  rejected: number;
   /** Exclusive callback lease currently admitted on this whole worker slot. */
   activeLease?: WorkerLease;
   /** Close waiters that wake when every already-dispatched call is settled. */
@@ -195,6 +243,7 @@ const REENTRANT_POOL_MESSAGE =
   "EnginePool.do, EnginePool.evaluate, and EnginePool.close cannot be called " +
   "from within an active EnginePool.do callback on the same pool";
 const MAX_ENGINE_POOL_THREADS = 64;
+const DEFAULT_ENGINE_POOL_QUEUE_CAPACITY = 1024;
 
 // ---------------------------------------------------------------------------
 // Error reconstruction
@@ -242,14 +291,19 @@ function reconstructError(payload: WorkerResponse["error"]): Error {
  */
 export class EnginePool {
   private readonly slots: WorkerSlot[];
+  private readonly queueCapacity: number;
   private readonly callbackContext = new AsyncLocalStorage<PoolCallbackContext>();
   private roundRobin = 0;
   private closed = false;
   /** The first terminal Worker failure poisons every later root admission. */
   private terminalError?: Error;
 
-  private constructor(slots: WorkerSlot[]) {
+  private constructor(
+    slots: WorkerSlot[],
+    queueCapacity = DEFAULT_ENGINE_POOL_QUEUE_CAPACITY,
+  ) {
     this.slots = slots;
+    this.queueCapacity = Object.is(queueCapacity, -0) ? 0 : queueCapacity;
     for (const slot of slots) {
       if (this.terminalError === undefined && slot.state.kind === "failed") {
         this.terminalError = slot.state.error;
@@ -267,17 +321,19 @@ export class EnginePool {
   // ---------------------------------------------------------------------------
 
   /**
-   * Create a pool with the given engine specs and thread count.
+   * Create a pool with the given engine specs and bounded per-slot wait queues.
    *
    * Each thread lazily creates engine instances on first use for each spec.
    *
    * @param specs Named engine configurations.
    * @param options.threads Number of worker threads, from 1 through 64.
    * Default: 1.
+   * @param options.queueCapacity Maximum waiting entries on each worker slot.
+   * Default: 1024; must be a non-negative safe integer.
    */
   static create(
     specs: EngineSpec[],
-    options?: { threads?: number },
+    options?: EnginePoolOptions,
   ): Promise<EnginePool> {
     const configuredThreadCount = options?.threads;
     const threadCount =
@@ -292,12 +348,28 @@ export class EnginePool {
       );
     }
 
-    return EnginePool.createValidated(specs, threadCount);
+    const configuredQueueCapacity = options?.queueCapacity;
+    const queueCapacity =
+      configuredQueueCapacity === undefined
+        ? DEFAULT_ENGINE_POOL_QUEUE_CAPACITY
+        : configuredQueueCapacity;
+    if (!Number.isSafeInteger(queueCapacity) || queueCapacity < 0) {
+      throw new RangeError(
+        "EnginePool.create: 'queueCapacity' must be a non-negative safe integer",
+      );
+    }
+
+    return EnginePool.createValidated(
+      specs,
+      threadCount,
+      queueCapacity,
+    );
   }
 
   private static async createValidated(
     specs: EngineSpec[],
     threadCount: number,
+    queueCapacity: number,
   ): Promise<EnginePool> {
     const workerPath = resolve(__dirname, "pool-worker.js");
 
@@ -326,7 +398,7 @@ export class EnginePool {
       }
 
       await Promise.all(initPromises);
-      const pool = new EnginePool(slots);
+      const pool = new EnginePool(slots, queueCapacity);
       // Worker events are normally delivered on later event-loop turns, but a
       // deterministic Worker seam can report init success and then fail from
       // one synchronous postMessage call. Never publish that prefailed pool.
@@ -413,6 +485,7 @@ export class EnginePool {
       pending: new Map(),
       inflight: 0,
       queue: [],
+      rejected: 0,
       pendingDrainWaiters: [],
       listeners,
       listenersAttached: false,
@@ -474,8 +547,8 @@ export class EnginePool {
       EnginePool.rejectQueuedWork(queued, error);
     }
     for (const queued of ownerQueue) {
-      EnginePool.removeAbortListener(queued);
       queued.entry.reject(error);
+      EnginePool.removeAbortListener(queued);
     }
     for (const entry of pending) {
       entry.reject(error);
@@ -485,13 +558,13 @@ export class EnginePool {
   }
 
   private static rejectQueuedWork(queued: QueuedWork, error: Error): void {
-    EnginePool.removeAbortListener(queued);
     if (queued.kind === "lease") {
       EnginePool.markLeaseReleased(queued.lease);
       queued.reject(error);
     } else {
       queued.entry.reject(error);
     }
+    EnginePool.removeAbortListener(queued);
   }
 
   private static notifyPendingDrained(slot: WorkerSlot): void {
@@ -551,6 +624,24 @@ export class EnginePool {
     return slot;
   }
 
+  /** Waiting entries share one structural budget across both slot FIFOs. */
+  private static queuedOnSlot(slot: WorkerSlot): number {
+    return slot.queue.length + (slot.activeLease?.queue.length ?? 0);
+  }
+
+  /** Return and account for a local overload error when the slot is full. */
+  private queueFullError(slot: WorkerSlot): EnginePoolQueueFullError | undefined {
+    const queued = EnginePool.queuedOnSlot(slot);
+    if (queued < this.queueCapacity) return undefined;
+
+    slot.rejected++;
+    return new EnginePoolQueueFullError(
+      this.queueCapacity,
+      queued,
+      this.slots.indexOf(slot),
+    );
+  }
+
   private assertNotInActiveCallback(): void {
     if (this.callbackContext.getStore()?.active) {
       throw new Error(REENTRANT_POOL_MESSAGE);
@@ -583,9 +674,22 @@ export class EnginePool {
   private static removeAbortListener(
     queued: Pick<QueuedRequest, "signal" | "onAbort">,
   ): void {
-    if (queued.signal && queued.onAbort) {
-      queued.signal.removeEventListener("abort", queued.onAbort);
-      queued.onAbort = undefined;
+    const onAbort = queued.onAbort;
+    queued.onAbort = undefined;
+    if (queued.signal && onAbort) {
+      EnginePool.detachAbortListener(queued.signal, onAbort);
+    }
+  }
+
+  /** Best-effort detach without letting a replaceable hook replace settlement. */
+  private static detachAbortListener(
+    signal: AbortSignal,
+    onAbort: () => void,
+  ): void {
+    try {
+      signal.removeEventListener("abort", onAbort);
+    } catch {
+      // Preserve the already-owned request or its earlier settlement.
     }
   }
 
@@ -598,19 +702,20 @@ export class EnginePool {
       slot.worker.postMessage(queued.req);
       return true;
     } catch (error) {
-      // A queued request's dequeue-cancellation listener is no longer useful
-      // after any attempted send, including when a synchronous Worker event
-      // settled the request before postMessage threw.
-      EnginePool.removeAbortListener(queued);
-
       // Preserve first settlement across synchronous response/error/exit
       // seams. Those paths already reconciled the counter and any owned work.
-      if (slot.pending.get(queued.req.id) !== queued.entry) return true;
+      if (slot.pending.get(queued.req.id) !== queued.entry) {
+        EnginePool.removeAbortListener(queued);
+        return true;
+      }
 
       slot.pending.delete(queued.req.id);
       slot.inflight--;
       queued.entry.reject(error);
       EnginePool.notifyPendingDrained(slot);
+      // Cleanup runs after the exact send outcome owns settlement, so a
+      // replaceable removal hook cannot publish a later competing outcome.
+      EnginePool.removeAbortListener(queued);
       return false;
     }
   }
@@ -652,10 +757,10 @@ export class EnginePool {
         const queued = lease.queue.shift()!;
 
         if (queued.signal?.aborted) {
-          EnginePool.removeAbortListener(queued);
           queued.entry.reject(
             new DOMException("The operation was aborted", "AbortError"),
           );
+          EnginePool.removeAbortListener(queued);
           continue;
         }
 
@@ -676,18 +781,18 @@ export class EnginePool {
 
       if (queued.kind === "lease") {
         if (queued.signal?.aborted) {
-          EnginePool.removeAbortListener(queued);
           EnginePool.markLeaseReleased(queued.lease);
           queued.reject(
             new DOMException("The operation was aborted", "AbortError"),
           );
+          EnginePool.removeAbortListener(queued);
           continue;
         }
 
-        EnginePool.removeAbortListener(queued);
         slot.activeLease = queued.lease;
         queued.lease.active = true;
         queued.resolve(queued.lease);
+        EnginePool.removeAbortListener(queued);
         return;
       }
 
@@ -695,10 +800,10 @@ export class EnginePool {
 
       // If the request was aborted while queued, reject it immediately.
       if (request.signal?.aborted) {
-        EnginePool.removeAbortListener(request);
         request.entry.reject(
           new DOMException("The operation was aborted", "AbortError"),
         );
+        EnginePool.removeAbortListener(request);
         continue;
       }
 
@@ -723,13 +828,18 @@ export class EnginePool {
       );
     }
 
+    const admitImmediately =
+      slot.inflight === 0 &&
+      slot.activeLease === undefined &&
+      slot.queue.length === 0;
+    if (!admitImmediately) {
+      const queueFullError = this.queueFullError(slot);
+      if (queueFullError) return Promise.reject(queueFullError);
+    }
+
     const lease = EnginePool.createLease();
     return new Promise<WorkerLease>((resolve, reject) => {
-      if (
-        slot.inflight === 0 &&
-        slot.activeLease === undefined &&
-        slot.queue.length === 0
-      ) {
+      if (admitImmediately) {
         slot.activeLease = lease;
         lease.active = true;
         resolve(lease);
@@ -744,15 +854,53 @@ export class EnginePool {
         signal,
       };
       if (signal) {
-        queued.onAbort = () => {
+        const detach = () => {
+          EnginePool.detachAbortListener(signal, onAbort);
+        };
+        const onAbort = () => {
           const idx = slot.queue.indexOf(queued);
           if (idx !== -1) {
             slot.queue.splice(idx, 1);
+            if (queued.onAbort === onAbort) queued.onAbort = undefined;
             EnginePool.markLeaseReleased(lease);
             reject(new DOMException("The operation was aborted", "AbortError"));
+            detach();
+            EnginePool.drainQueue(slot);
           }
         };
-        signal.addEventListener("abort", queued.onAbort, { once: true });
+        queued.onAbort = onAbort;
+        slot.queue.push(queued);
+
+        let registrationThrew = false;
+        let registrationError: unknown;
+        try {
+          signal.addEventListener("abort", onAbort, { once: true });
+        } catch (error) {
+          registrationThrew = true;
+          registrationError = error;
+        }
+
+        const idx = slot.queue.indexOf(queued);
+        if (registrationThrew) {
+          if (idx !== -1) {
+            slot.queue.splice(idx, 1);
+            if (queued.onAbort === onAbort) queued.onAbort = undefined;
+            EnginePool.markLeaseReleased(lease);
+            reject(registrationError);
+            EnginePool.drainQueue(slot);
+          }
+          detach();
+          return;
+        }
+        if (idx === -1) {
+          detach();
+          return;
+        }
+        if (signal.aborted) {
+          onAbort();
+          detach();
+        }
+        return;
       }
       slot.queue.push(queued);
     });
@@ -780,6 +928,7 @@ export class EnginePool {
     method: string,
     args: unknown[],
     signal?: AbortSignal,
+    beforeAdmission?: () => void,
   ): Promise<unknown> {
     if (this.closed) {
       return Promise.reject(new Error("EnginePool has been closed"));
@@ -787,17 +936,49 @@ export class EnginePool {
     if (this.terminalError) {
       return Promise.reject(this.terminalError);
     }
+    if (signal?.aborted) {
+      return Promise.reject(
+        new DOMException(ABORTED_OPERATION_MESSAGE, "AbortError"),
+      );
+    }
+
+    let dispatchImmediately =
+      slot.inflight === 0 &&
+      slot.activeLease === undefined &&
+      slot.queue.length === 0;
+    if (!dispatchImmediately) {
+      const queueFullError = this.queueFullError(slot);
+      if (queueFullError) return Promise.reject(queueFullError);
+    }
+
+    beforeAdmission?.();
+    if (this.closed) {
+      return Promise.reject(new Error("EnginePool has been closed"));
+    }
+    if (this.terminalError) {
+      return Promise.reject(this.terminalError);
+    }
+    if (signal?.aborted) {
+      return Promise.reject(
+        new DOMException(ABORTED_OPERATION_MESSAGE, "AbortError"),
+      );
+    }
+    dispatchImmediately =
+      slot.inflight === 0 &&
+      slot.activeLease === undefined &&
+      slot.queue.length === 0;
+    if (!dispatchImmediately) {
+      const queueFullError = this.queueFullError(slot);
+      if (queueFullError) return Promise.reject(queueFullError);
+    }
+
     const id = slot.nextId++;
     const req: WorkerRequest = { id, method, args };
 
     return new Promise<unknown>((resolve, reject) => {
       const entry: PendingEntry = { resolve, reject };
 
-      if (
-        slot.inflight === 0 &&
-        slot.activeLease === undefined &&
-        slot.queue.length === 0
-      ) {
+      if (dispatchImmediately) {
         // Dispatch immediately.
         const queued: QueuedRequest = {
           kind: "request",
@@ -809,7 +990,8 @@ export class EnginePool {
           EnginePool.drainQueue(slot);
         }
       } else {
-        // Queue and set up abort listener for queued cancellation.
+        // Reserve the structural queue unit before the replaceable listener
+        // hook so reentrant admission observes the accepted entry.
         const queued: QueuedRequest = {
           kind: "request",
           req,
@@ -817,14 +999,51 @@ export class EnginePool {
           signal,
         };
         if (signal) {
-          queued.onAbort = () => {
+          const detach = () => {
+            EnginePool.detachAbortListener(signal, onAbort);
+          };
+          const onAbort = () => {
             const idx = slot.queue.indexOf(queued);
             if (idx !== -1) {
               slot.queue.splice(idx, 1);
+              if (queued.onAbort === onAbort) queued.onAbort = undefined;
               reject(new DOMException("The operation was aborted", "AbortError"));
+              detach();
+              EnginePool.drainQueue(slot);
             }
           };
-          signal.addEventListener("abort", queued.onAbort, { once: true });
+          queued.onAbort = onAbort;
+          slot.queue.push(queued);
+
+          let registrationThrew = false;
+          let registrationError: unknown;
+          try {
+            signal.addEventListener("abort", onAbort, { once: true });
+          } catch (error) {
+            registrationThrew = true;
+            registrationError = error;
+          }
+
+          const idx = slot.queue.indexOf(queued);
+          if (registrationThrew) {
+            if (idx !== -1) {
+              slot.queue.splice(idx, 1);
+              if (queued.onAbort === onAbort) queued.onAbort = undefined;
+              reject(registrationError);
+              EnginePool.drainQueue(slot);
+            }
+            detach();
+            return;
+          }
+          if (idx === -1) {
+            detach();
+            return;
+          }
+          if (signal.aborted) {
+            onAbort();
+            detach();
+          }
+          return;
         }
         slot.queue.push(queued);
       }
@@ -838,7 +1057,32 @@ export class EnginePool {
     method: string,
     args: unknown[],
     signal?: AbortSignal,
+    beforeAdmission?: () => void,
   ): Promise<unknown> {
+    if (!lease.active || lease.released || slot.activeLease !== lease) {
+      return Promise.reject(new Error(INACTIVE_PROXY_MESSAGE));
+    }
+    const initialState = slot.state as WorkerSlotState;
+    if (initialState.kind === "failed") {
+      return Promise.reject(initialState.error);
+    }
+    if (initialState.kind !== "running") {
+      return Promise.reject(new Error("EnginePool has been closed"));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(
+        new DOMException(ABORTED_OPERATION_MESSAGE, "AbortError"),
+      );
+    }
+
+    let dispatchImmediately =
+      slot.inflight === 0 && lease.queue.length === 0;
+    if (!dispatchImmediately) {
+      const queueFullError = this.queueFullError(slot);
+      if (queueFullError) return Promise.reject(queueFullError);
+    }
+
+    beforeAdmission?.();
     if (!lease.active || lease.released || slot.activeLease !== lease) {
       return Promise.reject(new Error(INACTIVE_PROXY_MESSAGE));
     }
@@ -853,6 +1097,12 @@ export class EnginePool {
         new DOMException(ABORTED_OPERATION_MESSAGE, "AbortError"),
       );
     }
+    dispatchImmediately =
+      slot.inflight === 0 && lease.queue.length === 0;
+    if (!dispatchImmediately) {
+      const queueFullError = this.queueFullError(slot);
+      if (queueFullError) return Promise.reject(queueFullError);
+    }
 
     const id = slot.nextId++;
     const req: WorkerRequest = { id, method, args };
@@ -864,7 +1114,7 @@ export class EnginePool {
         entry,
       };
 
-      if (slot.inflight === 0 && lease.queue.length === 0) {
+      if (dispatchImmediately) {
         if (!EnginePool.dispatchRequest(slot, queued)) {
           EnginePool.drainQueue(slot);
         }
@@ -886,8 +1136,19 @@ export class EnginePool {
     lease: WorkerLease,
     signal?: AbortSignal,
   ): EngineProxy {
-    const send = (method: string, args: unknown[]): Promise<unknown> =>
-      this.sendOnLease(slot, lease, method, [specName, ...args], signal);
+    const send = (
+      method: string,
+      args: unknown[],
+      beforeAdmission?: () => void,
+    ): Promise<unknown> =>
+      this.sendOnLease(
+        slot,
+        lease,
+        method,
+        [specName, ...args],
+        signal,
+        beforeAdmission,
+      );
 
     const withActiveLease = <T>(operation: () => Promise<T>): Promise<T> => {
       if (!lease.active || lease.released || slot.activeLease !== lease) {
@@ -922,23 +1183,21 @@ export class EnginePool {
         const abortFlag = new Int32Array(sab);
 
         let onAbort: (() => void) | undefined;
-        if (signal) {
-          if (signal.aborted) {
-            Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1);
-          } else {
+        const registerAbort = signal
+          ? () => {
             onAbort = () => { Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1); };
             signal.addEventListener("abort", onAbort, { once: true });
           }
-        }
+          : undefined;
 
         try {
           return (await send("__batched_run", [
             limit ?? null,
             sab,
-          ])) as RunResult;
+          ], registerAbort)) as RunResult;
         } finally {
           if (signal && onAbort) {
-            signal.removeEventListener("abort", onAbort);
+            EnginePool.detachAbortListener(signal, onAbort);
           }
         }
       });
@@ -1004,6 +1263,33 @@ export class EnginePool {
   // Public API
   // ---------------------------------------------------------------------------
 
+  /** Return a fresh, detached scheduling snapshot. */
+  metrics(): EnginePoolMetrics {
+    const slots = this.slots.map<EnginePoolSlotMetrics>((slot, slotIndex) => ({
+      slotIndex,
+      queued: EnginePool.queuedOnSlot(slot),
+      inFlight: slot.inflight,
+      rejected: slot.rejected,
+    }));
+
+    let queued = 0;
+    let inFlight = 0;
+    let rejected = 0;
+    for (const slot of slots) {
+      queued += slot.queued;
+      inFlight += slot.inFlight;
+      rejected += slot.rejected;
+    }
+
+    return {
+      queueCapacity: this.queueCapacity,
+      queued,
+      inFlight,
+      rejected,
+      slots,
+    };
+  }
+
   /**
    * Stateless one-shot evaluation: reset → assert → run → return facts.
    *
@@ -1054,12 +1340,14 @@ export class EnginePool {
       }),
     };
 
-    // Set up in-flight abort: set the out-of-band host-cancellation flag.
+    // Accepted calls set up in-flight abort before request allocation and send.
     let onAbort: (() => void) | undefined;
-    if (signal) {
-      onAbort = () => { Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1); };
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
+    const registerAbort = signal
+      ? () => {
+        onAbort = () => { Atomics.store(abortFlag, ABORT_FLAG_INDEX, 1); };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+      : undefined;
 
     try {
       const result = await this.sendToSlot(
@@ -1067,11 +1355,12 @@ export class EnginePool {
         "__evaluate",
         [specName, wireRequest, sab],
         signal,
+        registerAbort,
       );
       return result as EvaluateResult;
     } finally {
       if (signal && onAbort) {
-        signal.removeEventListener("abort", onAbort);
+        EnginePool.detachAbortListener(signal, onAbort);
       }
     }
   }
