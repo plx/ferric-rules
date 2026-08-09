@@ -28,9 +28,10 @@ import type { NativeEngine } from "./native";
 import type { EvaluateRequest, EvaluateResult, FactIdInput } from "./types";
 import { normalizeEvaluateLimit, normalizeRunLimit } from "./limit-validation";
 
-type NativeLogicalRunEngine = NativeEngine & {
-  __continueRun(limit: number): ReturnType<NativeEngine["run"]>;
-};
+type NativeContinueRun = (
+  engine: NativeEngine,
+  limit: number,
+) => ReturnType<NativeEngine["run"]>;
 
 if (!parentPort) {
   throw new Error("pool-worker.ts must be run as a Worker thread");
@@ -52,6 +53,7 @@ const native = loadNative();
 const NativeEngineClass = native["Engine"] as any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const NativeFerricSymbol = native["FerricSymbol"] as any;
+const nativeContinueRun = native["__continueRun"] as NativeContinueRun;
 
 /** Shim the shared helper with this worker's native FerricSymbol constructor. */
 const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol);
@@ -68,9 +70,9 @@ interface SpecEntry {
 /** Registered specs by name. */
 const specs = new Map<string, SpecEntry>();
 /** Lazily-created engines by spec name. */
-const engines = new Map<string, NativeLogicalRunEngine>();
+const engines = new Map<string, NativeEngine>();
 
-function getEngine(specName: string): NativeLogicalRunEngine {
+function getEngine(specName: string): NativeEngine {
   const existing = engines.get(specName);
   if (existing) return existing;
 
@@ -79,7 +81,7 @@ function getEngine(specName: string): NativeLogicalRunEngine {
     throw new Error(`Unknown engine spec: "${specName}"`);
   }
 
-  const engine = new NativeEngineClass(spec.options ?? {}) as NativeLogicalRunEngine;
+  const engine = new NativeEngineClass(spec.options ?? {}) as NativeEngine;
   if (spec.source) {
     engine.load(spec.source);
     engine.reset();
@@ -97,7 +99,7 @@ function getEngine(specName: string): NativeLogicalRunEngine {
  * undefined/null = unlimited, 0 = zero firings, positive = max.
  */
 function batchedRun(
-  engine: NativeLogicalRunEngine,
+  engine: NativeEngine,
   limit: number | undefined | null,
   abortBuffer: Int32Array | null,
 ): { rulesFired: number; haltReason: number } {
@@ -126,7 +128,7 @@ function batchedRun(
     const batchLimit = Math.min(remaining, RUN_BATCH_SIZE);
     const result = firstChunk
       ? engine.run(batchLimit)
-      : engine.__continueRun(batchLimit);
+      : nativeContinueRun(engine, batchLimit);
     firstChunk = false;
     totalFired += result.rulesFired;
 

@@ -184,18 +184,6 @@ test("D-001 table-driven mocked worker protocol covers init/run/close branches",
       return result;
     }
 
-    __continueRun(limit: number): { rulesFired: number; haltReason: number } {
-      this.runCalls.push(`continue:${String(limit)}`);
-      const result = this.continueRunResults.shift() ?? {
-        rulesFired: limit,
-        haltReason: 1,
-      };
-      const afterRun = this.afterRun;
-      this.afterRun = undefined;
-      afterRun?.();
-      return result;
-    }
-
     halt(): void {
       this.haltCalls += 1;
       this.halted = true;
@@ -214,6 +202,23 @@ test("D-001 table-driven mocked worker protocol covers init/run/close branches",
     }
   }
 
+  const continuedEngines: FakeEngine[] = [];
+  function nativeContinueRun(
+    engine: FakeEngine,
+    limit: number,
+  ): { rulesFired: number; haltReason: number } {
+    continuedEngines.push(engine);
+    engine.runCalls.push(`continue:${String(limit)}`);
+    const result = engine.continueRunResults.shift() ?? {
+      rulesFired: limit,
+      haltReason: 1,
+    };
+    const afterRun = engine.afterRun;
+    engine.afterRun = undefined;
+    afterRun?.();
+    return result;
+  }
+
   const parentPort = new FakeParentPort();
   delete requireFromHere.cache[requireFromHere.resolve(workerPath)];
 
@@ -223,6 +228,7 @@ test("D-001 table-driven mocked worker protocol covers init/run/close branches",
       if (request === bundledPath) {
         return {
           Engine: FakeEngine,
+          __continueRun: nativeContinueRun,
           FerricSymbol: class FerricSymbol {
             constructor(readonly value: string) {}
           },
@@ -263,6 +269,11 @@ test("D-001 table-driven mocked worker protocol covers init/run/close branches",
         });
         assert.deepStrictEqual(FakeEngine.snapshots, [{ data: [9, 8], format: 1 }]);
         const engine = FakeEngine.instances.at(-1)!;
+        assert.strictEqual(Reflect.has(engine, "__continueRun"), false);
+        assert.strictEqual(
+          Object.hasOwn(FakeEngine.prototype, "__continueRun"),
+          false,
+        );
 
         engine.halted = true;
         engine.diagnostics = ["stale diagnostic"];
@@ -302,6 +313,7 @@ test("D-001 table-driven mocked worker protocol covers init/run/close branches",
           result: { rulesFired: 101, haltReason: 0 },
         });
         assert.deepStrictEqual(engine.runCalls, ["run:100", "continue:100"]);
+        assert.deepStrictEqual(continuedEngines, [engine]);
         engine.runResults = [];
         engine.continueRunResults = [];
 
@@ -444,18 +456,6 @@ test("E-005 E-011 mocked pool worker routes continuation and host abort", () => 
       return result;
     }
 
-    __continueRun(limit: number): { rulesFired: number; haltReason: number } {
-      this.runCalls.push(`continue:${String(limit)}`);
-      const result = this.continueRunResults.shift() ?? {
-        rulesFired: limit,
-        haltReason: 1,
-      };
-      const afterRun = this.afterRun;
-      this.afterRun = undefined;
-      afterRun?.();
-      return result;
-    }
-
     halt(): void {
       this.haltCalls += 1;
       this.halted = true;
@@ -464,6 +464,23 @@ test("E-005 E-011 mocked pool worker routes continuation and host abort", () => 
     get isHalted(): boolean {
       return this.halted;
     }
+  }
+
+  const continuedEngines: FakeEngine[] = [];
+  function nativeContinueRun(
+    engine: FakeEngine,
+    limit: number,
+  ): { rulesFired: number; haltReason: number } {
+    continuedEngines.push(engine);
+    engine.runCalls.push(`continue:${String(limit)}`);
+    const result = engine.continueRunResults.shift() ?? {
+      rulesFired: limit,
+      haltReason: 1,
+    };
+    const afterRun = engine.afterRun;
+    engine.afterRun = undefined;
+    afterRun?.();
+    return result;
   }
 
   const parentPort = new FakeParentPort();
@@ -475,6 +492,7 @@ test("E-005 E-011 mocked pool worker routes continuation and host abort", () => 
       if (request === bundledPath) {
         return {
           Engine: FakeEngine,
+          __continueRun: nativeContinueRun,
           FerricSymbol: class FerricSymbol {
             constructor(readonly value: string) {}
           },
@@ -507,6 +525,11 @@ test("E-005 E-011 mocked pool worker routes continuation and host abort", () => 
           result: false,
         });
         const engine = FakeEngine.instances.at(-1)!;
+        assert.strictEqual(Reflect.has(engine, "__continueRun"), false);
+        assert.strictEqual(
+          Object.hasOwn(FakeEngine.prototype, "__continueRun"),
+          false,
+        );
         assert.deepStrictEqual(engine.loadCalls, ["(defrule ok =>)"]);
         assert.strictEqual(engine.resetCalls, 1);
 
@@ -526,6 +549,7 @@ test("E-005 E-011 mocked pool worker routes continuation and host abort", () => 
           result: { rulesFired: 101, haltReason: 0 },
         });
         assert.deepStrictEqual(engine.runCalls, ["run:100", "continue:100"]);
+        assert.deepStrictEqual(continuedEngines, [engine]);
         engine.runResults = [];
         engine.continueRunResults = [];
 

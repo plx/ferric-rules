@@ -26,9 +26,10 @@ import type { NativeEngine } from "./native";
 import type { FactIdInput } from "./types";
 import { normalizeRunLimit } from "./limit-validation";
 
-type NativeLogicalRunEngine = NativeEngine & {
-  __continueRun(limit: number): ReturnType<NativeEngine["run"]>;
-};
+type NativeContinueRun = (
+  engine: NativeEngine,
+  limit: number,
+) => ReturnType<NativeEngine["run"]>;
 
 if (!parentPort) {
   throw new Error("worker.ts must be run as a Worker thread");
@@ -50,6 +51,7 @@ const native = loadNative();
 const NativeEngine = native["Engine"] as any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const NativeFerricSymbol = native["FerricSymbol"] as any;
+const nativeContinueRun = native["__continueRun"] as NativeContinueRun;
 
 /** Shim the shared helper with this worker's native FerricSymbol constructor. */
 const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol);
@@ -58,7 +60,7 @@ const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerr
 // Engine state
 // ---------------------------------------------------------------------------
 
-let engine: NativeLogicalRunEngine | null = null;
+let engine: NativeEngine | null = null;
 
 // ---------------------------------------------------------------------------
 // Init handler
@@ -75,9 +77,9 @@ function handleInit(init: WorkerInit): void {
     engine = NativeEngine.fromSnapshot(
       Buffer.from(init.snapshot.data),
       init.snapshot.format,
-    ) as NativeLogicalRunEngine;
+    ) as NativeEngine;
   } else {
-    engine = new NativeEngine(opts) as NativeLogicalRunEngine;
+    engine = new NativeEngine(opts) as NativeEngine;
     if (init.source) {
       engine.load(init.source);
       engine.reset();
@@ -127,7 +129,7 @@ function batchedRun(
     const batchLimit = Math.min(remaining, RUN_BATCH_SIZE);
     const result = firstChunk
       ? activeEngine.run(batchLimit)
-      : activeEngine.__continueRun(batchLimit);
+      : nativeContinueRun(activeEngine, batchLimit);
     firstChunk = false;
     totalFired += result.rulesFired;
 

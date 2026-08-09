@@ -57,6 +57,19 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Continue one bounded chunk of the current logical run.
+    ///
+    /// This is deliberately not exported as an `Engine` method. The Node
+    /// worker entrypoints reach it through the module-level private bridge so
+    /// public engine instances cannot bypass fresh-run state reset semantics.
+    pub(crate) fn continue_run(&mut self, limit: u32) -> Result<RunResult> {
+        let engine = self.engine_mut()?;
+        let result = engine
+            .continue_run(RunLimit::Count(limit as usize))
+            .map_err(engine_error_to_napi)?;
+        Ok(result.into())
+    }
+
     fn engine(&self) -> Result<&FerricEngine> {
         self.inner
             .as_ref()
@@ -333,21 +346,6 @@ impl Engine {
             None => RunLimit::Unlimited,
         };
         let result = engine.run(run_limit).map_err(engine_error_to_napi)?;
-        Ok(result.into())
-    }
-
-    /// Continue one bounded chunk of the current logical run.
-    ///
-    /// This worker-only integration hook preserves a pending halt request and
-    /// action diagnostics from earlier chunks. Call it only after `run()` or a
-    /// prior continuation returned `LimitReached`.
-    #[doc(hidden)]
-    #[napi(js_name = "__continueRun", skip_typescript)]
-    pub fn continue_run(&mut self, limit: u32) -> Result<RunResult> {
-        let engine = self.engine_mut()?;
-        let result = engine
-            .continue_run(RunLimit::Count(limit as usize))
-            .map_err(engine_error_to_napi)?;
         Ok(result.into())
     }
 

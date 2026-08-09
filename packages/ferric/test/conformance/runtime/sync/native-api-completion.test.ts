@@ -7,6 +7,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,6 +29,7 @@ import {
 import { convertNativeError } from "../../../../dist/types";
 
 const SOURCE = "(defrule hello (initial-fact) => (printout t \"hello\" crlf))";
+const requireFromHere = createRequire(__filename);
 
 // ---------------------------------------------------------------------------
 // G-001 manual native proxy: static factory methods return wrapped Engines
@@ -96,6 +98,59 @@ test("G-001 wrapped Engine instances are recognized by instanceof Engine", () =>
     assert.ok(!({} instanceof Engine), "plain object is not an Engine");
     assert.ok(!(null instanceof Engine), "null is not an Engine");
     assert.ok(!(0 instanceof Engine), "primitive is not an Engine");
+  } finally {
+    constructed.close();
+    fromSource.close();
+    fromSnapshot.close();
+    fromSnapshotFile.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// N-09: worker-only continuation is not on the public Engine prototype
+// ---------------------------------------------------------------------------
+test("N-09 Engine construction paths do not expose logical-run continuation", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ferric-private-continuation-"));
+  const path = join(dir, "snapshot.bin");
+  const constructed = new Engine();
+  const fromSource = Engine.fromSource(SOURCE);
+  const snapshot = fromSource.serialize(Format.Bincode);
+  const fromSnapshot = Engine.fromSnapshot(snapshot, Format.Bincode);
+  fromSnapshot.saveSnapshot(path, Format.Bincode);
+  const fromSnapshotFile = Engine.fromSnapshotFile(path, Format.Bincode);
+
+  try {
+    for (const [label, engine] of [
+      ["new Engine()", constructed],
+      ["Engine.fromSource", fromSource],
+      ["Engine.fromSnapshot", fromSnapshot],
+      ["Engine.fromSnapshotFile", fromSnapshotFile],
+    ] as const) {
+      assert.strictEqual(Reflect.has(engine, "__continueRun"), false, label);
+      assert.strictEqual(Reflect.get(engine, "__continueRun"), undefined, label);
+
+      for (
+        let prototype = Object.getPrototypeOf(engine) as object | null;
+        prototype !== null;
+        prototype = Object.getPrototypeOf(prototype) as object | null
+      ) {
+        assert.strictEqual(
+          Object.hasOwn(prototype, "__continueRun"),
+          false,
+          `${label} prototype chain must not expose continuation`,
+        );
+      }
+    }
+
+    const rawNative = requireFromHere("../../../../native/index.js") as {
+      Engine: { prototype: object };
+      __continueRun: unknown;
+    };
+    assert.strictEqual(
+      Object.hasOwn(rawNative.Engine.prototype, "__continueRun"),
+      false,
+    );
+    assert.strictEqual(typeof rawNative.__continueRun, "function");
   } finally {
     constructed.close();
     fromSource.close();
