@@ -94,6 +94,15 @@ func assertRequestCancellationOutcomeClosed[T any](
 	}
 }
 
+func receiveRequestQueueObservation(t *testing.T, observations <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-observations:
+	case <-time.After(requestCancellationTestTimeout):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
 func TestRequestQueueCancellationReclaimsCapacity(t *testing.T) {
 	queue := newRequestQueue[int](1)
 	t.Cleanup(queue.close)
@@ -127,6 +136,119 @@ func TestRequestQueueCancellationReclaimsCapacity(t *testing.T) {
 	}
 	if outcome.value.cancel() {
 		t.Fatal("dequeued request remained cancelable")
+	}
+}
+
+//nolint:funlen // Gated waiters exercise collapsed and chained capacity signals in one lifecycle.
+func TestRequestQueueNotifiesOneCapacityWaiterPerFreedSlot(t *testing.T) {
+	const waiterCount = 3
+	queue := newRequestQueue[int](waiterCount)
+	releaseWaiters := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(releaseWaiters) })
+		queue.close()
+	})
+
+	residents := make([]*queuedRequest[int], waiterCount)
+	for index := range waiterCount {
+		resident, err := queue.enqueue(context.Background(), index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		residents[index] = resident
+	}
+
+	waits := make(chan struct{}, waiterCount)
+	queue.observer = &requestQueueObserver{
+		onCapacityWait: func() {
+			waits <- struct{}{}
+			<-releaseWaiters
+		},
+	}
+
+	outcomes := make(chan requestCancellationOutcome[int], waiterCount)
+	for value := 2; value < 2+waiterCount; value++ {
+		go func() {
+			_, enqueueErr := queue.enqueue(context.Background(), value)
+			outcomes <- requestCancellationOutcome[int]{value: value, err: enqueueErr}
+		}()
+		receiveRequestQueueObservation(t, waits, fmt.Sprintf("capacity waiter %d", value))
+	}
+
+	for index, resident := range residents {
+		if !resident.cancel() {
+			t.Fatalf("canceling resident request %d reported worker ownership", index)
+		}
+	}
+	if got := len(queue.notFull); got != 1 {
+		t.Fatalf("buffered capacity notifications while three freed slots were held = %d, want 1", got)
+	}
+
+	releaseOnce.Do(func() { close(releaseWaiters) })
+	admitted := make(map[int]bool, waiterCount)
+	for waiter := range waiterCount {
+		outcome := receiveRequestCancellationOutcome(t, outcomes, fmt.Sprintf("capacity waiter %d", waiter+1))
+		if outcome.err != nil {
+			t.Fatalf("capacity waiter %d failed: %v", waiter+1, outcome.err)
+		}
+		admitted[outcome.value] = true
+	}
+	if got := len(queue.notFull); got != 0 {
+		t.Fatalf("buffered capacity notifications after filling all freed slots = %d, want 0", got)
+	}
+	if got := queue.len(); got != waiterCount {
+		t.Fatalf("queue length after filling all freed slots = %d, want %d", got, waiterCount)
+	}
+	for range waiterCount {
+		dequeued := queue.dequeue()
+		if !dequeued.ok || !admitted[dequeued.value] {
+			t.Fatalf("dequeued request = (%d, %t), want a newly admitted waiter", dequeued.value, dequeued.ok)
+		}
+	}
+}
+
+func TestRequestQueueCloseWakesAllCapacityWaiters(t *testing.T) {
+	queue := newRequestQueue[int](1)
+	t.Cleanup(queue.close)
+	if _, err := queue.enqueue(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+
+	const waiterCount = 4
+	waits := make(chan struct{}, waiterCount)
+	queue.observer = &requestQueueObserver{
+		onCapacityWait: func() {
+			waits <- struct{}{}
+		},
+	}
+
+	outcomes := make(chan requestCancellationOutcome[*queuedRequest[int]], waiterCount)
+	for value := 2; value < 2+waiterCount; value++ {
+		go func() {
+			request, err := queue.enqueue(context.Background(), value)
+			outcomes <- requestCancellationOutcome[*queuedRequest[int]]{value: request, err: err}
+		}()
+		receiveRequestQueueObservation(t, waits, fmt.Sprintf("closing capacity waiter %d", value))
+	}
+
+	queue.close()
+	for waiter := range waiterCount {
+		outcome := receiveRequestCancellationOutcome(t, outcomes, fmt.Sprintf("closed capacity waiter %d", waiter+1))
+		if outcome.value != nil || !errors.Is(outcome.err, errRequestQueueClosed) {
+			t.Fatalf("closed capacity waiter %d = (%v, %v), want (nil, errRequestQueueClosed)", waiter+1, outcome.value, outcome.err)
+		}
+	}
+	if got := len(queue.notFull); got != 0 {
+		t.Fatalf("Close buffered %d ordinary capacity notifications, want broadcast-only wakeup", got)
+	}
+
+	dequeued := queue.dequeue()
+	if !dequeued.ok || dequeued.value != 1 {
+		t.Fatalf("dequeue after Close = (%d, %t), want admitted request (1, true)", dequeued.value, dequeued.ok)
+	}
+	if dequeued = queue.dequeue(); dequeued.ok {
+		t.Fatalf("second dequeue after Close = (%d, true), want drained queue", dequeued.value)
 	}
 }
 

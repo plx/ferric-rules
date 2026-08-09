@@ -17,11 +17,20 @@ var (
 // submitters. Removal and dequeue share one lock, making worker ownership a
 // single, deterministic transition while immediately reclaiming capacity.
 type requestQueue[T any] struct {
-	mu       sync.Mutex
-	items    []*queuedRequest[T]
-	capacity int
-	closed   bool
-	changed  chan struct{}
+	mu           sync.Mutex
+	items        []*queuedRequest[T]
+	capacity     int
+	closed       bool
+	notEmpty     chan struct{}
+	notFull      chan struct{}
+	closedSignal chan struct{}
+	observer     *requestQueueObserver
+}
+
+// requestQueueObserver is a test-only observation seam. It must be installed
+// before concurrent queue use and remain immutable afterward.
+type requestQueueObserver struct {
+	onCapacityWait func()
 }
 
 // queuedRequest is a cancellation handle for one admitted queue entry. Its
@@ -39,15 +48,18 @@ type dequeuedRequest[T any] struct {
 
 func newRequestQueue[T any](capacity int) *requestQueue[T] {
 	return &requestQueue[T]{
-		items:    make([]*queuedRequest[T], 0, capacity),
-		capacity: capacity,
-		changed:  make(chan struct{}),
+		items:        make([]*queuedRequest[T], 0, capacity),
+		capacity:     capacity,
+		notEmpty:     make(chan struct{}, 1),
+		notFull:      make(chan struct{}, 1),
+		closedSignal: make(chan struct{}),
 	}
 }
 
 // enqueue waits for capacity, returning a handle that can remove the request
 // until dequeue transfers ownership to the worker.
 func (q *requestQueue[T]) enqueue(ctx context.Context, value T) (*queuedRequest[T], error) {
+	wokeForCapacity := false
 	for {
 		q.mu.Lock()
 		if q.closed {
@@ -56,6 +68,9 @@ func (q *requestQueue[T]) enqueue(ctx context.Context, value T) (*queuedRequest[
 		}
 		select {
 		case <-ctx.Done():
+			if wokeForCapacity {
+				q.signalNotFullLocked()
+			}
 			err := requestContextError(ctx)
 			q.mu.Unlock()
 			return nil, err
@@ -64,17 +79,27 @@ func (q *requestQueue[T]) enqueue(ctx context.Context, value T) (*queuedRequest[
 		if len(q.items) < q.capacity {
 			request := &queuedRequest[T]{queue: q, value: value, queued: true}
 			q.items = append(q.items, request)
-			q.notifyLocked()
+			q.signalNotEmptyLocked()
+			if wokeForCapacity {
+				q.signalNotFullLocked()
+			}
 			q.mu.Unlock()
 			return request, nil
 		}
-		changed := q.changed
+		wokeForCapacity = false
+		observer := q.observer
 		q.mu.Unlock()
+		if observer != nil && observer.onCapacityWait != nil {
+			observer.onCapacityWait()
+		}
 
 		select {
 		case <-ctx.Done():
 			return nil, requestContextError(ctx)
-		case <-changed:
+		case <-q.closedSignal:
+			// Loop so the closed check remains serialized with admission.
+		case <-q.notFull:
+			wokeForCapacity = true
 		}
 	}
 }
@@ -96,9 +121,11 @@ func (q *requestQueue[T]) dequeue() dequeuedRequest[T] {
 			q.mu.Unlock()
 			return dequeuedRequest[T]{}
 		}
-		changed := q.changed
 		q.mu.Unlock()
-		<-changed
+		select {
+		case <-q.notEmpty:
+		case <-q.closedSignal:
+		}
 	}
 }
 
@@ -130,7 +157,7 @@ func (q *requestQueue[T]) close() {
 	q.mu.Lock()
 	if !q.closed {
 		q.closed = true
-		q.notifyLocked()
+		close(q.closedSignal)
 	}
 	q.mu.Unlock()
 }
@@ -147,13 +174,25 @@ func (q *requestQueue[T]) removeLocked(index int) *queuedRequest[T] {
 	q.items[len(q.items)-1] = nil
 	q.items = q.items[:len(q.items)-1]
 	request.queued = false
-	q.notifyLocked()
+	q.signalNotFullLocked()
 	return request
 }
 
-func (q *requestQueue[T]) notifyLocked() {
-	close(q.changed)
-	q.changed = make(chan struct{})
+func (q *requestQueue[T]) signalNotEmptyLocked() {
+	select {
+	case q.notEmpty <- struct{}{}:
+	default:
+	}
+}
+
+func (q *requestQueue[T]) signalNotFullLocked() {
+	if q.closed || len(q.items) >= q.capacity {
+		return
+	}
+	select {
+	case q.notFull <- struct{}{}:
+	default:
+	}
 }
 
 func requestContextError(ctx context.Context) error {
