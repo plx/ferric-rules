@@ -10,10 +10,18 @@ import { resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 
 import {
+  Engine,
   FactType,
   HaltReason,
   FerricSymbol,
+  RUN_BATCH_SIZE,
 } from "../../../helpers/ferric";
+import {
+  EARLY_DIAGNOSTIC_SOURCE,
+  HALT_WITH_DIAGNOSTIC_SOURCE,
+  haltAtActivationSource,
+  logicalRunStateFacts,
+} from "../../../helpers/logical-run";
 
 interface WorkerResponse {
   id: number;
@@ -382,6 +390,7 @@ test("E-007 table-driven direct pool worker batched run covers limit modes", asy
       },
       {
         label: "pre-set abort buffer returns HaltRequested",
+        expectUnhalted: true,
         prepare: async () => {
           await request(worker, "reset", ["loop"]);
           await request(worker, "assertFact", ["loop", "counter", 0]);
@@ -402,6 +411,162 @@ test("E-007 table-driven direct pool worker batched run covers limit modes", asy
       const args = await item.prepare();
       const result = await request(worker, "__batched_run", ["loop", ...args]);
       assert.doesNotThrow(() => item.verify(result), item.label);
+      if (item.expectUnhalted) {
+        assert.strictEqual(
+          await request(worker, "getIsHalted", ["loop"]),
+          false,
+          "host cancellation must not set the native rule-level halt latch",
+        );
+        assert.strictEqual(await request(worker, "getAgendaSize", ["loop"]), 1);
+      }
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// E-011 direct protocol: exact halt-boundary state is preserved
+// ---------------------------------------------------------------------------
+test(
+  "E-011 direct pool worker preserves every logical-run halt boundary",
+  { timeout: 10_000 },
+  async () => {
+    await withPoolWorker(async (worker) => {
+      const boundaries = [
+        1,
+        RUN_BATCH_SIZE,
+        RUN_BATCH_SIZE + 1,
+        2 * RUN_BATCH_SIZE,
+      ];
+      await request(worker, "__init", [{
+        specs: boundaries.map((boundary) => ({
+          name: `activation-${boundary}`,
+          source: haltAtActivationSource(boundary),
+        })),
+      }]);
+
+      for (const boundary of boundaries) {
+        const specName = `activation-${boundary}`;
+        assert.deepStrictEqual(
+          await request(worker, "__batched_run", [specName, null, null]),
+          { rulesFired: boundary, haltReason: HaltReason.HaltRequested },
+        );
+        assert.strictEqual(
+          await request(worker, "getIsHalted", [specName]),
+          true,
+        );
+        assert.strictEqual(
+          await request(worker, "getAgendaSize", [specName]),
+          1,
+        );
+        assert.deepStrictEqual(
+          logicalRunStateFacts(
+            await request(worker, "facts", [specName]) as any[],
+          ),
+          [{ relation: "position", fields: [boundary - 1] }],
+        );
+      }
+    });
+  },
+);
+
+test(
+  "E-011 direct pool worker exact caller limit wins over pending halt",
+  { timeout: 10_000 },
+  async () => {
+    await withPoolWorker(async (worker) => {
+      await request(worker, "__init", [{
+        specs: [{
+          name: "boundary",
+          source: haltAtActivationSource(RUN_BATCH_SIZE),
+        }],
+      }]);
+
+      assert.deepStrictEqual(
+        await request(worker, "__batched_run", [
+          "boundary",
+          RUN_BATCH_SIZE,
+          null,
+        ]),
+        {
+          rulesFired: RUN_BATCH_SIZE,
+          haltReason: HaltReason.LimitReached,
+        },
+      );
+      assert.strictEqual(await request(worker, "getIsHalted", ["boundary"]), true);
+      assert.strictEqual(await request(worker, "getAgendaSize", ["boundary"]), 1);
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// E-011 direct protocol: continuation retains diagnostics across native chunks
+// ---------------------------------------------------------------------------
+test(
+  "E-011 direct pool worker logical run retains an early diagnostic",
+  { timeout: 10_000 },
+  async () => {
+    const sync = Engine.fromSource(EARLY_DIAGNOSTIC_SOURCE);
+    try {
+      const expectedResult = sync.run();
+      const expectedDiagnostics = [...sync.diagnostics];
+      assert.strictEqual(expectedDiagnostics.length, 1);
+
+      await withPoolWorker(async (worker) => {
+        await request(worker, "__init", [{
+          specs: [{ name: "diagnostic", source: EARLY_DIAGNOSTIC_SOURCE }],
+        }]);
+
+        assert.deepStrictEqual(
+          await request(worker, "__batched_run", ["diagnostic", null, null]),
+          expectedResult,
+        );
+        assert.deepStrictEqual(
+          await request(worker, "getDiagnostics", ["diagnostic"]),
+          expectedDiagnostics,
+        );
+        assert.strictEqual(
+          await request(worker, "getAgendaSize", ["diagnostic"]),
+          0,
+        );
+      });
+    } finally {
+      sync.close();
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// D-006 direct protocol: proxy zero-limit is still a fresh logical run
+// ---------------------------------------------------------------------------
+test(
+  "D-006 direct pool worker zero-limit run clears halt and diagnostics only",
+  { timeout: 10_000 },
+  async () => {
+    await withPoolWorker(async (worker) => {
+      await request(worker, "__init", [{
+        specs: [{ name: "fresh", source: HALT_WITH_DIAGNOSTIC_SOURCE }],
+      }]);
+
+      assert.deepStrictEqual(
+        await request(worker, "__batched_run", ["fresh", null, null]),
+        { rulesFired: 1, haltReason: HaltReason.HaltRequested },
+      );
+      assert.strictEqual(await request(worker, "getIsHalted", ["fresh"]), true);
+      assert.strictEqual(await request(worker, "getAgendaSize", ["fresh"]), 1);
+      assert.ok(
+        (await request(worker, "getDiagnostics", ["fresh"]) as string[]).length > 0,
+      );
+
+      assert.deepStrictEqual(
+        await request(worker, "__batched_run", ["fresh", 0, null]),
+        { rulesFired: 0, haltReason: HaltReason.LimitReached },
+      );
+      assert.strictEqual(await request(worker, "getIsHalted", ["fresh"]), false);
+      assert.strictEqual(await request(worker, "getAgendaSize", ["fresh"]), 1);
+      assert.deepStrictEqual(
+        await request(worker, "getDiagnostics", ["fresh"]),
+        [],
+      );
+    });
+  },
+);

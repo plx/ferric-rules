@@ -1,6 +1,7 @@
 # TypeScript Binding Test Specification (Revised)
 
 Date: 2026-04-11
+Updated: 2026-08-09 (FR-NODE-002 logical-run semantics)
 Status: Required for reimplementation
 
 Companion documents:
@@ -74,6 +75,8 @@ Must include:
 - Lossless fact-ID boundaries and high-generation lifecycle round-trip
   (`B-010`, `B-011`), including every sync ID-taking API.
 - Run semantics including `limit` behavior (`D-006` sync side, `N-01`).
+- Fresh-run state semantics for `run(0)`, including clearing a prior halt
+  request and action diagnostics (`D-006`, `N-08`).
 - Error mappings for all documented error subclasses (`C-001` to `C-003`).
 - Lifecycle semantics (`F-001`, `F-002`, `A-005` where applicable).
 - Snapshot round-trip behavior.
@@ -83,21 +86,36 @@ Must include:
 - Symbol input/output round-trip across worker boundary (`B-002`, `B-004`).
 - Snapshot transport using worker path (`D-002`, `D-007`).
 - `source`/`snapshot` exclusivity (`D-003`).
-- Cancellation pre-abort and in-flight abort (`D-004`, `D-005`).
-- Run limit behavior parity with sync (`D-006`, `N-01`).
+- Cancellation pre-abort and in-flight abort (`D-004`, `D-005`), including a
+  deterministic assertion that host abort does not call native `halt()` merely
+  to produce the public partial `HaltRequested` result.
+- Run limit behavior parity with sync (`D-006`, `N-01`), including a real fresh
+  native `run(0)` and its execution-state reset.
+- Logical-run parity (`D-009`, `N-08`, `N-09`): exactly one fresh chunk,
+  continuation-only later chunks, total count accumulation, early diagnostic
+  retention, exact-boundary halt and explicit-limit precedence at `1`, batch
+  size, batch size + 1, and twice batch size, and a later invocation starting
+  fresh. D-005 covers cancellation between chunks without a synthetic native
+  halt.
 - Error payload and reconstruction correctness (`C-001` to `C-005`).
 - `FactId` structured-clone response/request round-trip (`D-008`).
 
 ### 4.4 Pool Runtime Tests (minimum 35 cases)
 Must include:
 - Evaluate lifecycle (`E-002`).
-- Cancellation for pre-abort, queued abort, in-flight abort (`E-003`, `E-004`, `E-005`).
+- Cancellation for pre-abort, queued abort, and in-flight abort (`E-003`,
+  `E-004`, `E-005`), including the no-synthetic-native-halt assertion.
 - `do()` cancellation behavior (`E-006`).
 - Proxy behavior parity (`E-007`).
 - `close()` contract (in-flight completion and idempotency) (`E-008`, `E-009`).
 - Thread default behavior (`E-001`).
 - `FactId` structured-clone response/request round-trip through a proxy
   (`E-010`).
+- Logical-run parity for both `evaluate` and proxy/direct run paths (`E-011`,
+  `N-08`, `N-09`), covering exact-boundary result/state equivalence,
+  diagnostics, accumulated totals, explicit-limit precedence, and a later
+  fresh run. E-005 covers cancellation between chunks without a synthetic
+  native halt.
 
 ### 4.5 Package Tests (minimum 10 cases)
 Must include:
@@ -110,6 +128,9 @@ Must include:
 1. Include reusable CLIPS fixtures for:
    - Symbol/string discrimination,
    - Long-running loops for cancellation,
+   - Exact-boundary halts at `1`, batch size, batch size + 1, and twice batch
+     size, with a post-halt activation that must remain queued,
+   - A diagnostic emitted before a continuation boundary,
    - Slot/template error cases,
    - Module/focus behavior,
    - Serialization round-trip.
@@ -123,6 +144,9 @@ Must include:
 1. Cancellation tests `MUST` use bounded deterministic waits and explicit synchronization helpers.
 2. Tests `MUST NOT` rely on wall-clock races as sole pass condition.
 3. Any retry logic `MUST` be explicit and justified.
+4. Logical-run routing tests `MUST` use deterministic seams or direct worker
+   protocol observation to distinguish fresh-run, continuation, halt-query, and
+   host-abort paths.
 
 ## 7. CI and Local Gates
 
