@@ -202,14 +202,23 @@ func TestEngineMethodsAfterClose(t *testing.T) {
 			}
 			return nil
 		}},
+		{"GetOutputE", func() error {
+			output, ok, err := e.GetOutputE("stdout")
+			if output != "" || ok {
+				return fmt.Errorf("output = (%q, %v), want empty false", output, ok)
+			}
+			return wantClosed(err)
+		}},
 		{"ClearOutput", func() error {
 			e.ClearOutput("stdout")
 			return nil
 		}},
+		{"ClearOutputE", func() error { return wantClosed(e.ClearOutputE("stdout")) }},
 		{"PushInput", func() error {
 			e.PushInput("line")
 			return nil
 		}},
+		{"PushInputE", func() error { return wantClosed(e.PushInputE("line")) }},
 		{"Diagnostics", func() error {
 			if value := e.Diagnostics(); value != nil {
 				return fmt.Errorf("diagnostics = %#v, want nil", value)
@@ -593,9 +602,9 @@ func forbidEngineOperationFFI(t *testing.T) {
 		called("IsHalted")
 		return false, ffi.ErrOK
 	}
-	ffiEngineGetOutput = func(ffi.EngineHandle, string) (string, bool) {
-		called("GetOutput")
-		return "", false
+	ffiEngineGetOutputCopy = func(ffi.EngineHandle, string) (string, bool, ffi.ErrorCode) {
+		called("GetOutputCopy")
+		return "", false, ffi.ErrOK
 	}
 	ffiEngineClearOutput = func(ffi.EngineHandle, string) ffi.ErrorCode {
 		called("ClearOutput")

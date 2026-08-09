@@ -38,7 +38,7 @@ var (
 	ffiEngineFocusStackEntry        = ffi.EngineFocusStackEntry
 	ffiEngineAgendaCount            = ffi.EngineAgendaCount
 	ffiEngineIsHalted               = ffi.EngineIsHalted
-	ffiEngineGetOutput              = ffi.EngineGetOutput
+	ffiEngineGetOutputCopy          = ffi.EngineGetOutputCopy
 	ffiEngineClearOutput            = ffi.EngineClearOutput
 	ffiEnginePushInput              = ffi.EnginePushInput
 	ffiEngineActionDiagnosticCount  = ffi.EngineActionDiagnosticCount
@@ -51,6 +51,8 @@ var (
 	ffiEngineTemplateSlotCount      = ffi.EngineTemplateSlotCount
 	ffiEngineTemplateSlotName       = ffi.EngineTemplateSlotName
 	ffiEngineGetFactRelation        = ffi.EngineGetFactRelation
+	ffiValueSymbolBytes             = ffi.ValueSymbolBytes
+	ffiValueStringBytes             = ffi.ValueStringBytes
 	ffiValueMultifieldCopy          = ffi.ValueMultifieldCopy
 	ffiValueFree                    = ffi.ValueFree
 )

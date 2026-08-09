@@ -477,7 +477,14 @@ func TestPinnedEngine_DoAfterClose(t *testing.T) {
 	require.NoError(t, p.Close())
 
 	err = p.Do(context.Background(), func(_ *Engine) error { return nil })
-	assert.ErrorIs(t, err, errPinnedEngineClosed)
+	require.ErrorIs(t, err, errPinnedEngineClosed)
+
+	output, ok, err := p.GetOutputE("t")
+	assert.Empty(t, output)
+	assert.False(t, ok)
+	require.ErrorIs(t, err, errPinnedEngineClosed)
+	require.ErrorIs(t, p.ClearOutputE("t"), errPinnedEngineClosed)
+	require.ErrorIs(t, p.PushInputE("line"), errPinnedEngineClosed)
 }
 
 func TestPinnedEngine_DoContextCanceled(t *testing.T) {

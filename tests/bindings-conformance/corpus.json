@@ -349,10 +349,10 @@
           "tracking_issue": "https://github.com/plx/ferric-rules/issues/115"
         },
         "go": {
-          "expected": {"type": "string", "value": "a"},
-          "rationale": "Go currently passes host strings through C.CString; rejecting embedded NUL across the binding remains tracked by FR-GO-012.",
+          "expected": {"error": "invalid_argument"},
+          "rationale": "The Go binding rejects embedded NUL before crossing the legacy NUL-terminated C string boundary.",
           "since": "1.0.0",
-          "tracking_issue": "https://github.com/plx/ferric-rules/issues/131"
+          "tracking_issue": "https://github.com/plx/ferric-rules/issues/115"
         }
       }
     },

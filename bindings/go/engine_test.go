@@ -1523,6 +1523,15 @@ func TestEngineWrongThreadMultipleOps(t *testing.T) {
 		_, err = e.AssertString("(assert (z))")
 		results <- opResult{"AssertString", err}
 
+		_, _, err = e.GetOutputE("t")
+		results <- opResult{"GetOutputE", err}
+
+		err = e.ClearOutputE("t")
+		results <- opResult{"ClearOutputE", err}
+
+		err = e.PushInputE("line")
+		results <- opResult{"PushInputE", err}
+
 		close(results)
 	}()
 
