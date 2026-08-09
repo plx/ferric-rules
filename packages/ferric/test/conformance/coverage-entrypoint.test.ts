@@ -47,6 +47,7 @@ import "./runtime/sync/run-limit.test.ts";
 import "./runtime/sync/snapshot.test.ts";
 
 import "./runtime/worker/additional.test.ts";
+import "./runtime/worker/create-cleanup.test.ts";
 import "./runtime/worker/create-validation.test.ts";
 import "./runtime/worker/error-mapping.test.ts";
 import "./runtime/worker/fact-id.test.ts";

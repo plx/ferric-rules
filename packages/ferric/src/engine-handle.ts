@@ -50,7 +50,7 @@ export type { EngineHandleOptions };
 
 interface PendingEntry {
   resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
+  reject: (error: unknown) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +78,30 @@ function reconstructError(payload: WorkerResponse["error"]): Error {
   return err;
 }
 
+/** Preserve a create failure while retaining a secondary teardown failure. */
+function attachCreateCleanupCause(primary: unknown, cleanupFailure: unknown): void {
+  if (!(primary instanceof Error)) return;
+
+  try {
+    const errorWithCause = primary as Error & { cause?: unknown };
+    const cause =
+      "cause" in errorWithCause
+        ? new AggregateError(
+            [errorWithCause.cause, cleanupFailure],
+            "EngineHandle.create cleanup also failed",
+          )
+        : cleanupFailure;
+
+    Object.defineProperty(errorWithCause, "cause", {
+      value: cause,
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    // A frozen/non-extensible primary error must still remain the rejection.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // EngineHandle
 // ---------------------------------------------------------------------------
@@ -100,47 +124,48 @@ export class EngineHandle {
   private readonly pending = new Map<number, PendingEntry>();
   private closed = false;
 
-  private constructor(worker: Worker) {
-    this.worker = worker;
+  private readonly onWorkerMessage = (resp: WorkerResponse): void => {
+    const entry = this.pending.get(resp.id);
+    if (!entry) return;
+    this.pending.delete(resp.id);
 
-    worker.on("message", (resp: WorkerResponse) => {
-      const entry = this.pending.get(resp.id);
-      if (!entry) return;
-      this.pending.delete(resp.id);
+    if ("error" in resp) {
+      entry.reject(reconstructError(resp.error));
+    } else {
+      entry.resolve(fromWire(resp.result, FerricSymbol));
+    }
+  };
 
-      if ("error" in resp) {
-        entry.reject(reconstructError(resp.error));
-      } else {
-        entry.resolve(fromWire(resp.result, FerricSymbol));
-      }
-    });
+  private readonly onWorkerError = (err: Error): void => {
+    const snapshot = [...this.pending.values()];
+    this.pending.clear();
+    for (const entry of snapshot) {
+      entry.reject(err);
+    }
+  };
 
-    worker.on("error", (err: Error) => {
+  private readonly onWorkerExit = (code: number): void => {
+    // Any pending request when the worker exits — even with code 0 —
+    // will never be answered. Without this rejection those promises
+    // would hang forever.
+    if (this.pending.size > 0) {
+      const err = new Error(
+        code === 0
+          ? "Worker exited before responding to pending request"
+          : `Worker exited unexpectedly with code ${code}`,
+      );
       const snapshot = [...this.pending.values()];
       this.pending.clear();
       for (const entry of snapshot) {
         entry.reject(err);
       }
-    });
+    }
+    this.worker = null;
+  };
 
-    worker.on("exit", (code: number) => {
-      // Any pending request when the worker exits — even with code 0 —
-      // will never be answered. Without this rejection those promises
-      // would hang forever.
-      if (this.pending.size > 0) {
-        const err = new Error(
-          code === 0
-            ? "Worker exited before responding to pending request"
-            : `Worker exited unexpectedly with code ${code}`,
-        );
-        const snapshot = [...this.pending.values()];
-        this.pending.clear();
-        for (const entry of snapshot) {
-          entry.reject(err);
-        }
-      }
-      this.worker = null;
-    });
+  private constructor(worker: Worker, attachListeners = true) {
+    this.worker = worker;
+    if (attachListeners) this.attachWorkerListeners(worker);
   }
 
   // ---------------------------------------------------------------------------
@@ -153,18 +178,20 @@ export class EngineHandle {
    * The Engine is created on the worker's OS thread, satisfying thread affinity.
    * If `options.source` is provided, the source is loaded and reset() is called.
    * If `options.snapshot` is provided, the engine is restored from the snapshot.
+   * If initialization fails after the Worker starts, create() awaits termination
+   * before rejecting with the original error. A termination failure is attached
+   * to that error as its cause rather than replacing it.
    */
   static async create(options?: EngineHandleOptions): Promise<EngineHandle> {
+    const source = options?.source;
+    const snapshot = options?.snapshot;
+
     // D-003: source and snapshot are mutually exclusive.
-    if (options?.source !== undefined && options?.snapshot !== undefined) {
+    if (source !== undefined && snapshot !== undefined) {
       throw new TypeError(
         "EngineHandle.create: 'source' and 'snapshot' are mutually exclusive"
       );
     }
-
-    const workerPath = resolve(__dirname, "worker.js");
-    const worker = new Worker(workerPath);
-    const handle = new EngineHandle(worker);
 
     const init: WorkerInit = {
       options: options
@@ -174,26 +201,35 @@ export class EngineHandle {
             maxCallDepth: options.maxCallDepth,
           }
         : undefined,
-      source: options?.source,
+      source,
     };
+    let transferList: readonly ArrayBuffer[] | undefined;
 
-    if (options?.snapshot) {
+    if (snapshot) {
       // Transfer the ArrayBuffer for zero-copy.
-      const ab = options.snapshot.data.buffer.slice(
-        options.snapshot.data.byteOffset,
-        options.snapshot.data.byteOffset + options.snapshot.data.byteLength,
+      const ab = snapshot.data.buffer.slice(
+        snapshot.data.byteOffset,
+        snapshot.data.byteOffset + snapshot.data.byteLength,
       );
-      init.snapshot = { data: ab as ArrayBuffer, format: options.snapshot.format };
-
-      const req: WorkerRequest = { id: handle.nextId++, method: "__init", args: [init] };
-      const promise = handle.makePromise(req.id);
-      worker.postMessage(req, [ab as ArrayBuffer]);
-      await promise;
-    } else {
-      await handle.call("__init", [init]);
+      init.snapshot = { data: ab as ArrayBuffer, format: snapshot.format };
+      transferList = [ab as ArrayBuffer];
     }
 
-    return handle;
+    const workerPath = resolve(__dirname, "worker.js");
+    const worker = new Worker(workerPath);
+    // Keep factory ownership until the initialization acknowledgement arrives.
+    // Delaying listener attachment until after construction lets every
+    // post-spawn failure unwind through the same cleanup transaction.
+    const handle = new EngineHandle(worker, false);
+
+    try {
+      handle.attachWorkerListeners(worker);
+      await handle.initialize(init, transferList);
+      return handle;
+    } catch (error) {
+      await handle.cleanupFailedCreate(worker, error);
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -204,6 +240,87 @@ export class EngineHandle {
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
     });
+  }
+
+  /** Send the factory-only initialization request with atomic send rollback. */
+  private initialize(
+    init: WorkerInit,
+    transferList?: readonly ArrayBuffer[],
+  ): Promise<void> {
+    const worker = this.worker;
+    if (!worker) {
+      return Promise.reject(new Error("Worker exited before initialization"));
+    }
+
+    const id = this.nextId++;
+    const req: WorkerRequest = { id, method: "__init", args: [init] };
+
+    return new Promise<void>((resolve, reject) => {
+      const entry: PendingEntry = {
+        resolve: () => resolve(),
+        reject,
+      };
+      this.pending.set(id, entry);
+
+      try {
+        if (transferList) {
+          worker.postMessage(req, transferList);
+        } else {
+          worker.postMessage(req);
+        }
+      } catch (error) {
+        // postMessage may throw synchronously. Remove the bookkeeping before
+        // rejecting the same Promise returned to create(), so no orphaned
+        // pending request or unhandled rejection remains behind.
+        if (this.pending.get(id) === entry) {
+          this.pending.delete(id);
+        }
+        reject(error);
+      }
+    });
+  }
+
+  private attachWorkerListeners(worker: Worker): void {
+    worker.on("message", this.onWorkerMessage);
+    worker.on("error", this.onWorkerError);
+    worker.on("exit", this.onWorkerExit);
+  }
+
+  private detachWorkerListeners(worker: Worker): void {
+    worker.off("message", this.onWorkerMessage);
+    worker.off("error", this.onWorkerError);
+    worker.off("exit", this.onWorkerExit);
+  }
+
+  /** Release a Worker that was never published through a successful create(). */
+  private async cleanupFailedCreate(worker: Worker, primary: unknown): Promise<void> {
+    this.closed = true;
+
+    const snapshot = [...this.pending.values()];
+    this.pending.clear();
+    for (const entry of snapshot) {
+      entry.reject(primary);
+    }
+
+    let terminationFailed = false;
+    let terminationFailure: unknown;
+    try {
+      await worker.terminate();
+    } catch (error) {
+      terminationFailed = true;
+      terminationFailure = error;
+    } finally {
+      try {
+        this.detachWorkerListeners(worker);
+      } catch {
+        // The primary initialization error must remain the rejection.
+      }
+      this.worker = null;
+    }
+
+    if (terminationFailed) {
+      attachCreateCleanupCause(primary, terminationFailure);
+    }
   }
 
   private call(method: string, args: unknown[]): Promise<unknown> {

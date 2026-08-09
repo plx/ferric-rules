@@ -1,7 +1,7 @@
 # TypeScript Binding Test Specification (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-003 worker-slot callback leases)
+Updated: 2026-08-09 (FR-NODE-004 failed EngineHandle creation cleanup)
 Status: Required for reimplementation
 
 Companion documents:
@@ -24,7 +24,8 @@ This is not optional guidance. The implementation is incomplete until this speci
 - Must run without worker threads.
 
 ### 2.3 Worker Runtime Unit Tests (`EngineHandle`)
-- Exercise wire conversion, cancellation, worker protocol, and error reconstruction.
+- Exercise wire conversion, cancellation, worker protocol, error
+  reconstruction, and failed-construction Worker ownership.
 
 ### 2.4 Pool Runtime Unit Tests (`EnginePool`)
 - Exercise queueing, dispatch, cancellation states, worker-slot lease isolation,
@@ -101,6 +102,28 @@ Must include:
   halt.
 - Error payload and reconstruction correctness (`C-001` to `C-005`).
 - `FactId` structured-clone response/request round-trip (`D-008`).
+- Failed `EngineHandle.create()` ownership (`D-010`), including:
+  - a timeout-guarded real invalid-source subprocess that catches the
+    initialization error, never calls `process.exit()` or `unref()`, returns
+    active Worker resources to baseline, and exits naturally;
+  - source and snapshot initialization protocol failures;
+  - a synchronous initialization `postMessage` throw after request
+    registration;
+  - response, error, and exit listener counts plus pending initialization
+    bookkeeping returning to baseline;
+  - a delayed termination barrier proving `create()` remains unsettled until
+    its single termination attempt completes;
+  - a termination rejection that leaves the exact primary error as the public
+    rejection and attaches the termination error as its cause;
+  - duplicate or late protocol/error/exit signals proving request settlement
+    and termination each occur exactly once;
+  - pre-Worker validation and Worker-constructor throw controls; and
+  - a successful construction control proving ownership transfers without
+    failed-create teardown.
+
+The synchronous-send case above applies only to initialization cleanup.
+Ordinary handle/pool send rollback remains FR-NODE-008, and concurrent public
+`close()` completion-barrier coverage remains FR-NODE-010.
 
 ### 4.4 Pool Runtime Tests (minimum 45 cases)
 Must include:
@@ -176,6 +199,8 @@ Must include:
    than sleeps as their correctness oracle.
 6. Randomized-await lease stress `MUST` use a recorded deterministic seed and
    bounded iteration count.
+7. Failed-create subprocess tests `MUST` use a parent-enforced timeout as a
+   failure guard while requiring natural child exit as the passing condition.
 
 ## 7. CI and Local Gates
 
