@@ -18,6 +18,12 @@
  * unrelated pool work can use that worker until the pool observes the
  * callback's returned Promise settle and its accepted proxy operations drain.
  *
+ * ## Terminal worker failures
+ * The first unexpected Worker error or exit permanently poisons future pool
+ * admission; workers are not respawned. Work already accepted by healthy slots
+ * may finish, including owner calls from an admitted callback. The failed slot
+ * rejects everything it owns and cannot accept more work.
+ *
  * ## Cooperative cancellation
  *
  * `evaluate()` and `do()` accept an `AbortSignal`. Cancellation sets a
@@ -148,8 +154,21 @@ interface PoolCallbackContext {
   active: boolean;
 }
 
+type WorkerSlotState =
+  | { kind: "running" }
+  | { kind: "failed"; error: Error }
+  | { kind: "terminating" }
+  | { kind: "closed" };
+
+interface WorkerSlotListeners {
+  message: (response: WorkerResponse) => void;
+  error: (error: Error) => void;
+  exit: (code: number) => void;
+}
+
 interface WorkerSlot {
   worker: Worker;
+  state: WorkerSlotState;
   nextId: number;
   pending: Map<number, PendingEntry>;
   /** Number of requests currently being processed by the worker. */
@@ -158,6 +177,13 @@ interface WorkerSlot {
   queue: QueuedWork[];
   /** Exclusive callback lease currently admitted on this whole worker slot. */
   activeLease?: WorkerLease;
+  /** Close waiters that wake when every already-dispatched call is settled. */
+  pendingDrainWaiters: Array<() => void>;
+  /** Exact owned listener references, retained for deterministic detachment. */
+  listeners: WorkerSlotListeners;
+  listenersAttached: boolean;
+  /** Installed once the slot belongs to a published EnginePool. */
+  onTerminal?: (slot: WorkerSlot, error: Error) => void;
 }
 
 const INACTIVE_PROXY_MESSAGE =
@@ -215,9 +241,21 @@ export class EnginePool {
   private readonly callbackContext = new AsyncLocalStorage<PoolCallbackContext>();
   private roundRobin = 0;
   private closed = false;
+  /** The first terminal Worker failure poisons every later root admission. */
+  private terminalError?: Error;
 
   private constructor(slots: WorkerSlot[]) {
     this.slots = slots;
+    for (const slot of slots) {
+      if (this.terminalError === undefined && slot.state.kind === "failed") {
+        this.terminalError = slot.state.error;
+      }
+      if (slot.state.kind === "running") {
+        slot.onTerminal = (failedSlot, error) => {
+          this.handleSlotTerminal(failedSlot, error);
+        };
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -264,12 +302,28 @@ export class EnginePool {
       }
 
       await Promise.all(initPromises);
-      return new EnginePool(slots);
+      const pool = new EnginePool(slots);
+      // Worker events are normally delivered on later event-loop turns, but a
+      // deterministic Worker seam can report init success and then fail from
+      // one synchronous postMessage call. Never publish that prefailed pool.
+      if (pool.terminalError) throw pool.terminalError;
+      return pool;
     } catch (error) {
+      // A Worker constructor can throw after earlier initialization promises
+      // were created but before Promise.all() attached its handlers.
+      for (const initPromise of initPromises) {
+        void initPromise.catch(() => undefined);
+      }
+
+      const cleanupError =
+        error instanceof Error
+          ? error
+          : new Error("EnginePool creation failed during initialization");
       await Promise.all(
         slots.map(async (slot) => {
+          EnginePool.failSlot(slot, cleanupError);
           try {
-            await slot.worker.terminate();
+            await EnginePool.terminateSlot(slot);
           } catch {
             // Ignore best-effort cleanup failures while unwinding create().
           }
@@ -284,62 +338,167 @@ export class EnginePool {
   // ---------------------------------------------------------------------------
 
   private static createSlot(worker: Worker): WorkerSlot {
-    const slot: WorkerSlot = {
+    let slot!: WorkerSlot;
+    const listeners: WorkerSlotListeners = {
+      message: (resp: WorkerResponse) => {
+        if (slot.state.kind !== "running") return;
+
+        const entry = slot.pending.get(resp.id);
+        if (!entry) return;
+        slot.pending.delete(resp.id);
+        slot.inflight--;
+
+        if ("error" in resp) {
+          entry.reject(reconstructError(resp.error));
+        } else {
+          entry.resolve(fromWire(resp.result, FerricSymbol));
+        }
+
+        EnginePool.notifyPendingDrained(slot);
+
+        // Dispatch the next queued request, if any.
+        EnginePool.drainQueue(slot);
+      },
+      error: (err: Error) => {
+        EnginePool.signalSlotFailure(slot, err);
+      },
+      exit: (code: number) => {
+        if (slot.state.kind === "terminating") {
+          slot.state = { kind: "closed" };
+          EnginePool.detachSlotListeners(slot);
+          EnginePool.notifyPendingDrained(slot);
+          return;
+        }
+        if (slot.state.kind !== "running") return;
+
+        const err = new Error(
+          code === 0
+            ? slot.pending.size > 0
+              ? "Pool worker exited before responding to pending request"
+              : "Pool worker exited unexpectedly with code 0"
+            : `Pool worker exited unexpectedly with code ${code}`,
+        );
+        EnginePool.signalSlotFailure(slot, err);
+      },
+    };
+
+    slot = {
       worker,
+      state: { kind: "running" },
       nextId: 0,
       pending: new Map(),
       inflight: 0,
       queue: [],
+      pendingDrainWaiters: [],
+      listeners,
+      listenersAttached: false,
     };
 
-    worker.on("message", (resp: WorkerResponse) => {
-      const entry = slot.pending.get(resp.id);
-      if (!entry) return;
-      slot.pending.delete(resp.id);
-      slot.inflight--;
-
-      if ("error" in resp) {
-        entry.reject(reconstructError(resp.error));
-      } else {
-        entry.resolve(fromWire(resp.result, FerricSymbol));
-      }
-
-      // Dispatch the next queued request, if any.
-      EnginePool.drainQueue(slot);
-    });
-
-    worker.on("error", (err: Error) => {
-      const snapshot = [...slot.pending.values()];
-      slot.pending.clear();
-      // Reject owner work already accepted behind the failed in-flight call so
-      // callback cleanup can drain and release its lease. Full terminal slot
-      // cleanup remains the responsibility of FR-NODE-005.
-      EnginePool.rejectActiveLeaseQueue(slot, err);
-      for (const entry of snapshot) {
-        entry.reject(err);
-      }
-    });
-
-    worker.on("exit", (code: number) => {
-      // Any pending request when a pool worker exits — even with code 0 —
-      // will never be answered. Without this rejection those promises
-      // would hang forever.
-      if (slot.pending.size > 0) {
-        const err = new Error(
-          code === 0
-            ? "Pool worker exited before responding to pending request"
-            : `Pool worker exited unexpectedly with code ${code}`,
-        );
-        const snapshot = [...slot.pending.values()];
-        slot.pending.clear();
-        EnginePool.rejectActiveLeaseQueue(slot, err);
-        for (const entry of snapshot) {
-          entry.reject(err);
-        }
-      }
-    });
+    EnginePool.attachSlotListeners(slot);
 
     return slot;
+  }
+
+  private static attachSlotListeners(slot: WorkerSlot): void {
+    if (slot.listenersAttached) return;
+    slot.worker.on("message", slot.listeners.message);
+    slot.worker.on("error", slot.listeners.error);
+    slot.worker.on("exit", slot.listeners.exit);
+    slot.listenersAttached = true;
+  }
+
+  private static detachSlotListeners(slot: WorkerSlot): void {
+    if (!slot.listenersAttached) return;
+    slot.worker.off("message", slot.listeners.message);
+    slot.worker.off("error", slot.listeners.error);
+    slot.worker.off("exit", slot.listeners.exit);
+    slot.listenersAttached = false;
+  }
+
+  private static signalSlotFailure(slot: WorkerSlot, error: Error): void {
+    if (slot.state.kind !== "running") return;
+    if (slot.onTerminal) {
+      slot.onTerminal(slot, error);
+    } else {
+      EnginePool.failSlot(slot, error);
+    }
+  }
+
+  private handleSlotTerminal(slot: WorkerSlot, error: Error): void {
+    if (slot.state.kind !== "running") return;
+    this.terminalError ??= error;
+    EnginePool.failSlot(slot, this.terminalError);
+  }
+
+  /** Atomically make one Worker slot unusable and settle all work it owns. */
+  private static failSlot(slot: WorkerSlot, error: Error): void {
+    if (slot.state.kind !== "running") return;
+
+    // Publish failure before rejecting anything so Promise reactions can never
+    // enqueue more work onto this Worker.
+    slot.state = { kind: "failed", error };
+    slot.onTerminal = undefined;
+    EnginePool.detachSlotListeners(slot);
+
+    const pending = [...slot.pending.values()];
+    const rootQueue = slot.queue.splice(0);
+    const ownerQueue = slot.activeLease?.queue.splice(0) ?? [];
+    slot.pending.clear();
+    slot.inflight = 0;
+
+    for (const queued of rootQueue) {
+      EnginePool.rejectQueuedWork(queued, error);
+    }
+    for (const queued of ownerQueue) {
+      EnginePool.removeAbortListener(queued);
+      queued.entry.reject(error);
+    }
+    for (const entry of pending) {
+      entry.reject(error);
+    }
+
+    EnginePool.notifyPendingDrained(slot);
+  }
+
+  private static rejectQueuedWork(queued: QueuedWork, error: Error): void {
+    EnginePool.removeAbortListener(queued);
+    if (queued.kind === "lease") {
+      EnginePool.markLeaseReleased(queued.lease);
+      queued.reject(error);
+    } else {
+      queued.entry.reject(error);
+    }
+  }
+
+  private static notifyPendingDrained(slot: WorkerSlot): void {
+    if (slot.pending.size !== 0) return;
+    const waiters = slot.pendingDrainWaiters.splice(0);
+    for (const resolve of waiters) resolve();
+  }
+
+  private static waitForPending(slot: WorkerSlot): Promise<void> {
+    if (slot.pending.size === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      slot.pendingDrainWaiters.push(resolve);
+    });
+  }
+
+  private static async terminateSlot(slot: WorkerSlot): Promise<void> {
+    if (slot.state.kind === "closed" || slot.state.kind === "terminating") return;
+    if (slot.state.kind === "running" || slot.state.kind === "failed") {
+      slot.state = { kind: "terminating" };
+    }
+
+    try {
+      await slot.worker.terminate();
+    } finally {
+      if (slot.state.kind === "terminating") {
+        slot.state = { kind: "closed" };
+      }
+      slot.onTerminal = undefined;
+      EnginePool.detachSlotListeners(slot);
+      EnginePool.notifyPendingDrained(slot);
+    }
   }
 
   private static initSlot(slot: WorkerSlot, init: PoolWorkerInit): Promise<void> {
@@ -406,16 +565,6 @@ export class EnginePool {
     slot.worker.postMessage(queued.req);
   }
 
-  private static rejectActiveLeaseQueue(slot: WorkerSlot, error: Error): void {
-    const lease = slot.activeLease;
-    if (!lease) return;
-    const snapshot = lease.queue.splice(0);
-    for (const queued of snapshot) {
-      EnginePool.removeAbortListener(queued);
-      queued.entry.reject(error);
-    }
-  }
-
   private static settleLeaseCall(lease: WorkerLease): void {
     lease.pendingCalls--;
     if (lease.pendingCalls !== 0) return;
@@ -444,6 +593,7 @@ export class EnginePool {
 
   /** Dispatch the next owner request or root FIFO item for an idle slot. */
   private static drainQueue(slot: WorkerSlot): void {
+    if (slot.state.kind !== "running") return;
     if (slot.inflight !== 0) return;
 
     const lease = slot.activeLease;
@@ -516,6 +666,9 @@ export class EnginePool {
     if (this.closed) {
       return Promise.reject(new Error("EnginePool has been closed"));
     }
+    if (this.terminalError) {
+      return Promise.reject(this.terminalError);
+    }
     if (signal?.aborted) {
       return Promise.reject(
         new DOMException("The operation was aborted", "AbortError"),
@@ -583,6 +736,9 @@ export class EnginePool {
     if (this.closed) {
       return Promise.reject(new Error("EnginePool has been closed"));
     }
+    if (this.terminalError) {
+      return Promise.reject(this.terminalError);
+    }
     const id = slot.nextId++;
     const req: WorkerRequest = { id, method, args };
 
@@ -632,6 +788,12 @@ export class EnginePool {
     if (!lease.active || lease.released || slot.activeLease !== lease) {
       return Promise.reject(new Error(INACTIVE_PROXY_MESSAGE));
     }
+    if (slot.state.kind === "failed") {
+      return Promise.reject(slot.state.error);
+    }
+    if (slot.state.kind !== "running") {
+      return Promise.reject(new Error("EnginePool has been closed"));
+    }
 
     const id = slot.nextId++;
     const req: WorkerRequest = { id, method, args };
@@ -680,6 +842,12 @@ export class EnginePool {
     const withActiveLease = <T>(operation: () => Promise<T>): Promise<T> => {
       if (!lease.active || lease.released || slot.activeLease !== lease) {
         return Promise.reject(new Error(INACTIVE_PROXY_MESSAGE));
+      }
+      if (slot.state.kind === "failed") {
+        return Promise.reject(slot.state.error);
+      }
+      if (slot.state.kind !== "running") {
+        return Promise.reject(new Error("EnginePool has been closed"));
       }
       return operation();
     };
@@ -802,6 +970,7 @@ export class EnginePool {
   ): Promise<EvaluateResult> {
     this.assertNotInActiveCallback();
     if (this.closed) throw new Error("EnginePool has been closed");
+    if (this.terminalError) throw this.terminalError;
 
     const signal = options?.signal;
     const limit = normalizeEvaluateLimit(
@@ -886,6 +1055,7 @@ export class EnginePool {
   ): Promise<T> {
     this.assertNotInActiveCallback();
     if (this.closed) throw new Error("EnginePool has been closed");
+    if (this.terminalError) throw this.terminalError;
 
     const signal = options?.signal;
     if (signal?.aborted) {
@@ -984,16 +1154,10 @@ export class EnginePool {
     await Promise.all(
       this.slots.map(async (slot) => {
         // Reject all queued (not yet dispatched) requests.
-        for (const queued of slot.queue) {
-          EnginePool.removeAbortListener(queued);
-          if (queued.kind === "lease") {
-            EnginePool.markLeaseReleased(queued.lease);
-            queued.reject(closeErr);
-          } else {
-            queued.entry.reject(closeErr);
-          }
+        const rootQueue = slot.queue.splice(0);
+        for (const queued of rootQueue) {
+          EnginePool.rejectQueuedWork(queued, closeErr);
         }
-        slot.queue.length = 0;
 
         // A do() callback is admitted work even while it has no native request
         // in flight. Its owner calls remain valid after close starts, and close
@@ -1004,23 +1168,12 @@ export class EnginePool {
           await activeLease.releasedPromise;
         }
 
-        // Wait for in-flight requests to settle. The existing message
-        // handler installed in createSlot() clears slot.pending as
-        // responses arrive; we piggyback on each message to re-check.
-        if (slot.pending.size > 0) {
-          await new Promise<void>((resolve) => {
-            const check = () => {
-              if (slot.pending.size === 0) {
-                slot.worker.off("message", check);
-                resolve();
-              }
-            };
-            slot.worker.on("message", check);
-            check();
-          });
-        }
+        // A slot-owned waiter is resolved by either its last response or its
+        // atomic terminal-failure cleanup. It does not depend on a later
+        // Worker message that can never arrive after error/exit.
+        await EnginePool.waitForPending(slot);
 
-        await slot.worker.terminate();
+        await EnginePool.terminateSlot(slot);
       }),
     );
   }

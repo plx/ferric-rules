@@ -565,7 +565,7 @@ export class EngineHandle {
 
 `EnginePool` manages multiple Worker threads for concurrent, stateless evaluation. It is the TypeScript equivalent of Go's `Coordinator` + `Manager` pattern.
 
-Each worker lazily creates engines from named specs. Requests are dispatched round-robin across workers.
+Each worker lazily creates engines from named specs. Requests are dispatched round-robin across workers while the pool is healthy.
 Work assigned to one worker slot is admitted FIFO. A `do()` callback receives
 an exclusive lease over its selected slot before the callback begins, so no
 unrelated task can use that worker until the pool processes the callback's
@@ -724,6 +724,43 @@ export interface EngineProxy {
 Abort-driven proxy invalidation and the state effects of an operation accepted
 before abort are reserved for FR-NODE-009. An outer `do()` rejection does not
 allow unrelated work onto a slot while its callback is still running.
+
+#### Worker terminal failure policy
+
+Each pool slot has an explicit lifecycle. The first Worker `error` or
+unexpected `exit` observed before close begins terminating that Worker marks
+its slot failed and establishes one pool-wide terminal failure. An `error`
+retains the exact emitted object; an unexpected exit creates one stable error
+for its exit code. Later terminal signals cannot replace that primary failure
+or settle work a second time.
+
+The failed slot rejects every request, root queue entry, lease admission, and
+lease-private proxy operation assigned to it. It clears its counters, removes
+owned abort and Worker listeners, and wakes close bookkeeping. The pool does
+not replay that work or respawn the Worker because replacement would silently
+discard the mutable engines hosted by the failed slot.
+
+Once the failure is observed, new `evaluate()` and `do()` calls reject with the
+same primary error before round-robin selection or request bookkeeping. Work
+already accepted on another healthy slot remains eligible to finish through
+that slot's FIFO. An already-admitted healthy `do()` lease may continue its
+owner proxy operations until the callback settles. Recovery is explicit:
+close the failed pool and create a new one.
+
+A failed-slot callback's pending and queued proxy operations reject, and later
+proxy sends fail fast. The pool cannot forcibly settle arbitrary JavaScript in
+that callback, such as an unrelated Promise awaited while the worker is idle;
+the existing admitted-callback release barrier remains in force until the
+callback settles. `close()` therefore still observes the documented callback
+lifetime while no pool-generated request or close waiter remains stranded.
+
+An ordinary response error from a live Worker rejects only its matching
+request and does not poison the pool. An exit caused after `close()`
+deliberately starts Worker termination is also expected, not a fault.
+Synchronous ordinary `postMessage` rollback is FR-NODE-008; general
+queued-listener cleanup is FR-NODE-006; abort-time proxy semantics are
+FR-NODE-009; bounded backpressure is FR-NODE-011; and the Promise shared by
+concurrent close callers is FR-NODE-010.
 
 ## Value Conversion Details
 

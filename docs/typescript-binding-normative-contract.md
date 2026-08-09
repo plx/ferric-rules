@@ -1,7 +1,7 @@
 # TypeScript Binding Normative Contract (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-004 failed EngineHandle creation cleanup)
+Updated: 2026-08-09 (FR-NODE-005 terminal EnginePool worker faults)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -138,6 +138,63 @@ If this contract conflicts with legacy design docs, this contract wins.
    - then terminate workers.
 4. `EnginePool.close()` `MUST` be idempotent.
 5. `EnginePool` `MUST` support `[Symbol.asyncDispose]()` and delegate to `close()`.
+6. Every pool Worker slot `MUST` have an explicit `running`, `failed`,
+   `terminating`, or `closed` state. A Worker `error`, or an `exit` before the
+   pool deliberately begins terminating that Worker, `MUST` move a running
+   slot to `failed` even when it has no pending request and even when the exit
+   code is zero. A Worker response carrying an ordinary request error
+   `MUST NOT` fail the slot. An exit caused after the pool deliberately begins
+   terminating that Worker `MUST NOT` establish a pool failure.
+7. The first unexpected Worker terminal event observed after successful pool
+   creation `MUST` establish one immutable pool-wide terminal failure. If the
+   event is `error`, the exact emitted error object `MUST` be retained. If it
+   is `exit`, the pool `MUST` construct and retain one deterministic `Error`
+   describing that exit. Later `error`, `exit`, response, abort, and close
+   races `MUST NOT` replace the primary failure or settle affected work twice.
+   A later terminal event from another running slot `MUST` still perform that
+   slot's local cleanup using the original pool failure.
+8. Establishing the terminal failure `MUST` atomically:
+   - clear and reject every pending request on the failed slot;
+   - set that slot's in-flight count to zero;
+   - clear and reject all ordinary requests, lease admissions, and
+     lease-private proxy requests already assigned to the failed slot;
+   - mark rejected lease admissions released and remove every abort listener
+     owned by discarded work;
+   - wake any pending-drain waiter used by `close()`; and
+   - detach the failed Worker's message, error, and exit listeners.
+
+   Every rejection caused by this transition `MUST` use the retained primary
+   failure and occur exactly once.
+9. EnginePool `MUST NOT` respawn or silently replace a failed Worker. After the
+   pool-wide terminal failure is established, every later `evaluate` or `do`
+   admission `MUST` reject with the retained primary failure before
+   round-robin selection, request-ID allocation, abort-listener registration,
+   or `postMessage`. Callers recover by closing the failed pool and creating a
+   new one.
+10. Work accepted on another still-running slot before the failure was
+    observed, including that slot's existing root FIFO, `MUST` remain eligible
+    to finish normally. An already-admitted healthy active lease `MUST` retain
+    its N-10 owner-dispatch rights until its callback settles. The pool
+    `MUST NOT` replay failed-slot work on that healthy slot, and the healthy
+    slot remains owned by the pool until close.
+11. A Worker fault `MUST` reject in-flight and queued proxy operations of an
+    admitted `do` callback on the failed slot and make any later proxy send
+    through that callback fail with the retained pool failure. It `MUST NOT`
+    forcibly settle arbitrary JavaScript in that callback, such as an unrelated
+    user Promise awaited while the slot is idle. The callback's existing
+    lease/release barrier remains in force until the callback settles. Item 10
+    continues to govern an admitted callback on another healthy slot.
+12. `close()` begun before or after a Worker fault `MUST` be able to observe
+    the terminal cleanup, finish terminating all owned Workers, and complete;
+    it `MUST NOT` wait forever on pending bookkeeping cleared by the fault.
+    This requirement does not define the shared completion barrier for
+    concurrent public close calls.
+13. Atomic rollback when an ordinary `postMessage` throws synchronously remains
+    FR-NODE-008. Generic queued AbortSignal-listener cleanup remains
+    FR-NODE-006; cancellation-time proxy invalidation remains FR-NODE-009;
+    bounded queue capacity remains FR-NODE-011; and concurrent close callers
+    sharing one completion Promise remains FR-NODE-010. FR-NODE-005 owns the
+    corresponding cleanup only when a Worker terminal event occurs.
 
 ### 4.4 EnginePool.do Worker-Slot Lease
 

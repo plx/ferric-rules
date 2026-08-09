@@ -120,9 +120,9 @@ test("E-007 EnginePool ignores replies for unknown request ids", () => {
 });
 
 // ---------------------------------------------------------------------------
-// E-008 manual cleanup: worker error rejects all pending pool requests
+// E-013 manual cleanup: worker error rejects all pending pool requests
 // ---------------------------------------------------------------------------
-test("E-008 EnginePool rejects pending requests when worker emits error", async () => {
+test("E-013 EnginePool rejects pending requests when worker emits error", async () => {
   const { pool, worker } = makePool();
   const pending = pool.evaluate("rules", {});
 
@@ -131,11 +131,11 @@ test("E-008 EnginePool rejects pending requests when worker emits error", async 
 });
 
 // ---------------------------------------------------------------------------
-// E-012 lease cleanup: a worker error rejecting the owner request invalidates
-// the callback proxy. Full failed-slot queue/future-work cleanup belongs to
-// FR-NODE-005; this seam only locks the callback lease's terminal path.
+// E-012/E-013 lease cleanup: a worker error rejecting the owner request
+// invalidates the callback proxy. Comprehensive failed-slot queue and future
+// admission coverage lives in terminal-state.test.ts.
 // ---------------------------------------------------------------------------
-test("E-012 EnginePool worker error invalidates the active callback lease", async () => {
+test("E-012 E-013 EnginePool worker error invalidates the active callback lease", async () => {
   const { pool, worker } = makePool();
   let retained: any;
 
@@ -417,9 +417,9 @@ test("E-012 an earlier returned-Promise reaction drains before proxy invalidatio
 });
 
 // ---------------------------------------------------------------------------
-// E-008 table-driven cleanup: worker exit rejects pending pool requests
+// E-013 table-driven cleanup: worker exit rejects pending pool requests
 // ---------------------------------------------------------------------------
-test("E-008 table-driven EnginePool rejects pending requests on worker exit", async () => {
+test("E-013 table-driven EnginePool rejects pending requests on worker exit", async () => {
   for (const [code, pattern] of [
     [0, /exited before responding/],
     [9, /unexpectedly with code 9/],
