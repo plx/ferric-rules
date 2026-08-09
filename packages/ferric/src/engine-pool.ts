@@ -191,6 +191,7 @@ const INACTIVE_PROXY_MESSAGE =
 const REENTRANT_POOL_MESSAGE =
   "EnginePool.do, EnginePool.evaluate, and EnginePool.close cannot be called " +
   "from within an active EnginePool.do callback on the same pool";
+const MAX_ENGINE_POOL_THREADS = 64;
 
 // ---------------------------------------------------------------------------
 // Error reconstruction
@@ -268,13 +269,33 @@ export class EnginePool {
    * Each thread lazily creates engine instances on first use for each spec.
    *
    * @param specs Named engine configurations.
-   * @param options.threads Number of worker threads. Default: 1.
+   * @param options.threads Number of worker threads, from 1 through 64.
+   * Default: 1.
    */
-  static async create(
+  static create(
     specs: EngineSpec[],
     options?: { threads?: number },
   ): Promise<EnginePool> {
-    const threadCount = Math.max(1, options?.threads ?? 1);
+    const configuredThreadCount = options?.threads;
+    const threadCount =
+      configuredThreadCount === undefined ? 1 : configuredThreadCount;
+    if (
+      !Number.isSafeInteger(threadCount) ||
+      threadCount < 1 ||
+      threadCount > MAX_ENGINE_POOL_THREADS
+    ) {
+      throw new RangeError(
+        "EnginePool.create: 'threads' must be a safe integer between 1 and 64",
+      );
+    }
+
+    return EnginePool.createValidated(specs, threadCount);
+  }
+
+  private static async createValidated(
+    specs: EngineSpec[],
+    threadCount: number,
+  ): Promise<EnginePool> {
     const workerPath = resolve(__dirname, "pool-worker.js");
 
     const init: PoolWorkerInit = {

@@ -1,7 +1,7 @@
 # TypeScript Binding Normative Contract (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-005 terminal EnginePool worker faults)
+Updated: 2026-08-09 (FR-NODE-007 bounded EnginePool thread counts)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -130,7 +130,13 @@ If this contract conflicts with legacy design docs, this contract wins.
 10. `EngineHandle` `MUST` support `[Symbol.asyncDispose]()` and delegate to `close()`.
 
 ### 4.3 EnginePool
-1. `EnginePool.create(..., { threads })` `MUST` default to `threads = 1` when omitted.
+1. `EnginePool.create(..., { threads })` `MUST` default to `threads = 1` only
+   when `threads` is omitted or `undefined`. Every explicitly supplied count
+   `MUST` satisfy `Number.isSafeInteger(threads)` and be in the inclusive range
+   `1..64`. The count `MUST NOT` be coerced or clamped, and no option may
+   override the upper bound. An invalid count `MUST` throw `RangeError`
+   synchronously, before `create()` returns a Promise, inspects engine specs,
+   constructs a Worker, or registers initialization bookkeeping.
 2. `evaluate(spec, req)` `MUST` perform: `reset -> assert facts -> run -> collect facts/output`.
 3. `EnginePool.close()` `MUST`:
    - reject new requests after close starts,
@@ -195,6 +201,8 @@ If this contract conflicts with legacy design docs, this contract wins.
     bounded queue capacity remains FR-NODE-011; and concurrent close callers
     sharing one completion Promise remains FR-NODE-010. FR-NODE-005 owns the
     corresponding cleanup only when a Worker terminal event occurs.
+    The fixed Worker-count bound in item 1 does not define or satisfy the queue
+    capacity and overload policy assigned to FR-NODE-011.
 
 ### 4.4 EnginePool.do Worker-Slot Lease
 

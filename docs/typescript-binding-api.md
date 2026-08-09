@@ -571,6 +571,12 @@ an exclusive lease over its selected slot before the callback begins, so no
 unrelated task can use that worker until the pool processes the callback's
 normal settlement and its accepted proxy calls drain.
 
+Pool construction defaults to one Worker when `threads` is omitted or
+`undefined`. An explicit count must be a JavaScript safe integer in the
+inclusive range `1..64`; Ferric does not coerce, clamp, or provide an override
+for larger values. Invalid counts throw `RangeError` synchronously from
+`EnginePool.create()` before it returns a Promise or constructs any Worker.
+
 ```typescript
 export interface EngineSpec {
   name: string;
@@ -607,7 +613,8 @@ export class EnginePool {
   /**
    * Create a pool with the given engine specs and thread count.
    * @param specs Named engine configurations.
-   * @param options.threads Number of worker threads. Default: 1.
+   * @param options.threads Number of worker threads. Default: 1; range: 1..64.
+   * @throws RangeError synchronously if threads is not a safe integer in range.
    */
   static create(
     specs: EngineSpec[],
