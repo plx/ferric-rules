@@ -1,7 +1,7 @@
 # TypeScript Binding Test Specification (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-005 terminal EnginePool worker faults)
+Updated: 2026-08-09 (FR-NODE-007 bounded EnginePool thread counts)
 Status: Required for reimplementation
 
 Companion documents:
@@ -28,9 +28,10 @@ This is not optional guidance. The implementation is incomplete until this speci
   reconstruction, and failed-construction Worker ownership.
 
 ### 2.4 Pool Runtime Unit Tests (`EnginePool`)
-- Exercise queueing, dispatch, cancellation states, worker-slot lease isolation,
-  proxy lifetime and ordering, same-pool reentrancy, terminal Worker faults,
-  `close()` behavior, and stateless evaluation behavior.
+- Exercise construction bounds, queueing, dispatch, cancellation states,
+  worker-slot lease isolation, proxy lifetime and ordering, same-pool
+  reentrancy, terminal Worker faults, `close()` behavior, and stateless
+  evaluation behavior.
 
 ### 2.5 Package/Load Tests
 - Validate native load behavior and package entrypoint surface guarantees.
@@ -128,7 +129,7 @@ The synchronous-send case above applies only to initialization cleanup.
 Ordinary handle/pool send rollback remains FR-NODE-008, and concurrent public
 `close()` completion-barrier coverage remains FR-NODE-010.
 
-### 4.4 Pool Runtime Tests (minimum 45 cases)
+### 4.4 Pool Runtime Tests (minimum 50 cases)
 Must include:
 - Evaluate lifecycle (`E-002`).
 - Cancellation for pre-abort, queued abort, and in-flight abort (`E-003`,
@@ -138,6 +139,18 @@ Must include:
 - `close()` contract (in-flight completion, admitted-callback completion, and
   idempotency) (`E-008`, `E-009`, `E-012`).
 - Thread default behavior (`E-001`).
+- Synchronous bounded thread-count validation (`E-014`, `N-12`), including:
+  - direct, un-awaited calls proving each invalid count throws `RangeError`
+    before returning a Promise;
+  - `NaN`, positive and negative infinity, zero, negative integers, fractions,
+    safe integers above `64`, and positive and negative unsafe integers;
+  - a Worker-constructor seam proving every invalid case constructs zero
+    Workers and does not start initialization bookkeeping;
+  - accepted omitted/`undefined`, `1`, and `64` cases, with the maximum tested
+    through deterministic Workers rather than allocating 64 real Workers; and
+  - a timeout-guarded real-process invalid-count probe that catches the
+    synchronous error, observes no Worker-resource increase, and exits
+    naturally without `process.exit()` or `unref()`.
 - `FactId` structured-clone response/request round-trip through a proxy
   (`E-010`).
 - Logical-run parity for both `evaluate` and proxy/direct run paths (`E-011`,
@@ -201,6 +214,8 @@ FR-NODE-008. Generic queue-listener cleanup remains FR-NODE-006; bounded queue
 capacity remains FR-NODE-011; and concurrent close calls sharing one completion
 Promise remains FR-NODE-010. E-013 covers those resources only on a Worker
 terminal transition.
+E-014 bounds Worker construction only; bounded queued work, overflow policy,
+and queue metrics remain FR-NODE-011.
 
 ### 4.5 Package Tests (minimum 10 cases)
 Must include:

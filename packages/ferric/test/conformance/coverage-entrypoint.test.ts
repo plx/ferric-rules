@@ -35,6 +35,7 @@ import "./runtime/pool/protocol-direct.test.ts";
 import "./runtime/pool/run-limit.test.ts";
 import "./runtime/pool/terminal-state.test.ts";
 import "./runtime/pool/thread-default.test.ts";
+import "./runtime/pool/thread-validation.test.ts";
 import "./runtime/pool/wire-conversion.test.ts";
 
 import "./runtime/sync/dispose.test.ts";

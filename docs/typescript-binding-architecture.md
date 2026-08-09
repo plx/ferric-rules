@@ -1,7 +1,7 @@
 # TypeScript Binding Architecture (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-005 terminal EnginePool worker faults)
+Updated: 2026-08-09 (FR-NODE-007 bounded EnginePool thread counts)
 Status: Draft for reimplementation
 
 Companion documents:
@@ -53,6 +53,10 @@ This document is intentionally descriptive. If this document conflicts with the 
 
 ### Layer 3: `EnginePool` (multi-worker concurrency)
 - TypeScript orchestration over multiple workers.
+- Defaults to one Worker and accepts only safe-integer thread counts in the
+  fixed inclusive range `1..64`. Validation throws synchronously before the
+  asynchronous creation transaction or Worker ownership begins; counts are
+  never coerced or clamped, and there is no large-pool override.
 - Dispatches work round-robin across worker slots.
 - Supports stateless one-shot evaluation plus stateful proxy operations.
 - Gives every slot an explicit running, failed, terminating, or closed state.
@@ -136,6 +140,8 @@ per-runtime artifact-smoke contract.
   that slot, removes its request and abort listeners, and wakes any close
   waiter. The pool retains failed Worker objects only so explicit close can
   finish their lifecycle alongside the remaining healthy Workers.
+- Invalid EnginePool thread counts are rejected before any Worker is
+  constructed, so no pool Worker ownership or failed-create cleanup begins.
 - Public API typing is owned by TypeScript package surface (`dist/index.d.ts`), not by generated native d.ts alone.
 
 Pre-Worker argument validation and a synchronous Worker-constructor throw do
@@ -151,6 +157,8 @@ FR-NODE-006; abort-driven proxy lifetime and mutation semantics remain
 FR-NODE-009; queue capacity and metrics remain FR-NODE-011. FR-NODE-005 must
 wake a close already waiting for a failed request, but it does not add the
 shared concurrent-close completion Promise assigned to FR-NODE-010.
+The `1..64` construction bound limits one pool's Worker allocation; it does not
+bound queued work or define the backpressure policy assigned to FR-NODE-011.
 
 ## Design Constraints
 1. Canonical value wire schema must be single-source-of-truth.
@@ -163,6 +171,8 @@ shared concurrent-close completion Promise assigned to FR-NODE-010.
 6. One unexpected Worker terminal event poisons future admission for the whole
    pool; silent slot replacement and partially available round-robin behavior
    are not recovery mechanisms.
+7. EnginePool Worker count is a fixed, non-overridable safe-integer range of
+   `1..64`, validated synchronously before Worker construction.
 
 ## Risk Seams (Must Receive Focused Review)
 1. Symbol/value conversion across worker boundaries.
@@ -176,6 +186,7 @@ shared concurrent-close completion Promise assigned to FR-NODE-010.
 7. `EnginePool.close()` behavior under active callbacks and concurrency.
 8. Public TS API shape drift (`undefined` exports, mismatched unions).
 9. JavaScript/native package version skew or a missing optional native package.
+10. EnginePool construction limits and validation-before-ownership ordering.
 
 ## Delivery Model
 Reimplementation should be staged and gated:
