@@ -1,0 +1,101 @@
+name: Dependency Policy
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-policy:
+    name: Dependency Policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+
+      - name: Bind the exact candidate
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Initialize fail-closed evidence
+        shell: bash
+        run: >-
+          python3 scripts/dependency-policy.py initialize
+          --policy dependency-policy.json
+          --candidate-sha "$CANDIDATE_SHA"
+          --today "$(date -u +%F)"
+          --output-dir dependency-policy-evidence
+
+      - name: Install Rust 1.93.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+
+      - name: Install pinned Rust dependency tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_root="${RUNNER_TEMP}/dependency-policy-rust-tools"
+          cargo_home="${tool_root}/cargo-home"
+          install_root="${tool_root}/install"
+          mkdir -p "${cargo_home}" "${install_root}"
+          cd "${RUNNER_TEMP}"
+          CARGO_HOME="${cargo_home}" CARGO_INSTALL_ROOT="${install_root}" cargo install --locked cargo-audit --version 0.22.2
+          CARGO_HOME="${cargo_home}" CARGO_INSTALL_ROOT="${install_root}" cargo install --locked cargo-deny --version 0.20.2
+          CARGO_HOME="${cargo_home}" CARGO_INSTALL_ROOT="${install_root}" cargo install --locked cargo-cyclonedx --version 0.5.9
+          CARGO_HOME="${cargo_home}" CARGO_INSTALL_ROOT="${install_root}" cargo install --locked cargo-about --version 0.9.0 --features cli --force
+          echo "${install_root}/bin" >> "${GITHUB_PATH}"
+
+      - name: Install Node 22.18.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+
+      - name: Install npm 11.12.1 and CycloneDX npm 4.2.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_root="${RUNNER_TEMP}/dependency-policy-npm-tools"
+          user_config="${tool_root}/npm-user-config"
+          global_config="${tool_root}/npm-global-config"
+          cache="${tool_root}/npm-cache"
+          mkdir -p "${tool_root}" "${cache}"
+          : > "${user_config}"
+          : > "${global_config}"
+          cd "${RUNNER_TEMP}"
+          NPM_CONFIG_USERCONFIG="${user_config}" NPM_CONFIG_GLOBALCONFIG="${global_config}" NPM_CONFIG_CACHE="${cache}" npm install --global --prefix "${tool_root}" --registry=https://registry.npmjs.org/ npm@11.12.1 @cyclonedx/cyclonedx-npm@4.2.1
+          echo "${tool_root}/bin" >> "${GITHUB_PATH}"
+
+      - name: Install uv 0.11.16
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: 0.11.16
+          enable-cache: true
+
+      - name: Run the stable dependency-policy aggregate
+        shell: bash
+        run: >-
+          python3 scripts/dependency-policy.py run
+          --policy dependency-policy.json
+          --candidate-sha "$CANDIDATE_SHA"
+          --today "$(date -u +%F)"
+          --output-dir dependency-policy-evidence
+
+      - name: Upload dependency-policy evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-policy-evidence-${{ env.CANDIDATE_SHA }}
+          path: dependency-policy-evidence/
+          retention-days: 30
+          if-no-files-found: error

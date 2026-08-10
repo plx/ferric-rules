@@ -128,19 +128,19 @@ _uv *args:
 
 # Check Python formatting
 py-fmt-check:
-    cd tools/ferric-tools && uv run ruff format --check src/ tests/
+    cd tools/ferric-tools && uv run ruff format --check src/ tests/ ../../scripts/dependency-policy.py
 
 # Apply Python formatting
 py-fmt:
-    cd tools/ferric-tools && uv run ruff format src/ tests/
+    cd tools/ferric-tools && uv run ruff format src/ tests/ ../../scripts/dependency-policy.py
 
 # Run Python linter
 py-lint:
-    cd tools/ferric-tools && uv run ruff check src/ tests/
+    cd tools/ferric-tools && uv run ruff check src/ tests/ ../../scripts/dependency-policy.py
 
 # Run Python linter with auto-fix
 py-lint-fix:
-    cd tools/ferric-tools && uv run ruff check --fix src/ tests/
+    cd tools/ferric-tools && uv run ruff check --fix src/ tests/ ../../scripts/dependency-policy.py
 
 # Run Python tests (tools)
 py-test:
@@ -392,6 +392,26 @@ rust-native-artifacts-verify artifacts candidate_sha candidate_tree output:
     python3 scripts/verify-rust-native-artifacts.py --declaration crates/ferric-rules-cli/release-targets.json --artifacts-dir "{{artifacts}}" --candidate-sha "{{candidate_sha}}" --candidate-tree "{{candidate_tree}}" --output-dir "{{output}}"
 
 # ── Licensing ────────────────────────────────────────────────────────────────
+
+# Validate the reviewed dependency policy and official cargo-deny configuration
+dependency-policy-validate today:
+    python3 scripts/dependency-policy.py validate --policy dependency-policy.json --today "{{today}}"
+
+# Run the complete dependency policy for the current checkout and UTC date
+dependency-policy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    candidate_sha="$(git rev-parse HEAD)"
+    today="$(date -u +%F)"
+    python3 scripts/dependency-policy.py run --policy dependency-policy.json --candidate-sha "$candidate_sha" --today "$today" --output-dir dependency-policy-evidence
+
+# Evaluate a previously captured dependency-policy evidence bundle
+dependency-policy-evaluate reports_dir sbom_dir candidate_sha today output_dir:
+    python3 scripts/dependency-policy.py evaluate --policy dependency-policy.json --reports-dir "{{reports_dir}}" --sbom-dir "{{sbom_dir}}" --candidate-sha "{{candidate_sha}}" --today "{{today}}" --output-dir "{{output_dir}}"
+
+# Run the complete pinned dependency-policy gate for the checked-out candidate
+dependency-policy-run candidate_sha today:
+    python3 scripts/dependency-policy.py run --policy dependency-policy.json --candidate-sha "{{candidate_sha}}" --today "{{today}}" --output-dir dependency-policy-evidence
 
 # Regenerate Rust third-party license notices from the locked Cargo graph
 license-notices:

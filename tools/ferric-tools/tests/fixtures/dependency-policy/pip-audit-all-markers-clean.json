@@ -1,0 +1,25 @@
+{
+  "dependencies": [
+    {
+      "name": "host-package",
+      "version": "1.0.0",
+      "vulns": []
+    },
+    {
+      "name": "marker-only",
+      "version": "2.0.0",
+      "vulns": []
+    },
+    {
+      "name": "duplicate-package",
+      "version": "3.0.0",
+      "vulns": []
+    },
+    {
+      "name": "duplicate-package",
+      "version": "4.0.0",
+      "vulns": []
+    }
+  ],
+  "fixes": []
+}

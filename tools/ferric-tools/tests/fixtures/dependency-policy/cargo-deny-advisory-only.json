@@ -1,0 +1,52 @@
+[
+  {
+    "type": "diagnostic",
+    "fields": {
+      "advisory": {
+        "id": "RUSTSEC-2099-0100"
+      },
+      "code": "vulnerability",
+      "graphs": [
+        {
+          "Krate": {
+            "name": "fixture-crate",
+            "version": "1.2.3"
+          }
+        }
+      ],
+      "labels": [],
+      "message": "advisory found for fixture-crate 1.2.3",
+      "notes": [],
+      "severity": "error"
+    }
+  },
+  {
+    "type": "summary",
+    "fields": {
+      "advisories": {
+        "errors": 1,
+        "helps": 0,
+        "notes": 0,
+        "warnings": 0
+      },
+      "bans": {
+        "errors": 0,
+        "helps": 0,
+        "notes": 0,
+        "warnings": 0
+      },
+      "licenses": {
+        "errors": 0,
+        "helps": 0,
+        "notes": 0,
+        "warnings": 0
+      },
+      "sources": {
+        "errors": 0,
+        "helps": 0,
+        "notes": 0,
+        "warnings": 0
+      }
+    }
+  }
+]

@@ -1,0 +1,52 @@
+{
+  "dependencies": [
+    {
+      "name": "click",
+      "version": "8.3.1",
+      "vulns": [
+        {
+          "id": "PYSEC-2099-0001",
+          "fix_versions": [
+            "8.3.3"
+          ],
+          "aliases": [
+            "CVE-2099-0001",
+            "GHSA-7777-8888-9999"
+          ],
+          "description": "GHSA alias must win over PYSEC and CVE"
+        }
+      ]
+    },
+    {
+      "name": "pytest",
+      "version": "9.0.2",
+      "vulns": [
+        {
+          "id": "PYSEC-2099-0002",
+          "fix_versions": [
+            "9.0.3"
+          ],
+          "aliases": [
+            "CVE-2099-0002"
+          ],
+          "description": "PYSEC must win when no GHSA alias exists"
+        }
+      ]
+    },
+    {
+      "name": "pygments",
+      "version": "2.19.2",
+      "vulns": [
+        {
+          "id": "CVE-2099-0003",
+          "fix_versions": [
+            "2.20.0"
+          ],
+          "aliases": [],
+          "description": "CVE is the final canonical fallback"
+        }
+      ]
+    }
+  ],
+  "fixes": []
+}
