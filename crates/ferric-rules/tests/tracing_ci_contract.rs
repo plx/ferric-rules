@@ -1,5 +1,9 @@
 use std::path::Path;
 
+fn normalize_line_endings(contents: &str) -> String {
+    contents.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 fn workflow_job<'a>(workflow: &'a str, id: &str) -> &'a str {
     let marker = format!("\n  {id}:\n");
     assert_eq!(
@@ -41,8 +45,10 @@ fn just_recipe<'a>(justfile: &'a str, name: &str) -> &'a str {
 #[test]
 fn required_tracing_job_runs_the_repository_gate_unconditionally() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let workflow = std::fs::read_to_string(workspace_root.join(".github/workflows/ci.yml"))
-        .expect("CI workflow should be readable");
+    let workflow = normalize_line_endings(
+        &std::fs::read_to_string(workspace_root.join(".github/workflows/ci.yml"))
+            .expect("CI workflow should be readable"),
+    );
     let job = workflow_job(&workflow, "tracing");
 
     for required in [
@@ -93,8 +99,10 @@ fn required_tracing_job_runs_the_repository_gate_unconditionally() {
 #[test]
 fn tracing_gate_covers_the_locked_full_workspace_configuration() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let justfile = std::fs::read_to_string(workspace_root.join("justfile"))
-        .expect("justfile should be readable");
+    let justfile = normalize_line_endings(
+        &std::fs::read_to_string(workspace_root.join("justfile"))
+            .expect("justfile should be readable"),
+    );
     let expected_recipe = r"    cargo check --workspace --features tracing --locked
     cargo clippy --workspace --all-targets --features tracing --locked -- -D warnings
     cargo test --workspace --features tracing --locked";
@@ -107,5 +115,24 @@ fn tracing_gate_covers_the_locked_full_workspace_configuration() {
     assert!(
         !recipe.contains("--exclude"),
         "check-tracing must not exclude any workspace package"
+    );
+}
+
+#[test]
+fn contract_parsers_accept_windows_line_endings() {
+    let workflow = normalize_line_endings(
+        "name: CI\r\n\r\njobs:\r\n  tracing:\r\n    name: Tracing Feature\r\n  next:\r\n    name: Next\r\n",
+    );
+    assert_eq!(
+        workflow_job(&workflow, "tracing"),
+        "    name: Tracing Feature"
+    );
+
+    let justfile = normalize_line_endings(
+        "set shell := [\"bash\", \"-uc\"]\r\n\r\ncheck-tracing:\r\n    cargo check --workspace --features tracing --locked\r\n\r\nnext:\r\n    true\r\n",
+    );
+    assert_eq!(
+        just_recipe(&justfile, "check-tracing"),
+        "    cargo check --workspace --features tracing --locked"
     );
 }

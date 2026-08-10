@@ -383,6 +383,14 @@ doc-open:
 verify-rust-packages:
     ./scripts/verify-rust-packages.sh
 
+# Build, install, and smoke one declared native Rust target outside the worktree
+rust-native-artifact-smoke target candidate_sha candidate_tree output:
+    python3 scripts/test-rust-native-artifact.py --declaration crates/ferric-rules-cli/release-targets.json --target-id "{{target}}" --candidate-sha "{{candidate_sha}}" --candidate-tree "{{candidate_tree}}" --output-dir "{{output}}"
+
+# Verify and retain the exact seven-target native Rust evidence bundle
+rust-native-artifacts-verify artifacts candidate_sha candidate_tree output:
+    python3 scripts/verify-rust-native-artifacts.py --declaration crates/ferric-rules-cli/release-targets.json --artifacts-dir "{{artifacts}}" --candidate-sha "{{candidate_sha}}" --candidate-tree "{{candidate_tree}}" --output-dir "{{output}}"
+
 # ── Licensing ────────────────────────────────────────────────────────────────
 
 # Regenerate Rust third-party license notices from the locked Cargo graph

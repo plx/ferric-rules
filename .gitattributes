@@ -19,3 +19,6 @@ crates/ferric-rules-python/LICENSE-APACHE text eol=lf
 crates/ferric-rules-python/wheel-targets.json text eol=lf
 docs/python-package-release.md text eol=lf
 scripts/musl_static_libgcc_linker.py text eol=lf
+
+# Keep native Rust target provenance byte-identical on Windows.
+crates/ferric-rules-cli/release-targets.json text eol=lf

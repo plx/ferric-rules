@@ -26,6 +26,76 @@ unpublished internal dependencies back to the local sources so first-release
 package and dry-run checks work before crates.io contains them; Cargo
 configuration is not included in the package archives.
 
+## Native facade and CLI target contract
+
+The distributed Rust artifacts covered by the native matrix are the
+`ferric-rules` facade source package and the `ferric-rules-cli` source package.
+The machine-readable source of truth is
+[`release-targets.json`](../crates/ferric-rules-cli/release-targets.json). It
+limits the package set to `ferric-rules` and `ferric-rules-cli`, names `ferric`
+as the evidence binary, requires an all-feature install, and labels that binary
+`ci-evidence-only`. Each target records its family, native environment, C
+library, and `native` conformance. The declaration contains exactly these
+rows:
+
+| Target ID | Rust target | Native evidence environment | Declared libc |
+| --- | --- | --- | --- |
+| `linux-x86_64-gnu` | `x86_64-unknown-linux-gnu` | Ubuntu 24.04 x86-64 | `glibc` |
+| `linux-aarch64-gnu` | `aarch64-unknown-linux-gnu` | Ubuntu 24.04 AArch64 | `glibc` |
+| `linux-x86_64-musl` | `x86_64-unknown-linux-musl` | matching-architecture, digest-pinned Alpine container on Ubuntu 24.04 x86-64 | `musl` 1.2.x |
+| `linux-aarch64-musl` | `aarch64-unknown-linux-musl` | matching-architecture, digest-pinned Alpine container on Ubuntu 24.04 AArch64 | `musl` 1.2.x |
+| `macos-x86_64` | `x86_64-apple-darwin` | macOS 15 Intel | `none` |
+| `macos-aarch64` | `aarch64-apple-darwin` | macOS 15 Apple silicon | `none` |
+| `windows-x86_64-msvc` | `x86_64-pc-windows-msvc` | Windows 2025 x86-64 | `msvc` |
+
+Each row is build-and-execute evidence on the declared OS and architecture.
+The musl rows execute inside a matching-architecture musl userspace without
+CPU emulation. Cross-compilation alone is non-conformance and cannot satisfy a
+row. Unlisted targets are not part of the supported Rust/CLI release matrix and
+must not be advertised as such.
+
+The Ubuntu 24.04 glibc environment is the continuously tested source-build
+environment, not a claim that an uploaded binary has a particular historical
+glibc compatibility floor. Likewise, this matrix does not declare a macOS
+deployment minimum. The project currently distributes Cargo source packages,
+not downloadable per-target CLI binaries; binaries retained by CI are test
+evidence only.
+
+For pushes to `main`, pull requests targeting `main`, and manual dispatches,
+the path-unfiltered `Rust Native Artifacts` workflow checks out the immutable
+pull-request head (or push commit) directly. On every row it:
+
+1. uses Rust 1.93.0 and verifies that the compiler host and observed runtime
+   match the declaration;
+2. runs release-profile, all-feature facade and CLI tests and builds the CLI;
+3. packages the facade and CLI source crates;
+4. installs the all-feature CLI from its source path into a temporary prefix
+   outside the worktree; and
+5. executes the installed binary from outside the worktree, covering version
+   metadata, Unicode paths and output, CRLF input, snapshot creation/loading,
+   REPL EOF, documented process exit codes, and native dynamic dependencies.
+
+Every row retains the two `.crate` files, the installed CLI binary, dynamic
+dependency output, and a receipt containing the candidate commit/tree,
+toolchain and runtime identities, commands, and artifact SHA-256 digests. A
+fail-closed aggregate job requires all seven rows, compares each receipt with
+the target declaration and direct candidate, rechecks every retained hash, and
+retains one candidate-SHA-named verified evidence bundle. That aggregate
+exposes the stable `Rust Native Artifacts` check context; changes to the formal
+required-status ruleset remain outside this lane.
+
+This native portability lane is intentionally narrower than the clean-room
+install contract in [FR-RELEASE-008 (#153)](https://github.com/plx/ferric-rules/issues/153).
+Here, `cargo install --path` reads the candidate source tree while placing and
+executing the binary outside it. Issue #153 owns installation from extracted
+`.crate` files, empty-cache and offline registry-like reconstruction, package
+omission and version-skew cases, uninstall behavior, and the complete
+clean-consumer CLI suite. Binding-specific C, Go, Node, and Python matrices
+remain with [FR-DIST-008 (#124)](https://github.com/plx/ferric-rules/issues/124),
+and workspace-wide all-feature, hardening, audit, scaling, Miri, sanitizer, and
+fuzz status policy remains with
+[FR-RELEASE-004 (#150)](https://github.com/plx/ferric-rules/issues/150).
+
 ## Local artifact verification
 
 Run:
