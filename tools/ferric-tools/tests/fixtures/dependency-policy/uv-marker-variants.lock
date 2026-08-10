@@ -1,0 +1,47 @@
+version = 1
+revision = 3
+requires-python = ">=3.9"
+resolution-markers = [
+    "python_full_version < '3.10'",
+    "python_full_version >= '3.10' and sys_platform != 'win32'",
+    "python_full_version >= '3.10' and sys_platform == 'win32'",
+]
+
+[[package]]
+name = "fixture-root"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "host-package" },
+    { name = "marker-only" },
+    { name = "duplicate-package", version = "3.0.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "duplicate-package", version = "4.0.0", source = { registry = "https://pypi.org/simple" } },
+]
+
+[[package]]
+name = "host-package"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = ["python_full_version >= '3.10' and sys_platform != 'win32'"]
+sdist = { url = "https://files.pythonhosted.org/host-package-1.0.0.tar.gz", hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111", size = 1 }
+
+[[package]]
+name = "marker-only"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = ["python_full_version < '3.10'"]
+sdist = { url = "https://files.pythonhosted.org/marker-only-2.0.0.tar.gz", hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222", size = 1 }
+
+[[package]]
+name = "duplicate-package"
+version = "3.0.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = ["python_full_version >= '3.10' and sys_platform != 'win32'"]
+sdist = { url = "https://files.pythonhosted.org/duplicate-package-3.0.0.tar.gz", hash = "sha256:3333333333333333333333333333333333333333333333333333333333333333", size = 1 }
+
+[[package]]
+name = "duplicate-package"
+version = "4.0.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = ["python_full_version >= '3.10' and sys_platform == 'win32'"]
+sdist = { url = "https://files.pythonhosted.org/duplicate-package-4.0.0.tar.gz", hash = "sha256:4444444444444444444444444444444444444444444444444444444444444444", size = 1 }

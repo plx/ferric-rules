@@ -1,0 +1,23 @@
+{
+  "components": [
+    {
+      "purl": "pkg:pypi/click@8.3.1",
+      "version": "8.3.1",
+      "name": "click",
+      "bom-ref": "pkg:pypi/click@8.3.1",
+      "type": "library"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "version": "0.1.0",
+      "name": "python-tools",
+      "type": "application"
+    },
+    "timestamp": "2099-12-31T23:59:59.999999Z"
+  },
+  "version": 1,
+  "serialNumber": "urn:uuid:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "specVersion": "1.5",
+  "bomFormat": "CycloneDX"
+}

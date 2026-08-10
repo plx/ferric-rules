@@ -1,0 +1,50 @@
+[
+  {
+    "type": "diagnostic",
+    "fields": {
+      "code": "unlicensed",
+      "graphs": [
+        {
+          "Krate": {
+            "name": "mystery-crate",
+            "version": "1.2.3"
+          }
+        }
+      ],
+      "message": "license for mystery-crate 1.2.3 could not be determined",
+      "severity": "error"
+    }
+  },
+  {
+    "type": "diagnostic",
+    "fields": {
+      "code": "source-not-allowed",
+      "graphs": [
+        {
+          "Krate": {
+            "name": "source-crate",
+            "version": "2.0.0"
+          }
+        }
+      ],
+      "message": "source is not allowed",
+      "severity": "error"
+    }
+  },
+  {
+    "type": "diagnostic",
+    "fields": {
+      "code": "banned",
+      "graphs": [
+        {
+          "Krate": {
+            "name": "banned-crate",
+            "version": "3.0.0"
+          }
+        }
+      ],
+      "message": "crate is banned",
+      "severity": "error"
+    }
+  }
+]

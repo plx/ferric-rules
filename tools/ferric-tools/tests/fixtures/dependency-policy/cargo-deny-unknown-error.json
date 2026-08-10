@@ -1,0 +1,18 @@
+[
+  {
+    "type": "diagnostic",
+    "fields": {
+      "code": "future-policy-error",
+      "graphs": [
+        {
+          "Krate": {
+            "name": "future-crate",
+            "version": "9.9.9"
+          }
+        }
+      ],
+      "message": "a future cargo-deny hard error must never be ignored",
+      "severity": "error"
+    }
+  }
+]

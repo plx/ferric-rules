@@ -8,7 +8,7 @@ third-party Cargo crates; Ferric workspace crates are licensed under
 The notices below are generated from the Cargo workspace with:
 
 ```sh
-cargo about generate --config about.toml --workspace --all-features --locked --offline --fail licenses/third-party-notices.hbs
+cargo-about generate --config about.toml --workspace --all-features --locked --offline --fail licenses/third-party-notices.hbs
 ```
 
 For dependencies with an `OR` SPDX expression, `about.toml` controls which

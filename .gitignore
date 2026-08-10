@@ -43,3 +43,6 @@ packages/ferric/node_modules/
 # Compatibility assessment (generated)
 tests/examples/compat-manifest.json
 .ferric-compat/
+
+# Dependency policy evidence (generated)
+/dependency-policy-evidence/

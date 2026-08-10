@@ -1,0 +1,18 @@
+[
+  {
+    "type": "diagnostic",
+    "fields": {
+      "code": "yanked",
+      "graphs": [
+        {
+          "Krate": {
+            "name": "atomic-polyfill",
+            "version": "1.0.3"
+          }
+        }
+      ],
+      "message": "atomic-polyfill 1.0.3 is yanked",
+      "severity": "error"
+    }
+  }
+]

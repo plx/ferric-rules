@@ -1,0 +1,59 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/fixture-build@2.0.0",
+      "name": "fixture-build",
+      "version": "2.0.0",
+      "purl": "pkg:cargo/fixture-build@2.0.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/fixture-development@3.0.0",
+      "name": "fixture-development",
+      "version": "3.0.0",
+      "purl": "pkg:cargo/fixture-development@3.0.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3333333333333333333333333333333333333333333333333333333333333333"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/fixture-optional@4.0.0",
+      "name": "fixture-optional",
+      "version": "4.0.0",
+      "purl": "pkg:cargo/fixture-optional@4.0.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4444444444444444444444444444444444444444444444444444444444444444"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/fixture-target-only@5.0.0",
+      "name": "fixture-target-only",
+      "version": "5.0.0",
+      "purl": "pkg:cargo/fixture-target-only@5.0.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      ]
+    }
+  ]
+}

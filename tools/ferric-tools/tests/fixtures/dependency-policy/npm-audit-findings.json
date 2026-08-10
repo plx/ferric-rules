@@ -1,0 +1,81 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "detect-libc": {
+      "name": "detect-libc",
+      "severity": "critical",
+      "isDirect": true,
+      "via": [
+        {
+          "source": 990001,
+          "name": "detect-libc",
+          "dependency": "detect-libc",
+          "title": "critical runtime fixture",
+          "url": "https://github.com/advisories/GHSA-1111-2222-3333",
+          "severity": "critical",
+          "cwe": [
+            "CWE-94"
+          ],
+          "cvss": {
+            "score": 10,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"
+          },
+          "range": "<=2.1.2"
+        }
+      ],
+      "effects": [],
+      "range": "<=2.1.2",
+      "nodes": [
+        "node_modules/detect-libc"
+      ],
+      "fixAvailable": false
+    },
+    "esbuild": {
+      "name": "esbuild",
+      "severity": "low",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 990002,
+          "name": "esbuild",
+          "dependency": "esbuild",
+          "title": "low development fixture",
+          "url": "https://github.com/advisories/GHSA-4444-5555-6666",
+          "severity": "low",
+          "cwe": [
+            "CWE-400"
+          ],
+          "cvss": {
+            "score": 2.1,
+            "vectorString": null
+          },
+          "range": "<=0.27.7"
+        }
+      ],
+      "effects": [],
+      "range": "<=0.27.7",
+      "nodes": [
+        "node_modules/esbuild"
+      ],
+      "fixAvailable": false
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 1,
+      "moderate": 0,
+      "high": 0,
+      "critical": 1,
+      "total": 2
+    },
+    "dependencies": {
+      "prod": 2,
+      "dev": 34,
+      "optional": 34,
+      "peer": 0,
+      "peerOptional": 0,
+      "total": 42
+    }
+  }
+}

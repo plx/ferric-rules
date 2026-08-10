@@ -1,0 +1,114 @@
+{
+  "database": {
+    "advisory-count": 4,
+    "last-commit": "1111111111111111111111111111111111111111",
+    "last-updated": "2026-08-09T00:00:00Z"
+  },
+  "lockfile": {
+    "dependency-count": 4
+  },
+  "settings": {
+    "target_arch": [],
+    "target_os": [],
+    "severity": null,
+    "ignore": [],
+    "informational_warnings": [
+      "unmaintained",
+      "unsound",
+      "notice"
+    ]
+  },
+  "vulnerabilities": {
+    "found": true,
+    "count": 1,
+    "list": [
+      {
+        "advisory": {
+          "id": "RUSTSEC-2099-0001",
+          "package": "pyo3",
+          "title": "critical runtime fixture",
+          "informational": null,
+          "cvss": "10.0",
+          "aliases": [
+            "GHSA-aaaa-bbbb-cccc"
+          ]
+        },
+        "versions": {
+          "patched": [
+            ">=99.0.0"
+          ],
+          "unaffected": []
+        },
+        "affected": null,
+        "package": {
+          "name": "pyo3",
+          "version": "0.23.5",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "dependencies": [],
+          "replace": null
+        }
+      }
+    ]
+  },
+  "warnings": {
+    "unmaintained": [
+      {
+        "kind": "unmaintained",
+        "package": {
+          "name": "bincode",
+          "version": "1.3.3",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        "advisory": {
+          "id": "RUSTSEC-2099-0002",
+          "package": "bincode",
+          "title": "unmaintained fixture",
+          "informational": "unmaintained"
+        }
+      }
+    ],
+    "unsound": [
+      {
+        "kind": "unsound",
+        "package": {
+          "name": "paste",
+          "version": "1.0.15",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        "advisory": {
+          "id": "RUSTSEC-2099-0003",
+          "package": "paste",
+          "title": "unsound fixture",
+          "informational": "unsound"
+        }
+      }
+    ],
+    "notice": [
+      {
+        "kind": "notice",
+        "package": {
+          "name": "postcard",
+          "version": "1.1.3",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        },
+        "advisory": {
+          "id": "RUSTSEC-2099-0004",
+          "package": "postcard",
+          "title": "notice fixture",
+          "informational": "notice"
+        }
+      }
+    ],
+    "yanked": [
+      {
+        "kind": "yanked",
+        "package": {
+          "name": "atomic-polyfill",
+          "version": "1.0.3",
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      }
+    ]
+  }
+}

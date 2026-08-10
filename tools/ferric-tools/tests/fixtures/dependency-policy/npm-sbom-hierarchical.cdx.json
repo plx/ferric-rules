@@ -1,0 +1,47 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "npm:node_modules/parent-a",
+      "name": "parent-a",
+      "version": "1.0.0",
+      "components": [
+        {
+          "type": "library",
+          "bom-ref": "npm:node_modules/parent-a/node_modules/fixture-duplicate",
+          "name": "fixture-duplicate",
+          "version": "1.0.0",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "npm:node_modules/parent-b",
+      "name": "parent-b",
+      "version": "1.0.0",
+      "components": [
+        {
+          "type": "library",
+          "bom-ref": "npm:node_modules/parent-b/node_modules/fixture-duplicate",
+          "name": "fixture-duplicate",
+          "version": "1.0.0",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

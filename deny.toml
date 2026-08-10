@@ -1,0 +1,54 @@
+[graph]
+# An empty target filter is cargo-deny 0.20.2's supported all-target graph.
+# The dependency-policy scan manifest records this as target_scope = "all".
+targets = []
+all-features = true
+exclude = []
+exclude-dev = false
+exclude-unpublished = false
+
+[advisories]
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+unused-ignored-advisory = "deny"
+disable-yank-checking = false
+# dependency-policy.json is the sole exception source. Never duplicate an
+# advisory or yanked-package exception here.
+ignore = []
+
+[licenses]
+confidence-threshold = 0.8
+include-dev = true
+include-build = true
+unused-license-exception = "deny"
+private = { ignore = false, ignore-sources = [], registries = [] }
+clarify = []
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+exceptions = [
+    { allow = ["MPL-2.0"], crate = "cbindgen@0.28.0" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
