@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "artifact_contract": {
+    "packages": [
+      "ferric-rules",
+      "ferric-rules-cli"
+    ],
+    "binary": "ferric",
+    "install_all_features": true,
+    "execution": "native",
+    "distribution": "ci-evidence-only"
+  },
+  "targets": [
+    {
+      "id": "linux-x86_64-gnu",
+      "runner": "ubuntu-24.04",
+      "rust_target": "x86_64-unknown-linux-gnu",
+      "family": "linux",
+      "architecture": "x86_64",
+      "libc": "glibc",
+      "native_environment": "ubuntu-24.04",
+      "conformance": "native"
+    },
+    {
+      "id": "linux-aarch64-gnu",
+      "runner": "ubuntu-24.04-arm",
+      "rust_target": "aarch64-unknown-linux-gnu",
+      "family": "linux",
+      "architecture": "aarch64",
+      "libc": "glibc",
+      "native_environment": "ubuntu-24.04-arm",
+      "conformance": "native"
+    },
+    {
+      "id": "linux-x86_64-musl",
+      "runner": "ubuntu-24.04",
+      "rust_target": "x86_64-unknown-linux-musl",
+      "family": "linux",
+      "architecture": "x86_64",
+      "libc": "musl",
+      "native_environment": "python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df",
+      "conformance": "native"
+    },
+    {
+      "id": "linux-aarch64-musl",
+      "runner": "ubuntu-24.04-arm",
+      "rust_target": "aarch64-unknown-linux-musl",
+      "family": "linux",
+      "architecture": "aarch64",
+      "libc": "musl",
+      "native_environment": "python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df",
+      "conformance": "native"
+    },
+    {
+      "id": "macos-x86_64",
+      "runner": "macos-15-intel",
+      "rust_target": "x86_64-apple-darwin",
+      "family": "macos",
+      "architecture": "x86_64",
+      "libc": "none",
+      "native_environment": "macos-15-intel",
+      "conformance": "native"
+    },
+    {
+      "id": "macos-aarch64",
+      "runner": "macos-15",
+      "rust_target": "aarch64-apple-darwin",
+      "family": "macos",
+      "architecture": "aarch64",
+      "libc": "none",
+      "native_environment": "macos-15",
+      "conformance": "native"
+    },
+    {
+      "id": "windows-x86_64-msvc",
+      "runner": "windows-2025",
+      "rust_target": "x86_64-pc-windows-msvc",
+      "family": "windows",
+      "architecture": "x86_64",
+      "libc": "msvc",
+      "native_environment": "windows-2025",
+      "conformance": "native"
+    }
+  ]
+}

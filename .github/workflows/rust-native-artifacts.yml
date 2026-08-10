@@ -1,0 +1,187 @@
+name: Rust Native Artifacts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_TOOLCHAIN: "1.93.0"
+
+jobs:
+  native-rust:
+    name: Native Rust (${{ matrix.target }})
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64-gnu
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            family: linux
+            libc: glibc
+          - target: linux-aarch64-gnu
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            family: linux
+            libc: glibc
+          - target: linux-x86_64-musl
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-musl
+            family: linux
+            libc: musl
+            container_image: python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df
+          - target: linux-aarch64-musl
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+            family: linux
+            libc: musl
+            container_image: python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df
+          - target: macos-x86_64
+            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+            family: macos
+            libc: none
+          - target: macos-aarch64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+            family: macos
+            libc: none
+          - target: windows-x86_64-msvc
+            runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+            family: windows
+            libc: msvc
+    runs-on: ${{ matrix.runner }}
+    env:
+      RUST_TARGET: ${{ matrix.rust_target }}
+      TARGET_ID: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind evidence to the candidate tree
+        shell: bash
+        run: echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.libc != 'musl'
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.rust_target }}
+      - uses: actions/setup-python@v5
+        if: matrix.libc != 'musl'
+        with:
+          python-version: "3.12"
+      - name: Build, package, install, and smoke on the native host
+        if: matrix.libc != 'musl'
+        shell: bash
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/rust-native-evidence/${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          python scripts/test-rust-native-artifact.py \
+            --declaration crates/ferric-rules-cli/release-targets.json \
+            --target-id "$TARGET_ID" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-tree "$CANDIDATE_TREE" \
+            --output-dir "$EVIDENCE_DIR"
+          test -f "$EVIDENCE_DIR/receipt.json"
+      - name: Build, package, install, and smoke in native musl
+        if: matrix.libc == 'musl'
+        shell: bash
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/rust-native-evidence/${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --env CANDIDATE_SHA \
+            --env CANDIDATE_TREE \
+            --env CARGO_TERM_COLOR \
+            --env EVIDENCE_DIR \
+            --env RUSTFLAGS \
+            --env RUST_TARGET \
+            --env RUST_TOOLCHAIN \
+            --env TARGET_ID \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --volume "${{ runner.temp }}:${{ runner.temp }}" \
+            --workdir /workspace \
+            "${{ matrix.container_image }}" \
+            sh -euxc '
+              apk add --no-cache binutils build-base curl file git
+              curl --proto "=https" --tlsv1.2 -sSf \
+                https://sh.rustup.rs --output /tmp/rustup-init.sh
+              sh /tmp/rustup-init.sh -y --profile minimal \
+                --default-host "$RUST_TARGET" \
+                --default-toolchain "$RUST_TOOLCHAIN"
+              export PATH="/root/.cargo/bin:$PATH"
+              git config --global --add safe.directory /workspace
+              python3 scripts/test-rust-native-artifact.py \
+                --declaration crates/ferric-rules-cli/release-targets.json \
+                --target-id "$TARGET_ID" \
+                --candidate-sha "$CANDIDATE_SHA" \
+                --candidate-tree "$CANDIDATE_TREE" \
+                --output-dir "$EVIDENCE_DIR"
+              test -f "$EVIDENCE_DIR/receipt.json"
+            '
+      - name: Upload exact native evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-native-${{ matrix.target }}-${{ env.CANDIDATE_SHA }}
+          path: ${{ runner.temp }}/rust-native-evidence/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  native-rust-required:
+    name: Rust Native Artifacts
+    if: always()
+    needs: native-rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require every native matrix row
+        if: needs.native-rust.result != 'success'
+        env:
+          NATIVE_RUST_PASSED: ${{ needs.native-rust.result == 'success' }}
+        run: |
+          echo "native-rust success: $NATIVE_RUST_PASSED"
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind aggregate verification to the candidate tree
+        run: echo "CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_ENV"
+      - name: Download all native target evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rust-native-*-${{ env.CANDIDATE_SHA }}
+          path: ${{ runner.temp }}/rust-native-downloads
+      - name: Verify the exact candidate artifact set
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify-rust-native-artifacts.py \
+            --declaration crates/ferric-rules-cli/release-targets.json \
+            --artifacts-dir "${{ runner.temp }}/rust-native-downloads" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-tree "$CANDIDATE_TREE" \
+            --output-dir "${{ runner.temp }}/rust-native-verified"
+      - name: Upload one verified native bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-native-verified-${{ env.CANDIDATE_SHA }}
+          path: ${{ runner.temp }}/rust-native-verified/
+          if-no-files-found: error
+          retention-days: 30
