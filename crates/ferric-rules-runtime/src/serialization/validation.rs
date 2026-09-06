@@ -113,6 +113,7 @@ impl Engine {
             let count = template.slot_names.len();
             ensure(
                 count == template.slot_types.len()
+                    && count == template.allowed_types.len()
                     && count == template.defaults.len()
                     && count == template.slot_index.len(),
                 "inconsistent template slot vectors",
@@ -122,8 +123,17 @@ impl Engine {
                     template.slot_index.get(name) == Some(&index),
                     "inconsistent template slot index",
                 )?;
+                if let Some(types) = &template.allowed_types[index] {
+                    ensure(
+                        !types.is_empty() && types.windows(2).all(|pair| pair[0] < pair[1]),
+                        "noncanonical template type union",
+                    )?;
+                }
                 self.symbol_table
                     .validate_snapshot_value(&template.defaults[index])?;
+                if !matches!(template.defaults[index], Value::Void) {
+                    template.validate_slot(index, &template.defaults[index])?;
+                }
             }
         }
         for id in self.rete.snapshot_template_ids() {
@@ -285,6 +295,7 @@ impl Engine {
                         "fact/template slot cardinality mismatch",
                     )?;
                 }
+                template.validate_slots(&fact.slots)?;
                 fact.slots.as_ref()
             }
         };

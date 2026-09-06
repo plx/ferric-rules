@@ -923,6 +923,68 @@ mod tests {
     }
 
     #[test]
+    fn malformed_template_type_metadata_and_defaults_are_rejected() {
+        let engine = Engine::with_rules("(deftemplate item (slot n (type NUMBER)))").unwrap();
+        for allowed in [
+            serde_json::json!([]),
+            serde_json::json!([[]]),
+            serde_json::json!([["Integer", "Integer"]]),
+            serde_json::json!([["Float", "Integer"]]),
+        ] {
+            let result = alter_state(&engine, |state| {
+                state["template_defs"][1]["value"]["allowed_types"] = allowed.clone();
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "accepted {allowed}: {:?}",
+                result.err()
+            );
+        }
+        let result = alter_state(&engine, |state| {
+            state["template_defs"][1]["value"]["defaults"][0] =
+                serde_json::to_value(Value::String(
+                    ferric_rules_core::FerricString::new(
+                        "wrong",
+                        ferric_rules_core::StringEncoding::Utf8,
+                    )
+                    .unwrap(),
+                ))
+                .unwrap();
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("allowed types"))
+        );
+    }
+
+    #[test]
+    fn restored_live_and_dormant_template_facts_obey_declared_types() {
+        for reset in [false, true] {
+            for (slots, values) in [
+                ("(slot n (type NUMBER) (default ?NONE))", "(n 2.5)"),
+                ("(multislot n (type NUMBER) (default ?NONE))", "(n 1 2.5)"),
+            ] {
+                let mut engine = Engine::new(EngineConfig::default());
+                engine
+                    .load_str(&format!(
+                        "(deftemplate item {slots}) (deffacts seed (item {values}))"
+                    ))
+                    .unwrap();
+                if reset {
+                    engine.reset().unwrap();
+                }
+                let result = alter_state(&engine, |state| {
+                    state["template_defs"][1]["value"]["allowed_types"] =
+                        serde_json::json!([["Integer"]]);
+                });
+                assert!(
+                    matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("allowed types")),
+                    "{slots}, reset={reset}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn writes_reject_unsupported_values_and_limits_before_returning_bytes() {
         let mut engine = Engine::new(EngineConfig::default());
         engine
