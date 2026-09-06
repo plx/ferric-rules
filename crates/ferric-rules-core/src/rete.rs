@@ -134,14 +134,32 @@ impl ReteNetwork {
         // 1. Propagate through alpha network
         let affected_memories = self.alpha.assert_fact(fact_id, fact);
 
-        // 2. For each affected alpha memory, perform right activations on subscribed joins
+        // Capture all right-parent candidates before positive propagation. A
+        // new left token can already join this fact in a downstream node; that
+        // token must not be visited again by the same fact's right notification.
+        let mut right_activations: SmallVec<[(NodeId, SmallVec<[TokenId; 8]>); 4]> =
+            SmallVec::new();
         for &alpha_mem_id in &affected_memories {
-            let join_nodes: SmallVec<[NodeId; 4]> =
-                SmallVec::from_slice(self.beta.join_nodes_for_alpha(alpha_mem_id));
-
-            for join_node_id in join_nodes {
-                self.right_activate(join_node_id, fact_id, fact, fact_base, &mut new_activations);
+            for &join_node_id in self.beta.join_nodes_for_alpha(alpha_mem_id) {
+                right_activations.push((
+                    join_node_id,
+                    self.right_parent_candidates(join_node_id, fact),
+                ));
             }
+        }
+        // Beta nodes are allocated after their parents and IDs are not reused.
+        // Notify descendants before ancestors: later left propagation from an
+        // ancestor then creates the newest combinations, as CLIPS does.
+        right_activations.sort_unstable_by_key(|(node, _)| std::cmp::Reverse(node.0));
+        for (join_node_id, parents) in right_activations {
+            self.right_activate(
+                join_node_id,
+                parents,
+                fact_id,
+                fact,
+                fact_base,
+                &mut new_activations,
+            );
         }
 
         // 3. For each affected alpha memory, perform right activations on subscribed negative nodes
@@ -500,15 +518,29 @@ impl ReteNetwork {
         new_activations
     }
 
+    /// Capture existing right-join parents without allowing propagation to grow
+    /// the candidate set during this assertion. Uses the same indexed lookup
+    /// as ordinary joins, including the fallback for non-indexable keys.
+    fn right_parent_candidates(&self, join_node_id: NodeId, fact: &Fact) -> SmallVec<[TokenId; 8]> {
+        let Some(BetaNode::Join { parent, tests, .. }) = self.beta.get_node(join_node_id) else {
+            return SmallVec::new();
+        };
+        self.find_memory_for_node(*parent)
+            .and_then(|memory| self.beta.get_memory(memory))
+            .map(|memory| collect_candidate_parent_tokens(memory, tests, fact))
+            .unwrap_or_default()
+    }
+
     /// Perform a right activation on a join node.
     ///
     /// When a new fact enters an alpha memory, this function:
-    /// 1. Gets all tokens from the parent beta memory
+    /// 1. Uses parent candidates captured before positive propagation
     /// 2. For each token, evaluates join tests against the new fact
     /// 3. If tests pass, creates a new token and propagates it
     fn right_activate(
         &mut self,
         join_node_id: NodeId,
+        parent_tokens: SmallVec<[TokenId; 8]>,
         fact_id: FactId,
         fact: &Fact,
         fact_base: &FactBase,
@@ -519,32 +551,16 @@ impl ReteNetwork {
             return;
         };
 
-        let (parent_id, tests, bindings, join_memory_id, children) = match join_node {
+        let (tests, bindings, join_memory_id, children) = match join_node {
             BetaNode::Join {
-                parent,
                 tests,
                 bindings,
                 memory,
                 children,
                 ..
-            } => (
-                *parent,
-                tests.clone(),
-                bindings.clone(),
-                *memory,
-                children.clone(),
-            ),
+            } => (tests.clone(), bindings.clone(), *memory, children.clone()),
             _ => return,
         };
-
-        // Get parent tokens (indexed when possible for O(1) lookup). The root
-        // participates through its real one-token beta memory, so the same path
-        // handles the first join and every later join.
-        let parent_tokens: SmallVec<[TokenId; 8]> = self
-            .find_memory_for_node(parent_id)
-            .and_then(|mem_id| self.beta.get_memory(mem_id))
-            .map(|mem| collect_candidate_parent_tokens(mem, &tests, fact))
-            .unwrap_or_default();
 
         for parent_token_id in parent_tokens {
             let Some(parent_token) = self.token_store.get(parent_token_id) else {
