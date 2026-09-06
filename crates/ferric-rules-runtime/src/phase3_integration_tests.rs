@@ -92,6 +92,7 @@ mod tests {
             (deffacts startup (person Alice))
         ",
         );
+        engine.reset().unwrap();
 
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 2);
@@ -109,6 +110,7 @@ mod tests {
             (deffacts startup (item lamp))
         ",
         );
+        engine.reset().unwrap();
 
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
@@ -125,6 +127,7 @@ mod tests {
             (deffacts startup (trigger) (item a) (item b))
         ",
         );
+        engine.reset().unwrap();
 
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
@@ -149,6 +152,7 @@ mod tests {
                 (reason apple))
         ",
         );
+        engine.reset().unwrap();
 
         let result = run_to_completion(&mut engine);
         // Only banana should pass (apple is blocked by conjunction)
@@ -167,6 +171,7 @@ mod tests {
             (deffacts startup (temporary data))
         ",
         );
+        engine.reset().unwrap();
 
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
@@ -184,6 +189,7 @@ mod tests {
             (deffacts startup (person Alice))
         ",
         );
+        engine.reset().unwrap();
 
         // First run
         let r1 = run_to_completion(&mut engine);
@@ -210,6 +216,7 @@ mod tests {
             (deffacts startup (value 5) (value -3))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "positive");
@@ -334,6 +341,7 @@ mod tests {
                 (go))
         ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
 
@@ -1134,6 +1142,7 @@ mod tests {
             (deffacts startup (value 5))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
     }
@@ -1148,6 +1157,7 @@ mod tests {
             (deffacts startup (value 5))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "result");
         assert_eq!(fields.len(), 1);
@@ -1173,6 +1183,7 @@ mod tests {
             (deffacts startup (value 10) (value -5) (value 0))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "positive");
@@ -1202,6 +1213,7 @@ mod tests {
             (deffacts startup (value 50) (value -5) (value 200))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "in-range");
@@ -1224,6 +1236,7 @@ mod tests {
             (deffacts startup (value 5))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "result");
         assert!(
@@ -1252,6 +1265,7 @@ mod tests {
                 (candidate 99))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "match");
@@ -1272,6 +1286,7 @@ mod tests {
             (deffacts startup (value 5) (value 15))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         let fields = get_ordered_fields(&engine, "small");
@@ -1311,6 +1326,7 @@ mod tests {
             (deffacts startup (value 10))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "half");
         match fields[0] {
@@ -1337,6 +1353,7 @@ mod tests {
             (deffacts startup (start 5) (start -1) (label ok))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "result");
@@ -1357,6 +1374,7 @@ mod tests {
             (deffacts startup (value 5) (value -3))
         ",
         );
+        engine.reset().unwrap();
 
         let r1 = run_to_completion(&mut engine);
         assert_eq!(r1.rules_fired, 1);
@@ -1386,6 +1404,7 @@ mod tests {
             (deffacts startup (person (name Alice) (status junior)))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
     }
@@ -1406,6 +1425,7 @@ mod tests {
             (deffacts startup (item (name widget) (count 5)))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         // Exactly one firing: the original (count=5) matches, duplicate with
         // count=10 is created but does not re-match the constant test.
@@ -1428,6 +1448,7 @@ mod tests {
             (deffacts startup (person (name Alice)))
         ",
         );
+        engine.reset().unwrap();
         // Should not panic; modify with unknown slot produces an ActionError
         // but step() still fires (counts the activation as processed).
         // The step completes without panic.
@@ -1447,6 +1468,7 @@ mod tests {
             (deffacts startup (sensor (id my-sensor)))
         ",
         );
+        engine.reset().unwrap();
         assert_eq!(engine.facts().unwrap().count(), 1);
         let (fact_id, _) = engine.facts().unwrap().next().unwrap();
         assert!(matches!(
@@ -1471,6 +1493,7 @@ mod tests {
                 (status-record (code error)))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         // Only the `ok` record should match.
         assert_eq!(result.rules_fired, 1);
@@ -1488,6 +1511,7 @@ mod tests {
             (deffacts startup (point (x 3) (y 4)))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "found");
@@ -1528,6 +1552,7 @@ mod tests {
             (deffacts startup (person Alice))
         "#,
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         let output = engine.get_output("t").unwrap_or("");
@@ -1544,6 +1569,7 @@ mod tests {
             (deffacts startup (value 42))
         "#,
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let output = engine.get_output("t").unwrap_or("");
         assert!(
@@ -1562,6 +1588,7 @@ mod tests {
             (deffacts startup (flag))
         "#,
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let output = engine.get_output("t").unwrap_or("");
         assert_eq!(output, "line1\nline2\n");
@@ -1577,6 +1604,7 @@ mod tests {
             (deffacts startup (flag))
         "#,
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let output = engine.get_output("t").unwrap_or("");
         assert_eq!(output, "a\tb\n");
@@ -1592,6 +1620,7 @@ mod tests {
             (deffacts startup (value 5))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let output = engine.get_output("t").unwrap_or("");
         assert_eq!(output, "10\n");
@@ -1607,6 +1636,7 @@ mod tests {
             (deffacts startup (channel t))
         "#,
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
 
@@ -1627,6 +1657,7 @@ mod tests {
             (deffacts startup (flag))
         "#,
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         assert!(engine.get_output("t").is_some());
 
@@ -1654,6 +1685,7 @@ mod tests {
             (deffacts init (value 5))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "result");
         assert_eq!(fields.len(), 1);
@@ -1675,6 +1707,7 @@ mod tests {
             (deffacts init (pair 3 7))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "sum");
         assert_eq!(fields.len(), 1);
@@ -1697,6 +1730,7 @@ mod tests {
             (deffacts init (items 10 20 30))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "first-item");
         assert_eq!(fields.len(), 1);
@@ -1719,6 +1753,7 @@ mod tests {
             (deffacts init (val 4))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "result");
         assert_eq!(fields.len(), 1);
@@ -1742,6 +1777,7 @@ mod tests {
             (deffacts init (val 3))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "result");
         assert_eq!(fields.len(), 1);
@@ -1781,6 +1817,7 @@ mod tests {
             (deffacts init (value 1))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "limit");
         assert_eq!(fields.len(), 1);
@@ -1802,6 +1839,7 @@ mod tests {
             (deffacts init (value 5) (value 15))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         // Only value 15 > 10 should produce a passed fact
         assert_has_fact_with_relation(&engine, "passed");
@@ -1825,6 +1863,7 @@ mod tests {
             (deffacts init (item a) (item b) (item c))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let counter = engine.get_global("counter").expect("counter should be set");
         assert!(
@@ -1854,6 +1893,7 @@ mod tests {
             (deffacts mutate-init (go))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let mutated = engine
             .get_global("x")
@@ -1910,6 +1950,7 @@ mod tests {
             (deffacts init (val 5))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let output = engine.get_output("t").unwrap_or("");
         assert_eq!(output, "10\n", "expected '10\\n', got '{output}'");
@@ -1937,6 +1978,7 @@ mod tests {
             (deffacts init (item 1))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "found");
@@ -1996,6 +2038,7 @@ mod tests {
             (deffacts startup (start))
         ",
         );
+        engine.reset().unwrap();
 
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
@@ -2080,6 +2123,7 @@ mod tests {
             (deffacts sensor-data (reading (value 42)))
         ",
         );
+        engine.reset().unwrap();
         engine.push_focus("ANALYZER").unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
@@ -2099,6 +2143,7 @@ mod tests {
             (deffacts startup (foo (x 7)))
         ",
         );
+        engine.reset().unwrap();
 
         engine.push_focus("B").unwrap();
         let result = run_to_completion(&mut engine);
@@ -2118,6 +2163,8 @@ mod tests {
             (deffacts B::startup (secret (value 7)))
         ",
         );
+        assert_eq!(engine.current_module(), "B");
+        engine.reset().unwrap();
 
         let template_id = engine
             .facts()
@@ -2127,7 +2174,7 @@ mod tests {
                 ferric_rules_core::Fact::Ordered(_) => None,
             })
             .expect("template fact from imported A::secret");
-        assert_eq!(engine.current_module(), "B");
+        assert_eq!(engine.current_module(), "MAIN");
         assert_eq!(engine.template_name_by_id(template_id), Some("A::secret"));
         assert_eq!(engine.template_module_name_by_id(template_id), Some("A"));
     }
@@ -2166,6 +2213,7 @@ mod tests {
             (deffacts startup (foo (x 19)))
         ",
         );
+        engine.reset().unwrap();
 
         engine.push_focus("C2").unwrap();
         let result = run_to_completion(&mut engine);
@@ -2431,6 +2479,7 @@ mod tests {
             (deffacts startup (go 41))
         ",
         );
+        engine.reset().unwrap();
         assert_engine_consistent(&engine);
 
         engine.set_focus("WORK").unwrap();
@@ -2476,6 +2525,7 @@ mod tests {
             (deffacts startup (input 21))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         let fields = get_ordered_fields(&engine, "result");
@@ -2501,6 +2551,7 @@ mod tests {
             (deffacts startup (input 3.5))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "result");
         assert_eq!(fields.len(), 1);
@@ -2526,6 +2577,7 @@ mod tests {
             (deffacts startup (trigger))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "result");
         assert_eq!(fields.len(), 1);
@@ -2551,6 +2603,7 @@ mod tests {
             (deffacts startup (trigger))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "result");
         assert_eq!(fields.len(), 1);
@@ -2593,6 +2646,7 @@ mod tests {
             (deffacts startup (value 7))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "doubled");
         assert_eq!(fields.len(), 1);
@@ -2616,6 +2670,7 @@ mod tests {
             (deffacts startup (trigger))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "result");
         assert_eq!(fields.len(), 1);
@@ -2640,6 +2695,7 @@ mod tests {
             (deffacts startup (int-trigger 5) (float-trigger 3.0))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         assert_has_fact_with_relation(&engine, "int-result");
         assert_has_fact_with_relation(&engine, "float-result");
@@ -2659,6 +2715,7 @@ mod tests {
             (deffacts startup (sym-trigger) (str-trigger))
         "#,
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         assert_has_fact_with_relation(&engine, "sym-result");
         assert_has_fact_with_relation(&engine, "str-result");
@@ -2676,6 +2733,7 @@ mod tests {
             (deffacts startup (trigger))
         ",
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let fields = get_ordered_fields(&engine, "result");
         assert_eq!(fields.len(), 1);
@@ -2721,6 +2779,7 @@ mod tests {
             (deffacts startup (item 1) (item 2) (checked 1))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 0);
         assert_no_fact_with_relation(&engine, "all-complete");
@@ -2818,6 +2877,7 @@ mod tests {
             (deffacts startup (task a) (task b) (task c) (done a) (done c))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 0);
         assert_no_fact_with_relation(&engine, "all-done");
@@ -2838,6 +2898,7 @@ mod tests {
             (deffacts startup (batch test-batch) (item 1) (checked 1))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "batch-complete");
@@ -2882,6 +2943,7 @@ mod tests {
     fn fixture_deffunction_loads_and_executes() {
         let mut engine = new_utf8_engine();
         load_fixture(&mut engine, "phase3_deffunction.clp");
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "result");
@@ -2893,6 +2955,7 @@ mod tests {
     fn fixture_defglobal_loads_and_executes() {
         let mut engine = new_utf8_engine();
         load_fixture(&mut engine, "phase3_defglobal.clp");
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         // value 100 > threshold 50, so above-threshold asserted
         // value 25 < threshold 50, so no above-threshold for 25
@@ -2908,6 +2971,7 @@ mod tests {
     fn fixture_defgeneric_loads_and_dispatches() {
         let mut engine = new_utf8_engine();
         load_fixture(&mut engine, "phase3_defgeneric.clp");
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "result");
@@ -2928,6 +2992,7 @@ mod tests {
     fn fixture_printout_loads_and_produces_output() {
         let mut engine = new_utf8_engine();
         load_fixture(&mut engine, "phase3_printout.clp");
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let output = engine.get_output("t").unwrap_or_default();
         assert!(output.contains("Hello, "));
@@ -2937,6 +3002,7 @@ mod tests {
     fn fixture_expression_eval_loads_and_executes() {
         let mut engine = new_utf8_engine();
         load_fixture(&mut engine, "phase3_expression_eval.clp");
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         // value 5 passes test (> 5 0), value -3 fails test (> -3 0)
         assert_eq!(result.rules_fired, 1);
@@ -2948,6 +3014,7 @@ mod tests {
     fn fixture_defmodule_loads_and_executes_with_focus() {
         let mut engine = new_utf8_engine();
         load_fixture(&mut engine, "phase3_defmodule.clp");
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         // start rule fires (from MAIN), then focus COUNTER fires count-step
         assert!(result.rules_fired >= 2);
@@ -2975,6 +3042,7 @@ mod tests {
             (deffacts startup (input 5))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         let fields = get_ordered_fields(&engine, "scaled");
@@ -3002,6 +3070,7 @@ mod tests {
             (deffacts startup (trigger))
         "#,
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let output = engine.get_output("t").unwrap_or_default();
         assert!(
@@ -3033,6 +3102,7 @@ mod tests {
                 (task (id 2) (status done)))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "all-done");
@@ -3055,6 +3125,7 @@ mod tests {
             (deffacts startup (input 3))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         let fields = get_ordered_fields(&engine, "result");
@@ -3077,6 +3148,7 @@ mod tests {
             (deffacts startup (value 50) (value 200))
         ",
         );
+        engine.reset().unwrap();
         let result = run_to_completion(&mut engine);
         assert_eq!(result.rules_fired, 1);
         assert_has_fact_with_relation(&engine, "big-value");
@@ -3100,6 +3172,7 @@ mod tests {
             (deffacts startup (step))
         "#,
         );
+        engine.reset().unwrap();
         run_to_completion(&mut engine);
         let output = engine.get_output("t").unwrap_or_default();
         assert!(

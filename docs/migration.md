@@ -5,6 +5,31 @@ to Ferric. For detailed feature compatibility, see [compatibility.md](compatibil
 
 ---
 
+## Pre-1.0 seed and reset changes
+
+Loading `deffacts` now registers a named definition without asserting its facts.
+Call `reset()` after loading startup rules and seeds, or use Rust
+`Engine::with_rules`, which already loads and resets. A later load leaves
+existing application facts unchanged until the next reset. `LoadResult` no
+longer reports deffacts seeds as newly asserted facts. Explicit `assert` and
+`load-facts` continue to add facts immediately.
+
+A definition is identified by module and local name. Successful replacement
+moves it to the end of that module's definition order; reset visits modules
+in creation order, then their definitions in order. `undefdeffacts` removes
+definitions without retracting current facts. An invalid individual definition
+leaves its previous definition intact. This atomic replacement is deliberately
+stronger than CLIPS 6.30, which removes the old same-name definition before
+reporting some replacement errors.
+
+The internal `(initial-fact)` remains matchable by rules but is hidden from
+host fact lookup/enumeration and protected against retract, modify, and
+duplicate. Replacing `MAIN::initial-fact` with a user `deffacts` is rejected.
+These restrictions differ from CLIPS; keep application bootstrap state in
+ordinary named facts. Empty and leading-negative rule conditions use the
+independent RETE root token. Reset establishes that root and the internal
+initial fact before asserting application seeds.
+
 ## Step 1: Check Feature Coverage
 
 Review your CLIPS codebase for features that Ferric does not support:

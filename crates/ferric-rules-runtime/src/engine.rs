@@ -45,6 +45,16 @@ fn run_result(rules_fired: usize, halt_reason: HaltReason) -> RunResult {
 /// hash-based lookup.
 pub(crate) type RuleIndex<T> = Vec<Option<T>>;
 
+/// A named seed definition. Vector order is definition order; replacement
+/// moves the definition to the end of its module's reset sequence.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) struct RegisteredDeffacts {
+    pub module: ModuleId,
+    pub name: String,
+    pub facts: Vec<Fact>,
+}
+
 pub(crate) fn rule_index_get<T>(entries: &[Option<T>], rule_id: RuleId) -> Option<&T> {
     entries.get(rule_id.0 as usize)?.as_ref()
 }
@@ -163,7 +173,7 @@ pub struct Engine {
     pub(crate) rete: ReteNetwork,
     pub(crate) compiler: ReteCompiler,
     /// Registered deffacts for re-assertion on reset.
-    pub(crate) registered_deffacts: Vec<Vec<Fact>>,
+    pub(crate) registered_deffacts: Vec<RegisteredDeffacts>,
     /// Compiled rule info for action execution.
     pub(crate) rule_info: RuleIndex<Arc<CompiledRuleInfo>>,
     /// Registered template definitions: name → `TemplateId`.
@@ -194,9 +204,9 @@ pub struct Engine {
     pub(crate) generic_modules: ModuleNameMap<ModuleId>,
     /// The `FactId` of the synthetic `(initial-fact)` in working memory, if present.
     ///
-    /// `(initial-fact)` mirrors CLIPS' built-in fact and backs the implicit
-    /// condition used for empty-LHS and test-only rules. It is tracked here so
-    /// that `facts()` can exclude it from user-visible results.
+    /// It supports explicit `(initial-fact)` patterns. Empty/negative prefixes
+    /// use the independent non-fact root. Public host queries hide this protected
+    /// implementation fact, and retraction rejects its ID.
     pub(crate) initial_fact_id: Option<FactId>,
     /// Non-fatal action diagnostics captured during execution.
     pub(crate) action_diagnostics: Vec<ActionError>,
@@ -548,6 +558,7 @@ impl Engine {
     ///
     /// Returns an error if:
     /// - The fact ID does not exist
+    /// - The ID identifies the protected internal `(initial-fact)`
     /// - The fact is not a template fact
     /// - The slot name does not exist in the template
     pub fn get_fact_slot_by_name(
@@ -555,6 +566,10 @@ impl Engine {
         fact_id: FactId,
         slot_name: &str,
     ) -> Result<&Value, EngineError> {
+        if Some(fact_id) == self.initial_fact_id {
+            return Err(EngineError::FactNotFound(fact_id));
+        }
+
         let fact = self
             .fact_base
             .get(fact_id)
@@ -589,6 +604,9 @@ impl Engine {
     pub fn retract(&mut self, fact_id: FactId) -> Result<(), EngineError> {
         ferric_span!(info_span, "engine_retract", fact_id = ?fact_id);
 
+        if Some(fact_id) == self.initial_fact_id {
+            return Err(EngineError::ProtectedInitialFact);
+        }
         let entry = self
             .fact_base
             .get(fact_id)
@@ -607,17 +625,24 @@ impl Engine {
         Ok(())
     }
 
-    /// Get a fact by ID.
+    /// Get a user-visible fact by ID.
+    ///
+    /// Returns `None` for the protected internal `(initial-fact)`, consistently
+    /// with `facts()` and `find_facts()`.
     ///
     /// The `Result` return type is retained for API compatibility.
     pub fn get_fact(&self, fact_id: FactId) -> Result<Option<&Fact>, EngineError> {
+
+        if Some(fact_id) == self.initial_fact_id {
+            return Ok(None);
+        }
         Ok(self.fact_base.get(fact_id).map(|entry| &entry.fact))
     }
 
     /// Iterate over all user-visible facts in working memory.
     ///
     /// Returns an iterator of `(FactId, &Fact)` pairs. The synthetic
-    /// `(initial-fact)` inserted for CLIPS empty-LHS compatibility is excluded
+    /// protected `(initial-fact)` used by explicit initial-fact patterns is excluded
     /// from the results.
     ///
     /// The `Result` return type is retained for API compatibility.
@@ -650,6 +675,9 @@ impl Engine {
             .fact_base
             .facts_by_relation(relation_sym)
             .filter_map(|fid| {
+                if Some(fid) == self.initial_fact_id {
+                    return None;
+                }
                 let entry = self.fact_base.get(fid)?;
                 Some((fid, &entry.fact))
             })
@@ -1125,7 +1153,11 @@ impl Engine {
     }
 
     /// Reset the engine: clear all facts, tokens, and activations, then
-    /// re-assert all registered deffacts.
+    /// assert the protected initial fact and all registered deffacts.
+    ///
+    /// Loading deffacts only registers seeds. Reset asserts them in module
+    /// creation order, then definition order within each module. Replacing a
+    /// named definition moves it to the end of that module's definition order.
     ///
     /// The compiled rule network is preserved — only runtime state is cleared.
     ///
@@ -1135,6 +1167,7 @@ impl Engine {
 
         // Clear all runtime state
         self.fact_base = FactBase::new();
+        self.initial_fact_id = None;
         self.rete.clear_working_memory();
         self.router.clear();
         self.action_diagnostics.clear();
@@ -1152,27 +1185,25 @@ impl Engine {
         }
         self.drain_pending_predicate_matches();
 
-        // Re-assert registered deffacts under the current duplication policy.
-        // Clone the declarations so assertion can mutably update working memory.
-        let registered_deffacts = self.registered_deffacts.clone();
-        for deffacts in &registered_deffacts {
-            for fact in deffacts {
-                let _ = self.assert_fact_internal(fact.clone());
-            }
-        }
+        // Establish the built-in initial fact before any application seed.
+        // Unconditional/leading-negative matches already use the non-fact root.
+        let initial_sym = self
+            .symbol_table
+            .intern_symbol("initial-fact", self.config.string_encoding)?;
+        let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+            relation: initial_sym,
+            fields: smallvec::SmallVec::new(),
+        }));
+        self.initial_fact_id = Some(result.fact_id());
 
-        // Re-assert (initial-fact) for empty-LHS and test-only rules. Update
-        // initial_fact_id so that facts() continues to exclude it.
-        if self.initial_fact_id.is_some() {
-            let initial_sym = self
-                .symbol_table
-                .intern_symbol("initial-fact", self.config.string_encoding)
-                .expect("initial-fact symbol interning must succeed");
-            let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
-                relation: initial_sym,
-                fields: smallvec::SmallVec::new(),
-            }));
-            self.initial_fact_id = Some(result.fact_id());
+        // CLIPS traverses modules in creation order, then each module's current
+        // deffacts definitions in definition order. Stable sort preserves both.
+        let mut definitions = self.registered_deffacts.clone();
+        definitions.sort_by_key(|definition| definition.module.0);
+        for definition in definitions {
+            for fact in definition.facts {
+                self.assert_fact_internal(fact);
+            }
         }
 
         Ok(())
@@ -1353,6 +1384,27 @@ impl Engine {
         self.globals.debug_assert_consistency();
         self.generics.debug_assert_consistency();
 
+        if let Some(id) = self.initial_fact_id {
+            let fact = &self
+                .fact_base
+                .get(id)
+                .expect("initial-fact ID must be live")
+                .fact;
+            assert!(
+                matches!(fact, Fact::Ordered(fact) if fact.fields.is_empty()
+                && self.resolve_symbol(fact.relation) == Some("initial-fact")),
+                "initial-fact must be its reserved zero-field fact"
+            );
+        }
+        let mut seed_names = HashSet::new();
+        for definition in &self.registered_deffacts {
+            assert!(self.module_registry.get(definition.module).is_some());
+            assert!(
+                seed_names.insert((definition.module, definition.name.as_str())),
+                "duplicate deffacts identity"
+            );
+        }
+
         let rule_slot_count = self.rule_info.len().max(self.rule_modules.len());
         for index in 0..rule_slot_count {
             let info = self.rule_info.get(index).and_then(Option::as_ref);
@@ -1530,6 +1582,9 @@ pub enum EngineError {
 
     #[error("fact not found: {0:?}")]
     FactNotFound(FactId),
+
+    #[error("the internal initial-fact is protected and cannot be retracted")]
+    ProtectedInitialFact,
 
     /// Retained for wrappers that impose their own thread-affinity contract.
     /// The Rust engine does not produce this error.
@@ -2568,7 +2623,8 @@ mod tests {
             .load_str("(deffacts startup (person Alice) (person Bob))")
             .unwrap();
 
-        // Should have 2 activations from deffacts
+        engine.reset().unwrap();
+        // Reset creates 2 activations from deffacts.
         assert_eq!(engine.rete.agenda.len(), 2);
 
         // Run to clear agenda
@@ -3068,6 +3124,83 @@ mod tests {
             );
 
             engine.debug_assert_consistency();
+        }
+    }
+}
+
+#[cfg(test)]
+mod initial_fact_contract_tests {
+    use super::*;
+
+    #[test]
+    fn initial_fact_host_visibility_and_retraction_are_consistent() {
+        let mut engine =
+            Engine::with_rules("(defrule explicit (initial-fact) =>) (defrule empty =>)").unwrap();
+        let id = engine.initial_fact_id.unwrap();
+        assert!(engine.get_fact(id).unwrap().is_none());
+        assert!(engine.find_facts("initial-fact").unwrap().is_empty());
+        assert_eq!(engine.facts().unwrap().count(), 0);
+        assert!(matches!(
+            engine.get_fact_slot_by_name(id, "x"),
+            Err(EngineError::FactNotFound(_))
+        ));
+        assert!(matches!(
+            engine.retract(id),
+            Err(EngineError::ProtectedInitialFact)
+        ));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        engine.reset().unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        engine.debug_assert_consistency();
+        engine.clear();
+        engine.debug_assert_consistency();
+        engine.load_str("(defrule empty =>)").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+    }
+
+    #[test]
+    fn initial_fact_rhs_mutation_is_rejected_without_corrupting_root_state() {
+        for action in [
+            "(retract ?f)",
+            "(modify ?f (slot broken))",
+            "(duplicate ?f)",
+        ] {
+            let mut engine = Engine::with_rules(&format!(
+                "(defrule mutate ?f <- (initial-fact) => {action})"
+            ))
+            .unwrap();
+            assert_eq!(
+                engine.run(RunLimit::Unlimited).unwrap().halt_reason,
+                HaltReason::ActionError
+            );
+            assert!(engine
+                .action_diagnostics()
+                .iter()
+                .any(|error| error.to_string().contains("protected")));
+            engine.debug_assert_consistency();
+            engine.load_str("(defrule empty =>)").unwrap();
+            assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn restored_initial_fact_retains_protection_and_root_order() {
+        let engine =
+            Engine::with_rules("(defrule explicit (initial-fact) =>) (deffacts seed (item 1))")
+                .unwrap();
+        for &format in crate::serialization::SerializationFormat::ALL {
+            let mut restored =
+                Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
+            let id = restored.initial_fact_id.unwrap();
+            assert!(restored.get_fact(id).unwrap().is_none());
+            assert!(matches!(
+                restored.retract(id),
+                Err(EngineError::ProtectedInitialFact)
+            ));
+            restored.reset().unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            restored.debug_assert_consistency();
         }
     }
 }

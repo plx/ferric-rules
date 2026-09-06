@@ -716,6 +716,14 @@ fn execute_single_action(
             eval_env,
             collected_facts,
         ),
+        "undefdeffacts" => execute_undefdeffacts(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
         "ppdefrule" => execute_ppdefrule(
             token,
             rule_info,
@@ -1758,6 +1766,65 @@ fn execute_undefrule(
     Ok(())
 }
 
+fn execute_undefdeffacts(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    args: &[ActionExpr],
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
+) -> Result<(), ActionError> {
+    if args.len() != 1 {
+        return Err(ActionError::EvalError(
+            "undefdeffacts: expected one name or *".to_string(),
+        ));
+    }
+    let selectors = evaluated_rule_selectors(
+        "undefdeffacts",
+        token,
+        rule_info,
+        args,
+        context,
+        eval_env,
+        collected_facts,
+    )?;
+    if selectors[0] == "*" {
+        context.engine.registered_deffacts.clear();
+        return Ok(());
+    }
+    let name = parse_qualified_name(&selectors[0])
+        .map_err(|error| ActionError::EvalError(format!("undefdeffacts: {error}")))?;
+    let module = match name.module_name() {
+        Some(module) => context
+            .engine
+            .module_registry
+            .get_by_name(module)
+            .ok_or_else(|| {
+                ActionError::EvalError(format!("undefdeffacts: unknown module `{module}`"))
+            })?,
+        None => context.current_module,
+    };
+    if module == context.engine.module_registry.main_module_id()
+        && name.local_name() == "initial-fact"
+    {
+        return Err(ActionError::EvalError(
+            "the built-in initial-fact definition is protected".to_string(),
+        ));
+    }
+    let before = context.engine.registered_deffacts.len();
+    context
+        .engine
+        .registered_deffacts
+        .retain(|definition| definition.module != module || definition.name != name.local_name());
+    if before == context.engine.registered_deffacts.len() {
+        return Err(ActionError::EvalError(format!(
+            "undefdeffacts: unknown definition `{}`",
+            selectors[0]
+        )));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)] // Keep call-site symmetry with other action handlers.
 fn execute_ppdefrule(
     token: &Token,
@@ -2124,26 +2191,12 @@ fn execute_load_facts(
         return Ok(()); // I/O failure — return void (FALSE in expression context)
     };
 
-    // Wrap the file contents as a temporary deffacts construct so we can
-    // reuse the full parsing + interpretation pipeline without duplicating logic.
-    let wrapped = format!("(deffacts __ferric_load_facts_scratch__\n{contents}\n)");
-    let deffacts_count_before = context.engine.registered_deffacts.len();
-    let load_result = context.engine.load_str(&wrapped);
-
-    // Only pop if load_str actually registered the scratch deffacts.
-    // If parsing failed before reaching deffacts registration, popping
-    // would remove an unrelated pre-existing entry and corrupt state.
-    if context.engine.registered_deffacts.len() > deffacts_count_before {
-        context.engine.registered_deffacts.pop();
-    }
-
-    if load_result.is_err() {
-        // Parse or assertion error — facts may have been partially asserted.
-        // CLIPS returns FALSE in this case.
-    }
-    // Return void (the TRUE/FALSE return value is only meaningful when
-    // load-facts is used as an expression, e.g., (bind ?r (load-facts "f")).
-    // In that context the evaluator stub in evaluator.rs handles it.
+    // Loading facts must not mutate named reset seeds or collide with a source
+    // definition. The shared fact builder validates and asserts file facts.
+    context
+        .engine
+        .load_facts_str(&contents)
+        .map_err(|error| ActionError::EvalError(format!("load-facts: {error}")))?;
     Ok(())
 }
 
@@ -2474,6 +2527,12 @@ fn execute_retract(
         match arg {
             ActionExpr::Variable(var_name, _) => {
                 let fact_id = resolve_fact_address(collected_facts, rule_info, var_name)?;
+                if Some(fact_id) == context.engine.initial_fact_id {
+                    return Err(ActionError::EvalError(
+                        "the internal initial-fact is protected and cannot be retracted"
+                            .to_string(),
+                    ));
+                }
                 let fact = get_fact_or_error(&context.engine.fact_base, fact_id)?;
                 context
                     .engine
@@ -2553,6 +2612,12 @@ fn execute_fact_mutation(
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     let fact_id = resolve_target_fact_id(args, collected_facts, rule_info)?;
+    if Some(fact_id) == context.engine.initial_fact_id {
+        return Err(ActionError::EvalError(
+            "the internal initial-fact is protected and cannot be modified or duplicated"
+                .to_string(),
+        ));
+    }
     let original_fact = get_fact_or_error(&context.engine.fact_base, fact_id)?;
 
     match &original_fact {

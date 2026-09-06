@@ -96,7 +96,7 @@ struct EngineSnapshotRef<'a> {
     config: &'a EngineConfig,
     rete: &'a ReteNetwork,
     compiler: &'a ReteCompiler,
-    registered_deffacts: &'a Vec<Vec<Fact>>,
+    registered_deffacts: &'a Vec<crate::engine::RegisteredDeffacts>,
     rule_info: &'a RuleIndex<Arc<CompiledRuleInfo>>,
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map")]
     template_ids: &'a rustc_hash::FxHashMap<Box<str>, TemplateId>,
@@ -129,7 +129,7 @@ struct EngineSnapshotOwned {
     config: EngineConfig,
     rete: ReteNetwork,
     compiler: ReteCompiler,
-    registered_deffacts: Vec<Vec<Fact>>,
+    registered_deffacts: Vec<crate::engine::RegisteredDeffacts>,
     rule_info: RuleIndex<Arc<CompiledRuleInfo>>,
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map")]
     template_ids: rustc_hash::FxHashMap<Box<str>, TemplateId>,
@@ -288,7 +288,7 @@ impl Engine {
 
         // Check registered deffacts
         for deffacts in &self.registered_deffacts {
-            for fact in deffacts {
+            for fact in &deffacts.facts {
                 let has_external = match fact {
                     Fact::Ordered(of) => values_contain_external_address(&of.fields),
                     Fact::Template(tf) => values_contain_external_address(&tf.slots),

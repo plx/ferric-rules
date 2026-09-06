@@ -280,7 +280,8 @@ pub struct TemplateFactBody {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactSlotValue {
     pub name: String,
-    pub value: FactValue,
+    /// Every supplied field, in order. Empty is valid for a multislot.
+    pub values: Vec<FactValue>,
     pub span: Span,
 }
 
@@ -2924,21 +2925,14 @@ fn interpret_fact_slot_value(slot_expr: &SExpr) -> Result<FactSlotValue, Interpr
         .ok_or_else(|| InterpretError::expected("slot name (symbol)", slot_list[0].span()))?
         .to_string();
 
-    if slot_list.len() < 2 {
-        // Empty slot: `(slot-name)` with no values — valid for multislots,
-        // produces an empty multifield value.
-        return Ok(FactSlotValue {
-            name: slot_name,
-            value: FactValue::EmptyMultifield(slot_expr.span()),
-            span: slot_expr.span(),
-        });
-    }
-
-    let value = interpret_fact_value(&slot_list[1])?;
+    let values = slot_list[1..]
+        .iter()
+        .map(interpret_fact_value)
+        .collect::<Result<_, _>>()?;
 
     Ok(FactSlotValue {
         name: slot_name,
-        value,
+        values,
         span: slot_expr.span(),
     })
 }

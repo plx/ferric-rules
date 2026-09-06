@@ -69,7 +69,8 @@ mod tests {
         let rule_id = RuleId(1);
         let mut rete = build_single_pattern_rete(&mut engine, "person", rule_id);
 
-        let activation_count = assert_facts_into_rete(&mut rete, &engine, &result.asserted_facts);
+        let reset_facts: Vec<_> = engine.facts().unwrap().map(|(id, _)| id).collect();
+        let activation_count = assert_facts_into_rete(&mut rete, &engine, &reset_facts);
         assert_eq!(activation_count, 3);
         assert_eq!(rete.agenda.len(), 3);
     }
@@ -93,7 +94,8 @@ mod tests {
         let rule_id = RuleId(1);
         let mut rete = build_constant_test_rete(&mut engine, "color", red_test, rule_id);
 
-        let activation_count = assert_facts_into_rete(&mut rete, &engine, &result.asserted_facts);
+        let reset_facts: Vec<_> = engine.facts().unwrap().map(|(id, _)| id).collect();
+        let activation_count = assert_facts_into_rete(&mut rete, &engine, &reset_facts);
         assert_eq!(activation_count, 1);
         assert_eq!(rete.agenda.len(), 1);
     }
@@ -113,14 +115,16 @@ mod tests {
                 (printout t ?x crlf))
         ";
         let result = load_ok(&mut engine, source);
+        engine.reset().unwrap();
 
-        assert_eq!(result.asserted_facts.len(), 3);
+        assert!(result.asserted_facts.is_empty());
         assert_eq!(result.rules.len(), 1);
 
         let rule_id = RuleId(1);
         let mut rete = build_single_pattern_rete(&mut engine, "animal", rule_id);
 
-        let activation_count = assert_facts_into_rete(&mut rete, &engine, &result.asserted_facts);
+        let reset_facts: Vec<_> = engine.facts().unwrap().map(|(id, _)| id).collect();
+        let activation_count = assert_facts_into_rete(&mut rete, &engine, &reset_facts);
         assert_eq!(activation_count, 3);
         assert_eq!(rete.agenda.len(), 3);
 

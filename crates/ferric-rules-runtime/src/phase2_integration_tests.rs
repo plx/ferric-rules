@@ -179,11 +179,12 @@ mod tests {
             (deffacts startup (animal dog) (animal cat) (animal bird))
         ";
         let result = load_ok(&mut engine, source);
+        engine.reset().unwrap();
 
         assert_eq!(result.rules.len(), 1);
-        assert_eq!(result.asserted_facts.len(), 3);
+        assert!(result.asserted_facts.is_empty());
 
-        // Facts from deffacts automatically propagate through rete during load
+        // Reset facts propagate through rete after dormant source registration
         assert_eq!(engine.rete.agenda.len(), 3);
         assert_rete_consistent(engine.rete());
     }
@@ -622,6 +623,7 @@ mod tests {
             .load_str("(deffacts startup (person Alice))")
             .unwrap();
 
+        engine.reset().unwrap();
         // First run
         let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 1);
@@ -983,6 +985,7 @@ mod tests {
         engine
             .load_file(std::path::Path::new("tests/fixtures/phase2_basic.clp"))
             .unwrap();
+        engine.reset().unwrap();
 
         // Should have 2 facts from deffacts
         assert_eq!(engine.facts().unwrap().count(), 2);
@@ -999,6 +1002,7 @@ mod tests {
         engine
             .load_file(std::path::Path::new("tests/fixtures/phase2_negative.clp"))
             .unwrap();
+        engine.reset().unwrap();
 
         // Should have 3 items + 1 forbidden = 4 facts
         assert_eq!(engine.facts().unwrap().count(), 4);
@@ -1015,6 +1019,7 @@ mod tests {
         engine
             .load_file(std::path::Path::new("tests/fixtures/phase2_exists.clp"))
             .unwrap();
+        engine.reset().unwrap();
 
         // Should have 1 category + 3 items = 4 facts
         assert_eq!(engine.facts().unwrap().count(), 4);
@@ -1031,6 +1036,7 @@ mod tests {
         engine
             .load_file(std::path::Path::new("tests/fixtures/phase2_salience.clp"))
             .unwrap();
+        engine.reset().unwrap();
 
         // Step once — high-priority should fire first
         engine.step().unwrap();
@@ -1045,6 +1051,7 @@ mod tests {
         engine
             .load_file(std::path::Path::new("tests/fixtures/phase2_chain.clp"))
             .unwrap();
+        engine.reset().unwrap();
 
         // Run all rules
         let result = engine.run(crate::execution::RunLimit::Unlimited).unwrap();
@@ -1058,6 +1065,7 @@ mod tests {
         engine
             .load_file(std::path::Path::new("tests/fixtures/phase2_retract.clp"))
             .unwrap();
+        engine.reset().unwrap();
 
         // Should have 1 temporary fact from deffacts
         assert_eq!(engine.facts().unwrap().count(), 1);
@@ -1074,6 +1082,7 @@ mod tests {
         engine
             .load_file(std::path::Path::new("tests/fixtures/phase2_ncc.clp"))
             .unwrap();
+        engine.reset().unwrap();
 
         // 2 items + block/reason apple + block banana
         assert_eq!(engine.facts().unwrap().count(), 5);
@@ -1217,6 +1226,7 @@ mod tests {
         ",
             )
             .unwrap();
+        engine.reset().unwrap();
 
         // Should have activations
         assert!(!engine.rete.agenda.is_empty());

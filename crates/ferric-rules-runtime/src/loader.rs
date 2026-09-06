@@ -306,6 +306,7 @@ impl Engine {
     /// Parses and processes top-level forms:
     /// - `(assert ...)` — assert facts into working memory
     /// - `(defrule ...)` — register rule definitions
+    /// - `(deffacts ...)` — register named seed facts, asserted only by `reset`
     /// - Other forms produce `UnsupportedForm` errors
     ///
     /// # Errors
@@ -427,7 +428,7 @@ impl Engine {
                 }
             }
 
-            // Collect constructs by type (don't assert deffacts yet).
+            // Collect constructs by type; deffacts only register reset seeds.
             //
             // Rules are collected with their owning module captured at the
             // time they appear in source so that defmodule statements
@@ -508,13 +509,23 @@ impl Engine {
                         }
                     }
                     Construct::Facts(facts) => {
-                        let module = parse_qualified_name(&facts.name)
-                            .ok()
-                            .and_then(|name| {
-                                name.module_name()
-                                    .and_then(|module| self.module_registry.get_by_name(module))
-                            })
-                            .unwrap_or_else(|| self.module_registry.current_module());
+                        let parsed = parse_qualified_name(&facts.name).map_err(LoadError::Compile);
+                        let owning_module = match parsed {
+                            Ok(name) => match name.module_name() {
+                                Some(module) => {
+                                    self.module_registry.get_by_name(module).ok_or_else(|| {
+                                        LoadError::Compile(format!(
+                                            "unknown module `{module}` for deffacts `{}`",
+                                            facts.name
+                                        ))
+                                    })
+                                }
+                                None => Ok(self.module_registry.current_module()),
+                            },
+                            Err(error) => Err(error),
+                        };
+                        match owning_module {
+                            Ok(module) => {
                         for fact in &facts.facts {
                             if let FactBody::Ordered(fact) = fact {
                                 if self
@@ -526,7 +537,10 @@ impl Engine {
                                 }
                             }
                         }
-                        deffacts_constructs.push((facts, self.module_registry.current_module()));
+                                deffacts_constructs.push((facts, module));
+                            },
+                            Err(error) => errors.push(error),
+                        }
                     }
                     Construct::Function(func) => {
                         let owning_module = self.module_registry.current_module();
@@ -697,15 +711,13 @@ impl Engine {
             }
             self.module_registry.set_current_module(saved_module);
 
-            // Ensure (initial-fact) is present AFTER rules are compiled but
-            // BEFORE deffacts are asserted. This mirrors CLIPS' built-in fact
-            // and satisfies the implicit condition used for empty-LHS and
-            // test-only rules. It is asserted only once.
+            // Explicit initial-fact patterns use a protected built-in fact.
+            // Empty/negative prefixes use the independent RETE root token.
             if let Err(e) = self.ensure_initial_fact() {
                 errors.push(e);
             }
 
-            // Now process deffacts (facts will flow through compiled rete via assert_ordered).
+            // Register dormant definitions; reset will assert their facts.
             for (facts, owning_module) in &deffacts_constructs {
                 self.module_registry.set_current_module(*owning_module);
                 if let Err(e) = self.process_deffacts_construct(facts, &mut result) {
@@ -747,9 +759,9 @@ impl Engine {
 
     /// Ensure `(initial-fact)` is present in working memory.
     ///
-    /// `(initial-fact)` mirrors CLIPS' built-in fact and satisfies the implicit
-    /// condition used for empty-LHS and test-only rules. It is asserted once;
-    /// subsequent calls are no-ops.
+    /// Explicit `(initial-fact)` patterns match this protected built-in fact.
+    /// Empty/negative prefixes use the independent RETE root token. It is
+    /// asserted once; subsequent calls are no-ops.
     ///
     /// The `FactId` is stored in `self.initial_fact_id` so that `facts()` can
     /// exclude it from user-visible results.
@@ -788,36 +800,79 @@ impl Engine {
         self.load_str(&source)
     }
 
-    /// Process a deffacts construct and assert its facts.
+    /// Prepare all seed facts before replacing the named definition. Loading
+    /// changes metadata only; reset is the sole consumer of these seed facts.
     fn process_deffacts_construct(
         &mut self,
-        facts_construct: &ferric_rules_parser::FactsConstruct,
+        definition: &ferric_rules_parser::FactsConstruct,
         result: &mut LoadResult,
     ) -> Result<(), LoadError> {
-        let mut constructed_facts = Vec::new();
-        for fact_body in &facts_construct.facts {
-            let fact_id = self.process_fact_body(fact_body, result)?;
-            result.asserted_facts.push(fact_id);
-            // Collect the fact for deffacts registration
-            if let Some(entry) = self.fact_base.get(fact_id) {
-                constructed_facts.push(entry.fact.clone());
-            }
+        let name = parse_qualified_name(&definition.name).map_err(LoadError::Compile)?;
+        let module = self.module_registry.current_module();
+        let name = name.local_name().to_string();
+        if module == self.module_registry.main_module_id() && name == "initial-fact" {
+            return Err(LoadError::Compile(
+                "the built-in initial-fact definition is protected".to_string(),
+            ));
         }
-        // Register for reset
-        self.registered_deffacts.push(constructed_facts);
+        let checkpoint = self.symbol_table.checkpoint();
+        let facts = match definition
+            .facts
+            .iter()
+            .map(|body| self.build_fact_body(body, result))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(facts) => facts,
+            Err(error) => {
+                self.symbol_table.restore(checkpoint);
+                return Err(error);
+            }
+        };
+        self.registered_deffacts
+            .retain(|entry| entry.module != module || entry.name != name);
+        self.registered_deffacts
+            .push(crate::engine::RegisteredDeffacts {
+                module,
+                name,
+                facts,
+            });
         Ok(())
     }
 
-    /// Process a single fact body from a deffacts construct.
-    fn process_fact_body(
+    fn build_fact_body(
         &mut self,
-        fact_body: &FactBody,
+        body: &FactBody,
         result: &mut LoadResult,
-    ) -> Result<FactId, LoadError> {
-        match fact_body {
-            FactBody::Ordered(ordered) => self.process_ordered_fact_body(ordered, result),
-            FactBody::Template(template) => self.process_template_fact_body(template, result),
+    ) -> Result<Fact, LoadError> {
+        match body {
+            FactBody::Ordered(ordered) => self.build_ordered_fact_body(ordered, result),
+            FactBody::Template(template) => self.build_template_fact_body(template, result),
         }
+    }
+
+    /// Reuse source fact validation without publishing a temporary definition.
+    pub(crate) fn load_facts_str(&mut self, contents: &str) -> Result<usize, LoadError> {
+        let wrapped = format!("(deffacts __loaded_facts__ {contents})");
+        let parsed = parse_sexprs(&wrapped, FileId(0));
+        if let Some(error) = parsed.errors.into_iter().next() {
+            return Err(LoadError::Parse(error));
+        }
+        let interpreted = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+        if let Some(error) = interpreted.errors.into_iter().next() {
+            return Err(LoadError::Interpret(error));
+        }
+        let mut count = 0;
+        let mut result = LoadResult::default();
+        for construct in interpreted.constructs {
+            if let Construct::Facts(definition) = construct {
+                for body in definition.facts {
+                    let fact = self.build_fact_body(&body, &mut result)?;
+                    self.assert_fact_internal(fact);
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
     }
 
     fn template_local_name(raw: &str) -> String {
@@ -949,11 +1004,11 @@ impl Engine {
     }
 
     /// Process an ordered fact body.
-    fn process_ordered_fact_body(
+    fn build_ordered_fact_body(
         &mut self,
         ordered: &OrderedFactBody,
         result: &mut LoadResult,
-    ) -> Result<FactId, LoadError> {
+    ) -> Result<Fact, LoadError> {
         let current_module = self.module_registry.current_module();
         if let Ok(template_id) = self.resolve_template_reference(&ordered.relation, current_module)
         {
@@ -968,31 +1023,37 @@ impl Engine {
                 .validate_required_slots(&registered.defaults)
                 .map_err(LoadError::Compile)?;
             let slots = registered.defaults.clone().into_boxed_slice();
-            return Ok(self
-                .assert_fact_internal(Fact::Template(TemplateFact { template_id, slots }))
-                .fact_id());
+            return Ok(Fact::Template(TemplateFact { template_id, slots }));
         }
         let mut fields = Vec::new();
         for fact_value in &ordered.values {
-            if let Some(value) = self.fact_value_to_value(fact_value, result) {
-                match value {
-                    // CLIPS splices multifield values into ordered facts.
-                    Value::Multifield(mf) => fields.extend(mf.as_slice().iter().cloned()),
-                    other => fields.push(other),
-                }
+            let value = self
+                .fact_value_to_value(fact_value, result)
+                .ok_or_else(|| {
+                    LoadError::Compile(format!(
+                        "invalid value in deffacts relation `{}`",
+                        ordered.relation
+                    ))
+                })?;
+            match value {
+                Value::Multifield(mf) => fields.extend(mf.as_slice().iter().cloned()),
+                Value::Void => {}
+                other => fields.push(other),
             }
         }
 
-        self.assert_ordered(&ordered.relation, fields)
-            .map_err(LoadError::Engine)
+        Ok(Fact::Ordered(ferric_rules_core::OrderedFact {
+            relation: self.compile_symbol(&ordered.relation)?,
+            fields: fields.into(),
+        }))
     }
 
     /// Process a template fact body.
-    fn process_template_fact_body(
+    fn build_template_fact_body(
         &mut self,
         template: &TemplateFactBody,
         result: &mut LoadResult,
-    ) -> Result<FactId, LoadError> {
+    ) -> Result<Fact, LoadError> {
         let current_module = self.module_registry.current_module();
         let template_id = match self.resolve_template_reference(&template.template, current_module)
         {
@@ -1016,9 +1077,10 @@ impl Engine {
                             })?;
                         fields.push(Value::Symbol(sym));
                     }
-                    return self
-                        .assert_ordered(&template.template, fields)
-                        .map_err(LoadError::Engine);
+                    return Ok(Fact::Ordered(ferric_rules_core::OrderedFact {
+                        relation: self.compile_symbol(&template.template)?,
+                        fields: fields.into(),
+                    }));
                 }
                 return Err(LoadError::Compile(format!("{msg} in deffacts")));
             }
@@ -1038,27 +1100,54 @@ impl Engine {
         // Start with defaults.
         let mut slots: Vec<Value> = registered.defaults.clone();
 
-        // Apply slot values from the deffacts body.
-        for slot_val in &template.slot_values {
-            let slot_idx = registered.slot_index(&slot_val.name).ok_or_else(|| {
+        let mut seen = HashSet::new();
+        for slot in &template.slot_values {
+            let index = registered.slot_index(&slot.name).ok_or_else(|| {
                 LoadError::Compile(format!(
                     "unknown slot `{}` in template `{}`",
-                    slot_val.name, template.template
+                    slot.name, template.template
                 ))
             })?;
-
-            if let Some(value) = self.fact_value_to_value(&slot_val.value, result) {
-                slots[slot_idx] = value;
+            if !seen.insert(index) {
+                return Err(LoadError::Compile(format!(
+                    "duplicate slot `{}` in template `{}`",
+                    slot.name, template.template
+                )));
             }
+            let mut fields = Vec::new();
+            for field in &slot.values {
+                let value = self.fact_value_to_value(field, result).ok_or_else(|| {
+                    LoadError::Compile(format!(
+                        "invalid value for slot `{}` in template `{}`",
+                        slot.name, template.template
+                    ))
+                })?;
+                match value {
+                    Value::Multifield(values) => fields.extend(values.as_slice().iter().cloned()),
+                    Value::Void => {}
+                    value => fields.push(value),
+                }
+            }
+            slots[index] = match registered.slot_types[index] {
+                ferric_rules_parser::SlotType::Single if fields.len() == 1 => fields.pop().unwrap(),
+                ferric_rules_parser::SlotType::Single => {
+                    return Err(LoadError::Compile(format!(
+                        "single-field slot `{}` in template `{}` requires exactly one value",
+                        slot.name, template.template
+                    )))
+                }
+                ferric_rules_parser::SlotType::Multi => {
+                    Value::Multifield(Box::new(fields.into_iter().collect()))
+                }
+            };
         }
-
-        // Assert as a proper template fact.
-        Ok(self
-            .assert_fact_internal(Fact::Template(TemplateFact {
-                template_id,
-                slots: slots.into_boxed_slice(),
-            }))
-            .fact_id())
+        registered
+            .validate_required_slots(&slots)
+            .map_err(LoadError::Compile)?;
+        Ok(Fact::Template(TemplateFact {
+            template_id,
+            slots: slots.into_boxed_slice(),
+        }))
     }
 
     fn is_ambiguous_empty_template_fact(template: &TemplateFactBody) -> bool {
@@ -1066,7 +1155,7 @@ impl Engine {
             && template
                 .slot_values
                 .iter()
-                .all(|slot| matches!(slot.value, FactValue::EmptyMultifield(_)))
+                .all(|slot| slot.values.is_empty())
     }
 
     fn ordered_template_conflict(template: &TemplateConstruct) -> LoadError {
@@ -1975,6 +2064,7 @@ impl Engine {
                 | "set-fact-duplication"
                 | "get-fact-duplication"
                 | "undefrule"
+                | "undefdeffacts"
                 | "ppdefrule"
                 | "load"
                 | "close"
@@ -3165,24 +3255,8 @@ impl Engine {
             }
         }
 
-        // Empty-LHS and test-only rules use CLIPS' built-in (initial-fact)
-        // mechanism. Conditional elements, including a leading NCC, are seeded
-        // uniformly by the beta root's empty-prefix token.
-        if conditions.is_empty() {
-            let initial_sym = self
-                .symbol_table
-                .intern_symbol("initial-fact", self.config.string_encoding)
-                .map_err(|e| LoadError::Compile(format!("initial-fact symbol: {e}")))?;
-            let initial_pattern = CompilablePattern {
-                entry_type: AlphaEntryType::OrderedRelation(initial_sym),
-                constant_tests: Vec::new(),
-                variable_slots: Vec::new(),
-                negated_variable_slots: Vec::new(),
-                negated: false,
-                exists: false,
-            };
-            conditions.insert(0, CompilableCondition::Pattern(initial_pattern));
-        }
+        // Empty conjunctions attach directly to the existing non-fact root.
+        // The visible initial-fact is separate state, not support for this match.
 
         Self::validate_rule_rhs_scope(rule, &existential_locals, &exported_variables)?;
 
@@ -5214,6 +5288,7 @@ mod tests {
                 (assert (matched ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(
@@ -5258,6 +5333,7 @@ mod tests {
               (assert (hit ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 2);
@@ -5282,6 +5358,7 @@ mod tests {
               (assert (gt2 ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let rule_info = engine
             .rule_info
@@ -5314,6 +5391,7 @@ mod tests {
               (assert (ok ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5336,6 +5414,7 @@ mod tests {
               (assert (pos ?y)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5358,6 +5437,7 @@ mod tests {
               (assert (tpl-ok ?a)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5382,6 +5462,7 @@ mod tests {
               (assert (safe ?min)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5406,6 +5487,7 @@ mod tests {
               (assert (safe-offset ?min)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5430,6 +5512,7 @@ mod tests {
               (assert (safe-bump ?min)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5453,6 +5536,7 @@ mod tests {
               (assert (safe-nested ?min)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5476,6 +5560,7 @@ mod tests {
               (assert (min-answer ?a)))
             "#,
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5500,6 +5585,7 @@ mod tests {
               (assert (missing ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5547,6 +5633,7 @@ mod tests {
               (assert (missing-offset ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5572,6 +5659,7 @@ mod tests {
               (assert (missing-nested ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -6069,8 +6157,9 @@ mod tests {
                 (person Bob))
         ";
         let result = load_ok(&mut engine, source);
+        engine.reset().unwrap();
 
-        assert_eq!(result.asserted_facts.len(), 2);
+        assert!(result.asserted_facts.is_empty());
         assert!(result.rules.is_empty());
     }
 
@@ -6085,10 +6174,11 @@ mod tests {
                 (foo (clear)))
             ",
         );
+        engine.reset().unwrap();
 
-        assert_eq!(result.asserted_facts.len(), 2);
+        assert!(result.asserted_facts.is_empty());
 
-        let fact_id = result.asserted_facts[1];
+        let fact_id = engine.find_facts("foo").unwrap()[1].0;
         let entry = engine
             .fact_base
             .get(fact_id)

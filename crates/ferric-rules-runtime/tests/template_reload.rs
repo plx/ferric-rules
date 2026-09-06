@@ -141,6 +141,7 @@ fn pending_constructs_retain_the_original_template_during_incremental_load() {
             engine
                 .load_str("(defrule read-record (record (original ?v)) => (printout t ?v crlf))")
                 .unwrap();
+            engine.reset().unwrap();
         } else {
             engine
                 .assert_template("record", &["original"], vec![Value::Integer(3)])

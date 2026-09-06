@@ -19,7 +19,7 @@ impl Engine {
             || self.rete.alpha.entry_types().any(|entry| {
                 matches!(entry, AlphaEntryType::OrderedRelation(symbol) if self.resolve_symbol(*symbol).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)))
             })
-            || self.registered_deffacts.iter().flatten().any(matches_fact)
+            || self.registered_deffacts.iter().flat_map(|seed| &seed.facts).any(matches_fact)
         {
             return true;
         }

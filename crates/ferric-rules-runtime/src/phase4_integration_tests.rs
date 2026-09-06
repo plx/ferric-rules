@@ -3575,6 +3575,7 @@ fn save_facts_writes_bare_fact_forms_to_file() {
     );
     let mut engine = new_utf8_engine();
     load_ok(&mut engine, &src);
+    engine.reset().unwrap();
     run_to_completion(&mut engine);
 
     let contents = std::fs::read_to_string(temp.path()).expect("read fct file");
@@ -3696,6 +3697,7 @@ fn save_and_load_facts_roundtrip() {
     // First engine: populate and save.
     let mut engine1 = new_utf8_engine();
     load_ok(&mut engine1, &src);
+    engine1.reset().unwrap();
     run_to_completion(&mut engine1);
 
     // Second engine: load the saved facts.

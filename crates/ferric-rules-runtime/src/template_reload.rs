@@ -19,7 +19,7 @@ impl Engine {
             || self
                 .registered_deffacts
                 .iter()
-                .flatten()
+                .flat_map(|definition| &definition.facts)
                 .any(|fact| matches!(fact, Fact::Template(template) if template.template_id == id))
         {
             return true;

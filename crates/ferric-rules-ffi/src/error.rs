@@ -156,7 +156,9 @@ pub(crate) fn map_engine_error(err: &EngineError) -> FerricError {
         | EngineError::ModuleNotFound(_)
         | EngineError::TemplateNotFound(_)
         | EngineError::SlotNotFound { .. } => FerricError::NotFound,
-        EngineError::NotATemplateFact(_) | EngineError::Encoding(_) => FerricError::InvalidArgument,
+        EngineError::NotATemplateFact(_)
+        | EngineError::Encoding(_)
+        | EngineError::ProtectedInitialFact => FerricError::InvalidArgument,
         #[allow(unreachable_patterns)]
         _ => FerricError::InternalError,
     }

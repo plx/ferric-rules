@@ -256,7 +256,8 @@ impl ReteCompiler {
         ))
     }
 
-    /// Compile a sequence of conditional elements into the rete network.
+    /// Compile conditional elements into the rete network. An empty sequence
+    /// is an unconditional conjunction attached to the non-fact beta root.
     pub fn compile_conditions(
         &mut self,
         rete: &mut ReteNetwork,
@@ -265,7 +266,6 @@ impl ReteCompiler {
         salience: Salience,
         conditions: &[CompilableCondition],
     ) -> Result<CompileResult, CompileError> {
-        Self::ensure_non_empty(conditions)?;
         Self::validate_conditions(conditions)?;
         let var_map = Self::prepare_var_map(conditions)?;
         Ok(self
@@ -279,7 +279,6 @@ impl ReteCompiler {
         salience: Salience,
         conditions: Vec<CompilableCondition>,
     ) -> Result<ConditionCompilationPlan, CompileError> {
-        Self::ensure_non_empty(&conditions)?;
         Self::validate_conditions(&conditions)?;
         let var_map = Self::prepare_var_map(&conditions)?;
         Ok(ConditionCompilationPlan {
