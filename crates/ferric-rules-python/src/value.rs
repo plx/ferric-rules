@@ -119,7 +119,10 @@ pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult
                 .collect();
             Ok(PyList::new(py, items?)?.into_any().unbind())
         }
-        Value::Void | Value::ExternalAddress(_) => Ok(py.None()),
+        Value::Void => Ok(py.None()),
+        Value::ExternalAddress(_) => Err(pyo3::exceptions::PyTypeError::new_err(
+            "host external identities are not supported by the Python binding",
+        )),
     }
 }
 

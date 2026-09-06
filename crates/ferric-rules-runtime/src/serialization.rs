@@ -23,8 +23,7 @@
 //!   [`SerializationError::ExternalAddressPresent`].
 
 use std::collections::VecDeque;
-use std::marker::PhantomData;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ferric_rules_core::{
     Fact, FactBase, ReteCompiler, ReteNetwork, SymbolTable, TemplateId, Value,
@@ -98,7 +97,7 @@ struct EngineSnapshotRef<'a> {
     rete: &'a ReteNetwork,
     compiler: &'a ReteCompiler,
     registered_deffacts: &'a Vec<Vec<Fact>>,
-    rule_info: &'a RuleIndex<Rc<CompiledRuleInfo>>,
+    rule_info: &'a RuleIndex<Arc<CompiledRuleInfo>>,
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map")]
     template_ids: &'a rustc_hash::FxHashMap<Box<str>, TemplateId>,
     template_defs: &'a slotmap::SlotMap<TemplateId, RegisteredTemplate>,
@@ -131,7 +130,7 @@ struct EngineSnapshotOwned {
     rete: ReteNetwork,
     compiler: ReteCompiler,
     registered_deffacts: Vec<Vec<Fact>>,
-    rule_info: RuleIndex<Rc<CompiledRuleInfo>>,
+    rule_info: RuleIndex<Arc<CompiledRuleInfo>>,
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map")]
     template_ids: rustc_hash::FxHashMap<Box<str>, TemplateId>,
     template_defs: slotmap::SlotMap<TemplateId, RegisteredTemplate>,
@@ -183,17 +182,26 @@ impl EngineSnapshotOwned {
             processing_predicates: false,
             halted: self.halted,
             input_buffer: self.input_buffer,
-            creator_thread: std::thread::current().id(),
-            _not_send_sync: PhantomData,
         }
     }
 }
 
-/// Check whether any `Value` in a slice is an `ExternalAddress`.
-fn values_contain_external_address(values: &[Value]) -> bool {
-    values
-        .iter()
-        .any(|v| matches!(v, Value::ExternalAddress(_)))
+/// Check values including nested multifields without recursing on the stack.
+fn values_contain_external_address(mut values: &[Value]) -> bool {
+    let mut pending = Vec::new();
+    loop {
+        for value in values {
+            match value {
+                Value::ExternalAddress(_) => return true,
+                Value::Multifield(fields) => pending.push(fields.as_slice()),
+                _ => {}
+            }
+        }
+        let Some(nested) = pending.pop() else {
+            return false;
+        };
+        values = nested;
+    }
 }
 
 impl Engine {
@@ -242,8 +250,8 @@ impl Engine {
     /// Deserialize an engine from bytes previously produced by
     /// [`Engine::serialize`] with the same format.
     ///
-    /// The returned engine is ready for [`Engine::run`]. Its thread affinity
-    /// is set to the calling thread.
+    /// The returned engine is ready for [`Engine::run`]. Ownership may be moved
+    /// to another thread before further use or destruction.
     ///
     /// # Errors
     ///
@@ -273,7 +281,7 @@ impl Engine {
 
         // Check registered globals
         for (_module, _name, value) in &self.registered_globals {
-            if matches!(value, Value::ExternalAddress(_)) {
+            if values_contain_external_address(std::slice::from_ref(value)) {
                 return Err(SerializationError::ExternalAddressPresent);
             }
         }
@@ -439,7 +447,9 @@ mod tests {
 
         let bytes = engine.serialize(format).unwrap();
         let engine2 = Engine::deserialize(&bytes, format).unwrap();
-        assert!(engine2.check_thread_affinity().is_ok());
+        let mut modules = engine2.modules();
+        modules.sort_unstable();
+        assert_eq!(modules, ["A", "B", "MAIN"]);
     }
 
     // ── Per-format tests ─────────────────────────────────────────────────
@@ -510,14 +520,6 @@ mod tests {
                 "format {format:?} should reject empty data"
             );
         }
-    }
-
-    #[test]
-    fn deserialized_engine_has_current_thread_affinity() {
-        let engine = Engine::new(EngineConfig::default());
-        let bytes = engine.serialize(SerializationFormat::Bincode).unwrap();
-        let engine2 = Engine::deserialize(&bytes, SerializationFormat::Bincode).unwrap();
-        assert!(engine2.check_thread_affinity().is_ok());
     }
 
     #[test]
