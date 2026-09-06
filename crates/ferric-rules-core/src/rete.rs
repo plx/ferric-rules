@@ -1689,7 +1689,7 @@ fn collect_candidate_facts(
                     if let Some(key) = AtomKey::from_value(bound_value) {
                         return alpha_memory
                             .lookup_by_slot(alpha_slot, &key)
-                            .map(|set| set.iter().copied().collect())
+                            .map(Iterator::collect)
                             .unwrap_or_default();
                     }
                 }
@@ -1717,7 +1717,7 @@ fn collect_candidate_parent_tokens(
                     if let Some(key) = AtomKey::from_value(fact_value) {
                         return parent_memory
                             .lookup_by_var(beta_var, &key)
-                            .map(|tokens| tokens.iter().copied().collect())
+                            .map(|tokens| tokens.iter().rev().copied().collect())
                             .unwrap_or_default();
                     }
                 }

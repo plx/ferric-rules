@@ -3,6 +3,7 @@
 //! The alpha network is the first stage of the Rete algorithm. It discriminates
 //! facts by type (template or ordered relation) and applies constant tests.
 
+use crate::ordered_set::OrderedSet;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use slotmap::SparseSecondaryMap;
 use smallvec::SmallVec;
@@ -133,14 +134,13 @@ impl AlphaNode {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlphaMemory {
     pub id: AlphaMemoryId,
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_set"))]
-    facts: HashSet<FactId>,
+    facts: OrderedSet<FactId>,
     /// Slot indices: `SlotIndex` -> `AtomKey` -> `FactId`s with that key in that slot.
     #[cfg_attr(
         feature = "serde",
-        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_map_of_fx_hash_set")
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_map")
     )]
-    slot_indices: HashMap<SlotIndex, HashMap<AtomKey, HashSet<FactId>>>,
+    slot_indices: HashMap<SlotIndex, HashMap<AtomKey, OrderedSet<FactId>>>,
     /// Which slots are currently indexed.
     indexed_slots: SmallVec<[SlotIndex; 4]>,
 }
@@ -151,7 +151,7 @@ impl AlphaMemory {
     pub fn new(id: AlphaMemoryId) -> Self {
         Self {
             id,
-            facts: HashSet::default(),
+            facts: OrderedSet::default(),
             slot_indices: HashMap::default(),
             indexed_slots: SmallVec::new(),
         }
@@ -253,8 +253,12 @@ impl AlphaMemory {
     ///
     /// Returns `None` if the slot is not indexed or the key is not present.
     #[must_use]
-    pub fn lookup_by_slot(&self, slot: SlotIndex, key: &AtomKey) -> Option<&HashSet<FactId>> {
-        self.slot_indices.get(&slot)?.get(key)
+    pub fn lookup_by_slot(
+        &self,
+        slot: SlotIndex,
+        key: &AtomKey,
+    ) -> Option<impl ExactSizeIterator<Item = FactId> + '_> {
+        Some(self.slot_indices.get(&slot)?.get(key)?.iter().copied())
     }
 
     /// Clear all facts and indices from this memory, preserving its ID and structure.
@@ -264,7 +268,7 @@ impl AlphaMemory {
         // indexed_slots stays — it tracks which slots SHOULD be indexed
     }
 
-    /// Iterate over all fact IDs in this memory.
+    /// Iterate over fact IDs in insertion order (oldest first).
     pub fn iter(&self) -> impl Iterator<Item = FactId> + '_ {
         self.facts.iter().copied()
     }
@@ -301,7 +305,7 @@ pub fn get_slot_value(fact: &Fact, slot: SlotIndex) -> Option<&Value> {
 }
 
 fn remove_from_slot_index(
-    slot_indices: &mut HashMap<SlotIndex, HashMap<AtomKey, HashSet<FactId>>>,
+    slot_indices: &mut HashMap<SlotIndex, HashMap<AtomKey, OrderedSet<FactId>>>,
     slot: SlotIndex,
     key: &AtomKey,
     fact_id: FactId,
@@ -1067,7 +1071,10 @@ mod tests {
         mem.insert(fact_id3, &fact3.fact);
 
         let key_42 = AtomKey::Integer(42);
-        let matching_facts = mem.lookup_by_slot(SlotIndex::Ordered(0), &key_42).unwrap();
+        let matching_facts: Vec<_> = mem
+            .lookup_by_slot(SlotIndex::Ordered(0), &key_42)
+            .unwrap()
+            .collect();
 
         assert_eq!(matching_facts.len(), 2);
         assert!(matching_facts.contains(&fact_id1));

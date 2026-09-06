@@ -3,6 +3,7 @@
 //! The beta network is the second stage of the Rete algorithm. It performs
 //! joins between alpha memories (facts) and beta memories (partial matches/tokens).
 
+use crate::ordered_set::OrderedSet;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -119,8 +120,7 @@ pub struct BetaMemoryId(pub u32);
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BetaMemory {
     pub id: BetaMemoryId,
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_set"))]
-    tokens: HashSet<TokenId>,
+    tokens: OrderedSet<TokenId>,
     /// Variable indices: `VarId` → `AtomKey` → set of `TokenId`s with that binding value.
     /// Enables O(1) lookup during right activation instead of full parent-token scans.
     #[cfg_attr(
@@ -139,7 +139,7 @@ impl BetaMemory {
     pub fn new(id: BetaMemoryId) -> Self {
         Self {
             id,
-            tokens: HashSet::default(),
+            tokens: OrderedSet::default(),
             var_indices: HashMap::default(),
             indexed_vars: SmallVec::new(),
         }
@@ -214,7 +214,9 @@ impl BetaMemory {
     /// If the memory has indexed variables, extracts the corresponding binding
     /// values and adds the token to the appropriate index entries.
     pub fn insert_indexed(&mut self, token_id: TokenId, bindings: &BindingSet) {
-        self.tokens.insert(token_id);
+        if !self.tokens.insert(token_id) {
+            return;
+        }
         for &var_id in &self.indexed_vars {
             if let Some(value) = bindings.get(var_id) {
                 if let Some(key) = AtomKey::from_value(value) {
@@ -264,9 +266,10 @@ impl BetaMemory {
         self.tokens.contains(&token_id)
     }
 
-    /// Iterate over all tokens in the memory.
+    /// Iterate over tokens in reverse insertion order (newest first).
+    /// This is the CLIPS beta traversal order when a new right fact arrives.
     pub fn iter(&self) -> impl Iterator<Item = TokenId> + '_ {
-        self.tokens.iter().copied()
+        self.tokens.iter().rev().copied()
     }
 
     /// Check if the memory is empty.

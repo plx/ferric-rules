@@ -2764,7 +2764,7 @@ mod tests {
             let key = AtomKey::Symbol(name);
             let hits = alpha_mem.lookup_by_slot(SlotIndex::Ordered(0), &key);
             assert!(
-                hits.is_some() && !hits.unwrap().is_empty(),
+                hits.is_some_and(|hits| hits.len() > 0),
                 "fact name{i} should be found via indexed lookup"
             );
         }

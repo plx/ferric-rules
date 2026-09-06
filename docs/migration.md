@@ -31,6 +31,11 @@ ordinary named facts. Empty and leading-negative rule conditions use the
 independent RETE root token. Reset establishes that root and the internal
 initial fact before asserting application seeds.
 
+Core-internal consumers of `AlphaMemory::lookup_by_slot` now receive an
+iterator in insertion order instead of a borrowed hash set. Collect that
+iterator when a materialized collection is needed. Public engine fact APIs
+retain their existing result types.
+
 ## Step 1: Check Feature Coverage
 
 Review your CLIPS codebase for features that Ferric does not support:
