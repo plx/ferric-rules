@@ -739,8 +739,8 @@ impl ReteNetwork {
     /// Perform a right activation on a negative node.
     ///
     /// When a new fact enters the alpha memory subscribed by a negative node:
-    /// 1. For each unblocked pass-through token, evaluate join tests
-    /// 2. If the fact matches, block the parent token:
+    /// 1. Record matching facts for already blocked parents as well as unblocked ones.
+    /// 2. For a newly blocked parent:
     ///    - Cascade-retract the pass-through token (removes downstream tokens/activations)
     ///    - Move from unblocked to blocked in negative memory
     fn negative_right_activate(
@@ -770,6 +770,21 @@ impl ReteNetwork {
             return;
         };
         let unblocked_entries: Vec<(TokenId, TokenId)> = neg_mem.iter_unblocked().collect();
+        let blocked_parents: Vec<TokenId> = neg_mem.blocked_parents().collect();
+
+        // A blocked parent has no pass-through token, but still needs every
+        // later matching fact recorded. Otherwise retracting its first blocker
+        // would allow it through while another blocker remains in working memory.
+        for parent_token_id in blocked_parents {
+            let Some(parent_token) = self.token_store.get(parent_token_id) else {
+                continue;
+            };
+            if evaluate_join(fact, Some(parent_token), &tests) {
+                if let Some(neg_mem) = self.beta.get_neg_memory_mut(neg_memory_id) {
+                    neg_mem.add_blocker(parent_token_id, fact_id);
+                }
+            }
+        }
 
         // For each unblocked token, check if the new fact blocks it
         let mut to_block = Vec::new();
@@ -3308,9 +3323,22 @@ mod tests {
         assert_eq!(rete.agenda.len(), 1, "Only bob should remain active");
         rete.debug_assert_consistency();
 
-        // Retract (exclude alice) — alice should come back
+        // A distinct later fact must be remembered even though alice is already
+        // blocked. This exercises right activation, unlike blockers that arrive
+        // before the parent and are all discovered during left activation.
+        let later_id =
+            fact_base.assert_ordered(exclude_sym, smallvec![alice_val.clone(), Value::Integer(2)]);
+        let later_fact = fact_base.get(later_id).unwrap().fact.clone();
+        rete.assert_fact(later_id, &later_fact, &fact_base);
+
+        // Retract the first blocker — alice remains blocked by the later fact.
         fact_base.retract(exc_alice_id);
         rete.retract_fact(exc_alice_id, &exc_alice_fact, &fact_base);
+        assert_eq!(rete.agenda.len(), 1, "Alice still has a matching blocker");
+        rete.debug_assert_consistency();
+
+        fact_base.retract(later_id);
+        rete.retract_fact(later_id, &later_fact, &fact_base);
 
         assert_eq!(rete.agenda.len(), 2, "Both should be active again");
         rete.debug_assert_consistency();
