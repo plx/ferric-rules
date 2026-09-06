@@ -37,8 +37,11 @@ impl Engine {
             "inconsistent rule/module index length",
         )?;
         let terminal_rules: rustc_hash::FxHashSet<_> = self.rete.snapshot_rule_ids().collect();
+        ensure(
+            terminal_rules.len() == self.rete.snapshot_rule_ids().count(),
+            "multiple terminals share an executable rule ID",
+        )?;
         let mut live_rules = 0;
-        let mut names = rustc_hash::FxHashSet::default();
         for (index, info) in self.rule_info.iter().enumerate() {
             let Some(info) = info else {
                 ensure(
@@ -57,7 +60,9 @@ impl Engine {
             )?;
             let module = self.rule_modules[index].ok_or("rule has no module")?;
             ensure(modules.get(module).is_some(), "rule has dangling module")?;
-            ensure(names.insert((module, &info.name)), "duplicate rule name")?;
+            // One source rule with `or` conditions lowers to several executable
+            // rules. Their public names may coincide; the unique slot/terminal
+            // association above is their executable identity.
             info.var_map.validate_snapshot(&self.symbol_table)?;
             ensure(
                 info.actions.len() == info.runtime_actions.len(),

@@ -1003,6 +1003,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn source_rule_or_variants_resume_and_are_replaced_together() {
+        let mut engine = Engine::with_rules(
+            "(defrule select (or (candidate a ?n) (candidate b ?n)) => (assert (selected old ?n)))",
+        )
+        .unwrap();
+        engine
+            .load_str("(assert (candidate a 1) (candidate b 2))")
+            .unwrap();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+            assert_eq!(restored.find_facts("selected").unwrap().len(), 2);
+            restored
+                .load_str("(defrule select (candidate c ?n) => (assert (selected new ?n)))")
+                .unwrap();
+            restored
+                .load_str("(assert (candidate a 3) (candidate b 4) (candidate c 5))")
+                .unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert_eq!(restored.find_facts("selected").unwrap().len(), 3);
+            let bytes = restored.serialize(format).unwrap();
+            let mut resumed = Engine::deserialize(&bytes, format).unwrap();
+            assert_eq!(resumed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        }
+    }
+
+    #[test]
+    fn distinct_terminals_cannot_share_an_executable_rule_id() {
+        let engine = Engine::with_rules("(defrule select (or (a) (b)) =>)").unwrap();
+        let result = alter_state(&engine, |state| {
+            let nodes = state
+                .pointer_mut("/rete/beta/nodes")
+                .unwrap()
+                .as_array_mut()
+                .unwrap();
+            let mut terminals = nodes
+                .iter_mut()
+                .filter_map(|entry| entry[1].get_mut("Terminal"));
+            let first_rule = terminals.next().unwrap()["rule"].clone();
+            terminals.next().unwrap()["rule"] = first_rule;
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("executable rule ID"))
+        );
+    }
+
     /// Test roundtrip for a given format with an empty engine.
     fn roundtrip_empty(format: SerializationFormat) {
         let engine = Engine::new(EngineConfig::default());
