@@ -1618,6 +1618,7 @@ impl Engine {
         rule: &RuleConstruct,
         source: &str,
     ) -> Result<CompileResult, LoadError> {
+        Self::reject_logical_conditions(&rule.patterns)?;
         // Validate patterns first (max nesting depth: 4 to support deeply nested NCCs)
         let validation_errors = validate_rule_patterns(&rule.patterns, 4);
         if !validation_errors.is_empty() {
@@ -1688,6 +1689,32 @@ impl Engine {
             last_result = self.install_prepared_rule(prepared);
         }
         Ok(last_result)
+    }
+
+    /// Logical support cannot be approximated by an ordinary conjunction.
+    /// Inspect the original tree before normalization can erase its wrapper.
+    fn reject_logical_conditions(patterns: &[Pattern]) -> Result<(), LoadError> {
+        let mut pending: Vec<_> = patterns.iter().collect();
+        while let Some(pattern) = pending.pop() {
+            match pattern {
+                Pattern::Logical(_, span) => {
+                    return Err(Self::unsupported_pattern(
+                        "logical",
+                        span,
+                        "truth maintenance is not implemented; use ordinary stated facts with explicit retraction",
+                    ));
+                }
+                Pattern::Not(inner, _) | Pattern::Assigned { pattern: inner, .. } => {
+                    pending.push(inner);
+                }
+                Pattern::And(children, _)
+                | Pattern::Or(children, _)
+                | Pattern::Exists(children, _)
+                | Pattern::Forall(children, _) => pending.extend(children),
+                Pattern::Ordered(_) | Pattern::Template(_) | Pattern::Test(_, _) => {}
+            }
+        }
+        Ok(())
     }
 
     fn validate_rule_action_callables(
@@ -2202,12 +2229,12 @@ impl Engine {
     }
 
     /// Recursively flatten a pattern for top-level condition processing.
-    /// - `And`/`Logical`: flatten children.
+    /// - `And`: flatten children. Logical CEs are rejected before translation.
     /// - Double negation remains intact so translation can compile it as exists.
     /// - Everything else: push as-is.
     fn flatten_pattern<'a>(pattern: &'a Pattern, out: &mut Vec<&'a Pattern>) {
         match pattern {
-            Pattern::And(inner, _) | Pattern::Logical(inner, _) => {
+            Pattern::And(inner, _) => {
                 for sub in inner {
                     Self::flatten_pattern(sub, out);
                 }
@@ -2875,11 +2902,11 @@ impl Engine {
     /// Also expands slot-level `Constraint::Or` disjunctions inside patterns.
     /// Returns a vec of rule variants (1 if no disjunctions, N*M*... for Cartesian product).
     fn expand_or_patterns(rule: &RuleConstruct) -> Vec<RuleConstruct> {
-        // First flatten top-level And/Logical to expose Or patterns
+        // First flatten top-level And to expose Or patterns
         let mut flat_patterns: Vec<Pattern> = Vec::new();
         for pattern in &rule.patterns {
             match pattern {
-                Pattern::And(inner, _) | Pattern::Logical(inner, _) => {
+                Pattern::And(inner, _) => {
                     flat_patterns.extend(inner.iter().cloned());
                 }
                 _ => flat_patterns.push(pattern.clone()),
@@ -3126,10 +3153,8 @@ impl Engine {
         let mut exported_variables = HashSet::new();
         let mut existential_locals = HashSet::new();
 
-        // Flatten top-level Pattern::And and Pattern::Logical into their children.
+        // Flatten ordinary conjunctions. Logical CEs have already been rejected.
         // CLIPS treats (and ...) as a grouping CE equivalent to listing sub-patterns directly.
-        // (logical ...) is a truth-maintenance wrapper; we strip it (no TMS yet) and treat
-        // children as top-level conditions.
         // Double negation stays intact and is translated through an exists node.
         let mut flat_patterns: Vec<&Pattern> = Vec::new();
         for pattern in &rule.patterns {
@@ -3516,7 +3541,7 @@ impl Engine {
             Pattern::Logical(_, span) => Err(Self::unsupported_pattern(
                 "logical",
                 span,
-                "logical CE is only supported at top-level of rule LHS",
+                "truth maintenance is not implemented",
             )),
             Pattern::Or(_, span) => Err(Self::unsupported_pattern(
                 "or",
@@ -3715,7 +3740,7 @@ impl Engine {
             Pattern::Logical(_, span) => Err(Self::unsupported_pattern(
                 "logical",
                 span,
-                "logical CE reached translate_pattern unexpectedly (should be flattened at top level)",
+                "truth maintenance is not implemented",
             )),
             Pattern::Or(_, span) => Err(Self::unsupported_pattern(
                 "or",

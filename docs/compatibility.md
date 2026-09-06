@@ -380,6 +380,14 @@ nestings are **not** supported:
     (assert (has-undone-item)))
 ```
 
+### Logical support
+
+Every `logical` CE is rejected during rule loading, including nested and
+disjunctive positions. Ferric does not track the support that CLIPS uses to
+retract derived facts automatically. A rejected replacement preserves the
+previous installed rule. Use ordinary stated facts and explicit retraction
+when the application owns that lifecycle.
+
 ### forall Semantics
 
 `forall` is desugared to `NCC([P, neg(Q)])` at loader level. This means
@@ -784,7 +792,7 @@ The following features are explicitly out of scope.
 | `Complexity` strategy | Deferred | Until fully specified |
 | `Random` strategy | Deferred | Until fully specified |
 | Replay-identical ordering | Not guaranteed | Total order within a run, but not reproducible across runs |
-| Truth maintenance (`logical` CE) | Not planned | Performance/serialization costs outweigh benefits |
+| Truth maintenance (`logical` CE) | Explicitly rejected | Logical support is outside the current supported subset; no performance claim is implied |
 | Triple-nested negation | Not supported | Decompose into multiple rules |
 | `(exists (not ...))` | Not supported | Use separate rules |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
