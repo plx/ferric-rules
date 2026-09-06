@@ -270,3 +270,36 @@ fn restored_template_assertions_preserve_slot_cardinality() {
         assert!(matches!(&facts[0].1.slots[0], Value::Multifield(values) if values.len() == 3));
     }
 }
+
+#[test]
+fn multislot_omits_void_expression_results_and_preserves_effects() {
+    let mut engine = Engine::with_rules(
+        r#"
+        (deftemplate item (multislot many))
+        (deffunction nothing () (printout t "side-effect" crlf))
+        (defrule create
+            =>
+            (assert (item (many before (nothing) after)))
+            (printout t "after-assert" crlf))
+        "#,
+    )
+    .unwrap();
+    let run = engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(run.rules_fired, 1);
+    assert_eq!(run.halt_reason, HaltReason::AgendaEmpty);
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.get_output("t"), Some("side-effect\nafter-assert\n"));
+    let facts = template_facts(&engine, "item");
+    assert_eq!(facts.len(), 1);
+    let Value::Multifield(values) = &facts[0].1.slots[0] else {
+        panic!("expected a multislot");
+    };
+    let fields: Vec<_> = values
+        .iter()
+        .map(|value| match value {
+            Value::Symbol(symbol) => engine.resolve_symbol(*symbol).unwrap(),
+            _ => panic!("only the two surrounding symbols should be retained"),
+        })
+        .collect();
+    assert_eq!(fields, ["before", "after"]);
+}

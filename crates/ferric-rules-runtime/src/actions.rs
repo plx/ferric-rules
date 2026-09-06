@@ -2763,6 +2763,9 @@ fn apply_template_slot_overrides(
                         Value::Multifield(fields) => {
                             values.extend(fields.as_slice().iter().cloned());
                         }
+                        // CLIPS omits expressions that return no value from
+                        // multislot construction while retaining their effects.
+                        Value::Void => {}
                         value => values.push(value),
                     }
                 }
