@@ -42,7 +42,7 @@ env:
 
 jobs:
   perf-compare:
-    if: inputs.workload_set != 'threading'
+    if: ${{ !startsWith(inputs.workload_set, 'threading') }}
     name: Perf Comparison Report
     runs-on: ubuntu-latest
     steps:
@@ -111,7 +111,7 @@ jobs:
             /tmp/head-perf-manifest.json
 
   threading-compare:
-    if: inputs.workload_set == 'threading'
+    if: startsWith(inputs.workload_set, 'threading')
     name: Paired threading measurements
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -128,7 +128,8 @@ jobs:
         env:
           BASE_SHA: ${{ inputs.base_sha }}
           HEAD_SHA: ${{ inputs.head_sha }}
-        run: scripts/bench-threading.sh "$BASE_SHA" "$HEAD_SHA" "$RUNNER_TEMP/threading-measurements"
+          WORKLOAD_SET: ${{ inputs.workload_set }}
+        run: scripts/bench-threading.sh "$BASE_SHA" "$HEAD_SHA" "$RUNNER_TEMP/threading-measurements" "$WORKLOAD_SET"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

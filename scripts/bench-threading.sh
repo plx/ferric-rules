@@ -4,6 +4,7 @@ set -euo pipefail
 base_sha="$1"
 head_sha="$2"
 output="$3"
+mode="${4:-threading}"
 [[ "$base_sha" =~ ^[0-9a-f]{40}$ && "$head_sha" =~ ^[0-9a-f]{40}$ ]]
 mkdir -p "$output"
 output="$(cd "$output" && pwd)"
@@ -28,11 +29,22 @@ git worktree add --detach "$experiment/candidate" "$head_sha"
 } > "$output/environment.txt"
 suites=(engine_bench waltz_bench churn_bench join_bench serialization_bench)
 filters=('^lifecycle_(load_reset_run|reset_run)_(100|1000)$' '^(waltz_100_junctions|waltz_500/waltz_500_junctions)$' '^churn_(500|2000)_facts$' '^join_(strings|nested_multifields)_(100|1000)$' '^serde_(small|medium)/(serialize|deserialize)$')
+package=ferric-rules
+expected=16
+if [[ "$mode" == threading-capi ]]; then
+    package=ferric-rules-ffi
+    suites=(capi_bench)
+    filters=('^capi/(lifecycle|read_output)/(100|1000)$')
+    expected=4
+elif [[ "$mode" != threading ]]; then
+    echo "Unknown measurement set: $mode" >&2
+    exit 1
+fi
 # Finish both builds before measuring; each revision has its own output directory.
 for variant in base candidate; do
     (
         cd "$experiment/$variant"
-        build=(cargo bench --locked -p ferric-rules --features serde --no-run)
+        build=(cargo bench --locked -p "$package" --features serde --no-run)
         for suite in "${suites[@]}"; do build+=(--bench "$suite"); done
         "${build[@]}" > "$output/$variant-build.log" 2>&1
         git status --porcelain > "$output/$variant-status.txt"
@@ -48,7 +60,7 @@ for round in a b; do
             for index in "${!suites[@]}"; do
                 suite="${suites[$index]}"
                 printf '%s: %s\n' "$label" "$suite"
-                cargo bench --locked -p ferric-rules --features serde --bench "$suite" -- \
+                cargo bench --locked -p "$package" --features serde --bench "$suite" -- \
                     "${filters[$index]}" --sample-size 30 --measurement-time 3 --warm-up-time 1 \
                     --noplot --save-baseline "$label" > "$output/$label/$suite.log" 2>&1
             done
@@ -56,11 +68,12 @@ for round in a b; do
         )
     done
 done
-python3 - "$output" <<'PY'
+python3 - "$output" "$expected" <<'PY'
 import json
 import pathlib
 import sys
 root = pathlib.Path(sys.argv[1])
+expected = int(sys.argv[2])
 results = {}
 for label in ('base-a', 'candidate-a', 'base-b', 'candidate-b'):
     rows = []
@@ -72,8 +85,8 @@ for label in ('base-a', 'candidate-a', 'base-b', 'candidate-b'):
                      'median_ns': estimates['median']['point_estimate'],
                      'median_confidence_interval_ns': estimates['median']['confidence_interval'],
                      'samples': len(samples['times'])})
-    if len(rows) != 16:
-        raise SystemExit(f'{label}: expected16 medians, found{len(rows)}')
+    if len(rows) != expected:
+        raise SystemExit(f'{label}: expected {expected} medians, found {len(rows)}')
     results[label] = sorted(rows, key=lambda row: row['benchmark'])
 (root / 'medians.json').write_text(json.dumps(results, indent=2) + '\n')
 PY
