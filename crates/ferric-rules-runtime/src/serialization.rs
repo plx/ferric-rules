@@ -1192,6 +1192,13 @@ mod tests {
     }
 
     #[test]
+    fn committed_schema_one_snapshot_preserves_resume_and_reset_behavior() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-1.cbor");
+        let restored = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        verify_schema_one_resume(restored);
+    }
+
+    #[test]
     fn schema_one_fixture_source_has_expected_resume_behavior() {
         let engine = schema_one_fixture_engine();
         let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
