@@ -1,13 +1,13 @@
 # TypeScript Binding Normative Contract (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-011 bounded pool backpressure)
-Status: Draft for reimplementation
+Updated: 2026-09-06 (bounded rehabilitation of values, lifecycle, and package consumers)
+Status: Implemented contract; validation and deliberate scope are tracked in [rehabilitation status](audits/rehabilitation-status.md).
 
 Companion documents:
-- [Architecture](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-architecture.md)
-- [Conformance Matrix](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-conformance-matrix.md)
-- [Test Specification](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-test-spec.md)
+- [Architecture](typescript-binding-architecture.md)
+- [Conformance Matrix](typescript-binding-conformance-matrix.md)
+- [Test Specification](typescript-binding-test-spec.md)
 
 ## 1. Normative Language
 The keywords `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative.
@@ -15,6 +15,31 @@ The keywords `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative.
 If this contract conflicts with legacy design docs, this contract wins.
 
 ## 2. Public Package Contract
+
+The supported runtime is Node 22 or newer. All seven declared native targets
+remain supported. Node 18/20 are end-of-life; unconditional disposal symbols also
+made the former `>=18` claim inaccurate before Node 18.18. This is a deliberate
+pre-1.0 minimum-version correction ([Node release status](https://nodejs.org/en/about/previous-releases),
+[18.18 disposal introduction](https://nodejs.org/en/blog/release/v18.18.0)).
+Package root exports support CommonJS require, ESM named/dynamic import and
+Node16/NodeNext type resolution. Only the root and `package.json` are exported.
+
+Implicit snapshots now use recommended CBOR. Explicit Bincode and the other
+formats remain experimental. Native envelope compatibility applies to every
+format; old implicit Bincode bytes require an explicit format only when their
+versioned envelope is compatible. Legacy raw snapshots are not silently migrated.
+
+Integral JavaScript numbers must be safe integers; use bigint for the signed
+64-bit range. Integral numbers outside that range are rejected instead of
+being guessed as floats. Run limits and counts use exact numbers through
+`Number.MAX_SAFE_INTEGER`, rejecting overflow. Native value conversion is staged
+into owned data and guarded against same-engine reentry; callbacks cannot close
+or access an engine while its native operation is admitted. Static factories
+always return a native `Engine`, even when called through a subclass or with
+`.call()`. Returning a subclass from those factories is no longer supported;
+this prevents another native class from receiving an incompatible Rust pointer.
+The private worker continuation function retains native class-receiver validation
+and is removed from the `Engine` prototype before addon initialization completes.
 
 ### 2.1 Exports
 1. Package entrypoint `@ferric-rules/node` `MUST` export concrete runtime values:
@@ -41,7 +66,7 @@ If this contract conflicts with legacy design docs, this contract wins.
 ### 3.1 JS -> CLIPS
 1. `FerricSymbol` -> CLIPS Symbol.
 2. `string` -> CLIPS String (quoted).
-3. `number` -> CLIPS Integer when integral and within `i64`; otherwise Float.
+3. Safe integral `number` -> CLIPS Integer; non-integral numbers -> Float. Unsafe integral numbers are rejected; use bigint or explicit CLIPS float syntax.
 4. `bigint` -> CLIPS Integer.
 5. `boolean` -> CLIPS Symbols `TRUE` / `FALSE`.
 6. `Array` -> CLIPS Multifield recursively.
@@ -54,7 +79,7 @@ If this contract conflicts with legacy design docs, this contract wins.
 4. CLIPS Integer outside safe range -> `bigint`.
 5. CLIPS Float -> `number`.
 6. CLIPS Multifield -> `ClipsValue[]` recursively.
-7. CLIPS Void and ExternalAddress -> `null`.
+7. CLIPS Void -> `null`; ExternalAddress is explicitly rejected, including inside multifields.
 
 ### 3.3 Fact Identifiers
 1. Every fact ID returned by `assertString`, `assertFact`, or `assertTemplate`,
@@ -127,9 +152,10 @@ If this contract conflicts with legacy design docs, this contract wins.
    `MUST NOT` run on that success path.
 8. The initialization-send case in item 5 defines failed-create ownership.
    Ordinary request-send rollback is governed by section 8.1. Items 5-7 also
-   do not define the completion barrier for concurrent public `close()` calls,
-   which remains FR-NODE-010.
-9. `EngineHandle.close()` `MUST` be idempotent.
+   are independent of the public close completion barrier.
+9. `EngineHandle.close()` `MUST` share one completion Promise across all calls.
+   It rejects pending requests even when Worker termination fails. Every close
+   caller observes the same cleanup completion or failure.
 10. `EngineHandle` `MUST` support `[Symbol.asyncDispose]()` and delegate to `close()`.
 
 ### 4.3 EnginePool
@@ -145,7 +171,7 @@ If this contract conflicts with legacy design docs, this contract wins.
    - reject new requests after close starts,
    - allow already-dispatched requests and admitted `do` callbacks to settle,
    - then terminate workers.
-4. `EnginePool.close()` `MUST` be idempotent.
+4. `EnginePool.close()` `MUST` share one completion Promise and wait for all slots, including when another slot fails to terminate.
 5. `EnginePool` `MUST` support `[Symbol.asyncDispose]()` and delegate to `close()`.
 6. Every pool Worker slot `MUST` have an explicit `running`, `failed`,
    `terminating`, or `closed` state. A Worker `error`, or an `exit` before the
@@ -590,11 +616,10 @@ rejection point. Under the section 4.5 invariant, `queued` equals `capacity`.
     settles. Cancellation completion, callback release, and queued-admission
     cancellation `MUST` return their owned listener and lease bookkeeping to
     baseline exactly once.
-12. Items 1-11 do not require generic cleanup of a root request's queue
-    listener after successful dispatch (FR-NODE-006), do not change concurrent
-    `close()` Promise sharing (FR-NODE-010), and do not let abort dequeue owner
-    work already accepted under section 4.5. Capacity admission for a later
-    proxy call occurs only after this section's gates succeed.
+12. A root request's queue listener is removed before successful dispatch and
+    on every terminal removal. Cancellation does not dequeue owner work already
+    accepted under section 4.5. Capacity admission for a later proxy call occurs
+    only after this section's gates succeed.
 
 ## 8. Worker Protocol Contract
 
@@ -723,4 +748,4 @@ interface WorkerResponse {
 
 1. Every requirement ID in the Conformance Matrix sections A-E `MUST` have at least one automated test case.
 2. All `FAIL` and `UNKNOWN` statuses from the matrix `MUST` be eliminated before declaring implementation complete.
-3. Test suite requirements are defined in [Test Specification](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-test-spec.md).
+3. Test suite requirements are defined in [Test Specification](typescript-binding-test-spec.md).

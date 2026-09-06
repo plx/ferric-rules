@@ -130,7 +130,9 @@ function wrapEngineWithErrorConversion(RawEngine: NativeEngineConstructor): Nati
         };
       }
 
-      const value = Reflect.get(target, prop, target);
+      let value: unknown;
+      try { value = Reflect.get(target, prop, target); }
+      catch (error) { throw convertNativeError(error); }
       if (typeof value === "function") {
         return function (this: unknown, ...args: unknown[]) {
           try {

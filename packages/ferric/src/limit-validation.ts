@@ -1,10 +1,12 @@
+import { FerricRuntimeError } from "./types";
+
 /**
  * Shared runtime validation for public run/evaluate limits.
  */
 
 function invalidLimit(context: string): never {
   throw new TypeError(
-    `${context}: 'limit' must be a finite non-negative integer`,
+    `${context}: 'limit' must be a finite non-negative integer in the safe integer range`,
   );
 }
 
@@ -25,7 +27,7 @@ export function normalizeRunLimit(
   if (
     typeof limit !== "number" ||
     !Number.isFinite(limit) ||
-    !Number.isInteger(limit) ||
+    !Number.isSafeInteger(limit) ||
     limit < 0
   ) {
     invalidLimit(context);
@@ -48,4 +50,13 @@ export function normalizeEvaluateLimit(
   }
 
   return normalizeRunLimit(limit, context) as number;
+}
+
+/** Preserve exact progress across worker batches instead of silently rounding. */
+export function addFiredCount(total: number, chunk: number): number {
+  const result = total + chunk;
+  if (!Number.isSafeInteger(chunk) || chunk < 0 || !Number.isSafeInteger(result)) {
+    throw new FerricRuntimeError("fired count exceeds JavaScript safe integer range");
+  }
+  return result;
 }

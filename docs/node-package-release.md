@@ -4,6 +4,10 @@
 npm install receives a native addon without compiling Rust or retaining a
 source checkout.
 
+Runtime minimum is Node 22; all native targets below are retained. The explicit
+exports map exposes the package root and `package.json`, with matching CommonJS,
+ESM, and type entrypoints. Other subpaths are private.
+
 ## Artifact contract
 
 The main tarball contains the compiled JavaScript/declarations plus
@@ -51,7 +55,7 @@ main and current-platform native tarballs. It also packs the installed,
 version-locked `detect-libc` dependency into temporary test storage so the
 consumer install uses no registry or pre-existing npm cache. It installs all
 three tarballs offline into a temporary project outside the repository, then
-uses CommonJS and dynamic `import()` to create, run, and close engines. The smoke
+checks CommonJS require, ESM named/dynamic imports, and Node16/NodeNext TypeScript consumers. The shared launch-selection program selects one action in sync/worker engines and after CBOR snapshot/resume; invalid input produces a typed diagnostic. The smoke
 also checks that the binary reports the same version as both package manifests.
 
 The `Node Package Artifacts` workflow repeats this operation on every declared
@@ -61,5 +65,4 @@ matching-architecture Linux host; they do not use CPU emulation. The workflow
 uploads the exact tarballs, checks target coverage, and requires the
 independently packed main tarball to be byte-identical across the matrix. It
 does not upload the temporary dependency tarball. It stages release artifacts
-only; publishing to npm remains subject to the production-readiness release
-checkpoint.
+only; public registry publication is outside the rehabilitation scope.

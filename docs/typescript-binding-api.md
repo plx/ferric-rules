@@ -17,16 +17,22 @@ Define a TypeScript-native API for ferric-rules that:
 3. Provides both a synchronous low-level API and an async worker-backed API for non-blocking use.
 4. Implements via [napi-rs](https://napi.rs), linking directly to Rust — no C FFI hop.
 
-## Thread Affinity in Node.js
+## Execution in Node.js
 
-The Ferric engine is thread-affine: it must be used only on the OS thread that created it. Node.js has a single main thread for JavaScript execution, which makes simple usage straightforward — a synchronous `Engine` created on the main thread naturally satisfies the contract.
+The Rust engine supports ownership transfer and shared reads. A native Node
+object belongs to its V8 isolate, so `Engine` remains a synchronous API in that
+isolate. Every native call has checked reentrancy protection: a JavaScript
+getter cannot close or access an engine during its admitted operation.
 
-The challenge arises when:
+Long `load`, `run`, serialization, and file operations block the calling event
+loop. Use `EngineHandle` for their asynchronous worker-backed counterparts;
+serialize there and use `node:fs/promises.writeFile` to save without blocking the
+main thread. `EnginePool` retains independent workers for parallel evaluations
+and exclusive leases. No dedicated-thread assumption is needed for the Rust
+engine itself.
 
-1. **Long-running `run()` blocks the event loop.** A complex ruleset may fire thousands of rules synchronously.
-2. **Worker threads** (`node:worker_threads`) each have their own V8 isolate and OS thread.
-
-The design addresses both via a two-layer architecture.
+Node 22 is the supported minimum. See the [normative contract](typescript-binding-normative-contract.md)
+for the pre-1.0 numeric, disposal, import, and snapshot migrations.
 
 ## Architecture
 
@@ -93,7 +99,7 @@ export class FerricSymbol {
  * Conversion rules (JS → CLIPS):
  *   FerricSymbol    → CLIPS symbol
  *   string          → CLIPS string (quoted)
- *   number          → CLIPS integer (if Number.isInteger) or float
+ *   number          → CLIPS integer (safe integers only) or float
  *   boolean         → CLIPS symbol TRUE / FALSE
  *   bigint          → CLIPS integer (for values outside safe-integer range)
  *   ClipsValue[]    → CLIPS multifield
@@ -421,7 +427,7 @@ export class Engine {
 
   /**
    * Serialize the engine's current state.
-   * @param format Serialization format. Default: Bincode.
+   * @param format Serialization format. Default: Cbor (recommended).
    */
   serialize(format?: Format): Buffer;
 
@@ -471,7 +477,7 @@ Worker to the returned handle.
 This failed-create rule includes cleanup after an initialization
 `postMessage` throw. Ordinary handle sends use the request-local rollback rule
 in the Worker Communication Protocol below. The completion barrier shared by
-concurrent public `close()` calls remains FR-NODE-010.
+concurrent public `close()` calls now waits for the same complete cleanup.
 
 After a returned handle registers an ordinary request, a synchronous
 `postMessage` failure rejects that request's Promise with the exact thrown
@@ -933,7 +939,7 @@ bounded admission and metrics contract above.
 |---------|-----------|-------|
 | `FerricSymbol` | Symbol | Explicit marker type |
 | `string` | String | Quoted CLIPS string |
-| `number` (integer) | Integer | `Number.isInteger(n)` check |
+| `number` (safe integer) | Integer | `Number.isSafeInteger(n)`; unsafe integers rejected |
 | `number` (float) | Float | |
 | `bigint` | Integer | For values outside `Number.MAX_SAFE_INTEGER` |
 | `boolean` | Symbol | `true` → `TRUE`, `false` → `FALSE` |

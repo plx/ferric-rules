@@ -26,7 +26,7 @@ import type { WorkerRequest, WorkerResponse, PoolWorkerInit } from "./wire";
 import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, fromWireToNative, extractFerricError } from "./wire";
 import type { NativeEngine } from "./native";
 import type { EvaluateRequest, EvaluateResult, FactIdInput } from "./types";
-import { normalizeEvaluateLimit, normalizeRunLimit } from "./limit-validation";
+import { addFiredCount, normalizeEvaluateLimit, normalizeRunLimit } from "./limit-validation";
 
 type NativeContinueRun = (
   engine: NativeEngine,
@@ -130,7 +130,7 @@ function batchedRun(
       ? engine.run(batchLimit)
       : nativeContinueRun(engine, batchLimit);
     firstChunk = false;
-    totalFired += result.rulesFired;
+    totalFired = addFiredCount(totalFired, result.rulesFired);
 
     if (result.haltReason !== 1 /* LimitReached */) {
       return { rulesFired: totalFired, haltReason: result.haltReason };

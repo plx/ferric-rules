@@ -6,34 +6,40 @@ use ferric_rules_runtime::engine::EngineError;
 use ferric_rules_runtime::loader::LoadError;
 use ferric_rules_runtime::InitError;
 
-/// Convert an [`EngineError`] to a napi [`Error`].
-pub fn engine_error_to_napi(err: EngineError) -> Error {
-    let msg = match &err {
-        EngineError::FactNotFound(_) => {
-            format!("FerricFactNotFoundError: {err}")
-        }
-        EngineError::TemplateNotFound(_) => {
-            format!("FerricTemplateNotFoundError: {err}")
-        }
-        EngineError::SlotNotFound { .. } => {
-            format!("FerricSlotNotFoundError: {err}")
-        }
-        EngineError::ModuleNotFound(_) => {
-            format!("FerricModuleNotFoundError: {err}")
-        }
-        EngineError::Encoding(_) => {
-            format!("FerricEncodingError: {err}")
-        }
-        EngineError::WrongThread { .. }
-        | EngineError::NotATemplateFact(_)
+fn engine_error_class(err: &EngineError) -> &'static str {
+    match err {
+        EngineError::FactNotFound(_) => "FerricFactNotFoundError",
+        EngineError::TemplateNotFound(_) => "FerricTemplateNotFoundError",
+        EngineError::SlotNotFound { .. } => "FerricSlotNotFoundError",
+        EngineError::ModuleNotFound(_) => "FerricModuleNotFoundError",
+        EngineError::Encoding(_) => "FerricEncodingError",
+        EngineError::WrongThread { .. } | EngineError::NotATemplateFact(_)
         | EngineError::SlotCountMismatch { .. }
         | EngineError::DuplicateSlot { .. }
         | EngineError::InvalidSlotValue { .. }
-        | EngineError::ProtectedInitialFact => {
-            format!("FerricRuntimeError: {err}")
-        }
-    };
-    Error::new(Status::GenericFailure, msg)
+        | EngineError::ProtectedInitialFact => "FerricRuntimeError",
+    }
+}
+
+/// Convert an [`EngineError`] to a napi [`Error`].
+pub fn engine_error_to_napi(err: EngineError) -> Error {
+    Error::new(
+        Status::GenericFailure,
+        format!("{}: {err}", engine_error_class(&err)),
+    )
+}
+
+fn load_error_class(err: &LoadError) -> &'static str {
+    match err {
+        LoadError::Parse(_) | LoadError::Interpret(_) => "FerricParseError",
+        LoadError::UnsupportedForm { .. }
+        | LoadError::InvalidAssert(_)
+        | LoadError::InvalidDefrule(_)
+        | LoadError::Compile(_)
+        | LoadError::Validation(_) | LoadError::ResourceLimit { .. } => "FerricCompileError",
+        LoadError::Engine(error) => engine_error_class(error),
+        LoadError::Io(_) => "FerricIOError",
+    }
 }
 
 /// Convert a `Vec<LoadError>` to a napi [`Error`].
@@ -47,17 +53,15 @@ pub fn load_errors_to_napi(errors: Vec<LoadError>) -> Error {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let has_parse = errors.iter().any(|e| matches!(e, LoadError::Parse(_)));
-    let has_compile = errors
-        .iter()
-        .any(|e| matches!(e, LoadError::Compile(_) | LoadError::ResourceLimit { .. }));
-
-    let prefix = if has_parse {
+    let classes = errors.iter().map(load_error_class).collect::<Vec<_>>();
+    // Preserve parse-before-compile precedence for mixed diagnostics. Every
+    // known variant has a category; an empty error list remains generic.
+    let prefix = if classes.contains(&"FerricParseError") {
         "FerricParseError"
-    } else if has_compile {
+    } else if classes.contains(&"FerricCompileError") {
         "FerricCompileError"
     } else {
-        "FerricError"
+        classes.first().copied().unwrap_or("FerricError")
     };
 
     Error::new(Status::GenericFailure, format!("{prefix}: {msg}"))
@@ -69,6 +73,12 @@ pub fn init_error_to_napi(err: InitError) -> Error {
         InitError::Load(errors) => load_errors_to_napi(errors),
         InitError::Reset(engine_err) => engine_error_to_napi(engine_err),
     }
+}
+
+/// Preserve file failures from snapshot convenience methods as typed I/O errors.
+#[cfg(feature = "serde")]
+pub fn io_error_to_napi(err: std::io::Error) -> Error {
+    Error::new(Status::GenericFailure, format!("FerricIOError: {err}"))
 }
 
 /// Convert a serialization error to a napi [`Error`].
