@@ -1374,6 +1374,8 @@ def _allowed_sdist_relative_path(relative: PurePosixPath) -> bool:
         if len(tail.parts) == 2:
             return tail.suffix == ".rs"
         if tail.parts[:2] == ("tests", "fixtures"):
+            if tail.parts[:3] == ("tests", "fixtures", "snapshots"):
+                return tail.suffix in {".clp", ".cbor", ".md"}
             return tail.suffix == ".clp"
     return False
 
