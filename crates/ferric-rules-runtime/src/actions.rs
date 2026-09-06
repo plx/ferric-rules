@@ -1751,15 +1751,9 @@ fn execute_undefrule(
         "undefrule",
     )?;
 
-    for rule_id in selected {
-        if let Some(slot) = context.engine.rule_info.get_mut(rule_id.0 as usize) {
-            *slot = None;
-        }
-        if let Some(slot) = context.engine.rule_modules.get_mut(rule_id.0 as usize) {
-            *slot = None;
-        }
-        context.engine.rete.disable_rule(rule_id);
-    }
+    context
+        .engine
+        .remove_compiled_rules(&selected.into_iter().collect::<Vec<_>>());
 
     Ok(())
 }

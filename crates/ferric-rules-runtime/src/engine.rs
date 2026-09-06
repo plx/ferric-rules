@@ -35,10 +35,10 @@ fn run_result(rules_fired: usize, halt_reason: HaltReason) -> RunResult {
 /// Dense indexed storage for per-rule data, keyed by `RuleId`.
 ///
 /// This uses a `Vec<Option<T>>` instead of a `HashMap` because `RuleId`s are
-/// allocated by `ReteCompiler` as a strictly monotonic, gap-free sequence
-/// starting at 1 — a new ID is only consumed after successful compilation,
-/// so failed compiles never create gaps. `undefrule` sets slots to `None`
-/// but does not grow the Vec beyond its natural size (8 bytes per hole).
+/// initially allocated by `ReteCompiler` starting at 1. Retired slots are reused
+/// after successful planning, so reload/undefine cycles do not accumulate holes
+/// or consume new metadata slots. Rule IDs are internal executable identities,
+/// not durable identities for a source rule across replacement.
 ///
 /// Direct indexed access provides faster O(1) lookups on the execution hot
 /// path (activation selection, rule firing, agenda display) compared to
@@ -209,6 +209,22 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Remove executable metadata and reclaim only rule-exclusive graph state.
+    pub(crate) fn remove_compiled_rules(&mut self, rules: &[RuleId]) {
+        if rules.is_empty() {
+            return;
+        }
+        for rule in rules {
+            if let Some(slot) = self.rule_info.get_mut(rule.0 as usize) {
+                *slot = None;
+            }
+            if let Some(slot) = self.rule_modules.get_mut(rule.0 as usize) {
+                *slot = None;
+            }
+        }
+        self.compiler.remove_rules(&mut self.rete, rules);
+    }
+
     /// Create a new engine with the given configuration.
     #[must_use]
     pub fn new(config: EngineConfig) -> Self {

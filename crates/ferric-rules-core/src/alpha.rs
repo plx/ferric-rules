@@ -364,6 +364,76 @@ impl AlphaNetwork {
         self.entry_nodes.keys()
     }
 
+    /// Reclaim paths no longer consumed by a live beta node. Compaction
+    /// preserves fact membership and returns the old-to-new memory mapping.
+    pub(crate) fn retain_memories(
+        &mut self,
+        retained: &HashSet<AlphaMemoryId>,
+    ) -> Vec<Option<AlphaMemoryId>> {
+        let mut memory_map = vec![None; self.memories.len()];
+        let mut memories = Vec::with_capacity(retained.len());
+        for mut memory in self.memories.drain(..) {
+            if retained.contains(&memory.id) {
+                let new_id = AlphaMemoryId(u32::try_from(memories.len()).unwrap());
+                memory_map[memory.id.0 as usize] = Some(new_id);
+                memory.id = new_id;
+                memories.push(memory);
+            }
+        }
+        self.memories = memories;
+
+        // Alpha paths are created parent-first. Keep a node if it owns a live
+        // memory or leads to one; no historical rule ownership table is needed.
+        let mut keep = vec![false; self.nodes.len()];
+        for (index, node) in self.nodes.iter().enumerate().rev() {
+            keep[index] = node.memory().is_some_and(|id| retained.contains(&id))
+                || node.children().iter().any(|id| keep[id.0 as usize]);
+        }
+        let mut node_map = vec![None; self.nodes.len()];
+        let mut next = 0;
+        for (index, &live) in keep.iter().enumerate() {
+            if live {
+                node_map[index] = Some(NodeId(next));
+                next += 1;
+            }
+        }
+        self.nodes = self
+            .nodes
+            .drain(..)
+            .enumerate()
+            .filter_map(|(index, mut node)| {
+                if !keep[index] {
+                    return None;
+                }
+                *node.children_mut() = node
+                    .children()
+                    .iter()
+                    .filter_map(|id| node_map[id.0 as usize])
+                    .collect();
+                *node.memory_mut() = node.memory().and_then(|id| memory_map[id.0 as usize]);
+                Some(node)
+            })
+            .collect();
+        self.entry_nodes.retain(|_, id| {
+            if let Some(new_id) = node_map[id.0 as usize] {
+                *id = new_id;
+                true
+            } else {
+                false
+            }
+        });
+        self.fact_to_memories.retain(|_, ids| {
+            *ids = ids
+                .iter()
+                .filter_map(|id| memory_map[id.0 as usize])
+                .collect();
+            !ids.is_empty()
+        });
+        self.next_node_id = next;
+        self.next_memory_id = u32::try_from(self.memories.len()).unwrap();
+        memory_map
+    }
+
     /// Get or create an entry node for a given entry type.
     ///
     /// Entry nodes are unique per entry type (idempotent).

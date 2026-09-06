@@ -206,6 +206,32 @@ impl ReteCompiler {
         id
     }
 
+    /// Retire rules and their uniquely owned network state while preserving
+    /// surviving shared matches. Reload work is bounded by the current graph.
+    pub fn remove_rules(&mut self, rete: &mut ReteNetwork, rules: &[RuleId]) {
+        if rules.is_empty() {
+            return;
+        }
+        let mapping = rete.remove_rules(rules);
+        self.alpha_path_cache.retain(|_, memory| {
+            if let Some(new_id) = mapping[memory.0 as usize] {
+                *memory = new_id;
+                true
+            } else {
+                false
+            }
+        });
+        self.join_node_cache = self
+            .join_node_cache
+            .drain()
+            .filter_map(|(mut key, node)| {
+                rete.beta.get_node(node)?;
+                key.alpha_memory = mapping[key.alpha_memory.0 as usize].unwrap();
+                Some((key, node))
+            })
+            .collect();
+    }
+
     /// Compile a rule into the rete network.
     ///
     /// Creates (or reuses) alpha paths for each pattern, builds the beta

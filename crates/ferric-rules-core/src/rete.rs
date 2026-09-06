@@ -379,6 +379,40 @@ impl ReteNetwork {
             .retain(|pending| pending.rule != rule_id);
     }
 
+    /// Reclaim rule-exclusive state without replaying facts into live siblings.
+    /// The compiler must remap its caches using the returned alpha memory map.
+    pub(crate) fn remove_rules(&mut self, rules: &[RuleId]) -> Vec<Option<AlphaMemoryId>> {
+        use rustc_hash::FxHashSet as HashSet;
+        let removed: HashSet<_> = rules.iter().copied().collect();
+        let retained = self.beta.retained_nodes(&removed);
+        let dead_tokens: HashSet<_> = self
+            .beta
+            .iter_nodes()
+            .filter(|(id, _)| !retained.contains(id))
+            .filter_map(|(id, _)| self.beta.memory_id_for_node(id))
+            .filter_map(|memory| self.beta.get_memory(memory))
+            .flat_map(BetaMemory::iter)
+            .collect();
+        // No live node descends from a removed node: retained ancestors include
+        // every NCC partner path. Removed token cascades therefore cannot alter
+        // a surviving rule's support or agenda entry.
+        for root in self.token_store.retraction_roots(&dead_tokens) {
+            for (token, _) in self.token_store.remove_cascade(root) {
+                self.agenda.remove_activations_for_token(token);
+            }
+        }
+        for rule in rules {
+            self.agenda.remove_activations_for_rule(*rule);
+            self.disabled_rules.remove(rule);
+        }
+        self.pending_predicate_matches
+            .retain(|pending| retained.contains(&pending.node));
+        let alpha_memories = self.beta.retain_nodes(&retained);
+        let mapping = self.alpha.retain_memories(&alpha_memories);
+        self.beta.remap_alpha_memories(&mapping);
+        mapping
+    }
+
     /// Return whether a rule's retained network nodes have been disabled.
     #[must_use]
     #[doc(hidden)]

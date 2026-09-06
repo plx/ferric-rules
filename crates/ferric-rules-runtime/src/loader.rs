@@ -17,6 +17,7 @@
 //! - `test` CE compilation (currently returns compile error).
 //! - Template pattern compilation (currently returns compile error).
 
+use ferric_rules_core::RuleId;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -61,6 +62,11 @@ struct PreparedRuleInstallation {
     plan: ConditionCompilationPlan,
     info: Arc<CompiledRuleInfo>,
     module: crate::modules::ModuleId,
+}
+
+struct RuleRhsScope<'a> {
+    exported: &'a HashSet<String>,
+    existential: &'a HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1498,6 +1504,31 @@ impl Engine {
             }
         }
 
+        // Rule identity is its owning module plus local name. Retire all
+        // internal disjunction variants only after the replacement is fully
+        // prepared, leaving failed reloads and unrelated shared matches intact.
+        let local_name = parse_qualified_name(&rule.name)
+            .map_err(|error| LoadError::Compile(error.clone()))?
+            .local_name()
+            .to_string();
+        let module = self.module_registry.current_module();
+        let replaced: Vec<_> = self
+            .rule_info
+            .iter()
+            .enumerate()
+            .filter_map(|(index, info)| {
+                let info = info.as_ref()?;
+                let id = RuleId(u32::try_from(index).ok()?);
+                let same_module =
+                    crate::engine::rule_index_get(&self.rule_modules, id) == Some(&module);
+                (same_module
+                    && parse_qualified_name(&info.name)
+                        .is_ok_and(|name| name.local_name() == local_name))
+                .then_some(id)
+            })
+            .collect();
+        self.remove_compiled_rules(&replaced);
+
         // Every operation from this point through installation is infallible.
         // Return the last result because all expansions share source semantics.
         let mut installed = prepared_rules.into_iter();
@@ -1980,7 +2011,18 @@ impl Engine {
     }
 
     fn install_prepared_rule(&mut self, prepared: PreparedRuleInstallation) -> CompileResult {
-        let rule_id = self.compiler.allocate_rule_id();
+        // Reuse retired executable slots so repeated reload/undefine cycles
+        // keep metadata bounded by the maximum number of simultaneous rules.
+        let rule_id = self
+            .rule_info
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, slot)| {
+                slot.is_none()
+                    .then(|| RuleId(u32::try_from(index).unwrap()))
+            })
+            .unwrap_or_else(|| self.compiler.allocate_rule_id());
 
         // Publish executable metadata before network initialization can produce
         // a predicate candidate or terminal activation for this rule.
@@ -2143,27 +2185,19 @@ impl Engine {
         Ok(())
     }
 
-    fn validate_existential_rhs_scope(
+    fn validate_rule_rhs_scope(
         rule: &RuleConstruct,
         existential_locals: &HashSet<String>,
         exported_variables: &HashSet<String>,
     ) -> Result<(), LoadError> {
-        let restricted: HashSet<String> = existential_locals
-            .difference(exported_variables)
-            .cloned()
-            .collect();
-        if restricted.is_empty() {
-            return Ok(());
-        }
+        let scope = RuleRhsScope {
+            exported: exported_variables,
+            existential: existential_locals,
+        };
 
         let mut rhs_locals = HashSet::new();
         for action in &rule.actions {
-            Self::validate_existential_rhs_call(
-                &rule.name,
-                &action.call,
-                &restricted,
-                &mut rhs_locals,
-            )?;
+            Self::validate_rule_rhs_call(&rule.name, &action.call, &scope, &mut rhs_locals)?;
         }
         Ok(())
     }
@@ -2172,16 +2206,16 @@ impl Engine {
         name.strip_prefix("$?").unwrap_or(name)
     }
 
-    fn validate_existential_rhs_call(
+    fn validate_rule_rhs_call(
         rule_name: &str,
         call: &FunctionCall,
-        restricted: &HashSet<String>,
+        scope: &RuleRhsScope<'_>,
         rhs_locals: &mut HashSet<String>,
     ) -> Result<(), LoadError> {
         if call.name == "bind" {
             if let Some(ActionExpr::Variable(name, _)) = call.args.first() {
                 for value in call.args.iter().skip(1) {
-                    Self::validate_existential_rhs_expr(rule_name, value, restricted, rhs_locals)?;
+                    Self::validate_rule_rhs_expr(rule_name, value, scope, rhs_locals)?;
                 }
                 rhs_locals.insert(Self::existential_scope_variable_name(name).to_string());
                 return Ok(());
@@ -2189,36 +2223,41 @@ impl Engine {
         }
 
         for arg in &call.args {
-            Self::validate_existential_rhs_expr(rule_name, arg, restricted, rhs_locals)?;
+            Self::validate_rule_rhs_expr(rule_name, arg, scope, rhs_locals)?;
         }
         Ok(())
     }
 
     #[allow(clippy::too_many_lines)] // Mirrors every structured RHS scope in ActionExpr.
-    fn validate_existential_rhs_expr(
+    fn validate_rule_rhs_expr(
         rule_name: &str,
         expr: &ActionExpr,
-        restricted: &HashSet<String>,
+        scope: &RuleRhsScope<'_>,
         rhs_locals: &mut HashSet<String>,
     ) -> Result<(), LoadError> {
         match expr {
             ActionExpr::Variable(name, span) => {
                 let scope_name = Self::existential_scope_variable_name(name);
-                if restricted.contains(scope_name) && !rhs_locals.contains(scope_name) {
+                if !scope.exported.contains(scope_name) && !rhs_locals.contains(scope_name) {
                     let display_name = if name.starts_with("$?") {
                         name.clone()
                     } else {
                         format!("?{name}")
                     };
+                    let reason = if scope.existential.contains(scope_name) {
+                        "is not exported by existential conditional element"
+                    } else {
+                        "is an unbound RHS variable"
+                    };
                     return Err(LoadError::Compile(format!(
-                        "rule `{rule_name}` variable {display_name} at line {} is not exported by existential conditional element",
+                        "[PRCCODE3] rule `{rule_name}` variable {display_name} at line {} {reason}",
                         span.start.line
                     )));
                 }
                 Ok(())
             }
             ActionExpr::FunctionCall(call) => {
-                Self::validate_existential_rhs_call(rule_name, call, restricted, rhs_locals)
+                Self::validate_rule_rhs_call(rule_name, call, scope, rhs_locals)
             }
             ActionExpr::If {
                 condition,
@@ -2226,24 +2265,14 @@ impl Engine {
                 else_actions,
                 ..
             } => {
-                Self::validate_existential_rhs_expr(rule_name, condition, restricted, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, condition, scope, rhs_locals)?;
                 let mut then_locals = rhs_locals.clone();
                 for action in then_actions {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut then_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut then_locals)?;
                 }
                 let mut else_locals = rhs_locals.clone();
                 for action in else_actions {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut else_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut else_locals)?;
                 }
                 rhs_locals.extend(then_locals);
                 rhs_locals.extend(else_locals);
@@ -2252,15 +2281,10 @@ impl Engine {
             ActionExpr::While {
                 condition, body, ..
             } => {
-                Self::validate_existential_rhs_expr(rule_name, condition, restricted, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, condition, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 for action in body {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut body_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
                 }
                 rhs_locals.extend(body_locals);
                 Ok(())
@@ -2272,19 +2296,14 @@ impl Engine {
                 body,
                 ..
             } => {
-                Self::validate_existential_rhs_expr(rule_name, start, restricted, rhs_locals)?;
-                Self::validate_existential_rhs_expr(rule_name, end, restricted, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, start, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, end, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 if let Some(name) = var_name {
                     body_locals.insert(name.clone());
                 }
                 for action in body {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut body_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
                 }
                 if let Some(name) = var_name {
                     body_locals.remove(name);
@@ -2298,17 +2317,12 @@ impl Engine {
                 body,
                 ..
             } => {
-                Self::validate_existential_rhs_expr(rule_name, list_expr, restricted, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, list_expr, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 body_locals.insert(var_name.clone());
                 body_locals.insert(format!("{var_name}-index"));
                 for action in body {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut body_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
                 }
                 body_locals.remove(var_name);
                 body_locals.remove(&format!("{var_name}-index"));
@@ -2323,19 +2337,9 @@ impl Engine {
             } => {
                 let mut query_locals = rhs_locals.clone();
                 query_locals.extend(bindings.iter().map(|(name, _)| name.clone()));
-                Self::validate_existential_rhs_expr(
-                    rule_name,
-                    query,
-                    restricted,
-                    &mut query_locals,
-                )?;
+                Self::validate_rule_rhs_expr(rule_name, query, scope, &mut query_locals)?;
                 for action in body {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut query_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut query_locals)?;
                 }
                 for (name, _) in bindings {
                     query_locals.remove(name);
@@ -2349,29 +2353,22 @@ impl Engine {
                 default,
                 ..
             } => {
-                Self::validate_existential_rhs_expr(rule_name, expr, restricted, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, expr, scope, rhs_locals)?;
                 for (case_expr, actions) in cases {
-                    Self::validate_existential_rhs_expr(
-                        rule_name, case_expr, restricted, rhs_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, case_expr, scope, rhs_locals)?;
                     let mut case_locals = rhs_locals.clone();
                     for action in actions {
-                        Self::validate_existential_rhs_expr(
-                            rule_name,
-                            action,
-                            restricted,
-                            &mut case_locals,
-                        )?;
+                        Self::validate_rule_rhs_expr(rule_name, action, scope, &mut case_locals)?;
                     }
                     rhs_locals.extend(case_locals);
                 }
                 if let Some(actions) = default {
                     let mut default_locals = rhs_locals.clone();
                     for action in actions {
-                        Self::validate_existential_rhs_expr(
+                        Self::validate_rule_rhs_expr(
                             rule_name,
                             action,
-                            restricted,
+                            scope,
                             &mut default_locals,
                         )?;
                     }
@@ -3128,7 +3125,7 @@ impl Engine {
             conditions.insert(0, CompilableCondition::Pattern(initial_pattern));
         }
 
-        Self::validate_existential_rhs_scope(rule, &existential_locals, &exported_variables)?;
+        Self::validate_rule_rhs_scope(rule, &existential_locals, &exported_variables)?;
 
         Ok(TranslatedRule {
             salience: Salience::new(rule.salience),
