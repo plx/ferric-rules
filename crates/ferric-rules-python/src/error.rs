@@ -69,6 +69,9 @@ pub fn engine_error_to_pyerr(err: EngineError) -> PyErr {
     match err {
         EngineError::WrongThread { .. }
         | EngineError::NotATemplateFact(_)
+        | EngineError::SlotCountMismatch { .. }
+        | EngineError::DuplicateSlot { .. }
+        | EngineError::InvalidSlotValue { .. }
         | EngineError::ProtectedInitialFact => FerricRuntimeError::new_err(err.to_string()),
         EngineError::FactNotFound(_) => FerricFactNotFoundError::new_err(err.to_string()),
         EngineError::Encoding(_) => FerricEncodingError::new_err(err.to_string()),

@@ -26,6 +26,9 @@ pub fn engine_error_to_napi(err: EngineError) -> Error {
         }
         EngineError::WrongThread { .. }
         | EngineError::NotATemplateFact(_)
+        | EngineError::SlotCountMismatch { .. }
+        | EngineError::DuplicateSlot { .. }
+        | EngineError::InvalidSlotValue { .. }
         | EngineError::ProtectedInitialFact => {
             format!("FerricRuntimeError: {err}")
         }

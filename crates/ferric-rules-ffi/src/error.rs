@@ -158,6 +158,9 @@ pub(crate) fn map_engine_error(err: &EngineError) -> FerricError {
         | EngineError::SlotNotFound { .. } => FerricError::NotFound,
         EngineError::NotATemplateFact(_)
         | EngineError::Encoding(_)
+        | EngineError::SlotCountMismatch { .. }
+        | EngineError::DuplicateSlot { .. }
+        | EngineError::InvalidSlotValue { .. }
         | EngineError::ProtectedInitialFact => FerricError::InvalidArgument,
         #[allow(unreachable_patterns)]
         _ => FerricError::InternalError,

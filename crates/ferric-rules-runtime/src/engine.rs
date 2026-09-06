@@ -485,6 +485,9 @@ impl Engine {
     ///
     /// `slot_names` and `slot_values` must have the same length. Each
     /// `slot_names[i]` is matched to the corresponding `slot_values[i]`.
+    /// Prefer [`Self::assert_template_slots`] when constructing new callers.
+    /// Single-field slots require scalar values. A scalar supplied for a
+    /// multislot becomes a one-element multifield; multifields retain all items.
     ///
     /// # Errors
     ///
@@ -517,6 +520,13 @@ impl Engine {
         slot_names: &[&str],
         slot_values: Vec<Value>,
     ) -> Result<FactAssertionResult, EngineError> {
+        if slot_names.len() != slot_values.len() {
+            return Err(EngineError::SlotCountMismatch {
+                names: slot_names.len(),
+                values: slot_values.len(),
+            });
+        }
+
         let tid = *self
             .template_ids
             .get(template_name)
@@ -530,7 +540,8 @@ impl Engine {
         // Start with default values for all slots.
         let mut slots = def.defaults.clone().into_boxed_slice();
 
-        // Overwrite specified slots.
+        // Validate every override before mutating working memory.
+        let mut seen = vec![false; slots.len()];
         for (name, value) in slot_names.iter().zip(slot_values) {
             let idx = def
                 .slot_index(name)
@@ -538,7 +549,39 @@ impl Engine {
                     template: template_name.to_string(),
                     slot: (*name).to_string(),
                 })?;
-            slots[idx] = value;
+            if std::mem::replace(&mut seen[idx], true) {
+                return Err(EngineError::DuplicateSlot {
+                    template: template_name.to_owned(),
+                    slot: (*name).to_owned(),
+                });
+            }
+            let invalid = |reason: &str| EngineError::InvalidSlotValue {
+                template: template_name.to_owned(),
+                slot: (*name).to_owned(),
+                reason: reason.to_owned(),
+            };
+            if matches!(value, Value::Void) {
+                return Err(invalid("a void value cannot be stored in a fact"));
+            }
+            slots[idx] = match (def.slot_types[idx], value) {
+                (ferric_rules_parser::SlotType::Single, Value::Multifield(_)) => {
+                    return Err(invalid("a single-field slot requires one scalar value"));
+                }
+                (ferric_rules_parser::SlotType::Multi, value @ Value::Multifield(_)) => value,
+                (ferric_rules_parser::SlotType::Multi, scalar) => {
+                    Value::Multifield(Box::new(std::iter::once(scalar).collect()))
+                }
+                (_, scalar) => scalar,
+            };
+        }
+        for (index, value) in slots.iter().enumerate() {
+            if matches!(value, Value::Void) {
+                return Err(EngineError::InvalidSlotValue {
+                    template: template_name.to_owned(),
+                    slot: def.slot_names[index].clone(),
+                    reason: "a value is required by (default ?NONE)".to_owned(),
+                });
+            }
         }
 
         let fact = Fact::Template(TemplateFact {
@@ -547,6 +590,23 @@ impl Engine {
         });
 
         Ok(self.assert_fact_internal(fact))
+    }
+
+    /// Assert named template slot/value pairs, applying defaults to omitted slots.
+    ///
+    /// This form keeps each name with its value; unlike parallel collections it
+    /// cannot contain mismatched counts. Duplicate/unknown slots and invalid
+    /// single-field values are rejected before working memory changes.
+    ///
+    /// # Errors
+    /// Returns the same slot, template and encoding errors as [`Self::assert_template`].
+    pub fn assert_template_slots<'a>(
+        &mut self,
+        template_name: &str,
+        slots: impl IntoIterator<Item = (&'a str, Value)>,
+    ) -> Result<FactId, EngineError> {
+        let (names, values): (Vec<_>, Vec<_>) = slots.into_iter().unzip();
+        self.assert_template(template_name, &names, values)
     }
 
     /// Get the value of a template fact's slot by name.
@@ -1604,6 +1664,19 @@ pub enum EngineError {
 
     #[error("slot not found: template \"{template}\" has no slot \"{slot}\"")]
     SlotNotFound { template: String, slot: String },
+
+    #[error("template slot count mismatch: {names} names but {values} values")]
+    SlotCountMismatch { names: usize, values: usize },
+
+    #[error("duplicate slot \"{slot}\" in template \"{template}\"")]
+    DuplicateSlot { template: String, slot: String },
+
+    #[error("invalid value for slot \"{slot}\" in template \"{template}\": {reason}")]
+    InvalidSlotValue {
+        template: String,
+        slot: String,
+        reason: String,
+    },
 }
 
 /// Errors that can occur when initializing an engine via
