@@ -185,3 +185,21 @@ func TestCoordinatorEveryCloseWaitsForActiveWork(t *testing.T) {
 		}
 	}
 }
+
+func TestRawNegativeRunLimitDoesNotWaitForEngineAdmission(t *testing.T) {
+	e, err := NewEngine()
+	mustNoError(t, err)
+	defer mustClose(t, e)
+	e.lifecycle.Lock()
+	defer e.lifecycle.Unlock()
+	result := make(chan error, 1)
+	go func() { _, err := e.RunWithLimit(context.Background(), -1); result <- err }()
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("error = %v, want invalid argument", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("invalid raw run waited for engine admission")
+	}
+}

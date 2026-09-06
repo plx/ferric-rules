@@ -490,14 +490,14 @@ func (e *Engine) runWithLimit(
 	limit int,
 	shouldInterrupt func() bool,
 ) (*RunResult, error) {
+	if err := validateRunLimit(limit); err != nil {
+		return nil, err
+	}
 	handle, release, err := e.leaseHandle()
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	if err := validateRunLimit(limit); err != nil {
-		return nil, err
-	}
 
 	if ctx == nil {
 		return nil, errNilContext

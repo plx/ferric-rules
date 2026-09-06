@@ -35,4 +35,5 @@ before running or queuing work.
 empty source), and explicit configuration overrides. A restored engine uses
 its saved configuration. Supply only the snapshot and its matching format.
 Every concurrent `Coordinator.Close` call waits for admitted work and worker
-cleanup to finish; shutdown remains idempotent.
+cleanup to finish; shutdown remains idempotent. Call coordinator shutdown
+outside its own `Manager.Do` callbacks, since it waits for those callbacks.
