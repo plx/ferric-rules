@@ -102,28 +102,32 @@ func assertedField(value any) (any, error) {
 	return normalize(fact.Fields[0]), nil
 }
 
+func voidValueCase(nested bool) (any, error) {
+	engine, err := withEngine()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = engine.Close() }()
+	var value any
+	if nested {
+		value = []any{nil}
+	}
+	_, assertionError := engine.AssertFact("probe", value)
+	count, err := engine.FactCount()
+	if err != nil {
+		return nil, err
+	}
+	ingress := "accepted"
+	if assertionError != nil {
+		ingress = "rejected"
+	}
+	return map[string]any{"ingress": ingress, "facts": count}, nil
+}
+
 func valueCase(caseID string) (any, error) {
 	switch caseID {
 	case "value.void", "value.void.nested":
-		engine, err := withEngine()
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = engine.Close() }()
-		var value any
-		if caseID == "value.void.nested" {
-			value = []any{nil}
-		}
-		_, assertionError := engine.AssertFact("probe", value)
-		count, err := engine.FactCount()
-		if err != nil {
-			return nil, err
-		}
-		ingress := "accepted"
-		if assertionError != nil {
-			ingress = "rejected"
-		}
-		return map[string]any{"ingress": ingress, "facts": count}, nil
+		return voidValueCase(caseID == "value.void.nested")
 	case "value.integer.boundaries":
 		minimum, err := assertedField(int64(-1 << 63))
 		if err != nil {
