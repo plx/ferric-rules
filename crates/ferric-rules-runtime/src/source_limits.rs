@@ -135,6 +135,13 @@ pub(crate) fn check_expansion(
             MAX_EXPANDED_RULE_BYTES,
         )?;
     }
+    // Empty-LHS rules still clone their RHS during normalization/installation.
+    check(
+        rule,
+        "expanded source bytes estimate",
+        source_bytes.saturating_mul(alternatives),
+        MAX_EXPANDED_RULE_BYTES,
+    )?;
     budget.charge(
         rule,
         nodes.saturating_mul(alternatives),

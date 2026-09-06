@@ -186,6 +186,27 @@ fn source_size_is_checked_before_parsing_and_preserves_existing_state() {
 }
 
 #[test]
+fn empty_lhs_rules_still_obey_the_per_rule_byte_limit() {
+    let mut engine = Engine::with_rules("(defrule keep => (assert (kept)))").unwrap();
+    let payload = "a".repeat(8 * 1024 * 1024);
+    let errors = engine
+        .load_str(&format!("(defrule keep => (printout t \"{payload}\"))"))
+        .unwrap_err();
+    assert!(
+        errors.iter().any(|error| matches!(
+            error,
+            LoadError::ResourceLimit {
+                resource: "expanded source bytes estimate",
+                ..
+            }
+        )),
+        "{errors:?}"
+    );
+    assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+    assert_eq!(engine.find_facts("kept").unwrap().len(), 1);
+}
+
+#[test]
 fn per_load_expansion_budget_preserves_already_installed_constructs() {
     let payload = "a".repeat(3 * 1024 * 1024);
     let source = (0..3).fold(String::new(), |mut source, n| {
