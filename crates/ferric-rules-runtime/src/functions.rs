@@ -381,6 +381,12 @@ impl GenericRegistry {
         modules_for_name_from_keys(&self.generics, name)
     }
 
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (ModuleId, &GenericFunction)> {
+        self.generics
+            .iter()
+            .flat_map(|(&module, names)| names.values().map(move |generic| (module, generic)))
+    }
+
     /// Check whether a generic already has a method with the given index.
     #[must_use]
     pub fn has_method_index(&self, module: ModuleId, name: &str, index: i32) -> bool {

@@ -300,7 +300,13 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
 
 ### Behavioral Notes
 
-- Templates must be defined before use in patterns or assertions.
+- Templates must be defined before use in patterns or assertions. A new
+  explicit template is rejected while existing facts, seed definitions, or
+  constructs depend on an ordered relation with the same local name. Earlier
+  ordered uses in the same load are protected as well. Ordered relations have
+  global identities in Ferric, so this guard also applies across modules and
+  to module-qualified spellings; separate already-explicit template identities
+  remain module-scoped. The internal `initial-fact` identity cannot be shadowed.
 - Template names are module-scoped and follow import/export visibility rules.
 - Asserting a template fact with missing slots uses declared defaults.
 - Template facts can be matched with partial slot patterns (unmentioned

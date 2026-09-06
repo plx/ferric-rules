@@ -428,8 +428,9 @@ impl Engine {
             // Rules are collected with their owning module captured at the
             // time they appear in source so that defmodule statements
             // interleaved with defrule statements are respected.
-            let mut deffacts_constructs = Vec::new();
+            let mut deffacts_constructs: Vec<ferric_rules_parser::FactsConstruct> = Vec::new();
             let mut rules_with_module = Vec::new();
+            let mut pending_ordered_fact_names = HashSet::new();
             for construct in interpret_result.constructs {
                 match construct {
                     Construct::Rule(rule) => {
@@ -455,12 +456,50 @@ impl Engine {
                     Construct::Template(template) => {
                         // Register template BEFORE compiling rules so that
                         // rules referencing this template can resolve the ID.
-                        if let Err(e) = self.register_template(&template, &mut result) {
+                        let name = Self::template_local_name(&template.name);
+                        let pending_ordered_use = rules_with_module.iter().any(|(rule, module)| {
+                            self.rule_uses_ordered_name(rule, *module, &name)
+                        }) || pending_ordered_fact_names.contains(&name)
+                            || assert_forms.iter().any(|expr| {
+                                expr.span().start.offset < template.span.start.offset
+                                    && expr.as_list().is_some_and(|form| {
+                                        form.iter().skip(1).any(|fact| {
+                                            fact.as_list()
+                                                .and_then(|fields| fields.first())
+                                                .and_then(SExpr::as_symbol)
+                                                .is_some_and(|raw| {
+                                                    Self::ordered_relation_name_is(raw, &name)
+                                                })
+                                        })
+                                    })
+                            });
+                        if pending_ordered_use {
+                            errors.push(Self::ordered_template_conflict(&template));
+                        } else if let Err(e) = self.register_template(&template, &mut result) {
                             errors.push(e);
+                        } else {
+                            result.templates.push(template);
                         }
-                        result.templates.push(template);
                     }
                     Construct::Facts(facts) => {
+                        let module = parse_qualified_name(&facts.name)
+                            .ok()
+                            .and_then(|name| {
+                                name.module_name()
+                                    .and_then(|module| self.module_registry.get_by_name(module))
+                            })
+                            .unwrap_or_else(|| self.module_registry.current_module());
+                        for fact in &facts.facts {
+                            if let FactBody::Ordered(fact) = fact {
+                                if self
+                                    .resolve_template_reference(&fact.relation, module)
+                                    .is_err()
+                                {
+                                    pending_ordered_fact_names
+                                        .insert(Self::template_local_name(&fact.relation));
+                                }
+                            }
+                        }
                         deffacts_constructs.push(facts);
                     }
                     Construct::Function(func) => {
@@ -997,6 +1036,12 @@ impl Engine {
                 .all(|slot| matches!(slot.value, FactValue::EmptyMultifield(_)))
     }
 
+    fn ordered_template_conflict(template: &TemplateConstruct) -> LoadError {
+        Self::compile_error_at(&template.span, &format!(
+            "cannot define template `{}` while its ordered relation is in use by facts or constructs", template.name
+        ))
+    }
+
     /// Register a `TemplateConstruct` in the engine's template registry.
     ///
     /// Allocates a fresh `TemplateId`, builds slot metadata, and stores both
@@ -1014,6 +1059,14 @@ impl Engine {
                     .and_then(|module| self.module_registry.get_by_name(module))
             })
             .unwrap_or_else(|| self.module_registry.current_module());
+        let local_name = Self::template_local_name(&template.name);
+        let existing = self.template_defs.iter().any(|(id, definition)| {
+            self.template_modules.get(id) == Some(&owning_module)
+                && Self::template_local_name(&definition.name) == local_name
+        });
+        if !existing && self.ordered_identity_is_live(&local_name) {
+            return Err(Self::ordered_template_conflict(template));
+        }
         let slot_count = template.slots.len();
         let mut slot_names = Vec::with_capacity(slot_count);
         let mut slot_index = HashMap::default();
