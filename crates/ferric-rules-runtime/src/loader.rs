@@ -1045,7 +1045,7 @@ impl Engine {
             }
             let registered = &self.template_defs[template_id];
             registered
-                .validate_required_slots(&registered.defaults)
+                .validate_slots(&registered.defaults)
                 .map_err(LoadError::Compile)?;
             let slots = registered.defaults.clone().into_boxed_slice();
             return Ok(Fact::Template(TemplateFact { template_id, slots }));
@@ -1167,7 +1167,7 @@ impl Engine {
             };
         }
         registered
-            .validate_required_slots(&slots)
+            .validate_slots(&slots)
             .map_err(LoadError::Compile)?;
         Ok(Fact::Template(TemplateFact {
             template_id,
@@ -1226,6 +1226,57 @@ impl Engine {
         ))
     }
 
+    /// Prepare one slot default without installing any template metadata.
+    fn template_slot_default(
+        &mut self,
+        slot_def: &ferric_rules_parser::SlotDefinition,
+        result: &mut LoadResult,
+    ) -> Result<Value, LoadError> {
+        let default_val = match &slot_def.default {
+            Some(ferric_rules_parser::DefaultValue::None) => Value::Void,
+            Some(ferric_rules_parser::DefaultValue::Value(literal)) => self
+                .literal_to_value(&literal.value, literal.span.start.line, result)
+                .ok_or_else(|| Self::compile_error_at(&literal.span, "invalid template default"))?,
+            Some(ferric_rules_parser::DefaultValue::Values(literals)) => {
+                let mut values = Vec::with_capacity(literals.len());
+                for literal in literals {
+                    values.push(
+                        self.literal_to_value(&literal.value, literal.span.start.line, result)
+                            .ok_or_else(|| {
+                                Self::compile_error_at(&literal.span, "invalid template default")
+                            })?,
+                    );
+                }
+                Value::Multifield(Box::new(values.into_iter().collect()))
+            }
+            None | Some(ferric_rules_parser::DefaultValue::Derive) => {
+                use ferric_rules_parser::SlotValueType;
+                if slot_def.slot_type == ferric_rules_parser::SlotType::Multi {
+                    Value::Multifield(Box::default())
+                } else {
+                    match slot_def.allowed_types.as_ref().and_then(|types| types.first()) {
+                    None | Some(SlotValueType::Symbol) => Value::Symbol(self.compile_symbol("nil")?),
+                    Some(SlotValueType::String) => Value::String(self.compile_string("")?),
+                    Some(SlotValueType::Integer) => Value::Integer(0),
+                    Some(SlotValueType::Float) => Value::Float(0.0),
+                    Some(SlotValueType::ExternalAddress) => return Err(Self::compile_error_at(&slot_def.span, "an external-address slot requires (default ?NONE); Ferric cannot derive a host-owned token")),
+                }
+                }
+            }
+        };
+        let default_val = match (slot_def.slot_type, default_val) {
+            (ferric_rules_parser::SlotType::Multi, Value::Void) => Value::Void,
+            (ferric_rules_parser::SlotType::Multi, Value::Multifield(fields)) => {
+                Value::Multifield(fields)
+            }
+            (ferric_rules_parser::SlotType::Multi, value) => {
+                Value::Multifield(Box::new([value].into_iter().collect()))
+            }
+            (_, value) => value,
+        };
+        Ok(default_val)
+    }
+
     /// Install a validated new template or replace an unused definition in place.
     fn register_template(
         &mut self,
@@ -1246,44 +1297,32 @@ impl Engine {
         slot_index.reserve(slot_count);
         let mut defaults = Vec::with_capacity(slot_count);
         let mut slot_types = Vec::with_capacity(slot_count);
+        let mut allowed_types = Vec::with_capacity(slot_count);
 
         for (i, slot_def) in template.slots.iter().enumerate() {
             slot_names.push(slot_def.name.clone());
             slot_index.insert(slot_def.name.clone(), i);
             slot_types.push(slot_def.slot_type);
+            allowed_types.push(slot_def.allowed_types.clone());
 
-            let default_val = match &slot_def.default {
-                Some(ferric_rules_parser::DefaultValue::Value(lit)) => self
-                    .literal_to_value(&lit.value, lit.span.start.line, result)
-                    .unwrap_or(Value::Void),
-                Some(ferric_rules_parser::DefaultValue::None) => Value::Void,
-                _ => match slot_def.slot_type {
-                    ferric_rules_parser::SlotType::Single => {
-                        Value::Symbol(self.compile_symbol("nil")?)
-                    }
-                    ferric_rules_parser::SlotType::Multi => Value::Multifield(Box::default()),
-                },
-            };
-            let default_val = match (slot_def.slot_type, default_val) {
-                (ferric_rules_parser::SlotType::Multi, Value::Void) => Value::Void,
-                (ferric_rules_parser::SlotType::Multi, Value::Multifield(fields)) => {
-                    Value::Multifield(fields)
-                }
-                (ferric_rules_parser::SlotType::Multi, value) => {
-                    Value::Multifield(Box::new([value].into_iter().collect()))
-                }
-                (_, value) => value,
-            };
-            defaults.push(default_val);
+            defaults.push(self.template_slot_default(slot_def, result)?);
         }
 
         let mut registered = RegisteredTemplate {
             name: template.name.clone(),
             slot_names,
             slot_types,
+            allowed_types,
             slot_index,
             defaults,
         };
+        for (index, value) in registered.defaults.iter().enumerate() {
+            if !matches!(value, Value::Void) {
+                registered.validate_slot(index, value).map_err(|message| {
+                    Self::compile_error_at(&template.slots[index].span, &message)
+                })?;
+            }
+        }
         let template_id = if let Some(id) = existing {
             // The old ID and public spelling remain stable. No fact or compiled
             // construct can observe the new slot layout, and repeated unused

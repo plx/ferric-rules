@@ -1280,3 +1280,14 @@ ferric run --json rules.clp 2> diagnostics.json
 
 Standard output (stdout) contains the rule engine's normal output. All
 diagnostics are emitted to stderr.
+
+### Template type declarations
+
+Primitive template slot unions (`SYMBOL`, `STRING`, `INTEGER`, `FLOAT`,
+`NUMBER`, `LEXEME`, `EXTERNAL-ADDRESS`) are retained and checked. Default values,
+seed facts, and literal rule assertions are validated before their construct is
+installed; runtime values and host template assertions are always validated.
+Unlike CLIPS 6.30 with its default dynamic checking disabled, Ferric rejects
+runtime values that violate a declared slot type. See
+[the migration notes](migration.md#primitive-template-slot-types) for default
+priority, external token handling, and explicit unsupported optional attributes.

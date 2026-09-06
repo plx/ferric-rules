@@ -575,13 +575,12 @@ impl Engine {
             };
         }
         for (index, value) in slots.iter().enumerate() {
-            if matches!(value, Value::Void) {
-                return Err(EngineError::InvalidSlotValue {
+            def.validate_slot(index, value)
+                .map_err(|reason| EngineError::InvalidSlotValue {
                     template: template_name.to_owned(),
                     slot: def.slot_names[index].clone(),
-                    reason: "a value is required by (default ?NONE)".to_owned(),
-                });
-            }
+                    reason,
+                })?;
         }
 
         let fact = Fact::Template(TemplateFact {

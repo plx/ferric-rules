@@ -265,3 +265,33 @@ engine borrowed inside a manager callback.
 | `defclass` / COOL | Not supported |
 | `if` / `then` / `else` | Not yet implemented |
 | Certainty factors | Not supported |
+
+## Primitive template slot types
+
+Ferric now retains `(type ...)` declarations for `SYMBOL`, `STRING`, `INTEGER`,
+`FLOAT`, `NUMBER`, `LEXEME`, and `EXTERNAL-ADDRESS`. Type lists form a union;
+`NUMBER` means integer or float, and `LEXEME` means symbol or string. Omitted
+constraints and `(type ?VARIABLE)` permit any supported value kind. Each field
+of a constrained multislot must satisfy its declared union.
+
+Defaults follow CLIPS' primitive preference: symbol `nil`, empty string,
+integer `0`, then float `0.0`, independent of the type list's spelling order.
+Multislot defaults are empty unless specified. Literal multifield defaults,
+including literal `create$` forms, retain every field. External-address slots
+require `(default ?NONE)`; Ferric does not manufacture host identity tokens.
+
+Invalid literal assertions reject a rule before installation or replacement.
+Defaults and named deffacts are checked before registration. Runtime assertions,
+`modify`, `duplicate`, and host template assertions also validate types before
+changing facts. This runtime checking is intentionally stricter than CLIPS
+6.30's default `FALSE` dynamic-constraint setting: applications must supply
+values matching their declarations. A failed `modify` leaves the original fact
+intact; a failed RHS action produces an action diagnostic and stops that RHS.
+
+Previously ignored `range`, `allowed-*`, `cardinality`, `default-dynamic`, and
+other optional slot attributes now produce an explicit unsupported error.
+Arbitrary computed defaults are also unsupported; use literal defaults or
+`?DERIVE`, and calculate dynamic values before assertion. `FACT-ADDRESS` and
+instance type declarations are rejected because the supported value model has
+no corresponding tagged value. These restrictions do not add CLIPS class
+constraints, general static type inference, or dynamic constraint toggles.

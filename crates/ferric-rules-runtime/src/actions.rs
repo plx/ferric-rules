@@ -2480,7 +2480,7 @@ fn execute_assert(
                         collected_facts,
                     )?;
                     registered
-                        .validate_required_slots(&slots)
+                        .validate_slots(&slots)
                         .map_err(ActionError::EvalError)?;
                     assert_template_and_propagate(
                         context.engine,
@@ -2668,6 +2668,9 @@ fn execute_fact_mutation(
                 eval_env,
                 collected_facts,
             )?;
+            registered
+                .validate_slots(&slots)
+                .map_err(ActionError::EvalError)?;
             if mode.retract_original() {
                 retract_original_fact(
                     &mut context.engine.fact_base,
