@@ -101,10 +101,10 @@ impl FactAssertionResult {
 /// Mutation requires exclusive access. Use a host mutex when multiple threads
 /// need to operate on one engine.
 ///
-/// The engine is not `Sync`. Evaluator configuration contains interior-mutable
-/// fact-duplication and action-loop budget state, so shared engine references
-/// must not be accessed concurrently. Owned values and shared match metadata
-/// can be cloned and used independently of an engine on other threads.
+/// The engine is also `Sync`: shared references may be read concurrently.
+/// Mutating operations still require exclusive access. Owned values and shared
+/// match metadata can be cloned and used independently of an engine on other
+/// threads. The C handle has its own serialized-call contract.
 ///
 /// ```
 /// use ferric_rules_runtime::Engine;
@@ -112,7 +112,7 @@ impl FactAssertionResult {
 /// assert_send::<Engine>();
 /// ```
 ///
-/// ```compile_fail
+/// ```
 /// use ferric_rules_runtime::Engine;
 /// fn assert_sync<T: Sync>() {}
 /// assert_sync::<Engine>();
