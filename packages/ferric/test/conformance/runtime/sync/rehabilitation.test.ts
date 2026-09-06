@@ -2,7 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { Engine, FerricSymbol, FerricRuntimeError, FerricParseError, FerricCompileError, FerricIOError, Format } from "../../../helpers/ferric";
+import { Engine, FerricSymbol, FerricRuntimeError, FerricParseError, FerricCompileError, FerricIOError, Format, HaltReason } from "../../../helpers/ferric";
 
 const nativeAddon = resolve(__dirname, "../../../../../../crates/ferric-rules-napi/ferric-rules-napi.node");
 
@@ -151,4 +151,56 @@ test("native continuation and factories cannot confuse wrapped Rust types", () =
   assert.equal(child.error, undefined);
   assert.equal(child.signal, null, child.stderr);
   assert.equal(child.status, 0, child.stderr);
+});
+
+
+test("configuration numbers are validated before native narrowing", () => {
+  const native = require(nativeAddon);
+  const source = "(deffunction answer () 42) (defrule once => (assert (result (answer))))";
+  for (const Binding of [Engine, native.Engine]) {
+    for (const create of [
+      (options: object) => new Binding(options),
+      (options: object) => Binding.fromSource("(defrule once => (assert (result 42)))", options),
+    ]) {
+      for (const maxCallDepth of [-1, 1.5, 2 ** 32, Infinity, NaN]) {
+        assert.throws(() => create({ maxCallDepth }), /maxCallDepth.*integer/);
+      }
+      for (const field of ["strategy", "encoding"]) {
+        for (const value of [-1, 0.5, 2 ** 32, -(2 ** 32), Infinity, NaN, 99]) {
+          assert.throws(() => create({ [field]: value }), new RegExp(field));
+        }
+      }
+      const valid = create({ maxCallDepth: 2 ** 32 - 1 });
+      valid.close();
+    }
+    for (const depth of [0, 1]) {
+      const engine = Binding.fromSource(source, { maxCallDepth: depth });
+      try {
+        const result = engine.run(1);
+        if (depth === 0) {
+          assert.equal(result.haltReason, HaltReason.ActionError);
+          assert.equal(engine.findFacts("result").length, 0);
+          assert.match(engine.diagnostics.join(" "), /depth/);
+        } else {
+          assert.equal(engine.findFacts("result")[0].fields[0], 42);
+        }
+      } finally { engine.close(); }
+    }
+  }
+});
+
+test("snapshot selectors reject fractional and wrapped enum values before file access", () => {
+  const native = require(nativeAddon);
+  for (const Binding of [Engine, native.Engine]) {
+    const engine = new Binding();
+    const saved = engine.serialize();
+    try {
+      for (const format of [-1, 0.5, 2 ** 32, -(2 ** 32), Infinity, NaN, 99]) {
+        assert.throws(() => engine.serialize(format), /snapshot format/);
+        assert.throws(() => Binding.fromSnapshot(saved, format), /snapshot format/);
+        assert.throws(() => Binding.fromSnapshotFile("/ferric/no-such-snapshot", format), /snapshot format/);
+        assert.throws(() => engine.saveSnapshot("/ferric/no-such-snapshot", format), /snapshot format/);
+      }
+    } finally { engine.close(); }
+  }
 });

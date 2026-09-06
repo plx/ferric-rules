@@ -2,8 +2,8 @@
  * EngineHandle — async wrapper around a synchronous Engine running on a
  * dedicated Worker thread.
  *
- * All methods return Promises and are safe to call from the main thread or
- * any other thread without blocking the event loop.
+ * Methods return Promises so native work does not block the calling JavaScript
+ * event loop. The handle itself belongs to its creating JavaScript isolate.
  *
  * ## Cooperative cancellation
  *
@@ -15,11 +15,11 @@
  * result with HaltReason.HaltRequested; it does not call native halt() merely
  * to represent host cancellation.
  *
- * ## Thread affinity
+ * ## Worker ownership
  *
- * The underlying Engine is created on the worker's OS thread and never
- * touched from any other thread. This satisfies the Ferric engine's
- * thread-affinity contract.
+ * Each worker owns its NAPI Engine instance and offloads load/run/snapshot work.
+ * The Rust engine permits serialized thread transfer; NAPI objects still belong
+ * to their V8 isolate, so workers retain ownership of their JavaScript objects.
  */
 
 import { Worker } from "node:worker_threads";

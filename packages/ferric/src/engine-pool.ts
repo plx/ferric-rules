@@ -1462,7 +1462,7 @@ export class EnginePool {
         signal.addEventListener("abort", onAbort, { once: true });
       }
       const stopListening = () => {
-        signal.removeEventListener("abort", onAbort);
+        EnginePool.detachAbortListener(signal, onAbort);
       };
       // The cancellation contract is phrased against pool-observed callback
       // completion, not the later accepted-work drain barrier. Once the pool's

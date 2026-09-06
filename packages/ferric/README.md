@@ -34,6 +34,10 @@ are safe-integer numbers. Raw fact IDs are bigint generational handles belonging
 to their engine; persist application keys and query fresh IDs after restore.
 External addresses are rejected instead of silently becoming null.
 
+Configuration and format selectors reject fractional/out-of-range numbers.
+`maxCallDepth` accepts integers from zero through 4294967295; zero disallows
+user-function calls, and the default remains 64.
+
 Static factories always return `Engine`, including calls through subclasses.
 
 Pre-1.0 migration: the runtime minimum is now Node 22; implicit snapshots now use

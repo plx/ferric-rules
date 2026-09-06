@@ -33,3 +33,20 @@ test("worker and pool limits reject unsafe numbers and accumulated progress cann
     assert.throws(() => addFiredCount(Number.MAX_SAFE_INTEGER, 1), FerricRuntimeError);
   } finally { await Promise.all([engine.close(), pool.close()]); }
 });
+
+
+test("worker constructors reject invalid numeric configuration and snapshot selectors", { timeout: 10000 }, async () => {
+  for (const options of [{ maxCallDepth: -1 }, { maxCallDepth: 1.5 }, { strategy: 2 ** 32 }, { encoding: 0.5 }]) {
+    await assert.rejects(EngineHandle.create(options), /maxCallDepth|strategy|encoding/);
+    // Pools instantiate named engines lazily on first use.
+    const pool = await EnginePool.create([{ name: "invalid", options }]);
+    try { await assert.rejects(pool.evaluate("invalid", {}), /maxCallDepth|strategy|encoding/); }
+    finally { await pool.close(); }
+  }
+  const engine = await EngineHandle.create();
+  try {
+    await assert.rejects(engine.serialize(0.5), /snapshot format/);
+    const saved = await engine.serialize();
+    await assert.rejects(EngineHandle.create({ snapshot: { data: saved, format: 2 ** 32 } }), /snapshot format/);
+  } finally { await engine.close(); }
+});

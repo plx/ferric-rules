@@ -12,7 +12,7 @@ use ferric_rules_runtime::execution::RunLimit;
 use ferric_rules_runtime::Engine as FerricEngine;
 use slotmap::{Key, KeyData};
 
-use crate::config::{Encoding, Strategy};
+use crate::config::{checked_u32, Encoding, Strategy};
 use crate::error::{engine_error_to_napi, init_error_to_napi, load_errors_to_napi};
 use crate::fact::fact_to_js;
 use crate::result::{checked_count, FiredRule, RuleInfo, RunResult};
@@ -22,28 +22,30 @@ use crate::value::{collect_object_keys, js_to_owned, value_to_js};
 #[napi(object)]
 pub struct EngineOptions {
     /// Conflict resolution strategy (default: Depth).
-    pub strategy: Option<Strategy>,
+    #[napi(ts_type = "Strategy")]
+    pub strategy: Option<f64>,
     /// String encoding mode (default: Utf8).
-    pub encoding: Option<Encoding>,
+    #[napi(ts_type = "Encoding")]
+    pub encoding: Option<f64>,
     /// Maximum call depth for user-defined functions (default: engine default).
-    pub max_call_depth: Option<u32>,
+    pub max_call_depth: Option<f64>,
 }
 
 /// Build a [`EngineConfig`] from optional options.
-fn make_config(options: Option<EngineOptions>) -> EngineConfig {
+fn make_config(options: Option<EngineOptions>) -> Result<EngineConfig> {
     let mut config = EngineConfig::default();
     if let Some(opts) = options {
         if let Some(s) = opts.strategy {
-            config.strategy = s.into();
+            config.strategy = Strategy::try_from(s)?.into();
         }
         if let Some(e) = opts.encoding {
-            config.string_encoding = e.into();
+            config.string_encoding = Encoding::try_from(e)?.into();
         }
         if let Some(depth) = opts.max_call_depth {
-            config.max_call_depth = depth as usize;
+            config.max_call_depth = checked_u32(depth, "maxCallDepth")? as usize;
         }
     }
-    config
+    Ok(config)
 }
 
 fn checked_run_limit(limit: f64) -> Result<usize> {
@@ -79,8 +81,8 @@ impl Engine {
         Ok(self.into_instance(env)?.as_object(env))
     }
 
-    // napi-rs exports shared receivers only. It does not dynamically guard
-    // generated &mut receivers against JS getters reentering the same object.
+    // Our napi exports use shared receivers only. napi-rs does not dynamically
+    // guard generated &mut receivers against JS getters reentering the same object.
     // This reservation protects all calls, including reads and close, while
     // conversions can invoke JavaScript. No runtime reference escapes it.
     fn state(&self) -> Result<RefMut<'_, Option<FerricEngine>>> {
@@ -154,11 +156,11 @@ impl Engine {
 
     /// Create a new, empty engine.
     #[napi(constructor)]
-    pub fn new(options: Option<EngineOptions>) -> Self {
-        let config = make_config(options);
-        Self {
+    pub fn new(options: Option<EngineOptions>) -> Result<Self> {
+        let config = make_config(options)?;
+        Ok(Self {
             inner: RefCell::new(Some(FerricEngine::new(config))),
-        }
+        })
     }
 
     /// Create an engine from CLIPS source, loading and resetting in one step.
@@ -171,7 +173,7 @@ impl Engine {
         source: String,
         options: Option<EngineOptions>,
     ) -> Result<JsObject> {
-        let config = make_config(options);
+        let config = make_config(options)?;
         let engine =
             FerricEngine::with_rules_config(&source, config).map_err(init_error_to_napi)?;
         Self {
@@ -619,10 +621,10 @@ impl Engine {
     #[napi]
     pub fn serialize(
         &self,
-        format: Option<crate::config::Format>,
+        #[napi(ts_arg_type = "Format | undefined | null")] format: Option<f64>,
     ) -> Result<napi::bindgen_prelude::Buffer> {
         let engine = self.engine()?;
-        let fmt = format.unwrap_or(crate::config::Format::Cbor).into();
+        let fmt = crate::config::snapshot_format(format)?;
         let bytes = engine
             .serialize(fmt)
             .map_err(crate::error::serde_error_to_napi)?;
@@ -634,9 +636,9 @@ impl Engine {
     pub fn from_snapshot(
         env: Env,
         data: napi::bindgen_prelude::Buffer,
-        format: Option<crate::config::Format>,
+        #[napi(ts_arg_type = "Format | undefined | null")] format: Option<f64>,
     ) -> Result<JsObject> {
-        let fmt = format.unwrap_or(crate::config::Format::Cbor).into();
+        let fmt = crate::config::snapshot_format(format)?;
         let engine = FerricEngine::deserialize(data.as_ref(), fmt)
             .map_err(crate::error::serde_error_to_napi)?;
         Self {
@@ -650,9 +652,9 @@ impl Engine {
     pub fn from_snapshot_file(
         env: Env,
         path: String,
-        format: Option<crate::config::Format>,
+        #[napi(ts_arg_type = "Format | undefined | null")] format: Option<f64>,
     ) -> Result<JsObject> {
-        let fmt = format.unwrap_or(crate::config::Format::Cbor).into();
+        let fmt = crate::config::snapshot_format(format)?;
         let engine = FerricEngine::deserialize_from_file(std::path::Path::new(&path), fmt)
             .map_err(|error| match error {
                 ferric_rules_runtime::SnapshotFileError::Io(error) => crate::error::io_error_to_napi(error),
@@ -666,9 +668,13 @@ impl Engine {
 
     /// Save a serialized engine snapshot to a file.
     #[napi]
-    pub fn save_snapshot(&self, path: String, format: Option<crate::config::Format>) -> Result<()> {
+    pub fn save_snapshot(
+        &self,
+        path: String,
+        #[napi(ts_arg_type = "Format | undefined | null")] format: Option<f64>,
+    ) -> Result<()> {
         let engine = self.engine()?;
-        let fmt = format.unwrap_or(crate::config::Format::Cbor).into();
+        let fmt = crate::config::snapshot_format(format)?;
         let bytes = engine
             .serialize(fmt)
             .map_err(crate::error::serde_error_to_napi)?;
