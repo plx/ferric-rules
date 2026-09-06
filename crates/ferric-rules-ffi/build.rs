@@ -728,5 +728,8 @@ fn main() {
         .expect("Could not find closing include guard in generated header");
     header.insert_str(guard_pos, STATIC_ASSERTIONS);
 
-    std::fs::write(format!("{crate_dir}/ferric.h"), header).expect("Failed to write ferric.h");
+    // Cargo builds, including parallel target/profile builds and vendored
+    // sources, may write only to this invocation's output directory.
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
+    std::fs::write(output.join("ferric.h"), header).expect("Failed to write generated ferric.h");
 }

@@ -32,6 +32,14 @@ build-ffi:
 build-ffi-release:
     cargo build -p ferric-rules-ffi --profile ffi-release
 
+# Compare Cargo's generated C header without modifying source files.
+check-ffi-header:
+    python3 scripts/ffi-header.py check
+
+# Explicitly update canonical Rust/C and Go header copies.
+generate-ffi-header:
+    python3 scripts/ffi-header.py generate
+
 # Build the CLI
 build-cli:
     cargo build -p ferric-rules-cli
@@ -185,7 +193,7 @@ check: fmt-check clippy test cargo-check check-examples py-fmt-check py-lint py-
 preflight: check
 
 # PR preflight: auto-fix formatting, then clippy + tests + cargo check + Python checks + Go lint
-preflight-pr: fmt clippy test cargo-check check-examples py-fmt py-lint-fix py-test py-bindings-test go-lint ts-lint license-notices
+preflight-pr: fmt clippy test cargo-check check-examples py-fmt py-lint-fix py-test py-bindings-test go-lint ts-lint license-notices check-ffi-header
 
 # ── User-guide examples ─────────────────────────────────────────────────────
 

@@ -11,6 +11,7 @@ if [[ "$mode" != all && "$mode" != --macos-only ]]; then
     echo "usage: scripts/build-swift.sh [--macos-only]" >&2
     exit 1
 fi
+python3 "$root/scripts/ffi-header.py" check
 package="$root/bindings/swift"
 staging="$root/target/swift-package"
 if ! cmp -s "$root/examples/embedding/launch-selection.clp" "$package/Tests/FerricTests/Fixtures/launch.clp"; then
