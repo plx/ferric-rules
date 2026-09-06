@@ -20,19 +20,19 @@ def template_engine():
 
 class TestAssertTemplate:
     def test_basic(self, template_engine):
-        fid = template_engine.assert_template("person", name="Alice", age=30)
+        fid = template_engine.assert_template("person", name=ferric.String("Alice"), age=30)
         assert isinstance(fid, int)
         assert fid > 0
 
     def test_get_fact_is_template(self, template_engine):
-        fid = template_engine.assert_template("person", name="Alice", age=30)
+        fid = template_engine.assert_template("person", name=ferric.String("Alice"), age=30)
         fact = template_engine.get_fact(fid)
         assert fact is not None
         assert fact.fact_type == ferric.FactType.TEMPLATE
         assert fact.template_name == "person"
 
     def test_slots_dict(self, template_engine):
-        fid = template_engine.assert_template("person", name="Bob", age=25)
+        fid = template_engine.assert_template("person", name=ferric.String("Bob"), age=25)
         fact = template_engine.get_fact(fid)
         assert fact.slots is not None
         assert fact.slots["name"] == ferric.String("Bob")
@@ -40,7 +40,7 @@ class TestAssertTemplate:
 
     def test_defaults_filled(self, template_engine):
         """Unspecified slots should get their declared defaults."""
-        fid = template_engine.assert_template("person", name="Charlie")
+        fid = template_engine.assert_template("person", name=ferric.String("Charlie"))
         fact = template_engine.get_fact(fid)
         assert fact.slots["name"] == ferric.String("Charlie")
         assert fact.slots["age"] == 0  # default
@@ -54,7 +54,7 @@ class TestAssertTemplate:
         assert fact.slots["active"] == ferric.Symbol("TRUE")
 
     def test_override_default(self, template_engine):
-        fid = template_engine.assert_template("person", name="Dave", active=ferric.Symbol("FALSE"))
+        fid = template_engine.assert_template("person", name=ferric.String("Dave"), active=ferric.Symbol("FALSE"))
         fact = template_engine.get_fact(fid)
         assert fact.slots["active"] == ferric.Symbol("FALSE")
 
@@ -67,15 +67,15 @@ class TestAssertTemplate:
             template_engine.assert_template("person", bad_slot="X")
 
     def test_template_facts_in_facts_list(self, template_engine):
-        template_engine.assert_template("person", name="Alice")
-        template_engine.assert_template("person", name="Bob")
+        template_engine.assert_template("person", name=ferric.String("Alice"))
+        template_engine.assert_template("person", name=ferric.String("Bob"))
         # Template facts show up in the full facts list.
         all_facts = template_engine.facts()
         person_facts = [f for f in all_facts if f.template_name == "person"]
         assert len(person_facts) == 2
 
     def test_retract_template_fact(self, template_engine):
-        fid = template_engine.assert_template("person", name="Alice")
+        fid = template_engine.assert_template("person", name=ferric.String("Alice"))
         template_engine.retract(fid)
         assert template_engine.get_fact(fid) is None
 
@@ -85,7 +85,7 @@ class TestAssertTemplate:
         (deftemplate car (slot make) (slot model))
         """
         engine = ferric.Engine.from_source(source)
-        p = engine.assert_template("person", name="Alice")
+        p = engine.assert_template("person", name=ferric.String("Alice"))
         c = engine.assert_template("car", make="Toyota", model="Camry")
         assert p != c
         pf = engine.get_fact(p)
@@ -106,7 +106,7 @@ class TestTemplateFactWithRules:
             (assert (adult ?n)))
         """
         engine = ferric.Engine.from_source(source)
-        engine.assert_template("person", name="Alice", age=30)
+        engine.assert_template("person", name=ferric.String("Alice"), age=30)
         result = engine.run()
         assert result.rules_fired == 1
         adults = engine.find_facts("adult")
@@ -121,6 +121,6 @@ class TestTemplateFactWithRules:
             (assert (adult ?n)))
         """
         engine = ferric.Engine.from_source(source)
-        engine.assert_template("person", name="Bob", age=10)
+        engine.assert_template("person", name=ferric.String("Bob"), age=10)
         result = engine.run()
         assert result.rules_fired == 0

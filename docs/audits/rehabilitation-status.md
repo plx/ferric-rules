@@ -175,35 +175,40 @@ workloads. C lifecycle changes range from -1.08% to +1.20%; read/output copying
 improves 4.13–6.37%. Snapshot timings here measure the existing raw format;
 versioned persistence will receive its own validation and comparison.
 
-Six new template scenarios (RH-CORE-016/017/026–029) now pass the expanded
-28-case lane: 17 equivalent, 11 unchanged exact divergences. Template repair
-[#299](https://github.com/plx/ferric-rules/issues/299) has 14 focused regressions,
-full runtime and scaling checks, independent review, and passing `just preflight-pr`.
+## Integration checkpoint
 
-35 new authenticated CLIPS scenarios are prepared: baseline 18 equivalent and
-17 semantic differences, with no invalid observations. Existing 22 reference
-expectations remain unchanged. Template assertion/cardinality fixes, last-blocker
-negation, multifield equality, and activation chronology have local regressions
-and pinned reference evidence. Independent review found and fixed a multislot
-void-result edge case. These fixes need integrated checks and reviewed merges.
-Reload safety, module exports/focus, and bounded versioned persistence are in
-progress. After landing threading across consumers, apply the prepared
-backlog migration and continue the finite checklist. Dependency simplification is merged; required product outcomes remain in progress.
+Dependency simplification is merged in PR #298 (`142c8d6b`); template RHS and
+identity repair is merged in PR #301 (`21e007a1`). Benchmark PR #302 and measured
+thread-transfer PR #304 target main, with sequential merge order. Their local
+preflights and essential Linux checks pass. The benchmark review identified a
+missing guard against comparing different workload sources. The guard is fixed
+and passes 19 focused tests; recorded ABAB sources also pass it unchanged.
 
-PR #301 review follow-up: a later explicit template could reinterpret an installed ordered RHS assertion. The candidate now rejects identity replacement while facts, seeds, or constructs use the ordered relation, including earlier same-load and qualified references. Seven baseline-failing regressions pass with the guard; real CLIPS rejects the ordinary RHS/LHS examples before the original rule runs. Qualified ordered syntax is a Ferric safety regression, not a new parity claim. The guard changes no snapshot layout.
+The integrated core candidate passes 57 authenticated pinned-CLIPS scenarios:
+55 equivalent, two exact documented LEX/MEA divergences. All 35 added scenarios
+match. Existing 22 scenarios now have 20 equivalences. Existing reference facts,
+output and firing expectations are preserved; FR-RETE-012's error category was
+corrected to the newly observed CLIPS CSTRCPSR4 load/construct error. The repaired
+empty-LHS reset chronology makes its original output match. No Ferric output
+was used as its own reference.
 
-Local follow-through (not yet merged): TS 429 tests and external Node 22/24/26
-consumers pass; Swift 6 strict concurrency and macOS/iOS local libraries pass;
-Go lifecycle fixes pass independent review/race checks. Source expansion/depth
-and file inputs are bounded, with ten focused regressions and independent
-review. Repeated-join propagation formerly produced eight firings for one valid
-match; its small fix has baseline failures and CLIPS tuple-order evidence.
-The staged differential set is now 35/35 equivalent after the local declared
-slot-type repair; authenticated integration is still pending. Versioned snapshot validation and host-value provenance integration
-are in progress. Required outcomes remain open until integrated checks and merges.
+Core repairs cover replacement/reload, named seeds/reset, activation/join order,
+module exports/focus, primitive slot validation, incremental globals, and clear
+unsupported-form rejection. Focused regressions and independent review accompany
+each family. Core preflight, release core/runtime tests and all five scaling checks pass.
+Invariant helpers are callable from release-built dependent tests, preserving
+the same checks across profiles.
 
-Threading [PR #304](https://github.com/plx/ferric-rules/pull/304) follows benchmark
-[PR #302](https://github.com/plx/ferric-rules/pull/302); merge order is sequential.
-Both target main so the existing core, artifact and sanitizer workflows run.
-The benchmark artifact file list was updated and its external offline package
-check passed before the update was pushed.
+The separate integration candidate contains bounded version-one CBOR snapshots,
+engine-scoped host values/handles, evaluator depth guards, and the reviewed
+TS/Python/Swift/Go consumers. It compiles across the workspace. Python's exact
+wheel and sdist, Node's exact tarball, and packaged Rust/CLI smokes pass outside
+the source tree on their reviewed candidates; final combined tests are running.
+Swift's final macOS/iOS libraries and strict-concurrency tests are being refreshed
+against the same value and snapshot schema. These checks are not release timing
+claims. Final CBOR/host API benchmark medians remain required.
+
+Next: finish core release validation and review merges in dependency order;
+complete the combined consumer checks and measurements, then apply and verify
+the prepared finite backlog migration. Required product outcomes remain open
+until their implementation PRs and final integrated validation are complete.

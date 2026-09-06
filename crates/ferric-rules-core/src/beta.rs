@@ -1112,9 +1112,7 @@ impl BetaNetwork {
 
     /// Verify internal consistency of the beta network.
     ///
-    /// This method is gated behind `test` or `debug_assertions` and will panic
-    /// if any inconsistencies are detected.
-    #[cfg(any(test, debug_assertions))]
+    /// Panics if any inconsistencies are detected, in any build profile.
     #[allow(clippy::too_many_lines)]
     pub fn debug_assert_consistency(&self) {
         self.validate_consistency()
