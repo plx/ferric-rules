@@ -120,6 +120,15 @@ pub enum SerializationError {
     Decode(String),
 }
 
+/// A snapshot file could not be read or did not contain a valid snapshot.
+#[derive(Debug, thiserror::Error)]
+pub enum SnapshotFileError {
+    #[error("snapshot file I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Serialization(#[from] SerializationError),
+}
+
 /// Maximum complete snapshot size (16 MiB), checked before codec work.
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
@@ -378,6 +387,29 @@ impl Engine {
         let engine = snapshot.into_engine();
         engine.validate_restored_state()?;
         Ok(engine)
+    }
+
+    /// Restore a snapshot without reading more than the supported byte limit.
+    ///
+    /// File reads stop after [`MAX_SNAPSHOT_BYTES`] plus one byte, including for
+    /// files whose size is unavailable or changes while being read. The same
+    /// envelope, codec, and restored-state checks as [`Self::deserialize`] apply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotFileError::Io`] for file read failures, or
+    /// [`SnapshotFileError::Serialization`] for oversized or invalid snapshots.
+    pub fn deserialize_from_file(
+        path: &std::path::Path,
+        format: SerializationFormat,
+    ) -> Result<Self, SnapshotFileError> {
+        use std::io::Read;
+
+        let file = std::fs::File::open(path)?;
+        let mut bytes = Vec::new();
+        file.take((MAX_SNAPSHOT_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        Ok(Self::deserialize(&bytes, format)?)
     }
 
     /// Pre-flight check: ensure no `ExternalAddress` values exist in the
