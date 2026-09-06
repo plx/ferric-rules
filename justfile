@@ -128,19 +128,19 @@ _uv *args:
 
 # Check Python formatting
 py-fmt-check:
-    cd tools/ferric-tools && uv run ruff format --check src/ tests/ ../../scripts/dependency-policy.py
+    cd tools/ferric-tools && uv run ruff format --check src/ tests/
 
 # Apply Python formatting
 py-fmt:
-    cd tools/ferric-tools && uv run ruff format src/ tests/ ../../scripts/dependency-policy.py
+    cd tools/ferric-tools && uv run ruff format src/ tests/
 
 # Run Python linter
 py-lint:
-    cd tools/ferric-tools && uv run ruff check src/ tests/ ../../scripts/dependency-policy.py
+    cd tools/ferric-tools && uv run ruff check src/ tests/
 
 # Run Python linter with auto-fix
 py-lint-fix:
-    cd tools/ferric-tools && uv run ruff check --fix src/ tests/ ../../scripts/dependency-policy.py
+    cd tools/ferric-tools && uv run ruff check --fix src/ tests/
 
 # Run Python tests (tools)
 py-test:
@@ -393,25 +393,13 @@ rust-native-artifacts-verify artifacts candidate_sha candidate_tree output:
 
 # ── Licensing ────────────────────────────────────────────────────────────────
 
-# Validate the reviewed dependency policy and official cargo-deny configuration
-dependency-policy-validate today:
-    python3 scripts/dependency-policy.py validate --policy dependency-policy.json --today "{{today}}"
-
-# Run the complete dependency policy for the current checkout and UTC date
+# Scan all locked dependency surfaces and check Rust licenses/notices.
 dependency-policy:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    candidate_sha="$(git rev-parse HEAD)"
-    today="$(date -u +%F)"
-    python3 scripts/dependency-policy.py run --policy dependency-policy.json --candidate-sha "$candidate_sha" --today "$today" --output-dir dependency-policy-evidence
+    ./scripts/dependency-check.sh
 
-# Evaluate a previously captured dependency-policy evidence bundle
-dependency-policy-evaluate reports_dir sbom_dir candidate_sha today output_dir:
-    python3 scripts/dependency-policy.py evaluate --policy dependency-policy.json --reports-dir "{{reports_dir}}" --sbom-dir "{{sbom_dir}}" --candidate-sha "{{candidate_sha}}" --today "{{today}}" --output-dir "{{output_dir}}"
-
-# Run the complete pinned dependency-policy gate for the checked-out candidate
-dependency-policy-run candidate_sha today:
-    python3 scripts/dependency-policy.py run --policy dependency-policy.json --candidate-sha "{{candidate_sha}}" --today "{{today}}" --output-dir dependency-policy-evidence
+# Exercise native scanner rejection of vulnerable inputs and malformed config.
+dependency-policy-test:
+    ./scripts/test-dependency-scanners.sh
 
 # Regenerate Rust third-party license notices from the locked Cargo graph
 license-notices:
@@ -447,26 +435,34 @@ test-go-stress count="10":
 # unaffected, but local 1.26 developers hit the crash on auto-install).
 golangci_lint_version := "v2.12.2"
 
-# Runs the golang-ci linter suite (auto-installs to ./bin/ if needed).
+# Run CI's exact golangci-lint version (install to ./bin/ if needed).
 run-golang-ci:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    if command -v golangci-lint >/dev/null 2>&1; then
-        LINT=golangci-lint
-    elif [[ -x ./bin/golangci-lint ]]; then
-        LINT=./bin/golangci-lint
-    else
-        echo "golangci-lint not found; installing {{golangci_lint_version}} to ./bin/ ..." >&2
-        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-            | sh -s -- -b ./bin {{golangci_lint_version}}
-        LINT=./bin/golangci-lint
+    required="{{golangci_lint_version}}"
+    lint=""
+    for candidate in "$(command -v golangci-lint || true)" "$PWD/bin/golangci-lint"; do
+        if [[ -x "$candidate" ]]; then
+            case "$("$candidate" --version)" in
+                "golangci-lint has version ${required#v} "*)
+                    lint="$(cd "$(dirname "$candidate")" && pwd)/$(basename "$candidate")"
+                    break ;;
+            esac
+        fi
+    done
+    if [[ -z "$lint" ]]; then
+        echo "Installing CI's golangci-lint $required to ./bin/ ..." >&2
+        curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/$required/install.sh" \
+            | sh -s -- -b ./bin "$required"
+        lint="$PWD/bin/golangci-lint"
     fi
 
     cd bindings/go
-    # Adjust relative path after cd
-    [[ "$LINT" == ./bin/* ]] && LINT="../../bin/golangci-lint"
-    "$LINT" run
+    # Match setup-go's go-version-file in CI: an older linter cannot parse a
+    # newer host Go standard library, even when this module's source is valid.
+    go_version="$(awk '$1 == "go" { print $2; exit }' go.mod)"
+    GOTOOLCHAIN="go$go_version" "$lint" run
 
 # Run Go lint checks for bindings.
 go-lint: build-go-ffi

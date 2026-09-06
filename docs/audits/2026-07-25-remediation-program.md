@@ -1,5 +1,10 @@
 # Production-readiness remediation program
 
+> Historical record, retired as an execution/exit contract on September 6,
+> 2026. The owner replaced its scope and approval obligations with the
+> [rehabilitation execution record](rehabilitation-status.md). Preserve its
+> observations; do not restart this program or interpret retirement as a pass.
+
 Snapshot date: 2026-07-25
 
 Repository: [plx/ferric-rules](https://github.com/plx/ferric-rules)
