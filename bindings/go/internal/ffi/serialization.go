@@ -22,15 +22,20 @@ func EngineSerializeAs(h EngineHandle, format SerializationFormat) ([]byte, Erro
 
 	return copyAndFreeBytes(unsafe.Pointer(data), uintptr(length), func() {
 		C.ferric_bytes_free(data, length)
-	}), ErrOK
+	})
 }
 
-func copyAndFreeBytes(data unsafe.Pointer, length uintptr, free func()) []byte {
+func copyAndFreeBytes(data unsafe.Pointer, length uintptr, free func()) ([]byte, ErrorCode) {
 	defer free()
-	if length == 0 {
-		return nil
+	// C.GoBytes accepts a signed 32-bit C.int even on 64-bit Go targets.
+	// This cap is also <= Go's maximum int on every supported architecture.
+	if length > 1<<31-1 {
+		return nil, ErrInvalidArgument
 	}
-	return C.GoBytes(data, C.int(length))
+	if length == 0 {
+		return nil, ErrOK
+	}
+	return C.GoBytes(data, C.int(length)), ErrOK
 }
 
 // EngineDeserializeAs creates an engine from previously serialized bytes

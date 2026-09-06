@@ -42,13 +42,14 @@ func (roundRobinPolicy) PickWorker(_ RouteHint, numWorkers int, counter uint64) 
 // Coordinator manages a pool of OS threads and a fixed set of engine types.
 // Engines are lazily instantiated per-thread on first use.
 type Coordinator struct {
-	specs   map[string][]EngineOption
-	workers []*worker
-	next    atomic.Uint64
-	policy  DispatchPolicy
-	done    chan struct{}
-	closed  atomic.Bool
-	obs     *obs
+	specs     map[string][]EngineOption
+	workers   []*worker
+	next      atomic.Uint64
+	policy    DispatchPolicy
+	done      chan struct{}
+	closeDone chan struct{}
+	closed    atomic.Bool
+	obs       *obs
 }
 
 // NewCoordinator creates a Coordinator with the given engine specs and
@@ -66,10 +67,11 @@ func NewCoordinator(specs []EngineSpec, opts ...CoordinatorOption) (*Coordinator
 	}
 
 	c := &Coordinator{
-		specs:  make(map[string][]EngineOption, len(specs)),
-		policy: cfg.policy,
-		done:   make(chan struct{}),
-		obs:    newObs(&cfg),
+		specs:     make(map[string][]EngineOption, len(specs)),
+		policy:    cfg.policy,
+		done:      make(chan struct{}),
+		closeDone: make(chan struct{}),
+		obs:       newObs(&cfg),
 	}
 	for _, s := range specs {
 		c.specs[s.Name] = s.Options
@@ -97,8 +99,10 @@ func (c *Coordinator) pickWorker(hint RouteHint) *worker {
 // It blocks until the worker goroutines have exited.
 func (c *Coordinator) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
+		<-c.closeDone
 		return nil
 	}
+	defer close(c.closeDone)
 	// Phase 1: Signal callers that no new work will be accepted.
 	close(c.done)
 	// Phase 2: Closing each request queue wakes blocked submitters and lets its

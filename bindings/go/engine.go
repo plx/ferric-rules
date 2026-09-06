@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
+	"github.com/plx/ferric-rules/bindings/go/internal/ffi"
 )
 
 var errIntOverflow = fmt.Errorf("ferric: integer overflow")
@@ -19,6 +19,13 @@ func validateCStringArgument(argument, value string) error {
 			Code:    int(ffi.ErrInvalidArgument),
 			Message: err.Error(),
 		}}
+	}
+	return nil
+}
+
+func validateRunLimit(limit int) error {
+	if limit < 0 {
+		return invalidArgument(fmt.Sprintf("run limit must be zero (unlimited) or positive, got %d", limit))
 	}
 	return nil
 }
@@ -53,9 +60,10 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 		opt(&cfg)
 	}
 
-	// Build and validate the complete effective configuration before invoking
-	// any native constructor. Snapshot restoration does not currently apply
-	// these overrides, but explicitly supplied values must still be validated.
+	if err := cfg.validateInputs(); err != nil {
+		return nil, err
+	}
+	// Validate accepted configuration before any native constructor.
 	config, err := makeConfig(&cfg)
 	if err != nil {
 		return nil, err
@@ -68,12 +76,6 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 		ffiFormat, err := formatToFFI(cfg.snapshotFormat)
 		if err != nil {
 			return nil, err
-		}
-		if len(cfg.snapshot) == 0 {
-			return nil, &InvalidArgumentError{FerricError{
-				Code:    int(ffi.ErrInvalidArgument),
-				Message: "snapshot data is empty",
-			}}
 		}
 		var rc ffi.ErrorCode
 		h, rc = ffiEngineDeserializeAs(cfg.snapshot, ffiFormat)
@@ -470,7 +472,7 @@ func (e *Engine) Run(ctx context.Context) (*RunResult, error) {
 }
 
 // RunWithLimit runs the engine with a maximum number of rule firings.
-// A limit of 0 means unlimited. A cancelable context is checked between batches
+// A limit of 0 means unlimited; negative limits are invalid. A cancelable context is checked between batches
 // of at most 100 rule firings; a noncancelable context uses one direct native
 // call. Cancellation returns the partial RunResult with HaltRequested and an
 // error wrapping ctx.Err(); an engine-requested halt returns HaltRequested with
@@ -493,6 +495,9 @@ func (e *Engine) runWithLimit(
 		return nil, err
 	}
 	defer release()
+	if err := validateRunLimit(limit); err != nil {
+		return nil, err
+	}
 
 	if ctx == nil {
 		return nil, errNilContext

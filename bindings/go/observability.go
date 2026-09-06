@@ -11,7 +11,7 @@ import (
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
-const instrumentationName = "github.com/prb/ferric-rules/bindings/go"
+const instrumentationName = "github.com/plx/ferric-rules/bindings/go"
 
 // obs holds the observability primitives for a Coordinator.
 // All fields are safe for concurrent use. When no providers are

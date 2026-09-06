@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
+	"github.com/plx/ferric-rules/bindings/go/internal/ffi"
 )
 
 var (

@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"unsafe"
 
-	ferric "github.com/prb/ferric-rules/bindings/go"
+	ferric "github.com/plx/ferric-rules/bindings/go"
 )
 
 const highIDIterations = 1_048_577

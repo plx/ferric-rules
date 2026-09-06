@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
+	"github.com/plx/ferric-rules/bindings/go/internal/ffi"
 )
 
 //nolint:funlen // The ordered failure sequence is the regression contract.
