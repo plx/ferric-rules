@@ -401,8 +401,8 @@ impl ReteNetwork {
                     for (key, ids) in keys {
                         let expected = expected.get(key).ok_or("wrong beta binding key")?;
                         require!(
-                            same_members(ids, expected),
-                            "inconsistent beta binding membership"
+                            ids == expected,
+                            "inconsistent beta binding membership or order"
                         );
                     }
                 }
@@ -433,6 +433,15 @@ impl ReteNetwork {
             }
         }
         self.validate_ncc_paths(&mut work)?;
+        // The compiler allocates parents before descendants and never reuses
+        // beta IDs. Right-assert dispatch relies on this order. Check it after
+        // path validation so corrupt cycles retain their specific diagnostics.
+        for (&id, node) in &self.beta.nodes {
+            work.step()?;
+            if let Some(parent_id) = parent(node) {
+                require!(parent_id.0 < id.0, "invalid beta allocation order");
+            }
+        }
         require_eq!(owned_memories.len(), self.beta.memories.len());
         require_eq!(owned_negative.len(), self.beta.neg_memories.len());
         require_eq!(owned_exists.len(), self.beta.exists_memories.len());
@@ -773,7 +782,13 @@ impl ReteNetwork {
             })
             .collect();
         let mut reverse = slotmap::SparseSecondaryMap::new();
-        for (id, entry) in facts.iter() {
+        // Slot reuse changes FactBase's storage order. Alpha traversal follows
+        // assertion chronology, which is preserved by each fact's timestamp.
+        let mut chronological_facts: Vec<_> = facts.iter().collect();
+        let sort_factor = usize::try_from(chronological_facts.len().max(2).ilog2()).unwrap() + 1;
+        work.spend(chronological_facts.len().saturating_mul(sort_factor))?;
+        chronological_facts.sort_unstable_by_key(|(_, entry)| entry.timestamp);
+        for (id, entry) in chronological_facts {
             let entry_type = match &entry.fact {
                 Fact::Ordered(fact) => AlphaEntryType::OrderedRelation(fact.relation),
                 Fact::Template(fact) => AlphaEntryType::Template(fact.template_id),
@@ -821,9 +836,24 @@ impl ReteNetwork {
         for (index, (actual, expected)) in self.alpha.memories.iter().zip(&expected).enumerate() {
             require_eq!(actual.id.0 as usize, index);
             require!(
-                actual.facts == expected.facts && actual.slot_indices == expected.slot_indices,
-                "inconsistent alpha fact/index membership"
+                actual.facts.iter().eq(expected.facts.iter()),
+                "inconsistent alpha fact membership or order"
             );
+            require_eq!(actual.slot_indices.len(), expected.slot_indices.len());
+            for (slot, keys) in &actual.slot_indices {
+                let expected = expected
+                    .slot_indices
+                    .get(slot)
+                    .ok_or("unexpected indexed alpha slot")?;
+                require_eq!(keys.len(), expected.len());
+                for (key, ids) in keys {
+                    let expected = expected.get(key).ok_or("unexpected alpha binding key")?;
+                    require!(
+                        ids.iter().eq(expected.iter()),
+                        "inconsistent alpha index membership or order"
+                    );
+                }
+            }
         }
         require_eq!(self.alpha.fact_to_memories.len(), reverse.len());
         for (fact, actual) in &self.alpha.fact_to_memories {

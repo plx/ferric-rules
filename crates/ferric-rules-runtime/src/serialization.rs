@@ -1275,6 +1275,124 @@ mod tests {
         }
     }
 
+    #[test]
+    fn corrupted_join_memory_and_index_order_is_rejected() {
+        let mut engine =
+            Engine::with_rules("(defrule joined (item ?key ?id) (gate ?key) =>) (defrule reversed (gate ?key) (item ?key ?id) =>)").unwrap();
+        for id in 0..20 {
+            engine
+                .assert_ordered(
+                    "item",
+                    vec![
+                        ferric_rules_core::Value::Integer(1),
+                        ferric_rules_core::Value::Integer(id),
+                    ],
+                )
+                .unwrap();
+        }
+        for (network, field) in [
+            ("alpha", "facts"),
+            ("alpha", "slot_indices"),
+            ("beta", "var_indices"),
+        ] {
+            let result = alter_state(&engine, |state| {
+                let mut changed = false;
+                for memory in state["rete"][network]["memories"].as_array_mut().unwrap() {
+                    if field == "facts" {
+                        let ids = memory[field].as_array_mut().unwrap();
+                        if ids.len() > 1 {
+                            ids.reverse();
+                            changed = true;
+                            break;
+                        }
+                    } else {
+                        for entry in memory[field].as_array_mut().unwrap() {
+                            for bucket in entry[1].as_array_mut().unwrap() {
+                                let ids = bucket[1].as_array_mut().unwrap();
+                                if ids.len() > 1 {
+                                    ids.reverse();
+                                    changed = true;
+                                    break;
+                                }
+                            }
+                            if changed {
+                                break;
+                            }
+                        }
+                        if changed {
+                            break;
+                        }
+                    }
+                }
+                assert!(changed, "missing multi-entry {network}/{field}");
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "{network}/{field}: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn otherwise_consistent_beta_relabeling_cannot_change_dispatch_order() {
+        let engine = Engine::with_rules("(defrule joined (a ?x) (b ?y) =>)").unwrap();
+        let result = alter_state(&engine, |state| {
+            let mut joins: Vec<_> = state["rete"]["beta"]["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|entry| entry[1].get("Join").is_some())
+                .map(|entry| entry[0].as_u64().unwrap())
+                .collect();
+            joins.sort_unstable();
+            assert_eq!(joins.len(), 2);
+            let swap = |value: &mut serde_json::Value| {
+                if let Some(id) = value.as_u64() {
+                    if id == joins[0] {
+                        *value = serde_json::json!(joins[1]);
+                    } else if id == joins[1] {
+                        *value = serde_json::json!(joins[0]);
+                    }
+                }
+            };
+            for entry in state["rete"]["beta"]["nodes"].as_array_mut().unwrap() {
+                swap(&mut entry[0]);
+                let body = entry[1]
+                    .as_object_mut()
+                    .unwrap()
+                    .values_mut()
+                    .next()
+                    .unwrap();
+                if let Some(parent) = body.get_mut("parent") {
+                    swap(parent);
+                }
+                if let Some(children) = body.get_mut("children") {
+                    for child in children.as_array_mut().unwrap() {
+                        swap(child);
+                    }
+                }
+            }
+            for entry in state["rete"]["beta"]["alpha_to_joins"]
+                .as_array_mut()
+                .unwrap()
+            {
+                for node in entry[1].as_array_mut().unwrap() {
+                    swap(node);
+                }
+            }
+            for entry in state["compiler"]["join_node_cache"].as_array_mut().unwrap() {
+                swap(&mut entry[0]["parent"]);
+                swap(&mut entry[1]);
+            }
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(ref message)) if message.contains("beta allocation order")),
+            "{:?}",
+            result.err()
+        );
+    }
+
     /// Test roundtrip for a given format with an empty engine.
     fn roundtrip_empty(format: SerializationFormat) {
         let engine = Engine::new(EngineConfig::default());
