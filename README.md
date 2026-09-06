@@ -217,7 +217,7 @@ These scenarios are verified as tests in
 
 That suite is intentionally Ferric-only regression coverage. External semantic
 claims are checked separately by `just compat-semantic-lane`, which executes a
-22-scenario structured matrix covering 20 audit IDs against the digest-pinned
+structured semantic matrix against the digest-pinned
 CLIPS reference. It rejects missing, unexplained, changed, or stale
 divergences. See
 [the compatibility assessment contract](docs/compatibility-assessment.md).
