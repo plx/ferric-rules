@@ -1707,8 +1707,8 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
         };
 
         let matches = match test.test_type {
-            JoinTestType::Equal => values_atom_eq(fact_value, token_value).unwrap_or(false),
-            JoinTestType::NotEqual => values_atom_eq(fact_value, token_value).is_some_and(|eq| !eq),
+            JoinTestType::Equal => values_join_eq(fact_value, token_value).unwrap_or(false),
+            JoinTestType::NotEqual => values_join_eq(fact_value, token_value).is_some_and(|eq| !eq),
             JoinTestType::GreaterThan => numeric_compare_matches(fact_value, token_value, |ord| {
                 matches!(ord, Ordering::Greater)
             }),
@@ -1784,24 +1784,25 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
     true
 }
 
-/// Direct atom-level equality test between two values.
+/// Equality for join values, including complete multifield slot values.
 ///
-/// Returns `Some(true)` when both values are the same atomic type and equal,
-/// `Some(false)` when both are atomic but unequal (including cross-type comparisons),
-/// and `None` when either value is `Multifield` or `Void` (non-comparable).
+/// Returns `Some(true)` for equal values of the same type, `Some(false)` for
+/// unequal values (including cross-type comparisons), and `None` for `Void`.
 ///
-/// This matches CLIPS semantics where `(eq 1 abc)` is FALSE (cross-type atomic
-/// values are definitively not-equal) while multifield comparisons are non-comparable.
-fn values_atom_eq(a: &Value, b: &Value) -> Option<bool> {
+/// Multifields use the same recursive, typed equality as same-fact constraints
+/// and the evaluator's `eq`. They are not atom-indexed, so candidate collection
+/// falls back to scanning when an equality key is a multifield.
+fn values_join_eq(a: &Value, b: &Value) -> Option<bool> {
     match (a, b) {
         (Value::Symbol(a), Value::Symbol(b)) => Some(a == b),
         (Value::Integer(a), Value::Integer(b)) => Some(a == b),
         (Value::Float(a), Value::Float(b)) => Some(a.to_bits() == b.to_bits()),
         (Value::String(a), Value::String(b)) => Some(a == b),
         (Value::ExternalAddress(a), Value::ExternalAddress(b)) => Some(a == b),
-        // Either value is Multifield or Void → non-comparable
-        (Value::Multifield(_) | Value::Void, _) | (_, Value::Multifield(_) | Value::Void) => None,
-        // Cross-type atomic comparisons → definitively not equal
+        (Value::Multifield(_), Value::Multifield(_)) => Some(a.structural_eq(b)),
+        // Void is an internal placeholder, not a comparable join value.
+        (Value::Void, _) | (_, Value::Void) => None,
+        // Cross-type comparisons → definitively not equal
         _ => Some(false),
     }
 }
@@ -4363,63 +4364,63 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Unit tests for `values_atom_eq`
+    // Unit tests for `values_join_eq`
     // -----------------------------------------------------------------------
 
     #[test]
-    fn values_atom_eq_same_type_equal() {
+    fn values_join_eq_same_type_equal() {
         use crate::encoding::StringEncoding;
         let mut symbol_table = SymbolTable::new();
         let sym = make_symbol(&mut symbol_table, "abc");
 
         assert_eq!(
-            values_atom_eq(&Value::Symbol(sym), &Value::Symbol(sym)),
+            values_join_eq(&Value::Symbol(sym), &Value::Symbol(sym)),
             Some(true)
         );
         assert_eq!(
-            values_atom_eq(&Value::Integer(42), &Value::Integer(42)),
+            values_join_eq(&Value::Integer(42), &Value::Integer(42)),
             Some(true)
         );
         assert_eq!(
-            values_atom_eq(&Value::Float(2.72), &Value::Float(2.72)),
+            values_join_eq(&Value::Float(2.72), &Value::Float(2.72)),
             Some(true)
         );
         let s = FerricString::new("hello", StringEncoding::Ascii).unwrap();
         assert_eq!(
-            values_atom_eq(&Value::String(s.clone()), &Value::String(s)),
+            values_join_eq(&Value::String(s.clone()), &Value::String(s)),
             Some(true)
         );
     }
 
     #[test]
-    fn values_atom_eq_same_type_unequal() {
+    fn values_join_eq_same_type_unequal() {
         use crate::encoding::StringEncoding;
         let mut symbol_table = SymbolTable::new();
         let sym_a = make_symbol(&mut symbol_table, "abc");
         let sym_b = make_symbol(&mut symbol_table, "xyz");
 
         assert_eq!(
-            values_atom_eq(&Value::Symbol(sym_a), &Value::Symbol(sym_b)),
+            values_join_eq(&Value::Symbol(sym_a), &Value::Symbol(sym_b)),
             Some(false)
         );
         assert_eq!(
-            values_atom_eq(&Value::Integer(1), &Value::Integer(2)),
+            values_join_eq(&Value::Integer(1), &Value::Integer(2)),
             Some(false)
         );
         assert_eq!(
-            values_atom_eq(&Value::Float(1.0), &Value::Float(2.0)),
+            values_join_eq(&Value::Float(1.0), &Value::Float(2.0)),
             Some(false)
         );
         let s1 = FerricString::new("hello", StringEncoding::Ascii).unwrap();
         let s2 = FerricString::new("world", StringEncoding::Ascii).unwrap();
         assert_eq!(
-            values_atom_eq(&Value::String(s1), &Value::String(s2)),
+            values_join_eq(&Value::String(s1), &Value::String(s2)),
             Some(false)
         );
     }
 
     #[test]
-    fn values_atom_eq_cross_type_atomic_returns_some_false() {
+    fn values_join_eq_cross_type_atomic_returns_some_false() {
         use crate::encoding::StringEncoding;
         let mut symbol_table = SymbolTable::new();
         let sym = make_symbol(&mut symbol_table, "abc");
@@ -4427,53 +4428,55 @@ mod tests {
 
         // Integer vs Symbol
         assert_eq!(
-            values_atom_eq(&Value::Integer(1), &Value::Symbol(sym)),
+            values_join_eq(&Value::Integer(1), &Value::Symbol(sym)),
             Some(false)
         );
         assert_eq!(
-            values_atom_eq(&Value::Symbol(sym), &Value::Integer(1)),
+            values_join_eq(&Value::Symbol(sym), &Value::Integer(1)),
             Some(false)
         );
         // Float vs String
         assert_eq!(
-            values_atom_eq(&Value::Float(1.0), &Value::String(s.clone())),
+            values_join_eq(&Value::Float(1.0), &Value::String(s.clone())),
             Some(false)
         );
         assert_eq!(
-            values_atom_eq(&Value::String(s), &Value::Float(1.0)),
+            values_join_eq(&Value::String(s), &Value::Float(1.0)),
             Some(false)
         );
         // Integer vs Float (cross-type in the atom sense)
         assert_eq!(
-            values_atom_eq(&Value::Integer(1), &Value::Float(1.0)),
+            values_join_eq(&Value::Integer(1), &Value::Float(1.0)),
             Some(false)
         );
         assert_eq!(
-            values_atom_eq(&Value::Float(1.0), &Value::Integer(1)),
+            values_join_eq(&Value::Float(1.0), &Value::Integer(1)),
             Some(false)
         );
     }
 
     #[test]
-    fn values_atom_eq_multifield_and_void_return_none() {
+    fn join_equality_compares_multifields_and_preserves_void_rejection() {
         let mf = Value::Multifield(Box::default());
 
         // Multifield vs atomic
-        assert_eq!(values_atom_eq(&mf, &Value::Integer(1)), None);
-        assert_eq!(values_atom_eq(&Value::Integer(1), &mf), None);
+        assert_eq!(values_join_eq(&mf, &Value::Integer(1)), Some(false));
+        assert_eq!(values_join_eq(&Value::Integer(1), &mf), Some(false));
         // Multifield vs Multifield
         assert_eq!(
-            values_atom_eq(&mf, &Value::Multifield(Box::default())),
-            None
+            values_join_eq(&mf, &Value::Multifield(Box::default())),
+            Some(true)
         );
+        let populated = Value::Multifield(Box::new([Value::Integer(1)].into_iter().collect()));
+        assert_eq!(values_join_eq(&mf, &populated), Some(false));
         // Void vs atomic
-        assert_eq!(values_atom_eq(&Value::Void, &Value::Integer(1)), None);
-        assert_eq!(values_atom_eq(&Value::Integer(1), &Value::Void), None);
+        assert_eq!(values_join_eq(&Value::Void, &Value::Integer(1)), None);
+        assert_eq!(values_join_eq(&Value::Integer(1), &Value::Void), None);
         // Void vs Void
-        assert_eq!(values_atom_eq(&Value::Void, &Value::Void), None);
+        assert_eq!(values_join_eq(&Value::Void, &Value::Void), None);
         // Multifield vs Void
-        assert_eq!(values_atom_eq(&mf, &Value::Void), None);
-        assert_eq!(values_atom_eq(&Value::Void, &mf), None);
+        assert_eq!(values_join_eq(&mf, &Value::Void), None);
+        assert_eq!(values_join_eq(&Value::Void, &mf), None);
     }
 
     // -----------------------------------------------------------------------
@@ -4731,39 +4734,39 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Property tests for values_atom_eq and negated join semantics
+    // Property tests for values_join_eq and negated join semantics
     // -----------------------------------------------------------------------
 
     proptest! {
-        /// Reflexivity: values_atom_eq(v, v) is Some(true) for all integer/float values.
+        /// Reflexivity: values_join_eq(v, v) is Some(true) for all integer/float values.
         #[test]
-        fn values_atom_eq_reflexive_for_atomics(
+        fn values_join_eq_reflexive_for_atomics(
             i in proptest::num::i64::ANY,
             f in proptest::num::f64::ANY,
         ) {
             prop_assert_eq!(
-                values_atom_eq(&Value::Integer(i), &Value::Integer(i)),
+                values_join_eq(&Value::Integer(i), &Value::Integer(i)),
                 Some(true),
                 "integer reflexivity"
             );
             prop_assert_eq!(
-                values_atom_eq(&Value::Float(f), &Value::Float(f)),
+                values_join_eq(&Value::Float(f), &Value::Float(f)),
                 Some(true),
                 "float reflexivity (bitwise)"
             );
         }
 
-        /// Symmetry: values_atom_eq(a, b) == values_atom_eq(b, a) for cross-type pairs.
+        /// Symmetry: values_join_eq(a, b) == values_join_eq(b, a) for cross-type pairs.
         #[test]
-        fn values_atom_eq_symmetric(
+        fn values_join_eq_symmetric(
             a_int in proptest::num::i64::ANY,
             b_float in proptest::num::f64::ANY,
         ) {
             let a = Value::Integer(a_int);
             let b = Value::Float(b_float);
             prop_assert_eq!(
-                values_atom_eq(&a, &b),
-                values_atom_eq(&b, &a),
+                values_join_eq(&a, &b),
+                values_join_eq(&b, &a),
                 "symmetry for Integer vs Float"
             );
         }
@@ -4777,8 +4780,8 @@ mod tests {
             let base = Value::Integer(base_val);
             let target = Value::Integer(target_val);
 
-            let eq_result = values_atom_eq(&base, &target).unwrap_or(false);
-            let neq_result = values_atom_eq(&base, &target).is_some_and(|eq| !eq);
+            let eq_result = values_join_eq(&base, &target).unwrap_or(false);
+            let neq_result = values_join_eq(&base, &target).is_some_and(|eq| !eq);
 
             prop_assert_eq!(eq_result, !neq_result,
                 "for same-type atomics, NotEqual must be the negation of Equal");
@@ -4793,10 +4796,10 @@ mod tests {
             let int_val = Value::Integer(i);
             let float_val = Value::Float(f);
 
-            let eq_result = values_atom_eq(&int_val, &float_val).unwrap_or(false);
+            let eq_result = values_join_eq(&int_val, &float_val).unwrap_or(false);
             prop_assert!(!eq_result, "cross-type Equal must be false");
 
-            let neq_result = values_atom_eq(&int_val, &float_val).is_some_and(|eq| !eq);
+            let neq_result = values_join_eq(&int_val, &float_val).is_some_and(|eq| !eq);
             prop_assert!(neq_result, "cross-type NotEqual must be true");
         }
     }
