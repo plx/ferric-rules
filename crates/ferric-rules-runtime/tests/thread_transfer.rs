@@ -16,7 +16,8 @@ fn ownership_traits_are_structural() {
     fn assert_send<T: Send>() {}
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send::<Engine>();
-    assert_send::<EngineConfig>();
+    assert_send_sync::<Engine>();
+    assert_send_sync::<EngineConfig>();
     assert_send_sync::<Mutex<Engine>>();
     assert_send_sync::<Value>();
     assert_send_sync::<ValueRef>();
@@ -264,4 +265,51 @@ fn snapshot_boundaries_reject_host_identities_including_nested_values() {
             assert!(error.to_string().contains("ExternalAddress"));
         }
     }
+}
+
+#[test]
+fn shared_engine_reads_can_overlap_without_a_host_mutex() {
+    let mut engine = Engine::with_rules(TRANSFER_RULES).unwrap();
+    assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+    let start = Barrier::new(4);
+    thread::scope(|scope| {
+        for _ in 0..4 {
+            let engine = &engine;
+            let start = &start;
+            scope.spawn(move || {
+                start.wait();
+                for _ in 0..100 {
+                    assert_eq!(engine.find_facts("recorded").unwrap().len(), 1);
+                    assert_eq!(
+                        engine
+                            .facts()
+                            .unwrap()
+                            .filter(|(_, fact)| matches!(fact, Fact::Template(_)))
+                            .count(),
+                        1
+                    );
+                    assert_eq!(engine.get_output("t"), Some("1|"));
+                    assert!(matches!(
+                        engine.get_global("count"),
+                        Some(Value::Integer(1))
+                    ));
+                    assert!(!engine.fact_duplication());
+                    assert_eq!(engine.agenda_len(), 0);
+                    assert!(engine.action_diagnostics().is_empty());
+                    #[cfg(feature = "serde")]
+                    {
+                        use ferric_rules_runtime::SerializationFormat;
+                        let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
+                        let mut restored =
+                            Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+                        restored
+                            .assert_template("item", &["number"], vec![Value::Integer(2)])
+                            .unwrap();
+                        assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+                        assert_eq!(restored.get_output("t"), Some("1|2|"));
+                    }
+                }
+            });
+        }
+    });
 }

@@ -284,6 +284,11 @@ pub struct MethodChain {
 // ---------------------------------------------------------------------------
 
 /// Context needed for expression evaluation.
+///
+/// Construction is crate-private (through the private template registry field).
+/// Engine entry points evaluate under exclusive engine access. The configuration
+/// includes an action budget shared with nested calls: future constructors must
+/// preserve exclusive evaluation or give independent roots separate configs.
 pub struct EvalContext<'a> {
     pub bindings: &'a BindingSet,
     pub var_map: &'a VarMap,
