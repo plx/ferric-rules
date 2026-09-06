@@ -167,10 +167,22 @@ class TestBoolConversion:
 
 
 class TestNoneConversion:
-    def test_none_roundtrip(self, engine):
-        fid = engine.assert_fact("empty", None)
-        fact = engine.get_fact(fid)
-        assert fact.fields[0] is None
+    @pytest.mark.parametrize("value", [None, [None], [[None]]])
+    def test_none_is_rejected_before_fact_installation(self, engine, value):
+        with pytest.raises(ValueError, match="None.*cannot be stored"):
+            engine.assert_fact("empty", value)
+        assert engine.fact_count == 0
+
+    @pytest.mark.parametrize("value", [None, [None], [[None]]])
+    def test_none_template_slot_is_rejected(self, engine, value):
+        engine.load("(deftemplate empty (multislot items))")
+        with pytest.raises(ValueError, match="None.*cannot be stored"):
+            engine.assert_template("empty", items=value)
+        assert engine.fact_count == 0
+
+    def test_nil_is_an_ordinary_symbol(self, engine):
+        fid = engine.assert_fact("empty", ferric.Symbol("nil"))
+        assert engine.get_fact(fid).fields == [ferric.Symbol("nil")]
 
 
 class TestListConversion:

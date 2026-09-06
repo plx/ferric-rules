@@ -568,7 +568,6 @@ dependencies = [
  "ferric-rules-runtime",
  "pyo3",
  "pyo3-build-config",
- "slotmap",
  "tracing",
 ]
 

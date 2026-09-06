@@ -74,7 +74,9 @@ create_exception!(
 /// Convert an `EngineError` into a Python exception.
 pub fn engine_error_to_pyerr(err: EngineError) -> PyErr {
     match err {
-        EngineError::WrongThread { .. }
+        EngineError::ForeignHandle
+        | EngineError::InvalidHostValue(_)
+        | EngineError::WrongThread { .. }
         | EngineError::NotATemplateFact(_)
         | EngineError::SlotCountMismatch { .. }
         | EngineError::DuplicateSlot { .. }

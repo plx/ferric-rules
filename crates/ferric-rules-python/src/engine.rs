@@ -13,13 +13,12 @@ use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyInt, PyList, PyTuple};
 
-use ferric_rules_core::FactId;
 use ferric_rules_runtime::config::EngineConfig;
 use ferric_rules_runtime::execution::RunLimit;
+use ferric_rules_runtime::FactHandle;
 use ferric_rules_runtime::{
     Engine, EngineError, HaltReason as NativeHaltReason, RunResult as NativeRunResult,
 };
-use slotmap::{Key, KeyData};
 
 use crate::config::{Encoding, Strategy};
 use crate::error::{
@@ -533,7 +532,7 @@ impl PyEngine {
             Ok(result
                 .asserted_facts
                 .iter()
-                .map(|fid| fid.data().as_ffi())
+                .map(|fid| fid.as_raw())
                 .collect())
         })
     }
@@ -561,7 +560,7 @@ impl PyEngine {
             let fid = engine
                 .assert_ordered(relation, values)
                 .map_err(engine_error_to_pyerr)?;
-            Ok(fid.data().as_ffi())
+            Ok(fid.as_raw())
         })
     }
 
@@ -603,14 +602,14 @@ impl PyEngine {
             let fid = engine
                 .assert_template(template_name, &name_refs, values)
                 .map_err(engine_error_to_pyerr)?;
-            Ok(fid.data().as_ffi())
+            Ok(fid.as_raw())
         })
     }
 
     /// Retract a fact by its ID.
     fn retract(&self, fact_id: u64) -> PyResult<()> {
         self.with_engine(|engine| {
-            let fid = FactId::from(KeyData::from_ffi(fact_id));
+            let fid = FactHandle::from_raw(fact_id);
             engine.retract(fid).map_err(engine_error_to_pyerr)
         })
     }
@@ -619,7 +618,7 @@ impl PyEngine {
     fn get_fact(&self, py: Python<'_>, fact_id: u64) -> PyResult<Option<Fact>> {
         let eid = self.engine_id;
         self.with_engine(|engine| {
-            let fid = FactId::from(KeyData::from_ffi(fact_id));
+            let fid = FactHandle::from_raw(fact_id);
             let fact = engine.get_fact(fid).map_err(engine_error_to_pyerr)?;
             match fact {
                 Some(f) => Ok(Some(fact_to_python(py, fid, f, engine, eid)?)),
@@ -712,10 +711,7 @@ impl PyEngine {
     /// Number of user-visible facts.
     #[getter]
     fn fact_count(&self) -> PyResult<usize> {
-        self.with_engine(|engine| {
-            let count = engine.facts().map_err(engine_error_to_pyerr)?.count();
-            Ok(count)
-        })
+        self.with_engine(|engine| Ok(engine.fact_count()))
     }
 
     /// Whether the engine is currently halted.
@@ -796,7 +792,7 @@ impl PyEngine {
     /// Get the value of a template fact slot by name.
     fn get_fact_slot(&self, py: Python<'_>, fact_id: u64, slot_name: &str) -> PyResult<PyObject> {
         self.with_engine(|engine| {
-            let fid = FactId::from(KeyData::from_ffi(fact_id));
+            let fid = FactHandle::from_raw(fact_id);
             let val = engine
                 .get_fact_slot_by_name(fid, slot_name)
                 .map_err(engine_error_to_pyerr)?;
@@ -965,7 +961,7 @@ impl PyEngine {
 
     fn __repr__(&self) -> PyResult<String> {
         self.with_engine(|engine| {
-            let fact_count = engine.facts().map_err(engine_error_to_pyerr)?.count();
+            let fact_count = engine.fact_count();
             let rule_count = engine.rules().len();
             let halted = engine.is_halted();
             Ok(format!(
@@ -975,15 +971,12 @@ impl PyEngine {
     }
 
     fn __len__(&self) -> PyResult<usize> {
-        self.with_engine(|engine| {
-            let count = engine.facts().map_err(engine_error_to_pyerr)?.count();
-            Ok(count)
-        })
+        self.with_engine(|engine| Ok(engine.fact_count()))
     }
 
     fn __contains__(&self, fact_id: u64) -> PyResult<bool> {
         self.with_engine(|engine| {
-            let fid = FactId::from(KeyData::from_ffi(fact_id));
+            let fid = FactHandle::from_raw(fact_id);
             let fact = engine.get_fact(fid).map_err(engine_error_to_pyerr)?;
             Ok(fact.is_some())
         })

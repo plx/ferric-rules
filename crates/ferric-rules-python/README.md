@@ -58,14 +58,25 @@ with ferric.Engine.from_snapshot(snapshot) as restored:
 Plain Python `str` and `ferric.String` create CLIPS string literals. Use
 `ferric.Symbol("ready")` for an unquoted CLIPS symbol. `bool` maps to the symbols
 `TRUE`/`FALSE`; `int` must fit a signed 64-bit integer, `float` maps to a native
-float, `None` to void, and lists/tuples to nested multifields. Conversion rejects
-unsupported objects and external identities explicitly. Host multifields are
+float, and lists/tuples to nested multifields. Fact inputs reject `None` (void),
+including nested values, because void represents an absent result and cannot be
+persisted as fact data. Use an explicit symbol such as `Symbol("nil")` when the
+application needs a stored sentinel. Conversion rejects unsupported objects and
+external identities explicitly. Host multifields are
 limited to 32 levels and 1,000,000 total values in an assertion.
 
 Returned symbol/string values use owned `Symbol`/`String` wrappers. Equality
 and hashing compare only wrappers of the same type and payload; neither equals
 a plain Python string. Use `.value` or `str(value)` when comparing host text.
-These rules also apply inside nested multifields and template slots.
+These rules also apply inside nested multifields and template slots. Owned
+returned values remain usable after closing their engine and can be asserted
+into another engine, which interns their symbol text in its own symbol table.
+
+Fact IDs are opaque, engine-scoped unsigned 64-bit integers. Pass them back to
+the engine that returned them; IDs from another engine or before reset/restore
+do not identify live facts. Store application IDs in fact fields for persistence
+instead of saving `Fact.id`. Reading a `Fact` returns an owned snapshot of its
+fields, which remains readable after retraction or engine shutdown.
 
 `Engine(max_call_depth=64)` and `Engine.from_source(source, max_call_depth=64)`
 accept a keyword-only integer from 0 through 4,294,967,295; booleans and
@@ -90,7 +101,9 @@ version to export durable application facts before updating. See the
 [shared launch-selection rules](../../examples/embedding/launch-selection.clp)
 for a deterministic embedding scenario exercised before and after restore.
 
-Pre-1.0 migration: replace plain strings with `Symbol(...)` where a rule expects
+Pre-1.0 migration: replace stored `None` values with an application sentinel and
+persist application IDs instead of native fact IDs. Replace plain strings with
+`Symbol(...)` where a rule expects
 a symbol; replace wrapper-to-str comparisons with typed wrappers or `.value`;
 use explicit `Format.BINCODE` only for the experimental Bincode codec. Catch
 `FerricSerializationError` for snapshot failures. `Interpret` errors now raise

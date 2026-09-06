@@ -134,7 +134,17 @@ with ferric.Engine.from_snapshot(completed) as resumed:
     assert [fact.fields for fact in resumed.find_facts("action")] == [expected]
 with ferric.Engine() as values:
     identifier = values.assert_fact("typed", "text", ferric.Symbol("text"), [2**63 - 1, -(2**63)])
-    assert values.get_fact(identifier).fields == [ferric.String("text"), ferric.Symbol("text"), [2**63 - 1, -(2**63)]]
+    assert identifier >= 1 << 63
+    owned = values.get_fact(identifier)
+    assert owned.fields == [ferric.String("text"), ferric.Symbol("text"), [2**63 - 1, -(2**63)]]
+    for invalid in (None, [None]):
+        try:
+            values.assert_fact("invalid", invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("void was accepted as durable fact data")
+    assert values.fact_count == 1
     values.retract(identifier)
     assert values.get_fact(identifier) is None
     try:
@@ -143,6 +153,18 @@ with ferric.Engine() as values:
         pass
     else:
         raise AssertionError("unsupported source did not raise typed compile error")
+with ferric.Engine() as destination:
+    destination.assert_fact("different", ferric.Symbol("intern-order"))
+    copied_id = destination.assert_fact(owned.relation, *owned.fields)
+    assert copied_id != owned.id
+    assert destination.get_fact(copied_id).fields == owned.fields
+    assert destination.get_fact(owned.id) is None
+    try:
+        destination.retract(owned.id)
+    except ferric.FerricFactNotFoundError:
+        pass
+    else:
+        raise AssertionError("foreign fact ID aliased a live fact")
 try:
     ferric.Engine.from_snapshot(b"legacy")
 except ferric.FerricSerializationError:
