@@ -26,7 +26,7 @@ expect_rejection() {
 printf '[advisories]\nyanked = "not-a-lint-level"\n' > "$scratch/deny.toml"
 expect_rejection malformed-cargo-config cargo deny --locked \
     --config "$scratch/deny.toml" check advisories
-rg 'error\[unexpected-value\]' "$evidence/malformed-cargo-config.log"
+grep -F 'unexpected-value' "$evidence/malformed-cargo-config.log"
 
 # lodash's affected template/merge APIs represent applicable runtime findings.
 # This package exists only inside the temporary scanner fixture.
@@ -73,5 +73,5 @@ PY
 printf 'lock-version = [\n' > "$scratch/python/pylock.toml"
 expect_rejection malformed-python-lock uvx --from pip-audit==2.10.1 pip-audit \
     --locked "$scratch/python" --strict
-rg 'invalid TOML' "$evidence/malformed-python-lock.log"
+grep -F 'invalid TOML' "$evidence/malformed-python-lock.log"
 echo "Native scanner rejection checks passed."

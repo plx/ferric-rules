@@ -98,12 +98,12 @@ test("G-001 Node package and lock metadata pin every target and detect-libc", ()
     (target) => target.packageName,
   );
   assert.deepStrictEqual(
-    Object.keys(mainPackage.optionalDependencies),
-    packageNames,
+    Object.keys(mainPackage.optionalDependencies).sort(),
+    [...packageNames].sort(),
   );
   assert.deepStrictEqual(
-    Object.keys(mainLock.packages[""].optionalDependencies),
-    packageNames,
+    Object.keys(mainLock.packages[""].optionalDependencies).sort(),
+    [...packageNames].sort(),
   );
   assert.strictEqual(
     mainPackage.dependencies["detect-libc"],
@@ -298,6 +298,27 @@ test("G-001 target validation rejects reordered, malformed, and ambiguous rows",
       validConfiguration({ targets: extraField }),
     ),
     /darwin-arm64.*exactly these fields/,
+  );
+});
+
+test("G-001 npm dependency key reordering preserves the target contract", () => {
+  const configuration = validConfiguration();
+  configuration.optionalDependencies = Object.fromEntries(
+    Object.entries(configuration.optionalDependencies).reverse(),
+  );
+  configuration.lockedOptionalDependencies = Object.fromEntries(
+    Object.entries(configuration.lockedOptionalDependencies).sort(([a], [b]) =>
+      a.localeCompare(b),
+    ),
+  );
+  assert.deepStrictEqual(collectNodeTargetValidationErrors(configuration), []);
+
+  delete configuration.lockedOptionalDependencies[
+    "@ferric-rules/napi-linux-arm64-musl"
+  ];
+  assertHasError(
+    collectNodeTargetValidationErrors(configuration),
+    /linux-arm64-musl.*exact locked optional dependency/,
   );
 });
 

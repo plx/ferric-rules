@@ -129,9 +129,11 @@ function validateVersionMap({ errors, label, actual, expectedNames, version }) {
   }
 
   const actualNames = Object.keys(actual);
-  if (!sameSequence(actualNames, expectedNames)) {
+  // npm may sort dependency objects while updating a lockfile. Their keys
+  // have no ordering semantics; the exact platform set and versions do.
+  if (!sameSequence([...actualNames].sort(), [...expectedNames].sort())) {
     errors.push(
-      `${label} must follow canonical target order: ${expectedNames.join(", ")}`,
+      `${label} must contain exactly these packages: ${expectedNames.join(", ")}`,
     );
   }
 
