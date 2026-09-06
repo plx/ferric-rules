@@ -129,9 +129,9 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         snapshot: Option<PathBuf>,
 
-        /// Format of the snapshot file (default: bincode).
+        /// Format of the snapshot file (default: CBOR).
         #[cfg(feature = "serde")]
-        #[arg(long, value_enum, default_value = "bincode")]
+        #[arg(long, value_enum, default_value = "cbor")]
         snapshot_format: CliFormat,
     },
 
@@ -149,8 +149,8 @@ enum Command {
         #[arg(short, long)]
         output: PathBuf,
 
-        /// Serialization format.
-        #[arg(long, value_enum, default_value = "bincode")]
+        /// Serialization format (default: CBOR).
+        #[arg(long, value_enum, default_value = "cbor")]
         format: CliFormat,
     },
 

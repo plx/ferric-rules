@@ -6,6 +6,12 @@ the existing `ciborium` dependency; the unmaintained bincode 1.x codec remains
 available only as an experimental format. JSON, MessagePack, and Postcard also
 remain experimental. This changes no format discriminants or method signatures.
 
+The CLI built with `--features serde` also defaults to CBOR for both
+`ferric snapshot rules.clp -o state.ferric` and
+`ferric repl --snapshot state.ferric`. Existing callers choosing an experimental
+codec must specify `--format` when saving and `--snapshot-format` when restoring.
+The default change accompanies the legacy raw snapshot break below.
+
 Snapshots retain facts and their identities, templates, globals and their reset
 initializers, deffacts, functions, rules, focus, queued activations, refraction,
 halt state, buffered input/output, and diagnostics. Successful restoration
