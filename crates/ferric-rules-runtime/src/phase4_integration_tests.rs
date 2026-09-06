@@ -3497,13 +3497,13 @@ fn load_rule_with_delayed_do_for_all_facts() {
     );
 }
 
-/// `any-factp` used as condition inside `if` loads without error.
+/// `any-factp` used as condition inside `if` rejects the unsupported expression context.
 #[test]
-fn load_rule_with_any_factp_in_if_condition() {
+fn reject_rule_with_any_factp_in_if_condition() {
     let mut engine = new_utf8_engine();
-    load_ok(
-        &mut engine,
-        r#"
+    let errors = engine
+        .load_str(
+            r#"
 (deftemplate flag (slot active))
 (defrule check
     (go)
@@ -3513,16 +3513,21 @@ fn load_rule_with_any_factp_in_if_condition() {
         else (printout t "no flags" crlf)))
 (deffacts trigger (go))
 "#,
-    );
+        )
+        .unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.to_string().contains("unsupported")));
+    assert!(engine.rules().is_empty());
 }
 
-/// `find-all-facts` used as the RHS of `bind` loads without error.
+/// `find-all-facts` used as the RHS of `bind` rejects the unsupported expression context.
 #[test]
-fn load_rule_with_find_all_facts_in_bind() {
+fn reject_rule_with_find_all_facts_in_bind() {
     let mut engine = new_utf8_engine();
-    load_ok(
-        &mut engine,
-        r"
+    let errors = engine
+        .load_str(
+            r"
 (deftemplate record (slot id))
 (defrule gather
     (go)
@@ -3531,16 +3536,21 @@ fn load_rule_with_find_all_facts_in_bind() {
     (printout t ?all crlf))
 (deffacts trigger (go))
 ",
-    );
+        )
+        .unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.to_string().contains("unsupported")));
+    assert!(engine.rules().is_empty());
 }
 
-/// `find-fact` used as the RHS of `bind` loads without error.
+/// `find-fact` used as the RHS of `bind` rejects the unsupported expression context.
 #[test]
-fn load_rule_with_find_fact_in_bind() {
+fn reject_rule_with_find_fact_in_bind() {
     let mut engine = new_utf8_engine();
-    load_ok(
-        &mut engine,
-        r"
+    let errors = engine
+        .load_str(
+            r"
 (deftemplate widget (slot id))
 (defrule get-first
     (go)
@@ -3549,7 +3559,12 @@ fn load_rule_with_find_fact_in_bind() {
     (printout t ?w crlf))
 (deffacts trigger (go))
 ",
-    );
+        )
+        .unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.to_string().contains("unsupported")));
+    assert!(engine.rules().is_empty());
 }
 
 // ===========================================================================

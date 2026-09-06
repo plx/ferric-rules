@@ -96,7 +96,7 @@ fn source_references_without_current_facts_block_template_redefinition() {
         "(deffunction create-record () (assert (record (original 2))))",
         "(defmethod create-record () (assert (record (original 2))))",
         "(deffunction inspect-record () (find-all-facts ((?f record)) TRUE))",
-        "(defrule query-record => (bind ?matches (find-all-facts ((?f record)) TRUE)))",
+        "(defrule query-record => (do-for-all-facts ((?f record)) TRUE (printout t ?f)))",
     ];
     for source in uses {
         let mut engine = Engine::with_rules("(deftemplate record (slot original))").unwrap();

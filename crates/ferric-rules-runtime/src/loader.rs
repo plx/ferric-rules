@@ -1763,6 +1763,10 @@ impl Engine {
         rule_name: &str,
     ) -> Result<(), LoadError> {
         match call.name.as_str() {
+            "refresh-agenda" => Err(Self::compile_error_at(
+                &call.span,
+                "refresh-agenda is unsupported: only static salience is supported",
+            )),
             // `(assert (relation ...))`: each argument list represents a fact pattern,
             // so the relation name is data, not a callable. For template facts,
             // slot names are also data and only slot values are expressions.
@@ -1930,13 +1934,10 @@ impl Engine {
                 }
                 Ok(())
             }
-            ActionExpr::QueryAction { query, body, .. } => {
-                self.validate_action_expr_as_expression(query, current_module, rule_name)?;
-                for action in body {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
-                }
-                Ok(())
-            }
+            ActionExpr::QueryAction { name, span, .. } => Err(Self::compile_error_at(
+                span,
+                &format!("{name} in an expression is unsupported; use a rule RHS do-for-* action or the host fact API"),
+            )),
             ActionExpr::Switch {
                 expr,
                 cases,
@@ -2053,6 +2054,12 @@ impl Engine {
         current_module: crate::modules::ModuleId,
         rule_name: &str,
     ) -> Result<(), LoadError> {
+        if callable == "refresh-agenda" {
+            return Err(Self::compile_error_at(
+                span,
+                "refresh-agenda is unsupported: only static salience is supported",
+            ));
+        }
         if self.is_declared_expression_callable(callable, current_module) {
             return Ok(());
         }

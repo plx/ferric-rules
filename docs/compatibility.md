@@ -182,20 +182,26 @@ including all commonly used conditional elements and RHS actions.
 
 ### Conflict Resolution Strategies
 
-Four strategies are implemented and configurable:
+Depth and breadth are the supported CLIPS ordering strategies. The host API
+also retains two experimental Ferric orderings for existing consumers:
 
 | Strategy | Description |
 |----------|-------------|
 | **Depth** | Most recent activation fires first (default) |
 | **Breadth** | Oldest activation fires first |
-| **LEX** | Lexicographic recency comparison |
-| **MEA** | First-pattern recency, then LEX tiebreak |
+| **LEX** (experimental) | Ferric's pattern-order recency comparison; not CLIPS LEX |
+| **MEA** (experimental) | Ferric's first-pattern recency, then its LEX tiebreak; not CLIPS MEA |
 
-Not implemented: `Simplicity`, `Complexity`, `Random`.
+CLIPS LEX/MEA specificity and sorted-recency semantics are deferred (#155).
+Use depth/breadth for portable rules. `Simplicity`, `Complexity`, and `Random`
+are not implemented. CLIPS `set-strategy`/`get-strategy` source commands are
+unsupported and produce missing-function diagnostics; configure a declared
+strategy through the host API. Bindings reject unknown enum/name values.
 
 ### Salience
 
-Rules may declare an integer salience. Higher salience fires first within the
+Rules may declare one static integer salience in -10000 through 10000.
+Higher salience fires first within the
 chosen conflict resolution strategy:
 
 ```clp
@@ -207,6 +213,22 @@ chosen conflict resolution strategy:
     (declare (salience 10))
     (go) => (printout t "low" crlf))
 ```
+
+Dynamic salience expressions, salience-evaluation modes, `refresh-agenda`, and
+`auto-focus` declarations are unsupported. Invalid/unsupported declarations
+reject the construct; they never become salience zero. `refresh-agenda` now
+reports an error instead of returning a successful no-op. These are deliberate
+pre-1.0 corrections to previously silent behavior.
+
+### Fact-query expressions
+
+Use the host fact inspection API for queries. RHS `do-for-*` actions retain
+their existing fact iteration, but CLIPS query expressions (`any-factp`,
+`find-fact`, `find-all-facts`) in expressions or callable bodies are unsupported.
+They now report a load or execution error rather than inventing FALSE/empty
+results. Query-bound `?fact:slot` expressions remain unsupported; ordinary
+rule LHS fact-address slot access remains available. This limitation does not
+restrict normal joins or host-side typed fact inspection.
 
 ### Activation Ordering Contract
 

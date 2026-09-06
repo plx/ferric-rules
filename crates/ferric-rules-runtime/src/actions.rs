@@ -1460,9 +1460,8 @@ fn execute_loop_body(
 ///
 /// For action forms (`do-for-*`), executes `body` for each matching fact and
 /// returns `Ok(())`. For expression forms (`any-factp`, `find-*`), the return
-/// value cannot be propagated here; call-sites that need it should go through
-/// `eval()` instead (which returns a default value since it lacks fact-base
-/// access — see `RuntimeExpr::QueryAction` eval arm).
+/// value is discarded here. Fact queries used as expressions are explicitly
+/// unsupported because the pure evaluator has no fact-base access.
 #[allow(clippy::too_many_arguments)]
 fn execute_query_action(
     reset_requested: &mut bool,

@@ -839,18 +839,32 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
     while idx < elements.len() {
         if let Some(declare_list) = elements[idx].as_list() {
             if !declare_list.is_empty() && declare_list[0].as_symbol() == Some("declare") {
-                // Process declare form - look for (salience N)
                 for decl_item in &declare_list[1..] {
-                    if let Some(item_list) = decl_item.as_list() {
-                        if item_list.len() == 2 && item_list[0].as_symbol() == Some("salience") {
-                            if let Some(Atom::Integer(sal)) = item_list[1].as_atom() {
-                                #[allow(clippy::cast_possible_truncation)]
-                                {
-                                    salience = *sal as i32;
-                                }
-                            }
-                        }
+                    let item_list = decl_item.as_list().ok_or_else(|| {
+                        InterpretError::expected(
+                            "a (salience <integer>) declaration",
+                            decl_item.span(),
+                        )
+                    })?;
+                    if item_list.first().and_then(SExpr::as_symbol) != Some("salience") {
+                        return Err(InterpretError::expected(
+                            "a supported declaration: only static salience is implemented (auto-focus is unsupported)",
+                            decl_item.span(),
+                        ));
                     }
+                    let Some(Atom::Integer(sal)) = item_list.get(1).and_then(SExpr::as_atom) else {
+                        return Err(InterpretError::expected(
+                            "static integer salience; dynamic expressions are unsupported",
+                            decl_item.span(),
+                        ));
+                    };
+                    if item_list.len() != 2 || !(-10_000..=10_000).contains(sal) {
+                        return Err(InterpretError::expected(
+                            "one salience integer in -10000..=10000",
+                            decl_item.span(),
+                        ));
+                    }
+                    salience = i32::try_from(*sal).expect("validated salience range");
                 }
                 idx += 1;
             } else {
