@@ -350,49 +350,49 @@ BENCHMARKS = [
     ),
     # serialization_bench (9, requires serde feature)
     (
-        "serde_small_serialize",
+        "snapshot_cbor_small_serialize",
         "serialization_bench",
-        "serde_small/serialize/new/estimates.json",
+        "snapshot_cbor_small/serialize/new/estimates.json",
     ),
     (
-        "serde_small_deserialize",
+        "snapshot_cbor_small_deserialize",
         "serialization_bench",
-        "serde_small/deserialize/new/estimates.json",
+        "snapshot_cbor_small/deserialize/new/estimates.json",
     ),
     (
-        "serde_small_compile_baseline",
+        "snapshot_cbor_small_compile_baseline",
         "serialization_bench",
-        "serde_small/compile_baseline/new/estimates.json",
+        "snapshot_cbor_small/compile_baseline/new/estimates.json",
     ),
     (
-        "serde_medium_serialize",
+        "snapshot_cbor_medium_serialize",
         "serialization_bench",
-        "serde_medium/serialize/new/estimates.json",
+        "snapshot_cbor_medium/serialize/new/estimates.json",
     ),
     (
-        "serde_medium_deserialize",
+        "snapshot_cbor_medium_deserialize",
         "serialization_bench",
-        "serde_medium/deserialize/new/estimates.json",
+        "snapshot_cbor_medium/deserialize/new/estimates.json",
     ),
     (
-        "serde_medium_compile_baseline",
+        "snapshot_cbor_medium_compile_baseline",
         "serialization_bench",
-        "serde_medium/compile_baseline/new/estimates.json",
+        "snapshot_cbor_medium/compile_baseline/new/estimates.json",
     ),
     (
-        "serde_large_serialize",
+        "snapshot_cbor_large_serialize",
         "serialization_bench",
-        "serde_large/serialize/new/estimates.json",
+        "snapshot_cbor_large/serialize/new/estimates.json",
     ),
     (
-        "serde_large_deserialize",
+        "snapshot_cbor_large_deserialize",
         "serialization_bench",
-        "serde_large/deserialize/new/estimates.json",
+        "snapshot_cbor_large/deserialize/new/estimates.json",
     ),
     (
-        "serde_large_compile_baseline",
+        "snapshot_cbor_large_compile_baseline",
         "serialization_bench",
-        "serde_large/compile_baseline/new/estimates.json",
+        "snapshot_cbor_large/compile_baseline/new/estimates.json",
     ),
     # constraint_bench (10)
     (
