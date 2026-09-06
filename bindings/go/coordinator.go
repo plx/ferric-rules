@@ -96,7 +96,9 @@ func (c *Coordinator) pickWorker(hint RouteHint) *worker {
 
 // Close shuts down the coordinator. It stops accepting new requests, completes
 // all non-canceled work already queued or started, and then frees all engines.
-// It blocks until the worker goroutines have exited.
+// It blocks until the worker goroutines have exited. Do not call Close
+// synchronously from a Manager.Do callback owned by this coordinator: shutdown
+// waits for that callback to return.
 func (c *Coordinator) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		<-c.closeDone
