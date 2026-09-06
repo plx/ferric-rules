@@ -35,8 +35,8 @@ pub struct EngineConfig {
     /// Whether structurally equivalent facts may coexist in working memory.
     ///
     /// This is interior-mutable because evaluator contexts already borrow the
-    /// engine configuration immutably. `Engine` is thread-affine, so mutation
-    /// through `Cell` does not weaken its concurrency contract.
+    /// engine configuration immutably. These cells make `Engine` `!Sync`:
+    /// an engine can move between threads, but operations remain serialized.
     fact_duplication: Cell<bool>,
     /// Remaining iterations in the current action execution, or `None` when
     /// no action/evaluator root owns a budget.

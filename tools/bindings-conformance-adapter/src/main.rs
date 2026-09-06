@@ -1,8 +1,6 @@
 use std::env;
-use std::ffi::c_void;
 use std::fs;
 use std::path::PathBuf;
-use std::ptr;
 
 use ferric_rules::core::{
     ConflictResolutionStrategy, ExternalAddress, ExternalTypeId, Fact, Multifield, StringEncoding,
@@ -136,7 +134,7 @@ fn value_case(case_id: &str) -> Result<JsonValue, String> {
         "value.external-address" => {
             let external = Value::ExternalAddress(ExternalAddress {
                 type_id: ExternalTypeId(7),
-                pointer: ptr::null_mut::<c_void>(),
+                token: 42,
             });
             let accepted = engine.assert_ordered("probe", vec![external]).is_ok();
             Ok(json!({
