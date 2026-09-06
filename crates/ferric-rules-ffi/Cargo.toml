@@ -9,7 +9,7 @@ repository.workspace = true
 readme.workspace = true
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 serde = ["ferric-rules-runtime/serde", "ferric-rules-pinned/serde"]
@@ -29,6 +29,7 @@ cbindgen = { workspace = true }
 
 [dev-dependencies]
 cbindgen = { workspace = true }
+criterion = { workspace = true }
 proptest = { workspace = true }
 
 # FFI crate must allow unsafe code for C-ABI exports
@@ -42,3 +43,7 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+
+[[bench]]
+name = "capi_bench"
+harness = false
