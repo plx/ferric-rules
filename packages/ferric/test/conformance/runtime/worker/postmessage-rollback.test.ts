@@ -324,3 +324,32 @@ test("D-011 send rollback remains first settlement when a Worker error arrives l
   await completeFacts(handle, worker);
   await handle.close();
 });
+
+
+test("concurrent handle closes share delayed cleanup and reject pending work on termination failure", async () => {
+  const { handle, worker } = makeHandle();
+  let finish!: () => void;
+  const gate = new Promise<void>((resolve) => { finish = resolve; });
+  const failure = new Error("termination failed");
+  worker.terminate = async () => {
+    worker.terminateCalls++;
+    await gate;
+    throw failure;
+  };
+  const controller = new AbortController();
+  const pending = rejectionOf(handle.run({ signal: controller.signal }));
+  const first = handle.close();
+  const second = handle.close();
+  assert.strictEqual(first, second);
+  let settled = false;
+  const closed = first.then(() => { settled = true; }, (error) => { settled = true; return error; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.strictEqual(settled, false);
+  assert.strictEqual(worker.terminateCalls, 1);
+  finish();
+  assert.strictEqual(await closed, failure);
+  assert.match(String(await pending), /EngineHandle closed/);
+  assert.strictEqual(handle.close(), first);
+  assert.strictEqual(getEventListeners(controller.signal, "abort").length, 0);
+  assertHandleIdle(handle);
+});

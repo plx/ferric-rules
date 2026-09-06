@@ -24,7 +24,7 @@ import type { WorkerRequest, WorkerResponse, WorkerInit } from "./wire";
 import { ABORT_FLAG_INDEX, RUN_BATCH_SIZE, toWire, fromWireToNative, extractFerricError } from "./wire";
 import type { NativeEngine } from "./native";
 import type { FactIdInput } from "./types";
-import { normalizeRunLimit } from "./limit-validation";
+import { addFiredCount, normalizeRunLimit } from "./limit-validation";
 
 type NativeContinueRun = (
   engine: NativeEngine,
@@ -131,7 +131,7 @@ function batchedRun(
       ? activeEngine.run(batchLimit)
       : nativeContinueRun(activeEngine, batchLimit);
     firstChunk = false;
-    totalFired += result.rulesFired;
+    totalFired = addFiredCount(totalFired, result.rulesFired);
 
     // Any terminal reason (AgendaEmpty, HaltRequested, or ActionError) stops batching.
     if (result.haltReason !== 1 /* LimitReached */) {

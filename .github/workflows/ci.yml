@@ -274,6 +274,18 @@ jobs:
       - name: Run TypeScript binding tests
         working-directory: packages/ferric
         run: npm test
+      - name: Smoke external Node 22 package consumers
+        run: node scripts/test-node-package-artifact.mjs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Smoke external Node 24 package consumers
+        run: node scripts/test-node-package-artifact.mjs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - name: Smoke external Node 26 package consumers
+        run: node scripts/test-node-package-artifact.mjs
 
   bindings-conformance:
     name: Cross-binding Conformance

@@ -41,6 +41,7 @@ test("G-001 table-driven ERROR_REGISTRY factories construct named Ferric errors"
     ["FerricParseError", "FERRIC_PARSE_ERROR"],
     ["FerricCompileError", "FERRIC_COMPILE_ERROR"],
     ["FerricRuntimeError", "FERRIC_RUNTIME_ERROR"],
+    ["FerricIOError", "FERRIC_IO_ERROR"],
     ["FerricFactNotFoundError", "FERRIC_FACT_NOT_FOUND"],
     ["FerricTemplateNotFoundError", "FERRIC_TEMPLATE_NOT_FOUND"],
     ["FerricSlotNotFoundError", "FERRIC_SLOT_NOT_FOUND"],

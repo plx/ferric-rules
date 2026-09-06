@@ -30,16 +30,24 @@ pub fn native_package_version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
 }
 
-/// Continue one bounded chunk for the internal Node worker batching loop.
-///
-/// This is a module-level bridge rather than an `Engine` prototype method so
-/// the public synchronous API cannot continue a completed or canceled logical
-/// run without the documented fresh-run reset.
-#[doc(hidden)]
-#[napi(js_name = "__continueRun", skip_typescript)]
-pub fn continue_run(
-    mut engine: napi::bindgen_prelude::ClassInstance<engine::Engine>,
-    limit: u32,
-) -> napi::Result<result::RunResult> {
-    engine.continue_run(limit)
+// napi_define_class installs a native receiver check on this function. Moving
+// that exact function off the prototype retains the check; a module-level
+// FromNapiRef/ ClassInstance argument would instead cast any native wrap to
+// Engine without checking its Rust type. No public Engine exposes continuation.
+// Rust unit tests have no Node environment to register; addon tests exercise
+// this hook in real Node processes.
+#[cfg(not(test))]
+#[napi_derive::module_exports]
+fn private_worker_bridge(mut exports: napi::JsObject) -> napi::Result<()> {
+    let constructor: napi::JsFunction = exports.get_named_property("Engine")?;
+    let mut prototype: napi::JsObject = constructor
+        .coerce_to_object()?
+        .get_named_property("prototype")?;
+    let continuation: napi::JsFunction = prototype.get_named_property("__continueRun")?;
+    if !prototype.delete_named_property("__continueRun")? {
+        return Err(napi::Error::from_reason(
+            "could not hide worker continuation method",
+        ));
+    }
+    exports.set_named_property("__continueRun", continuation)
 }

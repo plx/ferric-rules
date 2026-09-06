@@ -61,112 +61,115 @@ impl FerricSymbol {
     }
 }
 
-/// Convert a JavaScript value to a Rust [`Value`].
-///
-/// - `null`/`undefined` → `Value::Void`
-/// - `boolean` → `Value::Symbol("TRUE")` or `Value::Symbol("FALSE")`
-/// - `number` (integral) → `Value::Integer`
-/// - `number` (fractional) → `Value::Float`
-/// - `bigint` → `Value::Integer`
-/// - `string` → `Value::String` (CLIPS quoted string)
-/// - `FerricSymbol` → `Value::Symbol`
-/// - `Array` → `Value::Multifield`
-///
-/// # Errors
-///
-/// Returns an error if the value type is not supported or if symbol/string
-/// creation fails due to encoding constraints.
-#[allow(clippy::only_used_in_recursion)]
-pub fn js_to_value(env: &Env, val: JsUnknown, engine: &mut Engine) -> Result<Value> {
-    match val.get_type()? {
-        ValueType::Null | ValueType::Undefined => Ok(Value::Void),
+/// Owned input staging: all JavaScript access finishes before a runtime
+/// reference is borrowed. The caller retains the native object's reservation.
+pub enum OwnedValue {
+    Void,
+    Integer(i64),
+    Float(f64),
+    Symbol(String),
+    String(String),
+    Multifield(Vec<Self>),
+}
 
-        ValueType::Boolean => {
-            let js_bool: JsBoolean = val.try_into()?;
-            let b = js_bool.get_value()?;
-            let sym_name = if b { "TRUE" } else { "FALSE" };
-            let sid = engine
-                .intern_symbol(sym_name)
-                .map_err(engine_error_to_napi)?;
-            Ok(Value::Symbol(sid))
-        }
-
-        ValueType::Number => {
-            let js_num: JsNumber = val.try_into()?;
-            let n: f64 = js_num.get_double()?;
-            // If the number is a whole value within i64 range, treat as Integer.
-            // i64::MAX rounds up to 2^63 as f64, so the upper bound must stay
-            // strict to avoid saturating 2^63 into i64::MAX.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-            if n.fract() == 0.0 && n >= (i64::MIN as f64) && n < (i64::MAX as f64) {
-                Ok(Value::Integer(n as i64))
-            } else {
-                Ok(Value::Float(n))
+impl OwnedValue {
+    pub fn into_runtime(self, engine: &mut Engine) -> Result<Value> {
+        match self {
+            Self::Void => Ok(Value::Void),
+            Self::Integer(value) => Ok(Value::Integer(value)),
+            Self::Float(value) => Ok(Value::Float(value)),
+            Self::Symbol(value) => engine
+                .intern_symbol(&value)
+                .map(Value::Symbol)
+                .map_err(engine_error_to_napi),
+            Self::String(value) => engine
+                .create_string(&value)
+                .map(Value::String)
+                .map_err(engine_error_to_napi),
+            Self::Multifield(values) => {
+                let values = values
+                    .into_iter()
+                    .map(|value| value.into_runtime(engine))
+                    .collect::<Result<Multifield>>()?;
+                Ok(Value::Multifield(Box::new(values)))
             }
         }
+    }
+}
 
+/// Convert JS input into owned data, with bounded nesting and exact integers.
+#[allow(clippy::only_used_in_recursion)]
+pub fn js_to_owned(env: &Env, val: JsUnknown, depth: usize) -> Result<OwnedValue> {
+    match val.get_type()? {
+        ValueType::Null | ValueType::Undefined => Ok(OwnedValue::Void),
+        ValueType::Boolean => {
+            let value: JsBoolean = val.try_into()?;
+            Ok(OwnedValue::Symbol(
+                if value.get_value()? { "TRUE" } else { "FALSE" }.to_owned(),
+            ))
+        }
+        ValueType::Number => {
+            let value: JsNumber = val.try_into()?;
+            let number = value.get_double()?;
+            if number.fract() == 0.0 {
+                if number.abs() > 9_007_199_254_740_991.0 {
+                    return Err(Error::new(Status::InvalidArg, "integer number must be a safe integer; pass a bigint for signed 64-bit values"));
+                }
+                #[allow(clippy::cast_possible_truncation)]
+                Ok(OwnedValue::Integer(number as i64))
+            } else {
+                Ok(OwnedValue::Float(number))
+            }
+        }
         ValueType::BigInt => {
-            // SAFETY: We just confirmed the type is BigInt via get_type().
-            let js_bigint: JsBigInt = unsafe { val.cast() };
-            let (value, lossless) = js_bigint.get_i64()?;
+            // SAFETY: get_type confirmed BigInt; lossless rejects narrowing.
+            let value: JsBigInt = unsafe { val.cast() };
+            let (value, lossless) = value.get_i64()?;
             if !lossless {
                 return Err(Error::new(
                     Status::InvalidArg,
                     "BigInt value is outside the signed 64-bit integer range",
                 ));
             }
-            Ok(Value::Integer(value))
+            Ok(OwnedValue::Integer(value))
         }
-
         ValueType::String => {
-            let js_str: JsString = val.try_into()?;
-            let s = js_str.into_utf8()?.as_str()?.to_owned();
-            let fs = engine.create_string(&s).map_err(engine_error_to_napi)?;
-            Ok(Value::String(fs))
+            let value: JsString = val.try_into()?;
+            Ok(OwnedValue::String(value.into_utf8()?.as_str()?.to_owned()))
         }
-
         ValueType::Object => {
             let obj: JsObject = val.try_into()?;
-
-            // Check for Array first.
             if obj.is_array()? {
-                let len = obj.get_array_length()?;
-                let mut items = Vec::with_capacity(len as usize);
-                for i in 0..len {
-                    let elem: JsUnknown = obj.get_element(i)?;
-                    items.push(js_to_value(env, elem, engine)?);
+                if depth >= 128 {
+                    return Err(Error::new(
+                        Status::InvalidArg,
+                        "multifield nesting exceeds 128 levels (cyclic values are unsupported)",
+                    ));
                 }
-                let mf: Multifield = items.into_iter().collect();
-                return Ok(Value::Multifield(Box::new(mf)));
+                let len = obj.get_array_length()?;
+                let mut values = Vec::new();
+                for index in 0..len {
+                    values.push(js_to_owned(env, obj.get_element(index)?, depth + 1)?);
+                }
+                return Ok(OwnedValue::Multifield(values));
             }
-
-            // Check for a tagged FerricSymbol marker object.  The JS
-            // loader (`crates/ferric-rules-napi/index.js::marshalValue`) converts
-            // native FerricSymbol instances to plain objects of the form
-            // `{ __ferric_symbol: true, value: "name" }` before the args
-            // reach Rust, because napi-rs class instances lose their native
-            // pointer when passed through `Vec<JsUnknown>` extraction.
-            //
-            // This is a *different* tagged format from the postMessage wire
-            // form `{ __type: "FerricSymbol", value: string }` used between
-            // the main thread and worker threads — see
-            // `packages/ferric/src/wire.ts::WireSymbol`. The wire form never
-            // reaches Rust directly.
-            if obj.has_named_property("__ferric_symbol")? {
-                let value_prop: JsString = obj.get_named_property("value")?;
-                let sym_name = value_prop.into_utf8()?.as_str()?.to_owned();
-                let sid = engine
-                    .intern_symbol(&sym_name)
-                    .map_err(engine_error_to_napi)?;
-                return Ok(Value::Symbol(sid));
+            // The loader marshals FerricSymbol to this private native-call
+            // representation. Worker wire symbols are reconstructed first.
+            if obj.has_own_property("__ferric_symbol")? && obj.has_own_property("value")? {
+                let marker: JsUnknown = obj.get_named_property("__ferric_symbol")?;
+                if marker.get_type()? == ValueType::Boolean {
+                    let marker: JsBoolean = marker.try_into()?;
+                    if marker.get_value()? {
+                        let value: JsString = obj.get_named_property("value")?;
+                        return Ok(OwnedValue::Symbol(value.into_utf8()?.as_str()?.to_owned()));
+                    }
+                }
             }
-
             Err(Error::new(
                 Status::InvalidArg,
-                "cannot convert object to CLIPS value; expected Array or FerricSymbol",
+                "cannot convert object to CLIPS value; expected Array or a canonical FerricSymbol",
             ))
         }
-
         other => Err(Error::new(
             Status::InvalidArg,
             format!("unsupported JS value type: {other:?}"),

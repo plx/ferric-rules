@@ -1,5 +1,6 @@
 //! Node.js Engine wrapper.
 
+use std::cell::{RefCell, RefMut};
 use std::path::PathBuf;
 
 use napi::{Env, JsBigInt, JsNull, JsNumber, JsObject, JsUnknown, Result, ValueType};
@@ -14,8 +15,8 @@ use slotmap::{Key, KeyData};
 use crate::config::{Encoding, Strategy};
 use crate::error::{engine_error_to_napi, init_error_to_napi, load_errors_to_napi};
 use crate::fact::fact_to_js;
-use crate::result::{FiredRule, RuleInfo, RunResult};
-use crate::value::{collect_object_keys, js_to_value, value_to_js};
+use crate::result::{checked_count, FiredRule, RuleInfo, RunResult};
+use crate::value::{collect_object_keys, js_to_owned, value_to_js};
 
 /// Options for constructing an [`Engine`].
 #[napi(object)]
@@ -45,6 +46,20 @@ fn make_config(options: Option<EngineOptions>) -> EngineConfig {
     config
 }
 
+fn checked_run_limit(limit: f64) -> Result<usize> {
+    if !limit.is_finite()
+        || limit.fract() != 0.0
+        || !(0.0..=9_007_199_254_740_991.0).contains(&limit)
+    {
+        return Err(napi::Error::new(
+            napi::Status::InvalidArg,
+            "run limit must be a non-negative safe integer",
+        ));
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(limit as usize)
+}
+
 /// The Ferric rules engine — Node.js binding.
 ///
 /// This wraps a `ferric_rules_runtime::Engine` and exposes it to JavaScript via
@@ -53,33 +68,34 @@ fn make_config(options: Option<EngineOptions>) -> EngineConfig {
 /// struct.
 #[napi]
 pub struct Engine {
-    inner: Option<FerricEngine>,
+    inner: RefCell<Option<FerricEngine>>,
 }
 
 impl Engine {
-    /// Continue one bounded chunk of the current logical run.
-    ///
-    /// This is deliberately not exported as an `Engine` method. The Node
-    /// worker entrypoints reach it through the module-level private bridge so
-    /// public engine instances cannot bypass fresh-run state reset semantics.
-    pub(crate) fn continue_run(&mut self, limit: u32) -> Result<RunResult> {
-        let engine = self.engine_mut()?;
-        let result = engine
-            .continue_run(RunLimit::Count(limit as usize))
-            .map_err(engine_error_to_napi)?;
-        Ok(result.into())
+    fn into_js(self, env: Env) -> Result<JsObject> {
+        // Use the registered Engine constructor. napi-rs's generated factory
+        // instead uses JS `this`, which can be another native class; wrapping
+        // an Engine pointer under that class would permit a wrong-type read.
+        Ok(self.into_instance(env)?.as_object(env))
     }
 
-    fn engine(&self) -> Result<&FerricEngine> {
-        self.inner
-            .as_ref()
-            .ok_or_else(|| napi::Error::from_reason("engine has been closed"))
+    // napi-rs exports shared receivers only. It does not dynamically guard
+    // generated &mut receivers against JS getters reentering the same object.
+    // This reservation protects all calls, including reads and close, while
+    // conversions can invoke JavaScript. No runtime reference escapes it.
+    fn state(&self) -> Result<RefMut<'_, Option<FerricEngine>>> {
+        self.inner.try_borrow_mut().map_err(|_| {
+            napi::Error::from_reason("FerricRuntimeError: reentrant engine access is not allowed")
+        })
     }
 
-    fn engine_mut(&mut self) -> Result<&mut FerricEngine> {
-        self.inner
-            .as_mut()
-            .ok_or_else(|| napi::Error::from_reason("engine has been closed"))
+    fn engine(&self) -> Result<RefMut<'_, FerricEngine>> {
+        RefMut::filter_map(self.state()?, Option::as_mut)
+            .map_err(|_| napi::Error::from_reason("engine has been closed"))
+    }
+
+    fn engine_mut(&self) -> Result<RefMut<'_, FerricEngine>> {
+        self.engine()
     }
 }
 
@@ -141,7 +157,7 @@ impl Engine {
     pub fn new(options: Option<EngineOptions>) -> Self {
         let config = make_config(options);
         Self {
-            inner: Some(FerricEngine::new(config)),
+            inner: RefCell::new(Some(FerricEngine::new(config))),
         }
     }
 
@@ -149,14 +165,19 @@ impl Engine {
     ///
     /// Equivalent to constructing an engine, calling `load(source)`, then
     /// `reset()`.
-    #[napi(factory)]
-    pub fn from_source(source: String, options: Option<EngineOptions>) -> Result<Self> {
+    #[napi(ts_return_type = "Engine")]
+    pub fn from_source(
+        env: Env,
+        source: String,
+        options: Option<EngineOptions>,
+    ) -> Result<JsObject> {
         let config = make_config(options);
         let engine =
             FerricEngine::with_rules_config(&source, config).map_err(init_error_to_napi)?;
-        Ok(Self {
-            inner: Some(engine),
-        })
+        Self {
+            inner: RefCell::new(Some(engine)),
+        }
+        .into_js(env)
     }
 
     // -----------------------------------------------------------------------
@@ -165,16 +186,16 @@ impl Engine {
 
     /// Load CLIPS source into the engine.
     #[napi]
-    pub fn load(&mut self, source: String) -> Result<()> {
-        let engine = self.engine_mut()?;
+    pub fn load(&self, source: String) -> Result<()> {
+        let mut engine = self.engine_mut()?;
         engine.load_str(&source).map_err(load_errors_to_napi)?;
         Ok(())
     }
 
     /// Load CLIPS source from a file at the given path.
     #[napi]
-    pub fn load_file(&mut self, path: String) -> Result<()> {
-        let engine = self.engine_mut()?;
+    pub fn load_file(&self, path: String) -> Result<()> {
+        let mut engine = self.engine_mut()?;
         engine
             .load_file(&PathBuf::from(path))
             .map_err(load_errors_to_napi)?;
@@ -189,8 +210,8 @@ impl Engine {
     ///
     /// Returns an array of fact IDs (as `bigint`) for all asserted facts.
     #[napi]
-    pub fn assert_string(&mut self, source: String) -> Result<Vec<u64>> {
-        let engine = self.engine_mut()?;
+    pub fn assert_string(&self, source: String) -> Result<Vec<u64>> {
+        let mut engine = self.engine_mut()?;
         let wrapped = format!("(assert {source})");
         let result = engine.load_str(&wrapped).map_err(load_errors_to_napi)?;
         if result.asserted_facts.is_empty() {
@@ -210,17 +231,22 @@ impl Engine {
     /// Field values may be `null`, `boolean`, `number`, `bigint`, `string`,
     /// `FerricSymbol`, or `Array`.
     #[napi(ts_args_type = "relation: string, ...fields: unknown[]")]
-    pub fn assert_fact(
-        &mut self,
-        env: Env,
-        relation: String,
-        fields: Vec<JsUnknown>,
-    ) -> Result<u64> {
-        let engine = self.engine_mut()?;
-        let mut values = Vec::with_capacity(fields.len());
-        for item in fields {
-            values.push(js_to_value(&env, item, engine)?);
+    pub fn assert_fact(&self, env: Env, relation: String, fields: Vec<JsUnknown>) -> Result<u64> {
+        let mut state = self.state()?;
+        if state.is_none() {
+            return Err(napi::Error::from_reason("engine has been closed"));
         }
+        let staged = fields
+            .into_iter()
+            .map(|item| js_to_owned(&env, item, 0))
+            .collect::<Result<Vec<_>>>()?;
+        let engine = state
+            .as_mut()
+            .ok_or_else(|| napi::Error::from_reason("engine has been closed"))?;
+        let values = staged
+            .into_iter()
+            .map(|value| value.into_runtime(engine))
+            .collect::<Result<Vec<_>>>()?;
         let fid = engine
             .assert_ordered(&relation, values)
             .map_err(engine_error_to_napi)?;
@@ -233,24 +259,26 @@ impl Engine {
     /// CLIPS values (`null`, `boolean`, `number`, `bigint`, `string`,
     /// `FerricSymbol`, or `Array`).
     #[napi]
-    pub fn assert_template(
-        &mut self,
-        env: Env,
-        template_name: String,
-        slots: JsObject,
-    ) -> Result<u64> {
-        let engine = self.engine_mut()?;
-        let keys = collect_object_keys(&slots)?;
-
-        let mut names: Vec<String> = Vec::with_capacity(keys.len());
-        let mut values = Vec::with_capacity(keys.len());
-
-        for name in keys {
-            let val: JsUnknown = slots.get_named_property_unchecked(&name)?;
-            let rust_val = js_to_value(&env, val, engine)?;
-            names.push(name);
-            values.push(rust_val);
+    pub fn assert_template(&self, env: Env, template_name: String, slots: JsObject) -> Result<u64> {
+        let mut state = self.state()?;
+        if state.is_none() {
+            return Err(napi::Error::from_reason("engine has been closed"));
         }
+        let names = collect_object_keys(&slots)?;
+        let staged = names
+            .iter()
+            .map(|name| {
+                let value: JsUnknown = slots.get_named_property_unchecked(name)?;
+                js_to_owned(&env, value, 0)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let engine = state
+            .as_mut()
+            .ok_or_else(|| napi::Error::from_reason("engine has been closed"))?;
+        let values = staged
+            .into_iter()
+            .map(|value| value.into_runtime(engine))
+            .collect::<Result<Vec<_>>>()?;
 
         let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let fid = engine
@@ -262,9 +290,9 @@ impl Engine {
     /// Retract a fact by its ID. Canonical IDs are `bigint`; safe legacy
     /// `number` IDs are also accepted.
     #[napi(ts_args_type = "factId: bigint | number")]
-    pub fn retract(&mut self, fact_id: JsUnknown) -> Result<()> {
+    pub fn retract(&self, fact_id: JsUnknown) -> Result<()> {
         let fid = fact_id_from_js(fact_id)?;
-        let engine = self.engine_mut()?;
+        let mut engine = self.engine_mut()?;
         engine.retract(fid).map_err(engine_error_to_napi)
     }
 
@@ -277,7 +305,7 @@ impl Engine {
         let fact = engine.get_fact(fid).map_err(engine_error_to_napi)?;
         match fact {
             Some(f) => {
-                let obj = fact_to_js(&env, fid, f, engine)?;
+                let obj = fact_to_js(&env, fid, f, &engine)?;
                 Ok(obj.into_unknown())
             }
             None => env.get_null().map(JsNull::into_unknown),
@@ -292,7 +320,7 @@ impl Engine {
         let facts_vec: Vec<(FactId, _)> = iter.collect();
         let mut arr = env.create_array_with_length(facts_vec.len())?;
         for (i, (fid, fact)) in facts_vec.iter().enumerate() {
-            let obj = fact_to_js(&env, *fid, fact, engine)?;
+            let obj = fact_to_js(&env, *fid, fact, &engine)?;
             #[allow(clippy::cast_possible_truncation)]
             arr.set_element(i as u32, obj)?;
         }
@@ -306,7 +334,7 @@ impl Engine {
         let found = engine.find_facts(&relation).map_err(engine_error_to_napi)?;
         let mut arr = env.create_array_with_length(found.len())?;
         for (i, (fid, fact)) in found.iter().enumerate() {
-            let obj = fact_to_js(&env, *fid, fact, engine)?;
+            let obj = fact_to_js(&env, *fid, fact, &engine)?;
             #[allow(clippy::cast_possible_truncation)]
             arr.set_element(i as u32, obj)?;
         }
@@ -327,7 +355,7 @@ impl Engine {
         let val = engine
             .get_fact_slot_by_name(fid, &slot_name)
             .map_err(engine_error_to_napi)?;
-        value_to_js(&env, val, engine)
+        value_to_js(&env, val, &engine)
     }
 
     // -----------------------------------------------------------------------
@@ -339,20 +367,32 @@ impl Engine {
     /// Returns a `RunResult` describing how many rules fired and why
     /// execution stopped.
     #[napi]
-    pub fn run(&mut self, limit: Option<u32>) -> Result<RunResult> {
-        let engine = self.engine_mut()?;
+    pub fn run(&self, limit: Option<f64>) -> Result<RunResult> {
+        let mut engine = self.engine_mut()?;
         let run_limit = match limit {
-            Some(n) => RunLimit::Count(n as usize),
+            Some(n) => RunLimit::Count(checked_run_limit(n)?),
             None => RunLimit::Unlimited,
         };
         let result = engine.run(run_limit).map_err(engine_error_to_napi)?;
-        Ok(result.into())
+        result.try_into()
+    }
+
+    /// Internal worker chunk. Module initialization moves this receiver-checked
+    /// native function off the prototype before exposing the addon to JS.
+    #[doc(hidden)]
+    #[napi(js_name = "__continueRun", skip_typescript)]
+    pub fn continue_run(&self, limit: u32) -> Result<RunResult> {
+        let mut engine = self.engine_mut()?;
+        let result = engine
+            .continue_run(RunLimit::Count(limit as usize))
+            .map_err(engine_error_to_napi)?;
+        result.try_into()
     }
 
     /// Fire a single rule activation. Returns a `FiredRule` or `null`.
     #[napi]
-    pub fn step(&mut self) -> Result<Option<FiredRule>> {
-        let engine = self.engine_mut()?;
+    pub fn step(&self) -> Result<Option<FiredRule>> {
+        let mut engine = self.engine_mut()?;
         let result = engine.step().map_err(engine_error_to_napi)?;
         Ok(result.map(|fr| {
             let name = engine
@@ -365,23 +405,23 @@ impl Engine {
 
     /// Request the engine to halt after the current rule completes.
     #[napi]
-    pub fn halt(&mut self) -> Result<()> {
-        let engine = self.engine_mut()?;
+    pub fn halt(&self) -> Result<()> {
+        let mut engine = self.engine_mut()?;
         engine.halt();
         Ok(())
     }
 
     /// Reset the engine: clear facts and re-assert deffacts.
     #[napi]
-    pub fn reset(&mut self) -> Result<()> {
-        let engine = self.engine_mut()?;
+    pub fn reset(&self) -> Result<()> {
+        let mut engine = self.engine_mut()?;
         engine.reset().map_err(engine_error_to_napi)
     }
 
     /// Clear the engine: remove all rules, facts, templates, globals, etc.
     #[napi]
-    pub fn clear(&mut self) -> Result<()> {
-        let engine = self.engine_mut()?;
+    pub fn clear(&self) -> Result<()> {
+        let mut engine = self.engine_mut()?;
         engine.clear();
         Ok(())
     }
@@ -392,11 +432,10 @@ impl Engine {
 
     /// Number of user-visible facts in working memory.
     #[napi(getter)]
-    pub fn fact_count(&self) -> Result<u32> {
+    pub fn fact_count(&self) -> Result<f64> {
         let engine = self.engine()?;
         let count = engine.facts().map_err(engine_error_to_napi)?.count();
-        #[allow(clippy::cast_possible_truncation)]
-        Ok(count as u32)
+        checked_count(count, "fact count")
     }
 
     /// Whether the engine is currently halted.
@@ -407,9 +446,8 @@ impl Engine {
 
     /// Number of pending activations on the agenda.
     #[napi(getter)]
-    pub fn agenda_size(&self) -> Result<u32> {
-        #[allow(clippy::cast_possible_truncation)]
-        Ok(self.engine()?.agenda_len() as u32)
+    pub fn agenda_size(&self) -> Result<f64> {
+        checked_count(self.engine()?.agenda_len(), "agenda size")
     }
 
     /// Name of the current module.
@@ -491,7 +529,7 @@ impl Engine {
     pub fn get_global(&self, env: Env, name: String) -> Result<JsUnknown> {
         let engine = self.engine()?;
         match engine.get_global(&name) {
-            Some(val) => value_to_js(&env, val, engine),
+            Some(val) => value_to_js(&env, val, &engine),
             None => env.get_null().map(JsNull::into_unknown),
         }
     }
@@ -502,7 +540,7 @@ impl Engine {
 
     /// Set focus to a single module, replacing the previous focus stack.
     #[napi]
-    pub fn set_focus(&mut self, module_name: String) -> Result<()> {
+    pub fn set_focus(&self, module_name: String) -> Result<()> {
         self.engine_mut()?
             .set_focus(&module_name)
             .map_err(engine_error_to_napi)
@@ -510,7 +548,7 @@ impl Engine {
 
     /// Push a module onto the focus stack.
     #[napi]
-    pub fn push_focus(&mut self, module_name: String) -> Result<()> {
+    pub fn push_focus(&self, module_name: String) -> Result<()> {
         self.engine_mut()?
             .push_focus(&module_name)
             .map_err(engine_error_to_napi)
@@ -530,14 +568,14 @@ impl Engine {
 
     /// Clear captured output for a channel.
     #[napi]
-    pub fn clear_output(&mut self, channel: String) -> Result<()> {
+    pub fn clear_output(&self, channel: String) -> Result<()> {
         self.engine_mut()?.clear_output_channel(&channel);
         Ok(())
     }
 
     /// Push a line of input for `read`/`readline` to consume.
     #[napi]
-    pub fn push_input(&mut self, line: String) -> Result<()> {
+    pub fn push_input(&self, line: String) -> Result<()> {
         self.engine_mut()?.push_input(&line);
         Ok(())
     }
@@ -548,75 +586,8 @@ impl Engine {
 
     /// Clear accumulated action diagnostics.
     #[napi]
-    pub fn clear_diagnostics(&mut self) -> Result<()> {
+    pub fn clear_diagnostics(&self) -> Result<()> {
         self.engine_mut()?.clear_action_diagnostics();
-        Ok(())
-    }
-
-    // -----------------------------------------------------------------------
-    // Serialization
-    // -----------------------------------------------------------------------
-
-    /// Serialize the engine state to a Node.js `Buffer`.
-    #[cfg(feature = "serde")]
-    #[napi]
-    pub fn serialize(
-        &self,
-        format: Option<crate::config::Format>,
-    ) -> Result<napi::bindgen_prelude::Buffer> {
-        let engine = self.engine()?;
-        let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
-        let bytes = engine
-            .serialize(fmt)
-            .map_err(crate::error::serde_error_to_napi)?;
-        Ok(napi::bindgen_prelude::Buffer::from(bytes))
-    }
-
-    /// Create an engine by deserializing from a Node.js `Buffer`.
-    #[cfg(feature = "serde")]
-    #[napi(factory)]
-    pub fn from_snapshot(
-        data: napi::bindgen_prelude::Buffer,
-        format: Option<crate::config::Format>,
-    ) -> Result<Self> {
-        let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
-        let engine = FerricEngine::deserialize(data.as_ref(), fmt)
-            .map_err(crate::error::serde_error_to_napi)?;
-        Ok(Self {
-            inner: Some(engine),
-        })
-    }
-
-    /// Create an engine by deserializing from a file.
-    #[cfg(feature = "serde")]
-    #[napi(factory)]
-    pub fn from_snapshot_file(path: String, format: Option<crate::config::Format>) -> Result<Self> {
-        let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
-        let engine = FerricEngine::deserialize_from_file(std::path::Path::new(&path), fmt)
-            .map_err(|error| match error {
-                ferric_rules_runtime::SnapshotFileError::Io(error) => {
-                    napi::Error::new(napi::Status::GenericFailure, error.to_string())
-                }
-                ferric_rules_runtime::SnapshotFileError::Serialization(error) => {
-                    crate::error::serde_error_to_napi(error)
-                }
-            })?;
-        Ok(Self {
-            inner: Some(engine),
-        })
-    }
-
-    /// Save a serialized engine snapshot to a file.
-    #[cfg(feature = "serde")]
-    #[napi]
-    pub fn save_snapshot(&self, path: String, format: Option<crate::config::Format>) -> Result<()> {
-        let engine = self.engine()?;
-        let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
-        let bytes = engine
-            .serialize(fmt)
-            .map_err(crate::error::serde_error_to_napi)?;
-        std::fs::write(&path, &bytes)
-            .map_err(|e| napi::Error::new(napi::Status::GenericFailure, e.to_string()))?;
         Ok(())
     }
 
@@ -629,8 +600,79 @@ impl Engine {
     /// After calling `close()`, any further method calls will throw an error.
     /// This is idempotent — calling it multiple times is safe.
     #[napi]
-    pub fn close(&mut self) -> Result<()> {
-        self.inner.take();
+    pub fn close(&self) -> Result<()> {
+        self.state()?.take();
+        Ok(())
+    }
+}
+
+// Gate the whole napi impl so disabled methods are also absent from its
+// generated registration helpers. Per-method cfg leaves dangling helpers.
+#[cfg(feature = "serde")]
+#[napi]
+impl Engine {
+    // -----------------------------------------------------------------------
+    // Serialization
+    // -----------------------------------------------------------------------
+
+    /// Serialize the engine state to a Node.js `Buffer`.
+    #[napi]
+    pub fn serialize(
+        &self,
+        format: Option<crate::config::Format>,
+    ) -> Result<napi::bindgen_prelude::Buffer> {
+        let engine = self.engine()?;
+        let fmt = format.unwrap_or(crate::config::Format::Cbor).into();
+        let bytes = engine
+            .serialize(fmt)
+            .map_err(crate::error::serde_error_to_napi)?;
+        Ok(napi::bindgen_prelude::Buffer::from(bytes))
+    }
+
+    /// Create an engine by deserializing from a Node.js `Buffer`.
+    #[napi(ts_return_type = "Engine")]
+    pub fn from_snapshot(
+        env: Env,
+        data: napi::bindgen_prelude::Buffer,
+        format: Option<crate::config::Format>,
+    ) -> Result<JsObject> {
+        let fmt = format.unwrap_or(crate::config::Format::Cbor).into();
+        let engine = FerricEngine::deserialize(data.as_ref(), fmt)
+            .map_err(crate::error::serde_error_to_napi)?;
+        Self {
+            inner: RefCell::new(Some(engine)),
+        }
+        .into_js(env)
+    }
+
+    /// Create an engine by deserializing from a file.
+    #[napi(ts_return_type = "Engine")]
+    pub fn from_snapshot_file(
+        env: Env,
+        path: String,
+        format: Option<crate::config::Format>,
+    ) -> Result<JsObject> {
+        let fmt = format.unwrap_or(crate::config::Format::Cbor).into();
+        let engine = FerricEngine::deserialize_from_file(std::path::Path::new(&path), fmt)
+            .map_err(|error| match error {
+                ferric_rules_runtime::SnapshotFileError::Io(error) => crate::error::io_error_to_napi(error),
+                ferric_rules_runtime::SnapshotFileError::Serialization(error) => crate::error::serde_error_to_napi(error),
+            })?;
+        Self {
+            inner: RefCell::new(Some(engine)),
+        }
+        .into_js(env)
+    }
+
+    /// Save a serialized engine snapshot to a file.
+    #[napi]
+    pub fn save_snapshot(&self, path: String, format: Option<crate::config::Format>) -> Result<()> {
+        let engine = self.engine()?;
+        let fmt = format.unwrap_or(crate::config::Format::Cbor).into();
+        let bytes = engine
+            .serialize(fmt)
+            .map_err(crate::error::serde_error_to_napi)?;
+        std::fs::write(&path, &bytes).map_err(crate::error::io_error_to_napi)?;
         Ok(())
     }
 }
