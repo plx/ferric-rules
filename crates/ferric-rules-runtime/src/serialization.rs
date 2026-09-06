@@ -8,18 +8,21 @@
 //!
 //! ## Supported formats
 //!
-//! | Format      | Crate          | Notes                                 |
-//! |-------------|----------------|---------------------------------------|
-//! | Bincode     | `bincode`      | Experimental compact binary        |
-//! | JSON        | `serde_json`   | Human-readable, larger output         |
-//! | CBOR        | `ciborium`     | Recommended persistence format  |
-//! | `MessagePack` | `rmp-serde`    | Compact binary, JSON-like schema      |
-//! | Postcard    | `postcard`     | Compact, `no_std`-friendly binary     |
+//! | Format | Crate | Status |
+//! | --- | --- | --- |
+//! | CBOR | `ciborium` | Recommended persistence format |
+//! | Bincode | `bincode` | Experimental compact binary |
+//! | JSON | `serde_json` | Experimental human-readable payload |
+//! | `MessagePack` | `rmp-serde` | Experimental compact binary |
+//! | Postcard | `postcard` | Experimental compact binary |
+//!
+//! Every codec payload is wrapped in the same versioned binary envelope.
 //!
 //! ## Limitations
 //!
 //! - `ExternalAddress` values cannot be serialized. If any are present in the
-//!   fact base, [`Engine::serialize`] returns
+//!   engine state, [`Engine::serialize`] rejects the snapshot, including
+//!   nested external identities in facts and globals, with
 //!   [`SerializationError::ExternalAddressPresent`].
 
 mod limited;
@@ -314,6 +317,8 @@ impl Engine {
     ///
     /// Returns [`SerializationError::ExternalAddressPresent`] if the engine
     /// contains any `ExternalAddress` values (which cannot be serialized).
+    /// Invalid engine invariants, persistence limits, and unsupported codec
+    /// values also produce errors. Successful writes satisfy the read limits.
     pub fn serialize(&self, format: SerializationFormat) -> Result<Vec<u8>, SerializationError> {
         self.validate_serializable()?;
         self.validate_restored_state()?;
@@ -361,8 +366,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns an error if the data is malformed or does not match the
-    /// expected format.
+    /// Returns an error for legacy raw data, unknown versions or capabilities,
+    /// a mismatched codec, corruption, exceeded persistence limits, or invalid
+    /// restored state. A failed decode never installs a partial engine.
     pub fn deserialize(
         data: &[u8],
         format: SerializationFormat,
