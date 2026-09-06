@@ -16,8 +16,9 @@ longer reports deffacts seeds as newly asserted facts. Explicit `assert` and
 
 A definition is identified by module and local name. Successful replacement
 moves it to the end of that module's definition order; reset visits modules
-in creation order, then their definitions in order. `undefdeffacts` removes
-definitions without retracting current facts. An invalid individual definition
+in creation order, then their definitions in order. `undeffacts` removes
+definitions without retracting current facts; its `*` selector applies only to
+the current module. An invalid individual definition
 leaves its previous definition intact. This atomic replacement is deliberately
 stronger than CLIPS 6.30, which removes the old same-name definition before
 reporting some replacement errors.

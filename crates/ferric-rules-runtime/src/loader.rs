@@ -2064,7 +2064,7 @@ impl Engine {
                 | "set-fact-duplication"
                 | "get-fact-duplication"
                 | "undefrule"
-                | "undefdeffacts"
+                | "undeffacts"
                 | "ppdefrule"
                 | "load"
                 | "close"

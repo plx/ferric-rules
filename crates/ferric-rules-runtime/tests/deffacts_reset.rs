@@ -22,9 +22,9 @@ fn run(engine: &mut Engine, count: usize) {
 
 fn integer_facts(engine: &Engine, relation: &str) -> Vec<i64> {
     engine
-        .find_facts(relation)
+        .facts()
         .unwrap()
-        .iter()
+        .filter(|(_, fact)| matches!(fact, Fact::Ordered(fact) if engine.resolve_symbol(fact.relation) == Some(relation)))
         .map(|(_, fact)| {
             let Fact::Ordered(fact) = fact else {
                 panic!("ordered fact required")
@@ -153,8 +153,8 @@ fn template_seed_multislots_preserve_all_typed_fields_and_empty_values() {
 }
 
 #[test]
-fn undefdeffacts_removes_only_the_selected_named_seed_without_retracting_current_facts() {
-    let mut engine = Engine::with_rules("(deffacts first (item 1)) (deffacts second (item 2)) (defrule remove => (undefdeffacts first) (undefrule remove))").unwrap();
+fn undeffacts_removes_only_the_selected_named_seed_without_retracting_current_facts() {
+    let mut engine = Engine::with_rules("(deffacts first (item 1)) (deffacts second (item 2)) (defrule remove => (undeffacts first) (undefrule remove))").unwrap();
     run(&mut engine, 1);
     assert_eq!(integer_facts(&engine, "item"), [1, 2]);
     engine.reset().unwrap();
@@ -180,4 +180,26 @@ fn restored_named_definitions_keep_chronology_and_replacement_identity() {
     engine.clear();
     engine.reset().unwrap();
     assert_eq!(engine.facts().unwrap().count(), 0);
+}
+
+#[test]
+fn undeffacts_local_wildcard_and_qualified_names_preserve_other_modules() {
+    for (selector, expected) in [
+        ("same", vec![1, 2]),
+        ("*", vec![1, 2]),
+        ("A::same", vec![1, 3]),
+    ] {
+        let mut engine = Engine::with_rules(&format!(
+            "(deffacts MAIN::same (item 1))
+             (defmodule A) (deffacts same (item 2))
+             (defmodule B) (deffacts same (item 3))
+             (defrule B::remove => (undeffacts {selector}) (undefrule remove))"
+        ))
+        .unwrap();
+        engine.push_focus("B").unwrap();
+        run(&mut engine, 1);
+        assert_eq!(integer_facts(&engine, "item"), [1, 2, 3]);
+        engine.reset().unwrap();
+        assert_eq!(integer_facts(&engine, "item"), expected, "{selector}");
+    }
 }

@@ -716,7 +716,7 @@ fn execute_single_action(
             eval_env,
             collected_facts,
         ),
-        "undefdeffacts" => execute_undefdeffacts(
+        "undeffacts" => execute_undeffacts(
             token,
             rule_info,
             &call.args,
@@ -1766,7 +1766,7 @@ fn execute_undefrule(
     Ok(())
 }
 
-fn execute_undefdeffacts(
+fn execute_undeffacts(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     args: &[ActionExpr],
@@ -1776,11 +1776,11 @@ fn execute_undefdeffacts(
 ) -> Result<(), ActionError> {
     if args.len() != 1 {
         return Err(ActionError::EvalError(
-            "undefdeffacts: expected one name or *".to_string(),
+            "undeffacts: expected one name or *".to_string(),
         ));
     }
     let selectors = evaluated_rule_selectors(
-        "undefdeffacts",
+        "undeffacts",
         token,
         rule_info,
         args,
@@ -1789,18 +1789,21 @@ fn execute_undefdeffacts(
         collected_facts,
     )?;
     if selectors[0] == "*" {
-        context.engine.registered_deffacts.clear();
+        context
+            .engine
+            .registered_deffacts
+            .retain(|definition| definition.module != context.current_module);
         return Ok(());
     }
     let name = parse_qualified_name(&selectors[0])
-        .map_err(|error| ActionError::EvalError(format!("undefdeffacts: {error}")))?;
+        .map_err(|error| ActionError::EvalError(format!("undeffacts: {error}")))?;
     let module = match name.module_name() {
         Some(module) => context
             .engine
             .module_registry
             .get_by_name(module)
             .ok_or_else(|| {
-                ActionError::EvalError(format!("undefdeffacts: unknown module `{module}`"))
+                ActionError::EvalError(format!("undeffacts: unknown module `{module}`"))
             })?,
         None => context.current_module,
     };
@@ -1818,7 +1821,7 @@ fn execute_undefdeffacts(
         .retain(|definition| definition.module != module || definition.name != name.local_name());
     if before == context.engine.registered_deffacts.len() {
         return Err(ActionError::EvalError(format!(
-            "undefdeffacts: unknown definition `{}`",
+            "undeffacts: unknown definition `{}`",
             selectors[0]
         )));
     }
