@@ -1,5 +1,10 @@
 # Production-Readiness Re-Audit Playbook
 
+> Historical record, retired as an execution/exit contract on September 6,
+> 2026. The owner replaced its scope and approval obligations with the
+> [rehabilitation execution record](rehabilitation-status.md). Preserve its
+> observations; do not restart this program or interpret retirement as a pass.
+
 - Status: execution template
 - Audience: an independent release auditor who did not implement the remediations
 - Scope: `ferric-rules`, its CLI, C FFI, Rust facade, Python binding,

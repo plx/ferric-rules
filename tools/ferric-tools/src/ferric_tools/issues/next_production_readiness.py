@@ -14,10 +14,10 @@ import typer
 
 app = typer.Typer(help="Select the next production-readiness issue.")
 
-DEFAULT_UNIVERSE_LABEL = "program:production-readiness"
-DEFAULT_WORK_LABEL = "workflow:production-readiness"
-DEFAULT_LEAF_LABEL = "workflow:production-readiness-leaf"
-DEFAULT_GATE_LABEL = "workflow:production-readiness-gate"
+DEFAULT_UNIVERSE_LABEL = "program:rehabilitation"
+DEFAULT_WORK_LABEL = "workflow:rehabilitation"
+DEFAULT_LEAF_LABEL = "workflow:rehabilitation-leaf"
+DEFAULT_GATE_LABEL = "workflow:rehabilitation-gate"
 PRIORITY_LABELS = {f"priority:p{rank}": rank for rank in range(4)}
 
 ISSUES_QUERY = """

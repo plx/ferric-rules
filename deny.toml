@@ -1,6 +1,5 @@
 [graph]
 # An empty target filter is cargo-deny 0.20.2's supported all-target graph.
-# The dependency-policy scan manifest records this as target_scope = "all".
 targets = []
 all-features = true
 exclude = []
@@ -13,9 +12,14 @@ unsound = "all"
 yanked = "deny"
 unused-ignored-advisory = "deny"
 disable-yank-checking = false
-# dependency-policy.json is the sole exception source. Never duplicate an
-# advisory or yanked-package exception here.
-ignore = []
+# Applicability and reconsideration conditions: docs/dependency-security-policy.md.
+# These are advisory-specific exceptions, not package or severity suppressions.
+ignore = [
+    { id = "RUSTSEC-2025-0020", reason = "Ferric never calls PyString::from_object; revisit when changing Python conversion APIs or upgrading PyO3." },
+    { id = "RUSTSEC-2026-0177", reason = "Ferric never creates PyCFunction closures; revisit when adding Python callbacks or upgrading PyO3." },
+    { id = "RUSTSEC-2025-0141", reason = "Bincode 1.3.3 maintenance notice, no reported vulnerability; revisit with the versioned snapshot implementation." },
+    { id = "RUSTSEC-2024-0436", reason = "Unmaintained paste is an rmp build-time macro, no reported vulnerability; revisit the MessagePack dependency update." },
+]
 
 [licenses]
 confidence-threshold = 0.8
