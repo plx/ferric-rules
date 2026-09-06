@@ -59,6 +59,7 @@ pub mod engine;
 pub mod evaluator;
 pub mod execution;
 pub mod functions;
+pub mod host;
 pub mod loader;
 pub mod modules;
 pub mod qualified_name;
@@ -93,6 +94,10 @@ pub use config::EngineConfig;
 pub use engine::{Engine, EngineError, FactAssertionResult, InitError};
 pub use execution::{FiredRule, HaltReason, RunLimit, RunResult};
 pub use functions::{FunctionEnv, GenericRegistry, GlobalStore};
+pub use host::{
+    FactHandle, HostFact, HostValue, IntoHostFields, SymbolHandle, HOST_VALUE_MAX_DEPTH,
+    HOST_VALUE_MAX_ITEMS,
+};
 pub use loader::{LoadError, LoadResult, RuleDef};
 pub use modules::{ModuleId, ModuleRegistry};
 pub use qualified_name::{parse_qualified_name, QualifiedName};

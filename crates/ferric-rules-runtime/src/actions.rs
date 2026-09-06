@@ -2696,7 +2696,7 @@ fn assert_ordered_and_propagate(
     engine: &mut Engine,
     relation: Symbol,
     fields: OrderedFields,
-) -> crate::FactAssertionResult {
+) -> crate::FactAssertionResult<FactId> {
     engine.assert_fact_internal(Fact::Ordered(OrderedFact { relation, fields }))
 }
 
@@ -2704,7 +2704,7 @@ fn assert_template_and_propagate(
     engine: &mut Engine,
     template_id: TemplateId,
     slots: Box<[Value]>,
-) -> crate::FactAssertionResult {
+) -> crate::FactAssertionResult<FactId> {
     engine.assert_fact_internal(Fact::Template(ferric_rules_core::TemplateFact {
         template_id,
         slots,

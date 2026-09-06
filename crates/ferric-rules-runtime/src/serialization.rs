@@ -270,6 +270,7 @@ impl EngineSnapshotOwned {
     fn into_engine(self) -> Engine {
         Engine {
             fact_base: self.fact_base,
+            host: crate::host::HostState::new(),
             symbol_table: self.symbol_table,
             config: self.config,
             rete: self.rete,

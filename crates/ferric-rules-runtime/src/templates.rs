@@ -35,6 +35,14 @@ pub(crate) struct RegisteredTemplate {
 }
 
 impl RegisteredTemplate {
+    /// Whether an already complete owned fact still has the same template
+    /// identity and slot meaning after a definition replacement.
+    pub fn same_shape(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.slot_names == other.slot_names
+            && self.slot_types == other.slot_types
+    }
+
     #[must_use]
     pub fn slot_index(&self, name: &str) -> Option<usize> {
         self.slot_index.get(name).copied()

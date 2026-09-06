@@ -292,7 +292,7 @@ pub struct RuleDef {
 #[derive(Debug, Default)]
 pub struct LoadResult {
     /// Facts asserted during loading.
-    pub asserted_facts: Vec<FactId>,
+    pub asserted_facts: Vec<crate::FactHandle>,
     /// Rules registered during loading (typed constructs from Stage 2).
     pub rules: Vec<RuleConstruct>,
     /// Templates registered during loading.
@@ -755,6 +755,7 @@ impl Engine {
             }
         }
 
+        self.host.prune(&self.fact_base);
         if errors.is_empty() {
             ferric_event!(
                 info,
@@ -1524,7 +1525,7 @@ impl Engine {
     fn process_assert(&mut self, args: &[SExpr], result: &mut LoadResult) -> Result<(), LoadError> {
         for fact_expr in args {
             let fact_id = self.process_assert_fact(fact_expr, result)?;
-            result.asserted_facts.push(fact_id);
+            result.asserted_facts.push(self.host.export(fact_id));
         }
         Ok(())
     }
@@ -1575,8 +1576,16 @@ impl Engine {
             }
         }
 
-        self.assert_ordered(relation, fields)
-            .map_err(LoadError::Engine)
+        let relation = self
+            .symbol_table
+            .intern_symbol(relation, self.config.string_encoding)
+            .map_err(|error| LoadError::Engine(error.into()))?;
+        Ok(self
+            .assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+                relation,
+                fields: fields.into_iter().collect(),
+            }))
+            .fact_id())
     }
 
     /// Process a template fact within an assert form.
