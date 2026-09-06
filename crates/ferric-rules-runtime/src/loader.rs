@@ -4981,7 +4981,7 @@ mod tests {
             .iter()
             .any(|error| error.to_string().contains("expression nesting limit")));
         // Failed replacement preserves the earlier, executable rule.
-        engine.assert_ordered("trigger", vec![]).unwrap();
+        engine.assert_ordered("trigger", ()).unwrap();
         assert_eq!(
             engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
             1

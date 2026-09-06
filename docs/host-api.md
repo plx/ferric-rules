@@ -43,7 +43,10 @@ This is a deliberate API break: `Engine::assert` accepts an owned `HostFact`,
 not an arbitrary core `Fact`; use `assert_ordered` or `assert_template_slots`
 for new facts. Use `()` for empty ordered fields. Template slot/value pairs
 avoid mismatched parallel arrays, and duplicate slots are rejected. Scalar
-values for multislots become one-element multifields.
+values for multislots become one-element multifields. Ordered assertion and
+owned ordered reassertion reject names belonging to explicit templates. The
+current ordered relation identity is global, so this guard also covers private
+and module-qualified templates by local name; use the template assertion API.
 
 The `core` crate and borrowed RETE inspection remain low-level facilities.
 `resolve_core_symbol` is an explicit adapter for a raw key obtained from the

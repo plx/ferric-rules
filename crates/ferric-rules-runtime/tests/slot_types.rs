@@ -19,7 +19,7 @@ fn primitive_and_union_defaults_match_clips_priority() {
                 ?l "|" ?fi "|" (str-length ?is) "|" ?ss "|" (length$ ?items) crlf))"#,
     )
     .unwrap();
-    engine.assert_template("defaults", &[], vec![]).unwrap();
+    engine.assert_template("defaults", &[], ()).unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
     assert_eq!(
         engine.get_output("t"),
@@ -82,7 +82,7 @@ fn named_seed_replacement_and_defaults_validate_every_field_atomically() {
     assert_eq!(values.len(), 2);
     assert!(matches!(values[0], Value::Integer(7)));
     assert!(matches!(values[1], Value::Integer(8)));
-    let defaults = engine.assert_template("item", &[], vec![]).unwrap();
+    let defaults = engine.assert_template("item", &[], ()).unwrap();
     let Value::Multifield(values) = engine.get_fact_slot_by_name(defaults, "n").unwrap() else {
         panic!()
     };
@@ -96,7 +96,7 @@ fn invalid_defaults_cannot_replace_an_unused_template() {
     assert!(engine
         .load_str("(deftemplate item (slot n (type INTEGER) (default wrong)))")
         .is_err());
-    let fact = engine.assert_template("item", &[], vec![]).unwrap();
+    let fact = engine.assert_template("item", &[], ()).unwrap();
     assert!(matches!(
         engine.get_fact_slot_by_name(fact, "n").unwrap(),
         Value::Integer(0)
@@ -195,7 +195,7 @@ fn ignored_or_unrepresentable_constraint_attributes_are_explicit_errors() {
             "{attribute}"
         );
         assert!(matches!(
-            engine.assert_template("item", &[], vec![]),
+            engine.assert_template("item", &[], ()),
             Err(EngineError::TemplateNotFound(_))
         ));
     }

@@ -437,6 +437,23 @@ impl Engine {
         Ok(fields.into_iter().map(|value| value.value).collect())
     }
 
+    fn validate_ordered_host_relation(&self, relation: &str) -> Result<(), EngineError> {
+        // Ordered identities are global in the current RETE representation.
+        // Match the loader's inverse guard by local name, including private
+        // and module-qualified template definitions.
+        let local = relation.rsplit("::").next().unwrap_or(relation);
+        if self
+            .template_defs
+            .values()
+            .any(|definition| definition.name.rsplit("::").next() == Some(local))
+        {
+            return Err(EngineError::InvalidHostValue(format!(
+                "ordered relation `{relation}` conflicts with an explicit template; use assert_template_slots"
+            )));
+        }
+        Ok(())
+    }
+
     fn host_assertion_result(&self, result: FactAssertionResult<FactId>) -> FactAssertionResult {
         self.host.prune(&self.fact_base);
         match result {
@@ -453,13 +470,13 @@ impl Engine {
     ///
     /// The relation name is interned as a symbol. Fields can be passed as a
     /// `Vec<Value>`, a single `Value`, a primitive (`i64`, `i32`, `f64`),
-    /// a `Symbol`, a `FerricString`, or a fixed-size array of `Value`s.
+    /// a `SymbolHandle`, a `FerricString`, or a fixed-size array of host values.
     ///
     /// # Examples
     ///
     /// ```ignore
     /// engine.assert_ordered("count", 42_i64)?;           // single integer
-    /// engine.assert_ordered("tier", free_symbol)?;        // single Symbol
+    /// engine.assert_ordered("tier", free_symbol)?;        // single SymbolHandle
     /// engine.assert_ordered("pair", vec![v1, v2])?;       // multiple values
     /// engine.assert_ordered("empty", ())?;            // no fields
     /// ```
@@ -493,6 +510,7 @@ impl Engine {
     ) -> Result<FactAssertionResult, EngineError> {
         ferric_span!(info_span, "engine_assert_ordered", relation);
 
+        self.validate_ordered_host_relation(relation)?;
         let fields_small = self.host_fields(fields)?;
         let relation_sym = self
             .symbol_table
@@ -520,6 +538,12 @@ impl Engine {
         if fact.owner != self.host.owner {
             return Err(EngineError::ForeignHandle);
         }
+        if let Fact::Ordered(ordered) = &fact.fact {
+            let relation = self
+                .resolve_core_symbol(ordered.relation)
+                .ok_or(EngineError::ForeignHandle)?;
+            self.validate_ordered_host_relation(relation)?;
+        }
         if let Fact::Template(template) = &fact.fact {
             let definition = self
                 .template_defs
@@ -532,6 +556,9 @@ impl Engine {
             {
                 return Err(EngineError::ForeignHandle);
             }
+            definition
+                .validate_slots(&template.slots)
+                .map_err(EngineError::InvalidHostValue)?;
         }
         let result = self.assert_fact_internal(fact.fact);
         Ok(self.host_assertion_result(result))
@@ -854,10 +881,7 @@ impl Engine {
         Ok(FerricString::new(s, self.config.string_encoding)?)
     }
 
-    /// Intern a symbol and wrap it as a [`Value::Symbol`].
-    ///
-    /// This is a convenience for the common pattern of
-    /// `Value::Symbol(engine.intern_symbol(s)?)`.
+    /// Intern a symbol as a host value retaining this engine's ownership.
     ///
     /// # Errors
     ///
@@ -872,7 +896,7 @@ impl Engine {
     /// Combines symbol interning and fact assertion into one call. Equivalent to:
     /// ```ignore
     /// let sym = engine.intern_symbol(symbol_name)?;
-    /// engine.assert_ordered(relation, Value::Symbol(sym))?;
+    /// engine.assert_ordered(relation, sym)?;
     /// ```
     ///
     /// # Errors
@@ -888,14 +912,14 @@ impl Engine {
         self.assert_ordered(relation, value)
     }
 
-    /// Return the CLIPS `TRUE` symbol as a [`Value`].
+    /// Return the CLIPS `TRUE` symbol as an owned host value.
     ///
     /// The symbol is interned on first use and cached thereafter.
     pub fn clips_true(&mut self) -> Result<HostValue, EngineError> {
         self.symbol_value("TRUE")
     }
 
-    /// Return the CLIPS `FALSE` symbol as a [`Value`].
+    /// Return the CLIPS `FALSE` symbol as an owned host value.
     ///
     /// The symbol is interned on first use and cached thereafter.
     pub fn clips_false(&mut self) -> Result<HostValue, EngineError> {

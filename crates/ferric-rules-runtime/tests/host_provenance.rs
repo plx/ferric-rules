@@ -198,3 +198,63 @@ fn host_value_depth_limit_accepts_the_boundary_and_rejects_the_next_level() {
     assert_eq!(engine.facts().unwrap().count(), 1);
     assert!(engine.find_facts("too-deep").unwrap().is_empty());
 }
+
+#[test]
+fn ordered_host_facts_cannot_reenter_an_explicit_template_identity() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let id = engine.assert_ordered("item", 7_i64).unwrap();
+    let captured = engine.get_fact_owned(id).unwrap().unwrap();
+    engine.retract(id).unwrap();
+    engine.load_str("(deftemplate item (slot value))").unwrap();
+    assert!(matches!(
+        engine.assert(captured),
+        Err(EngineError::InvalidHostValue(_))
+    ));
+    assert!(matches!(
+        engine.assert_ordered("item", 7_i64),
+        Err(EngineError::InvalidHostValue(_))
+    ));
+    assert_eq!(engine.fact_count(), 0);
+    engine
+        .assert_template_slots("item", [("value", 7_i64)])
+        .unwrap();
+    assert_eq!(engine.fact_count(), 1);
+}
+
+#[test]
+fn owned_template_facts_cannot_escape_changed_primitive_constraints() {
+    let mut engine = Engine::with_rules("(deftemplate item (slot value (type INTEGER)))").unwrap();
+    let id = engine
+        .assert_template_slots("item", [("value", 7_i64)])
+        .unwrap();
+    let captured = engine.get_fact_owned(id).unwrap().unwrap();
+    engine.retract(id).unwrap();
+    engine
+        .load_str("(deftemplate item (slot value (type FLOAT)))")
+        .unwrap();
+    assert!(matches!(
+        engine.assert(captured),
+        Err(EngineError::ForeignHandle)
+    ));
+    assert!(matches!(
+        engine.assert_template_slots("item", [("value", 7_i64)]),
+        Err(EngineError::InvalidSlotValue { .. })
+    ));
+    engine
+        .assert_template_slots("item", [("value", 1.5_f64)])
+        .unwrap();
+    assert_eq!(engine.fact_count(), 1);
+}
+
+#[test]
+fn ordered_host_names_cannot_bypass_private_or_qualified_templates() {
+    let mut engine =
+        Engine::with_rules("(defmodule PRIVATE) (deftemplate PRIVATE::item (slot value))").unwrap();
+    for relation in ["item", "PRIVATE::item", "MAIN::item"] {
+        assert!(matches!(
+            engine.assert_ordered(relation, 7_i64),
+            Err(EngineError::InvalidHostValue(_))
+        ));
+    }
+    assert_eq!(engine.fact_count(), 0);
+}
