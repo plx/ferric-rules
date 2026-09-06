@@ -117,7 +117,7 @@ export type ClipsValue =
   | null;
 ```
 
-Note: unlike the Python binding, plain `string` maps to a CLIPS *string* (quoted), not a symbol. This matches Go's behavior and avoids a common footgun — CLIPS symbols should be explicitly constructed via `new FerricSymbol("foo")`. Booleans are a convenience that maps to `TRUE`/`FALSE` symbols.
+Plain `string` maps to a CLIPS string literal, matching Python and Go. Construct symbols explicitly with `new FerricSymbol("foo")`. Booleans map to the symbols `TRUE`/`FALSE`.
 
 ### Enums
 

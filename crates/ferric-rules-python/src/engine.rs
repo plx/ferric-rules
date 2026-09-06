@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyBool, PyDict, PyInt, PyList, PyTuple};
 
 use ferric_rules_core::FactId;
 use ferric_rules_runtime::config::EngineConfig;
@@ -27,7 +27,7 @@ use crate::error::{
 };
 use crate::fact::{fact_to_python, Fact};
 use crate::result::{FiredRule, RunResult};
-use crate::value::{python_to_value, value_to_python};
+use crate::value::{value_to_python, PythonValueBudget};
 
 /// Global counter for assigning unique engine IDs.
 static NEXT_ENGINE_ID: AtomicU64 = AtomicU64::new(1);
@@ -178,10 +178,7 @@ impl Drop for ActiveRunGuard<'_> {
 }
 
 #[cfg(feature = "serde")]
-enum SnapshotFileError {
-    Io(std::io::Error),
-    Serialization(ferric_rules_runtime::SerializationError),
-}
+use ferric_rules_runtime::SnapshotFileError;
 
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -190,7 +187,11 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Build an `EngineConfig` from optional Python args.
-fn make_config(strategy: Option<Strategy>, encoding: Option<Encoding>) -> EngineConfig {
+fn make_config(
+    strategy: Option<Strategy>,
+    encoding: Option<Encoding>,
+    max_call_depth: Option<&Bound<'_, PyAny>>,
+) -> PyResult<EngineConfig> {
     let mut config = EngineConfig::default();
     if let Some(s) = strategy {
         config.strategy = s.into();
@@ -198,7 +199,19 @@ fn make_config(strategy: Option<Strategy>, encoding: Option<Encoding>) -> Engine
     if let Some(e) = encoding {
         config.string_encoding = e.into();
     }
-    config
+    if let Some(value) = max_call_depth {
+        if value.is_instance_of::<PyBool>() || !value.is_instance_of::<PyInt>() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "max_call_depth must be an integer between 0 and 4294967295",
+            ));
+        }
+        config.max_call_depth = value.extract::<u32>().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(
+                "max_call_depth must be between 0 and 4294967295",
+            )
+        })? as usize;
+    }
+    Ok(config)
 }
 
 fn run_with_external_cancel(
@@ -274,7 +287,7 @@ fn snapshot_file_error_to_pyerr(error: SnapshotFileError) -> PyErr {
     match error {
         SnapshotFileError::Io(error) => pyo3::exceptions::PyIOError::new_err(error.to_string()),
         SnapshotFileError::Serialization(error) => {
-            crate::error::FerricError::new_err(error.to_string())
+            crate::error::FerricSerializationError::new_err(error.to_string())
         }
     }
 }
@@ -405,22 +418,27 @@ impl PyEngine {
     /// * `strategy` -- Conflict resolution strategy (default: `Strategy.DEPTH`).
     /// * `encoding` -- String encoding mode (default: `Encoding.UTF8`).
     #[new]
-    #[pyo3(signature = (*, strategy=None, encoding=None))]
-    fn new(strategy: Option<Strategy>, encoding: Option<Encoding>) -> Self {
-        let config = make_config(strategy, encoding);
-        Self::from_engine(Engine::new(config))
+    #[pyo3(signature = (*, strategy=None, encoding=None, max_call_depth=None))]
+    fn new(
+        strategy: Option<Strategy>,
+        encoding: Option<Encoding>,
+        max_call_depth: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let config = make_config(strategy, encoding, max_call_depth)?;
+        Ok(Self::from_engine(Engine::new(config)))
     }
 
     /// Create an engine from CLIPS source, loading and resetting in one step.
     #[staticmethod]
-    #[pyo3(signature = (source, *, strategy=None, encoding=None))]
+    #[pyo3(signature = (source, *, strategy=None, encoding=None, max_call_depth=None))]
     fn from_source(
         py: Python<'_>,
         source: &str,
         strategy: Option<Strategy>,
         encoding: Option<Encoding>,
+        max_call_depth: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
-        let config = make_config(strategy, encoding);
+        let config = make_config(strategy, encoding, max_call_depth)?;
         let source = source.to_owned();
         let engine = py.allow_threads(move || {
             Engine::with_rules_config(&source, config).map(OwnedEngine::new)
@@ -428,6 +446,12 @@ impl PyEngine {
         engine
             .map(Self::from_owned_engine)
             .map_err(init_error_to_pyerr)
+    }
+
+    /// Maximum nested user-function calls. Zero disallows user-function calls.
+    #[getter]
+    fn max_call_depth(&self) -> PyResult<usize> {
+        self.with_engine(|engine| Ok(engine.max_call_depth()))
     }
 
     // -- Context manager --
@@ -523,9 +547,10 @@ impl PyEngine {
     ) -> PyResult<u64> {
         let _ = py;
         self.with_engine(|engine| {
+            let mut budget = PythonValueBudget::default();
             let mut values = Vec::with_capacity(args.len());
             for item in args.iter() {
-                values.push(python_to_value(&item, engine)?);
+                values.push(budget.convert(&item, engine)?);
             }
             let fid = engine
                 .assert_ordered(relation, values)
@@ -555,12 +580,13 @@ impl PyEngine {
         self.with_engine(|engine| {
             let (names, values) = match kwargs {
                 Some(dict) => {
+                    let mut budget = PythonValueBudget::default();
                     let mut names = Vec::with_capacity(dict.len());
                     let mut values = Vec::with_capacity(dict.len());
                     for (key, val) in dict.iter() {
                         let name: String = key.extract()?;
                         names.push(name);
-                        values.push(python_to_value(&val, engine)?);
+                        values.push(budget.convert(&val, engine)?);
                     }
                     (names, values)
                 }
@@ -837,7 +863,7 @@ impl PyEngine {
     ///
     /// # Arguments
     ///
-    /// * `format` -- Serialization format (default: `Format.BINCODE`).
+    /// * `format` -- Serialization format (default: `Format.CBOR`).
     ///
     /// Returns `bytes` containing the serialized engine state.
     #[cfg(feature = "serde")]
@@ -847,9 +873,10 @@ impl PyEngine {
         py: Python<'py>,
         format: Option<crate::config::Format>,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
-        let format = format.unwrap_or(crate::config::Format::Bincode).into();
+        let format = format.unwrap_or(crate::config::Format::Cbor).into();
         let bytes = self.with_engine_allow_threads(py, move |engine| engine.serialize(format))?;
-        let bytes = bytes.map_err(|error| crate::error::FerricError::new_err(error.to_string()))?;
+        let bytes = bytes
+            .map_err(|error| crate::error::FerricSerializationError::new_err(error.to_string()))?;
         Ok(pyo3::types::PyBytes::new(py, &bytes))
     }
 
@@ -858,7 +885,7 @@ impl PyEngine {
     /// # Arguments
     ///
     /// * `data` -- Serialized engine state (bytes).
-    /// * `format` -- Serialization format (default: `Format.BINCODE`).
+    /// * `format` -- Serialization format (default: `Format.CBOR`).
     #[staticmethod]
     #[cfg(feature = "serde")]
     #[pyo3(signature = (data, *, format=None))]
@@ -867,13 +894,18 @@ impl PyEngine {
         data: &[u8],
         format: Option<crate::config::Format>,
     ) -> PyResult<Self> {
+        if data.len() > ferric_rules_runtime::MAX_SNAPSHOT_BYTES {
+            return Err(crate::error::FerricSerializationError::new_err(
+                "snapshot exceeds the 16 MiB byte limit",
+            ));
+        }
         let data = data.to_vec();
-        let format = format.unwrap_or(crate::config::Format::Bincode).into();
+        let format = format.unwrap_or(crate::config::Format::Cbor).into();
         let engine =
             py.allow_threads(move || Engine::deserialize(&data, format).map(OwnedEngine::new));
         engine
             .map(Self::from_owned_engine)
-            .map_err(|error| crate::error::FerricError::new_err(error.to_string()))
+            .map_err(|error| crate::error::FerricSerializationError::new_err(error.to_string()))
     }
 
     /// Save a serialized engine snapshot to a file.
@@ -881,7 +913,7 @@ impl PyEngine {
     /// # Arguments
     ///
     /// * `path` -- File path (str or os.PathLike).
-    /// * `format` -- Serialization format (default: `Format.BINCODE`).
+    /// * `format` -- Serialization format (default: `Format.CBOR`).
     #[cfg(feature = "serde")]
     #[pyo3(signature = (path, *, format=None))]
     fn save_snapshot(
@@ -890,7 +922,7 @@ impl PyEngine {
         path: PathBuf,
         format: Option<crate::config::Format>,
     ) -> PyResult<()> {
-        let format = format.unwrap_or(crate::config::Format::Bincode).into();
+        let format = format.unwrap_or(crate::config::Format::Cbor).into();
         let result = self.with_engine_allow_threads(py, move |engine| {
             let bytes = engine
                 .serialize(format)
@@ -905,7 +937,7 @@ impl PyEngine {
     /// # Arguments
     ///
     /// * `path` -- File path (str or os.PathLike).
-    /// * `format` -- Serialization format (default: `Format.BINCODE`).
+    /// * `format` -- Serialization format (default: `Format.CBOR`).
     #[staticmethod]
     #[cfg(feature = "serde")]
     #[pyo3(signature = (path, *, format=None))]
@@ -914,12 +946,9 @@ impl PyEngine {
         path: PathBuf,
         format: Option<crate::config::Format>,
     ) -> PyResult<Self> {
-        let format = format.unwrap_or(crate::config::Format::Bincode).into();
+        let format = format.unwrap_or(crate::config::Format::Cbor).into();
         let engine = py.allow_threads(move || {
-            let data = std::fs::read(path).map_err(SnapshotFileError::Io)?;
-            let engine =
-                Engine::deserialize(&data, format).map_err(SnapshotFileError::Serialization)?;
-            Ok(OwnedEngine::new(engine))
+            Engine::deserialize_from_file(&path, format).map(OwnedEngine::new)
         });
         engine
             .map(Self::from_owned_engine)

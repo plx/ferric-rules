@@ -220,9 +220,9 @@ def test_detached_operations_preserve_result_and_error_mapping(tmp_path):
         ferric.Engine().load(malformed_source)
     with pytest.raises(ferric.FerricParseError, match="unclosed parenthesis"):
         ferric.Engine().load_file(malformed_source_path)
-    with pytest.raises(ferric.FerricError, match="deserialization failed"):
+    with pytest.raises(ferric.FerricSerializationError, match="legacy raw snapshots"):
         ferric.Engine.from_snapshot(b"not a snapshot")
-    with pytest.raises(ferric.FerricError, match="deserialization failed"):
+    with pytest.raises(ferric.FerricSerializationError, match="legacy raw snapshots"):
         ferric.Engine.from_snapshot_file(malformed_snapshot_path)
     with pytest.raises(OSError):
         ferric.Engine().save_snapshot(missing_parent)

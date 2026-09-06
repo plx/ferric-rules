@@ -64,7 +64,7 @@ class TestSerializeRoundtrip:
         restored = ferric.Engine.from_snapshot(data, format=fmt)
         assert restored.fact_count == 0
 
-    def test_default_format_is_bincode(self):
+    def test_default_format_is_cbor(self):
         engine = ferric.Engine.from_source(SOURCE)
         data = engine.serialize()  # no format arg
         restored = ferric.Engine.from_snapshot(data)  # no format arg
@@ -81,20 +81,20 @@ class TestSerializeRoundtrip:
         restored = ferric.Engine.from_snapshot(engine.serialize(format=fmt), format=fmt)
         facts = restored.facts()
         assert len(facts) == 1
-        assert facts[0].slots["label"] == "alpha"
+        assert facts[0].slots["label"] == ferric.String("alpha")
         assert facts[0].slots["count"] == 7
 
 
 class TestSerializeErrors:
     @pytest.mark.parametrize("fmt", ALL_FORMATS)
     def test_invalid_data_rejected(self, fmt):
-        with pytest.raises(ferric.FerricError):
+        with pytest.raises(ferric.FerricSerializationError):
             ferric.Engine.from_snapshot(b"not valid data", format=fmt)
 
     def test_cross_format_rejected(self):
         engine = ferric.Engine()
         data = engine.serialize(format=ferric.Format.BINCODE)
-        with pytest.raises(ferric.FerricError):
+        with pytest.raises(ferric.FerricSerializationError):
             ferric.Engine.from_snapshot(data, format=ferric.Format.JSON)
 
 

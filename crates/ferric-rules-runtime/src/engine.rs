@@ -235,6 +235,12 @@ impl Engine {
         self.compiler.remove_rules(&mut self.rete, rules);
     }
 
+    /// Maximum nested user-function calls; zero disallows user-function calls.
+    #[must_use]
+    pub fn max_call_depth(&self) -> usize {
+        self.config.max_call_depth
+    }
+
     /// Create a new engine with the given configuration.
     #[must_use]
     pub fn new(config: EngineConfig) -> Self {

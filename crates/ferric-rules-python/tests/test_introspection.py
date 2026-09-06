@@ -51,4 +51,4 @@ class TestGetGlobal:
             (defglobal ?*name* = hello)
         """)
         val = engine.get_global("name")
-        assert val == "hello"
+        assert val == ferric.Symbol("hello")
