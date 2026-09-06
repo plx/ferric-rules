@@ -137,7 +137,7 @@ fn assert_person(engine: &mut Engine, name: &str, age: i64) -> anyhow::Result<()
     engine.assert_template(
         "person",
         &["name", "age"],
-        vec![name_sym, Value::Integer(age)],
+        vec![name_sym, Value::Integer(age).into()],
     )?;
     Ok(())
 }
@@ -243,14 +243,14 @@ fn classify(engine: &mut Engine, smoke: &str, temperature: f64) -> anyhow::Resul
     engine.assert_ordered("sensor", vec![smoke_kind, smoke_level])?;
 
     let temp_kind = engine.symbol_value("temperature")?;
-    engine.assert_ordered("sensor", vec![temp_kind, Value::Float(temperature)])?;
+    engine.assert_ordered("sensor", vec![temp_kind, Value::Float(temperature).into()])?;
 
     engine.run(RunLimit::Unlimited)?;
 
     for (_, fact) in engine.find_facts("alert")? {
         if let ferric_rules::core::Fact::Ordered(of) = fact {
             if let Some(Value::Symbol(sym)) = of.fields.first() {
-                if let Some(name) = engine.resolve_symbol(*sym) {
+                if let Some(name) = engine.resolve_core_symbol(*sym) {
                     return Ok(Some(name.to_string()));
                 }
             }
@@ -618,7 +618,7 @@ input buffer. Push lines from Rust before the run:
 <!-- example: 10-io-channels/src/main.rs -->
 ```rust
 engine.push_input("hello world");
-engine.assert_ordered("prompt-line", vec![])?;
+engine.assert_ordered("prompt-line", ())?;
 engine.run(RunLimit::Unlimited)?;
 ```
 
@@ -811,7 +811,7 @@ fn run(engine: &mut Engine, inputs: &[(i64, &str, f64)]) -> anyhow::Result<()> {
         engine.assert_template(
             "reading",
             &["id", "kind", "value"],
-            vec![Value::Integer(*id), kind_sym, Value::Float(*value)],
+            vec![Value::Integer(*id).into(), kind_sym, Value::Float(*value).into()],
         )?;
     }
 
@@ -861,7 +861,7 @@ A non-exhaustive list worth internalizing:
 - **Templates are module-scoped.** Export them from the module that owns
   the shape; import them from modules that need them.
 - **Symbols are interned per-engine.** Use `engine.symbol_value("foo")`
-  when you need to build a `Value` with a specific symbol; `resolve_symbol`
+  when you need an engine-scoped `HostValue` with a specific symbol; `resolve_core_symbol`
   goes the other way.
 
 ---

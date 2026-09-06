@@ -27,22 +27,30 @@ fn main() -> anyhow::Result<()> {
     let mut engine = Engine::with_rules(rules)?;
 
     run_scenario(&mut engine, "no tasks", |e| {
-        e.assert_ordered("start", vec![])?;
+        e.assert_ordered("start", ())?;
         Ok(())
     })?;
 
     run_scenario(&mut engine, "work pending", |e| {
         let f = e.symbol_value("FALSE")?;
-        e.assert_template("task", &["id", "done"], vec![Value::Integer(1), f.clone()])?;
-        e.assert_template("task", &["id", "done"], vec![Value::Integer(2), f])?;
+        e.assert_template(
+            "task",
+            &["id", "done"],
+            vec![Value::Integer(1).into(), f.clone()],
+        )?;
+        e.assert_template("task", &["id", "done"], vec![Value::Integer(2).into(), f])?;
         Ok(())
     })?;
 
     run_scenario(&mut engine, "everything done", |e| {
-        e.assert_ordered("ready", vec![])?;
+        e.assert_ordered("ready", ())?;
         let t = e.symbol_value("TRUE")?;
-        e.assert_template("task", &["id", "done"], vec![Value::Integer(1), t.clone()])?;
-        e.assert_template("task", &["id", "done"], vec![Value::Integer(2), t])?;
+        e.assert_template(
+            "task",
+            &["id", "done"],
+            vec![Value::Integer(1).into(), t.clone()],
+        )?;
+        e.assert_template("task", &["id", "done"], vec![Value::Integer(2).into(), t])?;
         Ok(())
     })?;
 

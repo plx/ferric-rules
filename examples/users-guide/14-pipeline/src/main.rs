@@ -13,7 +13,11 @@ fn run(engine: &mut Engine, inputs: &[(i64, &str, f64)]) -> anyhow::Result<()> {
         engine.assert_template(
             "reading",
             &["id", "kind", "value"],
-            vec![Value::Integer(*id), kind_sym, Value::Float(*value)],
+            vec![
+                Value::Integer(*id).into(),
+                kind_sym,
+                Value::Float(*value).into(),
+            ],
         )?;
     }
 
@@ -27,7 +31,7 @@ fn run(engine: &mut Engine, inputs: &[(i64, &str, f64)]) -> anyhow::Result<()> {
                 match field {
                     Value::Integer(n) => print!(" {n}"),
                     Value::Symbol(sym) => {
-                        if let Some(name) = engine.resolve_symbol(*sym) {
+                        if let Some(name) = engine.resolve_core_symbol(*sym) {
                             print!(" {name}");
                         }
                     }

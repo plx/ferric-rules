@@ -70,7 +70,7 @@ impl Classifier {
         for (_, fact) in self.engine.find_facts("decision")? {
             if let ferric_rules::core::Fact::Ordered(of) = fact {
                 if let Some(Value::Symbol(sym)) = of.fields.first() {
-                    if let Some(name) = self.engine.resolve_symbol(*sym) {
+                    if let Some(name) = self.engine.resolve_core_symbol(*sym) {
                         return Ok(match name {
                             "premium" => Decision::Premium,
                             "warn" => Decision::Warn,

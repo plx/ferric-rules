@@ -13,7 +13,9 @@ fn engine_error_class(err: &EngineError) -> &'static str {
         EngineError::SlotNotFound { .. } => "FerricSlotNotFoundError",
         EngineError::ModuleNotFound(_) => "FerricModuleNotFoundError",
         EngineError::Encoding(_) => "FerricEncodingError",
-        EngineError::WrongThread { .. }
+        EngineError::ForeignHandle
+        | EngineError::InvalidHostValue(_)
+        | EngineError::WrongThread { .. }
         | EngineError::NotATemplateFact(_)
         | EngineError::SlotCountMismatch { .. }
         | EngineError::DuplicateSlot { .. }

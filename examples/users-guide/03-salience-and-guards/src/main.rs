@@ -13,14 +13,14 @@ fn classify(engine: &mut Engine, smoke: &str, temperature: f64) -> anyhow::Resul
     engine.assert_ordered("sensor", vec![smoke_kind, smoke_level])?;
 
     let temp_kind = engine.symbol_value("temperature")?;
-    engine.assert_ordered("sensor", vec![temp_kind, Value::Float(temperature)])?;
+    engine.assert_ordered("sensor", vec![temp_kind, Value::Float(temperature).into()])?;
 
     engine.run(RunLimit::Unlimited)?;
 
     for (_, fact) in engine.find_facts("alert")? {
         if let ferric_rules::core::Fact::Ordered(of) = fact {
             if let Some(Value::Symbol(sym)) = of.fields.first() {
-                if let Some(name) = engine.resolve_symbol(*sym) {
+                if let Some(name) = engine.resolve_core_symbol(*sym) {
                     return Ok(Some(name.to_string()));
                 }
             }

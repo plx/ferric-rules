@@ -10,7 +10,7 @@ fn run_temp() -> anyhow::Result<()> {
     let mut engine = Engine::with_rules(rules)?;
 
     let kind = engine.symbol_value("celsius")?;
-    engine.assert_ordered("reading", vec![kind, Value::Float(20.0)])?;
+    engine.assert_ordered("reading", vec![kind, Value::Float(20.0).into()])?;
     engine.run(RunLimit::Unlimited)?;
 
     let output = engine.get_output("t").unwrap_or("");
