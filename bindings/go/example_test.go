@@ -19,9 +19,8 @@ import (
 // supplied facts, runs to completion, and returns the resulting facts and
 // captured output. No state carries over between calls.
 //
-// Thread affinity is handled automatically: the Coordinator manages a pool of
-// OS-locked worker goroutines and dispatches each request to one of them.
-// Callers never need to worry about runtime.LockOSThread.
+// The Coordinator manages a pool of worker goroutines and dispatches each
+// request to one of them; independent requests can use independent engines.
 
 // ExampleManager_Evaluate demonstrates stateless one-shot evaluation using
 // the wire-type API. Facts are supplied as WireFactInput values and results
@@ -172,8 +171,8 @@ func ExampleManager_Evaluate_templateFacts() {
 // the same worker thread, so rules are compiled only once.
 //
 // IMPORTANT: The *Engine passed to the closure must not be retained or used
-// after the closure returns — doing so violates thread affinity and will
-// panic or produce undefined behavior.
+// after the closure returns: its state belongs to the worker and may be reset
+// for another request. Serialized transfer does not change that ownership rule.
 
 // ExampleManager_Do demonstrates the Do escape hatch for multi-step
 // engine interaction that goes beyond simple evaluate-and-discard.
@@ -300,17 +299,15 @@ func ExampleManager_Do_stepExecution() {
 // PinnedEngine wraps a single engine on a dedicated OS-locked goroutine.
 // All operations are serialized through that goroutine in FIFO order, so
 // PinnedEngine is safe for concurrent use from any number of goroutines
-// without callers needing to manage thread affinity themselves.
+// with queueing and active-run cancellation handled by the wrapper.
 //
 // State persists across calls: facts, rules, and globals survive until
 // explicitly cleared. This makes PinnedEngine ideal for long-lived
 // workflows, interactive REPL-style use, and applications that accumulate
 // knowledge over time.
 //
-// Thread-affinity note: The underlying ferric engine is bound to the OS
-// thread that created it (via runtime.LockOSThread). PinnedEngine handles
-// this transparently — you call methods from any goroutine and they are
-// dispatched to the correct thread automatically.
+// The dedicated worker remains useful for ordered dispatch even though raw
+// engines now support serialized transfer between OS threads.
 
 // ExamplePinnedEngine demonstrates the basic PinnedEngine lifecycle:
 // create, load rules, assert facts, run, inspect results.

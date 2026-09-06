@@ -1,4 +1,4 @@
-//! Tests for FFI engine lifecycle and thread affinity (Pass 004).
+//! Tests for FFI engine lifecycle and serialized thread transfer (Pass 004).
 
 use crate::engine::{
     ferric_engine_clear_error, ferric_engine_free, ferric_engine_last_error,
@@ -163,9 +163,8 @@ fn engine_last_error_null_is_null() {
 }
 
 #[test]
-fn thread_affinity_passes_on_creating_thread() {
-    // Verify that the engine's thread affinity check succeeds when
-    // called from the creating thread.
+fn ordinary_access_on_creating_thread() {
+    // The creating thread remains an ordinary supported caller.
     unsafe {
         let engine = ferric_engine_new();
         // All operations should succeed on the creating thread
@@ -178,8 +177,7 @@ fn thread_affinity_passes_on_creating_thread() {
 #[test]
 fn thread_violation_error_mapping() {
     // Test that EngineError::WrongThread maps to FerricError::ThreadViolation.
-    // We can't actually cross threads with Engine (it's !Send), but we can
-    // verify the error mapping path works correctly.
+    // Preserve this legacy discriminant for ABI compatibility.
     use crate::error::map_engine_error;
     use ferric_rules_runtime::engine::EngineError;
 
@@ -191,11 +189,8 @@ fn thread_violation_error_mapping() {
 }
 
 #[test]
-fn thread_violation_from_other_thread_via_raw_pointer() {
-    // Create an engine, convert to raw pointer, and attempt to use it
-    // from another thread. Since Engine is !Send, we use raw pointers
-    // (which are Send) to test the FFI's thread-affinity enforcement.
-    // Thread violations always return FerricError::ThreadViolation.
+fn serialized_reset_from_another_thread() {
+    // The owner retains the allocation and performs no access until join.
     unsafe {
         let engine = ferric_engine_new();
         let engine_addr = engine as usize; // usize is Send
@@ -207,7 +202,7 @@ fn thread_violation_from_other_thread_via_raw_pointer() {
         .join()
         .unwrap();
 
-        assert_eq!(result, FerricError::ThreadViolation);
+        assert_eq!(result, FerricError::Ok);
 
         // Free from the correct (creating) thread
         ferric_engine_free(engine);
@@ -215,7 +210,7 @@ fn thread_violation_from_other_thread_via_raw_pointer() {
 }
 
 #[test]
-fn clear_error_thread_violation_replaces_the_current_snapshot() {
+fn clear_error_on_another_thread_clears_the_snapshot() {
     unsafe {
         let engine = ferric_engine_new();
         (*engine).set_error_for_test("sticky error".to_string());
@@ -228,13 +223,9 @@ fn clear_error_thread_violation_replaces_the_current_snapshot() {
         .join()
         .unwrap();
 
-        assert_eq!(result, FerricError::ThreadViolation);
+        assert_eq!(result, FerricError::Ok);
 
-        let err_ptr = ferric_engine_last_error(engine);
-        assert!(!err_ptr.is_null());
-        let message = std::ffi::CStr::from_ptr(err_ptr).to_string_lossy();
-        assert!(message.contains("wrong thread"), "{message}");
-        assert!(!message.contains("sticky error"), "{message}");
+        assert!(ferric_engine_last_error(engine).is_null());
 
         ferric_engine_free(engine);
     }

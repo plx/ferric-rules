@@ -326,10 +326,15 @@ def test_foreign_idle_and_closed_halt_are_noops():
 @pytest.mark.parametrize(
     "scenario",
     [
+        "conversion_reentry",
         "foreign_halt",
-        "foreign_close",
-        "close_serialize",
-        "wrong_thread_during_run",
+        pytest.param(
+            "foreign_close",
+            marks=pytest.mark.skipif(
+                not hasattr(ferric, "engine_run_active"), reason="requires testing feature"
+            ),
+        ),
+        "waiting_read_during_run",
     ],
 )
 def test_active_native_phase_lifecycle_handoff_is_bounded(scenario):
@@ -349,7 +354,7 @@ def test_active_native_phase_lifecycle_handoff_is_bounded(scenario):
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFOs")
 @pytest.mark.parametrize(
     "scenario",
-    ["load_fifo", "save_fifo", "from_snapshot_fifo"],
+    ["load_fifo", "save_fifo", "close_save_fifo", "from_snapshot_fifo"],
 )
 def test_file_operation_releases_gil_for_fifo_handoff(scenario):
     result = subprocess.run(
@@ -360,6 +365,24 @@ def test_file_operation_releases_gil_for_fifo_handoff(scenario):
         timeout=10,
     )
 
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == f"ok:{scenario}\n"
+    assert result.stderr == ""
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFOs")
+@pytest.mark.skipif(
+    not hasattr(ferric, "engine_instance_count"), reason="requires testing feature"
+)
+@pytest.mark.parametrize("scenario", ["waiting_read_load_fifo", "concurrent_close_load_fifo"])
+def test_contended_native_admission_releases_gil_and_drains_before_close(scenario):
+    result = subprocess.run(
+        [sys.executable, str(_HANDOFF_FIXTURE), scenario],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout == f"ok:{scenario}\n"
     assert result.stderr == ""

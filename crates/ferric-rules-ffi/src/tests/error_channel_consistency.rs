@@ -3,7 +3,7 @@
 use crate::engine::{
     ferric_engine_fact_count, ferric_engine_free, ferric_engine_get_fact_field_count,
     ferric_engine_get_global, ferric_engine_last_error, ferric_engine_load_string,
-    ferric_engine_new, ferric_engine_reset, FerricEngine,
+    ferric_engine_new, ferric_engine_retract, FerricEngine,
 };
 use crate::error::{ferric_clear_error_global, ferric_last_error_global, FerricError};
 use crate::types::FerricValue;
@@ -139,26 +139,27 @@ fn pre_handle_failure_updates_only_the_global_channel() {
 }
 
 #[test]
-fn valid_engine_thread_violation_updates_both_channels() {
+fn transferred_engine_error_updates_calling_threads_global_channel() {
     unsafe {
         let engine = ferric_engine_new();
         let engine_address = engine as usize;
         let (result, thread_global) = std::thread::spawn(move || {
             let engine = engine_address as *mut FerricEngine;
-            let result = ferric_engine_reset(engine);
+            let result = ferric_engine_retract(engine, u64::MAX);
             let thread_global = global_error();
             (result, thread_global)
         })
         .join()
         .unwrap();
 
-        assert_eq!(result, FerricError::ThreadViolation);
-        let thread_global = thread_global.expect("thread failure should set its global channel");
+        assert_eq!(result, FerricError::NotFound);
+        let thread_global =
+            thread_global.expect("failure should set its calling-thread global channel");
         assert_eq!(
             engine_error(engine).as_deref(),
             Some(thread_global.as_str())
         );
-        assert!(thread_global.contains("wrong thread"));
+        assert!(thread_global.contains("not found"));
 
         assert_eq!(ferric_engine_free(engine), FerricError::Ok);
     }

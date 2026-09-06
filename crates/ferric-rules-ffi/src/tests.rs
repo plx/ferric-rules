@@ -2,7 +2,7 @@
 //!
 //! Test modules organized by FFI surface area:
 //! - `error_model` — Error code mapping, channel isolation, message lifetime
-//! - `thread_affinity` — Thread-check-before-mutation enforcement
+//! - `thread_transfer` — Serialized transfer, admission, and lifetime boundaries
 //! - `lifecycle` — Engine create/configure/free
 //! - `execution` — run/step/assert/retract
 //! - `copy_to_buffer` — Truncation, size query, edge cases
@@ -71,3 +71,6 @@ mod template_assertion;
 
 #[cfg(test)]
 mod pinned;
+
+#[cfg(test)]
+mod thread_transfer;

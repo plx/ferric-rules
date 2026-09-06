@@ -874,9 +874,9 @@ Ferric's engine core is reachable from other languages via `ferric-rules-ffi`
 - **Python**: `crates/ferric-rules-python` exposes `import ferric` through
   `cp39-abi3` wheels for GIL-enabled CPython 3.9 through 3.13. Python 3.14,
   free-threaded CPython, subinterpreters, and other interpreters are not
-  currently supported. Ordinary `Engine` operations remain bound to their
-  creator thread, while the exact load/run/snapshot/file cohort releases the
-  GIL without moving native engine access. Active-run-only `halt()` and
+  currently supported. `Engine` operations serialize across threads without
+  waiting for the native mutex under the GIL; the documented load/run/snapshot/
+  file cohort also releases the GIL during work. Active-run-only `halt()` and
   synchronous, idempotent `close()` may run on any supported Python thread;
   close and final-reference cleanup destroy the native engine exactly once.
   See the package

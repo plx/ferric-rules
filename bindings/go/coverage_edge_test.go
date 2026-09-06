@@ -818,9 +818,9 @@ func TestManualPinnedEngineCancellationAndSerializationFile(t *testing.T) {
 	}
 }
 
-func TestManualEngineSourceConfigWrongThreadCloseAndDiagnostics(t *testing.T) {
+func TestManualEngineSourceConfigTransferredCloseAndDiagnostics(t *testing.T) {
 	// These examples cover source+config construction, Engine.Close's
-	// thread-affinity error, and the simple diagnostic iterator success path.
+	// transferred close, and the simple diagnostic iterator success path.
 	lockThread(t)
 
 	e, err := NewEngine(
@@ -832,14 +832,14 @@ func TestManualEngineSourceConfigWrongThreadCloseAndDiagnostics(t *testing.T) {
 	}
 	defer mustClose(t, e)
 
-	wrongThread := make(chan error, 1)
+	transferredClose := make(chan error, 1)
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
-		wrongThread <- e.Close()
+		transferredClose <- e.Close()
 	}()
-	if err := <-wrongThread; !errors.Is(err, ErrThreadViolation) {
-		t.Fatalf("wrong-thread Close = %v", err)
+	if err := <-transferredClose; err != nil {
+		t.Fatalf("transferred Close = %v", err)
 	}
 
 	diag, err := NewEngine(WithSource(`(defrule boom => (/ 1 0))`))

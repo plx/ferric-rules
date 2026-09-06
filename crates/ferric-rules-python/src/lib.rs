@@ -39,7 +39,10 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Testing instrumentation
     #[cfg(feature = "testing")]
-    m.add_function(wrap_pyfunction!(engine::engine_instance_count, m)?)?;
+    {
+        m.add_function(wrap_pyfunction!(engine::engine_instance_count, m)?)?;
+        m.add_function(wrap_pyfunction!(engine::engine_run_active, m)?)?;
+    }
 
     Ok(())
 }

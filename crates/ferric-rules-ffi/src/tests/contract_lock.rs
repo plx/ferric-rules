@@ -252,12 +252,12 @@ fn contract_lock_invalid_config_produces_null_and_global_error() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Thread-affinity contract
+// 5. Serialized-transfer contract
 // ---------------------------------------------------------------------------
 
-/// Operations from the creating thread always succeed (affinity check passes).
+/// Operations from the creating thread remain supported.
 #[test]
-fn contract_lock_thread_affinity_same_thread_succeeds() {
+fn contract_lock_same_thread_succeeds() {
     unsafe {
         let engine = ferric_engine_new();
         assert!(!engine.is_null());
@@ -273,41 +273,21 @@ fn contract_lock_thread_affinity_same_thread_succeeds() {
     }
 }
 
-/// Operations from a different thread return `ThreadViolation`.
+/// A live allocation may be handed to another thread for serialized operations.
 #[test]
-fn contract_lock_thread_affinity_violation_returns_error_code() {
+fn contract_lock_serialized_cross_thread_access_succeeds() {
     unsafe {
-        let engine = ferric_engine_new();
-        let engine_addr = engine as usize;
-
-        let result = std::thread::spawn(move || {
-            let eng = engine_addr as *mut FerricEngine;
-            ferric_engine_reset(eng)
+        let owned = Box::from_raw(ferric_engine_new());
+        std::thread::spawn(move || {
+            let engine = Box::into_raw(owned);
+            assert_eq!(ferric_engine_reset(engine), FerricError::Ok);
+            let mut fired = 99;
+            assert_eq!(ferric_engine_run(engine, -1, &mut fired), FerricError::Ok);
+            assert_eq!(fired, 0);
+            assert_eq!(ferric_engine_free(engine), FerricError::Ok);
         })
         .join()
         .unwrap();
-
-        assert_eq!(
-            result,
-            FerricError::ThreadViolation,
-            "cross-thread access must return ThreadViolation"
-        );
-
-        // Global error channel must be populated by the thread-violation path.
-        // NOTE: global error is thread-local, so we check on the creating thread
-        // by triggering another violation and checking inline.
-        let engine_addr2 = engine as usize;
-        let result2 = std::thread::spawn(move || {
-            let eng = engine_addr2 as *mut FerricEngine;
-            // Can't read the creating thread's global error from here,
-            // but we can confirm the code is correct.
-            ferric_engine_run(eng, -1, std::ptr::null_mut())
-        })
-        .join()
-        .unwrap();
-        assert_eq!(result2, FerricError::ThreadViolation);
-
-        ferric_engine_free(engine);
     }
 }
 

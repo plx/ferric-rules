@@ -163,10 +163,10 @@ Ferric uses byte-equality comparison with no Unicode normalization:
 If your application embeds CLIPS via its C API, Ferric provides a similar
 C FFI surface. Key differences:
 
-- Engine runtime operations are thread-affine (must be used on the creating
-  thread). Per-engine last-error copies are synchronized across threads;
-  borrowed-pointer use must not overlap another borrowed read or destruction.
-  The destruction-only unchecked free skips affinity.
+- Raw engines may move between OS threads; the host must serialize runtime
+  calls and protect borrowed-pointer use and destruction. Per-engine error
+  copies are separately synchronized. Both free entry points now have the same
+  lifetime contract. The legacy thread-violation error discriminant is retained.
 - Error handling uses return codes plus synchronized error channels. A failure
   involving a validated raw-engine handle updates both its per-engine snapshot
   and the calling thread's global fallback; pre-handle failures update only
@@ -180,6 +180,22 @@ C FFI surface. Key differences:
 
 See [compatibility.md](compatibility.md) Section 16.13 for the full FFI
 contract.
+
+Python `Engine` ordinary operations now serialize across threads. Code that
+previously expected a `wrong thread` exception should use the normal result
+or operation error; a closed engine reports `engine has been closed` on every
+thread. `halt()` still cancels only an active run, and `close()` remains an
+idempotent destruction barrier. Same-engine reentry during Python conversion
+is explicitly rejected. This pre-1.0 change removes the creator-thread
+requirement without adding an asynchronous operation queue.
+
+Go `Engine` now serializes its complete native operation and diagnostic-copy
+window internally, so callers may use it from different goroutines without a
+lifetime `runtime.LockOSThread`. Constructors pin temporarily for thread-local
+error retrieval. Raw `Halt` queues behind an active operation; use a cancelable
+run context or `PinnedEngine.Halt` for active-run cancellation. Existing worker
+queues and pool ownership rules remain in force, including not retaining an
+engine borrowed inside a manager callback.
 
 ---
 

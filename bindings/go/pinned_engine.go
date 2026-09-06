@@ -11,14 +11,13 @@ import (
 
 var errPinnedEngineClosed = errors.New("ferric: pinned engine is closed")
 
-// PinnedEngine is a stateful single-engine wrapper that hides thread-affinity
-// mechanics from callers. It manages a dedicated OS-locked goroutine and
-// serializes all engine operations through it.
+// PinnedEngine is a stateful single-engine queue with a dedicated OS-locked
+// worker goroutine. It preserves FIFO dispatch and active-run cancellation.
 //
 // All methods are safe for concurrent use from multiple goroutines.
 // Engine operations are serialized on the internal worker goroutine in FIFO
 // order. Halt and the initial Close signal are out-of-band controls so they can
-// interrupt an active Run without violating engine thread affinity.
+// interrupt an active Run without waiting for its serialized operation lease.
 //
 // PinnedEngine implements io.Closer. Always defer Close() after creation.
 type PinnedEngine struct {
