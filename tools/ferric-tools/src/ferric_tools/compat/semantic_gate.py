@@ -71,6 +71,12 @@ REQUIRED_CASE_ISSUES = {
     "FR-RETE-016": 192,
     "FR-RETE-017": 193,
     "FR-RETE-018": 161,
+    "RH-CORE-016": 299,
+    "RH-CORE-017": 299,
+    "RH-CORE-026": 299,
+    "RH-CORE-027": 299,
+    "RH-CORE-028": 299,
+    "RH-CORE-029": 299,
 }
 
 app = typer.Typer(help="Enforce the pinned-CLIPS semantic differential policy.")

@@ -71,6 +71,24 @@ Template facts use named slots defined by `deftemplate`:
 (assert (person (name Alice) (age 30)))
 ```
 
+RHS assertions resolve declared templates in the rule's module, evaluate named
+slots, fill defaults, and propagate template matches. Multislots splice supplied
+multifield values; both `?items` and `$?items` read the same bound value. Invalid
+slot names, repeated slots and statically invalid cardinality reject the rule
+before installation. A dynamic single-slot cardinality error stops that RHS
+without asserting a partial fact. Void expression results are omitted from
+multislots while their output effects remain observable.
+
+Pre-1.0 migration: template metadata now records slot cardinality. Legacy raw
+engine snapshots are not a stable interchange contract across this change;
+retain application facts/rule source for rebuilding. The rehabilitation's
+versioned persistence work will define the supported snapshot envelope.
+
+Complex non-linear predicate or return-value constraints inside negated ordered
+patterns are CLIPS-valid but explicitly rejected during load. PR #254 removed an
+incorrect firing-time fallback; it did not complete that optional language
+feature. The remaining gap is tracked in [#300](https://github.com/plx/ferric-rules/issues/300).
+
 ### Fact Identity
 
 Each successfully asserted fact receives a unique fact index. Fact addresses

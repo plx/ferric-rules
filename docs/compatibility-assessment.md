@@ -110,6 +110,12 @@ observer:
 docker build -t ferric-rules/clips-reference:latest docker/clips-reference
 ```
 
+Run `just compat-observer-test` after the image is available when changing the
+observer. The live regression checks imported facts are emitted only once and
+same-named private templates retain their actual modules. It also checks that
+capture adds no fixture output or diagnostics. CI runs this test before the
+pinned compatibility assessment.
+
 Do not use `just clips-build` for a local-only rebuild: that recipe publishes
 unless invoked with its explicitly local options.
 

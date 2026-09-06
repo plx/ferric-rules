@@ -299,9 +299,14 @@ compat-semantic-gate *args:
 compat-ci-gate *args:
     just _uv ferric-compat-ci-gate {{args}}
 
+# Test the native observer against the already-built pinned CLIPS image
+compat-observer-test:
+    FERRIC_CLIPS_REFERENCE_TESTS=1 just _uv pytest tests/test_clips_reference_integration.py -q
+
 # Rebuild and execute the complete pinned-CLIPS semantic differential lane
 compat-semantic-lane:
     docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+    just compat-observer-test
     just build-cli-release
     just compat-scan
     just compat-run --all --source ferric-semantic
@@ -311,6 +316,7 @@ compat-semantic-lane:
 assess-compatibility:
     just build-cli-release
     docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+    just compat-observer-test
     just compat-scan
     just harness-gen --output-dir "$PWD/.ferric-compat/assessment-harnesses"
     just harness-gen --output-dir "$PWD/.ferric-compat/assessment-harnesses" --check

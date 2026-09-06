@@ -2,14 +2,15 @@
 
 This first-party corpus is the release-blocking differential lane for the
 production-readiness regressions `FR-RETE-001` through `FR-RETE-018` and
-`FR-LANG-001`/`002`. Every `.clp` file is a primary fixture with a version-2
+`FR-LANG-001`/`002`, plus rehabilitation template cases `RH-CORE-016`,
+`017`, and `026`–`029`. Every `.clp` file is a primary fixture with a version-2
 structured oracle in `../compat-oracles.json`. Files ending in `.stage` are
 additional digest-bound sources loaded by that fixture's canonical scenario;
 they are not standalone corpus entries.
 
 The lane always executes the same scenario against Ferric and the repository's
-pinned CLIPS reference image. `../compat-semantic-policy.json` requires all 22
-scenario IDs covering 20 audit IDs, verifies the measured reference binary and
+pinned CLIPS reference image. `../compat-semantic-policy.json` requires all 28
+scenario IDs, verifies the measured reference binary and
 library digests, and
 allows a known divergence only when its classification, reason, mismatch
 fields, and normalized Ferric observation fingerprint all match exactly. A

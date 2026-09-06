@@ -2932,6 +2932,1148 @@
       "normalizers": [
         "fact-ids"
       ]
+    },
+    "ferric-semantic/rh-core-016.clp": {
+      "version": 2,
+      "id": "RH-CORE-016",
+      "feature": "explicit named template export is available to an importing focused module",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-016.clp",
+          "sha256": "cfc80a35c663818375454dde382914ee798803e0d702d001425c221babe4d3b1"
+        }
+      ],
+      "source_sha256": "cfc80a35c663818375454dde382914ee798803e0d702d001425c221babe4d3b1",
+      "composed_sha256": "04f780870b6d56d23592a2e0caeb7a6d0ca8e1624db3296671a0d0b20f929180",
+      "nonce": "547b2892b0ed9c34eb14a0b8f45d4514",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "template",
+            "id": 1,
+            "origin": "fixture",
+            "module": "DATA",
+            "template": "task",
+            "slots": [
+              {
+                "name": "id",
+                "value": {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "template",
+            "id": 2,
+            "origin": "fixture",
+            "module": "WORK",
+            "template": "completed",
+            "slots": [
+              {
+                "name": "id",
+                "value": {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "work a\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:DATA::task",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "id"
+                    },
+                    {
+                      "type": "symbol",
+                      "value": "a"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:WORK::completed",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "id"
+                    },
+                    {
+                      "type": "symbol",
+                      "value": "a"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "work a\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-017.clp": {
+      "version": 2,
+      "id": "RH-CORE-017",
+      "feature": "export-all exposes typed template values across a module boundary",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-017.clp",
+          "sha256": "b06b73fc993e6196d701d16d2dcfe9e947cb072f2fdf29bab8f8ef3455d669ba"
+        }
+      ],
+      "source_sha256": "b06b73fc993e6196d701d16d2dcfe9e947cb072f2fdf29bab8f8ef3455d669ba",
+      "composed_sha256": "dd965cf90a4eb6e18d41d25b8f371f1216c1ab252bd0c8b56a01c5bc9b6d671b",
+      "nonce": "8a36037870554242c6d646b84b807778",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "template",
+            "id": 1,
+            "origin": "fixture",
+            "module": "STORE",
+            "template": "entry",
+            "slots": [
+              {
+                "name": "label",
+                "value": {
+                  "type": "string",
+                  "value": "alpha"
+                }
+              },
+              {
+                "name": "value",
+                "value": {
+                  "type": "integer",
+                  "value": 42
+                }
+              }
+            ]
+          },
+          {
+            "kind": "template",
+            "id": 2,
+            "origin": "fixture",
+            "module": "VIEW",
+            "template": "shown",
+            "slots": [
+              {
+                "name": "value",
+                "value": {
+                  "type": "integer",
+                  "value": 42
+                }
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "alpha=42\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:STORE::entry",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "label"
+                    },
+                    {
+                      "type": "string",
+                      "value": "alpha"
+                    }
+                  ]
+                },
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "value"
+                    },
+                    {
+                      "type": "integer",
+                      "value": 42
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:VIEW::shown",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "value"
+                    },
+                    {
+                      "type": "integer",
+                      "value": 42
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "alpha=42\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-026.clp": {
+      "version": 2,
+      "id": "RH-CORE-026",
+      "feature": "RHS assert uses named template slots and preserves default typed values",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-026.clp",
+          "sha256": "d60acdfab6799cadbdc9db595f6380aca5c93ee069d1019973598a8358b1d36f"
+        }
+      ],
+      "source_sha256": "d60acdfab6799cadbdc9db595f6380aca5c93ee069d1019973598a8358b1d36f",
+      "composed_sha256": "76e8db1de40f22e7531d0b216c0370c3c374622b648e69e13fde0044a438519f",
+      "nonce": "a5c3a77a078b8fadb383f079c1402d62",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "template",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "template": "record",
+            "slots": [
+              {
+                "name": "name",
+                "value": {
+                  "type": "symbol",
+                  "value": "alice"
+                }
+              },
+              {
+                "name": "count",
+                "value": {
+                  "type": "integer",
+                  "value": 7
+                }
+              },
+              {
+                "name": "label",
+                "value": {
+                  "type": "string",
+                  "value": "ready"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "alice"
+              },
+              {
+                "type": "integer",
+                "value": 7
+              },
+              {
+                "type": "string",
+                "value": "ready"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "alice 7 ready\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::record",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "name"
+                    },
+                    {
+                      "type": "symbol",
+                      "value": "alice"
+                    }
+                  ]
+                },
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "count"
+                    },
+                    {
+                      "type": "integer",
+                      "value": 7
+                    }
+                  ]
+                },
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "label"
+                    },
+                    {
+                      "type": "string",
+                      "value": "ready"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "alice"
+                },
+                {
+                  "type": "integer",
+                  "value": 7
+                },
+                {
+                  "type": "string",
+                  "value": "ready"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "alice 7 ready\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-027.clp": {
+      "version": 2,
+      "id": "RH-CORE-027",
+      "feature": "RHS template assertions flatten multifield values into the declared multislot",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-027.clp",
+          "sha256": "c7ef956c117c99ac41d050ea24728e1c7b00e5c69e1ab7f8a965692e5da129ea"
+        }
+      ],
+      "source_sha256": "c7ef956c117c99ac41d050ea24728e1c7b00e5c69e1ab7f8a965692e5da129ea",
+      "composed_sha256": "ab711a43a6c6bb0d0f935f51a0348fe4e5d44188ade20cf4ebb4c071ba93dcec",
+      "nonce": "cefca793aca3377f75af944d93879662",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "source",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 12
+              },
+              {
+                "type": "symbol",
+                "value": "red"
+              },
+              {
+                "type": "string",
+                "value": "blue"
+              },
+              {
+                "type": "float",
+                "value": "3.5"
+              }
+            ]
+          },
+          {
+            "kind": "template",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "template": "packet",
+            "slots": [
+              {
+                "name": "id",
+                "value": {
+                  "type": "integer",
+                  "value": 12
+                }
+              },
+              {
+                "name": "items",
+                "value": {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "red"
+                    },
+                    {
+                      "type": "string",
+                      "value": "blue"
+                    },
+                    {
+                      "type": "float",
+                      "value": "3.5"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 12
+              },
+              {
+                "type": "symbol",
+                "value": "red"
+              },
+              {
+                "type": "string",
+                "value": "blue"
+              },
+              {
+                "type": "float",
+                "value": "3.5"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "12 3\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::source",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 12
+                },
+                {
+                  "type": "symbol",
+                  "value": "red"
+                },
+                {
+                  "type": "string",
+                  "value": "blue"
+                },
+                {
+                  "type": "float",
+                  "value": "3.5"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::packet",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "id"
+                    },
+                    {
+                      "type": "integer",
+                      "value": 12
+                    }
+                  ]
+                },
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "items"
+                    },
+                    {
+                      "type": "multifield",
+                      "value": [
+                        {
+                          "type": "symbol",
+                          "value": "red"
+                        },
+                        {
+                          "type": "string",
+                          "value": "blue"
+                        },
+                        {
+                          "type": "float",
+                          "value": "3.5"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 12
+                },
+                {
+                  "type": "symbol",
+                  "value": "red"
+                },
+                {
+                  "type": "string",
+                  "value": "blue"
+                },
+                {
+                  "type": "float",
+                  "value": "3.5"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "12 3\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order",
+        "float-format"
+      ]
+    },
+    "ferric-semantic/rh-core-028.clp": {
+      "version": 2,
+      "id": "RH-CORE-028",
+      "feature": "modifying a template fact cancels its stale join and enables its new join",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-028.clp",
+          "sha256": "b9e80e6b59c2e01a4b2f9a1a08b5ba0c8afc2ce400601b7c00a50096e0b3ddbd"
+        }
+      ],
+      "source_sha256": "b9e80e6b59c2e01a4b2f9a1a08b5ba0c8afc2ce400601b7c00a50096e0b3ddbd",
+      "composed_sha256": "e8fd03787608c4669d7b73c02ac09097da9a324ec96960e9a89465e952351078",
+      "nonce": "5f200d74cbe659888eee7f5d7b69ed50",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "permission",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "active"
+              }
+            ]
+          },
+          {
+            "kind": "template",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "template": "account",
+            "slots": [
+              {
+                "name": "id",
+                "value": {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              },
+              {
+                "name": "status",
+                "value": {
+                  "type": "symbol",
+                  "value": "active"
+                }
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "active a\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::permission",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "active"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::account",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "id"
+                    },
+                    {
+                      "type": "symbol",
+                      "value": "a"
+                    }
+                  ]
+                },
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "status"
+                    },
+                    {
+                      "type": "symbol",
+                      "value": "active"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "active a\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-029.clp": {
+      "version": 2,
+      "id": "RH-CORE-029",
+      "feature": "duplicating a template with overrides preserves the original fact",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-029.clp",
+          "sha256": "3a7921a932a32550819f3d9e39d9324b23458b985422f33282707793ca776e18"
+        }
+      ],
+      "source_sha256": "3a7921a932a32550819f3d9e39d9324b23458b985422f33282707793ca776e18",
+      "composed_sha256": "ec170c3e1fe040fed3e8271422ffec23ab23f0e3e2ecc86b1517b6781b1250b4",
+      "nonce": "ac30eb368a26d72779a5d9dd510d558a",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "template",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "template": "entry",
+            "slots": [
+              {
+                "name": "id",
+                "value": {
+                  "type": "symbol",
+                  "value": "original"
+                }
+              },
+              {
+                "name": "value",
+                "value": {
+                  "type": "integer",
+                  "value": 4
+                }
+              }
+            ]
+          },
+          {
+            "kind": "template",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "template": "entry",
+            "slots": [
+              {
+                "name": "id",
+                "value": {
+                  "type": "symbol",
+                  "value": "copy"
+                }
+              },
+              {
+                "name": "value",
+                "value": {
+                  "type": "integer",
+                  "value": 8
+                }
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 4
+              },
+              {
+                "type": "integer",
+                "value": 8
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "4 8\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::entry",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "id"
+                    },
+                    {
+                      "type": "symbol",
+                      "value": "original"
+                    }
+                  ]
+                },
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "value"
+                    },
+                    {
+                      "type": "integer",
+                      "value": 4
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::entry",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "id"
+                    },
+                    {
+                      "type": "symbol",
+                      "value": "copy"
+                    }
+                  ]
+                },
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "value"
+                    },
+                    {
+                      "type": "integer",
+                      "value": 8
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 4
+                },
+                {
+                  "type": "integer",
+                  "value": 8
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "4 8\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
     }
   }
 }

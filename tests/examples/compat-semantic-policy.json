@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "suite_version": "1.1.0",
+  "suite_version": "1.2.0",
   "source": "ferric-semantic",
   "reference": {
     "schema": "ferric.clips-reference-provenance",
@@ -367,6 +367,60 @@
         "rationale": "Ferric asserts a deffacts construct loaded after reset without another reset; pinned CLIPS leaves it dormant.",
         "since": "0.1.0",
         "tracking_issue": "https://github.com/plx/ferric-rules/issues/161"
+      }
+    },
+    {
+      "id": "RH-CORE-016",
+      "issue": "https://github.com/plx/ferric-rules/issues/299",
+      "fixture": "ferric-semantic/rh-core-016.clp",
+      "family": "explicit named template export is available to an importing focused module",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "RH-CORE-017",
+      "issue": "https://github.com/plx/ferric-rules/issues/299",
+      "fixture": "ferric-semantic/rh-core-017.clp",
+      "family": "export-all exposes typed template values across a module boundary",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "RH-CORE-026",
+      "issue": "https://github.com/plx/ferric-rules/issues/299",
+      "fixture": "ferric-semantic/rh-core-026.clp",
+      "family": "RHS assert uses named template slots and preserves default typed values",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "RH-CORE-027",
+      "issue": "https://github.com/plx/ferric-rules/issues/299",
+      "fixture": "ferric-semantic/rh-core-027.clp",
+      "family": "RHS template assertions flatten multifield values into the declared multislot",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "RH-CORE-028",
+      "issue": "https://github.com/plx/ferric-rules/issues/299",
+      "fixture": "ferric-semantic/rh-core-028.clp",
+      "family": "modifying a template fact cancels its stale join and enables its new join",
+      "expected": {
+        "classification": "equivalent"
+      }
+    },
+    {
+      "id": "RH-CORE-029",
+      "issue": "https://github.com/plx/ferric-rules/issues/299",
+      "fixture": "ferric-semantic/rh-core-029.clp",
+      "family": "duplicating a template with overrides preserves the original fact",
+      "expected": {
+        "classification": "equivalent"
       }
     }
   ]
