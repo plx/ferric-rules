@@ -673,10 +673,10 @@ func TestFocusStack(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Wrong-thread coverage (GOB-003)
+// Serialized OS-thread handoff
 // ---------------------------------------------------------------------------
 
-func TestEngineFreeFromWrongThread(t *testing.T) {
+func TestEngineFreeAfterThreadTransfer(t *testing.T) {
 	lockThread(t)
 
 	h := EngineNew()
@@ -684,7 +684,7 @@ func TestEngineFreeFromWrongThread(t *testing.T) {
 		t.Fatal("EngineNew returned nil")
 	}
 
-	// Thread-checked free from a different OS thread should fail.
+	// Transfer ownership and destroy exactly once on a different OS thread.
 	done := make(chan ErrorCode, 1)
 	go func() {
 		runtime.LockOSThread()
@@ -692,19 +692,12 @@ func TestEngineFreeFromWrongThread(t *testing.T) {
 		done <- EngineFree(h)
 	}()
 
-	rc := <-done
-	if rc != ErrThreadViolation {
-		t.Fatalf("expected ErrThreadViolation from wrong-thread EngineFree, got %d", rc)
-	}
-
-	// Clean up from the creating thread.
-	rc = EngineFree(h)
-	if rc != ErrOK {
-		t.Fatalf("EngineFree from creating thread returned %d", rc)
+	if rc := <-done; rc != ErrOK {
+		t.Fatalf("EngineFree after transfer returned %d", rc)
 	}
 }
 
-func TestEngineRunFromWrongThread(t *testing.T) {
+func TestEngineRunAfterThreadTransfer(t *testing.T) {
 	lockThread(t)
 
 	h := EngineNewWithSource(`(defrule r => (assert (done)))`)
@@ -713,21 +706,28 @@ func TestEngineRunFromWrongThread(t *testing.T) {
 	}
 	defer EngineFree(h)
 
-	done := make(chan ErrorCode, 1)
+	type result struct {
+		fired uint64
+		code  ErrorCode
+	}
+	done := make(chan result, 1)
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
-		_, rc := EngineRun(h, -1)
-		done <- rc
+		fired, rc := EngineRun(h, -1)
+		done <- result{fired: fired, code: rc}
 	}()
 
-	rc := <-done
-	if rc != ErrThreadViolation {
-		t.Fatalf("expected ErrThreadViolation from wrong-thread EngineRun, got %d", rc)
+	got := <-done
+	if got.code != ErrOK || got.fired != 1 {
+		t.Fatalf("EngineRun after transfer = (%d, %d), want (1, OK)", got.fired, got.code)
+	}
+	if count, rc := EngineFactCount(h); rc != ErrOK || count != 1 {
+		t.Fatalf("FactCount after return handoff = (%d, %d), want (1, OK)", count, rc)
 	}
 }
 
-func TestEngineResetFromWrongThread(t *testing.T) {
+func TestEngineResetAfterThreadTransfer(t *testing.T) {
 	lockThread(t)
 
 	h := EngineNew()
@@ -744,7 +744,7 @@ func TestEngineResetFromWrongThread(t *testing.T) {
 	}()
 
 	rc := <-done
-	if rc != ErrThreadViolation {
-		t.Fatalf("expected ErrThreadViolation from wrong-thread EngineReset, got %d", rc)
+	if rc != ErrOK {
+		t.Fatalf("EngineReset after transfer returned %d", rc)
 	}
 }

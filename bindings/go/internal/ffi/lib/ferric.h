@@ -5,28 +5,24 @@
  * THREAD SAFETY
  * ============================================================
  *
- * Raw engine handles (FerricEngine*) are bound to the thread that
- * created them. Ordinary ferric_engine_* runtime accessors validate
- * thread affinity before accessing runtime state.
+ * Raw engine handles (FerricEngine*) may transfer between OS threads.
+ * The host must serialize runtime access and keep the allocation live
+ * throughout every call and borrowed-pointer use. An atomic admission
+ * guard rejects overlapping runtime calls with FERRIC_ERROR_INTERNAL_ERROR;
+ * this is not a lifetime owner and does not make successful free races safe.
  *
- * - Creating thread: all operations succeed normally.
- * - Other threads: ordinary runtime operations return
- *   FERRIC_ERROR_THREAD_VIOLATION with a descriptive message in the
- *   engine snapshot and that thread's global fallback.
- * - ferric_engine_last_error_copy() is synchronized and may run
- *   concurrently from any thread. Each call copies one coherent
- *   error snapshot.
- * - ferric_engine_last_error() may be called from any thread, but
- *   the returned borrowed pointer must not be used while another
- *   borrowed read or engine destruction may occur. Use the copy API
- *   when pointer-use windows could overlap.
- * - ferric_engine_free_unchecked() is a destruction-only escape
- *   hatch that deliberately skips affinity. Like all destruction,
- *   it must not overlap any access to that engine.
- * - Neither diagnostic reader may race with engine destruction.
- * - Same-engine runtime reentry from a host callback fails with
- *   FERRIC_ERROR_INTERNAL_ERROR. The last-error readers remain safe
- *   to call from such callbacks.
+ * - Runtime reads and writes, including logical-run continuations, may
+ *   execute on different threads when externally serialized.
+ * - ferric_engine_last_error_copy() uses a separate mutex and may run
+ *   concurrently from any thread, copying one coherent error snapshot.
+ * - Borrowed output/error pointers require a host-protected use window;
+ *   copy them before ending that window or use the copy accessors.
+ * - Successful free must exclude all calls and borrowed-pointer use.
+ *   ferric_engine_free_unchecked() is retained as a compatibility alias
+ *   with the same requirements; ordinary free also supports any thread.
+ * - Same-engine runtime reentry from a host callback is rejected, including
+ *   free. Per-engine error access remains available during such callbacks.
+ * - The host must not call any API with a pointer after successful free.
  *
  * The global error functions (ferric_last_error_global, etc.)
  * use thread-local storage and are safe to call from any thread.
@@ -151,9 +147,8 @@
  *   leaves output parameters unchanged.
  * - A call rejected before it reaches engine state changes no runtime
  *   or continuation state, though it still publishes its documented
- *   error. A null handle, a thread affinity violation, and a reentrant
- *   call from a host callback all leave the logical run intact for the
- *   owner thread.
+ *   error. A null handle or an overlapping/reentrant call leaves the
+ *   logical run intact for a later serialized continuation.
  * - Host cancellation is not HALT_REQUESTED. A cancelable binding
  *   stops submitting chunks, reports its own canceled outcome, and
  *   starts any later logical run with ferric_engine_run_ex(). The
@@ -382,14 +377,14 @@ typedef enum FerricValueType {
 
 // Opaque engine handle exposed to C.
 //
-// The runtime engine remains owner-thread-only. Per-engine error snapshots
+// The runtime engine remains exclusively admitted. Per-engine error snapshots
 // are stored separately so the two last-error accessors can safely read them
 // from any thread.
 //
 // Production accessors never construct a Rust reference to this whole
 // structure. They project references to individual fields from the raw
-// handle, which permits an owner-thread `&mut Engine` to coexist with a
-// foreign-thread reference to the disjoint diagnostic mutex.
+// handle, which permits a guarded `&mut Engine` to coexist with a
+// concurrent reference to the disjoint diagnostic mutex.
 //
 // C code receives `*mut FerricEngine` as an opaque pointer.
 typedef struct FerricEngine FerricEngine;
@@ -513,7 +508,7 @@ typedef void (*FerricPinnedCompletionFn)(void *context,
 // # Safety
 //
 // The returned pointer must be freed with `ferric_engine_free`.
-// The engine is bound to the creating thread.
+// The host may transfer the live handle between threads while serializing access.
 struct FerricEngine *ferric_engine_new(void);
 
 // Create a new engine with optional caller-provided configuration.
@@ -535,7 +530,7 @@ struct FerricEngine *ferric_engine_new_with_config(const struct FerricConfig *co
 //
 // - `engine` must be a pointer returned by `ferric_engine_new` or null.
 // - The engine must not be in use by another call when freed.
-// - The engine must be freed from the same thread that created it.
+// - The host must exclude every other access and borrowed-pointer use until free returns.
 enum FerricError ferric_engine_free(struct FerricEngine *engine);
 
 // Load a CLIPS source string into the engine.
@@ -1180,8 +1175,8 @@ enum FerricError ferric_engine_run_ex(struct FerricEngine *engine,
 //
 // A call rejected before it reaches engine state changes no runtime or
 // continuation state, though it still publishes its documented error: a null
-// handle, a thread-affinity violation, and a reentrant call from a host
-// callback all leave the logical run intact for the owner thread to continue.
+// handle and an overlapping/reentrant call leave the logical run intact for
+// the next serialized continuation.
 // On any error, output parameters are left unchanged.
 //
 // Host cancellation is distinct from an engine halt: stop calling this
@@ -1250,11 +1245,10 @@ enum FerricError ferric_engine_get_fact_slot_by_name(const struct FerricEngine *
                                                      const char * FERRIC_NULL_TERMINATED slot_name,
                                                      struct FerricValue *out_value);
 
-// Free an engine handle without checking thread affinity.
+// Compatibility alias for freeing an engine from any thread.
 //
-// This is intended for use by garbage-collected runtimes (Go, etc.) whose
-// finalizers run on arbitrary threads. In normal usage, prefer
-// `ferric_engine_free` which validates thread affinity.
+// It has the same lifetime and exclusive-access requirements as
+// `ferric_engine_free`; new callers should use that ordinary entry point.
 //
 // Null pointers are safely ignored.
 //
@@ -1340,7 +1334,7 @@ enum FerricError ferric_engine_serialize_bincode(const struct FerricEngine *engi
 // Deserialize an engine from bincode bytes.
 //
 // The returned engine handle is ready for use (e.g. `ferric_engine_run`).
-// Its thread affinity is set to the calling thread.
+// It may be transferred between threads under the same serialized-access contract.
 //
 // # Safety
 //

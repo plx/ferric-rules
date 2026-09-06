@@ -1449,10 +1449,10 @@ func TestBuildFactGetFactCompleteness(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Wrong-thread coverage (GOB-003)
+// Serialized OS-thread handoff
 // ---------------------------------------------------------------------------
 
-func TestEngineWrongThread(t *testing.T) {
+func TestEngineThreadTransfer(t *testing.T) {
 	lockThread(t)
 
 	e, err := NewEngine()
@@ -1474,19 +1474,12 @@ func TestEngineWrongThread(t *testing.T) {
 	}()
 
 	err = <-errc
-	if err == nil {
-		t.Fatal("expected thread violation error from wrong thread")
-	}
-	if !errors.Is(err, ErrThreadViolation) {
-		t.Fatalf("expected ErrThreadViolation, got: %v", err)
-	}
-	var tve *ThreadViolationError
-	if !errors.As(err, &tve) {
-		t.Fatalf("expected ThreadViolationError, got %T: %v", err, err)
+	if err != nil {
+		t.Fatalf("transferred FactCount: %v", err)
 	}
 }
 
-func TestEngineWrongThreadMultipleOps(t *testing.T) {
+func TestEngineThreadTransferMultipleOps(t *testing.T) {
 	lockThread(t)
 
 	e, err := NewEngine(WithSource(`
@@ -1497,7 +1490,7 @@ func TestEngineWrongThreadMultipleOps(t *testing.T) {
 	}
 	defer mustClose(t, e)
 
-	// Verify several operations all return ErrThreadViolation from a wrong thread.
+	// Exercise sequential operations after handing ownership to a new OS thread.
 	type opResult struct {
 		name string
 		err  error
@@ -1536,11 +1529,8 @@ func TestEngineWrongThreadMultipleOps(t *testing.T) {
 	}()
 
 	for r := range results {
-		if r.err == nil {
-			t.Fatalf("%s: expected thread violation error", r.name)
-		}
-		if !errors.Is(r.err, ErrThreadViolation) {
-			t.Fatalf("%s: expected ErrThreadViolation, got: %v", r.name, r.err)
+		if r.err != nil {
+			t.Fatalf("%s after transfer: %v", r.name, r.err)
 		}
 	}
 }

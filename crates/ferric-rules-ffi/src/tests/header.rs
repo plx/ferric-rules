@@ -77,27 +77,27 @@ fn header_has_thread_safety_banner() {
         "ferric.h is missing the THREAD SAFETY section"
     );
     assert!(
-        header.contains("FERRIC_ERROR_THREAD_VIOLATION"),
-        "Thread-safety section must mention FERRIC_ERROR_THREAD_VIOLATION"
+        header.contains("Raw engine handles (FerricEngine*) may transfer between OS threads"),
+        "Thread-safety section must document serialized transfer"
     );
     assert!(
-        header.contains("ferric_engine_last_error_copy() is synchronized"),
+        header.contains("ferric_engine_last_error_copy() uses a separate mutex"),
         "Thread-safety section must promise synchronized owned snapshots"
     );
     assert!(
-        header.contains("returned borrowed pointer must not be used while another"),
+        header.contains("Borrowed output/error pointers require a host-protected use window"),
         "Thread-safety section must constrain borrowed-pointer use"
     );
     assert!(
-        header.contains("ferric_engine_free_unchecked() is a destruction-only escape"),
-        "Thread-safety section must document unchecked destruction"
+        header.contains("ferric_engine_free_unchecked() is retained as a compatibility alias"),
+        "Thread-safety section must document the legacy free alias"
     );
     assert!(
-        header.contains("Neither diagnostic reader may race with engine destruction"),
+        header.contains("Successful free must exclude all calls and borrowed-pointer use"),
         "Thread-safety section must forbid concurrent engine destruction"
     );
     assert!(
-        header.contains("Same-engine runtime reentry from a host callback fails"),
+        header.contains("Same-engine runtime reentry from a host callback is rejected"),
         "Thread-safety section must document deterministic reentry rejection"
     );
 }

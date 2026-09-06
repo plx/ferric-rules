@@ -66,13 +66,13 @@ func EngineNewWithSourceConfig(source string, config *Config) EngineHandle {
 	return C.ferric_engine_new_with_source_config(cs, config)
 }
 
-// EngineFree frees an engine handle (thread-checked).
+// EngineFree frees a live handle on any thread; the host must exclude all access.
 func EngineFree(h EngineHandle) ErrorCode {
 	return ErrorCode(C.ferric_engine_free(h))
 }
 
-// EngineFreeUnchecked frees an engine without thread-affinity check.
-// Intended for GC finalizers that run on arbitrary threads.
+// EngineFreeUnchecked is a compatibility alias for EngineFree.
+// It has the same serialization and lifetime requirements.
 func EngineFreeUnchecked(h EngineHandle) ErrorCode {
 	return ErrorCode(C.ferric_engine_free_unchecked(h))
 }

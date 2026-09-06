@@ -1,14 +1,14 @@
 //! Python Engine wrapper.
 //!
-//! Engine operations remain pinned to the creator thread. `PyEngine` owns the
-//! engine behind a mutex so explicit close or Python's final-reference cleanup
-//! can destroy it synchronously on another thread without transferring runtime
-//! access.
+//! An engine may be called from any Python thread. Native work is serialized by
+//! its ownership mutex; waiting for that mutex never holds the GIL. Long native
+//! phases acquire and release the mutex entirely while detached from Python.
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread::{self, ThreadId};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -39,14 +39,13 @@ const RUN_CANCEL_CHUNK_SIZE: usize = 64;
 #[cfg(feature = "testing")]
 static ENGINE_INSTANCE_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Exclusive ownership of a thread-affine engine which may be sent solely so
-/// the whole engine can be destroyed on the thread that releases Python's
-/// final reference.
-struct OwnedThreadAffineEngine {
+/// Owned native state and optional destruction accounting. Transferability
+/// comes from Engine's fields; this wrapper requires no unsafe trait assertion.
+struct OwnedEngine {
     // Rust drops struct fields in declaration order. Keep the native engine
     // before the testing guard so the live count changes only after Engine's
     // destructor has completed.
-    engine: Box<Engine>,
+    engine: Engine,
     #[cfg(feature = "testing")]
     _instance_count: EngineInstanceCount,
 }
@@ -69,10 +68,10 @@ impl Drop for EngineInstanceCount {
     }
 }
 
-impl OwnedThreadAffineEngine {
+impl OwnedEngine {
     fn new(engine: Engine) -> Self {
         Self {
-            engine: Box::new(engine),
+            engine,
             #[cfg(feature = "testing")]
             _instance_count: EngineInstanceCount::new(),
         }
@@ -83,51 +82,44 @@ impl OwnedThreadAffineEngine {
     }
 }
 
-// SAFETY: `OwnedThreadAffineEngine` is private and is only stored behind
-// `PyEngine`'s mutex. Runtime access is granted only after checking that the
-// current thread is the engine's creator, and the mutex prevents that access
-// from overlapping destruction. Actual cross-thread movement is used only to
-// drop the whole, exclusively owned engine, matching the destruction-only
-// exception documented by `ferric_engine_free_unchecked`. Construction also
-// returns this wrapper through `Python::allow_threads`, whose closure executes
-// synchronously on the invoking OS thread; that round trip does not transfer
-// runtime access to another thread.
-unsafe impl Send for OwnedThreadAffineEngine {}
-
-/// Exclusive, creator-thread engine access for one GIL-released native phase.
-///
-/// `PyO3` 0.23 models `Ungil` as `Send` on stable Rust. `Engine` is deliberately
-/// `!Send`, so this narrow lease supplies only that conservative marker bound.
-/// It is never exposed or stored and is consumed directly by
-/// `Python::allow_threads`.
-struct GilReleasedEngineOperation<'a> {
-    engine: &'a mut Engine,
-    invoking_thread: ThreadId,
+thread_local! {
+    // Python allocation/conversion may invoke user finalizers. Reject same-engine
+    // reentry on this native thread instead of waiting for our own reservation.
+    static ACTIVE_ENGINES: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
 }
 
-impl<'a> GilReleasedEngineOperation<'a> {
-    fn new(engine: &'a mut Engine) -> Self {
-        Self {
-            engine,
-            invoking_thread: thread::current().id(),
+struct EngineOperationGuard(u64);
+
+impl EngineOperationGuard {
+    fn enter(engine_id: u64) -> PyResult<Self> {
+        let inserted = ACTIVE_ENGINES.with(|active| active.borrow_mut().insert(engine_id));
+        if inserted {
+            Ok(Self(engine_id))
+        } else {
+            Err(Self::error())
         }
     }
 
-    fn run<F, R>(self, operation: F) -> R
-    where
-        F: FnOnce(&mut Engine) -> R,
-    {
-        debug_assert_eq!(thread::current().id(), self.invoking_thread);
-        operation(self.engine)
+    fn check(engine_id: u64) -> PyResult<()> {
+        if ACTIVE_ENGINES.with(|active| active.borrow().contains(&engine_id)) {
+            Err(Self::error())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn error() -> PyErr {
+        FerricRuntimeError::new_err("reentrant access to the same engine is not supported")
     }
 }
 
-// SAFETY: PyO3 documents that `Python::allow_threads` releases the GIL around
-// a synchronous call on the invoking OS thread; it does not launch a thread.
-// `PyEngine` creates this private lease only after the creator-thread check and
-// while holding the engine mutex, moves it directly into that call, and keeps
-// the mutex reserved until the call returns. No API can move or retain it.
-unsafe impl Send for GilReleasedEngineOperation<'_> {}
+impl Drop for EngineOperationGuard {
+    fn drop(&mut self) {
+        ACTIVE_ENGINES.with(|active| {
+            active.borrow_mut().remove(&self.0);
+        });
+    }
+}
 
 /// A per-run cancellation token published only while a run is active.
 #[derive(Default)]
@@ -289,83 +281,83 @@ fn snapshot_file_error_to_pyerr(error: SnapshotFileError) -> PyErr {
 
 /// The Ferric rules engine.
 ///
-/// Thread-affine: must be used only from the thread that created it.
-/// Cross-thread access raises `FerricRuntimeError` (not a panic).
-///
-/// The actual engine data remains creator-thread-only for runtime access, but
-/// the handle owns it directly so the final Python reference can destroy it on
-/// any supported Python thread.
+/// Operations from different threads are serialized. Waiting callers release
+/// the GIL, and owned fact/value snapshots remain valid after the engine closes.
+/// Calls that reenter the same engine during Python conversion are rejected.
 #[pyclass(name = "Engine", module = "ferric")]
 pub struct PyEngine {
     engine_id: u64,
-    creator_thread: ThreadId,
     closing: AtomicBool,
     active_run: ActiveRunControl,
-    engine: Mutex<Option<OwnedThreadAffineEngine>>,
+    engine: Mutex<Option<OwnedEngine>>,
 }
 
 impl PyEngine {
     fn from_engine(engine: Engine) -> Self {
-        Self::from_owned_engine(OwnedThreadAffineEngine::new(engine))
+        Self::from_owned_engine(OwnedEngine::new(engine))
     }
 
-    fn from_owned_engine(engine: OwnedThreadAffineEngine) -> Self {
+    fn from_owned_engine(engine: OwnedEngine) -> Self {
         Self {
             engine_id: NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed),
-            creator_thread: thread::current().id(),
             closing: AtomicBool::new(false),
             active_run: ActiveRunControl::default(),
             engine: Mutex::new(Some(engine)),
         }
     }
 
-    fn ensure_creator_thread(&self) -> PyResult<()> {
-        let current = thread::current().id();
-        if current != self.creator_thread {
-            return Err(FerricRuntimeError::new_err(format!(
-                "engine called from wrong thread (created on {:?}, called from {:?})",
-                self.creator_thread, current,
-            )));
-        }
-        Ok(())
-    }
-
     fn closed_error() -> PyErr {
         FerricRuntimeError::new_err("engine has been closed")
     }
 
-    /// Check thread, lock the live engine, and run a closure with mutable access.
+    /// Short operations may build Python values while holding the reservation.
+    /// Acquire it without ever blocking an attached Python thread: if busy,
+    /// detach, wait for availability, drop that temporary guard, and retry.
+    /// No `MutexGuard` or Python-bound value crosses the detached closure.
     fn with_engine<F, R>(&self, f: F) -> PyResult<R>
     where
         F: FnOnce(&mut Engine) -> PyResult<R>,
     {
-        self.ensure_creator_thread()?;
-        let mut state = lock_unpoisoned(&self.engine);
-        if self.closing.load(Ordering::Acquire) {
-            return Err(Self::closed_error());
-        }
-        let engine = state.as_mut().ok_or_else(Self::closed_error)?;
-        f(engine.get_mut())
+        Python::with_gil(|py| {
+            EngineOperationGuard::check(self.engine_id)?;
+            let mut state = loop {
+                if self.closing.load(Ordering::Acquire) {
+                    return Err(Self::closed_error());
+                }
+                match self.engine.try_lock() {
+                    Ok(state) => break state,
+                    Err(TryLockError::Poisoned(error)) => break error.into_inner(),
+                    Err(TryLockError::WouldBlock) => {
+                        py.allow_threads(|| drop(lock_unpoisoned(&self.engine)));
+                    }
+                }
+            };
+            let _operation = EngineOperationGuard::enter(self.engine_id)?;
+            if self.closing.load(Ordering::Acquire) {
+                return Err(Self::closed_error());
+            }
+            let engine = state.as_mut().ok_or_else(Self::closed_error)?;
+            f(engine.get_mut())
+        })
     }
 
-    /// Reserve the live engine, release the GIL for one native phase, and
-    /// return its owned result after reacquiring the GIL and releasing the
-    /// engine reservation.
+    /// Both admission and release happen while detached, before reacquiring
+    /// the GIL. This prevents a waiting Python reader from deadlocking a run.
     fn with_engine_allow_threads<F, R>(&self, py: Python<'_>, operation: F) -> PyResult<R>
     where
         F: FnOnce(&mut Engine) -> R + Send,
         R: Send,
     {
-        self.ensure_creator_thread()?;
-        let mut state = lock_unpoisoned(&self.engine);
-        if self.closing.load(Ordering::Acquire) {
-            return Err(Self::closed_error());
-        }
-        let engine = state.as_mut().ok_or_else(Self::closed_error)?.get_mut();
-        let lease = GilReleasedEngineOperation::new(engine);
-        let result = py.allow_threads(move || lease.run(operation));
-        drop(state);
-        Ok(result)
+        EngineOperationGuard::check(self.engine_id)?;
+        py.allow_threads(move || {
+            let _operation = EngineOperationGuard::enter(self.engine_id)?;
+            let mut state = lock_unpoisoned(&self.engine);
+            if self.closing.load(Ordering::Acquire) {
+                return Err(Self::closed_error());
+            }
+            let engine = state.as_mut().ok_or_else(Self::closed_error)?.get_mut();
+            Ok(operation(engine))
+        })
     }
 
     fn run_allow_threads(
@@ -373,27 +365,13 @@ impl PyEngine {
         py: Python<'_>,
         limit: RunLimit,
     ) -> PyResult<Result<NativeRunResult, EngineError>> {
-        self.ensure_creator_thread()?;
-        let mut state = lock_unpoisoned(&self.engine);
-        if self.closing.load(Ordering::Acquire) {
-            return Err(Self::closed_error());
-        }
-        let engine = state.as_mut().ok_or_else(Self::closed_error)?.get_mut();
-
-        // Publication occurs after admission and before releasing the GIL.
-        let active_run = self.active_run.publish(&self.closing);
-        let cancel = active_run.token();
-        let closing = &self.closing;
-        let lease = GilReleasedEngineOperation::new(engine);
-        let result = py.allow_threads(move || {
-            lease.run(|engine| run_with_external_cancel(engine, limit, &cancel, closing))
-        });
-
-        // The run is no longer signalable before its exclusive engine lease is
-        // released, so a later halt cannot latch onto a future run.
-        drop(active_run);
-        drop(state);
-        Ok(result)
+        self.with_engine_allow_threads(py, |engine| {
+            // Publish only after admission. Close's cancellation race is
+            // closed by publish's recheck of the closing flag.
+            let active_run = self.active_run.publish(&self.closing);
+            let cancel = active_run.token();
+            run_with_external_cancel(engine, limit, &cancel, &self.closing)
+        })
     }
 
     fn begin_close(&self) {
@@ -445,7 +423,7 @@ impl PyEngine {
         let config = make_config(strategy, encoding);
         let source = source.to_owned();
         let engine = py.allow_threads(move || {
-            Engine::with_rules_config(&source, config).map(OwnedThreadAffineEngine::new)
+            Engine::with_rules_config(&source, config).map(OwnedEngine::new)
         });
         engine
             .map(Self::from_owned_engine)
@@ -466,9 +444,9 @@ impl PyEngine {
         _exc_type: Option<&Bound<'_, PyAny>>,
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
-    ) -> bool {
-        self.close(py);
-        false // don't suppress exceptions
+    ) -> PyResult<bool> {
+        self.close(py)?;
+        Ok(false) // don't suppress exceptions
     }
 
     /// Explicitly close and destroy this engine from any supported Python thread.
@@ -477,9 +455,11 @@ impl PyEngine {
     /// waiting for admitted native work, and returns after native destruction.
     /// After calling `close()`, later ordinary engine operations raise
     /// `FerricRuntimeError`; close and context-manager exit remain idempotent.
-    fn close(&self, py: Python<'_>) {
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        EngineOperationGuard::check(self.engine_id)?;
         self.begin_close();
         py.allow_threads(|| self.destroy_engine());
+        Ok(())
     }
 
     // -- Loading --
@@ -889,9 +869,8 @@ impl PyEngine {
     ) -> PyResult<Self> {
         let data = data.to_vec();
         let format = format.unwrap_or(crate::config::Format::Bincode).into();
-        let engine = py.allow_threads(move || {
-            Engine::deserialize(&data, format).map(OwnedThreadAffineEngine::new)
-        });
+        let engine =
+            py.allow_threads(move || Engine::deserialize(&data, format).map(OwnedEngine::new));
         engine
             .map(Self::from_owned_engine)
             .map_err(|error| crate::error::FerricError::new_err(error.to_string()))
@@ -940,7 +919,7 @@ impl PyEngine {
             let data = std::fs::read(path).map_err(SnapshotFileError::Io)?;
             let engine =
                 Engine::deserialize(&data, format).map_err(SnapshotFileError::Serialization)?;
-            Ok(OwnedThreadAffineEngine::new(engine))
+            Ok(OwnedEngine::new(engine))
         });
         engine
             .map(Self::from_owned_engine)
@@ -981,4 +960,12 @@ impl PyEngine {
 #[pyfunction]
 pub fn engine_instance_count() -> u64 {
     ENGINE_INSTANCE_COUNT.load(Ordering::Relaxed)
+}
+
+/// Observe native run admission without acquiring its engine reservation.
+/// Used only to synchronize lifecycle regressions with the testing feature.
+#[cfg(feature = "testing")]
+#[pyfunction]
+pub fn engine_run_active(engine: &PyEngine) -> bool {
+    lock_unpoisoned(&engine.active_run.active).is_some()
 }

@@ -56,12 +56,12 @@ with ferric.Engine.from_snapshot(snapshot, format=ferric.Format.JSON) as restore
 
 ## Threading, GIL, and lifecycle contract
 
-An `Engine` is operationally bound to the OS thread that constructed it.
-Every ordinary operation on an existing handle checks that affinity before
-inspecting lifecycle state. A call from another thread raises
-`FerricRuntimeError` with a `wrong thread` diagnostic and does not touch engine
-state; this remains the result for a foreign-thread ordinary operation while
-the owner is doing detached work and after the handle has been closed.
+An `Engine` may be used and closed from any supported Python thread, including
+after its creator thread exits. Calls on one engine serialize through its
+native ownership mutex. Waiting for that mutex releases the GIL, so a reader
+waiting behind `run()` cannot prevent the running call from returning. Calls
+that reenter the same engine during Python value conversion or finalization
+raise `FerricRuntimeError` instead of waiting for their own reservation.
 
 The following potentially long operations release the GIL around their native
 CPU or filesystem phase:
@@ -76,19 +76,17 @@ This list is exact. Fact APIs (including `assert_string()`), `step()`,
 continue to execute while holding the GIL.
 
 Ferric copies or extracts Python-owned source, snapshot, path, and format
-inputs before releasing the GIL. An existing-handle call reserves the engine's
-exclusive native-operation lease before detaching, then runs on the same OS
-thread that admitted it. The native result or error becomes Rust-owned before
-the GIL is reacquired and Python objects or exceptions are created. Releasing
-the GIL therefore lets unrelated Python threads and independent engines make
-progress without moving an `Engine` reference to another OS thread or making
-ordinary operations cross-thread-safe.
+inputs before releasing the GIL. Long operations acquire and release the
+native mutex entirely while detached; native results and errors are owned
+before Python objects are constructed. Short operations acquire the mutex
+without blocking under the GIL, then build their Python results while attached.
+Facts, values, and snapshot bytes returned to Python are owned independently
+of the engine. Independent engines can execute native work concurrently.
 
-`halt()` is a narrow control exception to affinity. It is prompt, idempotent,
-and callable from any supported Python thread. It signals only a `run()` that
-is already active; an idle, closing, or closed call is a no-op that returns
-`None`, does not set `is_halted`, and does not affect a future run. It does not
-wait for the active run to return.
+`halt()` is prompt, idempotent, and callable from any supported Python thread.
+It signals only a `run()` that is already active; an idle, closing, or closed
+call is a no-op that returns `None`, does not set `is_halted`, and does not
+affect a future run. It does not wait for the active run to return.
 
 An active `run()` checks the control signal before each chunk of at most 64
 rule firings and before reporting finite-limit exhaustion. A chunk already in
@@ -99,7 +97,7 @@ successful partial `RunResult` with `HaltReason.HALT_REQUESTED`. The bound is in
 rule firings, not wall-clock time: one rule action can itself take an
 unbounded amount of time.
 
-`close()` and context-manager exit are the lifecycle exceptions to affinity.
+`close()` and context-manager exit are synchronous lifecycle barriers.
 The first close marks the handle closing, signals an active run, and releases
 the GIL across the entire wait for an admitted native phase and the native
 destruction itself. It is synchronous and idempotent; every concurrent closer
@@ -107,7 +105,7 @@ returns `None` only after the engine has been destroyed exactly once. A
 previously admitted operation keeps its own native result or error. Close does
 not cancel admitted load, serialization, or file work, so it waits for that
 work to finish naturally and has no general wall-clock latency guarantee. Once
-close wins admission, later creator-thread operations raise
+close wins admission, later ordinary operations raise
 `FerricRuntimeError("engine has been closed")`. Context-manager exit applies
 the same barrier and still returns `False` so it does not suppress exceptions.
 
@@ -125,15 +123,13 @@ deallocation. Cleanup does not wait for a future creator-thread call, a
 thread-local cleanup pass, a worker thread, or a Python callback. This same
 Rust-only path is safe when CPython deallocates an engine during supported
 main-interpreter shutdown. The creator thread may exit while another thread
-still owns the Python handle; ordinary operations remain unavailable from
-other threads, but a later `close()` or final-reference drop still reclaims it.
+still owns the Python handle and continues to use or close it.
 
-The raw `Engine` has no asynchronous `aclose()` method, cross-thread ordinary
-operation queue, or awaitable API. A public pinned facade with FIFO
-cross-thread calls and queued cancellation remains tracked in
-[issue #190](https://github.com/plx/ferric-rules/issues/190). CPython
-subinterpreters, free-threaded CPython, and alternate Python interpreters are
-outside the current support contract.
+`Engine` provides synchronous serialized calls, not an asynchronous queue or
+an `aclose()` method. Use a host executor to offload long operations when an
+application needs an awaitable interface. CPython subinterpreters,
+free-threaded CPython, and alternate Python interpreters remain outside the
+current support contract.
 
 ## Building from source
 

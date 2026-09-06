@@ -1,23 +1,15 @@
 //! FFI engine APIs — lifecycle, execution, and fact operations.
 //!
-//! ## Thread Affinity Contract
+//! ## Serialized transfer contract
 //!
-//! Runtime-facing `ferric_engine_*` entry points validate that the calling
-//! thread matches the thread that created the engine before projecting a
-//! reference to runtime state.
-//!
-//! - Thread violations return `FERRIC_ERROR_THREAD_VIOLATION` with a descriptive
-//!   message in the global error channel.
-//! - `ferric_engine_last_error_copy` provides synchronized, coherent snapshots
-//!   to any thread.
-//! - `ferric_engine_last_error` also skips affinity checks, but its returned
-//!   pointer must not be used while another borrowed read or engine free may
-//!   occur.
-//! - `ferric_engine_free_unchecked` deliberately skips affinity solely to
-//!   destroy the handle; it must not overlap any access to that engine.
-//!
-//! The internal `unsafe fn move_to_current_thread` is deliberately NOT
-//! exposed through the C API.
+//! A live handle may move between OS threads, including for destruction. Runtime
+//! reads and writes use one atomic admission guard; overlapping or reentrant
+//! runtime calls are rejected. Error copies use a separate diagnostics mutex.
+//! This guard does not own the allocation: the host must keep it alive for every
+//! call and serialize successful free with all calls and borrowed-pointer use.
+//! Copy output/error data before ending the host's protected lifetime window.
+//! Global errors are thread-local; retrieve them on the failing call's thread.
+//! No simultaneous runtime reads or stale-pointer access are supported.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -26,7 +18,6 @@ use std::os::raw::c_char;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use std::thread::ThreadId;
 
 use crate::types::{
     engine_config_from_ffi, ferric_to_value, value_to_ferric, FerricConfig, FerricFactType,
@@ -44,19 +35,18 @@ use ferric_rules_runtime::{Engine, EngineConfig, InitError, RunLimit};
 
 /// Opaque engine handle exposed to C.
 ///
-/// The runtime engine remains owner-thread-only. Per-engine error snapshots
+/// The runtime engine remains exclusively admitted. Per-engine error snapshots
 /// are stored separately so the two last-error accessors can safely read them
 /// from any thread.
 ///
 /// Production accessors never construct a Rust reference to this whole
 /// structure. They project references to individual fields from the raw
-/// handle, which permits an owner-thread `&mut Engine` to coexist with a
-/// foreign-thread reference to the disjoint diagnostic mutex.
+/// handle, which permits a guarded `&mut Engine` to coexist with a
+/// concurrent reference to the disjoint diagnostic mutex.
 ///
 /// C code receives `*mut FerricEngine` as an opaque pointer.
 pub struct FerricEngine {
     pub(crate) engine: Engine,
-    owner_thread: ThreadId,
     call_active: AtomicBool,
     logical_run_continuation_ready: Cell<bool>,
     diagnostics: Mutex<EngineDiagnostics>,
@@ -82,7 +72,6 @@ impl FerricEngine {
     fn new(engine: Engine) -> Self {
         Self {
             engine,
-            owner_thread: std::thread::current().id(),
             call_active: AtomicBool::new(false),
             logical_run_continuation_ready: Cell::new(false),
             diagnostics: Mutex::new(EngineDiagnostics::new()),
@@ -151,8 +140,8 @@ pub(crate) unsafe fn output_cache_entry_count_for_test(
 
 /// Validate a non-null engine pointer without constructing a Rust reference.
 ///
-/// A whole-handle reference would overlap owner-thread access to `engine` with
-/// foreign-thread diagnostic access. Callers must project only the field they
+/// A whole-handle reference would overlap exclusive access to `engine` with
+/// concurrent diagnostic access. Callers must project only the field they
 /// need from the returned token.
 fn validate_engine_ptr(engine: *const FerricEngine) -> Result<NonNull<FerricEngine>, FerricError> {
     NonNull::new(engine.cast_mut()).ok_or_else(|| {
@@ -167,15 +156,6 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Project the immutable owner-thread field from an opaque handle.
-///
-/// # Safety
-///
-/// `handle` must remain valid for the duration of the returned reference.
-unsafe fn owner_thread<'a>(handle: NonNull<FerricEngine>) -> &'a ThreadId {
-    &*std::ptr::addr_of!((*handle.as_ptr()).owner_thread)
-}
-
 /// Project the active-call flag from an opaque handle.
 ///
 /// # Safety
@@ -185,12 +165,12 @@ unsafe fn call_active<'a>(handle: NonNull<FerricEngine>) -> &'a AtomicBool {
     &*std::ptr::addr_of!((*handle.as_ptr()).call_active)
 }
 
-/// Project the owner-thread logical-run continuation state.
+/// Project the guard-protected logical-run continuation state.
 ///
 /// # Safety
 ///
-/// `handle` must point to a live engine handle, and access must remain on the
-/// engine's owner thread without overlapping another runtime call.
+/// `handle` must point to a live engine handle, and access must hold an
+/// admitted runtime call without overlapping another runtime call.
 unsafe fn logical_run_continuation_ready<'a>(handle: NonNull<FerricEngine>) -> &'a Cell<bool> {
     &*std::ptr::addr_of!((*handle.as_ptr()).logical_run_continuation_ready)
 }
@@ -204,35 +184,16 @@ unsafe fn diagnostics<'a>(handle: NonNull<FerricEngine>) -> &'a Mutex<EngineDiag
     &*std::ptr::addr_of!((*handle.as_ptr()).diagnostics)
 }
 
-/// Project the owner-thread borrowed-output cache from an opaque handle.
+/// Project the guard-protected borrowed-output cache from an opaque handle.
 ///
 /// # Safety
 ///
-/// `handle` must point to a live engine handle, and access must remain on the
-/// engine's owner thread without overlapping another runtime call.
+/// `handle` must point to a live engine handle, and access must hold an
+/// admitted runtime call without overlapping another runtime call.
 unsafe fn output_cstrings<'a>(
     handle: NonNull<FerricEngine>,
 ) -> &'a RefCell<HashMap<String, CachedOutputCString>> {
     &*std::ptr::addr_of!((*handle.as_ptr()).output_cstrings)
-}
-
-/// Check thread affinity without touching the owner-thread-only runtime.
-///
-/// # Safety
-///
-/// `handle` must point to a live engine handle.
-unsafe fn check_thread_affinity(handle: NonNull<FerricEngine>) -> Result<(), FerricError> {
-    let creator = *owner_thread(handle);
-    let current = std::thread::current().id();
-    if current != creator {
-        let err = EngineError::WrongThread { creator, current };
-        return Err(set_engine_error_for_handle(
-            handle,
-            FerricError::ThreadViolation,
-            err.to_string(),
-        ));
-    }
-    Ok(())
 }
 
 struct EngineCallGuard<'a> {
@@ -269,7 +230,7 @@ struct EngineReadAccess<'a> {
     _guard: EngineCallGuard<'a>,
 }
 
-/// Reject overlapping access to the owner-thread-only runtime.
+/// Reject overlapping access to the exclusively admitted runtime.
 ///
 /// This primarily protects against a host callback synchronously re-entering
 /// the same raw engine. Diagnostic-only access does not use this guard and is
@@ -289,7 +250,7 @@ unsafe fn enter_engine_call<'a>(
         return Err(set_engine_error_for_handle(
             handle,
             FerricError::InternalError,
-            "reentrant call on a raw engine is not supported; only per-engine error accessors may be called from a host callback"
+            "overlapping or reentrant call on a raw engine is not supported; only per-engine error accessors may be called from a host callback"
                 .to_string(),
         ));
     }
@@ -311,7 +272,6 @@ unsafe fn borrow_engine_mut_preserving_logical_run<'a>(
     engine: *mut FerricEngine,
 ) -> Result<EngineWriteAccess<'a>, FerricError> {
     let handle = validate_engine_ptr(engine)?;
-    check_thread_affinity(handle)?;
     let guard = enter_engine_call(handle)?;
     let runtime = &mut *std::ptr::addr_of_mut!((*handle.as_ptr()).engine);
     let continuation_ready = logical_run_continuation_ready(handle);
@@ -330,7 +290,6 @@ unsafe fn borrow_engine_checked<'a>(
     engine: *const FerricEngine,
 ) -> Result<EngineReadAccess<'a>, FerricError> {
     let handle = validate_engine_ptr(engine)?;
-    check_thread_affinity(handle)?;
     let guard = enter_engine_call(handle)?;
     let runtime = &*std::ptr::addr_of!((*handle.as_ptr()).engine);
     let diagnostic_state = diagnostics(handle);
@@ -499,7 +458,7 @@ unsafe fn write_value_to_ffi(
 /// # Safety
 ///
 /// The returned pointer must be freed with `ferric_engine_free`.
-/// The engine is bound to the creating thread.
+/// The host may transfer the live handle between threads while serializing access.
 #[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_new() -> *mut FerricEngine {
@@ -544,7 +503,7 @@ pub unsafe extern "C" fn ferric_engine_new_with_config(
 ///
 /// - `engine` must be a pointer returned by `ferric_engine_new` or null.
 /// - The engine must not be in use by another call when freed.
-/// - The engine must be freed from the same thread that created it.
+/// - The host must exclude every other access and borrowed-pointer use until free returns.
 #[cfg_attr(ferric_ffi_compile, ffi_export(global_only))]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_free(engine: *mut FerricEngine) -> FerricError {
@@ -555,9 +514,6 @@ pub unsafe extern "C" fn ferric_engine_free(engine: *mut FerricEngine) -> Ferric
         Ok(handle) => handle,
         Err(code) => return code,
     };
-    if let Err(code) = check_thread_affinity(handle) {
-        return code;
-    }
     let guard = match enter_engine_call(handle) {
         Ok(guard) => guard,
         Err(code) => return code,
@@ -624,7 +580,7 @@ pub unsafe extern "C" fn ferric_engine_load_string(
 #[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
 pub unsafe extern "C" fn ferric_engine_last_error(engine: *const FerricEngine) -> *const c_char {
-    // Deliberately skip thread-affinity and active-call checks. Error snapshots
+    // Deliberately skip active-call admission. Error snapshots
     // are synchronized separately and are safe to query reentrantly.
     let Ok(handle) = validate_engine_ptr(engine) else {
         return ptr::null();
@@ -711,9 +667,6 @@ pub unsafe extern "C" fn ferric_engine_clear_error(engine: *mut FerricEngine) ->
         Ok(handle) => handle,
         Err(code) => return code,
     };
-    if let Err(code) = check_thread_affinity(handle) {
-        return code;
-    }
     lock_unpoisoned(diagnostics(handle)).error_state.clear();
     FerricError::Ok
 }
@@ -1214,7 +1167,7 @@ pub unsafe extern "C" fn ferric_engine_fact_count(
             "out_count pointer is null".to_string(),
         );
     }
-    // facts() does its own thread check
+    // facts() borrows only the admitted runtime
     match handle.engine.facts() {
         Ok(iter) => {
             *out_count = iter.count();
@@ -2503,8 +2456,8 @@ pub unsafe extern "C" fn ferric_engine_run_ex(
 ///
 /// A call rejected before it reaches engine state changes no runtime or
 /// continuation state, though it still publishes its documented error: a null
-/// handle, a thread-affinity violation, and a reentrant call from a host
-/// callback all leave the logical run intact for the owner thread to continue.
+/// handle and an overlapping/reentrant call leave the logical run intact for
+/// the next serialized continuation.
 /// On any error, output parameters are left unchanged.
 ///
 /// Host cancellation is distinct from an engine halt: stop calling this
@@ -2728,11 +2681,10 @@ pub unsafe extern "C" fn ferric_engine_get_fact_slot_by_name(
 // C API: Unchecked free (for GC finalizers)
 // ---------------------------------------------------------------------------
 
-/// Free an engine handle without checking thread affinity.
+/// Compatibility alias for freeing an engine from any thread.
 ///
-/// This is intended for use by garbage-collected runtimes (Go, etc.) whose
-/// finalizers run on arbitrary threads. In normal usage, prefer
-/// `ferric_engine_free` which validates thread affinity.
+/// It has the same lifetime and exclusive-access requirements as
+/// `ferric_engine_free`; new callers should use that ordinary entry point.
 ///
 /// Null pointers are safely ignored.
 ///
@@ -2849,7 +2801,7 @@ unsafe fn serialize_engine_impl(
         );
     }
 
-    // Validate engine and check thread affinity
+    // Validate engine and acquire exclusive runtime admission
     let handle = match borrow_engine_checked(engine) {
         Ok(h) => h,
         Err(code) => return code,
@@ -3043,7 +2995,7 @@ pub unsafe extern "C" fn ferric_engine_serialize_bincode(
 /// Deserialize an engine from bincode bytes.
 ///
 /// The returned engine handle is ready for use (e.g. `ferric_engine_run`).
-/// Its thread affinity is set to the calling thread.
+/// It may be transferred between threads under the same serialized-access contract.
 ///
 /// # Safety
 ///

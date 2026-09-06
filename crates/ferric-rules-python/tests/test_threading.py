@@ -1,4 +1,4 @@
-"""Tests for cross-thread access raising FerricRuntimeError."""
+"""Serialized cross-thread access and deterministic lifecycle tests."""
 
 import gc
 import queue
@@ -28,52 +28,19 @@ def _run_in_thread(fn):
         raise result["exc"]
 
 
-class TestCrossThreadProperty:
-    """Cross-thread reads of properties must raise FerricRuntimeError."""
-
-    def test_fact_count(self, engine):
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
-            _run_in_thread(lambda: engine.fact_count)
-
-    def test_is_halted(self, engine):
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
-            _run_in_thread(lambda: engine.is_halted)
-
-    def test_agenda_size(self, engine):
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
-            _run_in_thread(lambda: engine.agenda_size)
-
-    def test_current_module(self, engine):
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
-            _run_in_thread(lambda: engine.current_module)
-
-
-class TestCrossThreadMethod:
-    """Cross-thread method calls must raise FerricRuntimeError."""
-
-    def test_run(self, engine):
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
-            _run_in_thread(lambda: engine.run())
-
-    def test_reset(self, engine):
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
-            _run_in_thread(lambda: engine.reset())
-
-    def test_load(self, engine):
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
-            _run_in_thread(lambda: engine.load("(assert (x))"))
-
-    def test_assert_fact(self, engine):
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
-            _run_in_thread(lambda: engine.assert_fact("color", "red"))
-
-    def test_facts(self, engine):
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
-            _run_in_thread(lambda: engine.facts())
+class TestCrossThreadAccess:
+    @pytest.mark.parametrize("operation", [
+        lambda e: e.fact_count, lambda e: e.is_halted, lambda e: e.agenda_size,
+        lambda e: e.current_module, lambda e: e.run(), lambda e: e.reset(),
+        lambda e: e.load("(assert (x))"), lambda e: e.assert_fact("color", "red"),
+        lambda e: e.facts(),
+    ])
+    def test_serialized_operation(self, engine, operation):
+        _run_in_thread(lambda: operation(engine))
 
 
 class TestCrossThreadDrop:
-    """Dropping engine on wrong thread must not panic."""
+    """Dropping an engine on another thread must not panic."""
 
     def test_drop_on_foreign_thread_no_panic(self, capsys):
         """Engine dropped on foreign thread: no panic, no stderr output."""
@@ -91,29 +58,6 @@ class TestCrossThreadDrop:
         captured = capsys.readouterr()
         assert "leaked" not in captured.err
         assert "ferric" not in captured.err
-
-
-class TestCrossThreadIsNotPanic:
-    """Ensure the exception is FerricRuntimeError, NOT PanicException."""
-
-    def test_not_panic_exception(self, engine):
-        exc = None
-
-        def target():
-            nonlocal exc
-            try:
-                engine.run()
-            except Exception as e:
-                exc = e
-
-        t = threading.Thread(target=target)
-        t.start()
-        t.join()
-
-        assert exc is not None
-        assert isinstance(exc, ferric.FerricRuntimeError)
-        assert not isinstance(exc, BaseException) or isinstance(exc, Exception)
-        assert "wrong thread" in str(exc)
 
 
 class TestClose:
@@ -138,12 +82,15 @@ class TestClose:
             engine.fact_count
 
     @pytest.mark.parametrize("closed", [False, True])
-    def test_context_enter_preserves_wrong_thread_precedence(self, closed):
+    def test_context_enter_uses_lifecycle_state_after_transfer(self, closed):
         engine = ferric.Engine()
         if closed:
             engine.close()
 
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
+        if closed:
+            with pytest.raises(ferric.FerricRuntimeError, match="closed"):
+                _run_in_thread(lambda: engine.__enter__())
+        else:
             _run_in_thread(lambda: engine.__enter__())
 
     def test_context_enter_rejects_closed_on_creator_thread(self):
@@ -153,7 +100,7 @@ class TestClose:
         with pytest.raises(ferric.FerricRuntimeError, match="closed"):
             engine.__enter__()
 
-    def test_context_exit_closes_from_wrong_thread(self):
+    def test_context_exit_closes_from_another_thread(self):
         engine = ferric.Engine()
         results = []
 
@@ -163,7 +110,7 @@ class TestClose:
         with pytest.raises(ferric.FerricRuntimeError, match="closed"):
             engine.fact_count
 
-    def test_close_from_wrong_thread(self):
+    def test_close_from_another_thread(self):
         engine = ferric.Engine()
         results = []
 
@@ -173,11 +120,11 @@ class TestClose:
         with pytest.raises(ferric.FerricRuntimeError, match="closed"):
             engine.fact_count
 
-    def test_wrong_thread_precedes_closed_for_non_close_operations(self):
+    def test_closed_error_after_transfer(self):
         engine = ferric.Engine()
         engine.close()
 
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
+        with pytest.raises(ferric.FerricRuntimeError, match="closed"):
             _run_in_thread(lambda: engine.fact_count)
 
 
@@ -360,8 +307,8 @@ class TestInstanceCount:
 
         assert engine_identity > 0
         assert ferric.engine_instance_count() == baseline + 1
-        with pytest.raises(ferric.FerricRuntimeError, match="wrong thread"):
-            engine.fact_count
+        assert engine.fact_count == 1
+        assert engine.facts()[0].engine_id == engine_identity
         if cleanup == "close":
             assert engine.close() is None
         del engine
