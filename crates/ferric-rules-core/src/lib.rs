@@ -83,3 +83,5 @@ pub use symbol::{Symbol, SymbolTable};
 pub use token::{NodeId, Token, TokenId, TokenStore};
 pub use validation::{PatternValidationError, PatternViolation, SourceLocation, ValidationStage};
 pub use value::{AtomKey, ExternalAddress, ExternalTypeId, IntoFieldValues, Multifield, Value};
+
+mod snapshot;

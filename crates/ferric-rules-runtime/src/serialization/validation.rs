@@ -1,0 +1,402 @@
+//! Validation of runtime metadata after the core graph has been checked.
+
+use super::{Engine, SerializationError};
+use crate::evaluator::RuntimeExpr;
+use ferric_rules_core::{Fact, Value};
+use ferric_rules_parser::{ActionExpr, SlotType};
+
+fn ensure(condition: bool, message: &str) -> Result<(), String> {
+    if condition {
+        Ok(())
+    } else {
+        Err(message.to_owned())
+    }
+}
+
+impl Engine {
+    pub(super) fn validate_restored_state(&self) -> Result<(), SerializationError> {
+        self.validate_snapshot_metadata()
+            .map_err(SerializationError::InvalidState)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn validate_snapshot_metadata(&self) -> Result<(), String> {
+        self.symbol_table.validate_snapshot()?;
+        self.fact_base.validate_snapshot(&self.symbol_table)?;
+        self.rete
+            .validate_snapshot(&self.fact_base, &self.symbol_table)?;
+        self.compiler.validate_snapshot(&self.rete)?;
+        // Empty focus is a valid state after the last focused module drains.
+        let modules = &self.module_registry;
+        ensure(
+            modules.module_name(modules.main_module_id()) == Some("MAIN"),
+            "missing MAIN module",
+        )?;
+        ensure(
+            modules.get(modules.current_module()).is_some(),
+            "dangling current module",
+        )?;
+        for id in modules.focus_stack() {
+            ensure(modules.get(*id).is_some(), "dangling focus module")?;
+        }
+        for name in modules.module_names() {
+            ensure(
+                modules
+                    .get_by_name(name)
+                    .and_then(|id| modules.module_name(id))
+                    == Some(name),
+                "inconsistent module name index",
+            )?;
+        }
+        ensure(
+            self.config.max_call_depth <= 256,
+            "snapshot call-depth limit is 256",
+        )?;
+        ensure(
+            self.rule_info.len() == self.rule_modules.len(),
+            "inconsistent rule/module index length",
+        )?;
+        let terminal_rules: rustc_hash::FxHashSet<_> = self.rete.snapshot_rule_ids().collect();
+        let mut live_rules = 0;
+        let mut names = rustc_hash::FxHashSet::default();
+        for (index, info) in self.rule_info.iter().enumerate() {
+            let Some(info) = info else {
+                ensure(
+                    self.rule_modules[index].is_none(),
+                    "module assigned to removed rule",
+                )?;
+                continue;
+            };
+            live_rules += 1;
+            let rule = ferric_rules_core::RuleId(
+                u32::try_from(index).map_err(|_| "oversized rule index")?,
+            );
+            ensure(
+                terminal_rules.contains(&rule),
+                "runtime rule has no terminal",
+            )?;
+            let module = self.rule_modules[index].ok_or("rule has no module")?;
+            ensure(modules.get(module).is_some(), "rule has dangling module")?;
+            ensure(names.insert((module, &info.name)), "duplicate rule name")?;
+            info.var_map.validate_snapshot(&self.symbol_table)?;
+            ensure(
+                info.actions.len() == info.runtime_actions.len(),
+                "inconsistent compiled action index",
+            )?;
+            for action in &info.actions {
+                for argument in &action.call.args {
+                    validate_action(argument)?;
+                }
+            }
+            for expr in info.runtime_actions.iter().flatten() {
+                self.validate_expression(expr)?;
+            }
+            for condition in &info.test_conditions {
+                let crate::actions::CompiledTestCondition::Expr(expr) = condition;
+                self.validate_expression(expr)?;
+            }
+        }
+        self.rete.validate_snapshot_rules(|id| {
+            self.rule_info
+                .get(id.0 as usize)
+                .and_then(Option::as_ref)
+                .map(|info| (info.salience, info.test_conditions.len()))
+        })?;
+        ensure(
+            live_rules == terminal_rules.len(),
+            "terminal lacks runtime rule metadata",
+        )?;
+        ensure(
+            self.template_defs.len() == self.template_ids.len(),
+            "inconsistent template name index",
+        )?;
+        ensure(
+            self.template_defs.len() == self.template_modules.len(),
+            "inconsistent template module index",
+        )?;
+        for (id, template) in &self.template_defs {
+            ensure(
+                self.template_ids.get(template.name.as_str()) == Some(&id),
+                "inconsistent template identity",
+            )?;
+            ensure(
+                self.template_modules
+                    .get(id)
+                    .is_some_and(|module| modules.get(*module).is_some()),
+                "template has dangling module",
+            )?;
+            let count = template.slot_names.len();
+            ensure(
+                count == template.slot_types.len()
+                    && count == template.defaults.len()
+                    && count == template.slot_index.len(),
+                "inconsistent template slot vectors",
+            )?;
+            for (index, name) in template.slot_names.iter().enumerate() {
+                ensure(
+                    template.slot_index.get(name) == Some(&index),
+                    "inconsistent template slot index",
+                )?;
+                self.symbol_table
+                    .validate_snapshot_value(&template.defaults[index])?;
+            }
+        }
+        for id in self.rete.snapshot_template_ids() {
+            ensure(
+                self.template_defs.contains_key(id),
+                "alpha graph has dangling template",
+            )?;
+        }
+        for (_, entry) in self.fact_base.iter() {
+            self.validate_snapshot_fact(&entry.fact)?;
+        }
+        for group in &self.registered_deffacts {
+            for fact in group {
+                self.validate_snapshot_fact(fact)?;
+            }
+        }
+        if let Some(id) = self.initial_fact_id {
+            ensure(self.fact_base.get(id).is_some_and(|entry| matches!(&entry.fact, Fact::Ordered(fact) if fact.fields.is_empty() && self.symbol_table.resolve_symbol_str(fact.relation) == Some("initial-fact"))), "invalid initial-fact identity")?;
+        }
+        for (module, values) in &self.globals.values {
+            ensure(modules.get(*module).is_some(), "global has dangling module")?;
+            for (name, value) in values {
+                ensure(!name.is_empty(), "empty global name")?;
+                self.symbol_table.validate_snapshot_value(value)?;
+            }
+        }
+        ensure(self.globals.gensym_counter >= 1, "invalid gensym counter")?;
+        for (module, _, value) in &self.registered_globals {
+            ensure(
+                modules.get(*module).is_some(),
+                "registered global has dangling module",
+            )?;
+            self.symbol_table.validate_snapshot_value(value)?;
+        }
+        for (module, functions) in &self.functions.functions {
+            ensure(
+                modules.get(*module).is_some(),
+                "function has dangling module",
+            )?;
+            for (name, function) in functions {
+                ensure(name.as_ref() == function.name, "inconsistent function name")?;
+                for expr in &function.body {
+                    validate_action(expr)?;
+                }
+            }
+        }
+        for (module, generics) in &self.generics.generics {
+            ensure(
+                modules.get(*module).is_some(),
+                "generic has dangling module",
+            )?;
+            for (name, generic) in generics {
+                ensure(name.as_ref() == generic.name, "inconsistent generic name")?;
+                ensure(
+                    generic.next_index > 0 && generic.next_index < i32::MAX,
+                    "invalid next method index",
+                )?;
+                let mut previous = 0;
+                for method in &generic.methods {
+                    ensure(
+                        method.index > previous && method.index < generic.next_index,
+                        "inconsistent method order/index",
+                    )?;
+                    previous = method.index;
+                    ensure(
+                        method.parameters.len() == method.type_restrictions.len(),
+                        "inconsistent method restrictions",
+                    )?;
+                    for expr in &method.body {
+                        validate_action(expr)?;
+                    }
+                }
+            }
+        }
+        for (mapping, kind) in [
+            (&self.function_modules, "function"),
+            (&self.global_modules, "global"),
+            (&self.generic_modules, "generic"),
+        ] {
+            for (module, entries) in mapping {
+                ensure(
+                    modules.get(*module).is_some(),
+                    "construct map has dangling module",
+                )?;
+                for (name, owner) in entries {
+                    ensure(module == owner, "inconsistent construct owner")?;
+                    let exists = match kind {
+                        "function" => self.functions.contains(*module, name),
+                        "global" => self.globals.contains(*module, name),
+                        _ => self.generics.contains(*module, name),
+                    };
+                    ensure(exists, "construct owner map has dangling entry")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_snapshot_fact(&self, fact: &Fact) -> Result<(), String> {
+        let values = match fact {
+            Fact::Ordered(fact) => {
+                ensure(
+                    self.symbol_table
+                        .resolve_symbol_str(fact.relation)
+                        .is_some(),
+                    "dangling deffacts relation",
+                )?;
+                fact.fields.as_slice()
+            }
+            Fact::Template(fact) => {
+                let template = self
+                    .template_defs
+                    .get(fact.template_id)
+                    .ok_or("fact has dangling template")?;
+                ensure(
+                    fact.slots.len() == template.slot_names.len(),
+                    "fact/template slot count mismatch",
+                )?;
+                for (kind, value) in template.slot_types.iter().zip(&fact.slots) {
+                    ensure(
+                        matches!(value, Value::Multifield(_)) == (*kind == SlotType::Multi),
+                        "fact/template slot cardinality mismatch",
+                    )?;
+                }
+                fact.slots.as_ref()
+            }
+        };
+        for value in values {
+            self.symbol_table.validate_snapshot_value(value)?;
+        }
+        Ok(())
+    }
+
+    fn validate_expression(&self, root: &RuntimeExpr) -> Result<(), String> {
+        let mut pending = vec![(root, 0)];
+        while let Some((expr, depth)) = pending.pop() {
+            ensure(depth < 16, "snapshot expression-depth limit is 16")?;
+            let mut branches = Vec::new();
+            match expr {
+                RuntimeExpr::Literal(value) => self.symbol_table.validate_snapshot_value(value)?,
+                RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. } => {}
+                RuntimeExpr::Call { args, .. } => {
+                    pending.extend(args.iter().map(|expr| (expr, depth + 1)));
+                }
+                RuntimeExpr::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    pending.push((condition, depth + 1));
+                    branches.extend([then_branch, else_branch]);
+                }
+                RuntimeExpr::While {
+                    condition, body, ..
+                } => {
+                    pending.push((condition, depth + 1));
+                    branches.push(body);
+                }
+                RuntimeExpr::LoopForCount {
+                    start, end, body, ..
+                } => {
+                    pending.extend([(start.as_ref(), depth + 1), (end.as_ref(), depth + 1)]);
+                    branches.push(body);
+                }
+                RuntimeExpr::Progn {
+                    list_expr, body, ..
+                } => {
+                    pending.push((list_expr, depth + 1));
+                    branches.push(body);
+                }
+                RuntimeExpr::QueryAction { query, body, .. } => {
+                    pending.push((query, depth + 1));
+                    branches.push(body);
+                }
+                RuntimeExpr::Switch {
+                    expr,
+                    cases,
+                    default,
+                    ..
+                } => {
+                    pending.push((expr, depth + 1));
+                    for (case, body) in cases {
+                        pending.push((case, depth + 1));
+                        branches.push(body);
+                    }
+                    branches.extend(default.iter());
+                }
+            }
+            for branch in branches {
+                for (action, runtime) in branch {
+                    validate_action(action)?;
+                    if let Some(runtime) = runtime {
+                        pending.push((runtime, depth + 1));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_action(root: &ActionExpr) -> Result<(), String> {
+    let mut pending = vec![(root, 0)];
+    while let Some((expr, depth)) = pending.pop() {
+        ensure(depth < 16, "snapshot action-depth limit is 16")?;
+        let mut branches = Vec::new();
+        match expr {
+            ActionExpr::Literal(_) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => {}
+            ActionExpr::FunctionCall(call) => branches.push(&call.args),
+            ActionExpr::If {
+                condition,
+                then_actions,
+                else_actions,
+                ..
+            } => {
+                pending.push((condition, depth + 1));
+                branches.extend([then_actions, else_actions]);
+            }
+            ActionExpr::While {
+                condition, body, ..
+            } => {
+                pending.push((condition, depth + 1));
+                branches.push(body);
+            }
+            ActionExpr::LoopForCount {
+                start, end, body, ..
+            } => {
+                pending.extend([(start.as_ref(), depth + 1), (end.as_ref(), depth + 1)]);
+                branches.push(body);
+            }
+            ActionExpr::Progn {
+                list_expr, body, ..
+            } => {
+                pending.push((list_expr, depth + 1));
+                branches.push(body);
+            }
+            ActionExpr::QueryAction { query, body, .. } => {
+                pending.push((query, depth + 1));
+                branches.push(body);
+            }
+            ActionExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                pending.push((expr, depth + 1));
+                for (case, body) in cases {
+                    pending.push((case, depth + 1));
+                    branches.push(body);
+                }
+                branches.extend(default.iter());
+            }
+        }
+        for branch in branches {
+            pending.extend(branch.iter().map(|expr| (expr, depth + 1)));
+        }
+    }
+    Ok(())
+}

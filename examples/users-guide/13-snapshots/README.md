@@ -10,8 +10,8 @@ just check-example
 
 What it shows:
 
-- `Engine::serialize(SerializationFormat::Bincode)` produces a byte stream.
-- `Engine::deserialize(&bytes, SerializationFormat::Bincode)` thaws it
+- `Engine::serialize(SerializationFormat::Cbor)` produces a byte stream.
+- `Engine::deserialize(&bytes, SerializationFormat::Cbor)` thaws it
   without re-parsing or recompiling the rules.
 - The thawed engine still has the global `?*threshold*` and the rule
   ready to fire.

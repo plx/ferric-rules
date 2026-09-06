@@ -73,9 +73,9 @@ fn remove_from_candidate_index(
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-struct SymbolMap<T> {
-    ascii: Vec<Option<T>>,
-    utf8: Vec<Option<T>>,
+pub(crate) struct SymbolMap<T> {
+    pub(crate) ascii: Vec<Option<T>>,
+    pub(crate) utf8: Vec<Option<T>>,
 }
 
 impl<T> SymbolMap<T> {
@@ -348,13 +348,13 @@ pub enum FactInsertionResult {
 /// Maintains indices for fast lookup by relation and template.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactBase {
-    facts: SlotMap<FactId, FactEntry>,
+    pub(crate) facts: SlotMap<FactId, FactEntry>,
     #[cfg_attr(
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
     )]
-    by_template: HashMap<TemplateId, HashSet<FactId>>,
-    by_relation: SymbolMap<HashSet<FactId>>,
+    pub(crate) by_template: HashMap<TemplateId, HashSet<FactId>>,
+    pub(crate) by_relation: SymbolMap<HashSet<FactId>>,
     /// Structural fingerprint → candidate fact IDs.
     ///
     /// Fingerprints are only an accelerator. Every lookup confirms the full
@@ -367,8 +367,8 @@ pub struct FactBase {
     /// no-duplicate case keeps its sole candidate inline without a heap
     /// allocation.
     #[cfg_attr(feature = "serde", serde(skip))]
-    by_structural_fingerprint: Option<HashMap<u64, SmallVec<[FactId; 1]>>>,
-    next_timestamp: Timestamp,
+    pub(crate) by_structural_fingerprint: Option<HashMap<u64, SmallVec<[FactId; 1]>>>,
+    pub(crate) next_timestamp: Timestamp,
 }
 
 impl FactBase {

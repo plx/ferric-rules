@@ -12,11 +12,11 @@ fn main() -> anyhow::Result<()> {
 
     // Offline: compile once, save a baseline snapshot.
     let engine = Engine::with_rules(rules)?;
-    let bytes = engine.serialize(SerializationFormat::Bincode)?;
+    let bytes = engine.serialize(SerializationFormat::Cbor)?;
     println!("snapshot size: {} bytes", bytes.len());
 
     // Online: fast path — no parsing, no compilation.
-    let mut engine = Engine::deserialize(&bytes, SerializationFormat::Bincode)?;
+    let mut engine = Engine::deserialize(&bytes, SerializationFormat::Cbor)?;
     engine.assert_ordered("reading", 7_i64)?;
     engine.run(RunLimit::Unlimited)?;
 

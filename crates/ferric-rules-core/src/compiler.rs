@@ -117,19 +117,19 @@ pub enum CompileError {
 /// Canonical key for alpha network paths, used for node sharing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-struct AlphaPathKey {
-    entry_type: AlphaEntryType,
-    tests: Vec<ConstantTest>,
+pub(crate) struct AlphaPathKey {
+    pub(crate) entry_type: AlphaEntryType,
+    pub(crate) tests: Vec<ConstantTest>,
 }
 
 /// Canonical key for positive join nodes, used for node sharing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-struct JoinNodeKey {
-    parent: NodeId,
-    alpha_memory: AlphaMemoryId,
-    tests: Vec<JoinTest>,
-    bindings: Vec<(SlotIndex, VarId)>,
+pub(crate) struct JoinNodeKey {
+    pub(crate) parent: NodeId,
+    pub(crate) alpha_memory: AlphaMemoryId,
+    pub(crate) tests: Vec<JoinTest>,
+    pub(crate) bindings: Vec<(SlotIndex, VarId)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -193,12 +193,12 @@ impl SymbolSet {
 pub struct ReteCompiler {
     /// Cache: alpha path → memory ID. Ensures identical alpha paths share memory.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    alpha_path_cache: HashMap<AlphaPathKey, AlphaMemoryId>,
+    pub(crate) alpha_path_cache: HashMap<AlphaPathKey, AlphaMemoryId>,
     /// Cache: join structure → join node ID. Ensures identical joins share nodes.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    join_node_cache: HashMap<JoinNodeKey, NodeId>,
+    pub(crate) join_node_cache: HashMap<JoinNodeKey, NodeId>,
     /// Next rule ID counter.
-    next_rule_id: u32,
+    pub(crate) next_rule_id: u32,
 }
 
 impl ReteCompiler {

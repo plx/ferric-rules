@@ -34,13 +34,13 @@ pub(crate) enum SymbolId {
 pub struct SymbolTable {
     /// ASCII symbols (used in `Ascii` and `AsciiSymbolsUtf8Strings` modes)
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    ascii_to_id: HashMap<Box<[u8]>, u32>,
-    ascii_strings: Vec<Box<[u8]>>,
+    pub(crate) ascii_to_id: HashMap<Box<[u8]>, u32>,
+    pub(crate) ascii_strings: Vec<Box<[u8]>>,
 
     /// UTF-8 symbols (used in `Utf8` mode)
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    utf8_to_id: HashMap<Box<str>, u32>,
-    utf8_strings: Vec<Box<str>>,
+    pub(crate) utf8_to_id: HashMap<Box<str>, u32>,
+    pub(crate) utf8_strings: Vec<Box<str>>,
 }
 
 /// An opaque rollback point for symbol interning.

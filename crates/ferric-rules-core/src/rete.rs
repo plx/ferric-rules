@@ -58,9 +58,9 @@ pub struct ReteNetwork {
     pub token_store: TokenStore,
     pub agenda: Agenda,
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::std_hash_set"))]
-    disabled_rules: std::collections::HashSet<crate::beta::RuleId>,
+    pub(crate) disabled_rules: std::collections::HashSet<crate::beta::RuleId>,
     #[cfg_attr(feature = "serde", serde(skip, default))]
-    pending_predicate_matches: VecDeque<PendingPredicateMatch>,
+    pub(crate) pending_predicate_matches: VecDeque<PendingPredicateMatch>,
 }
 
 impl ReteNetwork {
@@ -1697,7 +1697,7 @@ fn find_index_test(tests: &[JoinTest]) -> Option<(SlotIndex, VarId)> {
 /// Below this threshold, the hash computation overhead exceeds the savings.
 const INDEX_SCAN_THRESHOLD: usize = 16;
 
-fn collect_candidate_facts(
+pub(crate) fn collect_candidate_facts(
     alpha_memory: &AlphaMemory,
     tests: &[JoinTest],
     parent_bindings: &BindingSet,
@@ -1750,7 +1750,7 @@ fn collect_candidate_parent_tokens(
 /// Returns `true` if all tests pass, `false` otherwise.
 ///
 /// If `token` is `None`, treats this as a root-level match (no bindings to check).
-fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool {
+pub(crate) fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool {
     for test in tests {
         let Some(fact_value) = get_slot_value(fact, test.alpha_slot) else {
             return false;

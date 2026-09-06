@@ -134,15 +134,15 @@ impl AlphaNode {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlphaMemory {
     pub id: AlphaMemoryId,
-    facts: OrderedSet<FactId>,
+    pub(crate) facts: OrderedSet<FactId>,
     /// Slot indices: `SlotIndex` -> `AtomKey` -> `FactId`s with that key in that slot.
     #[cfg_attr(
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_map")
     )]
-    slot_indices: HashMap<SlotIndex, HashMap<AtomKey, OrderedSet<FactId>>>,
+    pub(crate) slot_indices: HashMap<SlotIndex, HashMap<AtomKey, OrderedSet<FactId>>>,
     /// Which slots are currently indexed.
-    indexed_slots: SmallVec<[SlotIndex; 4]>,
+    pub(crate) indexed_slots: SmallVec<[SlotIndex; 4]>,
 }
 
 impl AlphaMemory {
@@ -332,17 +332,17 @@ fn remove_from_slot_index(
 /// through the network.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlphaNetwork {
-    nodes: Vec<AlphaNode>,
-    memories: Vec<AlphaMemory>,
+    pub(crate) nodes: Vec<AlphaNode>,
+    pub(crate) memories: Vec<AlphaMemory>,
     /// Entry points: `AlphaEntryType` -> `NodeId`.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    entry_nodes: HashMap<AlphaEntryType, NodeId>,
+    pub(crate) entry_nodes: HashMap<AlphaEntryType, NodeId>,
     /// Reverse index: which alpha memories contain each fact.
     /// Populated on assertion, pruned on retraction. Eliminates the full
     /// alpha-memory scan in `memories_containing_fact`.
-    fact_to_memories: SparseSecondaryMap<FactId, SmallVec<[AlphaMemoryId; 4]>>,
-    next_node_id: u32,
-    next_memory_id: u32,
+    pub(crate) fact_to_memories: SparseSecondaryMap<FactId, SmallVec<[AlphaMemoryId; 4]>>,
+    pub(crate) next_node_id: u32,
+    pub(crate) next_memory_id: u32,
 }
 
 impl AlphaNetwork {
@@ -646,10 +646,18 @@ impl AlphaNetwork {
     /// if any inconsistencies are detected.
     #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
+        self.validate_consistency()
+            .expect("inconsistent engine state");
+    }
+
+    /// Validate internal indexes without panicking.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_lines)]
+    pub fn validate_consistency(&self) -> Result<(), String> {
         // Check 1: All alpha memory IDs referenced by nodes exist in memories map
         for node in &self.nodes {
             if let Some(mem_id) = node.memory() {
-                assert!(
+                crate::snapshot::require!(
                     self.memory(mem_id).is_some(),
                     "Node references non-existent memory {mem_id:?}"
                 );
@@ -661,7 +669,7 @@ impl AlphaNetwork {
             #[allow(clippy::cast_possible_truncation)]
             let node_id = NodeId(index as u32);
             for child_id in node.children() {
-                assert!(
+                crate::snapshot::require!(
                     self.node(*child_id).is_some(),
                     "Node {node_id:?} has non-existent child {child_id:?}"
                 );
@@ -674,7 +682,7 @@ impl AlphaNetwork {
             let node_id = NodeId(index as u32);
             let mut seen = HashSet::default();
             for child_id in node.children() {
-                assert!(
+                crate::snapshot::require!(
                     seen.insert(child_id),
                     "Node {node_id:?} has duplicate child {child_id:?}"
                 );
@@ -687,7 +695,7 @@ impl AlphaNetwork {
             for key_map in memory.slot_indices.values() {
                 for fact_set in key_map.values() {
                     for fact_id in fact_set {
-                        assert!(
+                        crate::snapshot::require!(
                             memory.facts.contains(fact_id),
                             "Memory {mem_id:?} has fact {fact_id:?} in index but not in main facts set"
                         );
@@ -695,6 +703,7 @@ impl AlphaNetwork {
                 }
             }
         }
+        Ok(())
     }
 
     /// Recursively propagate a fact through the network starting at a node.
@@ -740,7 +749,7 @@ impl AlphaNetwork {
         }
     }
 
-    fn propagation_plan(
+    pub(crate) fn propagation_plan(
         &self,
         node_id: NodeId,
         fact: &Fact,

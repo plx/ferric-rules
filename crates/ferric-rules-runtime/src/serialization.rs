@@ -1,7 +1,7 @@
 //! Engine serialization and deserialization.
 //!
 //! Provides [`Engine::serialize`] and [`Engine::deserialize`] for converting a
-//! fully-loaded engine to/from bytes in one of several formats. This enables
+//! fully loaded engine to/from bytes in one of several formats. This enables
 //! workflows where a canonical rule set is loaded and compiled once, serialized,
 //! and then deserialized many times to create fresh ready-to-run engines —
 //! skipping the parse/compile pipeline entirely.
@@ -10,9 +10,9 @@
 //!
 //! | Format      | Crate          | Notes                                 |
 //! |-------------|----------------|---------------------------------------|
-//! | Bincode     | `bincode`      | Compact binary, fast (default)        |
+//! | Bincode     | `bincode`      | Experimental compact binary        |
 //! | JSON        | `serde_json`   | Human-readable, larger output         |
-//! | CBOR        | `ciborium`     | Concise Binary Object Representation  |
+//! | CBOR        | `ciborium`     | Recommended persistence format  |
 //! | `MessagePack` | `rmp-serde`    | Compact binary, JSON-like schema      |
 //! | Postcard    | `postcard`     | Compact, `no_std`-friendly binary     |
 //!
@@ -22,6 +22,11 @@
 //!   fact base, [`Engine::serialize`] returns
 //!   [`SerializationError::ExternalAddressPresent`].
 
+mod limited;
+mod validation;
+
+use bincode::Options;
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -40,12 +45,12 @@ use crate::templates::RegisteredTemplate;
 /// Supported serialization formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SerializationFormat {
-    /// Compact binary format via `bincode`. Fast and small.
+    /// Experimental compact binary format via `bincode`.
     Bincode,
     /// JSON via `serde_json`. Human-readable, larger output.
     /// Note: JSON does not support `NaN` or `Infinity` float values.
     Json,
-    /// CBOR (Concise Binary Object Representation) via `ciborium`.
+    /// Recommended CBOR persistence format via `ciborium`.
     Cbor,
     /// `MessagePack` via `rmp-serde`. Compact binary with JSON-like schema.
     MessagePack,
@@ -65,6 +70,9 @@ impl SerializationFormat {
         }
     }
 
+    /// Recommended persistence format for new applications.
+    pub const RECOMMENDED: Self = Self::Cbor;
+
     /// All supported formats, in declaration order.
     pub const ALL: &'static [SerializationFormat] = &[
         Self::Bincode,
@@ -81,11 +89,102 @@ pub enum SerializationError {
     #[error("engine contains ExternalAddress values which cannot be serialized")]
     ExternalAddressPresent,
 
+    #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
+    LegacySnapshot,
+
+    #[error("unsupported snapshot schema version {0}; this build supports version 1")]
+    UnsupportedVersion(u16),
+
+    #[error("snapshot format does not match requested {0}")]
+    WrongFormat(&'static str),
+
+    #[error("snapshot has unsupported capability flags {0:#x}")]
+    UnsupportedCapabilities(u8),
+
+    #[error("snapshot exceeds the {0} limit")]
+    LimitExceeded(&'static str),
+
+    #[error("snapshot integrity checksum does not match")]
+    ChecksumMismatch,
+
+    #[error("invalid restored engine state: {0}")]
+    InvalidState(String),
+
     #[error("serialization failed: {0}")]
     Encode(String),
 
     #[error("deserialization failed: {0}")]
     Decode(String),
+}
+
+/// Maximum complete snapshot size (16 MiB), checked before codec work.
+pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+const MAGIC: &[u8; 8] = b"FERRIC\0S";
+const HEADER_LEN: usize = 52;
+
+fn format_id(format: SerializationFormat) -> u8 {
+    match format {
+        SerializationFormat::Bincode => 0,
+        SerializationFormat::Json => 1,
+        SerializationFormat::Cbor => 2,
+        SerializationFormat::MessagePack => 3,
+        SerializationFormat::Postcard => 4,
+    }
+}
+
+fn envelope(payload: Vec<u8>, format: SerializationFormat) -> Result<Vec<u8>, SerializationError> {
+    if payload.len() > MAX_SNAPSHOT_BYTES - HEADER_LEN {
+        return Err(SerializationError::LimitExceeded("16 MiB byte"));
+    }
+    let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.push(format_id(format));
+    bytes.push(0); // No optional capabilities in schema 1.
+    bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    let mut checksum = Sha256::new();
+    checksum.update(&bytes);
+    checksum.update(&payload);
+    bytes.extend_from_slice(&checksum.finalize());
+    bytes.extend(payload);
+    Ok(bytes)
+}
+
+fn open_envelope(data: &[u8], format: SerializationFormat) -> Result<&[u8], SerializationError> {
+    if data.len() > MAX_SNAPSHOT_BYTES {
+        return Err(SerializationError::LimitExceeded("16 MiB byte"));
+    }
+    if !data.starts_with(MAGIC) {
+        return Err(SerializationError::LegacySnapshot);
+    }
+    if data.len() < HEADER_LEN {
+        return Err(SerializationError::Decode(
+            "truncated snapshot header".to_owned(),
+        ));
+    }
+    let version = u16::from_le_bytes([data[8], data[9]]);
+    if version != 1 {
+        return Err(SerializationError::UnsupportedVersion(version));
+    }
+    if data[10] != format_id(format) {
+        return Err(SerializationError::WrongFormat(format.name()));
+    }
+    if data[11] != 0 {
+        return Err(SerializationError::UnsupportedCapabilities(data[11]));
+    }
+    let length = u64::from_le_bytes(data[12..20].try_into().expect("fixed header slice"));
+    if length != (data.len() - HEADER_LEN) as u64 {
+        return Err(SerializationError::Decode(
+            "snapshot payload length mismatch".to_owned(),
+        ));
+    }
+    let mut checksum = Sha256::new();
+    checksum.update(&data[..20]);
+    checksum.update(&data[HEADER_LEN..]);
+    if checksum.finalize().as_slice() != &data[20..HEADER_LEN] {
+        return Err(SerializationError::ChecksumMismatch);
+    }
+    Ok(&data[HEADER_LEN..])
 }
 
 /// Borrowed snapshot of engine state — used for serialization (avoids cloning).
@@ -123,6 +222,7 @@ struct EngineSnapshotRef<'a> {
 
 /// Owned snapshot of engine state — used for deserialization.
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EngineSnapshotOwned {
     fact_base: FactBase,
     symbol_table: SymbolTable,
@@ -216,6 +316,7 @@ impl Engine {
     /// contains any `ExternalAddress` values (which cannot be serialized).
     pub fn serialize(&self, format: SerializationFormat) -> Result<Vec<u8>, SerializationError> {
         self.validate_serializable()?;
+        self.validate_restored_state()?;
 
         let snapshot = EngineSnapshotRef {
             fact_base: &self.fact_base,
@@ -244,7 +345,12 @@ impl Engine {
             input_buffer: &self.input_buffer,
         };
 
-        encode(&snapshot, format)
+        let payload = encode(&snapshot, format)?;
+        // Apply the same wire limits to writes: never return bytes that this
+        // build cannot read, including JSON's inability to represent NaN.
+        let _: EngineSnapshotOwned = decode(&payload, format)
+            .map_err(|error| SerializationError::Encode(error.to_string()))?;
+        envelope(payload, format)
     }
 
     /// Deserialize an engine from bytes previously produced by
@@ -261,13 +367,23 @@ impl Engine {
         data: &[u8],
         format: SerializationFormat,
     ) -> Result<Self, SerializationError> {
-        let snapshot: EngineSnapshotOwned = decode(data, format)?;
-        Ok(snapshot.into_engine())
+        let payload = open_envelope(data, format)?;
+        let snapshot: EngineSnapshotOwned = decode(payload, format)?;
+        let engine = snapshot.into_engine();
+        engine.validate_restored_state()?;
+        Ok(engine)
     }
 
     /// Pre-flight check: ensure no `ExternalAddress` values exist in the
     /// fact base, registered globals, or registered deffacts.
     fn validate_serializable(&self) -> Result<(), SerializationError> {
+        for values in self.globals.values.values() {
+            for value in values.values() {
+                if values_contain_external_address(std::slice::from_ref(value)) {
+                    return Err(SerializationError::ExternalAddressPresent);
+                }
+            }
+        }
         // Check fact base
         for (_id, entry) in self.fact_base.iter() {
             let has_external = match &entry.fact {
@@ -303,31 +419,67 @@ impl Engine {
     }
 }
 
+#[derive(Default)]
+struct BoundedWriter(Vec<u8>);
+
+impl std::io::Write for BoundedWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > (MAX_SNAPSHOT_BYTES - HEADER_LEN).saturating_sub(self.0.len()) {
+            return Err(std::io::Error::other(
+                "snapshot exceeds the 16 MiB byte limit",
+            ));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl postcard::ser_flavors::Flavor for BoundedWriter {
+    type Output = Vec<u8>;
+    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
+        self.try_extend(&[byte])
+    }
+    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
+        std::io::Write::write_all(self, bytes).map_err(|_| postcard::Error::SerializeBufferFull)
+    }
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(self.0)
+    }
+}
+
 /// Encode a snapshot to bytes in the given format.
 fn encode<T: serde::Serialize>(
     value: &T,
     format: SerializationFormat,
 ) -> Result<Vec<u8>, SerializationError> {
+    let mut writer = BoundedWriter::default();
     match format {
         SerializationFormat::Bincode => {
-            bincode::serialize(value).map_err(|e| SerializationError::Encode(e.to_string()))
+            bincode::serialize_into(&mut writer, value)
+                .map_err(|e| SerializationError::Encode(e.to_string()))?;
         }
         SerializationFormat::Json => {
-            serde_json::to_vec(value).map_err(|e| SerializationError::Encode(e.to_string()))
+            serde_json::to_writer(&mut writer, value)
+                .map_err(|e| SerializationError::Encode(e.to_string()))?;
         }
         SerializationFormat::Cbor => {
-            let mut buf = Vec::new();
-            ciborium::ser::into_writer(value, &mut buf)
+            ciborium::ser::into_writer(value, &mut writer)
                 .map_err(|e| SerializationError::Encode(e.to_string()))?;
-            Ok(buf)
         }
         SerializationFormat::MessagePack => {
-            rmp_serde::to_vec(value).map_err(|e| SerializationError::Encode(e.to_string()))
+            value
+                .serialize(&mut rmp_serde::Serializer::new(&mut writer))
+                .map_err(|e| SerializationError::Encode(e.to_string()))?;
         }
         SerializationFormat::Postcard => {
-            postcard::to_allocvec(value).map_err(|e| SerializationError::Encode(e.to_string()))
+            return postcard::serialize_with_flavor::<T, BoundedWriter, Vec<u8>>(value, writer)
+                .map_err(|e| SerializationError::Encode(e.to_string()));
         }
     }
+    Ok(writer.0)
 }
 
 /// Decode a snapshot from bytes in the given format.
@@ -336,20 +488,49 @@ fn decode<T: serde::de::DeserializeOwned>(
     format: SerializationFormat,
 ) -> Result<T, SerializationError> {
     match format {
-        SerializationFormat::Bincode => {
-            bincode::deserialize(data).map_err(|e| SerializationError::Decode(e.to_string()))
-        }
-        SerializationFormat::Json => {
-            serde_json::from_slice(data).map_err(|e| SerializationError::Decode(e.to_string()))
-        }
+        SerializationFormat::Bincode => bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(MAX_SNAPSHOT_BYTES as u64)
+            .reject_trailing_bytes()
+            .deserialize::<limited::Limited<T>>(data)
+            .map(|value| value.0)
+            .map_err(|e| SerializationError::Decode(e.to_string())),
+        SerializationFormat::Json => serde_json::from_slice::<limited::Limited<T>>(data)
+            .map(|value| value.0)
+            .map_err(|e| SerializationError::Decode(e.to_string())),
         SerializationFormat::Cbor => {
-            ciborium::de::from_reader(data).map_err(|e| SerializationError::Decode(e.to_string()))
+            let mut reader = data;
+            let value = ciborium::de::from_reader_with_recursion_limit::<limited::Limited<T>, _>(
+                &mut reader,
+                limited::MAX_DEPTH,
+            )
+            .map_err(|e| SerializationError::Decode(e.to_string()))?;
+            if !reader.is_empty() {
+                return Err(SerializationError::Decode("trailing CBOR data".to_owned()));
+            }
+            Ok(value.0)
         }
         SerializationFormat::MessagePack => {
-            rmp_serde::from_slice(data).map_err(|e| SerializationError::Decode(e.to_string()))
+            let mut decoder = rmp_serde::Deserializer::new(std::io::Cursor::new(data));
+            decoder.set_max_depth(limited::MAX_DEPTH);
+            let value: limited::Limited<T> = serde::Deserialize::deserialize(&mut decoder)
+                .map_err(|e| SerializationError::Decode(e.to_string()))?;
+            if decoder.position() != data.len() as u64 {
+                return Err(SerializationError::Decode(
+                    "trailing MessagePack data".to_owned(),
+                ));
+            }
+            Ok(value.0)
         }
         SerializationFormat::Postcard => {
-            postcard::from_bytes(data).map_err(|e| SerializationError::Decode(e.to_string()))
+            let (value, remaining) = postcard::take_from_bytes::<limited::Limited<T>>(data)
+                .map_err(|e| SerializationError::Decode(e.to_string()))?;
+            if !remaining.is_empty() {
+                return Err(SerializationError::Decode(
+                    "trailing Postcard data".to_owned(),
+                ));
+            }
+            Ok(value.0)
         }
     }
 }
@@ -359,6 +540,302 @@ mod tests {
     use super::*;
     use crate::config::EngineConfig;
     use crate::execution::RunLimit;
+
+    fn alter_state(
+        engine: &Engine,
+        change: impl FnOnce(&mut serde_json::Value),
+    ) -> Result<Engine, SerializationError> {
+        let bytes = engine.serialize(SerializationFormat::Json).unwrap();
+        let mut state: serde_json::Value = serde_json::from_slice(&bytes[HEADER_LEN..]).unwrap();
+        change(&mut state);
+        let bytes = envelope(
+            serde_json::to_vec(&state).unwrap(),
+            SerializationFormat::Json,
+        )
+        .unwrap();
+        Engine::deserialize(&bytes, SerializationFormat::Json)
+    }
+
+    #[test]
+    fn versioned_envelope_rejects_unknown_corrupt_and_mismatched_inputs() {
+        let engine = Engine::new(EngineConfig::default());
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut changed = bytes.clone();
+            changed[8..10].copy_from_slice(&2_u16.to_le_bytes());
+            assert!(matches!(
+                Engine::deserialize(&changed, format),
+                Err(SerializationError::UnsupportedVersion(2))
+            ));
+            changed = bytes.clone();
+            changed[11] = 1;
+            assert!(matches!(
+                Engine::deserialize(&changed, format),
+                Err(SerializationError::UnsupportedCapabilities(1))
+            ));
+            changed = bytes.clone();
+            changed[10] = (changed[10] + 1) % 5;
+            assert!(matches!(
+                Engine::deserialize(&changed, format),
+                Err(SerializationError::WrongFormat(_))
+            ));
+            changed = bytes.clone();
+            *changed.last_mut().unwrap() ^= 1;
+            assert!(matches!(
+                Engine::deserialize(&changed, format),
+                Err(SerializationError::ChecksumMismatch)
+            ));
+            changed = bytes.clone();
+            changed.push(0);
+            assert!(matches!(
+                Engine::deserialize(&changed, format),
+                Err(SerializationError::Decode(_))
+            ));
+            assert!(matches!(
+                Engine::deserialize(&bytes[..HEADER_LEN - 1], format),
+                Err(SerializationError::Decode(_))
+            ));
+            let mut payload = bytes[HEADER_LEN..].to_vec();
+            payload.push(0);
+            let changed = envelope(payload, format).unwrap();
+            assert!(
+                matches!(
+                    Engine::deserialize(&changed, format),
+                    Err(SerializationError::Decode(_))
+                ),
+                "codec must reject trailing data: {format:?}"
+            );
+        }
+        assert!(matches!(
+            Engine::deserialize(&vec![0; MAX_SNAPSHOT_BYTES + 1], SerializationFormat::Cbor),
+            Err(SerializationError::LimitExceeded(_))
+        ));
+    }
+
+    #[test]
+    fn legacy_raw_fixture_has_an_explicit_rejection_path() {
+        let raw = include_bytes!("../tests/fixtures/snapshots/legacy-raw.cbor");
+        // Verify this is a meaningful old payload, not arbitrary garbage.
+        let legacy: EngineSnapshotOwned = decode(raw, SerializationFormat::Cbor).unwrap();
+        let legacy = legacy.into_engine();
+        assert_eq!(legacy.find_facts("durable").unwrap().len(), 1);
+        assert!(matches!(
+            Engine::deserialize(raw, SerializationFormat::Cbor),
+            Err(SerializationError::LegacySnapshot)
+        ));
+    }
+
+    #[test]
+    fn limits_apply_before_collection_allocation_and_recursive_decode() {
+        // Hostile lengths with almost no payload must fail without reserving them.
+        let mut cbor = vec![0x9b];
+        cbor.extend(u64::MAX.to_be_bytes());
+        assert!(decode::<Vec<Value>>(&cbor, SerializationFormat::Cbor)
+            .unwrap_err()
+            .to_string()
+            .contains("limit"));
+        assert!(
+            decode::<Vec<Value>>(&u64::MAX.to_le_bytes(), SerializationFormat::Bincode)
+                .unwrap_err()
+                .to_string()
+                .contains("limit")
+        );
+        let mut msgpack = vec![0xdd];
+        msgpack.extend(u32::MAX.to_be_bytes());
+        assert!(
+            decode::<Vec<Value>>(&msgpack, SerializationFormat::MessagePack)
+                .unwrap_err()
+                .to_string()
+                .contains("limit")
+        );
+        let mut nested = "{\"Multifield\":".repeat(200);
+        nested.push_str("[]");
+        nested.push_str(&"}".repeat(200));
+        assert!(decode::<Value>(nested.as_bytes(), SerializationFormat::Json).is_err());
+        // The aggregate budget also applies when no collection advertises a size.
+        let mut cbor = vec![0x9f];
+        cbor.extend(std::iter::repeat_n(0xf6, limited::MAX_ITEMS + 1));
+        cbor.push(0xff);
+        assert!(decode::<Vec<()>>(&cbor, SerializationFormat::Cbor)
+            .unwrap_err()
+            .to_string()
+            .contains("item limit"));
+    }
+
+    #[test]
+    fn checksum_valid_but_inconsistent_graphs_are_rejected() {
+        let mut engine = Engine::with_rules(
+            "(defrule pick (item ?n) (not (block ?n ?reason)) => (assert (picked ?n)))",
+        )
+        .unwrap();
+        engine
+            .load_str("(assert (item 7) (block 7 a) (block 7 b))")
+            .unwrap();
+        for pointer in [
+            "/fact_base/by_relation/utf8",
+            "/rete/alpha/fact_to_memories",
+            "/rete/token_store/fact_to_tokens",
+        ] {
+            let result = alter_state(&engine, |state| {
+                *state.pointer_mut(pointer).unwrap() = if pointer.ends_with("fact_to_memories") {
+                    serde_json::json!([{ "version": 0, "value": null }])
+                } else {
+                    serde_json::json!([])
+                }
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "{pointer}: {:?}",
+                result.err()
+            );
+        }
+        let result = alter_state(&engine, |state| {
+            state["rete"]["beta"]["next_node_id"] = serde_json::json!(0);
+        });
+        assert!(matches!(result, Err(SerializationError::InvalidState(_))));
+        let result = alter_state(&engine, |state| {
+            state["compiler"]["join_node_cache"][0][1] = serde_json::json!(42);
+        });
+        assert!(matches!(result, Err(SerializationError::InvalidState(_))));
+        // Remove one blocker and its reciprocal link. Local inverse checks still
+        // pass, but semantic validation must reject the incomplete support set.
+        let result = alter_state(&engine, |state| {
+            let memory = &mut state["rete"]["beta"]["neg_memories"][0];
+            let removed = memory["blocked"][0][1]
+                .as_array_mut()
+                .unwrap()
+                .pop()
+                .unwrap();
+            memory["fact_to_blocked"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|entry| entry[0] != removed);
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("blocker"))
+        );
+    }
+
+    #[test]
+    fn resume_preserves_refraction_globals_output_and_negative_transitions() {
+        for &format in SerializationFormat::ALL {
+            let mut original = Engine::with_rules("(defglobal ?*count* = 0) (defrule pick (item ?n) (not (block ?n ?reason)) => (bind ?*count* (+ ?*count* 1)) (assert (picked ?n)) (printout t ?n crlf))").unwrap();
+            original
+                .load_str("(assert (item 7) (item 8) (block 7 a) (block 7 b))")
+                .unwrap();
+            assert_eq!(original.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+            let bytes = original.serialize(format).unwrap();
+            let mut resumed = Engine::deserialize(&bytes, format).unwrap();
+            assert_eq!(resumed.get_output("t"), Some("8\n"));
+            assert_eq!(
+                resumed.run(RunLimit::Unlimited).unwrap().rules_fired,
+                0,
+                "a fired activation must not reappear after restore"
+            );
+            let blockers: Vec<_> = resumed
+                .find_facts("block")
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            resumed.retract(blockers[0]).unwrap();
+            assert_eq!(resumed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+            resumed.retract(blockers[1]).unwrap();
+            assert_eq!(resumed.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert_eq!(resumed.get_output("t"), Some("8\n7\n"));
+            assert_eq!(resumed.find_facts("picked").unwrap().len(), 2);
+            assert!(matches!(
+                resumed
+                    .globals
+                    .get(resumed.module_registry.main_module_id(), "count"),
+                Some(Value::Integer(2))
+            ));
+            // Future compilation must use the retained, validated sharing cache.
+            resumed
+                .load_str("(defrule later (picked ?n) => (assert (observed ?n)))")
+                .unwrap();
+            assert_eq!(resumed.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+            assert_eq!(resumed.find_facts("observed").unwrap().len(), 2);
+        }
+    }
+
+    #[test]
+    fn resume_preserves_exists_and_ncc_support_transitions() {
+        for condition in [
+            "(exists (support ?n ?reason))",
+            "(not (and (support ?n ?reason) (confirmed ?reason)))",
+        ] {
+            let mut engine = Engine::with_rules(&format!(
+                "(defrule choose (item ?n) {condition} => (assert (picked ?n)))"
+            ))
+            .unwrap();
+            engine
+                .load_str(
+                    "(assert (item 7) (support 7 a) (support 7 b) (confirmed a) (confirmed b))",
+                )
+                .unwrap();
+            let snapshot = engine.serialize(SerializationFormat::Cbor).unwrap();
+            let mut restored = Engine::deserialize(&snapshot, SerializationFormat::Cbor).unwrap();
+            let expected = usize::from(condition.starts_with("(exists"));
+            assert_eq!(
+                restored.run(RunLimit::Unlimited).unwrap().rules_fired,
+                expected
+            );
+            let support: Vec<_> = restored
+                .find_facts("support")
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            restored.retract(support[0]).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+            restored.retract(support[1]).unwrap();
+            assert_eq!(
+                restored.run(RunLimit::Unlimited).unwrap().rules_fired,
+                1 - expected
+            );
+            assert_eq!(restored.find_facts("picked").unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn snapshots_preserve_float_identity_including_nan_payloads() {
+        let fields = vec![
+            Value::Float(f64::from_bits(0x7ff8_0000_0000_1234)),
+            Value::Float(-0.0),
+            Value::Float(f64::INFINITY),
+        ];
+        let mut engine = Engine::new(EngineConfig::default());
+        let id = engine
+            .assert_ordered("measurement", fields.clone())
+            .unwrap();
+        assert!(
+            matches!(
+                engine.serialize(SerializationFormat::Json),
+                Err(SerializationError::Encode(_))
+            ),
+            "experimental JSON must reject non-finite values explicitly"
+        );
+        for format in [
+            SerializationFormat::Cbor,
+            SerializationFormat::Bincode,
+            SerializationFormat::MessagePack,
+            SerializationFormat::Postcard,
+        ] {
+            let bytes = engine.serialize(format).unwrap();
+            let restored = Engine::deserialize(&bytes, format).unwrap();
+            let Fact::Ordered(fact) = &restored.fact_base.get(id).unwrap().fact else {
+                panic!("ordered measurement");
+            };
+            assert!(
+                fields
+                    .iter()
+                    .zip(&fact.fields)
+                    .all(|(expected, actual)| expected.structural_eq(actual)),
+                "float bits changed in {format:?}"
+            );
+        }
+    }
 
     /// Test roundtrip for a given format with an empty engine.
     fn roundtrip_empty(format: SerializationFormat) {
