@@ -352,6 +352,7 @@ impl ModuleRegistry {
     }
 
     /// Fallible structural checks used before installing snapshot state.
+    #[cfg(any(feature = "serde", test, debug_assertions))]
     pub(crate) fn validate_snapshot(&self) -> Result<(), String> {
         if self.next_id == 0 || self.next_id == u32::MAX {
             return Err("invalid module allocation counter".to_owned());
