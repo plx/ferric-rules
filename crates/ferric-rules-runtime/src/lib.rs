@@ -85,6 +85,10 @@ pub use ferric_rules_core::{
     Multifield, StringEncoding, Symbol, Value,
 };
 
+// Benchmark-only compatibility with the current public handle name.
+#[doc(hidden)]
+pub type FactHandle = ferric_rules_core::FactId;
+
 // Re-export primary types at crate root for convenience.
 pub use actions::ActionError;
 pub use config::EngineConfig;

@@ -751,6 +751,13 @@ impl Engine {
         self.symbol_table.resolve_symbol_str(sym)
     }
 
+    /// Benchmark-only compatibility with the current core-symbol read API.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn resolve_core_symbol(&self, symbol: Symbol) -> Option<&str> {
+        self.resolve_symbol(symbol)
+    }
+
     /// Access the engine's Rete network for inspection.
     #[must_use]
     pub fn rete(&self) -> &ReteNetwork {
