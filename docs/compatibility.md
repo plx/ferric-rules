@@ -484,6 +484,11 @@ silently ignore invalid patterns.
 
 Ferric supports `defglobal` with the `?*name*` naming convention.
 
+Each named global is installed after its initializer succeeds. Earlier names in
+one `defglobal` group remain available to later initializers. If an initializer
+fails, its name and later names in that group are not installed; earlier globals
+and following top-level constructs retain their incremental load behavior.
+
 ```clp
 (defglobal ?*count* = 0)
 (defglobal ?*label* = "default")

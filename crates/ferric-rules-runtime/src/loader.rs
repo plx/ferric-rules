@@ -586,16 +586,6 @@ impl Engine {
                         result.functions.push(func);
                     }
                     Construct::Global(global) => {
-                        // Record the owning module for each global defined in this construct.
-                        let owning_module = self.module_registry.current_module();
-                        for def in &global.globals {
-                            insert_module_entry(
-                                &mut self.global_modules,
-                                owning_module,
-                                def.name.clone(),
-                                owning_module,
-                            );
-                        }
                         // Evaluate initial values and store in the global store.
                         if let Err(e) = self.process_global_construct(&global) {
                             errors.push(e);
@@ -1397,6 +1387,15 @@ impl Engine {
                     .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
             };
 
+            // CLIPS commits named globals incrementally, even within one
+            // defglobal group. Publish ownership only after this initializer
+            // succeeds, so failed/later names cannot leave phantom metadata.
+            insert_module_entry(
+                &mut self.global_modules,
+                current_module,
+                def.name.clone(),
+                current_module,
+            );
             self.globals.set(current_module, &def.name, value.clone());
             self.registered_globals
                 .push((current_module, def.name.clone(), value));
@@ -6059,6 +6058,38 @@ mod tests {
         assert_eq!(result.functions[0].name, "add-one");
         assert!(result.rules.is_empty());
         assert!(result.asserted_facts.is_empty());
+    }
+
+    #[test]
+    fn failed_global_initializers_cannot_leave_phantom_persisted_metadata() {
+        let mut engine = Engine::new(EngineConfig::default());
+        let errors = engine
+            .load_str(include_str!(
+                "../tests/fixtures/global_incremental_failure.clp"
+            ))
+            .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        // Snapshot restoration and module visibility must describe the same set
+        // of globals as the active value store, even after a partial load.
+        for (module, names) in &engine.global_modules {
+            for (name, owner) in names {
+                assert_eq!(module, owner);
+                assert!(
+                    engine.globals.contains(*module, name),
+                    "phantom global {module:?}::{name}"
+                );
+            }
+        }
+        for (module, name, _) in &engine.registered_globals {
+            assert!(engine.globals.contains(*module, name));
+            assert_eq!(
+                engine
+                    .global_modules
+                    .get(module)
+                    .and_then(|names| names.get(name.as_str())),
+                Some(module)
+            );
+        }
     }
 
     #[test]
