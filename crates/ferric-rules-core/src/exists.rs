@@ -182,7 +182,6 @@ impl ExistsMemory {
     }
 
     /// Verify internal consistency of the exists memory.
-    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
         // Check 1: forward and reverse support indices are consistent
         for (&token_id, facts) in &self.support {

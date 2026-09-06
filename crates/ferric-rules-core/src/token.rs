@@ -265,8 +265,7 @@ impl TokenStore {
 
     /// Verify internal consistency of all indices.
     ///
-    /// Intended for use in tests and debug builds.
-    #[cfg(any(test, debug_assertions))]
+    /// Available in all profiles so dependent crates can run release tests.
     pub fn debug_assert_consistency(&self) {
         // 1. Every TokenId in fact_to_tokens exists in the tokens SlotMap
         for (fact_id, token_ids) in &self.fact_to_tokens {

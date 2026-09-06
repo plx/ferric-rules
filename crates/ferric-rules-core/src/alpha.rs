@@ -642,9 +642,7 @@ impl AlphaNetwork {
 
     /// Verify internal consistency of the alpha network.
     ///
-    /// This method is gated behind `test` or `debug_assertions` and will panic
-    /// if any inconsistencies are detected.
-    #[cfg(any(test, debug_assertions))]
+    /// Panics if any inconsistencies are detected, in any build profile.
     pub fn debug_assert_consistency(&self) {
         // Check 1: All alpha memory IDs referenced by nodes exist in memories map
         for node in &self.nodes {

@@ -1586,8 +1586,7 @@ impl ReteNetwork {
     /// Checks all substructures and cross-structure invariants. Extended
     /// incrementally as Phase 2 adds negative, NCC, and exists nodes.
     ///
-    /// Intended for use in tests and debug builds.
-    #[cfg(any(test, debug_assertions))]
+    /// Available in all profiles so dependent crates can run release tests.
     pub fn debug_assert_consistency(&self) {
         // --- Phase 1 substructure checks ---
         self.token_store.debug_assert_consistency();

@@ -203,7 +203,6 @@ impl NegativeMemory {
     }
 
     /// Verify internal consistency of the negative memory.
-    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
         // Check 1: forward and reverse blocker indices are consistent
         for (&token_id, blockers) in &self.blocked {
