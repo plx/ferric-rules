@@ -1294,6 +1294,15 @@ impl Engine {
         if existing.is_some_and(|id| self.template_is_in_use(id)) {
             return Err(Self::template_in_use_error(template));
         }
+        if existing.is_none() && self.template_ids.contains_key(template.name.as_str()) {
+            return Err(Self::compile_error_at(
+                &template.span,
+                &format!(
+                    "template spelling `{}` already belongs to another module; use a module-qualified declaration such as `MODULE::{}` for a distinct template",
+                    template.name, Self::template_local_name(&template.name)
+                ),
+            ));
+        }
         let local_name = Self::template_local_name(&template.name);
         if existing.is_none() && self.ordered_identity_is_live(&local_name) {
             return Err(Self::ordered_template_conflict(template));
