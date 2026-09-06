@@ -428,8 +428,9 @@ impl Engine {
             // Rules are collected with their owning module captured at the
             // time they appear in source so that defmodule statements
             // interleaved with defrule statements are respected.
-            let mut deffacts_constructs = Vec::new();
+            let mut deffacts_constructs: Vec<ferric_rules_parser::FactsConstruct> = Vec::new();
             let mut rules_with_module = Vec::new();
+            let mut pending_ordered_fact_names = HashSet::new();
             for construct in interpret_result.constructs {
                 match construct {
                     Construct::Rule(rule) => {
@@ -455,12 +456,50 @@ impl Engine {
                     Construct::Template(template) => {
                         // Register template BEFORE compiling rules so that
                         // rules referencing this template can resolve the ID.
-                        if let Err(e) = self.register_template(&template, &mut result) {
+                        let name = Self::template_local_name(&template.name);
+                        let pending_ordered_use = rules_with_module.iter().any(|(rule, module)| {
+                            self.rule_uses_ordered_name(rule, *module, &name)
+                        }) || pending_ordered_fact_names.contains(&name)
+                            || assert_forms.iter().any(|expr| {
+                                expr.span().start.offset < template.span.start.offset
+                                    && expr.as_list().is_some_and(|form| {
+                                        form.iter().skip(1).any(|fact| {
+                                            fact.as_list()
+                                                .and_then(|fields| fields.first())
+                                                .and_then(SExpr::as_symbol)
+                                                .is_some_and(|raw| {
+                                                    Self::ordered_relation_name_is(raw, &name)
+                                                })
+                                        })
+                                    })
+                            });
+                        if pending_ordered_use {
+                            errors.push(Self::ordered_template_conflict(&template));
+                        } else if let Err(e) = self.register_template(&template, &mut result) {
                             errors.push(e);
+                        } else {
+                            result.templates.push(template);
                         }
-                        result.templates.push(template);
                     }
                     Construct::Facts(facts) => {
+                        let module = parse_qualified_name(&facts.name)
+                            .ok()
+                            .and_then(|name| {
+                                name.module_name()
+                                    .and_then(|module| self.module_registry.get_by_name(module))
+                            })
+                            .unwrap_or_else(|| self.module_registry.current_module());
+                        for fact in &facts.facts {
+                            if let FactBody::Ordered(fact) = fact {
+                                if self
+                                    .resolve_template_reference(&fact.relation, module)
+                                    .is_err()
+                                {
+                                    pending_ordered_fact_names
+                                        .insert(Self::template_local_name(&fact.relation));
+                                }
+                            }
+                        }
                         deffacts_constructs.push(facts);
                     }
                     Construct::Function(func) => {
@@ -770,7 +809,7 @@ impl Engine {
             .to_string()
     }
 
-    fn resolve_template_reference(
+    pub(crate) fn resolve_template_reference(
         &self,
         raw_name: &str,
         current_module: crate::modules::ModuleId,
@@ -882,6 +921,24 @@ impl Engine {
         ordered: &OrderedFactBody,
         result: &mut LoadResult,
     ) -> Result<FactId, LoadError> {
+        let current_module = self.module_registry.current_module();
+        if let Ok(template_id) = self.resolve_template_reference(&ordered.relation, current_module)
+        {
+            if !ordered.values.is_empty() {
+                return Err(LoadError::Compile(format!(
+                    "template `{}` requires named slot values",
+                    ordered.relation
+                )));
+            }
+            let registered = &self.template_defs[template_id];
+            registered
+                .validate_required_slots(&registered.defaults)
+                .map_err(LoadError::Compile)?;
+            let slots = registered.defaults.clone().into_boxed_slice();
+            return Ok(self
+                .assert_fact_internal(Fact::Template(TemplateFact { template_id, slots }))
+                .fact_id());
+        }
         let mut fields = Vec::new();
         for fact_value in &ordered.values {
             if let Some(value) = self.fact_value_to_value(fact_value, result) {
@@ -979,6 +1036,12 @@ impl Engine {
                 .all(|slot| matches!(slot.value, FactValue::EmptyMultifield(_)))
     }
 
+    fn ordered_template_conflict(template: &TemplateConstruct) -> LoadError {
+        Self::compile_error_at(&template.span, &format!(
+            "cannot define template `{}` while its ordered relation is in use by facts or constructs", template.name
+        ))
+    }
+
     /// Register a `TemplateConstruct` in the engine's template registry.
     ///
     /// Allocates a fresh `TemplateId`, builds slot metadata, and stores both
@@ -996,22 +1059,47 @@ impl Engine {
                     .and_then(|module| self.module_registry.get_by_name(module))
             })
             .unwrap_or_else(|| self.module_registry.current_module());
+        let local_name = Self::template_local_name(&template.name);
+        let existing = self.template_defs.iter().any(|(id, definition)| {
+            self.template_modules.get(id) == Some(&owning_module)
+                && Self::template_local_name(&definition.name) == local_name
+        });
+        if !existing && self.ordered_identity_is_live(&local_name) {
+            return Err(Self::ordered_template_conflict(template));
+        }
         let slot_count = template.slots.len();
         let mut slot_names = Vec::with_capacity(slot_count);
         let mut slot_index = HashMap::default();
         slot_index.reserve(slot_count);
         let mut defaults = Vec::with_capacity(slot_count);
+        let mut slot_types = Vec::with_capacity(slot_count);
 
         for (i, slot_def) in template.slots.iter().enumerate() {
             slot_names.push(slot_def.name.clone());
             slot_index.insert(slot_def.name.clone(), i);
+            slot_types.push(slot_def.slot_type);
 
             let default_val = match &slot_def.default {
                 Some(ferric_rules_parser::DefaultValue::Value(lit)) => self
                     .literal_to_value(&lit.value, lit.span.start.line, result)
                     .unwrap_or(Value::Void),
-                // ?NONE, ?DERIVE, or no default: use Void as placeholder.
-                _ => Value::Void,
+                Some(ferric_rules_parser::DefaultValue::None) => Value::Void,
+                _ => match slot_def.slot_type {
+                    ferric_rules_parser::SlotType::Single => {
+                        Value::Symbol(self.compile_symbol("nil")?)
+                    }
+                    ferric_rules_parser::SlotType::Multi => Value::Multifield(Box::default()),
+                },
+            };
+            let default_val = match (slot_def.slot_type, default_val) {
+                (ferric_rules_parser::SlotType::Multi, Value::Void) => Value::Void,
+                (ferric_rules_parser::SlotType::Multi, Value::Multifield(fields)) => {
+                    Value::Multifield(fields)
+                }
+                (ferric_rules_parser::SlotType::Multi, value) => {
+                    Value::Multifield(Box::new([value].into_iter().collect()))
+                }
+                (_, value) => value,
             };
             defaults.push(default_val);
         }
@@ -1019,6 +1107,7 @@ impl Engine {
         let registered = RegisteredTemplate {
             name: template.name.clone(),
             slot_names,
+            slot_types,
             slot_index,
             defaults,
         };
@@ -1443,22 +1532,30 @@ impl Engine {
             "assert" => {
                 for arg in &call.args {
                     if let ActionExpr::FunctionCall(fact_pattern) = arg {
-                        if self
-                            .resolve_template_reference(&fact_pattern.name, current_module)
-                            .is_ok()
+                        if let Ok(template_id) =
+                            self.resolve_template_reference(&fact_pattern.name, current_module)
                         {
-                            for slot_expr in &fact_pattern.args {
-                                if let ActionExpr::FunctionCall(slot_pair) = slot_expr {
-                                    for value_expr in &slot_pair.args {
-                                        self.validate_action_expr_as_expression(
-                                            value_expr,
-                                            current_module,
-                                            rule_name,
-                                        )?;
-                                    }
-                                } else {
+                            let registered = &self.template_defs[template_id];
+                            let slots = registered.slot_overrides(&fact_pattern.args).map_err(
+                                |message| Self::compile_error_at(&fact_pattern.span, &message),
+                            )?;
+                            for (index, default) in registered.defaults.iter().enumerate() {
+                                if matches!(default, Value::Void)
+                                    && !slots.iter().any(|(slot, _)| *slot == index)
+                                {
+                                    return Err(Self::compile_error_at(
+                                        &fact_pattern.span,
+                                        &format!(
+                                            "slot `{}` in template `{}` requires a value because of its (default ?NONE) attribute",
+                                            registered.slot_names[index], registered.name
+                                        ),
+                                    ));
+                                }
+                            }
+                            for (_, slot_pair) in slots {
+                                for value_expr in &slot_pair.args {
                                     self.validate_action_expr_as_expression(
-                                        slot_expr,
+                                        value_expr,
                                         current_module,
                                         rule_name,
                                     )?;
@@ -3313,8 +3410,26 @@ impl Engine {
     ) -> Result<CompilablePattern, LoadError> {
         match pattern {
             Pattern::Ordered(ordered) => {
-                let sym = self.compile_symbol(&ordered.relation)?;
-                let entry_type = AlphaEntryType::OrderedRelation(sym);
+                // The parser cannot distinguish `(template-name)` from an
+                // empty ordered pattern without the runtime template registry.
+                let current_module = self.module_registry.current_module();
+                let entry_type = if let Ok(template_id) =
+                    self.resolve_template_reference(&ordered.relation, current_module)
+                {
+                    if !ordered.constraints.is_empty() {
+                        return Err(Self::compile_error_at(
+                            &ordered.span,
+                            &format!(
+                                "template `{}` requires named slot constraints",
+                                ordered.relation
+                            ),
+                        ));
+                    }
+                    AlphaEntryType::Template(template_id)
+                } else {
+                    let sym = self.compile_symbol(&ordered.relation)?;
+                    AlphaEntryType::OrderedRelation(sym)
+                };
                 let mut constant_tests = Vec::new();
                 let mut variable_slots = Vec::new();
                 let mut negated_variable_slots = Vec::new();
@@ -4884,6 +4999,19 @@ mod tests {
             result.is_ok(),
             "template assert slot names should not require function declarations: {result:?}"
         );
+        engine.reset().unwrap();
+        let run = engine.run(crate::RunLimit::Unlimited).unwrap();
+        assert_eq!(run.rules_fired, 1);
+        assert!(engine.action_diagnostics().is_empty());
+        let (fact_id, _) = engine
+            .facts()
+            .unwrap()
+            .find(|(_, fact)| matches!(fact, Fact::Template(_)))
+            .expect("RHS assert must create a template fact");
+        let Value::Symbol(value) = engine.get_fact_slot_by_name(fact_id, "value").unwrap() else {
+            panic!("eq must produce a symbol value");
+        };
+        assert_eq!(engine.resolve_symbol(*value), Some("TRUE"));
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! engine. Both `loader.rs` and `actions.rs` need access to this type.
 
 use ferric_rules_core::Value;
+use ferric_rules_parser::{ActionExpr, FunctionCall, SlotType};
 use rustc_hash::FxHashMap as HashMap;
 
 /// Runtime representation of a registered template.
@@ -18,18 +19,16 @@ pub(crate) struct RegisteredTemplate {
     /// The template name (e.g. `"person"`).
     pub name: String,
     /// Slot names in declaration order.
-    ///
-    /// Retained for future diagnostic use (e.g. "valid slots are: …").
-    #[allow(dead_code)]
     pub slot_names: Vec<String>,
+    /// Single-field versus multifield cardinality for each slot position.
+    pub slot_types: Vec<SlotType>,
     /// Slot name → positional index mapping.
     #[cfg_attr(
         feature = "serde",
         serde(with = "ferric_rules_core::serde_helpers::fx_hash_map")
     )]
     pub slot_index: HashMap<String, usize>,
-    /// Default values for each slot position (`Value::Void` if no default is
-    /// declared or the default is `?NONE` / `?DERIVE`).
+    /// Default values for each slot position (`Value::Void` marks `?NONE`).
     pub defaults: Vec<Value>,
 }
 
@@ -37,6 +36,53 @@ impl RegisteredTemplate {
     #[must_use]
     pub fn slot_index(&self, name: &str) -> Option<usize> {
         self.slot_index.get(name).copied()
+    }
+
+    /// Validate named slot syntax before any value expression is evaluated.
+    pub fn slot_overrides<'a>(
+        &self,
+        overrides: &'a [ActionExpr],
+    ) -> Result<Vec<(usize, &'a FunctionCall)>, String> {
+        let mut seen = vec![false; self.slot_names.len()];
+        overrides
+            .iter()
+            .map(|expression| {
+                let ActionExpr::FunctionCall(call) = expression else {
+                    return Err(format!(
+                        "expected named slot list in template `{}`",
+                        self.name
+                    ));
+                };
+                let index = self.slot_index(&call.name).ok_or_else(|| {
+                    format!("unknown slot `{}` in template `{}`", call.name, self.name)
+                })?;
+                if std::mem::replace(&mut seen[index], true) {
+                    return Err(format!(
+                        "duplicate slot `{}` in template `{}`",
+                        call.name, self.name
+                    ));
+                }
+                if self.slot_types[index] == SlotType::Single && call.args.len() != 1 {
+                    return Err(format!(
+                        "single-field slot `{}` in template `{}` requires exactly one value",
+                        call.name, self.name
+                    ));
+                }
+                Ok((index, call))
+            })
+            .collect()
+    }
+
+    pub fn validate_required_slots(&self, slots: &[Value]) -> Result<(), String> {
+        for (index, value) in slots.iter().enumerate() {
+            if matches!(value, Value::Void) && matches!(self.defaults[index], Value::Void) {
+                return Err(format!(
+                    "slot `{}` in template `{}` requires a value because of its (default ?NONE) attribute",
+                    self.slot_names[index], self.name
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -55,6 +101,7 @@ mod tests {
         let defaults = vec![Value::Void; slot_names.len()];
         RegisteredTemplate {
             name: name.to_string(),
+            slot_types: vec![SlotType::Single; slot_names.len()],
             slot_names,
             slot_index,
             defaults,

@@ -1447,11 +1447,12 @@ mod tests {
             (deffacts startup (sensor (id my-sensor)))
         ",
         );
-        // The deffacts body only specifies `id`; `reading` should be Void
-        // (default is stored as Void for numeric defaults in current impl,
-        // since literals are only evaluated when explicitly provided).
-        // The main goal here is that loading succeeds without error.
         assert_eq!(engine.facts().unwrap().count(), 1);
+        let (fact_id, _) = engine.facts().unwrap().next().unwrap();
+        assert!(matches!(
+            engine.get_fact_slot_by_name(fact_id, "reading").unwrap(),
+            crate::Value::Integer(0)
+        ));
     }
 
     #[test]

@@ -464,9 +464,10 @@ def test_semantic_stderr_is_preserved_around_native_records():
     }
 
 
-def test_diagnostic_channel_separation_uses_only_the_adjacent_authenticated_payload():
-    user_output = "[EXPRNPSR3] fixture-authored output outside the diagnostic payload\n"
-    message = "\n[EXPRNPSR3] Missing function declaration for missing-function.\n"
+@pytest.mark.parametrize("code", ["EXPRNPSR3", "PRCCODE3", "CSTRNCHK1"])
+def test_diagnostic_channel_separation_uses_only_the_adjacent_authenticated_payload(code):
+    user_output = f"[{code}] fixture-authored output outside the diagnostic payload\n"
+    message = f"\n[{code}] Authenticated construct-loading rejection.\n"
     stderr = b"".join(
         [
             _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),

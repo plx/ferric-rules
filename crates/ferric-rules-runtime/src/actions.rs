@@ -569,10 +569,8 @@ fn collect_outer_runtime_bindings(
 }
 
 fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value) {
-    env.insert(name.to_string(), value.clone());
-    if !name.starts_with("$?") {
-        env.entry(format!("$?{name}")).or_insert(value);
-    }
+    // Both spellings share one current value, including after an RHS bind.
+    env.insert(name.strip_prefix("$?").unwrap_or(name).to_string(), value);
 }
 
 fn seed_multifield_tail_bindings(
@@ -2407,6 +2405,32 @@ fn execute_assert(
         match arg {
             ActionExpr::FunctionCall(fact_pattern) => {
                 let relation = &fact_pattern.name;
+                if let Ok(template_id) = context
+                    .engine
+                    .resolve_template_reference(relation, context.current_module)
+                {
+                    let registered = context.engine.template_defs[template_id].clone();
+                    let mut slots = registered.defaults.clone();
+                    apply_template_slot_overrides(
+                        &mut slots,
+                        &fact_pattern.args,
+                        &registered,
+                        token,
+                        rule_info,
+                        context,
+                        eval_env,
+                        collected_facts,
+                    )?;
+                    registered
+                        .validate_required_slots(&slots)
+                        .map_err(ActionError::EvalError)?;
+                    assert_template_and_propagate(
+                        context.engine,
+                        template_id,
+                        slots.into_boxed_slice(),
+                    );
+                    continue;
+                }
                 let relation_sym = context
                     .engine
                     .symbol_table
@@ -2683,8 +2707,8 @@ fn apply_ordered_slot_overrides(
 /// Apply slot overrides to a mutable template slot vector.
 ///
 /// Each override in `slot_overrides` is expected to be a `FunctionCall` whose
-/// name is a slot name and whose first argument is the new value.  Unknown slot
-/// names return an `EvalError`.
+/// name is a slot name. Single-field slots require one scalar value; multifield
+/// slots evaluate all expressions and splice their multifield results.
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
 fn apply_template_slot_overrides(
     slots: &mut [Value],
@@ -2696,22 +2720,10 @@ fn apply_template_slot_overrides(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
-    for slot_override in slot_overrides {
-        let ActionExpr::FunctionCall(fc) = slot_override else {
-            continue;
-        };
-
-        let slot_idx = registered
-            .slot_index
-            .get(&fc.name)
-            .copied()
-            .ok_or_else(|| {
-                ActionError::EvalError(format!(
-                    "unknown slot `{}` in template `{}`",
-                    fc.name, registered.name
-                ))
-            })?;
-
+    let overrides = registered
+        .slot_overrides(slot_overrides)
+        .map_err(ActionError::EvalError)?;
+    for (slot_idx, call) in overrides {
         if slot_idx >= slots.len() {
             return Err(ActionError::EvalError(format!(
                 "slot index {slot_idx} out of bounds for template `{}`",
@@ -2719,10 +2731,45 @@ fn apply_template_slot_overrides(
             )));
         }
 
-        if let Some(first_arg) = fc.args.first() {
-            slots[slot_idx] =
-                eval_env.eval_expr(token, rule_info, first_arg, context, collected_facts)?;
-        }
+        slots[slot_idx] = match registered.slot_types[slot_idx] {
+            ferric_rules_parser::SlotType::Single => {
+                let value = eval_env.eval_expr(
+                    token,
+                    rule_info,
+                    &call.args[0],
+                    context,
+                    collected_facts,
+                )?;
+                if matches!(value, Value::Multifield(_) | Value::Void) {
+                    return Err(ActionError::EvalError(format!(
+                        "single-field slot `{}` in template `{}` requires one scalar value",
+                        call.name, registered.name
+                    )));
+                }
+                value
+            }
+            ferric_rules_parser::SlotType::Multi => {
+                let mut values = ferric_rules_core::Multifield::new();
+                for expression in &call.args {
+                    match eval_env.eval_expr(
+                        token,
+                        rule_info,
+                        expression,
+                        context,
+                        collected_facts,
+                    )? {
+                        Value::Multifield(fields) => {
+                            values.extend(fields.as_slice().iter().cloned());
+                        }
+                        // CLIPS omits expressions that return no value from
+                        // multislot construction while retaining their effects.
+                        Value::Void => {}
+                        value => values.push(value),
+                    }
+                }
+                Value::Multifield(Box::new(values))
+            }
+        };
     }
 
     Ok(())

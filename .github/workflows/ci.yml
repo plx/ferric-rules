@@ -372,6 +372,10 @@ jobs:
         run: |
           scripts/clips-reference.sh provenance \
             > /tmp/compat-evidence/clips-reference-provenance.json
+      - name: Test pinned CLIPS observation boundaries
+        env:
+          FERRIC_CLIPS_REFERENCE_TESTS: '1'
+        run: uv run --project tools/ferric-tools pytest tools/ferric-tools/tests/test_clips_reference_integration.py -q
       - name: Scan claimed compatibility subset
         run: uv run --project tools/ferric-tools ferric-compat-scan
       - name: Generate compatibility harnesses

@@ -44,15 +44,17 @@ selection example, including persistence/resume, across all four host languages.
 
 ## Finite work checklist
 
-- [ ] Replace dependency-policy machinery ([#297](https://github.com/plx/ferric-rules/issues/297)) with standard scanners, actionable
+- [x] Replace dependency-policy machinery ([#297](https://github.com/plx/ferric-rules/issues/297)) with standard scanners, actionable
   scoped exceptions, and retained license notices; validate positive/negative cases.
 - [ ] Establish benchmark correctness oracles (#100), measure the threading
   choice, implement all affected ownership/lifetime contracts and regression tests.
+- [ ] Correct template RHS assertions/cardinality, correlated last-blocker `not`,
+  and multifield equality joins discovered by the required evidence workloads.
 - [ ] Correct rule replacement/removal and template load safety (#157, #158,
   #191); depth/breadth (#154); reset/named deffacts/initial-fact (#156, #161, #204).
 - [ ] Correct basic module export/focus (#160, #192, #193); document incremental
   load (#159); reject unsupported logical/optional strategy/module/salience cases
-  (#164, #155, #205, #209, #210), retaining PR #254's complex-negation disclosure.
+  (#164, #155, #205, #209, #210), retaining PR #254's complex-negation disclosure ([#300](https://github.com/plx/ferric-rules/issues/300)).
 - [ ] Validate host fact shape/provenance (#202, #203) and bound reachable
   dangerous construct expansion/depth (#200, #201), without a RETE redesign.
 - [ ] Version, bound, and validate snapshots with a concrete compatibility
@@ -92,25 +94,93 @@ cohort item. Required behavior may not be retired to complete the checklist.
   must validate the same work outside timing. Manners currently leaves its
   initial counter live; repair on the common benchmark base and do not compare
   to old timings that measured incorrect work.
-- Threading remains an implementation decision pending measurement. Inspection
-  confirms escaped `Rc` values, configuration `Cell`s, separate C caches/guards,
-  and a Python GIL/mutex lock-order hazard; removing affinity checks alone is
-  insufficient. No blanket unsafe trait implementations are authorized.
+- Select one structurally `Send + Sync` Rust engine. Paired measurements below
+  show no 10% end-to-end regression, so no optimization experiments or parallel
+  Rc/Arc implementations are needed. C calls remain serialized; shared Rust reads
+  do not authorize concurrent C access. External addresses become explicit host
+  registry tokens; unsupported binding and snapshot values are rejected.
 
 ## Current next action
 
-Dependency replacement for #297 is implemented and independently reviewed with
-no blocking findings. Native scans of seven graphs and malformed/vulnerable
-input rejection checks pass; Python 322 passed/16 existing testing-feature
-skips, tooling 722 passed, Node build/types and affected docs builds pass.
-`just preflight-pr` passes. Local Go lint now uses the existing CI linter and
-Go versions, fixing failures caused by newer host tools. The first PR still
-needs CI and merge.
+Dependency replacement [PR #298](https://github.com/plx/ferric-rules/pull/298)
+merged at `142c8d6b03a785b829d65e04efd9273dcf2609e1`; all 99 CI checks and
+independent review passed. Standard scanners, scoped applicability records,
+negative/malformed-input tests and license notices replace the retired policy.
+Portable scanner tests and exact-set npm validation fix initial CI findings.
 
-Benchmark oracles exposed a supported template RHS assertion defect: CLIPS
-produces `5:ready` and `(result (key 5) (status ready))`; baseline Ferric stops
-with unknown function `key`. Repair on the common base before timing. A separate
-structural Send candidate is under test; it is not the selected/landed contract.
-After the early PR, finish common-base oracles, run uncontended release
-comparisons, select/land threading, apply the prepared backlog migration, and
-continue the checklist. No phase is complete yet.
+All 17 retained facade benchmark suites now pass correctness oracles, as do
+runtime snapshot/fact-duplication suites. Repairs include invalid template RHS
+execution and historical Manners, duplicate-input, query and deffunction-sum
+workloads. New query/deffunction names avoid false historical comparisons.
+No performance claim uses old skipped work or correctness-only test timings.
+
+The measured common base is `36a6a53e81d61868d9c09acd40628c65184ec96c`; candidate
+`63ec35315f9270b69128de9eb842aad6427d1d2e` adds transferable shared values and
+structural `Send + Sync`. Exclusive evaluation remains required; private
+configuration atomics permit shared reads. Trait, handoff/destruction, escaped
+value, concurrent-read, serde/tracing and independent reachability review pass.
+C calls remain serialized. Python/Go lifetime, reentrancy and TLS changes pass
+339 Python tests, C tests and sanitizer harnesses, and Go race tests; independent
+review findings are addressed. These changes and Swift are not yet landed.
+
+The [paired experiment](https://github.com/plx/ferric-rules/actions/runs/34056683658)
+uses the existing performance workflow with an optional bounded workload set.
+Both revisions build first and run baseline/candidate/baseline/candidate on one
+runner. Local unrelated CPU activity made that preferable to timing this host.
+Criterion median/sample artifacts retain every run. The core runner was AMD
+EPYC 7763 (4 vCPUs), Ubuntu, Rust 1.93, serde, release LTO/one codegen unit;
+30 samples, 1s warmup/3s measurement, with existing Waltz-500 and medium snapshot
+10-sample overrides identical on both revisions. Timings below come from
+`cargo bench` median point estimates, never correctness-only tests.
+
+Actual medians in microseconds; A and B are alternating baseline/candidate pairs:
+
+| Workload | Base A | Candidate A | Delta A | Base B | Candidate B | Delta B |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| churn_2000_facts | 14373.123 | 14744.452 | +2.58% | 14142.558 | 14100.016 | -0.30% |
+| churn_500_facts | 3537.776 | 3638.118 | +2.84% | 3490.906 | 3490.227 | -0.02% |
+| join_nested_multifields_100 | 770.020 | 781.393 | +1.48% | 774.438 | 774.427 | -0.00% |
+| join_nested_multifields_1000 | 7327.801 | 7421.159 | +1.27% | 7175.505 | 7426.017 | +3.49% |
+| join_strings_100 | 459.244 | 463.093 | +0.84% | 460.687 | 456.840 | -0.84% |
+| join_strings_1000 | 4375.099 | 4401.259 | +0.60% | 4375.358 | 4351.902 | -0.54% |
+| lifecycle_load_reset_run_100 | 348.883 | 339.539 | -2.68% | 345.226 | 343.497 | -0.50% |
+| lifecycle_load_reset_run_1000 | 3371.073 | 3286.173 | -2.52% | 3307.434 | 3287.311 | -0.61% |
+| lifecycle_reset_run_100 | 179.479 | 178.031 | -0.81% | 175.657 | 178.818 | +1.80% |
+| lifecycle_reset_run_1000 | 1901.301 | 1852.289 | -2.58% | 1833.459 | 1855.230 | +1.19% |
+| serde_medium/deserialize | 674.826 | 672.591 | -0.33% | 677.940 | 691.590 | +2.01% |
+| serde_medium/serialize | 278.475 | 272.755 | -2.05% | 271.496 | 274.780 | +1.21% |
+| serde_small/deserialize | 75.935 | 75.862 | -0.10% | 75.766 | 77.319 | +2.05% |
+| serde_small/serialize | 27.089 | 26.726 | -1.34% | 26.296 | 27.719 | +5.41% |
+| waltz_100_junctions | 1356.475 | 1342.975 | -1.00% | 1342.676 | 1368.999 | +1.96% |
+| waltz_500/waltz_500_junctions | 6145.343 | 6088.864 | -0.92% | 6125.077 | 6233.813 | +1.78% |
+| capi/lifecycle/100 | 437.163 | 434.313 | -0.65% | 438.303 | 443.571 | +1.20% |
+| capi/lifecycle/1000 | 4227.374 | 4181.535 | -1.08% | 4159.138 | 4201.571 | +1.02% |
+| capi/read_output/100 | 15.372 | 14.395 | -6.36% | 15.439 | 14.459 | -6.35% |
+| capi/read_output/1000 | 159.280 | 152.703 | -4.13% | 160.238 | 152.100 | -5.08% |
+
+End-to-end core changes range from -2.68% to +3.49% across both pairs; the
+largest snapshot change is +5.41%. No workload reaches the 10% investigation
+trigger. Small differences should not be treated as reliable speedups.
+The [C ABI comparison](https://github.com/plx/ferric-rules/actions/runs/34057468971)
+uses base `3b8faf6662f5e2c5cb3abd8737687f82cdc9df41` and candidate
+`a3a372f9ff120740d8b6fe195791fb3a40b2f3f6`, with 30 samples for all four
+workloads. C lifecycle changes range from -1.08% to +1.20%; read/output copying
+improves 4.13–6.37%. Snapshot timings here measure the existing raw format;
+versioned persistence will receive its own validation and comparison.
+
+Six new template scenarios (RH-CORE-016/017/026–029) now pass the expanded
+28-case lane: 17 equivalent, 11 unchanged exact divergences. Template repair
+[#299](https://github.com/plx/ferric-rules/issues/299) has 14 focused regressions,
+full runtime and scaling checks, independent review, and passing `just preflight-pr`.
+
+35 new authenticated CLIPS scenarios are prepared: baseline 18 equivalent and
+17 semantic differences, with no invalid observations. Existing 22 reference
+expectations remain unchanged. Template assertion/cardinality fixes, last-blocker
+negation, multifield equality, and activation chronology have local regressions
+and pinned reference evidence. Independent review found and fixed a multislot
+void-result edge case. These fixes need integrated checks and reviewed merges.
+Reload safety, module exports/focus, and bounded versioned persistence are in
+progress. After landing threading across consumers, apply the prepared
+backlog migration and continue the finite checklist. Dependency simplification is merged; required product outcomes remain in progress.
+
+PR #301 review follow-up: a later explicit template could reinterpret an installed ordered RHS assertion. The candidate now rejects identity replacement while facts, seeds, or constructs use the ordered relation, including earlier same-load and qualified references. Seven baseline-failing regressions pass with the guard; real CLIPS rejects the ordinary RHS/LHS examples before the original rule runs. Qualified ordered syntax is a Ferric safety regression, not a new parity claim. The guard changes no snapshot layout.

@@ -71,6 +71,24 @@ Template facts use named slots defined by `deftemplate`:
 (assert (person (name Alice) (age 30)))
 ```
 
+RHS assertions resolve declared templates in the rule's module, evaluate named
+slots, fill defaults, and propagate template matches. Multislots splice supplied
+multifield values; both `?items` and `$?items` read the same bound value. Invalid
+slot names, repeated slots and statically invalid cardinality reject the rule
+before installation. A dynamic single-slot cardinality error stops that RHS
+without asserting a partial fact. Void expression results are omitted from
+multislots while their output effects remain observable.
+
+Pre-1.0 migration: template metadata now records slot cardinality. Legacy raw
+engine snapshots are not a stable interchange contract across this change;
+retain application facts/rule source for rebuilding. The rehabilitation's
+versioned persistence work will define the supported snapshot envelope.
+
+Complex non-linear predicate or return-value constraints inside negated ordered
+patterns are CLIPS-valid but explicitly rejected during load. PR #254 removed an
+incorrect firing-time fallback; it did not complete that optional language
+feature. The remaining gap is tracked in [#300](https://github.com/plx/ferric-rules/issues/300).
+
 ### Fact Identity
 
 Each successfully asserted fact receives a unique fact index. Fact addresses
@@ -282,7 +300,13 @@ Ferric supports `deftemplate` with the same syntax as CLIPS.
 
 ### Behavioral Notes
 
-- Templates must be defined before use in patterns or assertions.
+- Templates must be defined before use in patterns or assertions. A new
+  explicit template is rejected while existing facts, seed definitions, or
+  constructs depend on an ordered relation with the same local name. Earlier
+  ordered uses in the same load are protected as well. Ordered relations have
+  global identities in Ferric, so this guard also applies across modules and
+  to module-qualified spellings; separate already-explicit template identities
+  remain module-scoped. The internal `initial-fact` identity cannot be shadowed.
 - Template names are module-scoped and follow import/export visibility rules.
 - Asserting a template fact with missing slots uses declared defaults.
 - Template facts can be matched with partial slot patterns (unmentioned

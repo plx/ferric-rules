@@ -44,7 +44,10 @@ _NATIVE_PHASE_NAMES = frozenset(_V1_NATIVE_PHASES)
 _NATIVE_PHASE_STATUSES = frozenset({"OK", "CONTINUED", "ERROR"})
 _LOAD_SYNTAX_DIAGNOSTIC_FAMILIES = frozenset({"CSTRCPSR", "SCANNER"})
 _LOAD_SYNTAX_DIAGNOSTIC_CODES = frozenset({"PRNTUTIL2"})
-_LOAD_CONSTRUCT_DIAGNOSTIC_CODES = frozenset({"PRNTUTIL1"})
+# PRCCODE3 rejects undefined RHS variables; CSTRNCHK1 rejects literal slot
+# type/constraint violations during construct loading. Other PRCCODE messages
+# remain evaluation errors only when emitted in an authenticated run/reset phase.
+_LOAD_CONSTRUCT_DIAGNOSTIC_CODES = frozenset({"PRNTUTIL1", "PRCCODE3", "CSTRNCHK1"})
 _LOAD_CONSTRUCT_DIAGNOSTIC_FAMILIES = frozenset(
     {
         "ARGACCES",
@@ -154,11 +157,18 @@ def build_probe_operations(
     dump_definition = (
         f"(deffunction MAIN::{dump_name} () "
         "(bind ?fact-seq 0) "
-        "(progn$ (?fact (get-fact-list *)) "
-        "(if (neq (fact-relation ?fact) initial-fact) then "
-        "(bind ?fact-seq (+ ?fact-seq 1)) "
+        # Resolve each relation in a module where that fact is visible. A
+        # global fact list followed by MAIN lookup misattributes other modules'
+        # private templates and emits lookup errors as apparent fixture output.
+        "(progn$ (?scope (get-defmodule-list)) "
+        "(set-current-module ?scope) "
+        "(progn$ (?fact (get-fact-list ?scope)) "
         "(bind ?relation (fact-relation ?fact)) "
         "(bind ?module (deftemplate-module ?relation)) "
+        # Imported facts are visible in more than one scope: emit them exactly
+        # once, in their owning template's module.
+        "(if (and (eq ?module ?scope) (neq ?relation initial-fact)) then "
+        "(bind ?fact-seq (+ ?fact-seq 1)) "
         "(bind ?slots (fact-slot-names ?fact)) "
         "(bind ?kind (if (and (= (length$ ?slots) 1) "
         "(eq (nth$ 1 ?slots) implied)) then ordered else template)) "
@@ -181,7 +191,8 @@ def build_probe_operations(
         '(str-cat "SLOT|" ?fact-seq "|" (fact-index ?fact) "|" '
         '?slot-index "|" ?slot "|ATOMIC|1")) '
         f"({emit_name} ?fact-seq (fact-index ?fact) ?module ?relation "
-        "?slot-index ?slot 0 ?value))))) "
+        "?slot-index ?slot 0 ?value)))))) "
+        "(set-current-module MAIN) "
         "(return TRUE))"
     )
 

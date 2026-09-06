@@ -359,6 +359,11 @@ impl AlphaNetwork {
         (self.nodes.len(), self.memories.len())
     }
 
+    /// Fact identities referenced by compiled alpha paths.
+    pub fn entry_types(&self) -> impl Iterator<Item = &AlphaEntryType> {
+        self.entry_nodes.keys()
+    }
+
     /// Get or create an entry node for a given entry type.
     ///
     /// Entry nodes are unique per entry type (idempotent).
