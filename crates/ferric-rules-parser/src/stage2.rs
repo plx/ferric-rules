@@ -831,6 +831,7 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
 
     let mut idx = 1;
     let mut salience = 0;
+    let mut salience_set = false;
 
     // Check for optional comment (string as second element)
     let comment = parse_optional_comment(elements, &mut idx);
@@ -861,6 +862,12 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
                     if item_list.len() != 2 || !(-10_000..=10_000).contains(sal) {
                         return Err(InterpretError::expected(
                             "one salience integer in -10000..=10000",
+                            decl_item.span(),
+                        ));
+                    }
+                    if std::mem::replace(&mut salience_set, true) {
+                        return Err(InterpretError::expected(
+                            "only one salience declaration per rule",
                             decl_item.span(),
                         ));
                     }

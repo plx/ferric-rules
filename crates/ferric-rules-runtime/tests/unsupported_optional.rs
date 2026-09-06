@@ -77,6 +77,8 @@ fn refresh_and_dynamic_salience_cannot_promise_unimplemented_behavior() {
         "(defrule keep (declare (salience 4294967296)) => (assert (wrong)))",
         "(defrule keep (declare (salience 10001)) => (assert (wrong)))",
         "(defrule keep (declare (auto-focus TRUE)) => (assert (wrong)))",
+        "(defrule keep (declare (salience 1) (salience 2)) => (assert (wrong)))",
+        "(defrule keep (declare (salience 1)) (declare (salience 2)) => (assert (wrong)))",
     ] {
         let mut engine = Engine::with_rules("(defrule keep => (assert (kept)))").unwrap();
         assert!(engine.load_str(source).is_err(), "accepted {source}");
