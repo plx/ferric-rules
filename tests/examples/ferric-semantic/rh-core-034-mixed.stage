@@ -1,0 +1,4 @@
+; RH-CORE-034: CLIPS retains valid constructs before and after an invalid construct in one load.
+(deffacts first (value before))
+(defrule broken (subject ?x) => (assert (bad ?missing)))
+(deffacts second (value after))

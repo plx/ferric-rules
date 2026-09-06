@@ -289,10 +289,14 @@ impl ReteNetwork {
         self.agenda = Agenda::with_strategy(strategy);
 
         let root_token = self.seed_root_token();
-        let root_children = match self.beta.get_node(self.beta.root_id()) {
-            Some(BetaNode::Root { children, .. }) => children.clone(),
+        let mut root_children: SmallVec<[NodeId; 8]> = match self.beta.get_node(self.beta.root_id())
+        {
+            Some(BetaNode::Root { children, .. }) => SmallVec::from_slice(children),
             _ => return,
         };
+        // CLIPS seeds newer root branches first during reset. Their activation
+        // creation order matters for depth/breadth, including empty-LHS rules.
+        root_children.reverse();
         let mut new_activations = Vec::new();
         self.propagate_token(
             root_token,

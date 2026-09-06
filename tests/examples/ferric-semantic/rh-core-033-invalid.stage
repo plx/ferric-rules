@@ -1,0 +1,2 @@
+; RH-CORE-033: invalid typed assertion in a rejected rule does not damage a valid consumer.
+(defrule invalid => (assert (counter (n "wrong"))))

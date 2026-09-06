@@ -19,18 +19,11 @@ change, and it rejects every unexplained divergence.
 
 | Area | Current difference from pinned CLIPS | Policy cases | Tracking |
 |------|--------------------------------------|--------------|----------|
-| Depth and breadth agenda order | Recreated activations use different chronology in an order-sensitive case. | `FR-RETE-008` depth activation chronology; `FR-RETE-008-BREADTH` breadth activation chronology | [#154](https://github.com/plx/ferric-rules/issues/154) |
 | LEX and MEA agenda order | Recency vectors and the MEA tiebreak differ for selected multi-pattern activations. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
-| Reset ordering | `deffacts`-derived and `initial-fact` activations are inserted in the opposite order. | `FR-RETE-010` reset bootstrap ordering | [#156](https://github.com/plx/ferric-rules/issues/156) |
-| Rule replacement | A superseded same-name rule can remain live and fire alongside its replacement. | `FR-RETE-011` same-name rule replacement | [#157](https://github.com/plx/ferric-rules/issues/157) |
-| Template redefinition | A rejected live-template redefinition can corrupt later load state. | `FR-RETE-012` in-use template redefinition | [#158](https://github.com/plx/ferric-rules/issues/158) |
-| Module imports | An import from a module that exports nothing can be accepted and leak a qualified fact. | `FR-RETE-015` module export visibility | [#160](https://github.com/plx/ferric-rules/issues/160) |
-| Immediate focus-stack reporting | `list-focus-stack` can omit a module that was just focused. | `FR-RETE-016` immediate focus changes | [#192](https://github.com/plx/ferric-rules/issues/192) |
-| Drained focus stack | Ferric can retain `MAIN` after pinned CLIPS reports an empty stack. | `FR-RETE-017` focus-stack draining | [#193](https://github.com/plx/ferric-rules/issues/193) |
-| Late `deffacts` loading | A `deffacts` construct loaded after reset is asserted without another reset. | `FR-RETE-018` deffacts reset lifecycle | [#161](https://github.com/plx/ferric-rules/issues/161) |
 
-The reviewed differential policy covers 22 scenarios for 20 production-audit
-IDs plus one generated-harness control. It does not turn undeclared corpus
+The reviewed differential policy covers 57 scenarios: the existing 22 cases
+and 35 distinct rehabilitation scenarios, plus a generated-harness control.
+55 cases are equivalent; the two LEX/MEA cases retain exact known divergences. It does not turn undeclared corpus
 fixtures into compatibility claims; those remain pending or incompatible
 until they receive a structured oracle and reviewed policy entry. See
 [Compatibility assessment oracles](compatibility-assessment.md) for the exact

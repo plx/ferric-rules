@@ -1,0 +1,2 @@
+; RH-CORE-007: failed live-template redefinition preserves facts and original slot layout.
+(defrule read-original (record (original ?v)) => (printout t "original " ?v crlf) (assert (result ?v)))

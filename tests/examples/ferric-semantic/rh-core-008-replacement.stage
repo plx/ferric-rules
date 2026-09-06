@@ -1,0 +1,2 @@
+; RH-CORE-008: named deffacts replacement supplies only the latest definition at reset.
+(deffacts seed (version new))

@@ -2277,8 +2277,8 @@
           "stderr": ""
         },
         "diagnostic": {
-          "phase": "parse",
-          "category": "syntax-error",
+          "phase": "load",
+          "category": "construct-error",
           "continued": true
         },
         "run": {
@@ -4064,6 +4064,4816 @@
             "value": {
               "type": "string",
               "value": "4 8\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-001.clp": {
+      "version": 2,
+      "id": "RH-CORE-001",
+      "feature": "same-name replacement after reset removes old queued activations",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-001.clp",
+          "sha256": "90a4190604e22c52971347499d5f0cde3b295da4ff7687f2c4649d5d5d676ea2"
+        },
+        {
+          "name": "replacement",
+          "path": "ferric-semantic/rh-core-001-replacement.stage",
+          "sha256": "6617dc89b3b349de6511358f910e08e95b9a97edc10efefaf5df78a4c75bee41"
+        }
+      ],
+      "source_sha256": "90a4190604e22c52971347499d5f0cde3b295da4ff7687f2c4649d5d5d676ea2",
+      "composed_sha256": "57e1d7e71b836d6c0c3d08394da8c469c74e05d8687d0bc4490edb3dffd2dcf0",
+      "nonce": "eb38fe3a03168a07e8cf55bbf8580822",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "replacement",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "left",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "ready"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "right",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "ready"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "new"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "new\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::left",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "ready"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::right",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "ready"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "new"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "new\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-002.clp": {
+      "version": 2,
+      "id": "RH-CORE-002",
+      "feature": "repeated replacement preserves an independent shared-prefix rule",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-002.clp",
+          "sha256": "c18a008c62360041e631fcf1eb7a1cbac1b47307620d7e98a1c96d71f97df159"
+        },
+        {
+          "name": "middle",
+          "path": "ferric-semantic/rh-core-002-middle.stage",
+          "sha256": "47c2982fe78aa31da8c808c32b8297f4702b9244830a78cfff54b19a7219e492"
+        },
+        {
+          "name": "final",
+          "path": "ferric-semantic/rh-core-002-final.stage",
+          "sha256": "16de851d3b1a8eadae05a5623802bf698e005bb5c8472bc93230cc07ae4e24d9"
+        }
+      ],
+      "source_sha256": "c18a008c62360041e631fcf1eb7a1cbac1b47307620d7e98a1c96d71f97df159",
+      "composed_sha256": "e770a8047411725d6a9b854f1ebe3b3892f30ac4148041eba7f756bcfaee52a9",
+      "nonce": "e2f2ea007c0e84dfea5b4f1f5b462254",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "middle",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "final",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "subject",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "gate",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "open"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "proof",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "sibling"
+              },
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 5,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "final"
+              },
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "sibling\nfinal\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::subject",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::gate",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "open"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::proof",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "sibling"
+                },
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "final"
+                },
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "sibling\nfinal\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-003.clp": {
+      "version": 2,
+      "id": "RH-CORE-003",
+      "feature": "failed new rule load leaves a previously compiled sibling intact",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-003.clp",
+          "sha256": "05202d47a9b1d581a5f9df127960ef9b9e9dc7b3d99ad33584434f7908630fbe"
+        },
+        {
+          "name": "invalid",
+          "path": "ferric-semantic/rh-core-003-invalid.stage",
+          "sha256": "6eb1f3ea304bd4db6d6df469c2a20037128f19e5fb3bc61d5d28b5924958377f"
+        }
+      ],
+      "source_sha256": "05202d47a9b1d581a5f9df127960ef9b9e9dc7b3d99ad33584434f7908630fbe",
+      "composed_sha256": "b2882e30a6ea72841161ae2deedd723118906b768ad526a9f56b3caa9e9c8638",
+      "nonce": "8d2612bf935728d8bf168c7ce8880b65",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "invalid",
+            "on_error": "continue"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "subject",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "ok"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "ok"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "survivor ok\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "load",
+          "category": "construct-error",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::subject",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "ok"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "ok"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "survivor ok\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-004.clp": {
+      "version": 2,
+      "id": "RH-CORE-004",
+      "feature": "undefrule removes negative activations while a shared sibling remains live",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-004.clp",
+          "sha256": "97e9061c3d8bf23bee3ae92200e7f731a02f9cdfb4e4b1261f7b40e3e056e049"
+        }
+      ],
+      "source_sha256": "97e9061c3d8bf23bee3ae92200e7f731a02f9cdfb4e4b1261f7b40e3e056e049",
+      "composed_sha256": "4024d7bd1217ac0ddac76563fc3c8ef9e3845d5b98ec1d58fcddbfd45b0ba38d",
+      "nonce": "c9dae19f801b90f30a67a01faa7a479a",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "subject",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "subject",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "b"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "b"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 5,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "survivor b\nsurvivor a\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 3,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::subject",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::subject",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "b"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "b"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "survivor b\nsurvivor a\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-005.clp": {
+      "version": 2,
+      "id": "RH-CORE-005",
+      "feature": "removed existential rule never reappears when new support is asserted",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-005.clp",
+          "sha256": "d2f4f2595a89e457917bf978fed0c4fe2412516ac517fb71acb59d48f0406ba0"
+        }
+      ],
+      "source_sha256": "d2f4f2595a89e457917bf978fed0c4fe2412516ac517fb71acb59d48f0406ba0",
+      "composed_sha256": "b2a3eaed79e59245867c1f537d03f3e223a2df07718571fb03948cd576b25f89",
+      "nonce": "1777667ac7acb20c774aff7296948cf3",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "subject",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "proof",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 5,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "kept a\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::subject",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::proof",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "kept a\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-006.clp": {
+      "version": 2,
+      "id": "RH-CORE-006",
+      "feature": "unused template can be redefined with a new slot layout",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-006.clp",
+          "sha256": "cbf8c2509c34311b295bfeb6f13f096aee0c5d0b3aa14ae5623a9bfd595357b6"
+        },
+        {
+          "name": "replacement",
+          "path": "ferric-semantic/rh-core-006-replacement.stage",
+          "sha256": "1c622356ce330c8db664c9c27262c8903abfa4f8f214f821037e8874bb86d371"
+        }
+      ],
+      "source_sha256": "cbf8c2509c34311b295bfeb6f13f096aee0c5d0b3aa14ae5623a9bfd595357b6",
+      "composed_sha256": "d74a85a10ccc473456986ac54ef080ef7c268ae2b4e06071e29c172bdb54a8c4",
+      "nonce": "111f9466baec7384c2e2359817ee7a92",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "replacement",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "template",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "template": "record",
+            "slots": [
+              {
+                "name": "current",
+                "value": {
+                  "type": "integer",
+                  "value": 7
+                }
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 7
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "fresh 7\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::record",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "current"
+                    },
+                    {
+                      "type": "integer",
+                      "value": 7
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 7
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "fresh 7\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-007.clp": {
+      "version": 2,
+      "id": "RH-CORE-007",
+      "feature": "failed live-template redefinition preserves facts and original slot layout",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-007.clp",
+          "sha256": "831c785b5deaf1dcf065046cc34233ed71ee77cf30137d0883da7c283707f1c3"
+        },
+        {
+          "name": "invalid",
+          "path": "ferric-semantic/rh-core-007-invalid.stage",
+          "sha256": "e40610f25c860383fd7a68ca05370b661a910658ad8be5a4610b9831e5b0a496"
+        },
+        {
+          "name": "consumer",
+          "path": "ferric-semantic/rh-core-007-consumer.stage",
+          "sha256": "d146e49801f771d443b4a974c8bf64fb0be0faa6f1605911e3ada8d3ad8bc234"
+        }
+      ],
+      "source_sha256": "831c785b5deaf1dcf065046cc34233ed71ee77cf30137d0883da7c283707f1c3",
+      "composed_sha256": "a7eebeb90e0bdc01547dfb7b27be20b62e62c7afe0c4ae9a76c24a2609e34a9e",
+      "nonce": "294e20a03bca640f738cda7c94db502e",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "invalid",
+            "on_error": "continue"
+          },
+          {
+            "operation": "load",
+            "source": "consumer",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "template",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "template": "record",
+            "slots": [
+              {
+                "name": "original",
+                "value": {
+                  "type": "integer",
+                  "value": 9
+                }
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 9
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "original 9\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "load",
+          "category": "construct-error",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::record",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "original"
+                    },
+                    {
+                      "type": "integer",
+                      "value": 9
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 9
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "original 9\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-008.clp": {
+      "version": 2,
+      "id": "RH-CORE-008",
+      "feature": "named deffacts replacement supplies only the latest definition at reset",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-008.clp",
+          "sha256": "06107bfd458d2ba437b6587f60282a4a7025ea412a6983417f450824a2286d97"
+        },
+        {
+          "name": "replacement",
+          "path": "ferric-semantic/rh-core-008-replacement.stage",
+          "sha256": "e537623eb142794fda58cb0c65ae91ea312c7b830d8ca4706fd36a14431ab717"
+        }
+      ],
+      "source_sha256": "06107bfd458d2ba437b6587f60282a4a7025ea412a6983417f450824a2286d97",
+      "composed_sha256": "b31a1729ec0fdc6b6f95f207482972913e0ba51c29d071a45868ef1a71b3be05",
+      "nonce": "5845e56ca8ad339b5eca70679e7b7d46",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "replacement",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "version",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "new"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "new"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "new\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::version",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "new"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "new"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "new\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-009.clp": {
+      "version": 2,
+      "id": "RH-CORE-009",
+      "feature": "replacing one deffacts preserves independent definitions",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-009.clp",
+          "sha256": "e018e778e6a14a35c99f3928535df7c83b728c2e278fdc5902846bdf658b7b25"
+        },
+        {
+          "name": "replacement",
+          "path": "ferric-semantic/rh-core-009-replacement.stage",
+          "sha256": "5942dc223345b67c534114f4c28ca3c950b3626375ca6275a3228075c48db4f8"
+        }
+      ],
+      "source_sha256": "e018e778e6a14a35c99f3928535df7c83b728c2e278fdc5902846bdf658b7b25",
+      "composed_sha256": "4dbe4091ba112d5823d4b2b97bef1fc1fe2462d406315cace335ffdf66d8de54",
+      "nonce": "a64c941399d16e51a1d3e66ec964774c",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "replacement",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "sibling",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "retained"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "version",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "new"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "new"
+              },
+              {
+                "type": "symbol",
+                "value": "retained"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "new retained\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::sibling",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "retained"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::version",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "new"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "new"
+                },
+                {
+                  "type": "symbol",
+                  "value": "retained"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "new retained\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-010.clp": {
+      "version": 2,
+      "id": "RH-CORE-010",
+      "feature": "deffacts loaded after a reset become active on the next reset",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-010.clp",
+          "sha256": "2a07e482a0ecde16ef077d2d4325c7c9570e5da2031cfcd52e95442b701fa1af"
+        },
+        {
+          "name": "late",
+          "path": "ferric-semantic/rh-core-010-late.stage",
+          "sha256": "9c8e87e1aa560a859ee95e13b187825771a3f02eff6c89249d93b0456a21f1bd"
+        }
+      ],
+      "source_sha256": "2a07e482a0ecde16ef077d2d4325c7c9570e5da2031cfcd52e95442b701fa1af",
+      "composed_sha256": "ae39e566750626f4e282a645a5bfbcaa3fcfce07490e7e4e34907cbf09ee2c94",
+      "nonce": "0546acd98afc492b481d79488d55ce3f",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "late",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "late",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "ready"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "ready"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "late ready\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::late",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "ready"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "ready"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "late ready\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-011.clp": {
+      "version": 2,
+      "id": "RH-CORE-011",
+      "feature": "repeated reset creates exactly one initial fact activation",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-011.clp",
+          "sha256": "b490c2ee038d61b15dd7df036d9e591fff88f1830e22b82c6c01a9a17037c8b7"
+        }
+      ],
+      "source_sha256": "b490c2ee038d61b15dd7df036d9e591fff88f1830e22b82c6c01a9a17037c8b7",
+      "composed_sha256": "a382289e7de1d0a499cad3e12f49e92d11849b9eb0ad7a62872832c4f46ae9df",
+      "nonce": "f4a4e86e3e505c347393723c1b65bf06",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "boot"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "boot\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "boot"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "boot\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-012.clp": {
+      "version": 2,
+      "id": "RH-CORE-012",
+      "feature": "empty-LHS and standalone not rules bootstrap without application facts",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-012.clp",
+          "sha256": "cc00a29580561015b9a1fe24d5ccaa3c5639468e74b14b92a607deef19b65c11"
+        }
+      ],
+      "source_sha256": "cc00a29580561015b9a1fe24d5ccaa3c5639468e74b14b92a607deef19b65c11",
+      "composed_sha256": "b00276a2b935a71ece9a0e4123475bab266ad127292aebfaa468b35548cc1bcf",
+      "nonce": "9d9b5ce5ce68d8e0bac322ac2522dc02",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "ready",
+            "fields": []
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "yes"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "empty\nabsent\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::ready",
+            "value": {
+              "type": "multifield",
+              "value": []
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "yes"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "empty\nabsent\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-013.clp": {
+      "version": 2,
+      "id": "RH-CORE-013",
+      "feature": "depth strategy orders new dependent activations against queued work",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-013.clp",
+          "sha256": "1d056f07329cb5664867eef0a32743731b1c34a579d4a649dec615f6affb913b"
+        }
+      ],
+      "source_sha256": "1d056f07329cb5664867eef0a32743731b1c34a579d4a649dec615f6affb913b",
+      "composed_sha256": "da189bf47c480d48ed0f41a8462924863657af9b1c4a9afb0bf348c5aece0837",
+      "nonce": "75fa0de82dc6e6764214feaeb2e8868e",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "set-strategy",
+            "strategy": "depth",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "item",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "item",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "follow",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 5,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "follow",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 6,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 1
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "item 2\nfollow 2\nitem 1\nfollow 1\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 4,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::item",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 1
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::item",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 2
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::follow",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 2
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 2
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::follow",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 1
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 1
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "item 2\nfollow 2\nitem 1\nfollow 1\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-014.clp": {
+      "version": 2,
+      "id": "RH-CORE-014",
+      "feature": "breadth strategy orders new dependent activations against queued work",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-014.clp",
+          "sha256": "b2be69df0baf391861873da3ca63dc122a116f419bb0c88f7410b23172228448"
+        }
+      ],
+      "source_sha256": "b2be69df0baf391861873da3ca63dc122a116f419bb0c88f7410b23172228448",
+      "composed_sha256": "144d11648a92f52262331060e7685b4f74f118d7155d56a53b2bd0778b5d15c6",
+      "nonce": "22c87a5f9d8f9b44aa10eca4d9d5f36a",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "set-strategy",
+            "strategy": "breadth",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "item",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "item",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "follow",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "follow",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 5,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 6,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 2
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "item 1\nitem 2\nfollow 1\nfollow 2\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 4,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::item",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 1
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::item",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 2
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::follow",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 1
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::follow",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 2
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 1
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 2
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "item 1\nitem 2\nfollow 1\nfollow 2\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-015.clp": {
+      "version": 2,
+      "id": "RH-CORE-015",
+      "feature": "static salience takes precedence over assertion recency",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-015.clp",
+          "sha256": "2243e9299655565e7f0931e9609ab665a60785d60e6eb6439e84123ce066f64b"
+        }
+      ],
+      "source_sha256": "2243e9299655565e7f0931e9609ab665a60785d60e6eb6439e84123ce066f64b",
+      "composed_sha256": "4468ff248a166074ba0f5c611ffb45f2f78d5b6cafa8aef30f44bf82c6899712",
+      "nonce": "a0e82544e0a68650c707ed62b8630d48",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "old",
+            "fields": []
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "new",
+            "fields": []
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "high"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "low"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "high\nlow\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::old",
+            "value": {
+              "type": "multifield",
+              "value": []
+            }
+          },
+          {
+            "name": "fact:MAIN::new",
+            "value": {
+              "type": "multifield",
+              "value": []
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "high"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "low"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "high\nlow\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-018.clp": {
+      "version": 2,
+      "id": "RH-CORE-018",
+      "feature": "focus arguments establish deterministic module execution order",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-018.clp",
+          "sha256": "901ee1906618ae12fb6768a55d64363c5d62da9935cd8d7c8f37ba0626b4f181"
+        }
+      ],
+      "source_sha256": "901ee1906618ae12fb6768a55d64363c5d62da9935cd8d7c8f37ba0626b4f181",
+      "composed_sha256": "8b7cb121e45fb3ed2c72a0246204633b5f486d94b3fe61438542eb9058a14124",
+      "nonce": "9cc2683db1d0abe72d16fe5631443bc0",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [],
+        "channels": {
+          "stdout": "start\none\ntwo\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 3,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "start\none\ntwo\n"
+            }
+          }
+        ],
+        "focus_stack": [],
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-019.clp": {
+      "version": 2,
+      "id": "RH-CORE-019",
+      "feature": "named export does not expose an unexported sibling template",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-019.clp",
+          "sha256": "63efa62c7c9c3213259a815e05e45f2addff240235f4d3af78b4f38f67bc6e75"
+        },
+        {
+          "name": "invalid",
+          "path": "ferric-semantic/rh-core-019-invalid.stage",
+          "sha256": "35bbfb0e548b1be9a3aa539c7605b7860bdddee2a58213d667884db9d99f8405"
+        }
+      ],
+      "source_sha256": "63efa62c7c9c3213259a815e05e45f2addff240235f4d3af78b4f38f67bc6e75",
+      "composed_sha256": "f6132973b7287c043d29b946f7bcc989d60ebc95b72fbcd69df66e3135a827ab",
+      "nonce": "b90ca3996f0019b1a4f0caef85acdcec",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "invalid",
+            "on_error": "continue"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "template",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "template": "result",
+            "slots": [
+              {
+                "name": "value",
+                "value": {
+                  "type": "symbol",
+                  "value": "kept"
+                }
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "survivor\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "load",
+          "category": "construct-error",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "value"
+                    },
+                    {
+                      "type": "symbol",
+                      "value": "kept"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "survivor\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-020.clp": {
+      "version": 2,
+      "id": "RH-CORE-020",
+      "feature": "three-way joins preserve correlated bindings and exclude disconnected tuples",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-020.clp",
+          "sha256": "e9f2f7ef09871203c4c59d7c9d28c0c019d8fed0004320d870e07f9c3e3f46e9"
+        }
+      ],
+      "source_sha256": "e9f2f7ef09871203c4c59d7c9d28c0c019d8fed0004320d870e07f9c3e3f46e9",
+      "composed_sha256": "4a0f773a4cc2a49c41a08983b148d64ce003f52b0ca86707a16caf4ff7a31c2a",
+      "nonce": "cc8da5421cbbf73e5b2c17959b583b19",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "customer",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "alice"
+              },
+              {
+                "type": "symbol",
+                "value": "west"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "customer",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "bob"
+              },
+              {
+                "type": "symbol",
+                "value": "east"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "order",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "alice"
+              },
+              {
+                "type": "integer",
+                "value": 5
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "order",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "bob"
+              },
+              {
+                "type": "integer",
+                "value": 8
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 5,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "region",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "west"
+              },
+              {
+                "type": "symbol",
+                "value": "active"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 6,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "alice"
+              },
+              {
+                "type": "integer",
+                "value": 5
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "alice 5\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::customer",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "alice"
+                },
+                {
+                  "type": "symbol",
+                  "value": "west"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::customer",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "bob"
+                },
+                {
+                  "type": "symbol",
+                  "value": "east"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::order",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "alice"
+                },
+                {
+                  "type": "integer",
+                  "value": 5
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::order",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "bob"
+                },
+                {
+                  "type": "integer",
+                  "value": 8
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::region",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "west"
+                },
+                {
+                  "type": "symbol",
+                  "value": "active"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "alice"
+                },
+                {
+                  "type": "integer",
+                  "value": 5
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "alice 5\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-021.clp": {
+      "version": 2,
+      "id": "RH-CORE-021",
+      "feature": "repeated variable constraints preserve symbol versus string identity",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-021.clp",
+          "sha256": "1e50e7ad910de3a3309e24c7a0180c7cc736d4e969c65399ef1f57631c5d5c28"
+        }
+      ],
+      "source_sha256": "1e50e7ad910de3a3309e24c7a0180c7cc736d4e969c65399ef1f57631c5d5c28",
+      "composed_sha256": "934ff7bc0d2f16ea7d8ec58253384d188f63c49b32bcb0c23917fa66c42d8f67",
+      "nonce": "37310e0816f6b691717013100e405200",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "pair",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "red"
+              },
+              {
+                "type": "symbol",
+                "value": "red"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "pair",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "red"
+              },
+              {
+                "type": "symbol",
+                "value": "blue"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "pair",
+            "fields": [
+              {
+                "type": "string",
+                "value": "red"
+              },
+              {
+                "type": "symbol",
+                "value": "red"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "pair",
+            "fields": [
+              {
+                "type": "string",
+                "value": "blue"
+              },
+              {
+                "type": "string",
+                "value": "blue"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 5,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "string",
+                "value": "blue"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 6,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "red"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "blue\nred\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::pair",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "red"
+                },
+                {
+                  "type": "symbol",
+                  "value": "red"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::pair",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "red"
+                },
+                {
+                  "type": "symbol",
+                  "value": "blue"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::pair",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "string",
+                  "value": "red"
+                },
+                {
+                  "type": "symbol",
+                  "value": "red"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::pair",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "string",
+                  "value": "blue"
+                },
+                {
+                  "type": "string",
+                  "value": "blue"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "string",
+                  "value": "blue"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "red"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "blue\nred\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-022.clp": {
+      "version": 2,
+      "id": "RH-CORE-022",
+      "feature": "asserting a blocker cancels an already queued negative activation",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-022.clp",
+          "sha256": "8a5f27c3e71ee02087e0fd79a4b685b7a809506027f918e6f278da63552280c5"
+        }
+      ],
+      "source_sha256": "8a5f27c3e71ee02087e0fd79a4b685b7a809506027f918e6f278da63552280c5",
+      "composed_sha256": "0db967855c7227a8f30aefa4d7453c7a6aebd809b9bbde966fd87cf58def7fe3",
+      "nonce": "50bd5beeb6f251e98d2f36d85b2abec1",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "candidate",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "block",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "cancelled"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::candidate",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::block",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "cancelled"
+                }
+              ]
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-023.clp": {
+      "version": 2,
+      "id": "RH-CORE-023",
+      "feature": "correlated not becomes true only after the last distinct blocker is removed",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-023.clp",
+          "sha256": "50c677c9ec35ece3aa61b12ba34435d55a6c5450a8dfbdd607d102caf22da3bd"
+        }
+      ],
+      "source_sha256": "50c677c9ec35ece3aa61b12ba34435d55a6c5450a8dfbdd607d102caf22da3bd",
+      "composed_sha256": "3fa2fb3a75c165931577230fd0e443b625d8f03322c83e33fe45b1a22f6f3c0b",
+      "nonce": "b0dac79d56ffa544710c789ea643ecf1",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "candidate",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 6,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "unblocked\nselected a\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 3,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::candidate",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "unblocked\nselected a\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-024.clp": {
+      "version": 2,
+      "id": "RH-CORE-024",
+      "feature": "exists distinguishes per-candidate support without multiplying witnesses",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-024.clp",
+          "sha256": "f27d67a47938b85d0c3cf24da3d120c0792ba936d409f6e33575cf0aefbdd4f1"
+        }
+      ],
+      "source_sha256": "f27d67a47938b85d0c3cf24da3d120c0792ba936d409f6e33575cf0aefbdd4f1",
+      "composed_sha256": "8c30a617275fa2787c3e079ff82b4c2ca5d340c541857a624dde19aca2ec8dea",
+      "nonce": "6878a158474642f5c921bc27db0cbff8",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "candidate",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "candidate",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "b"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "proof",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              },
+              {
+                "type": "symbol",
+                "value": "one"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "proof",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              },
+              {
+                "type": "symbol",
+                "value": "two"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 5,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "proof",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "c"
+              },
+              {
+                "type": "symbol",
+                "value": "stray"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 6,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "eligible a\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::candidate",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::candidate",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "b"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::proof",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                },
+                {
+                  "type": "symbol",
+                  "value": "one"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::proof",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                },
+                {
+                  "type": "symbol",
+                  "value": "two"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::proof",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "c"
+                },
+                {
+                  "type": "symbol",
+                  "value": "stray"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "eligible a\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-025.clp": {
+      "version": 2,
+      "id": "RH-CORE-025",
+      "feature": "test CEs filter joined numeric facts using boolean arithmetic conditions",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-025.clp",
+          "sha256": "d337c3995844bef165c74c1aacdd284e412f60918ea907a9fb24c3e24b1f9c4a"
+        }
+      ],
+      "source_sha256": "d337c3995844bef165c74c1aacdd284e412f60918ea907a9fb24c3e24b1f9c4a",
+      "composed_sha256": "fcef22fbfd44b486d527f4834c99115a5c4a7f032fd45a9cb2bfe8dc40228882",
+      "nonce": "1d00d70010cc9f0d08488a6acd968a67",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "quote",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              },
+              {
+                "type": "integer",
+                "value": 10
+              },
+              {
+                "type": "integer",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "quote",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "b"
+              },
+              {
+                "type": "integer",
+                "value": 8
+              },
+              {
+                "type": "integer",
+                "value": 5
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "quote",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "c"
+              },
+              {
+                "type": "integer",
+                "value": 3
+              },
+              {
+                "type": "integer",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "budget",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 15
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 5,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              },
+              {
+                "type": "integer",
+                "value": 8
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 6,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "b"
+              },
+              {
+                "type": "integer",
+                "value": 3
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "a 8\nb 3\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::quote",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                },
+                {
+                  "type": "integer",
+                  "value": 10
+                },
+                {
+                  "type": "integer",
+                  "value": 2
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::quote",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "b"
+                },
+                {
+                  "type": "integer",
+                  "value": 8
+                },
+                {
+                  "type": "integer",
+                  "value": 5
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::quote",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "c"
+                },
+                {
+                  "type": "integer",
+                  "value": 3
+                },
+                {
+                  "type": "integer",
+                  "value": 1
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::budget",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 15
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                },
+                {
+                  "type": "integer",
+                  "value": 8
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "b"
+                },
+                {
+                  "type": "integer",
+                  "value": 3
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "a 8\nb 3\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-030.clp": {
+      "version": 2,
+      "id": "RH-CORE-030",
+      "feature": "retraction cancels dependent joined activations while preserving other candidates",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-030.clp",
+          "sha256": "b95863d8bd1e9f91d6f9afc917fc71ab539927dec2b89dc8cd8a7eb5203da75d"
+        }
+      ],
+      "source_sha256": "b95863d8bd1e9f91d6f9afc917fc71ab539927dec2b89dc8cd8a7eb5203da75d",
+      "composed_sha256": "d0379dce6339f01b189715a03ef3e9019eeeaf6d6b09e6c995a677323ef3e1c1",
+      "nonce": "446a4e68ed07a474f51966aba9374a8e",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "item",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "a"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "item",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "b"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "enabled",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "b"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 6,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "b"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "ready b\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::item",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "a"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::item",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "b"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::enabled",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "b"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "b"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "ready b\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-031.clp": {
+      "version": 2,
+      "id": "RH-CORE-031",
+      "feature": "fact duplication policy can enable then suppress identical assertions",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-031.clp",
+          "sha256": "c020d01e30c2b5f503272100846e34382b2a2c686b092c0c4e16ba75fb3d4db3"
+        }
+      ],
+      "source_sha256": "c020d01e30c2b5f503272100846e34382b2a2c686b092c0c4e16ba75fb3d4db3",
+      "composed_sha256": "7055f3386f1c758399e40b75e497c9d61d154ecd714c8c8eb64d548af6200eb6",
+      "nonce": "54ba1e907181e693bca4a8010f94699b",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "item",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "x"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "item",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "x"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "item x\nitem x\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 3,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::item",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "x"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::item",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "x"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "item x\nitem x\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-032.clp": {
+      "version": 2,
+      "id": "RH-CORE-032",
+      "feature": "halt preserves earlier RHS effects and prevents the next activation from firing",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-032.clp",
+          "sha256": "fd10ca0c88b881595ecde4d060f43ad938531c2a04e52c8deab9017bbbef3dce"
+        }
+      ],
+      "source_sha256": "fd10ca0c88b881595ecde4d060f43ad938531c2a04e52c8deab9017bbbef3dce",
+      "composed_sha256": "90f3a44461c7647dc7e2e754c5126fd1c53db002b1ae877d4049fcc50ee5a80e",
+      "nonce": "5fef551fe3920aa57450f0daa4ed2b69",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "go",
+            "fields": []
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "stopped"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "stop\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "halt-requested"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::go",
+            "value": {
+              "type": "multifield",
+              "value": []
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "stopped"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "stop\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-033.clp": {
+      "version": 2,
+      "id": "RH-CORE-033",
+      "feature": "invalid typed assertion in a rejected rule does not damage a valid consumer",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-033.clp",
+          "sha256": "d942388e2de011d8368b6e5180f41511ddcc82e98d381a1347832571810aaace"
+        },
+        {
+          "name": "invalid",
+          "path": "ferric-semantic/rh-core-033-invalid.stage",
+          "sha256": "9d0d9a11eb0d4223163bfeba6f2c06e9f459e2037e4e4a7df206441207f39134"
+        }
+      ],
+      "source_sha256": "d942388e2de011d8368b6e5180f41511ddcc82e98d381a1347832571810aaace",
+      "composed_sha256": "d3a4d99465449fb003e1c7f8189e47c317de2642978e9c376e198ab3f3b3f370",
+      "nonce": "25f927f9ccec0b2e1bc57622839bebfa",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "invalid",
+            "on_error": "continue"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "template",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "template": "counter",
+            "slots": [
+              {
+                "name": "n",
+                "value": {
+                  "type": "integer",
+                  "value": 5
+                }
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "integer",
+                "value": 5
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "valid 5\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "load",
+          "category": "construct-error",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::counter",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "multifield",
+                  "value": [
+                    {
+                      "type": "symbol",
+                      "value": "n"
+                    },
+                    {
+                      "type": "integer",
+                      "value": 5
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "integer",
+                  "value": 5
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "valid 5\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-034.clp": {
+      "version": 2,
+      "id": "RH-CORE-034",
+      "feature": "CLIPS retains valid constructs before and after an invalid construct in one load",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-034.clp",
+          "sha256": "c614a82271c8b5b915bfd180e6f9cd2d1e79cf5c547b4c31b67ab063f95be6f6"
+        },
+        {
+          "name": "mixed",
+          "path": "ferric-semantic/rh-core-034-mixed.stage",
+          "sha256": "89d08386847c1ef7ffa67b8c50b663e2ce2c1aa15e4b84016866f9f7afa7c21f"
+        }
+      ],
+      "source_sha256": "c614a82271c8b5b915bfd180e6f9cd2d1e79cf5c547b4c31b67ab063f95be6f6",
+      "composed_sha256": "4c1572bf96504eef6f183f1c1a347082b6e6cb91feb2c05a1af3b4d006bdcdd0",
+      "nonce": "d548b90cd9cb176b2714b93eaa616767",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "load",
+            "source": "mixed",
+            "on_error": "continue"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "value",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "before"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "value",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "after"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "after"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "result",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "before"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "after\nbefore\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "load",
+          "category": "construct-error",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 2,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::value",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "before"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::value",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "after"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "after"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::result",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "before"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "after\nbefore\n"
+            }
+          }
+        ],
+        "focus_stack": null,
+        "globals": null
+      },
+      "normalizers": [
+        "fact-ids",
+        "fact-order"
+      ]
+    },
+    "ferric-semantic/rh-core-035.clp": {
+      "version": 2,
+      "id": "RH-CORE-035",
+      "feature": "candidate facts select at most one deterministic launch action for a session",
+      "sources": [
+        {
+          "name": "primary",
+          "path": "ferric-semantic/rh-core-035.clp",
+          "sha256": "e297cc68808145f430f38c329c000724d698001431f10f3e04359f91077dd9ac"
+        }
+      ],
+      "source_sha256": "e297cc68808145f430f38c329c000724d698001431f10f3e04359f91077dd9ac",
+      "composed_sha256": "c4c17b58945a7039493e8dcf11be3c28b06e2784e990a0df4b74a2fe0db9f432",
+      "nonce": "a2f327587796987c42917e9491700dbb",
+      "setup": {
+        "steps": [
+          {
+            "operation": "load",
+            "source": "primary",
+            "on_error": "stop"
+          },
+          {
+            "operation": "reset",
+            "on_error": "stop"
+          },
+          {
+            "operation": "run",
+            "limit": null,
+            "on_error": "stop"
+          }
+        ]
+      },
+      "expectations": {
+        "phase": "run-complete",
+        "facts": [
+          {
+            "kind": "ordered",
+            "id": 1,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "session",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "session-42"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 2,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "candidate",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "session-42"
+              },
+              {
+                "type": "symbol",
+                "value": "promotion"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 3,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "candidate",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "session-42"
+              },
+              {
+                "type": "symbol",
+                "value": "sign-in"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 4,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "candidate",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "session-42"
+              },
+              {
+                "type": "symbol",
+                "value": "welcome"
+              }
+            ]
+          },
+          {
+            "kind": "ordered",
+            "id": 5,
+            "origin": "fixture",
+            "module": "MAIN",
+            "relation": "action",
+            "fields": [
+              {
+                "type": "symbol",
+                "value": "session-42"
+              },
+              {
+                "type": "symbol",
+                "value": "sign-in"
+              }
+            ]
+          }
+        ],
+        "channels": {
+          "stdout": "action session-42 sign-in\n",
+          "stderr": ""
+        },
+        "diagnostic": {
+          "phase": "none",
+          "category": "none",
+          "continued": true
+        },
+        "run": {
+          "limit": null,
+          "halt_reason": "agenda-empty"
+        },
+        "firings": {
+          "count": 1,
+          "names": null
+        },
+        "effects": [
+          {
+            "name": "fact:MAIN::session",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "session-42"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::candidate",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "session-42"
+                },
+                {
+                  "type": "symbol",
+                  "value": "promotion"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::candidate",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "session-42"
+                },
+                {
+                  "type": "symbol",
+                  "value": "sign-in"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::candidate",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "session-42"
+                },
+                {
+                  "type": "symbol",
+                  "value": "welcome"
+                }
+              ]
+            }
+          },
+          {
+            "name": "fact:MAIN::action",
+            "value": {
+              "type": "multifield",
+              "value": [
+                {
+                  "type": "symbol",
+                  "value": "session-42"
+                },
+                {
+                  "type": "symbol",
+                  "value": "sign-in"
+                }
+              ]
+            }
+          },
+          {
+            "name": "channel:stdout",
+            "value": {
+              "type": "string",
+              "value": "action session-42 sign-in\n"
             }
           }
         ],

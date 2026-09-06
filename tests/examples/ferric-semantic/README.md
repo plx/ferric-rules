@@ -2,14 +2,13 @@
 
 This first-party corpus is the release-blocking differential lane for the
 production-readiness regressions `FR-RETE-001` through `FR-RETE-018` and
-`FR-LANG-001`/`002`, plus rehabilitation template cases `RH-CORE-016`,
-`017`, and `026`–`029`. Every `.clp` file is a primary fixture with a version-2
+`FR-LANG-001`/`002`, plus 35 distinct rehabilitation cases `RH-CORE-001`–`035`. Every `.clp` file is a primary fixture with a version-2
 structured oracle in `../compat-oracles.json`. Files ending in `.stage` are
 additional digest-bound sources loaded by that fixture's canonical scenario;
 they are not standalone corpus entries.
 
 The lane always executes the same scenario against Ferric and the repository's
-pinned CLIPS reference image. `../compat-semantic-policy.json` requires all 28
+pinned CLIPS reference image. `../compat-semantic-policy.json` requires all 57
 scenario IDs, verifies the measured reference binary and
 library digests, and
 allows a known divergence only when its classification, reason, mismatch
@@ -35,3 +34,12 @@ Do not copy reference output into an unstructured assertion. Each fixture must
 retain at least one independently reviewable semantic effect, and every staged
 source must remain declared, path-contained, size-bounded, and SHA-256-bound by
 its oracle scenario.
+
+The rehabilitation scenarios cover replacement and removal, reset and named
+deffacts, depth/breadth chronology, module visibility/focus, typed joins and
+assertions, blocker/retraction transitions, incremental errors, and one-action
+launch selection. All 35 match pinned CLIPS 6.30; the existing corpus now has
+20 equivalent cases and two retained LEX/MEA divergences. The FR-RETE-012
+expectation changes only its diagnostic classification: the refreshed CLIPS
+CSTRCPSR4 rejection is a construct-load error. Its facts/output expectations
+remain unchanged and pass after the empty-LHS reset-order fix.

@@ -974,10 +974,12 @@ fn fr_rete_008_depth_and_breadth_expose_recreated_activation_chronology() {
         ConflictResolutionStrategy::Breadth,
     );
 
+    // Pinned CLIPS schedules recreated negative activations by creation time,
+    // not by the timetags of their supporting facts.
     assert_eq!(depth.rules_fired, 4);
-    assert_eq!(depth.output, "P\nN\n");
+    assert_eq!(depth.output, "N\nP\n");
     assert_eq!(breadth.rules_fired, 4);
-    assert_eq!(breadth.output, "N\nP\n");
+    assert_eq!(breadth.output, "P\nN\n");
     assert_ne!(depth.output, breadth.output);
 }
 
