@@ -182,3 +182,5 @@ void-result edge case. These fixes need integrated checks and reviewed merges.
 Reload safety, module exports/focus, and bounded versioned persistence are in
 progress. After landing threading across consumers, apply the prepared
 backlog migration and continue the finite checklist. Dependency simplification is merged; required product outcomes remain in progress.
+
+PR #301 review follow-up: a later explicit template could reinterpret an installed ordered RHS assertion. The candidate now rejects identity replacement while facts, seeds, or constructs use the ordered relation, including earlier same-load and qualified references. Seven baseline-failing regressions pass with the guard; real CLIPS rejects the ordinary RHS/LHS examples before the original rule runs. Qualified ordered syntax is a Ferric safety regression, not a new parity claim. The guard changes no snapshot layout.
