@@ -5,10 +5,10 @@
     (slot age))
 
 (deffacts startup
-    (person Alice 30)
-    (person Bob 25))
+    (person (name Alice) (age 30))
+    (person (name Bob) (age 25)))
 
 (defrule greet-person
-    (person ?name ?age)
+    (person (name ?name) (age ?age))
     =>
     (assert (greeted ?name)))
