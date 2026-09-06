@@ -111,7 +111,7 @@ fn unrelated_and_already_explicit_template_identities_still_work() {
         .unwrap_err();
     // A live global ordered identity is protected across modules as well.
     let mut engine = Engine::new(EngineConfig::utf8());
-    engine.load_str("(defmodule A) (deftemplate item (slot x)) (defrule make => (assert (item (x 2)))) (defmodule B) (deftemplate item (slot y))").unwrap();
+    engine.load_str("(defmodule A) (deftemplate item (slot x)) (defrule make => (assert (item (x 2)))) (defmodule B) (deftemplate B::item (slot y))").unwrap();
     assert!(engine.action_diagnostics().is_empty());
 }
 
