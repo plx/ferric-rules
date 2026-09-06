@@ -51,24 +51,19 @@ test("B-010 all synchronous fact-ID producers and snapshots use bigint", () => {
   }
 });
 
-test("B-011 safe legacy number IDs remain accepted without changing bigint outputs", () => {
+test("B-011 safe numeric lookup inputs remain accepted; wide handles require bigint", () => {
   const engine = new Engine();
   try {
     engine.load("(deftemplate item (slot value))");
-    engine.reset();
-
     const id = engine.assertTemplate("item", { value: 7 });
-    const legacyNumberId = Number(id);
-    assert.ok(Number.isSafeInteger(legacyNumberId));
-
-    const fact = engine.getFact(legacyNumberId) as Fact | null;
-    assert.strictEqual(fact?.id, id);
-    assert.strictEqual(engine.getFactSlot(legacyNumberId, "value"), 7);
-    engine.retract(legacyNumberId);
+    assert.ok(id > BigInt(Number.MAX_SAFE_INTEGER));
+    assert.strictEqual(engine.getFact(0), null);
+    assert.strictEqual(engine.getFact(Number.MAX_SAFE_INTEGER), null);
+    assert.throws(() => engine.getFact(Number(id)), UNSAFE_NUMBER_ERROR);
+    assert.strictEqual(engine.getFactSlot(id, "value"), 7);
+    engine.retract(id);
     assert.strictEqual(engine.getFact(id), null);
-  } finally {
-    engine.close();
-  }
+  } finally { engine.close(); }
 });
 
 test("B-011 invalid fact-ID kinds and ranges are rejected deliberately", () => {
@@ -159,12 +154,12 @@ test("B-011 bigint conversion is accepted below, at, and above the safe-number b
   }
 });
 
-test("B-010 high-generation fact IDs round-trip exactly in a Node subprocess", () => {
+test("B-010 wide opaque fact IDs round-trip exactly in a Node subprocess", () => {
   const packageEntry = resolve(__dirname, "../../../../dist/index.js");
   const script = `
     const assert = require("node:assert/strict");
     const { Engine, Format } = require(${JSON.stringify(packageEntry)});
-    const iterations = 1_048_577;
+    const iterations = 2;
     const engine = new Engine();
     let id;
     try {
@@ -183,8 +178,11 @@ test("B-010 high-generation fact IDs round-trip exactly in a Node subprocess", (
       for (const format of [Format.Bincode, Format.Json]) {
         const restored = Engine.fromSnapshot(engine.serialize(format), format);
         try {
-          assert.strictEqual(restored.getFact(id).id, id);
-          restored.retract(id);
+          assert.strictEqual(restored.getFact(id), null);
+          const freshId = restored.findFacts("generation")[0].id;
+          assert.notStrictEqual(freshId, id);
+          assert.ok(freshId > BigInt(Number.MAX_SAFE_INTEGER));
+          restored.retract(freshId);
           assert.strictEqual(restored.getFact(id), null);
         } finally {
           restored.close();
@@ -197,9 +195,7 @@ test("B-010 high-generation fact IDs round-trip exactly in a Node subprocess", (
       engine.close();
     }
 
-    // A template-loaded engine reserves a second fact slot. Churn that slot to
-    // the same generation boundary and prove getFactSlot accepts its returned
-    // above-safe-range bigint without a second cross-process fixture.
+    // Template APIs must also preserve every bit of a returned opaque handle.
     const templateEngine = new Engine();
     try {
       templateEngine.load("(deftemplate high-template (slot value))");
@@ -222,7 +218,7 @@ test("B-010 high-generation fact IDs round-trip exactly in a Node subprocess", (
 
   const childEnv = { ...process.env };
   // The aggregate coverage lane already instruments this test process. The
-  // high-generation child is an isolation/reproduction boundary, not another
+  // wide opaque child is an isolation/reproduction boundary, not another
   // coverage shard; inheriting these variables contaminates the parent's
   // merged coverage and can also alter slot allocation through test bootstrap.
   // Node's test runner re-injects its coverage directory when the key is
@@ -239,7 +235,7 @@ test("B-010 high-generation fact IDs round-trip exactly in a Node subprocess", (
   assert.strictEqual(
     child.status,
     0,
-    `high-generation subprocess failed:\nstdout: ${child.stdout}\nstderr: ${child.stderr}`,
+    `wide opaque subprocess failed:\nstdout: ${child.stdout}\nstderr: ${child.stderr}`,
   );
   assert.strictEqual(child.stdout, "ok");
 });

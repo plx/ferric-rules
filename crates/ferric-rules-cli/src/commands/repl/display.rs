@@ -7,7 +7,7 @@ use ferric_rules_runtime::Engine;
 pub(crate) fn format_value(value: &Value, engine: &Engine) -> String {
     match value {
         Value::Symbol(sym) => engine
-            .resolve_symbol(*sym)
+            .resolve_core_symbol(*sym)
             .unwrap_or("<unknown>")
             .to_string(),
         Value::String(s) => format!("\"{}\"", s.as_str()),
@@ -47,13 +47,12 @@ pub(crate) fn print_facts(engine: &Engine) {
             let mut count = 0usize;
             for (id, fact) in iter {
                 count += 1;
-                let id_num = {
-                    use slotmap::Key as _;
-                    id.data().as_ffi()
-                };
+                let id_num = { id.as_raw() };
                 match fact {
                     Fact::Ordered(o) => {
-                        let relation = engine.resolve_symbol(o.relation).unwrap_or("<unknown>");
+                        let relation = engine
+                            .resolve_core_symbol(o.relation)
+                            .unwrap_or("<unknown>");
                         print!("f-{id_num:<5}  ({relation}");
                         for field in &o.fields {
                             print!(" {}", format_value(field, engine));

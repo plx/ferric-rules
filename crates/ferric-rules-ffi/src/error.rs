@@ -156,7 +156,9 @@ pub(crate) fn map_engine_error(err: &EngineError) -> FerricError {
         | EngineError::ModuleNotFound(_)
         | EngineError::TemplateNotFound(_)
         | EngineError::SlotNotFound { .. } => FerricError::NotFound,
-        EngineError::NotATemplateFact(_)
+        EngineError::ForeignHandle
+        | EngineError::InvalidHostValue(_)
+        | EngineError::NotATemplateFact(_)
         | EngineError::Encoding(_)
         | EngineError::SlotCountMismatch { .. }
         | EngineError::DuplicateSlot { .. }

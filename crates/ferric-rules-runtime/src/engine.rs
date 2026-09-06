@@ -461,7 +461,7 @@ impl Engine {
     /// engine.assert_ordered("count", 42_i64)?;           // single integer
     /// engine.assert_ordered("tier", free_symbol)?;        // single Symbol
     /// engine.assert_ordered("pair", vec![v1, v2])?;       // multiple values
-    /// engine.assert_ordered("empty", vec![])?;            // no fields
+    /// engine.assert_ordered("empty", ())?;            // no fields
     /// ```
     ///
     /// # Errors
@@ -505,16 +505,12 @@ impl Engine {
         Ok(self.host_assertion_result(result))
     }
 
-    /// Assert a fully constructed fact into working memory.
-    ///
-    /// The `Result` return type is retained for API compatibility.
+    /// Reassert a captured owned fact after checking engine ownership and template shape.
     pub fn assert(&mut self, fact: HostFact) -> Result<FactHandle, EngineError> {
         Ok(self.assert_with_result(fact)?.fact_id())
     }
 
-    /// Assert a fully constructed fact and report whether it was newly inserted.
-    ///
-    /// The `Result` return type is retained for API compatibility.
+    /// Reassert a captured owned fact and report whether it was newly inserted.
     pub fn assert_with_result(
         &mut self,
         fact: HostFact,
@@ -776,6 +772,12 @@ impl Engine {
             return Ok(None);
         }
         Ok(self.fact_base.get(fact_id).map(|entry| &entry.fact))
+    }
+
+    /// Count user-visible facts without allocating or exporting host handles.
+    #[must_use]
+    pub fn fact_count(&self) -> usize {
+        self.fact_base.len() - usize::from(self.initial_fact_id.is_some())
     }
 
     /// Iterate over all user-visible facts in working memory.
@@ -1869,8 +1871,8 @@ mod tests {
             .unwrap();
         engine.reset().unwrap();
 
-        let first = engine.assert_ordered_with_result("x", vec![]).unwrap();
-        let duplicate = engine.assert_ordered_with_result("x", vec![]).unwrap();
+        let first = engine.assert_ordered_with_result("x", ()).unwrap();
+        let duplicate = engine.assert_ordered_with_result("x", ()).unwrap();
 
         assert!(matches!(first, FactAssertionResult::Asserted(_)));
         assert_eq!(duplicate, FactAssertionResult::Duplicate(first.fact_id()));
@@ -1897,13 +1899,13 @@ mod tests {
         let alice = engine.intern_symbol("Alice").unwrap();
 
         let first = engine
-            .assert_template_with_result("person", &["name"], vec![Value::Symbol(alice)])
+            .assert_template_with_result("person", &["name"], vec![HostValue::from(alice)])
             .unwrap();
         let duplicate = engine
             .assert_template_with_result(
                 "person",
                 &["age", "name"],
-                vec![Value::Integer(0), Value::Symbol(alice)],
+                vec![HostValue::from(0_i64), HostValue::from(alice)],
             )
             .unwrap();
 
@@ -1931,7 +1933,7 @@ mod tests {
         assert_eq!(
             engine
                 .fact_base
-                .get(second.fact_id())
+                .get(engine.host.resolve(second.fact_id()).unwrap())
                 .expect("second fact exists")
                 .timestamp,
             ferric_rules_core::Timestamp::new(1),
@@ -1974,7 +1976,7 @@ mod tests {
             )
             .unwrap();
         engine.reset().unwrap();
-        engine.assert_ordered("go", vec![]).unwrap();
+        engine.assert_ordered("go", ()).unwrap();
 
         let result = engine.run(RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 1);
@@ -2077,7 +2079,7 @@ mod tests {
         engine.reset().unwrap();
         assert_eq!(engine.agenda_len(), 1);
 
-        engine.assert_ordered("blocked", vec![]).unwrap();
+        engine.assert_ordered("blocked", ()).unwrap();
 
         assert_eq!(engine.agenda_len(), 0);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
@@ -2100,7 +2102,7 @@ mod tests {
             .unwrap();
         engine.reset().unwrap();
 
-        let blocker = engine.assert_ordered("blocked", vec![]).unwrap();
+        let blocker = engine.assert_ordered("blocked", ()).unwrap();
         assert_eq!(engine.agenda_len(), 0);
         engine.retract(blocker).unwrap();
 
@@ -2135,7 +2137,7 @@ mod tests {
             assert_single_root_prefix_token(&engine);
         }
 
-        let blocker_a = engine.assert_ordered("blocked-a", vec![]).unwrap();
+        let blocker_a = engine.assert_ordered("blocked-a", ()).unwrap();
         assert_eq!(engine.agenda_len(), 1, "rule B remains independent");
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
         assert_eq!(engine.get_output("t"), Some("B\n"));
@@ -2159,7 +2161,7 @@ mod tests {
     #[test]
     fn fr_rete_003_late_single_pattern_rule_backfills() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        engine.assert_ordered("foo", vec![]).unwrap();
+        engine.assert_ordered("foo", ()).unwrap();
 
         engine
             .load_str(
@@ -2219,9 +2221,9 @@ mod tests {
     #[test]
     fn fr_rete_003_late_negative_and_exists_backfill() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let blocker = engine.assert_ordered("blocked", vec![]).unwrap();
-        engine.assert_ordered("seed", vec![]).unwrap();
-        engine.assert_ordered("ready", vec![]).unwrap();
+        let blocker = engine.assert_ordered("blocked", ()).unwrap();
+        engine.assert_ordered("seed", ()).unwrap();
+        engine.assert_ordered("ready", ()).unwrap();
 
         engine
             .load_str(
@@ -2475,7 +2477,7 @@ mod tests {
             .facts()
             .unwrap()
             .any(|(_, fact)| matches!(fact, Fact::Ordered(ordered) if engine
-                .resolve_symbol(ordered.relation) == Some("preserved"))));
+                .resolve_core_symbol(ordered.relation) == Some("preserved"))));
         engine.debug_assert_consistency();
     }
 
@@ -2580,7 +2582,7 @@ mod tests {
     #[test]
     fn retract_fact() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let id = engine.assert_ordered("test", vec![]).unwrap();
+        let id = engine.assert_ordered("test", ()).unwrap();
 
         let result = engine.retract(id);
         assert!(result.is_ok());
@@ -2591,7 +2593,7 @@ mod tests {
     #[test]
     fn retract_nonexistent_fact_returns_error() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let id = engine.assert_ordered("test", vec![]).unwrap();
+        let id = engine.assert_ordered("test", ()).unwrap();
 
         engine.retract(id).unwrap();
         let result = engine.retract(id);
@@ -2602,12 +2604,9 @@ mod tests {
     #[test]
     fn assert_structured_ordered_fact() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let relation = engine.intern_symbol("person").unwrap();
-        let fact = Fact::Ordered(ferric_rules_core::OrderedFact {
-            relation,
-            fields: smallvec::smallvec![Value::Integer(42)],
-        });
-
+        let original = engine.assert_ordered("person", 42_i64).unwrap();
+        let fact = engine.get_fact_owned(original).unwrap().unwrap();
+        engine.retract(original).unwrap();
         let id = engine.assert(fact).unwrap();
         let stored = engine.get_fact(id).unwrap().unwrap();
 
@@ -2654,8 +2653,8 @@ mod tests {
         let mut engine = Engine::new(EngineConfig::utf8());
         engine.set_fact_duplication(true);
 
-        let id1 = engine.assert_ordered("test", vec![]).unwrap();
-        let id2 = engine.assert_ordered("test", vec![]).unwrap();
+        let id1 = engine.assert_ordered("test", ()).unwrap();
+        let id2 = engine.assert_ordered("test", ()).unwrap();
 
         let all: Vec<_> = engine.facts().unwrap().map(|(id, _)| id).collect();
         assert_eq!(all.len(), 2);
@@ -2927,7 +2926,7 @@ mod tests {
         // assert_ordered should automatically propagate through rete
         let alice_sym = engine.intern_symbol("Alice").unwrap();
         engine
-            .assert_ordered("person", vec![Value::Symbol(alice_sym)])
+            .assert_ordered("person", vec![HostValue::from(alice_sym)])
             .unwrap();
         assert_eq!(engine.rete.agenda.len(), 1);
     }
@@ -2939,7 +2938,7 @@ mod tests {
 
         let alice_sym = engine.intern_symbol("Alice").unwrap();
         let fid = engine
-            .assert_ordered("person", vec![Value::Symbol(alice_sym)])
+            .assert_ordered("person", vec![HostValue::from(alice_sym)])
             .unwrap();
         assert_eq!(engine.rete.agenda.len(), 1);
 
@@ -2990,15 +2989,15 @@ mod tests {
             let relation_pool: Vec<&str> = vec!["rel0", "rel1", "rel2"];
 
             // Shadow model: track which FactIds are currently live.
-            let mut live: Vec<FactId> = Vec::new();
+            let mut live: Vec<FactHandle> = Vec::new();
             // All FactIds ever successfully asserted (live or retracted).
-            let mut all_asserted: Vec<FactId> = Vec::new();
+            let mut all_asserted: Vec<FactHandle> = Vec::new();
 
             for op in &ops {
                 match op {
                     FactOp::AssertOrdered(name_idx) => {
                         let relation = relation_pool[name_idx % relation_pool.len()];
-                        let fid = engine.assert_ordered(relation, vec![]).unwrap();
+                        let fid = engine.assert_ordered(relation, ()).unwrap();
                         // Postcondition: newly asserted fact must be immediately retrievable.
                         let retrieved = engine.get_fact(fid).unwrap();
                         prop_assert!(
@@ -3083,10 +3082,10 @@ mod tests {
             engine.set_fact_duplication(true);
 
             // Assert N ordered facts and collect their IDs.
-            let mut live: Vec<FactId> = (0..n)
+            let mut live: Vec<FactHandle> = (0..n)
                 .map(|i| {
                     let relation = if i % 2 == 0 { "even" } else { "odd" };
-                    engine.assert_ordered(relation, vec![]).unwrap()
+                    engine.assert_ordered(relation, ()).unwrap()
                 })
                 .collect();
 
@@ -3272,7 +3271,7 @@ mod tests {
             // Assert some facts.
             for i in 0..n_facts {
                 let relation = if i % 2 == 0 { "alpha" } else { "beta" };
-                engine.assert_ordered(relation, vec![]).unwrap();
+                engine.assert_ordered(relation, ()).unwrap();
             }
             // Push some input lines.
             for i in 0..n_inputs {
@@ -3320,7 +3319,7 @@ mod initial_fact_contract_tests {
     fn initial_fact_host_visibility_and_retraction_are_consistent() {
         let mut engine =
             Engine::with_rules("(defrule explicit (initial-fact) =>) (defrule empty =>)").unwrap();
-        let id = engine.initial_fact_id.unwrap();
+        let id = engine.host.export(engine.initial_fact_id.unwrap());
         assert!(engine.get_fact(id).unwrap().is_none());
         assert!(engine.find_facts("initial-fact").unwrap().is_empty());
         assert_eq!(engine.facts().unwrap().count(), 0);
@@ -3376,7 +3375,7 @@ mod initial_fact_contract_tests {
         for &format in crate::serialization::SerializationFormat::ALL {
             let mut restored =
                 Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
-            let id = restored.initial_fact_id.unwrap();
+            let id = restored.host.export(restored.initial_fact_id.unwrap());
             assert!(restored.get_fact(id).unwrap().is_none());
             assert!(matches!(
                 restored.retract(id),

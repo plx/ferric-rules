@@ -806,8 +806,6 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
     source: *const c_char,
     out_fact_id: *mut u64,
 ) -> FerricError {
-    use slotmap::Key as _;
-
     let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
@@ -823,7 +821,7 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
                 *out_fact_id = load_result
                     .asserted_facts
                     .first()
-                    .map_or(0, |fid| fid.data().as_ffi());
+                    .map_or(0, |fid| fid.as_raw());
             }
             FerricError::Ok
         }
@@ -841,7 +839,10 @@ pub unsafe extern "C" fn ferric_engine_assert_string(
     }
 }
 
-/// Retract a fact by its opaque fact ID obtained from a previous assert.
+/// Retract a fact by its opaque fact ID obtained from this engine.
+/// IDs are unsigned 64-bit host handles, stable while the fact lives. Foreign,
+/// reset, cleared, and pre-restoration IDs return `NotFound`; they are not
+/// durable application identities or raw RETE keys.
 ///
 /// # Safety
 ///
@@ -858,8 +859,7 @@ pub unsafe extern "C" fn ferric_engine_retract(
         Err(code) => return code,
     };
 
-    let key_data = slotmap::KeyData::from_ffi(fact_id);
-    let fid = ferric_rules_core::FactId::from(key_data);
+    let fid = ferric_rules_runtime::FactHandle::from_raw(fact_id);
 
     match handle.engine.retract(fid) {
         Ok(()) => FerricError::Ok,
@@ -1167,14 +1167,8 @@ pub unsafe extern "C" fn ferric_engine_fact_count(
             "out_count pointer is null".to_string(),
         );
     }
-    // facts() borrows only the admitted runtime
-    match handle.engine.facts() {
-        Ok(iter) => {
-            *out_count = iter.count();
-            FerricError::Ok
-        }
-        Err(ref err) => set_engine_runtime_error(handle.diagnostics, err),
-    }
+    *out_count = handle.engine.fact_count();
+    FerricError::Ok
 }
 
 /// Get the number of fields in a fact.
@@ -1205,8 +1199,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field_count(
         );
     }
 
-    let key_data = slotmap::KeyData::from_ffi(fact_id);
-    let fid = ferric_rules_core::FactId::from(key_data);
+    let fid = ferric_rules_runtime::FactHandle::from_raw(fact_id);
 
     match handle.engine.get_fact(fid) {
         Ok(Some(fact)) => {
@@ -1262,8 +1255,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_field(
         );
     }
 
-    let key_data = slotmap::KeyData::from_ffi(fact_id);
-    let fid = ferric_rules_core::FactId::from(key_data);
+    let fid = ferric_rules_runtime::FactHandle::from_raw(fact_id);
 
     match handle.engine.get_fact(fid) {
         Ok(Some(fact)) => {
@@ -1362,8 +1354,6 @@ pub unsafe extern "C" fn ferric_engine_fact_ids(
     max_ids: usize,
     out_count: *mut usize,
 ) -> FerricError {
-    use slotmap::Key as _;
-
     let handle = match borrow_engine_checked(engine) {
         Ok(h) => h,
         Err(code) => return code,
@@ -1378,7 +1368,7 @@ pub unsafe extern "C" fn ferric_engine_fact_ids(
 
     match handle.engine.facts() {
         Ok(iter) => {
-            let ids: Vec<u64> = iter.map(|(fid, _)| fid.data().as_ffi()).collect();
+            let ids: Vec<u64> = iter.map(|(fid, _)| fid.as_raw()).collect();
             *out_count = ids.len();
             if !out_ids.is_null() {
                 let copy_count = ids.len().min(max_ids);
@@ -1411,8 +1401,6 @@ pub unsafe extern "C" fn ferric_engine_find_fact_ids(
     max_ids: usize,
     out_count: *mut usize,
 ) -> FerricError {
-    use slotmap::Key as _;
-
     let handle = match borrow_engine_checked(engine) {
         Ok(h) => h,
         Err(code) => return code,
@@ -1431,7 +1419,7 @@ pub unsafe extern "C" fn ferric_engine_find_fact_ids(
 
     match handle.engine.find_facts(relation_str) {
         Ok(facts) => {
-            let ids: Vec<u64> = facts.iter().map(|(fid, _)| fid.data().as_ffi()).collect();
+            let ids: Vec<u64> = facts.iter().map(|(fid, _)| fid.as_raw()).collect();
             *out_count = ids.len();
             if !out_ids.is_null() {
                 let copy_count = ids.len().min(max_ids);
@@ -1474,8 +1462,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_type(
         );
     }
 
-    let key_data = slotmap::KeyData::from_ffi(fact_id);
-    let fid = ferric_rules_core::FactId::from(key_data);
+    let fid = ferric_rules_runtime::FactHandle::from_raw(fact_id);
 
     match handle.engine.get_fact(fid) {
         Ok(Some(fact)) => {
@@ -1525,8 +1512,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_relation(
         );
     }
 
-    let key_data = slotmap::KeyData::from_ffi(fact_id);
-    let fid = ferric_rules_core::FactId::from(key_data);
+    let fid = ferric_rules_runtime::FactHandle::from_raw(fact_id);
 
     match handle.engine.get_fact(fid) {
         Ok(Some(fact)) => {
@@ -1535,7 +1521,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_relation(
                 Fact::Ordered(o) => {
                     let name = handle
                         .engine
-                        .resolve_symbol(o.relation)
+                        .resolve_core_symbol(o.relation)
                         .unwrap_or("<unknown>");
                     copy_str_to_buffer(name, buf, buf_len, out_len, handle.diagnostics)
                 }
@@ -1585,8 +1571,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_template_name(
         );
     }
 
-    let key_data = slotmap::KeyData::from_ffi(fact_id);
-    let fid = ferric_rules_core::FactId::from(key_data);
+    let fid = ferric_rules_runtime::FactHandle::from_raw(fact_id);
 
     match handle.engine.get_fact(fid) {
         Ok(Some(fact)) => {
@@ -1642,8 +1627,6 @@ pub unsafe extern "C" fn ferric_engine_assert_ordered(
     field_count: usize,
     out_fact_id: *mut u64,
 ) -> FerricError {
-    use slotmap::Key as _;
-
     let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
@@ -1660,11 +1643,19 @@ pub unsafe extern "C" fn ferric_engine_assert_ordered(
         );
     }
 
-    // Convert FerricValue array to Vec<Value>
+    if field_count > ferric_rules_runtime::HOST_VALUE_MAX_ITEMS {
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::InvalidArgument,
+            "too many values in one assertion".into(),
+        );
+    }
+    let mut remaining = ferric_rules_runtime::HOST_VALUE_MAX_ITEMS;
+    // Convert borrowed C values into owned host inputs.
     let mut values = Vec::with_capacity(field_count);
     for i in 0..field_count {
         let fv = &*fields.add(i);
-        match ferric_to_value(fv, handle.engine) {
+        match ferric_to_value(fv, handle.engine, 0, &mut remaining) {
             Ok(v) => values.push(v),
             Err(msg) => {
                 return set_engine_error_message(
@@ -1679,7 +1670,7 @@ pub unsafe extern "C" fn ferric_engine_assert_ordered(
     match handle.engine.assert_ordered(relation_str, values) {
         Ok(fid) => {
             if !out_fact_id.is_null() {
-                *out_fact_id = fid.data().as_ffi();
+                *out_fact_id = fid.as_raw();
             }
             FerricError::Ok
         }
@@ -2556,8 +2547,6 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
     count: usize,
     out_fact_id: *mut u64,
 ) -> FerricError {
-    use slotmap::Key as _;
-
     let handle = match borrow_engine_mut(engine) {
         Ok(h) => h,
         Err(code) => return code,
@@ -2584,6 +2573,14 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
         }
     }
 
+    if count > ferric_rules_runtime::HOST_VALUE_MAX_ITEMS {
+        return set_engine_error_message(
+            handle.diagnostics,
+            FerricError::InvalidArgument,
+            "too many values in one assertion".into(),
+        );
+    }
+    let mut remaining = ferric_rules_runtime::HOST_VALUE_MAX_ITEMS;
     // Convert slot names from C strings.
     let mut names = Vec::with_capacity(count);
     for i in 0..count {
@@ -2598,7 +2595,7 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
     let mut values = Vec::with_capacity(count);
     for i in 0..count {
         let fv = &*slot_values.add(i);
-        match ferric_to_value(fv, handle.engine) {
+        match ferric_to_value(fv, handle.engine, 0, &mut remaining) {
             Ok(v) => values.push(v),
             Err(msg) => {
                 return set_engine_error_message(
@@ -2615,7 +2612,7 @@ pub unsafe extern "C" fn ferric_engine_assert_template(
     match handle.engine.assert_template(tmpl_str, &name_refs, values) {
         Ok(fid) => {
             if !out_fact_id.is_null() {
-                *out_fact_id = fid.data().as_ffi();
+                *out_fact_id = fid.as_raw();
             }
             FerricError::Ok
         }
@@ -2668,8 +2665,7 @@ pub unsafe extern "C" fn ferric_engine_get_fact_slot_by_name(
         );
     }
 
-    let key_data = slotmap::KeyData::from_ffi(fact_id);
-    let fid = ferric_rules_core::FactId::from(key_data);
+    let fid = ferric_rules_runtime::FactHandle::from_raw(fact_id);
 
     match handle.engine.get_fact_slot_by_name(fid, name_str) {
         Ok(value) => write_value_to_ffi(value, handle.engine, out_value, handle.diagnostics),

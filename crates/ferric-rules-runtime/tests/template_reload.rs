@@ -43,7 +43,7 @@ fn unused_template_reload_reuses_identity_without_ambiguous_orphan_definitions()
     engine
         .load_str("(defrule read-record (record (current ?v)) => (assert (result ?v)))")
         .unwrap();
-    engine.assert_template("record", &[], vec![]).unwrap();
+    engine.assert_template("record", &[], ()).unwrap();
     run(&mut engine, 1);
     let results = engine.find_facts("result").unwrap();
     let ferric_rules_core::Fact::Ordered(result) = results[0].1 else {

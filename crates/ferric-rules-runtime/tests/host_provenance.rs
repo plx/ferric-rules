@@ -149,3 +149,52 @@ fn restored_state_gets_fresh_host_ids_and_continues_identical_rule_work() {
     assert_eq!(restored.find_facts("done").unwrap().len(), 1);
     assert_eq!(original.find_facts("item").unwrap().len(), 1);
 }
+
+#[test]
+fn concurrent_readers_observe_one_stable_handle_per_fact() {
+    use std::sync::{Arc, Barrier};
+    let engine =
+        Arc::new(Engine::with_rules("(deffacts seed (item 1) (item 2) (item 3))").unwrap());
+    let barrier = Arc::new(Barrier::new(5));
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            let engine = Arc::clone(&engine);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                let handles: Vec<_> = engine.facts().unwrap().map(|(id, _)| id).collect();
+                for &handle in &handles {
+                    assert!(engine.get_fact(handle).unwrap().is_some());
+                }
+                handles
+            })
+        })
+        .collect();
+    barrier.wait();
+    let results: Vec<_> = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(results[0].len(), 3);
+    assert!(results.iter().all(|handles| handles == &results[0]));
+    assert!(results[0]
+        .iter()
+        .all(|handle| handle.as_raw() > (1_u64 << 53)));
+}
+
+#[test]
+fn host_value_depth_limit_accepts_the_boundary_and_rejects_the_next_level() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let mut value = Value::Integer(1);
+    for _ in 0..32 {
+        value = Value::Multifield(Box::new([value].into_iter().collect()));
+    }
+    engine.assert_ordered("boundary", value.clone()).unwrap();
+    let excessive = Value::Multifield(Box::new([value].into_iter().collect()));
+    assert!(matches!(
+        engine.assert_ordered("too-deep", excessive),
+        Err(EngineError::InvalidHostValue(_))
+    ));
+    assert_eq!(engine.facts().unwrap().count(), 1);
+    assert!(engine.find_facts("too-deep").unwrap().is_empty());
+}

@@ -5283,7 +5283,7 @@ mod tests {
         let Value::Symbol(value) = engine.get_fact_slot_by_name(fact_id, "value").unwrap() else {
             panic!("eq must produce a symbol value");
         };
-        assert_eq!(engine.resolve_symbol(*value), Some("TRUE"));
+        assert_eq!(engine.resolve_core_symbol(*value), Some("TRUE"));
     }
 
     #[test]
@@ -6352,12 +6352,12 @@ mod tests {
         let fact_id = engine.find_facts("foo").unwrap()[1].0;
         let entry = engine
             .fact_base
-            .get(fact_id)
+            .get(engine.host.resolve(fact_id).unwrap())
             .expect("asserted fact should exist");
         match &entry.fact {
             ferric_rules_core::Fact::Ordered(ordered) => {
                 let relation = engine
-                    .resolve_symbol(ordered.relation)
+                    .resolve_core_symbol(ordered.relation)
                     .expect("relation symbol should resolve");
                 assert_eq!(relation, "foo");
                 assert_eq!(ordered.fields.len(), 1);
@@ -6365,7 +6365,7 @@ mod tests {
                     panic!("expected symbol field, got {:?}", ordered.fields[0]);
                 };
                 let field = engine
-                    .resolve_symbol(field_sym)
+                    .resolve_core_symbol(field_sym)
                     .expect("field symbol should resolve");
                 assert_eq!(field, "clear");
             }

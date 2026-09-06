@@ -51,8 +51,8 @@ func TestMultifieldAllocatorProvenanceRoundTrip(t *testing.T) {
 		},
 		{
 			name:  "mixed",
-			input: []any{nil, int32(3), float32(1.25), Symbol("sym"), "text", true, false},
-			want:  []any{nil, int64(3), float64(float32(1.25)), Symbol("sym"), "text", Symbol("TRUE"), Symbol("FALSE")},
+			input: []any{int64(0), int32(3), float32(1.25), Symbol("sym"), "text", true, false},
+			want:  []any{int64(0), int64(3), float64(float32(1.25)), Symbol("sym"), "text", Symbol("TRUE"), Symbol("FALSE")},
 		},
 		{
 			name:  "large",

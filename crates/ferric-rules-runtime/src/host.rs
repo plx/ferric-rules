@@ -17,7 +17,9 @@ pub const HOST_VALUE_MAX_DEPTH: usize = 32;
 /// Maximum values in one host assertion, including multifield elements.
 pub const HOST_VALUE_MAX_ITEMS: usize = 1_000_000;
 
-static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
+// Reserve a distinct opaque u64 namespace. This also exercises lossless host
+// representations without millions of arena-generation churn operations.
+static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1_u64 << 63);
 
 fn identity() -> u64 {
     NEXT_IDENTITY
@@ -278,5 +280,34 @@ impl HostState {
                 .by_handle
                 .retain(|_, fact| facts.get(*fact).is_some());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Engine, RunLimit};
+
+    #[test]
+    fn rhs_retraction_reset_and_clear_reclaim_host_handle_storage() {
+        let mut engine =
+            Engine::with_rules("(defrule consume ?f <- (item ?id) => (retract ?f))").unwrap();
+        engine.reset().unwrap();
+        assert_eq!(engine.fact_count(), 0);
+        assert!(engine.host.facts.lock().unwrap().by_fact.is_empty());
+        for id in 0..512 {
+            engine.assert_ordered("item", id).unwrap();
+        }
+        assert_eq!(engine.host.facts.lock().unwrap().by_fact.len(), 512);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 512);
+        assert!(engine.host.facts.lock().unwrap().by_fact.is_empty());
+        assert!(engine.host.facts.lock().unwrap().by_handle.is_empty());
+        for _ in 0..10 {
+            engine.assert_ordered("item", 1_i64).unwrap();
+            engine.reset().unwrap();
+            assert!(engine.host.facts.lock().unwrap().by_fact.is_empty());
+        }
+        engine.assert_ordered("item", 2_i64).unwrap();
+        engine.clear();
+        assert!(engine.host.facts.lock().unwrap().by_handle.is_empty());
     }
 }

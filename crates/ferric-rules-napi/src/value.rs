@@ -4,7 +4,7 @@
 //!
 //! | JavaScript         | CLIPS             |
 //! |--------------------|-------------------|
-//! | `null`/`undefined` | void              |
+//! | `null`/`undefined` | rejected as fact input; void output only |
 //! | `boolean`          | Symbol TRUE/FALSE |
 //! | `number` (integer) | Integer           |
 //! | `number` (float)   | Float             |
@@ -19,7 +19,7 @@ use napi::{
 };
 use napi_derive::napi;
 
-use ferric_rules_runtime::{Engine, Multifield, Value};
+use ferric_rules_runtime::{Engine, HostValue, Value, HOST_VALUE_MAX_DEPTH};
 
 use crate::error::engine_error_to_napi;
 
@@ -73,25 +73,25 @@ pub enum OwnedValue {
 }
 
 impl OwnedValue {
-    pub fn into_runtime(self, engine: &mut Engine) -> Result<Value> {
+    pub fn into_runtime(self, engine: &mut Engine) -> Result<HostValue> {
         match self {
-            Self::Void => Ok(Value::Void),
-            Self::Integer(value) => Ok(Value::Integer(value)),
-            Self::Float(value) => Ok(Value::Float(value)),
-            Self::Symbol(value) => engine
-                .intern_symbol(&value)
-                .map(Value::Symbol)
-                .map_err(engine_error_to_napi),
+            Self::Void => Err(Error::new(
+                Status::InvalidArg,
+                "void cannot be stored in a fact",
+            )),
+            Self::Integer(value) => Ok(value.into()),
+            Self::Float(value) => Ok(value.into()),
+            Self::Symbol(value) => engine.symbol_value(&value).map_err(engine_error_to_napi),
             Self::String(value) => engine
                 .create_string(&value)
-                .map(Value::String)
+                .map(HostValue::from)
                 .map_err(engine_error_to_napi),
             Self::Multifield(values) => {
                 let values = values
                     .into_iter()
                     .map(|value| value.into_runtime(engine))
-                    .collect::<Result<Multifield>>()?;
-                Ok(Value::Multifield(Box::new(values)))
+                    .collect::<Result<Vec<_>>>()?;
+                HostValue::multifield(values).map_err(engine_error_to_napi)
             }
         }
     }
@@ -99,7 +99,15 @@ impl OwnedValue {
 
 /// Convert JS input into owned data, with bounded nesting and exact integers.
 #[allow(clippy::only_used_in_recursion)]
-pub fn js_to_owned(env: &Env, val: JsUnknown, depth: usize) -> Result<OwnedValue> {
+pub fn js_to_owned(
+    env: &Env,
+    val: JsUnknown,
+    depth: usize,
+    remaining: &mut usize,
+) -> Result<OwnedValue> {
+    *remaining = remaining
+        .checked_sub(1)
+        .ok_or_else(|| Error::new(Status::InvalidArg, "too many values in one assertion"))?;
     match val.get_type()? {
         ValueType::Null | ValueType::Undefined => Ok(OwnedValue::Void),
         ValueType::Boolean => {
@@ -140,16 +148,27 @@ pub fn js_to_owned(env: &Env, val: JsUnknown, depth: usize) -> Result<OwnedValue
         ValueType::Object => {
             let obj: JsObject = val.try_into()?;
             if obj.is_array()? {
-                if depth >= 128 {
+                if depth >= HOST_VALUE_MAX_DEPTH {
                     return Err(Error::new(
                         Status::InvalidArg,
-                        "multifield nesting exceeds 128 levels (cyclic values are unsupported)",
+                        "multifield nesting exceeds 32 levels (cyclic values are unsupported)",
                     ));
                 }
                 let len = obj.get_array_length()?;
+                if len as usize > *remaining {
+                    return Err(Error::new(
+                        Status::InvalidArg,
+                        "too many values in one assertion",
+                    ));
+                }
                 let mut values = Vec::new();
                 for index in 0..len {
-                    values.push(js_to_owned(env, obj.get_element(index)?, depth + 1)?);
+                    values.push(js_to_owned(
+                        env,
+                        obj.get_element(index)?,
+                        depth + 1,
+                        remaining,
+                    )?);
                 }
                 return Ok(OwnedValue::Multifield(values));
             }
@@ -206,7 +225,7 @@ pub fn value_to_js(env: &Env, val: &Value, engine: &Engine) -> Result<JsUnknown>
         Value::Float(f) => env.create_double(*f).map(JsNumber::into_unknown),
 
         Value::Symbol(sym) => {
-            let name = engine.resolve_symbol(*sym).unwrap_or("<unknown>");
+            let name = engine.resolve_core_symbol(*sym).unwrap_or("<unknown>");
             // Construct a FerricSymbol class instance and return it as JsUnknown.
             let symbol = FerricSymbol {
                 name: name.to_owned(),

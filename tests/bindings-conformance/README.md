@@ -27,7 +27,14 @@ Adapters read a newline-delimited case-ID file and emit one JSON object per
 line:
 
 ```json
-{"case":"value.void","result":{"type":"void"}}
+{"case":"value.void","result":{"ingress":"rejected","facts":0}}
 ```
 
 Adapter stdout is protocol-only. Diagnostics belong on stderr.
+
+The 1.2 host contract rejects stored void values, including nested values, before
+creating facts. Primitive nil remains the CLIPS symbol `nil`. Owned void outputs
+and C value constructors still have separate lifecycle tests. Opaque fact handles
+use the high-bit u64 namespace; the high-ID oracle checks actual returned handles
+without the previous million-iteration arena-generation warmup. Handles must be
+refreshed by querying durable fact fields after snapshot restoration.

@@ -204,3 +204,50 @@ test("snapshot selectors reject fractional and wrapped enum values before file a
     } finally { engine.close(); }
   }
 });
+
+test("native fact handles stay exact, local and transient", () => {
+  const { Engine: NativeEngine } = require(nativeAddon);
+  const a = new NativeEngine();
+  const b = new NativeEngine();
+  try {
+    const first = a.assertFact("item", 1);
+    const second = b.assertFact("item", 2);
+    assert.equal(typeof first, "bigint");
+    assert.ok(first > 2n ** 53n);
+    assert.notEqual(first, second);
+    assert.throws(() => b.retract(first), /not found/);
+    assert.equal(b.factCount, 1);
+    assert.equal(b.facts()[0].id, second);
+    assert.equal(b.facts()[0].id, second);
+    const restored = NativeEngine.fromSnapshot(b.serialize());
+    try {
+      assert.throws(() => restored.retract(second), /not found/);
+      assert.deepEqual(restored.facts()[0].fields, [2]);
+      restored.retract(restored.facts()[0].id);
+      assert.equal(restored.factCount, 0);
+    } finally { restored.close(); }
+    a.reset();
+    assert.throws(() => a.retract(first), /not found/);
+    b.retract(second);
+    assert.equal(b.factCount, 0);
+  } finally { a.close(); b.close(); }
+});
+
+test("stored void and excessive nesting reject atomically", () => {
+  const engine = new Engine();
+  try {
+    assert.throws(() => engine.assertFact("void", null), /void/i);
+    assert.throws(() => engine.assertFact("void", [1, null]), /void/i);
+    let nested: any = 42;
+    for (let depth = 0; depth < 32; depth++) nested = [nested];
+    const id = engine.assertFact("bounded", nested);
+    assert.equal(engine.factCount, 1);
+    assert.throws(() => engine.assertFact("deep", [nested]), /depth|nest/i);
+    const cycle: any[] = [];
+    cycle.push(cycle);
+    assert.throws(() => engine.assertFact("cycle", cycle), /depth|nest/i);
+    assert.equal(engine.factCount, 1);
+    engine.retract(id);
+    assert.equal(engine.factCount, 0);
+  } finally { engine.close(); }
+});

@@ -51,7 +51,7 @@ fn invalid_overrides_reject_before_fact_or_activation_is_created() {
             vec![Value::Multifield(Box::new(Multifield::new()))],
             "one scalar",
         ),
-        (vec!["id"], vec![Value::Void], "void value"),
+        (vec!["id"], vec![Value::Void], "void"),
     ] {
         let error = engine.assert_template("item", &names, values).unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");

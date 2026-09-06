@@ -31,7 +31,8 @@ stored facts without cloning their values. An owned template fact is rejected
 if its template's name, slot meanings or constraints changed after capture.
 
 `FactHandle::as_raw` and `from_raw` serve numeric embedding APIs. Numbers are
-process-unique, stable while a fact lives in one engine, and checked by that
+process-unique unsigned 64-bit handles (including values above signed 64-bit and
+JavaScript safe-integer ranges), stable while a fact lives in one engine, and checked by that
 engine. A foreign or stale handle cannot select a numerically colliding RETE
 slot. Retraction removes its mapping; reset clears fact handles; clear and
 restoration establish fresh host identities. Snapshot facts and subsequent rule

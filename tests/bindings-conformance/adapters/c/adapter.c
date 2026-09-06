@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define HIGH_ID_ITERATIONS 1048577U
+#define HIGH_ID_ITERATIONS 1U
 
 static const char *halt_reason_name(enum FerricHaltReason reason);
 
@@ -178,9 +178,28 @@ static bool print_asserted_value(struct FerricValue *input) {
 }
 
 static bool value_case(const char *case_id) {
-    if (strcmp(case_id, "value.void") == 0) {
+    if (strcmp(case_id, "value.void") == 0 || strcmp(case_id, "value.void.nested") == 0) {
+        struct FerricEngine *engine = ferric_engine_new();
         struct FerricValue value = ferric_value_void();
-        return print_asserted_value(&value);
+        struct FerricValue field = value;
+        uintptr_t count = 99;
+        uint64_t id = 0;
+        enum FerricError code;
+        bool nested = strcmp(case_id, "value.void.nested") == 0;
+        if (engine == NULL) return false;
+        if (nested && ferric_value_multifield_copy(&value, 1U, &field) != FERRIC_ERROR_OK) {
+            ferric_engine_free(engine);
+            return false;
+        }
+        code = ferric_engine_assert_ordered(engine, "probe", &field, 1U, &id);
+        if (nested) ferric_value_free(&field);
+        if (ferric_engine_fact_count(engine, &count) != FERRIC_ERROR_OK) {
+            ferric_engine_free(engine);
+            return false;
+        }
+        printf("{\"ingress\":\"%s\",\"facts\":%" PRIuPTR "}", code == FERRIC_ERROR_INVALID_ARGUMENT ? "rejected" : "accepted", count);
+        ferric_engine_free(engine);
+        return true;
     }
     if (strcmp(case_id, "value.integer.boundaries") == 0) {
         struct FerricValue minimum = ferric_value_integer(INT64_MIN);
@@ -225,7 +244,7 @@ static bool value_case(const char *case_id) {
         if (ferric_value_multifield_copy(nested_input, 1U, &nested) != FERRIC_ERROR_OK) {
             return false;
         }
-        inputs[0] = ferric_value_void();
+        inputs[0] = ferric_value_integer(0);
         inputs[1] = ferric_value_integer(7);
         inputs[2] = ferric_value_float(2.5);
         inputs[3] = ferric_value_symbol("blue");

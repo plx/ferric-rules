@@ -8,7 +8,7 @@ use std::ffi::CStr;
 
 use ferric_rules_core::{ConflictResolutionStrategy, StringEncoding};
 use ferric_rules_ffi_macros::ffi_export;
-use ferric_rules_runtime::{Engine, EngineConfig, HaltReason};
+use ferric_rules_runtime::{Engine, EngineConfig, HaltReason, HostValue, HOST_VALUE_MAX_DEPTH};
 
 use crate::error::{set_global_error, FerricError};
 
@@ -383,7 +383,7 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricVa
             ..FerricValue::void()
         }),
         Value::Symbol(sym) => {
-            let name = engine.resolve_symbol(*sym).unwrap_or("<unknown>");
+            let name = engine.resolve_core_symbol(*sym).unwrap_or("<unknown>");
             let cstring = CString::new(name).map_err(|error| {
                 format!(
                     "symbol contains embedded NUL at byte {}; legacy FerricValue \
@@ -446,49 +446,60 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricVa
 pub(crate) unsafe fn ferric_to_value(
     fv: &FerricValue,
     engine: &mut Engine,
-) -> Result<Value, String> {
+    depth: usize,
+    remaining: &mut usize,
+) -> Result<HostValue, String> {
+    *remaining = remaining
+        .checked_sub(1)
+        .ok_or("too many values in one assertion")?;
     match FerricValueType::try_from(fv.value_type)? {
-        FerricValueType::Void => Ok(Value::Void),
-        FerricValueType::Integer => Ok(Value::Integer(fv.integer)),
-        FerricValueType::Float => Ok(Value::Float(fv.float)),
+        FerricValueType::Void => Err("void cannot be stored in a fact".into()),
+        FerricValueType::Integer => Ok(fv.integer.into()),
+        FerricValueType::Float => Ok(fv.float.into()),
         FerricValueType::Symbol => {
             if fv.string_ptr.is_null() {
-                return Err("symbol string_ptr is null".to_string());
+                return Err("symbol string_ptr is null".into());
             }
             let name = CStr::from_ptr(fv.string_ptr)
                 .to_str()
-                .map_err(|e| format!("symbol is not valid UTF-8: {e}"))?;
-            let sym = engine.intern_symbol(name).map_err(|e| e.to_string())?;
-            Ok(Value::Symbol(sym))
+                .map_err(|error| format!("symbol is not valid UTF-8: {error}"))?;
+            engine.symbol_value(name).map_err(|error| error.to_string())
         }
         FerricValueType::String => {
             if fv.string_ptr.is_null() {
-                return Err("string string_ptr is null".to_string());
+                return Err("string string_ptr is null".into());
             }
-            let s = CStr::from_ptr(fv.string_ptr)
+            let value = CStr::from_ptr(fv.string_ptr)
                 .to_str()
-                .map_err(|e| format!("string is not valid UTF-8: {e}"))?;
-            let fs = engine.create_string(s).map_err(|e| e.to_string())?;
-            Ok(Value::String(fs))
+                .map_err(|error| format!("string is not valid UTF-8: {error}"))?;
+            engine
+                .create_string(value)
+                .map(HostValue::from)
+                .map_err(|error| error.to_string())
         }
         FerricValueType::Multifield => {
-            if fv.multifield_len == 0 {
-                return Ok(Value::Multifield(Box::new(
-                    ferric_rules_core::Multifield::new(),
-                )));
+            if depth >= HOST_VALUE_MAX_DEPTH {
+                return Err("multifield nesting exceeds 32".into());
             }
-            if fv.multifield_ptr.is_null() {
-                return Err("multifield_ptr is null with non-zero length".to_string());
+            if fv.multifield_len > *remaining {
+                return Err("too many values in one assertion".into());
             }
-            let mut mf = ferric_rules_core::Multifield::new();
-            for i in 0..fv.multifield_len {
-                let elem = &*fv.multifield_ptr.add(i);
-                mf.push(ferric_to_value(elem, engine)?);
+            if fv.multifield_ptr.is_null() && fv.multifield_len != 0 {
+                return Err("multifield_ptr is null with non-zero length".into());
             }
-            Ok(Value::Multifield(Box::new(mf)))
+            let mut values = Vec::with_capacity(fv.multifield_len);
+            for index in 0..fv.multifield_len {
+                values.push(ferric_to_value(
+                    &*fv.multifield_ptr.add(index),
+                    engine,
+                    depth + 1,
+                    remaining,
+                )?);
+            }
+            HostValue::multifield(values).map_err(|error| error.to_string())
         }
         FerricValueType::ExternalAddress => {
-            Err("ExternalAddress cannot be converted from FFI".to_string())
+            Err("ExternalAddress cannot be converted from FFI".into())
         }
     }
 }

@@ -71,7 +71,7 @@ impl RegressionEngine {
             .facts()
             .expect("RegressionEngine::has_fact: facts() failed")
             .any(|(_, fact)| match fact {
-                Fact::Ordered(of) => self.engine.resolve_symbol(of.relation) == Some(relation),
+                Fact::Ordered(of) => self.engine.resolve_core_symbol(of.relation) == Some(relation),
                 Fact::Template(_) => false,
             })
     }

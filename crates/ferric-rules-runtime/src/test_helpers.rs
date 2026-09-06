@@ -14,9 +14,7 @@
 //! - `load_fixture`: Load a `.clp` fixture file by name.
 
 use ferric_rules_core::beta::{RuleId, Salience};
-use ferric_rules_core::{
-    AlphaEntryType, AlphaMemoryId, ConstantTest, FactId, ReteNetwork, StringEncoding,
-};
+use ferric_rules_core::{AlphaEntryType, AlphaMemoryId, ConstantTest, ReteNetwork, StringEncoding};
 
 use crate::config::EngineConfig;
 use crate::engine::Engine;
@@ -185,10 +183,14 @@ pub fn build_two_pattern_rete(
 pub fn assert_facts_into_rete(
     rete: &mut ReteNetwork,
     engine: &Engine,
-    fact_ids: &[FactId],
+    fact_ids: &[crate::FactHandle],
 ) -> usize {
     let mut count = 0;
-    for &fact_id in fact_ids {
+    for &handle in fact_ids {
+        let fact_id = engine
+            .host
+            .resolve(handle)
+            .expect("test fact handle must be local");
         let fact = engine
             .fact_base
             .get(fact_id)
@@ -205,8 +207,12 @@ pub fn assert_facts_into_rete(
 pub fn assert_one_fact(
     rete: &mut ReteNetwork,
     engine: &Engine,
-    fact_id: FactId,
+    fact_id: crate::FactHandle,
 ) -> Vec<ferric_rules_core::ActivationId> {
+    let fact_id = engine
+        .host
+        .resolve(fact_id)
+        .expect("test fact handle must be local");
     let fact = engine
         .fact_base
         .get(fact_id)
@@ -220,8 +226,12 @@ pub fn assert_one_fact(
 pub fn retract_one_fact(
     rete: &mut ReteNetwork,
     engine: &mut Engine,
-    fact_id: FactId,
+    fact_id: crate::FactHandle,
 ) -> Vec<ferric_rules_core::Activation> {
+    let fact_id = engine
+        .host
+        .resolve(fact_id)
+        .expect("test fact handle must be local");
     let fact = engine
         .fact_base
         .get(fact_id)
@@ -360,7 +370,7 @@ pub fn assert_fact_count(engine: &Engine, expected: usize) {
 ///
 /// Works with ordered facts only.
 #[allow(dead_code)] // Will be used as Phase 3 passes land
-pub fn find_facts_by_relation(engine: &Engine, relation: &str) -> Vec<ferric_rules_core::FactId> {
+pub fn find_facts_by_relation(engine: &Engine, relation: &str) -> Vec<crate::FactHandle> {
     let relation_bytes = relation.as_bytes();
     engine
         .facts()
@@ -419,7 +429,7 @@ pub fn get_ordered_fields(engine: &Engine, relation: &str) -> Vec<ferric_rules_c
     );
     let entry = engine
         .fact_base
-        .get(facts[0])
+        .get(engine.host.resolve(facts[0]).unwrap())
         .expect("fact should exist in test helper");
     match &entry.fact {
         ferric_rules_core::Fact::Ordered(ordered) => ordered.fields.to_vec(),

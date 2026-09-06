@@ -16,16 +16,19 @@ use crate::types::{
     FerricValueType,
 };
 use ferric_rules_core::{Multifield, Value};
-use slotmap::Key as _;
 use std::ffi::{CStr, CString};
 
-unsafe fn assert_internal_value(engine: *mut FerricEngine, relation: &str, value: Value) -> u64 {
+unsafe fn assert_internal_value(
+    engine: *mut FerricEngine,
+    relation: &str,
+    value: impl Into<ferric_rules_runtime::HostValue>,
+) -> u64 {
+    let value: ferric_rules_runtime::HostValue = value.into();
     (&mut *engine)
         .engine
         .assert_ordered(relation, value)
         .expect("test value should be accepted by the Rust runtime")
-        .data()
-        .as_ffi()
+        .as_raw()
 }
 
 unsafe fn nul_string_value(engine: *mut FerricEngine) -> Value {
@@ -105,7 +108,11 @@ fn legacy_value_egress_rejects_embedded_nul_strings_and_symbols() {
             .engine
             .intern_symbol("a\0b")
             .expect("the Rust runtime supports embedded NUL");
-        let symbol_id = assert_internal_value(engine, "symbol-payload", Value::Symbol(symbol));
+        let symbol_id = assert_internal_value(
+            engine,
+            "symbol-payload",
+            ferric_rules_runtime::HostValue::from(symbol),
+        );
 
         for fact_id in [string_id, symbol_id] {
             let mut out = FerricValue {
@@ -152,8 +159,7 @@ fn nested_and_template_slot_value_egress_rejects_embedded_nul() {
             .engine
             .assert_template("item", &["value"], vec![template_value])
             .unwrap()
-            .data()
-            .as_ffi();
+            .as_raw();
         let mut out = FerricValue {
             value_type: FerricValueType::Integer.as_raw(),
             integer: 91,
@@ -227,8 +233,7 @@ fn snapshot_round_trip_preserves_nul_before_legacy_egress_rejects_it() {
             .next()
             .expect("restored engine should contain the test fact")
             .0
-            .data()
-            .as_ffi();
+            .as_raw();
         let mut out = FerricValue::void();
         assert_eq!(
             ferric_engine_get_fact_field(restored, fact_id, 0, &mut out),

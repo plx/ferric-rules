@@ -8,7 +8,7 @@ import {
   EnginePool,
 } from "../../../helpers/ferric";
 
-const HIGH_GENERATION_FIRINGS = 1_048_577;
+const HIGH_GENERATION_FIRINGS = 2;
 const CHURN_SOURCE = `
 (defrule churn
   ?fact <- (generation ?value)
@@ -18,7 +18,7 @@ const CHURN_SOURCE = `
   (assert (generation (+ ?value 1))))
 `;
 
-test("E-010 EnginePool proxy structured-clones high-generation bigint IDs losslessly", async () => {
+test("E-010 EnginePool proxy structured-clones wide opaque bigint IDs losslessly", async () => {
   const pool = await EnginePool.create(
     [{ name: "churn", source: CHURN_SOURCE }],
     { threads: 1 },
@@ -28,9 +28,10 @@ test("E-010 EnginePool proxy structured-clones high-generation bigint IDs lossle
       const initialId = await proxy.assertFact("generation", 0);
       assert.strictEqual(typeof initialId, "bigint");
 
-      const legacyNumberId = Number(initialId);
-      assert.ok(Number.isSafeInteger(legacyNumberId));
-      assert.strictEqual((await proxy.getFact(legacyNumberId))?.id, initialId);
+      assert.ok(initialId > BigInt(Number.MAX_SAFE_INTEGER));
+      assert.strictEqual(await proxy.getFact(0), null);
+      await assert.rejects(proxy.getFact(Number(initialId)), /safe integer/);
+      assert.strictEqual((await proxy.getFact(initialId))?.id, initialId);
 
       const run = await proxy.run({ limit: HIGH_GENERATION_FIRINGS });
       assert.strictEqual(run.rulesFired, HIGH_GENERATION_FIRINGS);
