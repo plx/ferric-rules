@@ -17,9 +17,24 @@ deffunction/defgeneric, globals, and the core CLIPS standard library
 
 - logical dependencies
 - some of the more exotic pattern connectives
-- idiomatic wrappers/bindings (C++, Swift, python, etc.)
 
 We have no plans to support the object system (COOL).
+
+The supported subset and explicit limitations are in [compatibility.md](docs/compatibility.md).
+Embedding packages are available for [TypeScript](packages/ferric/README.md),
+[Python](crates/ferric-rules-python/README.md), and [Swift](bindings/swift/README.md).
+Swift has a reproducible local macOS/iOS build path. [Go](bindings/go/README.md)
+and the C ABI retain maintenance support.
+
+Rust engines support ownership transfer and shared reads (`Send + Sync`);
+mutation remains exclusive. Host bindings serialize native operations, with
+Node workers and the Swift asynchronous API providing offload for long runs.
+Use [versioned CBOR snapshots](docs/snapshots.md) for persistence and store durable
+application IDs in fact fields. [Host values and handles](docs/host-api.md) and
+the [migration notes](docs/migration.md) describe the deliberate pre-1.0 changes.
+The shared [launch-selection example](examples/embedding/launch-selection.clp)
+selects at most one action per session and is tested by external consumers in all
+four primary languages, including snapshot/resume.
 
 ## Using ferric-rules from Rust
 

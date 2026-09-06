@@ -12,14 +12,16 @@ The CLI built with `--features serde` also defaults to CBOR for both
 codec must specify `--format` when saving and `--snapshot-format` when restoring.
 The default change accompanies the legacy raw snapshot break below.
 
-Snapshots retain facts and their identities, templates, globals and their reset
+Snapshots retain facts and their internal rule-matching identities, templates, globals and their reset
 initializers, deffacts, functions, rules, focus, queued activations, refraction,
 halt state, buffered input/output, and diagnostics. Successful restoration
 preserves subsequent rule behavior, including pending activations and the last
 blocker/support transitions of `not`, `exists`, and negated conjunctions.
 Compilation caches are retained and validated so later rule installation works.
 An already fired activation does not reappear merely because the engine was
-restored. No callbacks or host objects are installed by decoding.
+restored. No callbacks or host objects are installed by decoding. Host-facing fact handles
+are recreated after restoration; query facts by durable application IDs instead
+of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 

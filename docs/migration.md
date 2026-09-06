@@ -183,9 +183,9 @@ Ferric uses byte-equality comparison with no Unicode normalization:
 
 1. Start with `ferric check` to validate syntax.
 2. Run with `ferric run` and compare output to CLIPS.
-3. Focus on final working-memory state rather than firing order -- Ferric
-   guarantees a total order within a run but not replay-identical order
-   across runs.
+3. Compare working-memory state, firing counts and observable output. Supported
+   depth/breadth ordering follows activation creation chronology; LEX/MEA remain
+   experimental and have documented CLIPS differences.
 4. Use `(declare (salience ...))` and `(focus ...)` to enforce ordering
    where side-effect order matters.
 
@@ -241,7 +241,7 @@ engine borrowed inside a manager callback.
 | `run` from RHS is a no-op | `(run)` inside a rule action does nothing |
 | `reset`/`clear` are deferred | Flag is set and checked after the current action sequence completes |
 | LHS guards belong in patterns/tests | Use RHS `if/then/else` for action control; use `(test ...)` CEs for match-time guards |
-| Activation order | Total order within a run, but not reproducible across runs |
+| Activation order | Depth/breadth follow activation creation chronology; LEX/MEA are experimental |
 
 ---
 
@@ -295,3 +295,29 @@ Arbitrary computed defaults are also unsupported; use literal defaults or
 instance type declarations are rejected because the supported value model has
 no corresponding tagged value. These restrictions do not add CLIPS class
 constraints, general static type inference, or dynamic constraint toggles.
+
+## September 2026 embedding API changes
+
+- Rust assertions accept engine-scoped host values and opaque `FactHandle`s.
+  Use `engine.symbol_value`, `HostValue::multifield`, named template slots, and
+  `()` for empty fields. Raw core symbols cannot be used as portable input.
+  Re-query fact handles after reset or restore; persist application IDs in facts.
+  See [host-api.md](host-api.md).
+- Snapshots use a bounded version-one envelope; CBOR is recommended and is the
+  default for CLI, TypeScript, Python and Swift consumers. Legacy unversioned
+  snapshots are rejected explicitly. Export durable application data through
+  the producing version before upgrading; see [snapshots.md](snapshots.md).
+- Python plain `str` now means a CLIPS string. Use `ferric.Symbol` for symbols.
+  Typed strings and symbols compare distinctly from each other and plain strings.
+  Python `None`, Node `null`, and Swift `.void` cannot be stored in facts.
+  Unsupported external values produce errors rather than null conversions.
+- Node requires version 22 or newer. Integers and fact IDs use `bigint` when they
+  exceed safe-number precision; run counts accept exact safe integers. Closing a
+  worker, handle or pool waits for supported native work and cleanup to finish.
+- Requested callable depth remains configurable and persists, while actual
+  evaluation is capped at 32 calls and 64 expression frames. Excessive recursive
+  work returns an action diagnostic; deeply nested definitions are rejected.
+- Go source imports use `github.com/plx/ferric-rules/bindings/go`. Raw operations
+  serialize across goroutines, while worker APIs retain offload and cancellation.
+  Swift's local package uses Swift 6, macOS 15 or iOS 18, with asynchronous native
+  work and owned results; see [its build instructions](../bindings/swift/README.md).
