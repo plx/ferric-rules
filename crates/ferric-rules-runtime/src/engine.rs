@@ -235,6 +235,18 @@ impl Engine {
         self.compiler.remove_rules(&mut self.rete, rules);
     }
 
+    /// Requested callable-depth limit, retained for configuration and snapshots.
+    #[must_use]
+    pub fn max_call_depth(&self) -> usize {
+        self.config.max_call_depth
+    }
+
+    /// Callable-depth ceiling applied by evaluation (at most 32).
+    #[must_use]
+    pub fn effective_max_call_depth(&self) -> usize {
+        self.config.effective_max_call_depth()
+    }
+
     /// Create a new engine with the given configuration.
     #[must_use]
     pub fn new(config: EngineConfig) -> Self {

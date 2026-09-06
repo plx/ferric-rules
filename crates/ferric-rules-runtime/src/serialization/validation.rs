@@ -28,10 +28,8 @@ impl Engine {
         self.compiler.validate_snapshot(&self.rete)?;
         let modules = &self.module_registry;
         modules.validate_snapshot()?;
-        ensure(
-            self.config.max_call_depth <= 256,
-            "snapshot call-depth limit is 256",
-        )?;
+        // Requested call depth is application configuration; the evaluator
+        // always applies its fixed effective ceiling, including after restore.
         ensure(
             self.rule_info.len() == self.rule_modules.len(),
             "inconsistent rule/module index length",
@@ -375,61 +373,5 @@ impl Engine {
 }
 
 fn validate_action(root: &ActionExpr) -> Result<(), String> {
-    let mut pending = vec![(root, 0)];
-    while let Some((expr, depth)) = pending.pop() {
-        ensure(depth < 16, "snapshot action-depth limit is 16")?;
-        let mut branches = Vec::new();
-        match expr {
-            ActionExpr::Literal(_) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => {}
-            ActionExpr::FunctionCall(call) => branches.push(&call.args),
-            ActionExpr::If {
-                condition,
-                then_actions,
-                else_actions,
-                ..
-            } => {
-                pending.push((condition, depth + 1));
-                branches.extend([then_actions, else_actions]);
-            }
-            ActionExpr::While {
-                condition, body, ..
-            } => {
-                pending.push((condition, depth + 1));
-                branches.push(body);
-            }
-            ActionExpr::LoopForCount {
-                start, end, body, ..
-            } => {
-                pending.extend([(start.as_ref(), depth + 1), (end.as_ref(), depth + 1)]);
-                branches.push(body);
-            }
-            ActionExpr::Progn {
-                list_expr, body, ..
-            } => {
-                pending.push((list_expr, depth + 1));
-                branches.push(body);
-            }
-            ActionExpr::QueryAction { query, body, .. } => {
-                pending.push((query, depth + 1));
-                branches.push(body);
-            }
-            ActionExpr::Switch {
-                expr,
-                cases,
-                default,
-                ..
-            } => {
-                pending.push((expr, depth + 1));
-                for (case, body) in cases {
-                    pending.push((case, depth + 1));
-                    branches.push(body);
-                }
-                branches.extend(default.iter());
-            }
-        }
-        for branch in branches {
-            pending.extend(branch.iter().map(|expr| (expr, depth + 1)));
-        }
-    }
-    Ok(())
+    crate::evaluator::validate_action_depth(root).map_err(|error| error.to_string())
 }

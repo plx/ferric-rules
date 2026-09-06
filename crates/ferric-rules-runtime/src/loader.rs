@@ -555,6 +555,14 @@ impl Engine {
                         }
                     }
                     Construct::Function(func) => {
+                        if let Err(error) = func
+                            .body
+                            .iter()
+                            .try_for_each(crate::evaluator::validate_action_depth)
+                        {
+                            errors.push(Self::compile_error_at(&func.span, &error.to_string()));
+                            continue;
+                        }
                         let owning_module = self.module_registry.current_module();
                         // Conflict check: a deffunction cannot share a name with
                         // an existing defgeneric (or vice versa).
@@ -640,6 +648,14 @@ impl Engine {
                         }
                     }
                     Construct::Method(method) => {
+                        if let Err(error) = method
+                            .body
+                            .iter()
+                            .try_for_each(crate::evaluator::validate_action_depth)
+                        {
+                            errors.push(Self::compile_error_at(&method.span, &error.to_string()));
+                            continue;
+                        }
                         let owning_module = self.module_registry.current_module();
                         // Conflict check: a defmethod that would auto-create a
                         // generic cannot share a name with an existing deffunction.
@@ -1373,6 +1389,7 @@ impl Engine {
                     globals: &mut self.globals,
                     generics: &self.generics,
                     call_depth: 0,
+                    expression_depth: 0,
                     current_module: self.module_registry.current_module(),
                     module_registry: &self.module_registry,
                     function_modules: &self.function_modules,
@@ -1451,6 +1468,7 @@ impl Engine {
                         globals: &mut self.globals,
                         generics: &self.generics,
                         call_depth: 0,
+                        expression_depth: 0,
                         current_module: self.module_registry.current_module(),
                         module_registry: &self.module_registry,
                         function_modules: &self.function_modules,
@@ -4934,17 +4952,31 @@ mod tests {
     }
 
     #[test]
-    fn parser_depth_accepts_documented_maximum_action() {
-        let action_depth = ferric_rules_parser::MAX_SEXPR_NESTING_DEPTH - 1;
+    fn action_translation_accepts_its_bound_and_rejects_deeper_parser_valid_input() {
+        let action_depth = 15;
         let mut engine = new_utf8_engine();
 
         let result = engine.load_str(&parser_depth_action_rule(action_depth));
 
         assert!(
             result.is_ok(),
-            "an action at the documented maximum must load: {result:?}"
+            "an action within the translation bound must load: {result:?}"
         );
         assert_eq!(engine.rules().len(), 1);
+        let errors = engine
+            .load_str(&parser_depth_action_rule(
+                ferric_rules_parser::MAX_SEXPR_NESTING_DEPTH - 1,
+            ))
+            .unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.to_string().contains("expression nesting limit")));
+        // Failed replacement preserves the earlier, executable rule.
+        engine.assert_ordered("trigger", vec![]).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            1
+        );
     }
 
     #[test]
