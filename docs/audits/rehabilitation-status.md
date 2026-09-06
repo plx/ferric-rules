@@ -198,6 +198,12 @@ Go lifecycle fixes pass independent review/race checks. Source expansion/depth
 and file inputs are bounded, with ten focused regressions and independent
 review. Repeated-join propagation formerly produced eight firings for one valid
 match; its small fix has baseline failures and CLIPS tuple-order evidence.
-The staged differential set is now 34/35 equivalent; declared slot types remain
-under repair. Versioned snapshot validation and host-value provenance integration
+The staged differential set is now 35/35 equivalent after the local declared
+slot-type repair; authenticated integration is still pending. Versioned snapshot validation and host-value provenance integration
 are in progress. Required outcomes remain open until integrated checks and merges.
+
+Threading [PR #304](https://github.com/plx/ferric-rules/pull/304) follows benchmark
+[PR #302](https://github.com/plx/ferric-rules/pull/302); merge order is sequential.
+Both target main so the existing core, artifact and sanitizer workflows run.
+The benchmark artifact file list was updated and its external offline package
+check passed before the update was pushed.
