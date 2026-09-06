@@ -454,6 +454,12 @@ impl PyEngine {
         self.with_engine(|engine| Ok(engine.max_call_depth()))
     }
 
+    /// Effective callable-depth ceiling, capped at 32 in every build profile.
+    #[getter]
+    fn effective_max_call_depth(&self) -> PyResult<usize> {
+        self.with_engine(|engine| Ok(engine.effective_max_call_depth()))
+    }
+
     // -- Context manager --
 
     fn __enter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {

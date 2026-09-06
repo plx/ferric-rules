@@ -193,3 +193,48 @@ def test_shared_launch_selection_and_snapshot_resume(tmp_path):
         with ferric.Engine.from_snapshot(completed) as resumed:
             assert resumed.run().rules_fired == 0
             assert [fact.fields for fact in resumed.find_facts("action")] == [expected]
+
+
+def test_requested_depth_cannot_disable_native_safety_limits():
+    source = r"""
+import ferric, threading, traceback
+try:
+    import resource
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+except ImportError:
+    pass
+threading.stack_size(2 * 1024 * 1024)
+errors = []
+def worker():
+    try:
+        for body in ('(recurse)', '(if TRUE then (if TRUE then (if TRUE then (if TRUE then (recurse)))))'):
+            engine = ferric.Engine.from_source(f'(deffunction recurse () {body}) (defrule run => (recurse))', max_call_depth=100000)
+            assert engine.max_call_depth == 100000
+            assert engine.effective_max_call_depth == 32
+            restored = ferric.Engine.from_snapshot(engine.serialize())
+            assert restored.max_call_depth == 100000
+            assert restored.effective_max_call_depth == 32
+            result = restored.run()
+            assert result.halt_reason == ferric.HaltReason.ACTION_ERROR
+            assert any('limit exceeded' in message for message in restored.diagnostics)
+            restored.clear()
+            restored.load('(defrule recovered => (assert (done)))')
+            assert restored.run().rules_fired == 1
+            assert len(restored.find_facts('done')) == 1
+            engine.close()
+            restored.close()
+    except BaseException:
+        errors.append(traceback.format_exc())
+thread = threading.Thread(target=worker)
+thread.start()
+thread.join()
+assert not errors, errors
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", source],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

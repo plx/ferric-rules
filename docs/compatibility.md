@@ -563,8 +563,20 @@ mutation and agenda/focus control belong in the calling rule's RHS.
 
 ### Recursive Calls
 
-Recursive calls are supported. A configurable maximum call depth prevents
-stack overflow.
+Recursive calls are supported with a requested maximum call depth, capped at
+32 effective callable frames in every build profile. Active expression evaluation
+is bounded at 64 frames across nested bodies and calls; expression translation
+and cloning accept trees up to 16 levels. Limit violations report an execution
+or load diagnostic before continuing recursive evaluation. Callable bodies
+are checked before registration; a failed function redefinition or implicit
+generic registration preserves the previous registry state.
+
+Embedding note: release recursion regressions run on 512 KiB native stacks;
+unoptimized development regressions use 2 MiB. These are supported test
+baselines, not a promise for arbitrarily small host stacks. Larger requested
+call limits remain readable and persistable but cannot raise the enforced
+ceiling. This pre-1.0 change replaces unsafe high-depth behavior with explicit
+execution errors.
 
 ### Conflict with defgeneric
 

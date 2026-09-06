@@ -16,10 +16,11 @@ pub const DEFAULT_MAX_ACTION_LOOP_ITERATIONS: usize = 1_000_000;
 pub struct EngineConfig {
     pub string_encoding: StringEncoding,
     pub strategy: ConflictResolutionStrategy,
-    /// Maximum call depth for user-defined function recursion.
+    /// Requested maximum call depth for user-defined functions and methods.
     ///
-    /// Calls that exceed this depth return a `RecursionLimit` error rather than
-    /// overflowing the stack.
+    /// Evaluation applies [`Self::effective_max_call_depth`], capped at 32 to
+    /// bound native callable frames. Expression nesting has its own limit;
+    /// deeply nested bodies can reach that limit before the callable ceiling.
     pub max_call_depth: usize,
     /// Maximum combined `while` and `loop-for-count` iterations per rule
     /// activation.
@@ -52,6 +53,15 @@ const fn default_max_action_loop_iterations() -> usize {
 }
 
 impl EngineConfig {
+    /// The callable-depth ceiling used by evaluation, in every build profile.
+    ///
+    /// Zero disallows user-function/method calls. Larger requested values are
+    /// retained in configuration and snapshots but cannot raise this ceiling.
+    #[must_use]
+    pub fn effective_max_call_depth(&self) -> usize {
+        self.max_call_depth.min(32)
+    }
+
     /// CLIPS-compatible strict ASCII mode with Depth strategy.
     #[must_use]
     pub fn ascii() -> Self {
