@@ -351,55 +351,36 @@ impl ModuleRegistry {
         )
     }
 
+    /// Fallible structural checks used before installing snapshot state.
+    pub(crate) fn validate_snapshot(&self) -> Result<(), String> {
+        if self.next_id == 0 || self.next_id == u32::MAX {
+            return Err("invalid module allocation counter".to_owned());
+        }
+        if self.modules.len() != self.name_to_id.len()
+            || self.name_to_id.get(MAIN_MODULE_NAME) != Some(&self.main_module_id)
+            || !self.modules.contains_key(&self.current_module)
+        {
+            return Err("inconsistent module identity indexes".to_owned());
+        }
+        // An empty stack is the normal state after a run drains all focuses.
+        for id in &self.focus_stack {
+            if !self.modules.contains_key(id) {
+                return Err("dangling focus module".to_owned());
+            }
+        }
+        for (id, module) in &self.modules {
+            if id.0 >= self.next_id || self.name_to_id.get(module.name.as_str()) != Some(id) {
+                return Err("inconsistent module name or allocation index".to_owned());
+            }
+        }
+        Ok(())
+    }
+
     /// Debug-only structural checks for module/focus bookkeeping.
     #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
-        assert!(
-            self.modules.contains_key(&self.main_module_id),
-            "module registry missing MAIN module id {:?}",
-            self.main_module_id
-        );
-        assert!(
-            self.name_to_id.get(MAIN_MODULE_NAME) == Some(&self.main_module_id),
-            "name_to_id missing MAIN -> {:?}",
-            self.main_module_id
-        );
-        assert!(
-            self.modules.contains_key(&self.current_module),
-            "current_module {:?} missing from modules",
-            self.current_module
-        );
-        // An empty stack is the normal state after a run drains all focuses.
-        for &module_id in &self.focus_stack {
-            assert!(
-                self.modules.contains_key(&module_id),
-                "focus stack contains unknown module id {module_id:?}"
-            );
-        }
-
-        for (name, id) in &self.name_to_id {
-            let module = self
-                .modules
-                .get(id)
-                .unwrap_or_else(|| panic!("name_to_id points to unknown module id {id:?}"));
-            assert_eq!(
-                module.name.as_str(),
-                name.as_ref(),
-                "name_to_id key `{name}` does not match module.name `{}`",
-                module.name
-            );
-        }
-
-        for (id, module) in &self.modules {
-            let mapped = self.name_to_id.get(module.name.as_str());
-            assert_eq!(
-                mapped,
-                Some(id),
-                "module `{}` id {:?} missing reverse mapping",
-                module.name,
-                id
-            );
-        }
+        self.validate_snapshot()
+            .expect("inconsistent module registry");
     }
 }
 

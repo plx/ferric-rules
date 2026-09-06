@@ -26,28 +26,8 @@ impl Engine {
         self.rete
             .validate_snapshot(&self.fact_base, &self.symbol_table)?;
         self.compiler.validate_snapshot(&self.rete)?;
-        // Empty focus is a valid state after the last focused module drains.
         let modules = &self.module_registry;
-        ensure(
-            modules.module_name(modules.main_module_id()) == Some("MAIN"),
-            "missing MAIN module",
-        )?;
-        ensure(
-            modules.get(modules.current_module()).is_some(),
-            "dangling current module",
-        )?;
-        for id in modules.focus_stack() {
-            ensure(modules.get(*id).is_some(), "dangling focus module")?;
-        }
-        for name in modules.module_names() {
-            ensure(
-                modules
-                    .get_by_name(name)
-                    .and_then(|id| modules.module_name(id))
-                    == Some(name),
-                "inconsistent module name index",
-            )?;
-        }
+        modules.validate_snapshot()?;
         ensure(
             self.config.max_call_depth <= 256,
             "snapshot call-depth limit is 256",
