@@ -160,6 +160,14 @@ use crate::binding::VarMap;
 use crate::rete::ReteNetwork;
 use crate::token::NodeId;
 
+// Source compilation allows 64 total condition nodes and 64 alpha tests.
+// Each condition contributes at most one node to a beta parent chain; an NCC
+// partner substitutes for its wrapper on a subnetwork path. Include root and
+// terminal. Partner callbacks need their own nesting/cycle bound below.
+const MAX_ALPHA_DEPTH: usize = 64;
+const MAX_BETA_PATH_NODES: usize = 66;
+const MAX_NCC_DEPTH: usize = 4;
+
 impl VarMap {
     #[doc(hidden)]
     pub fn validate_snapshot(&self, symbols: &SymbolTable) -> Result<(), String> {
@@ -269,10 +277,7 @@ impl ReteNetwork {
     #[doc(hidden)]
     #[allow(clippy::too_many_lines)]
     pub fn validate_snapshot(&self, facts: &FactBase, symbols: &SymbolTable) -> Result<(), String> {
-        self.alpha.validate_consistency()?;
-        self.beta.validate_consistency()?;
-        self.token_store.validate_consistency()?;
-        self.agenda.validate_consistency()?;
+        self.validate_consistency()?;
         require!(
             self.pending_predicate_matches.is_empty(),
             "snapshot has unfinished predicate matches"
@@ -317,7 +322,10 @@ impl ReteNetwork {
                 while let Some(next) = ancestor {
                     work.step()?;
                     require!(seen.insert(next), "cyclic beta graph");
-                    require!(seen.len() <= 256, "snapshot beta depth exceeds 256");
+                    require!(
+                        seen.len() <= MAX_BETA_PATH_NODES,
+                        "snapshot beta path exceeds 66 nodes"
+                    );
                     ancestor = parent(self.beta.nodes.get(&next).ok_or("dangling beta ancestor")?);
                 }
             } else {
@@ -424,6 +432,7 @@ impl ReteNetwork {
                 _ => {}
             }
         }
+        self.validate_ncc_paths(&mut work)?;
         require_eq!(owned_memories.len(), self.beta.memories.len());
         require_eq!(owned_negative.len(), self.beta.neg_memories.len());
         require_eq!(owned_exists.len(), self.beta.exists_memories.len());
@@ -573,7 +582,7 @@ impl ReteNetwork {
                 activated_pairs.insert((activation.rule, activation.token)),
                 "duplicate rule/token activation"
             );
-            work.spend(256)?;
+            work.spend(MAX_BETA_PATH_NODES)?;
             let expected: smallvec::SmallVec<[crate::fact::Timestamp; 4]> = self
                 .token_store
                 .collect_all_facts(activation.token)
@@ -606,6 +615,62 @@ impl ReteNetwork {
         }
         self.validate_join_memberships(facts, &mut work)?;
         self.validate_conditional_memories(facts, &mut work)?;
+        Ok(())
+    }
+
+    fn validate_ncc_paths(&self, work: &mut Work) -> Result<(), String> {
+        let mut dependencies = rustc_hash::FxHashMap::<NodeId, Vec<NodeId>>::default();
+        for (&id, node) in &self.beta.nodes {
+            let BetaNode::Ncc {
+                parent: prefix,
+                partner,
+                ..
+            } = node
+            else {
+                continue;
+            };
+            let mut cursor = match self.beta.nodes.get(partner) {
+                Some(BetaNode::NccPartner {
+                    parent, ncc_node, ..
+                }) if *ncc_node == id => *parent,
+                _ => return Err("invalid NCC partner link".to_owned()),
+            };
+            require!(cursor != *prefix, "empty NCC partner branch");
+            let nested = dependencies.entry(id).or_default();
+            while cursor != *prefix {
+                work.step()?;
+                require!(cursor != id, "NCC partner crosses its own output");
+                let ancestor = self.beta.nodes.get(&cursor).ok_or("dangling NCC branch")?;
+                if matches!(ancestor, BetaNode::Ncc { .. }) {
+                    nested.push(cursor);
+                }
+                cursor = parent(ancestor).ok_or("NCC branch does not share its declared prefix")?;
+            }
+        }
+        // Parent paths can be short while partner callbacks form a deep chain
+        // or a cycle. Check that separate dependency graph iteratively.
+        let mut visiting = rustc_hash::FxHashSet::default();
+        let mut depths = rustc_hash::FxHashMap::<NodeId, usize>::default();
+        for &root in dependencies.keys() {
+            let mut pending = vec![(root, false)];
+            while let Some((id, exit)) = pending.pop() {
+                work.step()?;
+                if depths.contains_key(&id) {
+                    continue;
+                }
+                let nested = dependencies.get(&id).ok_or("missing nested NCC")?;
+                if exit {
+                    let depth = 1 + nested.iter().map(|child| depths[child]).max().unwrap_or(0);
+                    require!(depth <= MAX_NCC_DEPTH, "snapshot NCC nesting exceeds 4");
+                    visiting.remove(&id);
+                    depths.insert(id, depth);
+                } else {
+                    require!(visiting.insert(id), "cyclic NCC partner dependencies");
+                    pending.push((id, true));
+                    pending.extend(nested.iter().map(|child| (*child, false)));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -673,8 +738,8 @@ impl ReteNetwork {
                 incoming[child.0 as usize] += 1;
                 depths[child.0 as usize] = depths[index] + 1;
                 require!(
-                    depths[child.0 as usize] <= 256,
-                    "snapshot alpha depth exceeds 256"
+                    depths[child.0 as usize] <= MAX_ALPHA_DEPTH,
+                    "snapshot alpha path exceeds 64 tests"
                 );
             }
             if let Some(memory) = memory {

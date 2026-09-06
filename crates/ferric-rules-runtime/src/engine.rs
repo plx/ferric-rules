@@ -1436,7 +1436,9 @@ impl Engine {
     #[allow(clippy::too_many_lines)]
     pub fn debug_assert_consistency(&self) {
         use std::collections::HashSet;
-        self.rete.debug_assert_consistency();
+        self.rete
+            .validate_consistency()
+            .expect("RETE consistency violation");
         self.module_registry.debug_assert_consistency();
         self.functions.debug_assert_consistency();
         self.globals.debug_assert_consistency();

@@ -1582,24 +1582,26 @@ impl ReteNetwork {
     }
 
     /// Verify cross-structure consistency for the full rete network.
-    ///
-    /// Checks all substructures and cross-structure invariants. Extended
-    /// incrementally as Phase 2 adds negative, NCC, and exists nodes.
-    ///
-    /// Intended for use in tests and debug builds.
     #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
+        self.validate_consistency()
+            .expect("RETE consistency violation");
+    }
+
+    /// Fallible consistency checks, also available to release-built consumers.
+    #[doc(hidden)]
+    pub fn validate_consistency(&self) -> Result<(), String> {
         // --- Phase 1 substructure checks ---
-        self.token_store.debug_assert_consistency();
-        self.alpha.debug_assert_consistency();
-        self.beta.debug_assert_consistency();
-        self.agenda.debug_assert_consistency();
+        self.token_store.validate_consistency()?;
+        self.alpha.validate_consistency()?;
+        self.beta.validate_consistency()?;
+        self.agenda.validate_consistency()?;
 
         // Cross-check: every token referenced by beta memories exists in TokenStore.
         for memory_id in self.beta.memory_ids() {
             if let Some(memory) = self.beta.get_memory(memory_id) {
                 for token_id in memory.iter() {
-                    assert!(
+                    crate::snapshot::require!(
                         self.token_store.get(token_id).is_some(),
                         "beta memory {memory_id:?} references non-existent token {token_id:?}"
                     );
@@ -1614,8 +1616,8 @@ impl ReteNetwork {
             .beta
             .memory_id_for_node(root_id)
             .and_then(|memory_id| self.beta.get_memory(memory_id))
-            .expect("beta root memory must exist");
-        assert_eq!(
+            .ok_or("beta root memory must exist")?;
+        crate::snapshot::require_eq!(
             root_memory.len(),
             1,
             "beta root memory must contain exactly one token"
@@ -1626,17 +1628,17 @@ impl ReteNetwork {
                 root_memory
                     .iter()
                     .next()
-                    .expect("beta root token must exist"),
+                    .ok_or("beta root token must exist")?,
             )
-            .expect("beta root token must be present in the token store");
-        assert_eq!(root_token.owner_node, root_id);
-        assert!(root_token.fact.is_none());
-        assert!(root_token.parent.is_none());
-        assert_eq!(root_token.bindings.bound_count(), 0);
+            .ok_or("beta root token must be present in the token store")?;
+        crate::snapshot::require_eq!(root_token.owner_node, root_id);
+        crate::snapshot::require!(root_token.fact.is_none());
+        crate::snapshot::require!(root_token.parent.is_none());
+        crate::snapshot::require_eq!(root_token.bindings.bound_count(), 0);
 
         // Cross-check: every token referenced by an agenda activation exists.
         for activation in self.agenda.iter_activations() {
-            assert!(
+            crate::snapshot::require!(
                 self.token_store.get(activation.token).is_some(),
                 "activation for rule {:?} references non-existent token {:?}",
                 activation.rule,
@@ -1644,25 +1646,7 @@ impl ReteNetwork {
             );
         }
 
-        // --- Phase 2 extension points (filled in by later passes) ---
-
-        // Negative node checks (Pass 006):
-        // - Every blocker entry maps to an existing token.
-        // - Blocker counts match actual blockers for each parent token.
-        // - Blocked tokens have no downstream activations.
-
-        // NCC node checks (Pass 010):
-        // - NCC partner memory and result memory are consistent.
-        // - Conjunction sub-network cleanup leaves no orphaned tokens.
-
-        // Exists node checks (Pass 010):
-        // - Support count for each parent token matches actual supporting facts.
-        // - Tokens with zero support have no downstream activations.
-
-        // Agenda strategy checks (Pass 007):
-        // - All activations in the ordering are correctly sorted per the
-        //   active conflict resolution strategy.
-        // - No duplicate activations for the same (rule, token) pair.
+        Ok(())
     }
 }
 

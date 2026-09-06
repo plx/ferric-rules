@@ -69,7 +69,9 @@ Supported persistence bounds are 16 MiB including the envelope, 128 Serde nestin
 levels, and 1,000,000 decoded items across the whole payload. Collection length
 hints are checked before allocation and do not control allocation capacity.
 Runtime values allow 32 nested multifields; stored action/expression trees allow
-16 levels, network ancestry 256 levels, and configured call depth at most 256.
+16 levels, alpha paths 64 tests, beta parent paths 66 nodes (including root
+and terminal), NCC nesting 4, and configured call depth at most 256. NCC partner
+branches must share their declared prefix and cannot form callback cycles.
 Graph validation has a 10,000,000-operation work allowance and a separate equal
 allowance for compiler-cache validation. It charges cross-products and test/index
 widths before evaluating them. A valid but unusually large engine can exceed

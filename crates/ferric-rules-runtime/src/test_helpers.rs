@@ -241,12 +241,13 @@ pub fn retract_one_fact(
 
 /// Assert full rete consistency. Panics on violation.
 ///
-/// This calls `debug_assert_consistency()` on the rete network, which checks
+/// This calls `validate_consistency()` on the rete network, which checks
 /// token store, alpha network, beta network, agenda, and cross-structure
 /// invariants (including any Phase 2 extensions as they are added).
 #[cfg(any(test, debug_assertions))]
 pub fn assert_rete_consistent(rete: &ReteNetwork) {
-    rete.debug_assert_consistency();
+    rete.validate_consistency()
+        .expect("RETE consistency violation");
 }
 
 /// Assert full engine consistency, including Phase 3 registries.

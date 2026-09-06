@@ -1129,6 +1129,152 @@ mod tests {
         );
     }
 
+    #[test]
+    fn restored_graph_paths_have_the_source_depth_limits() {
+        use std::fmt::Write;
+        let fields = (1..=64)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut alpha = Engine::with_rules(&format!(
+            "(defrule match (wide {fields}) => (assert (matched)))"
+        ))
+        .unwrap();
+        let bytes = alpha.serialize(SerializationFormat::Cbor).unwrap();
+        let mut restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+        restored
+            .load_str(&format!("(assert (wide {fields}))"))
+            .unwrap();
+        assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(restored.find_facts("matched").unwrap().len(), 1);
+        let result = alter_state(&alpha, |state| {
+            let nodes = state["rete"]["alpha"]["nodes"].as_array_mut().unwrap();
+            let id = nodes.len();
+            let appended = nodes.last().unwrap().clone();
+            let previous = nodes.last_mut().unwrap().get_mut("ConstantTest").unwrap();
+            previous["memory"] = serde_json::Value::Null;
+            previous["children"] = serde_json::json!([id]);
+            nodes.push(appended);
+            state["rete"]["alpha"]["next_node_id"] = serde_json::json!(id + 1);
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("64 tests"))
+        );
+        // Removing an accepted fact must also stay within the bounded path.
+        alpha
+            .load_str(&format!("(assert (wide {fields}))"))
+            .unwrap();
+        let fact = alpha.find_facts("wide").unwrap()[0].0;
+        alpha.retract(fact).unwrap();
+        assert_eq!(alpha.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+
+        let mut source = String::from("(defrule deep");
+        for index in 0..64 {
+            write!(source, " (p{index} ?x)").unwrap();
+        }
+        source.push_str(" => (assert (matched)))");
+        let engine = Engine::with_rules(&source).unwrap();
+        let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
+        let mut restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+        for index in 0..64 {
+            restored
+                .load_str(&format!("(assert (p{index} 7))"))
+                .unwrap();
+        }
+        assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(restored.find_facts("matched").unwrap().len(), 1);
+        let result = alter_state(&engine, |state| {
+            let beta = &mut state["rete"]["beta"];
+            let id = beta["next_node_id"].as_u64().unwrap();
+            let memory = beta["next_memory_id"].as_u64().unwrap();
+            let nodes = beta["nodes"].as_array_mut().unwrap();
+            let terminal = nodes
+                .iter()
+                .find(|node| node[1].get("Terminal").is_some())
+                .unwrap();
+            let terminal_id = terminal[0].as_u64().unwrap();
+            let parent = terminal[1]["Terminal"]["parent"].as_u64().unwrap();
+            let rule = terminal[1]["Terminal"]["rule"].clone();
+            beta_body_mut(nodes, terminal_id)["parent"] = serde_json::json!(id);
+            let children = beta_body_mut(nodes, parent)["children"]
+                .as_array_mut()
+                .unwrap();
+            *children
+                .iter_mut()
+                .find(|child| child.as_u64() == Some(terminal_id))
+                .unwrap() = serde_json::json!(id);
+            nodes.push(serde_json::json!([id, {"Predicate": {"parent": parent, "rule": rule, "condition_index": 0, "memory": memory, "children": [terminal_id]}}]));
+            let memories = beta["memories"].as_array_mut().unwrap();
+            let mut empty = memories.last().unwrap().clone();
+            empty["id"] = serde_json::json!(memory);
+            memories.push(empty);
+            beta["next_node_id"] = serde_json::json!(id + 1);
+            beta["next_memory_id"] = serde_json::json!(memory + 1);
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("66 nodes"))
+        );
+    }
+
+    fn beta_body_mut(nodes: &mut [serde_json::Value], id: u64) -> &mut serde_json::Value {
+        nodes
+            .iter_mut()
+            .find(|node| node[0].as_u64() == Some(id))
+            .unwrap()[1]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap()
+    }
+
+    #[test]
+    fn short_beta_paths_cannot_hide_deep_or_cyclic_ncc_callbacks() {
+        use std::fmt::Write;
+        for (count, cycle, expected) in
+            [(2, true, "cyclic NCC"), (5, false, "NCC nesting exceeds 4")]
+        {
+            let mut source = String::new();
+            for index in 0..count {
+                write!(
+                    source,
+                    "(defrule r{index} (not (and (a{index}) (b{index}))) =>)"
+                )
+                .unwrap();
+            }
+            let engine = Engine::with_rules(&source).unwrap();
+            let result = alter_state(&engine, |state| {
+                let nodes = state["rete"]["beta"]["nodes"].as_array_mut().unwrap();
+                let nccs = nodes
+                    .iter()
+                    .filter_map(|node| {
+                        node[1].get("Ncc").map(|body| {
+                            (node[0].as_u64().unwrap(), body["partner"].as_u64().unwrap())
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                for index in 0..(if cycle { count } else { count - 1 }) {
+                    let (_, partner) = nccs[index];
+                    let next = nccs[(index + 1) % count].0;
+                    let old_parent = beta_body_mut(nodes, partner)["parent"].as_u64().unwrap();
+                    beta_body_mut(nodes, old_parent)["children"]
+                        .as_array_mut()
+                        .unwrap()
+                        .retain(|child| child.as_u64() != Some(partner));
+                    beta_body_mut(nodes, next)["children"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(serde_json::json!(partner));
+                    beta_body_mut(nodes, partner)["parent"] = serde_json::json!(next);
+                }
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(message)) if message.contains(expected)),
+                "{expected}"
+            );
+        }
+    }
+
     /// Test roundtrip for a given format with an empty engine.
     fn roundtrip_empty(format: SerializationFormat) {
         let engine = Engine::new(EngineConfig::default());
