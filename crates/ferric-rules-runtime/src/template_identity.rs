@@ -14,10 +14,10 @@ impl Engine {
         if name == "initial-fact" {
             return true;
         }
-        let matches_fact = |fact: &Fact| matches!(fact, Fact::Ordered(fact) if self.resolve_symbol(fact.relation).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)));
+        let matches_fact = |fact: &Fact| matches!(fact, Fact::Ordered(fact) if self.resolve_core_symbol(fact.relation).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)));
         if self.fact_base.iter().any(|(_, entry)| matches_fact(&entry.fact))
             || self.rete.alpha.entry_types().any(|entry| {
-                matches!(entry, AlphaEntryType::OrderedRelation(symbol) if self.resolve_symbol(*symbol).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)))
+                matches!(entry, AlphaEntryType::OrderedRelation(symbol) if self.resolve_core_symbol(*symbol).is_some_and(|raw| Self::ordered_relation_name_is(raw, name)))
             })
             || self.registered_deffacts.iter().flat_map(|seed| &seed.facts).any(matches_fact)
         {

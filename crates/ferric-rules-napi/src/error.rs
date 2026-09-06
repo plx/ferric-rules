@@ -13,7 +13,8 @@ fn engine_error_class(err: &EngineError) -> &'static str {
         EngineError::SlotNotFound { .. } => "FerricSlotNotFoundError",
         EngineError::ModuleNotFound(_) => "FerricModuleNotFoundError",
         EngineError::Encoding(_) => "FerricEncodingError",
-        EngineError::WrongThread { .. } | EngineError::NotATemplateFact(_)
+        EngineError::WrongThread { .. }
+        | EngineError::NotATemplateFact(_)
         | EngineError::SlotCountMismatch { .. }
         | EngineError::DuplicateSlot { .. }
         | EngineError::InvalidSlotValue { .. }
@@ -36,7 +37,8 @@ fn load_error_class(err: &LoadError) -> &'static str {
         | LoadError::InvalidAssert(_)
         | LoadError::InvalidDefrule(_)
         | LoadError::Compile(_)
-        | LoadError::Validation(_) | LoadError::ResourceLimit { .. } => "FerricCompileError",
+        | LoadError::Validation(_)
+        | LoadError::ResourceLimit { .. } => "FerricCompileError",
         LoadError::Engine(error) => engine_error_class(error),
         LoadError::Io(_) => "FerricIOError",
     }
