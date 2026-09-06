@@ -676,6 +676,18 @@ Constructs can be referenced with `MODULE::name` syntax:
 - Only rules in the current focus-stack module are eligible to fire.
 - When a module's agenda is empty, it is popped and the next module resumes.
 
+### Template declaration spellings across modules
+
+CLIPS 6.30 accepts the same unqualified template declaration name in different
+modules. Ferric currently requires distinct public declaration spellings: after
+`(defmodule A) (deftemplate item ...)`, declare a second identity as
+`(defmodule B) (deftemplate B::item ...)`. Unqualified references inside module B
+still resolve its local template. A second conflicting unqualified declaration
+is rejected before installing metadata; previously it could overwrite the
+public name index and make snapshots invalid. This is an explicit module support
+limitation, not a claim of CLIPS equivalence. Existing qualified identities and
+same-module unused-template replacement retain their behavior.
+
 ### Facts Are Global
 
 Facts exist in a single global working memory. Module scoping affects only
