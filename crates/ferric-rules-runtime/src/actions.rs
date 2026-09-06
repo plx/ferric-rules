@@ -569,10 +569,8 @@ fn collect_outer_runtime_bindings(
 }
 
 fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value) {
-    env.insert(name.to_string(), value.clone());
-    if !name.starts_with("$?") {
-        env.entry(format!("$?{name}")).or_insert(value);
-    }
+    // Both spellings share one current value, including after an RHS bind.
+    env.insert(name.strip_prefix("$?").unwrap_or(name).to_string(), value);
 }
 
 fn seed_multifield_tail_bindings(

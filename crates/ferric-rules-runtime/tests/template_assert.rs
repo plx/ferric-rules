@@ -303,3 +303,44 @@ fn multislot_omits_void_expression_results_and_preserves_effects() {
         .collect();
     assert_eq!(fields, ["before", "after"]);
 }
+
+#[test]
+fn a_template_multislot_binding_has_both_rhs_variable_spellings() {
+    let mut engine = Engine::with_rules(
+        r#"
+        (deftemplate packet (slot id) (multislot items))
+        (deffacts seed (source 12 red "blue" 3.5))
+        (defrule create-packet (source ?id $?items) => (assert (packet (id ?id) (items $?items))))
+        (deffunction count-fields ($?values) (length$ $?values))
+        (defrule read-packet (packet (id ?id) (items $?items)) =>
+            (printout t ?id " " (length$ ?items) crlf)
+            (assert (result ?id $?items))
+            (assert (copied (count-fields red "blue" 3.5))))
+        "#,
+    )
+    .unwrap();
+    let run = engine.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(run.rules_fired, 2);
+    assert_eq!(
+        run.halt_reason,
+        HaltReason::AgendaEmpty,
+        "{:?}",
+        engine.action_diagnostics()
+    );
+    assert_eq!(engine.get_output("t"), Some("12 3\n"));
+    let results = engine.find_facts("result").unwrap();
+    assert_eq!(results.len(), 1);
+    let Fact::Ordered(result) = results[0].1 else {
+        panic!("ordered fact required")
+    };
+    assert_eq!(result.fields.len(), 4);
+    assert!(
+        matches!(result.fields[3], Value::Float(value) if value.to_bits() == 3.5_f64.to_bits())
+    );
+    let copies = engine.find_facts("copied").unwrap();
+    assert_eq!(copies.len(), 1);
+    let Fact::Ordered(copy) = copies[0].1 else {
+        panic!("ordered fact required")
+    };
+    assert!(matches!(copy.fields.as_slice(), [Value::Integer(3)]));
+}

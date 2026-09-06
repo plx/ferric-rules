@@ -494,9 +494,13 @@ fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Ev
     match expr {
         RuntimeExpr::Literal(v) => Ok(v.clone()),
         RuntimeExpr::BoundVar { name, span } => {
+            // Single-field and multifield spellings refer to the same binding.
+            // Compiled template slots and callable wildcard parameters store
+            // the bare name; ordered-tail RHS frames use that name as well.
+            let binding_name = name.strip_prefix("$?").unwrap_or(name);
             let sym = ctx
                 .symbol_table
-                .intern_symbol(name, ctx.config.string_encoding)
+                .intern_symbol(binding_name, ctx.config.string_encoding)
                 .map_err(|_| EvalError::UnboundVariable {
                     name: name.clone(),
                     span: span.clone(),
