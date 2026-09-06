@@ -24,7 +24,7 @@ fn integer_facts(engine: &Engine, relation: &str) -> Vec<i64> {
     engine
         .facts()
         .unwrap()
-        .filter(|(_, fact)| matches!(fact, Fact::Ordered(fact) if engine.resolve_symbol(fact.relation) == Some(relation)))
+        .filter(|(_, fact)| matches!(fact, Fact::Ordered(fact) if engine.resolve_core_symbol(fact.relation) == Some(relation)))
         .map(|(_, fact)| {
             let Fact::Ordered(fact) = fact else {
                 panic!("ordered fact required")

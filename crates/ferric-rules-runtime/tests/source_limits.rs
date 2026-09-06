@@ -266,6 +266,6 @@ fn per_load_expansion_budget_preserves_already_installed_constructs() {
     );
     // Loading is incremental across constructs. The third rule must not be
     // installed partially, while the first two remain usable.
-    engine.assert_ordered("left", Vec::new()).unwrap();
+    engine.assert_ordered("left", ()).unwrap();
     assert_eq!(engine.agenda_len(), 2);
 }
