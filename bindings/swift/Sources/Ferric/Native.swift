@@ -67,6 +67,7 @@ func withNativeValues<Result>(
   depth: Int = 0,
   _ body: (UnsafeBufferPointer<FerricValue>) throws -> Result
 ) throws -> Result {
+  if depth == 0 { try validateInputValues(values) }
   var native: [FerricValue] = []
   defer {
     for index in native.indices { _ = ferric_value_free(&native[index]) }
@@ -75,9 +76,44 @@ func withNativeValues<Result>(
   return try native.withUnsafeBufferPointer(body)
 }
 
+// Match the native host boundary before allocating any C values. Keep .void
+// available for returned absent results, but never store it as durable fact data.
+private func validateInputValues(_ values: [Value]) throws {
+  var remaining = 1_000_000
+  guard values.count <= remaining else {
+    throw EngineError.invalidArgument("host input exceeds 1000000 values")
+  }
+  var pending = values.map { ($0, 0) }
+  while let (value, depth) = pending.popLast() {
+    guard remaining > 0 else {
+      throw EngineError.invalidArgument("host input exceeds 1000000 values")
+    }
+    remaining -= 1
+    switch value {
+    case .void:
+      throw EngineError.invalidArgument(
+        "void cannot be stored in a fact, including inside a multifield"
+      )
+    case .multifield(let fields):
+      guard depth < 32 else {
+        throw EngineError.invalidArgument("multifield nesting exceeds 32 levels")
+      }
+      // Pending siblings also consume the aggregate budget when processed.
+      guard fields.count <= remaining - pending.count else {
+        throw EngineError.invalidArgument("host input exceeds 1000000 values")
+      }
+      pending.append(contentsOf: fields.map { ($0, depth + 1) })
+    default: break
+    }
+  }
+}
+
 private func encode(_ value: Value, depth: Int) throws -> FerricValue {
   switch value {
-  case .void: return ferric_value_void()
+  case .void:
+    throw EngineError.invalidArgument(
+      "void cannot be stored in a fact, including inside a multifield"
+    )
   case .integer(let number): return ferric_value_integer(number)
   case .float(let number): return ferric_value_float(number)
   case .symbol(let string), .string(let string):
@@ -93,8 +129,8 @@ private func encode(_ value: Value, depth: Int) throws -> FerricValue {
     try check(code)
     return result
   case .multifield(let values):
-    guard depth < 128 else {
-      throw EngineError.invalidArgument("multifield nesting exceeds 128 levels")
+    guard depth < 32 else {
+      throw EngineError.invalidArgument("multifield nesting exceeds 32 levels")
     }
     return try withNativeValues(values, depth: depth + 1) { buffer in
       var result = ferric_value_void()
@@ -116,8 +152,8 @@ func decode(_ value: FerricValue, depth: Int = 0) throws -> Value {
     let string = String(cString: pointer)
     return value.value_type == FERRIC_VALUE_TYPE_SYMBOL.rawValue ? .symbol(string) : .string(string)
   case FERRIC_VALUE_TYPE_MULTIFIELD.rawValue:
-    guard depth < 128 else {
-      throw EngineError.unsupportedValue("native multifield nesting exceeds 128 levels")
+    guard depth < 32 else {
+      throw EngineError.unsupportedValue("native multifield nesting exceeds 32 levels")
     }
     let elements = UnsafeBufferPointer(
       start: value.multifield_ptr,

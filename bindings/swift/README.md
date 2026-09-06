@@ -78,10 +78,15 @@ interrupt an already queued native operation.
 Values, facts, output, snapshot bytes, and error messages are owned Swift data
 and remain usable after close. Integers retain all signed 64-bit precision;
 symbols and strings are distinct, and nested multifields are supported up to
-128 levels. External addresses have no Swift representation and are rejected
-explicitly. Embedded NUL text is rejected at C string/value boundaries instead
-of being silently truncated. `FactID` belongs to one engine instance: query new
-IDs after restore and persist application keys instead of raw fact IDs.
+32 levels and one million aggregate values per assertion. Fact input rejects
+`.void`, including nested instances, before allocating C values; it represents
+an absent result rather than durable fact data. Use an application symbol such
+as `.symbol("nil")` for a stored sentinel. External addresses have no Swift
+representation and are rejected explicitly. Embedded NUL text is rejected at C string/value boundaries instead
+of being silently truncated. `FactID` retains the full unsigned 64-bit native ID and belongs to one engine
+instance. Reset and restore invalidate old IDs; query new IDs and persist
+application keys instead of raw fact IDs. Copied symbol/string values are owned
+text and can be asserted into a different engine after their source closes.
 
 Snapshots use recommended CBOR through the native versioned snapshot API. They
 preserve engine state and subsequent rule behavior, subject to the native
@@ -97,7 +102,8 @@ retraction, limited execution, meaningful snapshot continuation, and errors.
 Both the tests and external consumer use the canonical
 [`examples/embedding/launch-selection.clp`](../../examples/embedding/launch-selection.clp):
 three candidates deterministically select `sign-in` at most once for a session,
-including after snapshot/resume. Build and smoke scripts reject fixture drift.
+including after pending and completed snapshot/resume. Build and smoke scripts
+reject fixture drift.
 
 The iOS wrapper can also be checked without signing or launching an app:
 

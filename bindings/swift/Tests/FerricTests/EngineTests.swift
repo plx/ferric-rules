@@ -12,9 +12,10 @@ struct EngineTests {
     let values: [Value] = [
       .integer(.max), .integer(.min), .float(1.25), .symbol("symbol"), .string("résumé 🦀"),
       .string(""),
-      .multifield([.integer(7), .multifield([.string("nested")])]), .void,
+      .multifield([.integer(7), .multifield([.string("nested")])]),
     ]
     let id = try await Task.detached { try await engine.assertFact("typed", fields: values) }.value
+    #expect(id.rawValue >= 1 << 63)
     let facts = try await Task.detached { try await engine.facts() }.value
     #expect(facts == [.ordered(id: id, relation: "typed", fields: values)])
     try await Task.detached { try await engine.close() }.value
@@ -72,14 +73,85 @@ struct EngineTests {
   func rejectedValueConversionLeavesNoPartialFact() async throws {
     let engine = try await Engine.create()
     var nested = Value.integer(1)
-    for _ in 0..<129 { nested = .multifield([nested]) }
-    await #expect(throws: EngineError.invalidArgument("multifield nesting exceeds 128 levels")) {
+    for _ in 0..<33 { nested = .multifield([nested]) }
+    await #expect(throws: EngineError.invalidArgument("multifield nesting exceeds 32 levels")) {
       try await engine.assertFact("rejected", fields: [.string("already allocated"), nested])
     }
     #expect(try await engine.facts().isEmpty)
     _ = try await engine.assertFact("still-usable")
     #expect(try await engine.facts().count == 1)
     try await engine.close()
+  }
+
+  @Test
+  func voidAndAggregateLimitsRejectBeforeAssertion() async throws {
+    let engine = try await Engine.create()
+    try await engine.load("(deftemplate item (multislot values))")
+    for value in [Value.void, .multifield([.void]), .multifield([.multifield([.void])])] {
+      let error = EngineError.invalidArgument(
+        "void cannot be stored in a fact, including inside a multifield"
+      )
+      await #expect(throws: error) { try await engine.assertFact("invalid", fields: [value]) }
+      await #expect(throws: error) {
+        try await engine.assertTemplate("item", slots: ["values": value])
+      }
+    }
+    let half = Value.multifield(Array(repeating: .integer(1), count: 500_000))
+    await #expect(throws: EngineError.invalidArgument("host input exceeds 1000000 values")) {
+      try await engine.assertFact("invalid", fields: [half, half])
+    }
+    #expect(try await engine.facts().isEmpty)
+    let valid = try await engine.assertFact("sentinel", fields: [.symbol("nil")])
+    #expect(
+      try await engine.facts() == [
+        .ordered(id: valid, relation: "sentinel", fields: [.symbol("nil")])
+      ]
+    )
+    try await engine.close()
+  }
+
+  @Test
+  func nestedBoundaryAndOwnedValuesSurviveRestoreAndClose() async throws {
+    let engine = try await Engine.create()
+    var nested = Value.symbol("retained")
+    for _ in 0..<32 { nested = .multifield([nested]) }
+    let id = try await engine.assertFact("item", fields: [nested])
+    let facts = try await engine.facts()
+    let saved = try await engine.snapshot()
+    try await engine.close()
+    let restored = try await Engine.restore(saved)
+    let restoredFacts = try await restored.facts()
+    #expect(restoredFacts.count == 1)
+    guard case .ordered(let newID, "item", let fields) = restoredFacts[0] else {
+      Issue.record("restored fact lost its type or relation")
+      try await restored.close()
+      return
+    }
+    #expect(newID.rawValue != id.rawValue)
+    #expect(fields == [nested])
+    #expect(facts == [.ordered(id: id, relation: "item", fields: [nested])])
+    // Copied symbols are host-owned text; the destination interns its own values.
+    let destination = try await Engine.create()
+    _ = try await destination.assertFact("different", fields: [.symbol("intern-order")])
+    let copied = try await destination.assertFact("copy", fields: fields)
+    #expect(
+      try await destination.facts().contains(.ordered(id: copied, relation: "copy", fields: fields))
+    )
+    await #expect(
+      throws: EngineError.invalidArgument("fact identity belongs to a different engine")
+    ) {
+      try await destination.retract(newID)
+    }
+    try await destination.close()
+    try await restored.reset()
+    do {
+      try await restored.retract(newID)
+      Issue.record("pre-reset fact identity remained usable")
+    } catch EngineError.native(_, let message) {
+      #expect(!message.isEmpty)
+    }
+    #expect(try await restored.facts().isEmpty)
+    try await restored.close()
   }
 
   @Test
@@ -246,6 +318,13 @@ struct EngineTests {
         #expect(fields == [.symbol("session-42"), .symbol("sign-in")])
       }
       #expect(try await current.run().rulesFired == 0)
+      let completed = try await Engine.restore(current.snapshot())
+      #expect(try await completed.run().rulesFired == 0)
+      let completedActions = try await completed.facts().filter {
+        if case .ordered(_, "action", _) = $0 { true } else { false }
+      }
+      #expect(completedActions.count == 1)
+      try await completed.close()
       try await current.close()
     }
   }
@@ -265,7 +344,13 @@ struct EngineTests {
       try await engine.load("(assert (x))\0ignored")
     }
     do {
-      _ = try await engine.assertFact("value", fields: [.string("a\0b")])
+      _ = try await engine.assertFact(
+        "value",
+        fields: [
+          .string("already allocated"),
+          .multifield([.string("inner allocation"), .string("a\0b")]),
+        ]
+      )
       Issue.record("NUL value accepted")
     } catch {
       guard case .native(let code, let message) = error as? EngineError else { throw error }

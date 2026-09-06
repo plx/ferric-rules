@@ -47,8 +47,19 @@ import Foundation
                 if case .ordered(_, "action", _) = $0 { true } else { false }
             }
             precondition(actions.count == 1)
-            guard case .ordered(_, _, let fields) = actions[0] else { fatalError("missing action") }
+            guard case .ordered(let actionID, _, let fields) = actions[0] else { fatalError("missing action") }
+            precondition(actionID.rawValue >= 1 << 63)
             precondition(fields == [.symbol("session-42"), .symbol("sign-in")])
+            let complete = try await Engine.restore(current.snapshot())
+            let completedRun = try await complete.run()
+            precondition(completedRun.rulesFired == 0)
+            let completedActions = try await complete.facts().filter {
+                if case .ordered(_, "action", _) = $0 { true } else { false }
+            }
+            precondition(completedActions.count == 1)
+            guard case .ordered(let resumedID, _, let resumedFields) = completedActions[0] else { fatalError("missing resumed action") }
+            precondition(resumedID.rawValue != actionID.rawValue && resumedFields == fields)
+            try await complete.close()
             try await current.close()
         }
         let invalid = try await Engine.create()
@@ -58,8 +69,16 @@ import Foundation
         } catch EngineError.native(let code, let message) {
             precondition(code == 4 && !message.isEmpty)
         }
+        do {
+            _ = try await invalid.assertFact("invalid", fields: [.multifield([.void])])
+            fatalError("void accepted as persisted fact data")
+        } catch EngineError.invalidArgument(let message) {
+            precondition(message.contains("void"))
+        }
+        let invalidFacts = try await invalid.facts()
+        precondition(invalidFacts.isEmpty)
         try await invalid.close()
-        print("Swift external consumer: sign-in selected once; snapshot resume and invalid-input diagnostic passed")
+        print("Swift external consumer: sign-in selected once; pending/completed snapshot resume, high IDs and invalid-input diagnostics passed")
     }
 }
 SWIFT

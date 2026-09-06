@@ -2,6 +2,7 @@ import Foundation
 
 /// Owned CLIPS values. Integers remain exact signed 64-bit values.
 public indirect enum Value: Sendable, Equatable {
+  /// An absent native result. Fact assertion rejects this value, including nested instances.
   case void
   case integer(Int64)
   case float(Double)
@@ -10,7 +11,7 @@ public indirect enum Value: Sendable, Equatable {
   case multifield([Value])
 }
 
-/// A fact identity belongs to one Engine handle, including after snapshot restore.
+/// A transient identity scoped to one Engine. Reset and restore return fresh identifiers.
 public struct FactID: Sendable, Hashable {
   /// The native identifier, meaningful only within its owning engine.
   public let rawValue: UInt64
