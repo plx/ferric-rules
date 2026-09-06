@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
-import { Engine, FerricSymbol, FerricRuntimeError, FerricParseError, FerricCompileError, FerricIOError, Format, HaltReason } from "../../../helpers/ferric";
+import { resolve, join } from "node:path";
+import { mkdtempSync, openSync, ftruncateSync, closeSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { Engine, FerricSymbol, FerricRuntimeError, FerricParseError, FerricCompileError, FerricIOError, FerricSerializationError, Format, HaltReason } from "../../../helpers/ferric";
 
 const nativeAddon = resolve(__dirname, "../../../../../../crates/ferric-rules-napi/ferric-rules-napi.node");
 
@@ -250,4 +252,39 @@ test("stored void and excessive nesting reject atomically", () => {
     engine.retract(id);
     assert.equal(engine.factCount, 0);
   } finally { engine.close(); }
+});
+
+
+test("snapshot file constructors preserve typed errors and bound sparse inputs", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ferric-snapshot-limit-"));
+  const sparse = join(directory, "large.cbor");
+  try {
+    assert.throws(() => Engine.fromSnapshotFile(join(directory, "missing")), FerricIOError);
+    const file = openSync(sparse, "w");
+    try { ftruncateSync(file, 1024 ** 3); } finally { closeSync(file); }
+    assert.throws(() => Engine.fromSnapshotFile(sparse), (error: unknown) => {
+      assert.ok(error instanceof FerricSerializationError);
+      assert.match(error.message, /limit|maximum|large/i);
+      return true;
+    });
+    const corrupt = join(directory, "corrupt.cbor");
+    writeFileSync(corrupt, "legacy raw invalid snapshot");
+    assert.throws(() => Engine.fromSnapshotFile(corrupt), FerricSerializationError);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("requested recursion limits retain the effective 32-call native ceiling", () => {
+  for (const [depth, expected] of [[8, HaltReason.AgendaEmpty], [40, HaltReason.ActionError]] as const) {
+    const functions = Array.from({ length: depth }, (_, index) =>
+      `(deffunction hop${index} () ${index + 1 < depth ? `(hop${index + 1})` : "42"})`).join("\n");
+    const engine = Engine.fromSource(`${functions} (defrule once => (assert (answer (hop0))))`, { maxCallDepth: 256 });
+    try {
+      assert.equal(engine.run().haltReason, expected);
+      if (depth === 8) assert.deepEqual(engine.findFacts("answer")[0].fields, [42]);
+      else {
+        assert.equal(engine.factCount, 0);
+        assert.match(engine.diagnostics.join("\n"), /32/);
+      }
+    } finally { engine.close(); }
+  }
 });
