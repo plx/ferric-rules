@@ -1,7 +1,35 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use ferric_rules::runtime::{Engine, EngineConfig};
+
+fn validate_workload(source: &str, n_rules: usize, n_templates: usize) {
+    let mut engine = support::verify_source(source, 0);
+    for template in 0..n_templates {
+        engine
+            .load_str(&format!(
+                "(assert (t{template} (s0 key) (s1 left) (s2 right)))"
+            ))
+            .unwrap();
+    }
+    support::verify_run(&mut engine, n_rules);
+    for rule in 0..n_rules {
+        let result = engine.find_facts(&format!("result-{rule}")).unwrap();
+        assert_eq!(result.len(), 1);
+        let ferric_rules::core::Fact::Ordered(fact) = result[0].1 else {
+            unreachable!()
+        };
+        assert_eq!(
+            fact.fields
+                .iter()
+                .map(|value| support::symbol(&engine, value))
+                .collect::<Vec<_>>(),
+            ["key", "left", "right"]
+        );
+    }
+}
 
 /// Compilation scaling benchmark: cold-start parse + Rete network construction
 /// for large rule bases.
@@ -43,6 +71,7 @@ fn generate_compile_source(n_rules: usize, n_templates: usize) -> String {
 fn bench_compile_10r_5t(c: &mut Criterion) {
     let source = generate_compile_source(10, 5);
     c.bench_function("compile_10r_5t", |b| {
+        validate_workload(&source, 10, 5);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -53,6 +82,7 @@ fn bench_compile_10r_5t(c: &mut Criterion) {
 fn bench_compile_50r_10t(c: &mut Criterion) {
     let source = generate_compile_source(50, 10);
     c.bench_function("compile_50r_10t", |b| {
+        validate_workload(&source, 50, 10);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -65,6 +95,7 @@ fn bench_compile_100r_20t(c: &mut Criterion) {
     let mut group = c.benchmark_group("compile_100r_20t");
     group.sample_size(10);
     group.bench_function("compile_100r_20t", |b| {
+        validate_workload(&source, 100, 20);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -78,6 +109,7 @@ fn bench_compile_200r_30t(c: &mut Criterion) {
     let mut group = c.benchmark_group("compile_200r_30t");
     group.sample_size(10);
     group.bench_function("compile_200r_30t", |b| {
+        validate_workload(&source, 200, 30);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -91,6 +123,7 @@ fn bench_compile_500r_50t(c: &mut Criterion) {
     let mut group = c.benchmark_group("compile_500r_50t");
     group.sample_size(10);
     group.bench_function("compile_500r_50t", |b| {
+        validate_workload(&source, 500, 50);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -134,6 +167,11 @@ fn bench_online_rule_install(c: &mut Criterion) {
             BenchmarkId::new(format!("{n_wmes}_wmes"), format!("{n_rules}_rules")),
             &(n_wmes, n_rules),
             |b, _| {
+                let mut oracle = Engine::new(EngineConfig::utf8());
+                oracle.load_str(&fact_source).unwrap();
+                oracle.load_str(&rule_source).unwrap();
+                support::verify_run(&mut oracle, n_wmes / 10 * n_rules);
+                assert_eq!(oracle.find_facts("item").unwrap().len(), n_wmes);
                 b.iter_batched(
                     || {
                         let mut engine = Engine::new(EngineConfig::utf8());

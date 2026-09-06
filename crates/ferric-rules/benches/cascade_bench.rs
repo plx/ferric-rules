@@ -1,7 +1,24 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
+
+fn validate_workload(source: &str, depth: usize, n_keys: usize) {
+    let engine = support::verify_source(source, 2 * n_keys);
+    assert_eq!(
+        support::template_symbols(&engine, "matched", "key"),
+        support::expected_symbols("k", n_keys)
+    );
+    assert!(support::template_ids(&engine, "layer-0").is_empty());
+    for layer in 1..depth {
+        assert_eq!(
+            support::template_symbols(&engine, &format!("layer-{layer}"), "key"),
+            support::expected_symbols("k", n_keys)
+        );
+    }
+}
 
 /// Deep token tree retraction benchmark.
 ///
@@ -52,6 +69,7 @@ fn generate_cascade_source(depth: usize, n_keys: usize) -> String {
 fn bench_cascade_d3_100k(c: &mut Criterion) {
     let source = generate_cascade_source(3, 100);
     c.bench_function("cascade_d3_100k", |b| {
+        validate_workload(&source, 3, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -66,6 +84,7 @@ fn bench_cascade_d5_100k(c: &mut Criterion) {
     let mut group = c.benchmark_group("cascade_d5_100k");
     group.sample_size(10);
     group.bench_function("cascade_d5_100k", |b| {
+        validate_workload(&source, 5, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -81,6 +100,7 @@ fn bench_cascade_d7_50k(c: &mut Criterion) {
     let mut group = c.benchmark_group("cascade_d7_50k");
     group.sample_size(10);
     group.bench_function("cascade_d7_50k", |b| {
+        validate_workload(&source, 7, 50);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -96,6 +116,7 @@ fn bench_cascade_d10_30k(c: &mut Criterion) {
     let mut group = c.benchmark_group("cascade_d10_30k");
     group.sample_size(10);
     group.bench_function("cascade_d10_30k", |b| {
+        validate_workload(&source, 10, 30);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -111,6 +132,7 @@ fn bench_cascade_d15_20k(c: &mut Criterion) {
     let mut group = c.benchmark_group("cascade_d15_20k");
     group.sample_size(10);
     group.bench_function("cascade_d15_20k", |b| {
+        validate_workload(&source, 15, 20);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -126,6 +148,7 @@ fn bench_cascade_d3_100k_run_only(c: &mut Criterion) {
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     c.bench_function("cascade_d3_100k_run_only", |b| {
+        validate_workload(&source, 3, 100);
         b.iter(|| {
             engine.reset().unwrap();
             engine.run(RunLimit::Unlimited).unwrap()

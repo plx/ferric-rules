@@ -1,7 +1,24 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
+
+fn validate_workload(source: &str, n_rules: usize, n_facts: usize) {
+    let engine = support::verify_source(source, n_facts);
+    assert_eq!(support::template_ids(&engine, "event").len(), n_facts);
+    for rule in 0..n_rules {
+        let expected = (rule..n_facts)
+            .step_by(n_rules)
+            .map(|i| i64::try_from(i).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            support::ordered_integers(&engine, &format!("handled-{rule}")),
+            expected
+        );
+    }
+}
 
 /// Alpha network fan-out benchmark: many rules sharing the same template type.
 ///
@@ -40,6 +57,7 @@ fn generate_alpha_fanout_source(n_rules: usize, n_facts: usize) -> String {
 fn bench_alpha_fanout_10r_100f(c: &mut Criterion) {
     let source = generate_alpha_fanout_source(10, 100);
     c.bench_function("alpha_fanout_10r_100f", |b| {
+        validate_workload(&source, 10, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -52,6 +70,7 @@ fn bench_alpha_fanout_10r_100f(c: &mut Criterion) {
 fn bench_alpha_fanout_50r_500f(c: &mut Criterion) {
     let source = generate_alpha_fanout_source(50, 500);
     c.bench_function("alpha_fanout_50r_500f", |b| {
+        validate_workload(&source, 50, 500);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -66,6 +85,7 @@ fn bench_alpha_fanout_100r_1000f(c: &mut Criterion) {
     let mut group = c.benchmark_group("alpha_fanout_100r_1000f");
     group.sample_size(10);
     group.bench_function("alpha_fanout_100r_1000f", |b| {
+        validate_workload(&source, 100, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -81,6 +101,7 @@ fn bench_alpha_fanout_200r_2000f(c: &mut Criterion) {
     let mut group = c.benchmark_group("alpha_fanout_200r_2000f");
     group.sample_size(10);
     group.bench_function("alpha_fanout_200r_2000f", |b| {
+        validate_workload(&source, 200, 2000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -96,6 +117,7 @@ fn bench_alpha_fanout_500r_5000f(c: &mut Criterion) {
     let mut group = c.benchmark_group("alpha_fanout_500r_5000f");
     group.sample_size(10);
     group.bench_function("alpha_fanout_500r_5000f", |b| {
+        validate_workload(&source, 500, 5000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -111,6 +133,7 @@ fn bench_alpha_fanout_10r_100f_run_only(c: &mut Criterion) {
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     c.bench_function("alpha_fanout_10r_100f_run_only", |b| {
+        validate_workload(&source, 10, 100);
         b.iter(|| {
             engine.reset().unwrap();
             engine.run(RunLimit::Unlimited).unwrap()

@@ -1,125 +1,98 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
+use ferric_rules::core::{Fact, Value};
+use ferric_rules::runtime::{Engine, EngineConfig};
 
-/// Fact query action benchmark: `do-for-all-facts` performance scanning
-/// large working memories.
-///
-/// These actions iterate over the fact base linearly. A rule that fires C
-/// times with N total facts costs O(C*N) — potentially quadratic in the
-/// overall workload.
+/// Host-side template queries over the public fact inspection API. Each category
+/// requires a full scan; the workload reports both a count and a value sum.
+/// This replaces the invalid historical do-for-all-facts action benchmark.
 fn generate_query_source(n_items: usize, n_categories: usize) -> String {
-    let mut source = String::from(
-        "\
-(deftemplate item (slot category) (slot value))
-(deftemplate summary (slot category) (slot total))
-(deftemplate category-marker (slot name))
-
-(deffacts categories\n",
-    );
-
-    for i in 0..n_categories {
-        writeln!(source, "    (category-marker (name cat{i}))").unwrap();
-    }
-
-    source.push_str(")\n\n(deffacts items\n");
+    let mut source =
+        String::from("(deftemplate item (slot category) (slot value))\n(deffacts items\n");
     for i in 0..n_items {
-        let cat = i % n_categories;
-        writeln!(source, "    (item (category cat{cat}) (value {i}))").unwrap();
+        writeln!(
+            source,
+            "(item (category cat{}) (value {i}))",
+            i % n_categories
+        )
+        .unwrap();
     }
-
-    source.push_str(
-        ")
-
-(defrule summarize
-    (category-marker (name ?cat))
-    (not (summary (category ?cat)))
-    =>
-    (bind ?count 0)
-    (do-for-all-facts ((?i item)) (eq ?i:category ?cat)
-        (bind ?count (+ ?count 1)))
-    (assert (summary (category ?cat) (total ?count))))
-",
-    );
+    source.push_str(")\n");
     source
 }
 
-fn bench_query_100i_10c(c: &mut Criterion) {
-    let source = generate_query_source(100, 10);
-    c.bench_function("query_100i_10c", |b| {
-        b.iter(|| {
-            let mut engine = Engine::new(EngineConfig::utf8());
-            engine.load_str(&source).unwrap();
-            engine.reset().unwrap();
-            engine.run(RunLimit::Unlimited).unwrap()
-        });
-    });
-}
-
-fn bench_query_500i_20c(c: &mut Criterion) {
-    let source = generate_query_source(500, 20);
-    let mut group = c.benchmark_group("query_500i_20c");
-    group.sample_size(10);
-    group.bench_function("query_500i_20c", |b| {
-        b.iter(|| {
-            let mut engine = Engine::new(EngineConfig::utf8());
-            engine.load_str(&source).unwrap();
-            engine.reset().unwrap();
-            engine.run(RunLimit::Unlimited).unwrap()
-        });
-    });
-    group.finish();
-}
-
-fn bench_query_1000i_50c(c: &mut Criterion) {
-    let source = generate_query_source(1000, 50);
-    let mut group = c.benchmark_group("query_1000i_50c");
-    group.sample_size(10);
-    group.bench_function("query_1000i_50c", |b| {
-        b.iter(|| {
-            let mut engine = Engine::new(EngineConfig::utf8());
-            engine.load_str(&source).unwrap();
-            engine.reset().unwrap();
-            engine.run(RunLimit::Unlimited).unwrap()
-        });
-    });
-    group.finish();
-}
-
-fn bench_query_5000i_100c(c: &mut Criterion) {
-    let source = generate_query_source(5000, 100);
-    let mut group = c.benchmark_group("query_5000i_100c");
-    group.sample_size(10);
-    group.bench_function("query_5000i_100c", |b| {
-        b.iter(|| {
-            let mut engine = Engine::new(EngineConfig::utf8());
-            engine.load_str(&source).unwrap();
-            engine.reset().unwrap();
-            engine.run(RunLimit::Unlimited).unwrap()
-        });
-    });
-    group.finish();
-}
-
-fn bench_query_100i_10c_run_only(c: &mut Criterion) {
-    let source = generate_query_source(100, 10);
+fn prepare(source: &str) -> Engine {
     let mut engine = Engine::new(EngineConfig::utf8());
-    engine.load_str(&source).unwrap();
-    c.bench_function("query_100i_10c_run_only", |b| {
-        b.iter(|| {
-            engine.reset().unwrap();
-            engine.run(RunLimit::Unlimited).unwrap()
-        });
-    });
+    engine.load_str(source).unwrap();
+    engine.reset().unwrap();
+    engine
 }
 
-criterion_group!(
-    benches,
-    bench_query_100i_10c,
-    bench_query_500i_20c,
-    bench_query_1000i_50c,
-    bench_query_5000i_100c,
-    bench_query_100i_10c_run_only,
-);
+fn query_summaries(engine: &Engine, n_categories: usize) -> Vec<(usize, i64)> {
+    (0..n_categories)
+        .map(|category| {
+            let name = format!("cat{category}");
+            engine
+                .facts()
+                .unwrap()
+                .filter_map(|(id, fact)| {
+                    let Fact::Template(fact) = fact else {
+                        return None;
+                    };
+                    if engine.template_name_by_id(fact.template_id) != Some("item") {
+                        return None;
+                    }
+                    let Value::Symbol(actual_category) =
+                        engine.get_fact_slot_by_name(id, "category").unwrap()
+                    else {
+                        return None;
+                    };
+                    if engine.resolve_symbol(*actual_category) != Some(name.as_str()) {
+                        return None;
+                    }
+                    let Value::Integer(value) = engine.get_fact_slot_by_name(id, "value").unwrap()
+                    else {
+                        return None;
+                    };
+                    Some(*value)
+                })
+                .fold((0, 0), |(count, sum), value| (count + 1, sum + value))
+        })
+        .collect()
+}
+
+fn validate_workload(engine: &mut Engine, n_items: usize, n_categories: usize) {
+    support::verify_run(engine, 0);
+    assert_eq!(support::template_ids(engine, "item").len(), n_items);
+    let expected = (0..n_categories)
+        .map(|category| {
+            let values = (category..n_items).step_by(n_categories);
+            (
+                values.clone().count(),
+                values.map(|i| i64::try_from(i).unwrap()).sum(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(query_summaries(engine, n_categories), expected);
+}
+
+fn bench_api_queries(c: &mut Criterion) {
+    for (n_items, n_categories) in [(100, 10), (500, 20), (1_000, 50), (5_000, 100)] {
+        let source = generate_query_source(n_items, n_categories);
+        c.bench_function(&format!("api_query_load_{n_items}i_{n_categories}c"), |b| {
+            validate_workload(&mut prepare(&source), n_items, n_categories);
+            b.iter(|| query_summaries(&prepare(&source), n_categories));
+        });
+        let mut engine = prepare(&source);
+        c.bench_function(&format!("api_query_scan_{n_items}i_{n_categories}c"), |b| {
+            validate_workload(&mut engine, n_items, n_categories);
+            b.iter(|| query_summaries(&engine, n_categories));
+        });
+    }
+}
+
+criterion_group!(benches, bench_api_queries);
 criterion_main!(benches);

@@ -1,7 +1,70 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
+
+fn validate_arithmetic(source: &str, limit: usize) {
+    let mut value = 0_i64;
+    let mut firings = 0;
+    while value < i64::try_from(limit).unwrap() {
+        value = value * 2 + (value - value / 3) + 1;
+        firings += 1;
+    }
+    let engine = support::verify_source(source, firings);
+    let ids = support::template_ids(&engine, "counter");
+    assert_eq!(ids.len(), 1);
+    assert_eq!(
+        support::integer(engine.get_fact_slot_by_name(ids[0], "val").unwrap()),
+        value
+    );
+}
+
+fn validate_sum(source: &str, n: usize) {
+    let engine = support::verify_source(source, 1);
+    let ids = support::template_ids(&engine, "result");
+    assert_eq!(ids.len(), 1);
+    assert_eq!(
+        support::integer(engine.get_fact_slot_by_name(ids[0], "val").unwrap()),
+        i64::try_from(n * (n + 1) / 2).unwrap()
+    );
+}
+
+fn validate_string(source: &str, n: usize) {
+    let engine = support::verify_source(source, n);
+    let ids = support::template_ids(&engine, "fragment");
+    assert_eq!(ids.len(), n);
+    let mut seen = std::collections::BTreeSet::new();
+    for id in ids {
+        let key = usize::try_from(support::integer(
+            engine.get_fact_slot_by_name(id, "id").unwrap(),
+        ))
+        .unwrap();
+        assert!(key < n);
+        assert!(seen.insert(key));
+        let word = WORDS[key % WORDS.len()];
+        let ferric_rules::core::Value::String(text) =
+            engine.get_fact_slot_by_name(id, "text").unwrap()
+        else {
+            panic!("fragment text must be a string")
+        };
+        assert_eq!(text.as_str(), format!("{word}-{}", &word[..3]));
+    }
+}
+
+fn validate_test_ce(source: &str, n: usize) {
+    let expected = (1..n)
+        .filter(|i| i % 2 == 0)
+        .map(|i| i64::try_from(i).unwrap())
+        .collect::<Vec<_>>();
+    let engine = support::verify_source(source, expected.len());
+    assert_eq!(support::ordered_integers(&engine, "accepted"), expected);
+}
+
+const WORDS: [&str; 8] = [
+    "hello", "world", "bench", "clips", "rules", "test", "data", "fast",
+];
 
 /// Expression evaluator throughput benchmark.
 ///
@@ -9,7 +72,8 @@ use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 /// function dispatch, loop constructs, and string operations. Every `test` CE
 /// and every RHS argument passes through the evaluator; the dispatch chain
 /// (builtins → `FunctionEnv` → `GenericRegistry` → error) adds per-call overhead.
-/// Arithmetic-heavy RHS: counter fires N times, each time doing arithmetic.
+/// Arithmetic RHS: a geometrically increasing counter fires until reaching N.
+/// N is a stopping threshold, not a count of activations.
 fn generate_arithmetic_source(n: usize) -> String {
     let mut source = String::new();
     writeln!(
@@ -28,17 +92,20 @@ fn generate_arithmetic_source(n: usize) -> String {
     source
 }
 
-/// Deffunction dispatch: iterative sum via user-defined function.
+/// Deffunction dispatch: iterative sum with a supported global accumulator.
+/// Local bind inside deffunctions is not currently supported; old timings that
+/// stopped at that evaluation error are not comparable.
 fn generate_deffunction_source(n: usize) -> String {
     let mut source = String::new();
     writeln!(
         source,
         "\
+(defglobal ?*sum* = 0)
 (deffunction compute-sum (?n)
-    (bind ?sum 0)
+    (bind ?*sum* 0)
     (loop-for-count (?i 1 ?n)
-        (bind ?sum (+ ?sum ?i)))
-    ?sum)
+        (bind ?*sum* (+ ?*sum* ?i)))
+    ?*sum*)
 
 (deftemplate input (slot n))
 (deftemplate result (slot val))
@@ -84,11 +151,8 @@ fn generate_string_source(n: usize) -> String {
 (deffacts words\n",
     );
 
-    let words = [
-        "hello", "world", "bench", "clips", "rules", "test", "data", "fast",
-    ];
     for i in 0..n {
-        let word = words[i % words.len()];
+        let word = WORDS[i % WORDS.len()];
         writeln!(source, "    (word (id {i}) (text \"{word}\"))").unwrap();
     }
 
@@ -133,6 +197,7 @@ fn bench_evaluator_arithmetic(c: &mut Criterion) {
 
     let source_100 = generate_arithmetic_source(100);
     group.bench_function("eval_arith_100", |b| {
+        validate_arithmetic(&source_100, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_100).unwrap();
@@ -143,6 +208,7 @@ fn bench_evaluator_arithmetic(c: &mut Criterion) {
 
     let source_500 = generate_arithmetic_source(500);
     group.bench_function("eval_arith_500", |b| {
+        validate_arithmetic(&source_500, 500);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_500).unwrap();
@@ -154,6 +220,7 @@ fn bench_evaluator_arithmetic(c: &mut Criterion) {
     let source_1000 = generate_arithmetic_source(1000);
     group.sample_size(10);
     group.bench_function("eval_arith_1000", |b| {
+        validate_arithmetic(&source_1000, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_1000).unwrap();
@@ -164,6 +231,7 @@ fn bench_evaluator_arithmetic(c: &mut Criterion) {
 
     let source_5000 = generate_arithmetic_source(5000);
     group.bench_function("eval_arith_5000", |b| {
+        validate_arithmetic(&source_5000, 5000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_5000).unwrap();
@@ -179,7 +247,8 @@ fn bench_evaluator_deffunction(c: &mut Criterion) {
     let mut group = c.benchmark_group("eval_deffunction");
 
     let source_100 = generate_deffunction_source(100);
-    group.bench_function("eval_defun_100", |b| {
+    group.bench_function("eval_defun_global_sum_100", |b| {
+        validate_sum(&source_100, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_100).unwrap();
@@ -189,7 +258,8 @@ fn bench_evaluator_deffunction(c: &mut Criterion) {
     });
 
     let source_1000 = generate_deffunction_source(1000);
-    group.bench_function("eval_defun_1000", |b| {
+    group.bench_function("eval_defun_global_sum_1000", |b| {
+        validate_sum(&source_1000, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_1000).unwrap();
@@ -200,7 +270,8 @@ fn bench_evaluator_deffunction(c: &mut Criterion) {
 
     let source_10000 = generate_deffunction_source(10000);
     group.sample_size(10);
-    group.bench_function("eval_defun_10000", |b| {
+    group.bench_function("eval_defun_global_sum_10000", |b| {
+        validate_sum(&source_10000, 10000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_10000).unwrap();
@@ -217,6 +288,7 @@ fn bench_evaluator_loop(c: &mut Criterion) {
 
     let source_1000 = generate_loop_source(1000);
     group.bench_function("eval_loop_1000", |b| {
+        validate_sum(&source_1000, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_1000).unwrap();
@@ -227,6 +299,7 @@ fn bench_evaluator_loop(c: &mut Criterion) {
 
     let source_10000 = generate_loop_source(10000);
     group.bench_function("eval_loop_10000", |b| {
+        validate_sum(&source_10000, 10000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_10000).unwrap();
@@ -238,6 +311,7 @@ fn bench_evaluator_loop(c: &mut Criterion) {
     let source_100000 = generate_loop_source(100_000);
     group.sample_size(10);
     group.bench_function("eval_loop_100000", |b| {
+        validate_sum(&source_100000, 100_000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_100000).unwrap();
@@ -254,6 +328,7 @@ fn bench_evaluator_string(c: &mut Criterion) {
 
     let source_100 = generate_string_source(100);
     group.bench_function("eval_string_100", |b| {
+        validate_string(&source_100, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_100).unwrap();
@@ -264,6 +339,7 @@ fn bench_evaluator_string(c: &mut Criterion) {
 
     let source_500 = generate_string_source(500);
     group.bench_function("eval_string_500", |b| {
+        validate_string(&source_500, 500);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_500).unwrap();
@@ -275,6 +351,7 @@ fn bench_evaluator_string(c: &mut Criterion) {
     let source_1000 = generate_string_source(1000);
     group.sample_size(10);
     group.bench_function("eval_string_1000", |b| {
+        validate_string(&source_1000, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_1000).unwrap();
@@ -291,6 +368,7 @@ fn bench_test_ce_matching(c: &mut Criterion) {
 
     let source_100 = generate_test_ce_source(100);
     group.bench_function("test_ce_100", |b| {
+        validate_test_ce(&source_100, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_100).unwrap();
@@ -302,6 +380,7 @@ fn bench_test_ce_matching(c: &mut Criterion) {
     let source_1000 = generate_test_ce_source(1000);
     group.sample_size(10);
     group.bench_function("test_ce_1000", |b| {
+        validate_test_ce(&source_1000, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_1000).unwrap();

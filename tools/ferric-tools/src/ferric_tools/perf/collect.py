@@ -260,19 +260,19 @@ BENCHMARKS = [
         "eval_arithmetic/eval_arith_5000/new/estimates.json",
     ),
     (
-        "eval_defun_100",
+        "eval_defun_global_sum_100",
         "evaluator_bench",
-        "eval_deffunction/eval_defun_100/new/estimates.json",
+        "eval_deffunction/eval_defun_global_sum_100/new/estimates.json",
     ),
     (
-        "eval_defun_1000",
+        "eval_defun_global_sum_1000",
         "evaluator_bench",
-        "eval_deffunction/eval_defun_1000/new/estimates.json",
+        "eval_deffunction/eval_defun_global_sum_1000/new/estimates.json",
     ),
     (
-        "eval_defun_10000",
+        "eval_defun_global_sum_10000",
         "evaluator_bench",
-        "eval_deffunction/eval_defun_10000/new/estimates.json",
+        "eval_deffunction/eval_defun_global_sum_10000/new/estimates.json",
     ),
     (
         "eval_loop_1000",
@@ -304,23 +304,15 @@ BENCHMARKS = [
         "evaluator_bench",
         "eval_string/eval_string_1000/new/estimates.json",
     ),
-    # query_bench (4, excluding _run_only)
-    ("query_100i_10c", "query_bench", "query_100i_10c/new/estimates.json"),
-    (
-        "query_500i_20c",
-        "query_bench",
-        "query_500i_20c/query_500i_20c/new/estimates.json",
-    ),
-    (
-        "query_1000i_50c",
-        "query_bench",
-        "query_1000i_50c/query_1000i_50c/new/estimates.json",
-    ),
-    (
-        "query_5000i_100c",
-        "query_bench",
-        "query_5000i_100c/query_5000i_100c/new/estimates.json",
-    ),
+    # query_bench (8): supported host inspection, with and without loading
+    ("api_query_load_100i_10c", "query_bench", "api_query_load_100i_10c/new/estimates.json"),
+    ("api_query_load_500i_20c", "query_bench", "api_query_load_500i_20c/new/estimates.json"),
+    ("api_query_load_1000i_50c", "query_bench", "api_query_load_1000i_50c/new/estimates.json"),
+    ("api_query_load_5000i_100c", "query_bench", "api_query_load_5000i_100c/new/estimates.json"),
+    ("api_query_scan_100i_10c", "query_bench", "api_query_scan_100i_10c/new/estimates.json"),
+    ("api_query_scan_500i_20c", "query_bench", "api_query_scan_500i_20c/new/estimates.json"),
+    ("api_query_scan_1000i_50c", "query_bench", "api_query_scan_1000i_50c/new/estimates.json"),
+    ("api_query_scan_5000i_100c", "query_bench", "api_query_scan_5000i_100c/new/estimates.json"),
     # compile_bench (5)
     ("compile_10r_5t", "compile_bench", "compile_10r_5t/new/estimates.json"),
     ("compile_50r_10t", "compile_bench", "compile_50r_10t/new/estimates.json"),

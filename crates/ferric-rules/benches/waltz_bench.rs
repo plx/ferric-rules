@@ -1,3 +1,5 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -16,6 +18,37 @@ use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 /// - `not (edge (label unknown))` — negation over a template pattern
 /// - Multi-rule salience ordering
 const JUNCTION_TYPES: [&str; 3] = ["L", "T", "fork"];
+
+fn validate_workload(source: &str, n_junctions: usize) {
+    let mut expected = std::collections::BTreeMap::new();
+    let labels = ["convex", "boundary", "concave"];
+    for i in 0..n_junctions.saturating_sub(1) {
+        expected.insert((format!("j{i}"), format!("j{}", i + 1)), labels[i % 3]);
+    }
+    for i in (0..n_junctions.saturating_sub(2)).step_by(3) {
+        expected.insert((format!("j{i}"), format!("j{}", i + 2)), labels[i % 3]);
+    }
+    if n_junctions > 3 {
+        expected.insert(
+            (format!("j{}", n_junctions - 1), "j0".to_owned()),
+            labels[(n_junctions - 1) % 3],
+        );
+    }
+    let engine = support::verify_source(source, expected.len() + 1);
+    assert_eq!(
+        support::template_ids(&engine, "junction").len(),
+        n_junctions
+    );
+    let edges = support::template_ids(&engine, "edge");
+    assert_eq!(edges.len(), expected.len());
+    for id in edges {
+        let slot = |name| support::symbol(&engine, engine.get_fact_slot_by_name(id, name).unwrap());
+        let key = (slot("p1").to_owned(), slot("p2").to_owned());
+        assert_eq!(expected.remove(&key), Some(slot("label")));
+    }
+    assert!(expected.is_empty());
+    assert_eq!(engine.get_output("t"), Some("Labeling complete\n"));
+}
 
 /// Generate a Waltz scene with `n_junctions` junctions connected in a mesh.
 /// Each junction connects to the next, and additional cross-edges are added
@@ -90,6 +123,7 @@ fn generate_waltz_source(n_junctions: usize) -> String {
 fn bench_waltz_5(c: &mut Criterion) {
     let source = generate_waltz_source(5);
     c.bench_function("waltz_5_junctions", |b| {
+        validate_workload(&source, 5);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -102,6 +136,7 @@ fn bench_waltz_5(c: &mut Criterion) {
 fn bench_waltz_10(c: &mut Criterion) {
     let source = generate_waltz_source(10);
     c.bench_function("waltz_10_junctions", |b| {
+        validate_workload(&source, 10);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -114,6 +149,7 @@ fn bench_waltz_10(c: &mut Criterion) {
 fn bench_waltz_20(c: &mut Criterion) {
     let source = generate_waltz_source(20);
     c.bench_function("waltz_20_junctions", |b| {
+        validate_workload(&source, 20);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -126,6 +162,7 @@ fn bench_waltz_20(c: &mut Criterion) {
 fn bench_waltz_50(c: &mut Criterion) {
     let source = generate_waltz_source(50);
     c.bench_function("waltz_50_junctions", |b| {
+        validate_workload(&source, 50);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -138,6 +175,7 @@ fn bench_waltz_50(c: &mut Criterion) {
 fn bench_waltz_100(c: &mut Criterion) {
     let source = generate_waltz_source(100);
     c.bench_function("waltz_100_junctions", |b| {
+        validate_workload(&source, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -150,6 +188,7 @@ fn bench_waltz_100(c: &mut Criterion) {
 fn bench_waltz_150(c: &mut Criterion) {
     let source = generate_waltz_source(150);
     c.bench_function("waltz_150_junctions", |b| {
+        validate_workload(&source, 150);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -164,6 +203,7 @@ fn bench_waltz_200(c: &mut Criterion) {
     let mut group = c.benchmark_group("waltz_200");
     group.sample_size(10);
     group.bench_function("waltz_200_junctions", |b| {
+        validate_workload(&source, 200);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -179,6 +219,7 @@ fn bench_waltz_300(c: &mut Criterion) {
     let mut group = c.benchmark_group("waltz_300");
     group.sample_size(10);
     group.bench_function("waltz_300_junctions", |b| {
+        validate_workload(&source, 300);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -194,6 +235,7 @@ fn bench_waltz_500(c: &mut Criterion) {
     let mut group = c.benchmark_group("waltz_500");
     group.sample_size(10);
     group.bench_function("waltz_500_junctions", |b| {
+        validate_workload(&source, 500);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -209,6 +251,7 @@ fn bench_waltz_750(c: &mut Criterion) {
     let mut group = c.benchmark_group("waltz_750");
     group.sample_size(10);
     group.bench_function("waltz_750_junctions", |b| {
+        validate_workload(&source, 750);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -224,6 +267,7 @@ fn bench_waltz_1000(c: &mut Criterion) {
     let mut group = c.benchmark_group("waltz_1000");
     group.sample_size(10);
     group.bench_function("waltz_1000_junctions", |b| {
+        validate_workload(&source, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -239,6 +283,7 @@ fn bench_waltz_5_run_only(c: &mut Criterion) {
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     c.bench_function("waltz_5_junctions_run_only", |b| {
+        validate_workload(&source, 5);
         b.iter(|| {
             engine.reset().unwrap();
             engine.run(RunLimit::Unlimited).unwrap()

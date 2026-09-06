@@ -1,3 +1,5 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -27,6 +29,41 @@ use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 /// `?nh&~?ph`, the inequality is expressed as a `test` CE instead.
 const HOBBIES: [&str; 4] = ["chess", "hiking", "cooking", "reading"];
 
+fn validate_workload(source: &str, n_guests: usize) {
+    let engine = support::verify_source(source, n_guests);
+    assert_eq!(support::template_ids(&engine, "guest").len(), n_guests);
+    let counts = support::template_ids(&engine, "count");
+    assert_eq!(counts.len(), 1);
+    assert_eq!(
+        support::integer(engine.get_fact_slot_by_name(counts[0], "value").unwrap()),
+        i64::try_from(n_guests).unwrap()
+    );
+    let mut seating = std::collections::BTreeMap::new();
+    let mut guests = std::collections::BTreeSet::new();
+    for id in support::template_ids(&engine, "seating") {
+        let seat = support::integer(engine.get_fact_slot_by_name(id, "seat").unwrap());
+        let guest = support::symbol(&engine, engine.get_fact_slot_by_name(id, "guest").unwrap());
+        let guest_index: usize = guest.strip_prefix('g').unwrap().parse().unwrap();
+        assert!(guest_index < n_guests);
+        assert!(guests.insert(guest_index), "guest was seated twice");
+        assert!(
+            seating.insert(seat, guest_index).is_none(),
+            "seat was assigned twice"
+        );
+    }
+    assert_eq!(
+        seating.keys().copied().collect::<Vec<_>>(),
+        (1..=i64::try_from(n_guests).unwrap()).collect::<Vec<_>>()
+    );
+    let guest_order = seating.values().copied().collect::<Vec<_>>();
+    for pair in guest_order.windows(2) {
+        assert_ne!(
+            HOBBIES[pair[0] % HOBBIES.len()],
+            HOBBIES[pair[1] % HOBBIES.len()]
+        );
+    }
+}
+
 fn generate_manners_source(n_guests: usize) -> String {
     let mut source = String::from(
         "\
@@ -50,8 +87,9 @@ fn generate_manners_source(n_guests: usize) -> String {
     (declare (salience 40))
     (phase assign)
     (guest (name ?n) (hobby ?h))
-    (count (value 0))
+    ?c <- (count (value 0))
     =>
+    (retract ?c)
     (assert (seating (seat 1) (guest ?n)))
     (assert (count (value 1))))
 
@@ -76,6 +114,7 @@ fn generate_manners_source(n_guests: usize) -> String {
 fn bench_manners_8(c: &mut Criterion) {
     let source = generate_manners_source(8);
     c.bench_function("manners_8_guests", |b| {
+        validate_workload(&source, 8);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -88,6 +127,7 @@ fn bench_manners_8(c: &mut Criterion) {
 fn bench_manners_16(c: &mut Criterion) {
     let source = generate_manners_source(16);
     c.bench_function("manners_16_guests", |b| {
+        validate_workload(&source, 16);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -100,6 +140,7 @@ fn bench_manners_16(c: &mut Criterion) {
 fn bench_manners_32(c: &mut Criterion) {
     let source = generate_manners_source(32);
     c.bench_function("manners_32_guests", |b| {
+        validate_workload(&source, 32);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -112,6 +153,7 @@ fn bench_manners_32(c: &mut Criterion) {
 fn bench_manners_48(c: &mut Criterion) {
     let source = generate_manners_source(48);
     c.bench_function("manners_48_guests", |b| {
+        validate_workload(&source, 48);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -126,6 +168,7 @@ fn bench_manners_64(c: &mut Criterion) {
     let mut group = c.benchmark_group("manners_64");
     group.sample_size(10);
     group.bench_function("manners_64_guests", |b| {
+        validate_workload(&source, 64);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -141,6 +184,7 @@ fn bench_manners_96(c: &mut Criterion) {
     let mut group = c.benchmark_group("manners_96");
     group.sample_size(10);
     group.bench_function("manners_96_guests", |b| {
+        validate_workload(&source, 96);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -156,6 +200,7 @@ fn bench_manners_128(c: &mut Criterion) {
     let mut group = c.benchmark_group("manners_128");
     group.sample_size(10);
     group.bench_function("manners_128_guests", |b| {
+        validate_workload(&source, 128);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -171,6 +216,7 @@ fn bench_manners_256(c: &mut Criterion) {
     let mut group = c.benchmark_group("manners_256");
     group.sample_size(10);
     group.bench_function("manners_256_guests", |b| {
+        validate_workload(&source, 256);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -186,6 +232,7 @@ fn bench_manners_512(c: &mut Criterion) {
     let mut group = c.benchmark_group("manners_512");
     group.sample_size(10);
     group.bench_function("manners_512_guests", |b| {
+        validate_workload(&source, 512);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -201,6 +248,7 @@ fn bench_manners_8_run_only(c: &mut Criterion) {
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     c.bench_function("manners_8_guests_run_only", |b| {
+        validate_workload(&source, 8);
         b.iter(|| {
             engine.reset().unwrap();
             engine.run(RunLimit::Unlimited).unwrap()
