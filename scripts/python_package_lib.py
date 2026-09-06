@@ -1365,7 +1365,10 @@ def _allowed_sdist_relative_path(relative: PurePosixPath) -> bool:
         return False
     if tail.parts[0] == "benches":
         return tail.suffix == ".rs"
-    if crate == "ferric-rules-core" and tail.parts[0] == "proptest-regressions":
+    if (
+        crate in {"ferric-rules-core", "ferric-rules-runtime"}
+        and tail.parts[0] == "proptest-regressions"
+    ):
         return tail.suffix == ".txt"
     if crate == "ferric-rules-runtime" and tail.parts[0] == "tests":
         if len(tail.parts) == 2:
