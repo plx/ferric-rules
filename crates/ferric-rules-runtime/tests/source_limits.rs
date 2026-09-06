@@ -186,6 +186,43 @@ fn source_size_is_checked_before_parsing_and_preserves_existing_state() {
 }
 
 #[test]
+fn source_files_are_bounded_before_reading_and_keep_io_errors_distinct() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("large.clp");
+    // A sparse file proves file size is not used to preallocate the whole input.
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(1024 * 1024 * 1024)
+        .unwrap();
+    let mut engine = Engine::with_rules("(defrule keep => (assert (kept)))").unwrap();
+    let errors = engine.load_file(&path).unwrap_err();
+    assert!(matches!(
+        &errors[0],
+        LoadError::ResourceLimit {
+            resource: "source bytes",
+            required: 16_777_217,
+            ..
+        }
+    ));
+    std::fs::write(&path, [0xff]).unwrap();
+    assert!(matches!(
+        &engine.load_file(&path).unwrap_err()[0],
+        LoadError::Io(error) if error.kind() == std::io::ErrorKind::InvalidData
+    ));
+    std::fs::remove_file(&path).unwrap();
+    assert!(matches!(
+        &engine.load_file(&path).unwrap_err()[0],
+        LoadError::Io(error) if error.kind() == std::io::ErrorKind::NotFound
+    ));
+    assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+    assert_eq!(engine.find_facts("kept").unwrap().len(), 1);
+    std::fs::write(&path, "(defrule loaded => (assert (from-file)))").unwrap();
+    engine.load_file(&path).unwrap();
+    assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+    assert_eq!(engine.find_facts("from-file").unwrap().len(), 1);
+}
+
+#[test]
 fn empty_lhs_rules_still_obey_the_per_rule_byte_limit() {
     let mut engine = Engine::with_rules("(defrule keep => (assert (kept)))").unwrap();
     let payload = "a".repeat(8 * 1024 * 1024);

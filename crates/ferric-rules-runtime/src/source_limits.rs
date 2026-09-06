@@ -13,6 +13,20 @@ pub const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LOAD_PATTERN_NODES: usize = 1_048_576;
 const MAX_LOAD_EXPANDED_BYTES: usize = 32 * 1024 * 1024;
 
+pub(crate) fn check_source_size(bytes: usize) -> Result<(), LoadError> {
+    if bytes > MAX_SOURCE_BYTES {
+        return Err(LoadError::ResourceLimit {
+            rule: "<source>".to_string(),
+            resource: "source bytes",
+            required: bytes,
+            limit: MAX_SOURCE_BYTES,
+            line: 1,
+            column: 1,
+        });
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub(crate) struct LoadBudget {
     nodes: usize,

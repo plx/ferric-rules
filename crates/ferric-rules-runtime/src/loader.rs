@@ -19,6 +19,7 @@
 
 use ferric_rules_core::RuleId;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
@@ -338,16 +339,7 @@ impl Engine {
     #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_str", len = source.len());
-        if source.len() > crate::source_limits::MAX_SOURCE_BYTES {
-            return Err(vec![LoadError::ResourceLimit {
-                rule: "<source>".to_string(),
-                resource: "source bytes",
-                required: source.len(),
-                limit: crate::source_limits::MAX_SOURCE_BYTES,
-                line: 1,
-                column: 1,
-            }]);
-        }
+        crate::source_limits::check_source_size(source.len()).map_err(|e| vec![e])?;
 
         // Parse the source into S-expressions (Stage 1)
         let parse_result = {
@@ -808,7 +800,8 @@ impl Engine {
 
     /// Load CLIPS source code from a file.
     ///
-    /// Reads the file contents and delegates to `load_str`.
+    /// Reads at most the supported source limit plus one byte, then delegates
+    /// to `load_str`. Oversized files are rejected before full allocation.
     ///
     /// # Errors
     ///
@@ -817,7 +810,18 @@ impl Engine {
     /// - Source parsing or processing fails
     pub fn load_file(&mut self, path: &Path) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_file", path = %path.display());
-        let source = std::fs::read_to_string(path).map_err(|e| vec![LoadError::Io(e)])?;
+        let file = std::fs::File::open(path).map_err(|e| vec![LoadError::Io(e)])?;
+        let mut bytes = Vec::new();
+        file.take((crate::source_limits::MAX_SOURCE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| vec![LoadError::Io(e)])?;
+        crate::source_limits::check_source_size(bytes.len()).map_err(|e| vec![e])?;
+        let source = String::from_utf8(bytes).map_err(|e| {
+            vec![LoadError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e,
+            ))]
+        })?;
         self.load_str(&source)
     }
 
