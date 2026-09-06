@@ -135,3 +135,22 @@ implementation changes. A failing oracle invalidates that workload's timing.
 
 See `benches/PROTOCOL.md` for the full measurement protocol, including environment
 guidance and anti-flake recommendations.
+
+## C ABI consumer overhead
+
+`cargo bench -p ferric-rules-ffi --bench capi_bench` uses the same release/LTO
+profile as the engine suites. `-- --test` runs untimed correctness oracles.
+At 100 and 1,000 input items, `capi/lifecycle` includes create/load/reset/run,
+owned typed fact reads, output copies, and native destruction; `capi/read_output`
+measures those reads and copies against a prepared engine. ABI functions are
+called through black-boxed function pointers so LTO cannot inline away the
+boundary. This measures the C substrate used by hosts, not Python's GIL or
+Swift scheduling overhead.
+
+Before timing, the shared operations must produce N firings, 2N facts, exactly
+N selected integer/string pairs and output labels, and an owned missing-fact
+error. The lifecycle oracle inspects returned copies after RAII has freed the
+engine. Every handle is uniquely owned and freed once on the invoking thread,
+so the benchmark source works unchanged on the confined baseline and the
+transferable candidate. Use identical source, sizes, features, sampling, and
+profile for comparisons; no benchmark numbers come from smoke runs.

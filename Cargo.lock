@@ -509,6 +509,7 @@ name = "ferric-rules-ffi"
 version = "0.1.0"
 dependencies = [
  "cbindgen",
+ "criterion",
  "ferric-rules-core",
  "ferric-rules-ffi-macros",
  "ferric-rules-parser",
