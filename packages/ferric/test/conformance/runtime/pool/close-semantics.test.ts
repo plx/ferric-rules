@@ -2,6 +2,7 @@
  * EnginePool close semantics tests (E-008, E-009).
  */
 import { test } from "node:test";
+import { getEventListeners } from "node:events";
 import * as assert from "node:assert/strict";
 
 import {
@@ -187,4 +188,33 @@ test("pool close publishes its barrier before queued signal cleanup reenters", {
     releaseTermination();
     await Promise.allSettled([admitted, queued, outerClose, nestedClose]);
   }
+});
+
+
+test("callback signal cleanup cannot replace settlement or create an unhandled rejection", async () => {
+  const pool = await EnginePool.create([{ name: "test", source: "" }], { threads: 1 });
+  try {
+    for (const fails of [false, true]) {
+      const controller = new AbortController();
+      const remove = controller.signal.removeEventListener.bind(controller.signal);
+      let callbackStarted = false;
+      let cleanupThrows = 0;
+      controller.signal.removeEventListener = (...args) => {
+        remove(...args);
+        if (callbackStarted) { cleanupThrows++; throw new Error("cleanup hook failed"); }
+      };
+      const failure = new Error("original callback error");
+      const result = pool.do("test", async () => {
+        callbackStarted = true;
+        if (fails) throw failure;
+        return 42;
+      }, { signal: controller.signal });
+      if (fails) await assert.rejects(result, (error) => error === failure);
+      else assert.equal(await result, 42);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.ok(cleanupThrows > 0);
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+    }
+    assert.equal(await pool.do("test", async () => 99), 99);
+  } finally { await pool.close(); }
 });

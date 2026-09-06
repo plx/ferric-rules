@@ -31,7 +31,11 @@ versioned envelope is compatible. Legacy raw snapshots are not silently migrated
 
 Integral JavaScript numbers must be safe integers; use bigint for the signed
 64-bit range. Integral numbers outside that range are rejected instead of
-being guessed as floats. Run limits and counts use exact numbers through
+being guessed as floats. `maxCallDepth` accepts integers in `0..=4294967295`;
+zero keeps the runtime meaning of disallowing user-function calls. Strategy,
+encoding and snapshot format selectors must be exact declared enum members;
+fractional, wrapped or nonfinite numbers are rejected before native conversion.
+Run limits and counts use exact numbers through
 `Number.MAX_SAFE_INTEGER`, rejecting overflow. Native value conversion is staged
 into owned data and guarded against same-engine reentry; callbacks cannot close
 or access an engine while its native operation is admitted. Static factories
