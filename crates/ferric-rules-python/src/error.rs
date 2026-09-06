@@ -92,7 +92,9 @@ pub fn load_errors_to_pyerr(errors: Vec<LoadError>) -> PyErr {
 
     // Classify by scanning for parse errors first, then compile errors.
     let has_parse = errors.iter().any(|e| matches!(e, LoadError::Parse(_)));
-    let has_compile = errors.iter().any(|e| matches!(e, LoadError::Compile(_)));
+    let has_compile = errors
+        .iter()
+        .any(|e| matches!(e, LoadError::Compile(_) | LoadError::ResourceLimit { .. }));
 
     if has_parse {
         FerricParseError::new_err(msg)

@@ -45,7 +45,9 @@ pub fn load_errors_to_napi(errors: Vec<LoadError>) -> Error {
         .join("\n");
 
     let has_parse = errors.iter().any(|e| matches!(e, LoadError::Parse(_)));
-    let has_compile = errors.iter().any(|e| matches!(e, LoadError::Compile(_)));
+    let has_compile = errors
+        .iter()
+        .any(|e| matches!(e, LoadError::Compile(_) | LoadError::ResourceLimit { .. }));
 
     let prefix = if has_parse {
         "FerricParseError"

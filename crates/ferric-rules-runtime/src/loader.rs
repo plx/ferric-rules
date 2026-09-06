@@ -251,6 +251,16 @@ pub enum LoadError {
     #[error("compile error: {0}")]
     Compile(String),
 
+    #[error("rule `{rule}` at line {line}, column {column}: {resource} requires at least {required}, exceeding the supported limit of {limit}")]
+    ResourceLimit {
+        rule: String,
+        resource: &'static str,
+        required: usize,
+        limit: usize,
+        line: u32,
+        column: u32,
+    },
+
     #[error("pattern validation failed")]
     Validation(Vec<ferric_rules_core::PatternValidationError>),
 
@@ -328,6 +338,16 @@ impl Engine {
     #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_str", len = source.len());
+        if source.len() > crate::source_limits::MAX_SOURCE_BYTES {
+            return Err(vec![LoadError::ResourceLimit {
+                rule: "<source>".to_string(),
+                resource: "source bytes",
+                required: source.len(),
+                limit: crate::source_limits::MAX_SOURCE_BYTES,
+                line: 1,
+                column: 1,
+            }]);
+        }
 
         // Parse the source into S-expressions (Stage 1)
         let parse_result = {
@@ -701,9 +721,10 @@ impl Engine {
             // Restore each rule's owning module before compiling so that
             // cross-module template visibility checks use the correct module.
             let saved_module = self.module_registry.current_module();
+            let mut expansion_budget = crate::source_limits::LoadBudget::default();
             for (rule, owning_module) in &rules_with_module {
                 self.module_registry.set_current_module(*owning_module);
-                match self.compile_rule_construct(rule, source) {
+                match self.compile_rule_construct(rule, source, &mut expansion_budget) {
                     Ok(_) => {}
                     Err(e) => errors.push(e),
                 }
@@ -1617,8 +1638,10 @@ impl Engine {
         &mut self,
         rule: &RuleConstruct,
         source: &str,
+        expansion_budget: &mut crate::source_limits::LoadBudget,
     ) -> Result<CompileResult, LoadError> {
         Self::reject_logical_conditions(&rule.patterns)?;
+        crate::source_limits::check_expansion(rule, expansion_budget)?;
         // Validate patterns first (max nesting depth: 4 to support deeply nested NCCs)
         let validation_errors = validate_rule_patterns(&rule.patterns, 4);
         if !validation_errors.is_empty() {
@@ -1629,6 +1652,7 @@ impl Engine {
         // This transforms patterns like (not (and A (or B C))) into
         // (and (not (and A B)) (not (and A C))) which can then be flattened.
         let rule = Self::normalize_nested_or_ces(rule);
+        crate::source_limits::check_expansion(&rule, expansion_budget)?;
 
         // Expand (or ...) CEs via rule duplication: a rule with (or P1 P2) becomes
         // N internal rules, each with one branch substituted. Multiple or CEs produce

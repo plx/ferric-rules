@@ -359,6 +359,30 @@ All of the following are supported:
 - **Negated conjunction**: `(not (and (P) (Q)))`
 - **Constraint connectives**: `&`, `|`, `~`
 
+### Source and compiled network limits
+
+Source loading rejects input above 16 MiB before parsing. Rule normalization
+and disjunction expansion use checked, conservative work estimates: at most
+256 alternatives, 16,384 expanded pattern/constraint nodes, and 8 MiB of
+expanded source per rule. Both normalization passes also share a per-load
+budget of 1,048,576 estimated nodes and 32 MiB of expanded source. The estimate
+may reject an unusually redundant OR expression that could be optimized to
+less work; Ferric does not perform that optimization implicitly.
+
+Each compiled rule allows at most 64 condition nodes, counting predicates and
+nested NCC wrappers/children, and each alpha path allows at most 64 constant
+tests. These bounds keep recursive propagation practical without adding a
+resumable execution subsystem. Boundary regressions exercise combined alpha
+and beta depth, assertion, run, reset, and retraction on a 512 KiB native stack.
+Over-limit constructs fail before installation; previously installed rules and
+facts remain usable. Loading multiple constructs remains incremental, so a
+later failure does not roll back earlier successful constructs.
+
+These are implementation limits for the current pre-1.0 engine, not CLIPS
+language limits or a guarantee that arbitrary large fact populations fit a
+host's memory. The recommended snapshot envelope applies its own input and
+restored-graph validation limits.
+
 ### Pattern Nesting Restrictions
 
 Ferric supports single-level negation, exists, forall, and NCC. The following

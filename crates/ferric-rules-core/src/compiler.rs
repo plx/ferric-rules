@@ -17,6 +17,12 @@ use crate::symbol::{Symbol, SymbolId};
 use crate::token::NodeId;
 use crate::validation::{PatternValidationError, PatternViolation, ValidationStage};
 
+/// Maximum condition nodes in one compiled rule, including nested NCC nodes.
+/// This bounds recursive propagation depth without a second execution engine.
+pub const MAX_RULE_CONDITIONS: usize = 64;
+/// Maximum constant tests in one alpha path.
+pub const MAX_ALPHA_TESTS: usize = 64;
+
 /// A rule ready for compilation into rete structures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompilableRule {
@@ -98,6 +104,12 @@ pub enum CompileError {
     EmptyRule,
     #[error("too many variables in rule (limit: 65536)")]
     VarMapOverflow,
+    #[error("{resource} requires {required}, exceeding the supported limit of {limit}")]
+    ResourceLimit {
+        resource: &'static str,
+        required: usize,
+        limit: usize,
+    },
     #[error("pattern validation failed")]
     Validation(Vec<crate::validation::PatternValidationError>),
 }
@@ -243,6 +255,10 @@ impl ReteCompiler {
         rule: &CompilableRule,
     ) -> Result<CompileResult, CompileError> {
         Self::ensure_non_empty(&rule.patterns)?;
+        Self::check_limit("rule conditions", rule.patterns.len(), MAX_RULE_CONDITIONS)?;
+        for pattern in &rule.patterns {
+            Self::check_limit("alpha tests", pattern.constant_tests.len(), MAX_ALPHA_TESTS)?;
+        }
         Self::validate_rule_patterns(&rule.patterns)?;
         let conditions = Self::patterns_as_conditions(&rule.patterns);
         let var_map = Self::prepare_var_map(&conditions)?;
@@ -463,6 +479,25 @@ impl ReteCompiler {
     }
 
     fn validate_conditions(conditions: &[CompilableCondition]) -> Result<(), CompileError> {
+        // Inspect iteratively before entering any recursive validation or
+        // compilation path. No network state has been installed at this point.
+        let mut pending: Vec<_> = conditions.iter().collect();
+        let mut count = 0;
+        while let Some(condition) = pending.pop() {
+            count += 1;
+            Self::check_limit("rule conditions", count, MAX_RULE_CONDITIONS)?;
+            match condition {
+                CompilableCondition::Pattern(pattern) => {
+                    Self::check_limit(
+                        "alpha tests",
+                        pattern.constant_tests.len(),
+                        MAX_ALPHA_TESTS,
+                    )?;
+                }
+                CompilableCondition::Ncc(children) => pending.extend(children),
+                CompilableCondition::Predicate { .. } => {}
+            }
+        }
         let mut errors = Vec::new();
         for (condition_idx, condition) in conditions.iter().enumerate() {
             match condition {
@@ -491,6 +526,21 @@ impl ReteCompiler {
             }
         }
         Self::finish_validation(errors)
+    }
+
+    fn check_limit(
+        resource: &'static str,
+        required: usize,
+        limit: usize,
+    ) -> Result<(), CompileError> {
+        if required > limit {
+            return Err(CompileError::ResourceLimit {
+                resource,
+                required,
+                limit,
+            });
+        }
+        Ok(())
     }
 
     /// Validate NCC sub-conditions recursively.

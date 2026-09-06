@@ -172,6 +172,7 @@ pub(crate) fn map_load_error(err: &LoadError) -> FerricError {
         | LoadError::InvalidAssert(_)
         | LoadError::InvalidDefrule(_)
         | LoadError::Compile(_)
+        | LoadError::ResourceLimit { .. }
         | LoadError::Validation(_) => FerricError::CompileError,
         LoadError::Engine(e) => map_engine_error(e),
         LoadError::Io(_) => FerricError::IoError,
