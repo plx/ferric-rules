@@ -1,7 +1,7 @@
 """Tests for value conversion round-trips."""
 
-import pytest
 import ferric
+import pytest
 
 
 class TestIntRoundTrip:
@@ -36,18 +36,18 @@ class TestFloatRoundTrip:
 
 
 class TestStringRoundTrip:
-    def test_string_becomes_symbol(self, engine):
+    def test_plain_string_becomes_clips_string(self, engine):
         fid = engine.assert_fact("color", "red")
         fact = engine.get_fact(fid)
-        assert fact.fields[0] == "red"
-        assert isinstance(fact.fields[0], ferric.Symbol)
-
-    def test_symbol_equals_str(self, engine):
-        """Symbol compares equal to plain str with same value."""
-        fid = engine.assert_fact("color", "red")
-        fact = engine.get_fact(fid)
-        assert fact.fields[0] == "red"
+        assert fact.fields[0] == ferric.String("red")
+        assert isinstance(fact.fields[0], ferric.String)
         assert str(fact.fields[0]) == "red"
+
+    def test_nested_plain_strings_and_explicit_symbols(self, engine):
+        fid = engine.assert_fact("data", ["red", (ferric.Symbol("red"), "blue")])
+        assert engine.get_fact(fid).fields == [
+            [ferric.String("red"), [ferric.Symbol("red"), ferric.String("blue")]]
+        ]
 
 
 class TestSymbolType:
@@ -74,7 +74,7 @@ class TestSymbolType:
         fid = engine.assert_fact("data", ferric.Symbol("hello"))
         fact = engine.get_fact(fid)
         assert isinstance(fact.fields[0], ferric.Symbol)
-        assert fact.fields[0] == "hello"
+        assert fact.fields[0] == ferric.Symbol("hello")
 
 
 class TestClipsStringType:
@@ -101,7 +101,7 @@ class TestClipsStringType:
         fid = engine.assert_fact("data", ferric.String("hello"))
         fact = engine.get_fact(fid)
         assert isinstance(fact.fields[0], ferric.String)
-        assert fact.fields[0] == "hello"
+        assert fact.fields[0] == ferric.String("hello")
 
 
 class TestSymbolStringDistinction:
@@ -113,12 +113,10 @@ class TestSymbolStringDistinction:
     def test_rule_matches_symbol_not_string(self):
         """A rule matching symbol 'Alice' fires for Symbol but not String."""
         engine = ferric.Engine()
-        engine.load(
-            '(defrule match-symbol (name Alice) => (assert (matched symbol)))'
-        )
+        engine.load("(defrule match-symbol (name Alice) => (assert (matched symbol)))")
         engine.reset()
-        # Assert with plain str (becomes Symbol) - should match
-        engine.assert_fact("name", "Alice")
+        # Assert with explicit Symbol - should match
+        engine.assert_fact("name", ferric.Symbol("Alice"))
         result = engine.run()
         assert result.rules_fired == 1
 
@@ -141,31 +139,31 @@ class TestSymbolStringDistinction:
             '(defrule match-string (name "Alice") => (assert (matched string)))'
         )
         engine.reset()
-        # Assert with plain str (becomes Symbol) - should NOT match string pattern
-        engine.assert_fact("name", "Alice")
+        # Assert with explicit Symbol - should NOT match string pattern
+        engine.assert_fact("name", ferric.Symbol("Alice"))
         result = engine.run()
         assert result.rules_fired == 0
 
     def test_string_in_template(self, engine):
         """ClipsString works in template assertions."""
-        engine.load('(deftemplate person (slot name))')
+        engine.load("(deftemplate person (slot name))")
         engine.reset()
         fid = engine.assert_template("person", name=ferric.String("Alice"))
         fact = engine.get_fact(fid)
         assert isinstance(fact.slots["name"], ferric.String)
-        assert fact.slots["name"] == "Alice"
+        assert fact.slots["name"] == ferric.String("Alice")
 
 
 class TestBoolConversion:
     def test_true_becomes_symbol(self, engine):
         fid = engine.assert_fact("flag", True)
         fact = engine.get_fact(fid)
-        assert fact.fields[0] == "TRUE"
+        assert fact.fields[0] == ferric.Symbol("TRUE")
 
     def test_false_becomes_symbol(self, engine):
         fid = engine.assert_fact("flag", False)
         fact = engine.get_fact(fid)
-        assert fact.fields[0] == "FALSE"
+        assert fact.fields[0] == ferric.Symbol("FALSE")
 
 
 class TestNoneConversion:
@@ -201,32 +199,40 @@ class TestListConversion:
         field = engine.get_fact(fid).fields[0]
         assert isinstance(field[0], ferric.Symbol)
         assert isinstance(field[1], ferric.String)
-        assert field[0] == "sym"
-        assert field[1] == "str"
+        assert field[0] == ferric.Symbol("sym")
+        assert field[1] == ferric.String("str")
 
 
 class TestHashContract:
-    """hash(a) == hash(b) whenever a == b (Python invariant)."""
+    """Typed wrappers and host strings form coherent, distinct key classes."""
 
-    def test_symbol_hash_equals_str_hash(self):
-        sym = ferric.Symbol("hello")
-        assert sym == "hello"
-        assert hash(sym) == hash("hello")
+    @pytest.mark.parametrize("value_type", [ferric.Symbol, ferric.String])
+    def test_equal_values_have_equal_hashes(self, value_type):
+        assert value_type("hello") == value_type("hello")
+        assert hash(value_type("hello")) == hash(value_type("hello"))
+        assert value_type("hello") != "hello"
+        assert "hello" != value_type("hello")
 
-    def test_string_hash_equals_str_hash(self):
-        s = ferric.String("hello")
-        assert s == "hello"
-        assert hash(s) == hash("hello")
+    def test_mixed_sets_and_dicts_are_order_independent(self):
+        from itertools import permutations
 
-    def test_symbol_in_dict(self):
-        d = {}
-        d[ferric.Symbol("key")] = "value"
-        assert d["key"] == "value"
+        values = [ferric.Symbol("key"), ferric.String("key"), "key"]
+        for ordered in permutations(values):
+            assert len(set(ordered)) == 3
+            mapping = {value: type(value) for value in ordered}
+            assert len(mapping) == 3
+            assert mapping[ferric.Symbol("key")] is ferric.Symbol
+            assert mapping[ferric.String("key")] is ferric.String
+            assert mapping["key"] is str
+        for left in values:
+            for middle in values:
+                for right in values:
+                    if left == middle and middle == right:
+                        assert left == right
 
-    def test_string_in_set(self):
-        s = {ferric.String("a"), "a"}
-        assert len(s) == 1
-
-    def test_symbol_and_string_distinct_in_set(self):
-        s = {ferric.Symbol("x"), ferric.String("x")}
-        assert len(s) == 2
+    @pytest.mark.parametrize("value_type", [ferric.Symbol, ferric.String])
+    def test_hashed_payload_is_readonly(self, value_type):
+        value = value_type("stable")
+        with pytest.raises(AttributeError):
+            value.value = "changed"
+        assert {value: 1}[value_type("stable")] == 1

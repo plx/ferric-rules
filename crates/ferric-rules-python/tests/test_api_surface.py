@@ -62,7 +62,7 @@ class TestGetFactSlot:
         engine.reset()
         fid = engine.assert_template("person", name="Alice", age=30)
         val = engine.get_fact_slot(fid, "name")
-        assert val == "Alice"
+        assert val == ferric.String("Alice")
 
     def test_get_slot_integer(self):
         engine = ferric.Engine()

@@ -93,13 +93,14 @@ def value_case(case_id: str) -> Any:
                 ingress = "unsupported"
         finally:
             engine.close()
-        return {"host_representation": "void", "ingress": ingress}
+        return {"host_representation": "rejected", "ingress": ingress}
     raise RuntimeError(f"unknown value case {case_id}")
 
 
 def configuration_default() -> Any:
     engine = ferric.Engine()
     unicode = "accepted"
+    depth = engine.max_call_depth
     try:
         try:
             engine.assert_fact("unicode", ferric.String("é"))
@@ -107,14 +108,16 @@ def configuration_default() -> Any:
             unicode = "rejected"
     finally:
         engine.close()
-    return {"max_call_depth": 64, "strategy": "depth", "unicode": unicode}
+    return {"max_call_depth": depth, "strategy": "depth", "unicode": unicode}
 
 
 def configuration_custom() -> Any:
     engine = ferric.Engine(
         encoding=ferric.Encoding.ASCII,
         strategy=ferric.Strategy.BREADTH,
+        max_call_depth=8,
     )
+    assert engine.max_call_depth == 8
     ascii_unicode = "accepted"
     try:
         try:
@@ -125,7 +128,7 @@ def configuration_custom() -> Any:
         engine.close()
     return {
         "ascii_unicode": ascii_unicode,
-        "max_call_depth": "unavailable",
+        "max_call_depth": "configurable",
         "strategy_count": 4,
     }
 
@@ -135,8 +138,11 @@ def configuration_observation(
     *,
     encoding: ferric.Encoding | None = None,
     strategy: ferric.Strategy | None = None,
+    max_call_depth: int | None = None,
 ) -> Any:
-    engine = ferric.Engine.from_source(source, encoding=encoding, strategy=strategy)
+    engine = ferric.Engine.from_source(
+        source, encoding=encoding, strategy=strategy, max_call_depth=max_call_depth
+    )
     unicode = "accepted"
     try:
         try:
@@ -160,10 +166,13 @@ def configuration_strategy_fired(source: str) -> int:
 def configuration_isolation() -> Any:
     default_depth_source = fixture("configuration-default-depth.clp")
     strategy_source = fixture("configuration-strategy-order.clp")
-    unavailable = {"halt_reason": "unavailable", "unicode": "unavailable"}
     return {
-        "depth_1_only": unavailable,
-        "depth_256_only": unavailable,
+        "depth_1_only": configuration_observation(
+            fixture("custom-config.clp"), max_call_depth=1
+        ),
+        "depth_256_only": configuration_observation(
+            default_depth_source, max_call_depth=256
+        ),
         "encoding_ascii_only": configuration_observation(
             default_depth_source, encoding=ferric.Encoding.ASCII
         ),
@@ -229,7 +238,7 @@ def fact_lifecycle() -> Any:
             "template_snapshot_retained": (
                 template is not None
                 and template.template_name == "person"
-                and template.slots["name"] == "Ada"
+                and template.slots["name"] == ferric.String("Ada")
             ),
         }
     finally:

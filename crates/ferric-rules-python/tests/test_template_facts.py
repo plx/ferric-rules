@@ -35,28 +35,30 @@ class TestAssertTemplate:
         fid = template_engine.assert_template("person", name=ferric.String("Bob"), age=25)
         fact = template_engine.get_fact(fid)
         assert fact.slots is not None
-        assert fact.slots["name"] == "Bob"
+        assert fact.slots["name"] == ferric.String("Bob")
         assert fact.slots["age"] == 25
 
     def test_defaults_filled(self, template_engine):
         """Unspecified slots should get their declared defaults."""
         fid = template_engine.assert_template("person", name=ferric.String("Charlie"))
         fact = template_engine.get_fact(fid)
-        assert fact.slots["name"] == "Charlie"
+        assert fact.slots["name"] == ferric.String("Charlie")
         assert fact.slots["age"] == 0  # default
-        assert fact.slots["active"] == "TRUE"  # default
+        assert fact.slots["active"] == ferric.Symbol("TRUE")  # default
 
     def test_all_defaults(self, template_engine):
         """No kwargs → all slots get defaults."""
         fid = template_engine.assert_template("person")
         fact = template_engine.get_fact(fid)
         assert fact.slots["age"] == 0
-        assert fact.slots["active"] == "TRUE"
+        assert fact.slots["active"] == ferric.Symbol("TRUE")
 
     def test_override_default(self, template_engine):
-        fid = template_engine.assert_template("person", name=ferric.String("Dave"), active="FALSE")
+        fid = template_engine.assert_template(
+            "person", name=ferric.String("Dave"), active=ferric.Symbol("FALSE")
+        )
         fact = template_engine.get_fact(fid)
-        assert fact.slots["active"] == "FALSE"
+        assert fact.slots["active"] == ferric.Symbol("FALSE")
 
     def test_template_not_found(self, template_engine):
         with pytest.raises(ferric.FerricTemplateNotFoundError):
@@ -92,8 +94,8 @@ class TestAssertTemplate:
         cf = engine.get_fact(c)
         assert pf.template_name == "person"
         assert cf.template_name == "car"
-        assert cf.slots["make"] == "Toyota"
-        assert cf.slots["model"] == "Camry"
+        assert cf.slots["make"] == ferric.String("Toyota")
+        assert cf.slots["model"] == ferric.String("Camry")
 
 
 class TestTemplateFactWithRules:

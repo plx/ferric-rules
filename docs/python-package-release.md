@@ -7,11 +7,9 @@ machine contract in
 Changes to either document must keep package metadata, CI, validators, and
 consumer smoke tests in agreement.
 
-This contract is limited to Python distribution artifacts. The broader
-cross-binding minimum-runtime, sanitizer, stress, and clean-consumer CI program
-remains tracked in
-[#124](https://github.com/plx/ferric-rules/issues/124); this matrix does not
-claim to complete that work.
+This contract covers the retained Python artifact targets and clean-consumer
+checks. The finite rehabilitation scope requires locally usable artifacts and
+truthful validation, without public publication or a new platform matrix.
 
 ## Package identity and support boundary
 
@@ -171,12 +169,9 @@ non-mutating registry dry run are permitted staging steps. Stable publication
 to PyPI is an irreversible action and is not authorized by this contract or by
 the existence of a successful workflow run.
 
-No stable Python distribution may be published until the independent audit in
-[#223](https://github.com/plx/ferric-rules/issues/223) has approved the exact
-candidate and the maintainer has authorized the exact artifacts under the
-[staged-artifact and publication policy](audits/production-readiness-remediation-goal.md#staged-artifacts-and-irreversible-publication).
-The eventual promotion job must download the already verified bytes, recheck
-their manifest, and must not rebuild them.
+Public publication is outside the rehabilitation task. Any future publication
+requires explicit maintainer authorization for the verified artifacts; the
+retired production-readiness audit is not an active release prerequisite.
 
 ## Updating the contract
 

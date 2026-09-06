@@ -34,14 +34,9 @@
     {
       "id": "value.string.plain-host",
       "semantic": "value.string",
-      "canonical": {"type": "string", "value": "red"},
-      "deviations": {
-        "python": {
-          "expected": {"type": "symbol", "value": "red"},
-          "rationale": "Python plain str currently defaults to a CLIPS Symbol while the other host bindings default to String.",
-          "since": "1.0.0",
-          "tracking_issue": "https://github.com/plx/ferric-rules/issues/166"
-        }
+      "canonical": {
+        "type": "string",
+        "value": "red"
       }
     },
     {
@@ -99,10 +94,10 @@
         },
         "python": {
           "expected": {
-            "host_representation": "void",
+            "host_representation": "rejected",
             "ingress": "unsupported"
           },
-          "rationale": "Python currently collapses ExternalAddress egress to None and exposes no ingress wrapper.",
+          "rationale": "Python has no external-address wrapper; native external identities are explicitly rejected on conversion, never erased to None.",
           "since": "1.0.0",
           "tracking_issue": "https://github.com/plx/ferric-rules/issues/167"
         }
@@ -124,18 +119,6 @@
         "ascii_unicode": "rejected",
         "max_call_depth": "configurable",
         "strategy_count": 4
-      },
-      "deviations": {
-        "python": {
-          "expected": {
-            "ascii_unicode": "rejected",
-            "max_call_depth": "unavailable",
-            "strategy_count": 4
-          },
-          "rationale": "Python construction does not yet expose max_call_depth.",
-          "since": "1.0.0",
-          "tracking_issue": "https://github.com/plx/ferric-rules/issues/187"
-        }
       }
     },
     {
@@ -159,32 +142,6 @@
           "strategy_fired": 2,
           "unicode": "accepted"
         }
-      },
-      "deviations": {
-        "python": {
-          "expected": {
-            "depth_1_only": {
-              "halt_reason": "unavailable",
-              "unicode": "unavailable"
-            },
-            "depth_256_only": {
-              "halt_reason": "unavailable",
-              "unicode": "unavailable"
-            },
-            "encoding_ascii_only": {
-              "halt_reason": "action_error",
-              "unicode": "rejected"
-            },
-            "strategy_breadth_only": {
-              "halt_reason": "action_error",
-              "strategy_fired": 2,
-              "unicode": "accepted"
-            }
-          },
-          "rationale": "Python construction does not yet expose max_call_depth, so it cannot run the two depth-only isolation probes.",
-          "since": "1.1.0",
-          "tracking_issue": "https://github.com/plx/ferric-rules/issues/187"
-        }
       }
     },
     {
@@ -200,19 +157,17 @@
     {
       "id": "error.unsupported-construct",
       "semantic": "error.compile",
-      "canonical": {"family": "compile"},
+      "canonical": {
+        "family": "compile"
+      },
       "deviations": {
         "node": {
-          "expected": {"family": "generic"},
+          "expected": {
+            "family": "generic"
+          },
           "rationale": "Node does not yet classify every non-Parse/non-Compile LoadError variant.",
           "since": "1.0.0",
           "tracking_issue": "https://github.com/plx/ferric-rules/issues/184"
-        },
-        "python": {
-          "expected": {"family": "generic"},
-          "rationale": "Python does not yet classify every non-Parse/non-Compile LoadError variant.",
-          "since": "1.0.0",
-          "tracking_issue": "https://github.com/plx/ferric-rules/issues/189"
         }
       }
     },
