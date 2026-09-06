@@ -434,6 +434,12 @@ impl AlphaNetwork {
         memory_map
     }
 
+    /// Whether a compiled alpha path references this fact type.
+    #[must_use]
+    pub fn contains_entry(&self, entry_type: &AlphaEntryType) -> bool {
+        self.entry_nodes.contains_key(entry_type)
+    }
+
     /// Get or create an entry node for a given entry type.
     ///
     /// Entry nodes are unique per entry type (idempotent).

@@ -394,6 +394,12 @@ impl GenericRegistry {
             .is_some_and(|g| g.methods.iter().any(|m| m.index == index))
     }
 
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (ModuleId, &GenericFunction)> {
+        self.generics
+            .iter()
+            .flat_map(|(&module, entries)| entries.values().map(move |generic| (module, generic)))
+    }
+
     /// Debug-only structural checks for generic/method bookkeeping.
     #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {

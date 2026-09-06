@@ -432,7 +432,10 @@ impl Engine {
             // Rules are collected with their owning module captured at the
             // time they appear in source so that defmodule statements
             // interleaved with defrule statements are respected.
-            let mut deffacts_constructs: Vec<ferric_rules_parser::FactsConstruct> = Vec::new();
+            let mut deffacts_constructs: Vec<(
+                ferric_rules_parser::FactsConstruct,
+                crate::modules::ModuleId,
+            )> = Vec::new();
             let mut rules_with_module = Vec::new();
             let mut pending_ordered_fact_names = HashSet::new();
             for construct in interpret_result.constructs {
@@ -477,8 +480,27 @@ impl Engine {
                                         })
                                     })
                             });
+                        let pending_use = self
+                            .template_definition_identity(&template)
+                            .ok()
+                            .and_then(|(_, id)| id)
+                            .is_some_and(|id| {
+                                rules_with_module.iter().any(|(rule, module)| {
+                                    self.rule_uses_template(rule, *module, id)
+                                }) || deffacts_constructs.iter().any(|(facts, module)| {
+                                    facts.facts.iter().any(|fact| {
+                                        let name = match fact {
+                                            FactBody::Ordered(fact) => &fact.relation,
+                                            FactBody::Template(fact) => &fact.template,
+                                        };
+                                        self.template_name_is(name, *module, id)
+                                    })
+                                })
+                            });
                         if pending_ordered_use {
                             errors.push(Self::ordered_template_conflict(&template));
+                        } else if pending_use {
+                            errors.push(Self::template_in_use_error(&template));
                         } else if let Err(e) = self.register_template(&template, &mut result) {
                             errors.push(e);
                         } else {
@@ -504,7 +526,7 @@ impl Engine {
                                 }
                             }
                         }
-                        deffacts_constructs.push(facts);
+                        deffacts_constructs.push((facts, self.module_registry.current_module()));
                     }
                     Construct::Function(func) => {
                         let owning_module = self.module_registry.current_module();
@@ -684,11 +706,13 @@ impl Engine {
             }
 
             // Now process deffacts (facts will flow through compiled rete via assert_ordered).
-            for facts in &deffacts_constructs {
+            for (facts, owning_module) in &deffacts_constructs {
+                self.module_registry.set_current_module(*owning_module);
                 if let Err(e) = self.process_deffacts_construct(facts, &mut result) {
                     errors.push(e);
                 }
             }
+            self.module_registry.set_current_module(saved_module);
         }
 
         // Process assert forms AFTER rules are compiled so facts flow through rete
@@ -1051,29 +1075,55 @@ impl Engine {
         ))
     }
 
-    /// Register a `TemplateConstruct` in the engine's template registry.
-    ///
-    /// Allocates a fresh `TemplateId`, builds slot metadata, and stores both
-    /// the name→id mapping and the `RegisteredTemplate`.
-    #[allow(clippy::unnecessary_wraps)] // Result return kept for future error paths
+    /// Find the owning module and any previous same-name definition.
+    fn template_definition_identity(
+        &self,
+        template: &TemplateConstruct,
+    ) -> Result<
+        (
+            crate::modules::ModuleId,
+            Option<ferric_rules_core::TemplateId>,
+        ),
+        LoadError,
+    > {
+        let name = parse_qualified_name(&template.name)
+            .map_err(|message| Self::compile_error_at(&template.span, &message))?;
+        let module = if let Some(module) = name.module_name() {
+            self.module_registry.get_by_name(module).ok_or_else(|| {
+                Self::compile_error_at(
+                    &template.span,
+                    &format!("unknown module `{module}` for template `{}`", template.name),
+                )
+            })?
+        } else {
+            self.module_registry.current_module()
+        };
+        let existing = self.template_defs.iter().find_map(|(id, definition)| {
+            (self.template_modules.get(id) == Some(&module)
+                && Self::template_local_name(&definition.name) == name.local_name())
+            .then_some(id)
+        });
+        Ok((module, existing))
+    }
+
+    fn template_in_use_error(template: &TemplateConstruct) -> LoadError {
+        Self::compile_error_at(&template.span, &format!(
+            "[CSTRCPSR4] cannot redefine template `{}` while it is in use by facts or constructs", template.name
+        ))
+    }
+
+    /// Install a validated new template or replace an unused definition in place.
     fn register_template(
         &mut self,
         template: &TemplateConstruct,
         result: &mut LoadResult,
     ) -> Result<(), LoadError> {
-        let owning_module = parse_qualified_name(&template.name)
-            .ok()
-            .and_then(|name| {
-                name.module_name()
-                    .and_then(|module| self.module_registry.get_by_name(module))
-            })
-            .unwrap_or_else(|| self.module_registry.current_module());
+        let (owning_module, existing) = self.template_definition_identity(template)?;
+        if existing.is_some_and(|id| self.template_is_in_use(id)) {
+            return Err(Self::template_in_use_error(template));
+        }
         let local_name = Self::template_local_name(&template.name);
-        let existing = self.template_defs.iter().any(|(id, definition)| {
-            self.template_modules.get(id) == Some(&owning_module)
-                && Self::template_local_name(&definition.name) == local_name
-        });
-        if !existing && self.ordered_identity_is_live(&local_name) {
+        if existing.is_none() && self.ordered_identity_is_live(&local_name) {
             return Err(Self::ordered_template_conflict(template));
         }
         let slot_count = template.slots.len();
@@ -1113,17 +1163,26 @@ impl Engine {
             defaults.push(default_val);
         }
 
-        let registered = RegisteredTemplate {
+        let mut registered = RegisteredTemplate {
             name: template.name.clone(),
             slot_names,
             slot_types,
             slot_index,
             defaults,
         };
-        let template_id = self.template_defs.insert(registered);
-
-        self.template_ids
-            .insert(template.name.clone().into_boxed_str(), template_id);
+        let template_id = if let Some(id) = existing {
+            // The old ID and public spelling remain stable. No fact or compiled
+            // construct can observe the new slot layout, and repeated unused
+            // definitions do not leave orphaned registry entries behind.
+            registered.name.clone_from(&self.template_defs[id].name);
+            self.template_defs[id] = registered;
+            id
+        } else {
+            let id = self.template_defs.insert(registered);
+            self.template_ids
+                .insert(template.name.clone().into_boxed_str(), id);
+            id
+        };
         self.template_modules.insert(template_id, owning_module);
 
         Ok(())
