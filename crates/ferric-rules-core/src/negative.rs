@@ -203,7 +203,6 @@ impl NegativeMemory {
     }
 
     /// Verify internal consistency of the negative memory.
-    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
         self.validate_consistency()
             .expect("inconsistent engine state");

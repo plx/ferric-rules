@@ -380,8 +380,7 @@ impl Agenda {
 
     /// Verify internal consistency of agenda indices.
     ///
-    /// Intended for use in tests and debug builds.
-    #[cfg(any(test, debug_assertions))]
+    /// Available in all profiles so dependent crates can run release tests.
     pub fn debug_assert_consistency(&self) {
         self.validate_consistency()
             .expect("inconsistent engine state");
