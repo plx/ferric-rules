@@ -344,11 +344,9 @@ impl Engine {
                     .collect_all_facts(pending.parent_token)
             };
 
-            let mut focus_requests = Vec::new();
             let evaluation = {
                 let mut context = actions::ActionExecutionContext {
                     engine: self,
-                    focus_requests: &mut focus_requests,
                     current_module,
                 };
                 actions::evaluate_test_condition(
@@ -373,12 +371,6 @@ impl Engine {
                 }
             };
 
-            if !focus_requests.is_empty() {
-                self.action_diagnostics.push(ActionError::EvalError(format!(
-                    "rule `{}` test CE attempted a focus change during matching",
-                    info.name
-                )));
-            }
             self.rete
                 .resolve_predicate_match_with_parent(pending, passed, token, &self.fact_base);
         }
@@ -862,11 +854,9 @@ impl Engine {
 
         let collected_facts = self.rete.token_store.collect_all_facts(token_id);
 
-        let mut focus_requests = Vec::new();
-        let (fired, reset_requested, clear_requested, mut errors) = {
+        let (fired, reset_requested, clear_requested, errors) = {
             let mut action_context = actions::ActionExecutionContext {
                 engine: self,
-                focus_requests: &mut focus_requests,
                 current_module,
             };
             actions::execute_actions(&token, info.as_ref(), &mut action_context, &collected_facts)
@@ -875,16 +865,6 @@ impl Engine {
         // negative nodes and create new predicate candidates.
         self.drain_pending_predicate_matches();
 
-        // Apply focus requests (push in reverse order so first arg is on top)
-        for module_name in focus_requests.iter().rev() {
-            match self.resolve_focus_module(module_name) {
-                Ok(id) => self.module_registry.push_focus(id),
-                Err(_) => errors.push(ActionError::EvalError(format!(
-                    "focus: unknown module `{module_name}`"
-                ))),
-            }
-        }
-
         ferric_event!(
             debug,
             rule = rule_id.0,
@@ -892,7 +872,6 @@ impl Engine {
             reset_requested,
             clear_requested,
             diagnostics = errors.len(),
-            focus_requests = focus_requests.len(),
             "activation_actions_complete"
         );
         let action_error = !errors.is_empty();
@@ -910,8 +889,8 @@ impl Engine {
     ///
     /// Selection is module-aware: only activations whose rule belongs to the
     /// current focus module are eligible. If the current focus module has no
-    /// eligible activations and there are stacked focuses, the top focus is
-    /// popped and selection continues. The final baseline focus is preserved.
+    /// eligible activations, the top focus is popped and selection continues,
+    /// including the last focus. A new run defaults to MAIN when the stack is empty.
     fn pop_next_focus_activation(&mut self) -> Option<ferric_rules_core::Activation> {
         loop {
             let focus_module = self.module_registry.current_focus()?;
@@ -930,12 +909,7 @@ impl Engine {
                 return Some(activation);
             }
 
-            if self.module_registry.focus_stack().len() > 1 {
-                self.module_registry.pop_focus();
-                continue;
-            }
-
-            return None;
+            self.module_registry.pop_focus();
         }
     }
 
@@ -949,6 +923,10 @@ impl Engine {
     pub fn step(&mut self) -> Result<Option<FiredRule>, EngineError> {
         ferric_span!(info_span, "engine_step");
         self.action_diagnostics.clear();
+        if self.module_registry.current_focus().is_none() {
+            self.module_registry
+                .push_focus(self.module_registry.main_module_id());
+        }
 
         let Some(activation) = self.pop_next_focus_activation() else {
             ferric_event!(debug, "engine_step_no_activation");
@@ -997,9 +975,8 @@ impl Engine {
     /// Rule selection is focus-aware: only activations belonging to the module
     /// at the top of the focus stack are eligible to fire. When no eligible
     /// activations remain for the current focus module, the focus stack is
-    /// popped and the next module is tried. The final baseline focus is
-    /// preserved across runs; if it has no matching activations, execution
-    /// halts with `AgendaEmpty`.
+    /// popped and the next module is tried, leaving an empty focus stack on
+    /// quiescence. A new run defaults to MAIN if the stack starts empty.
     ///
     /// The `Result` return type is retained for API compatibility.
     pub fn run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
@@ -1024,6 +1001,10 @@ impl Engine {
         if clear_execution_state {
             self.halted = false;
             self.action_diagnostics.clear();
+            if self.module_registry.current_focus().is_none() {
+                self.module_registry
+                    .push_focus(self.module_registry.main_module_id());
+            }
         }
 
         let max_fires = match limit {
@@ -1044,8 +1025,8 @@ impl Engine {
                 return run_result(rules_fired, HaltReason::HaltRequested);
             }
 
-            // Focus-aware activation selection preserves the final baseline
-            // focus when no activations are eligible.
+            // Exhausted focuses are popped until a matching activation is
+            // found or the complete focus stack has drained.
             let Some(activation) = self.pop_next_focus_activation() else {
                 ferric_event!(
                     info,

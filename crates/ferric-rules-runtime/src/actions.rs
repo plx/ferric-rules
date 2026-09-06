@@ -37,7 +37,6 @@ const FACT_SLOT_REF_FN: &str = "__fact_slot_ref";
 
 pub(crate) struct ActionExecutionContext<'a> {
     pub engine: &'a mut Engine,
-    pub focus_requests: &'a mut Vec<String>,
     pub current_module: crate::modules::ModuleId,
 }
 
@@ -1589,9 +1588,8 @@ fn execute_query_action(
 
 /// Execute a `focus` action: push module(s) onto the focus stack.
 ///
-/// Arguments are evaluated to symbols and collected as focus requests.
-/// They are applied by the engine after all actions complete, in reverse
-/// order so the first argument becomes the top of the focus stack.
+/// Resolve all arguments, then push in reverse order so the first argument
+/// becomes the top of the stack before the next RHS action executes.
 #[allow(clippy::too_many_arguments)]
 fn execute_focus(
     token: &Token,
@@ -1601,18 +1599,26 @@ fn execute_focus(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
+    let mut modules = Vec::with_capacity(args.len());
     for arg in args {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
         match value {
             Value::Symbol(sym) => {
-                if let Some(name) = context.engine.symbol_table.resolve_symbol_str(sym) {
-                    if context.engine.module_registry.get_by_name(name).is_none() {
-                        return Err(ActionError::EvalError(format!(
-                            "focus: unknown module `{name}`"
-                        )));
-                    }
-                    context.focus_requests.push(name.to_string());
-                }
+                let name = context
+                    .engine
+                    .symbol_table
+                    .resolve_symbol_str(sym)
+                    .ok_or_else(|| {
+                        ActionError::EvalError("focus: invalid symbol argument".to_string())
+                    })?;
+                let module = context
+                    .engine
+                    .module_registry
+                    .get_by_name(name)
+                    .ok_or_else(|| {
+                        ActionError::EvalError(format!("focus: unknown module `{name}`"))
+                    })?;
+                modules.push(module);
             }
             _ => {
                 return Err(ActionError::EvalError(
@@ -1620,6 +1626,9 @@ fn execute_focus(
                 ));
             }
         }
+    }
+    for module in modules.into_iter().rev() {
+        context.engine.module_registry.push_focus(module);
     }
     Ok(())
 }

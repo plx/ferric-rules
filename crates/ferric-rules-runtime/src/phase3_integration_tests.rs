@@ -2133,23 +2133,22 @@ mod tests {
     }
 
     #[test]
-    fn module_without_explicit_export_defaults_to_export_all() {
+    fn module_without_explicit_export_rejects_import() {
         let mut engine = new_utf8_engine();
-        load_ok(
-            &mut engine,
-            r"
+        let errors = engine
+            .load_str(
+                r"
             (defmodule A)
             (deftemplate A::foo (slot x))
             (defmodule B (import A ?ALL))
-            (defrule B::r (foo (x ?v)) => (assert (seen ?v)))
-            (deffacts startup (foo (x 11)))
         ",
-        );
-
-        engine.push_focus("B").unwrap();
-        let result = run_to_completion(&mut engine);
-        assert_eq!(result.rules_fired, 1);
-        assert_has_fact_with_relation(&engine, "seen");
+            )
+            .unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.to_string().contains("does not export")));
+        assert!(!engine.modules().contains(&"B"));
+        assert_eq!(engine.current_module(), "A");
     }
 
     #[test]

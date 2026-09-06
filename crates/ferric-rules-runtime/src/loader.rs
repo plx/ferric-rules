@@ -549,6 +549,11 @@ impl Engine {
                         result.globals.push(global);
                     }
                     Construct::Module(module) => {
+                        if let Err(message) = self.module_registry.validate_imports(&module.imports)
+                        {
+                            errors.push(Self::compile_error_at(&module.span, &message));
+                            continue;
+                        }
                         // Register the module (or update its exports/imports if it already
                         // exists). Re-defining a module (including MAIN) is allowed in CLIPS
                         // to set up imports and exports; only truly conflicting definitions

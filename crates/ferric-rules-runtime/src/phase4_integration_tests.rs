@@ -778,20 +778,21 @@ fn cross_module_function_not_visible_without_export() {
 (defrule test-call (go) => (printout t (add 3 4) crlf))
 (deffacts startup (go))
 ";
-    load_ok(&mut engine, source);
+    let errors = engine.load_str(source).unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.to_string().contains("does not export")));
+    // The rejected MAIN import leaves the prior module context intact.
+    assert_eq!(engine.current_module(), "MATH");
     engine.reset().unwrap();
-    engine.run(crate::execution::RunLimit::Unlimited).unwrap();
-    let diagnostics = engine.action_diagnostics();
-    assert!(
-        diagnostics.iter().any(|d| {
-            let msg = format!("{d}");
-            msg.contains("not visible")
-                || msg.contains("not accessible")
-                || msg.contains("unknown")
-                || msg.contains("NotVisible")
-        }),
-        "expected visibility error diagnostic, got: {diagnostics:?}"
+    assert_eq!(
+        engine
+            .run(crate::execution::RunLimit::Unlimited)
+            .unwrap()
+            .rules_fired,
+        0
     );
+    assert_eq!(engine.get_output("t"), None);
 }
 
 #[test]
@@ -865,20 +866,21 @@ fn cross_module_global_not_visible_without_export() {
 (defrule test-global (go) => (printout t ?*threshold* crlf))
 (deffacts startup (go))
 ";
-    load_ok(&mut engine, source);
+    let errors = engine.load_str(source).unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.to_string().contains("does not export")));
+    // The rejected MAIN import leaves the prior module context intact.
+    assert_eq!(engine.current_module(), "CONFIG");
     engine.reset().unwrap();
-    engine.run(crate::execution::RunLimit::Unlimited).unwrap();
-    let diagnostics = engine.action_diagnostics();
-    assert!(
-        diagnostics.iter().any(|d| {
-            let msg = format!("{d}");
-            msg.contains("not visible")
-                || msg.contains("not accessible")
-                || msg.contains("unbound")
-                || msg.contains("NotVisible")
-        }),
-        "expected visibility error for global, got: {diagnostics:?}"
+    assert_eq!(
+        engine
+            .run(crate::execution::RunLimit::Unlimited)
+            .unwrap()
+            .rules_fired,
+        0
     );
+    assert_eq!(engine.get_output("t"), None);
 }
 
 #[test]
