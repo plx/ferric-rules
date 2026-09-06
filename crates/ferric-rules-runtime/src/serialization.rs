@@ -1057,6 +1057,78 @@ mod tests {
         );
     }
 
+    fn schema_one_fixture_engine() -> Engine {
+        let mut engine =
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-1.clp")).unwrap();
+        engine.set_focus("WORK").unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("done 3\n"));
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
+        engine
+    }
+
+    fn verify_schema_one_resume(mut engine: Engine) {
+        assert_eq!(engine.facts().unwrap().count(), 4);
+        assert_eq!(engine.get_output("t"), Some("done 3\n"));
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("done 3\ndone 1\n"));
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
+        let blocker = engine.find_facts("blocked").unwrap()[0].0;
+        engine.retract(blocker).unwrap();
+        engine.set_focus("WORK").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("done 3\ndone 1\ndone 2\n"));
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(3))));
+        assert_eq!(engine.facts().unwrap().count(), 3);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        for (id, _) in engine.facts().unwrap() {
+            let state = engine.get_fact_slot_by_name(id, "state").unwrap();
+            let Value::Symbol(state) = state else {
+                panic!("item state must be a symbol")
+            };
+            assert_eq!(engine.symbol_table.resolve_symbol_str(*state), Some("done"));
+        }
+        engine.reset().unwrap();
+        engine.set_focus("WORK").unwrap();
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(0))));
+        assert_eq!(engine.facts().unwrap().count(), 4);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
+    }
+
+    #[test]
+    fn schema_one_fixture_source_has_expected_resume_behavior() {
+        let engine = schema_one_fixture_engine();
+        let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
+        let restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+        verify_schema_one_resume(restored);
+    }
+
+    #[test]
+    fn restored_named_seeds_require_valid_unique_module_identities() {
+        let engine = schema_one_fixture_engine();
+        for (pointer, value) in [
+            ("/registered_deffacts/0/module", serde_json::json!(99)),
+            ("/registered_deffacts/0/name", serde_json::json!("")),
+        ] {
+            let result = alter_state(&engine, |state| {
+                *state.pointer_mut(pointer).unwrap() = value;
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "{pointer}"
+            );
+        }
+        let result = alter_state(&engine, |state| {
+            let seeds = state["registered_deffacts"].as_array_mut().unwrap();
+            seeds.push(seeds[0].clone());
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("duplicate named deffacts"))
+        );
+    }
+
     /// Test roundtrip for a given format with an empty engine.
     fn roundtrip_empty(format: SerializationFormat) {
         let engine = Engine::new(EngineConfig::default());

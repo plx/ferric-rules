@@ -135,8 +135,21 @@ impl Engine {
         for (_, entry) in self.fact_base.iter() {
             self.validate_snapshot_fact(&entry.fact)?;
         }
-        for group in &self.registered_deffacts {
-            for fact in group {
+        let mut seed_names = rustc_hash::FxHashSet::default();
+        for definition in &self.registered_deffacts {
+            ensure(
+                modules.get(definition.module).is_some(),
+                "deffacts has dangling module",
+            )?;
+            ensure(
+                !definition.name.is_empty() && !definition.name.contains("::"),
+                "invalid local deffacts name",
+            )?;
+            ensure(
+                seed_names.insert((definition.module, &definition.name)),
+                "duplicate named deffacts definition",
+            )?;
+            for fact in &definition.facts {
                 self.validate_snapshot_fact(fact)?;
             }
         }
