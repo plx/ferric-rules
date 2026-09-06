@@ -19,10 +19,12 @@ slotmap::new_key_type! {
     pub struct ActivationId;
 }
 
-/// Monotonically increasing sequence number for agenda ordering tiebreaks.
+/// Creation-order sequence number for agenda ordering.
 ///
 /// Distinct from `Timestamp` (which tracks fact assertion order) — this tracks
-/// the order in which activations are added to the agenda.
+/// the order in which activations are added to the agenda. Before exhaustion,
+/// the agenda rebases live sequences without changing their relative order;
+/// values are not permanent identities across that rebase or a full clear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActivationSeq(u64);
@@ -83,8 +85,8 @@ pub struct Activation {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StrategyOrd {
-    Depth(std::cmp::Reverse<Timestamp>), // Higher timestamp first
-    Breadth(Timestamp),                  // Lower timestamp first
+    Depth(std::cmp::Reverse<ActivationSeq>), // Newest activation first
+    Breadth(ActivationSeq),                  // Oldest activation first
     Lex(std::cmp::Reverse<SmallVec<[Timestamp; 4]>>), // Lexicographic recency (most recent first)
     Mea {
         first_recency: std::cmp::Reverse<Timestamp>,
@@ -156,9 +158,9 @@ impl Agenda {
     fn build_key(&self, activation: &Activation) -> AgendaKey {
         let strategy_ord = match self.strategy {
             ConflictResolutionStrategy::Depth => {
-                StrategyOrd::Depth(std::cmp::Reverse(activation.timestamp))
+                StrategyOrd::Depth(std::cmp::Reverse(activation.activation_seq))
             }
-            ConflictResolutionStrategy::Breadth => StrategyOrd::Breadth(activation.timestamp),
+            ConflictResolutionStrategy::Breadth => StrategyOrd::Breadth(activation.activation_seq),
             ConflictResolutionStrategy::Lex => {
                 StrategyOrd::Lex(std::cmp::Reverse(activation.recency.clone()))
             }
@@ -190,6 +192,11 @@ impl Agenda {
     /// the next sequence number. Returns the activation ID.
     pub fn add(&mut self, mut activation: Activation) -> ActivationId {
         ferric_span!(trace_span, "agenda_add", rule = ?activation.rule, salience = activation.salience.get());
+        // Rebase before exhaustion rather than wrap and make new activations
+        // appear old. This preserves relative order, including LEX/MEA ties.
+        if self.next_seq.get() == u64::MAX {
+            self.rebase_sequences();
+        }
         activation.activation_seq = self.next_seq;
         self.next_seq = self.next_seq.next();
 
@@ -207,6 +214,31 @@ impl Agenda {
         self.token_to_activations.entry(token).or_default().push(id);
 
         id
+    }
+
+    /// Reclaim sequence space while preserving the chronology of live matches.
+    fn rebase_sequences(&mut self) {
+        let mut chronological: Vec<_> = self
+            .activations
+            .iter()
+            .map(|(id, activation)| (activation.activation_seq, id))
+            .collect();
+        chronological.sort_unstable_by_key(|&(sequence, _)| sequence);
+        for (sequence, &(_, id)) in chronological.iter().enumerate() {
+            self.activations[id].activation_seq = ActivationSeq::new(
+                u64::try_from(sequence).expect("live activations fit the sequence space"),
+            );
+        }
+        self.next_seq = ActivationSeq::new(
+            u64::try_from(chronological.len()).expect("live activations fit the sequence space"),
+        );
+        self.ordering.clear();
+        self.id_to_key.clear();
+        for (id, activation) in &self.activations {
+            let key = self.build_key(activation);
+            self.ordering.insert(key.clone(), id);
+            self.id_to_key.insert(id, key);
+        }
     }
 
     /// Pop the highest-priority activation from the agenda.
@@ -459,6 +491,42 @@ mod tests {
     }
 
     #[test]
+    fn sequence_exhaustion_preserves_live_chronology_and_indexes() {
+        for strategy in [
+            ConflictResolutionStrategy::Depth,
+            ConflictResolutionStrategy::Breadth,
+            ConflictResolutionStrategy::Lex,
+            ConflictResolutionStrategy::Mea,
+        ] {
+            let mut agenda = Agenda::with_strategy(strategy);
+            let mut tokens = SlotMap::<TokenId, ()>::with_key();
+            let mut ids = Vec::new();
+            agenda.next_seq = ActivationSeq::new(u64::MAX - 2);
+            for rule in 0..3 {
+                ids.push(agenda.add(Activation {
+                    id: ActivationId::default(),
+                    rule: RuleId(rule),
+                    token: tokens.insert(()),
+                    salience: Salience::DEFAULT,
+                    timestamp: Timestamp::new(30 - u64::from(rule)),
+                    activation_seq: ActivationSeq::ZERO,
+                    recency: SmallVec::new(),
+                }));
+            }
+            agenda.debug_assert_consistency();
+            assert_eq!(agenda.next_seq.get(), 3);
+            if strategy != ConflictResolutionStrategy::Breadth {
+                ids.reverse();
+            }
+            for id in ids {
+                assert_eq!(agenda.pop().unwrap().id, id);
+                agenda.debug_assert_consistency();
+            }
+            assert!(agenda.is_empty());
+        }
+    }
+
+    #[test]
     fn agenda_new_is_empty() {
         let agenda = Agenda::new();
         assert!(agenda.is_empty());
@@ -556,7 +624,7 @@ mod tests {
             recency: SmallVec::new(),
         });
 
-        let id2 = agenda.add(Activation {
+        let _id2 = agenda.add(Activation {
             id: ActivationId::default(),
             rule: RuleId(2),
             token: t2,
@@ -566,7 +634,7 @@ mod tests {
             recency: SmallVec::new(),
         });
 
-        let _id3 = agenda.add(Activation {
+        let id3 = agenda.add(Activation {
             id: ActivationId::default(),
             rule: RuleId(3),
             token: t3,
@@ -578,10 +646,10 @@ mod tests {
 
         assert_eq!(agenda.len(), 3);
 
-        // Pop should return most recent timestamp first (id2)
+        // Newest activation wins even when supported by an older fact.
         let popped = agenda.pop().expect("Should have activation");
-        assert_eq!(popped.id, id2);
-        assert_eq!(popped.timestamp, Timestamp::new(200));
+        assert_eq!(popped.id, id3);
+        assert_eq!(popped.timestamp, Timestamp::new(150));
     }
 
     #[test]
@@ -661,7 +729,7 @@ mod tests {
             recency: SmallVec::new(),
         });
 
-        let id2 = agenda.add(Activation {
+        let _id2 = agenda.add(Activation {
             id: ActivationId::default(),
             rule: RuleId(2),
             token: t2,
@@ -671,7 +739,7 @@ mod tests {
             recency: SmallVec::new(),
         });
 
-        let _id3 = agenda.add(Activation {
+        let id3 = agenda.add(Activation {
             id: ActivationId::default(),
             rule: RuleId(3),
             token: t3,
@@ -681,10 +749,10 @@ mod tests {
             recency: SmallVec::new(),
         });
 
-        // Depth strategy: most recent timestamp first
+        // Depth uses activation creation even when fact recency disagrees.
         let popped = agenda.pop().expect("Should have activation");
-        assert_eq!(popped.id, id2);
-        assert_eq!(popped.timestamp, Timestamp::new(300));
+        assert_eq!(popped.id, id3);
+        assert_eq!(popped.timestamp, Timestamp::new(200));
     }
 
     #[test]
@@ -700,7 +768,7 @@ mod tests {
             rule: RuleId(1),
             token: t1,
             salience: Salience::DEFAULT,
-            timestamp: Timestamp::new(100), // Oldest
+            timestamp: Timestamp::new(400), // Newer fact, oldest activation
             activation_seq: ActivationSeq::ZERO,
             recency: SmallVec::new(),
         });
@@ -725,10 +793,10 @@ mod tests {
             recency: SmallVec::new(),
         });
 
-        // Breadth strategy: oldest timestamp first
+        // Breadth uses activation creation even when fact recency disagrees.
         let popped = agenda.pop().expect("Should have activation");
         assert_eq!(popped.id, id1);
-        assert_eq!(popped.timestamp, Timestamp::new(100));
+        assert_eq!(popped.timestamp, Timestamp::new(400));
     }
 
     #[test]
@@ -1069,7 +1137,7 @@ mod tests {
         let t2 = make_token_id();
         let t3 = make_token_id();
 
-        let _id1 = agenda.add(Activation {
+        let id1 = agenda.add(Activation {
             id: ActivationId::default(),
             rule: RuleId(1),
             token: t1,
@@ -1089,7 +1157,7 @@ mod tests {
             recency: SmallVec::new(),
         });
 
-        let id3 = agenda.add(Activation {
+        let _id3 = agenda.add(Activation {
             id: ActivationId::default(),
             rule: RuleId(3),
             token: t3,
@@ -1100,8 +1168,8 @@ mod tests {
         });
 
         let popped = agenda.pop().expect("Should have activation");
-        assert_eq!(popped.id, id3);
-        assert_eq!(popped.activation_seq, ActivationSeq::new(2));
+        assert_eq!(popped.id, id1);
+        assert_eq!(popped.activation_seq, ActivationSeq::ZERO);
     }
 
     #[test]
@@ -1762,7 +1830,7 @@ mod proptests {
             let (_map, tokens) = make_token_pool();
             for &strategy in &ALL_STRATEGIES {
                 let mut agenda = Agenda::with_strategy(strategy);
-                let _first = agenda.add(make_activation(
+                let first = agenda.add(make_activation(
                     RuleId(0),
                     tokens[0],
                     Salience::new(sal),
@@ -1777,8 +1845,8 @@ mod proptests {
                 let popped = agenda.pop().expect("should have activation");
                 prop_assert_eq!(
                     popped.id,
-                    second,
-                    "strategy {:?}: later-added activation should pop first",
+                    if strategy == ConflictResolutionStrategy::Breadth { first } else { second },
+                    "strategy {:?}: creation order must follow the selected strategy",
                     strategy,
                 );
             }
