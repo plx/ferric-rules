@@ -648,10 +648,30 @@ mod tests {
                 .to_string()
                 .contains("limit")
         );
-        let mut nested = "{\"Multifield\":".repeat(200);
-        nested.push_str("[]");
-        nested.push_str(&"}".repeat(200));
-        assert!(decode::<Value>(nested.as_bytes(), SerializationFormat::Json).is_err());
+        let postcard = postcard::to_allocvec(&(limited::MAX_ITEMS + 1)).unwrap();
+        assert!(decode::<Vec<Value>>(&postcard, SerializationFormat::Postcard).is_err());
+        for &format in SerializationFormat::ALL {
+            let mut nested = Value::Integer(7);
+            for _ in 0..8 {
+                nested = Value::Multifield(Box::new(vec![nested].into_iter().collect()));
+            }
+            let valid = encode(&nested, format).unwrap();
+            assert!(decode::<Value>(&valid, format)
+                .unwrap()
+                .structural_eq(&nested));
+            for _ in 8..60 {
+                nested = Value::Multifield(Box::new(vec![nested].into_iter().collect()));
+            }
+            let deep = encode(&nested, format).unwrap();
+            let error = decode::<Value>(&deep, format)
+                .unwrap_err()
+                .to_string()
+                .to_lowercase();
+            assert!(
+                format == SerializationFormat::Postcard || error.contains("limit"),
+                "{format:?}: {error}"
+            );
+        }
         // The aggregate budget also applies when no collection advertises a size.
         let mut cbor = vec![0x9f];
         cbor.extend(std::iter::repeat_n(0xf6, limited::MAX_ITEMS + 1));
@@ -833,6 +853,152 @@ mod tests {
                     .zip(&fact.fields)
                     .all(|(expected, actual)| expected.structural_eq(actual)),
                 "float bits changed in {format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_persisted_entries_are_rejected_instead_of_overwritten() {
+        let mut engine = Engine::with_rules(
+            "(defrule pick (item ?n) (not (block ?n ?reason)) => (assert (picked ?n)))",
+        )
+        .unwrap();
+        engine
+            .load_str("(assert (item 7) (item 8) (block 7 a) (block 7 b))")
+            .unwrap();
+        for pointer in [
+            "/compiler/join_node_cache",
+            "/rete/beta/memories/0/tokens",
+            "/rete/beta/neg_memories/0/blocked",
+            "/rete/alpha/memories/1/slot_indices",
+            "/rete/beta/memories/1/var_indices",
+            "/rete/agenda/ordering",
+        ] {
+            let result = alter_state(&engine, |state| {
+                let entries = state.pointer_mut(pointer).unwrap().as_array_mut().unwrap();
+                let duplicate = entries[0].clone();
+                entries.push(duplicate);
+            });
+            assert!(
+                matches!(result, Err(SerializationError::Decode(message)) if message.contains("duplicate")),
+                "{pointer}"
+            );
+        }
+    }
+
+    #[test]
+    fn corrupt_runtime_metadata_and_ordering_are_rejected() {
+        let mut engine = Engine::with_rules("(deftemplate item (slot value)) (defglobal ?*count* = 0) (defrule pick (item (value ?n)) => (bind ?*count* (+ ?*count* 1)))").unwrap();
+        engine
+            .load_str("(assert (item (value 1)) (item (value 2)))")
+            .unwrap();
+        for (pointer, value) in [
+            ("/module_registry/next_id", serde_json::json!(0)),
+            ("/module_registry/current_module", serde_json::json!(99)),
+            ("/global_modules", serde_json::json!([])),
+            ("/template_defs/1/value/defaults", serde_json::json!([])),
+            ("/rete/agenda/strategy", serde_json::json!("Breadth")),
+        ] {
+            let result = alter_state(&engine, |state| {
+                *state.pointer_mut(pointer).expect(pointer) = value;
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "{pointer}: {:?}",
+                result.err()
+            );
+        }
+        let result = alter_state(&engine, |state| {
+            state["unknown_application_state"] = serde_json::json!("must not disappear");
+        });
+        assert!(
+            matches!(result, Err(SerializationError::Decode(message)) if message.contains("unknown field"))
+        );
+    }
+
+    #[test]
+    fn writes_reject_unsupported_values_and_limits_before_returning_bytes() {
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .assert_ordered(
+                "broken",
+                vec![Value::String(ferric_rules_core::FerricString::Ascii(
+                    vec![0xff].into_boxed_slice(),
+                ))],
+            )
+            .unwrap();
+        assert!(
+            matches!(engine.serialize(SerializationFormat::Cbor), Err(SerializationError::InvalidState(message)) if message.contains("ASCII"))
+        );
+        let mut engine = Engine::new(EngineConfig::default());
+        let mut value = Value::Integer(7);
+        for _ in 0..33 {
+            value = Value::Multifield(Box::new(vec![value].into_iter().collect()));
+        }
+        engine.assert_ordered("deep", vec![value]).unwrap();
+        assert!(
+            matches!(engine.serialize(SerializationFormat::Cbor), Err(SerializationError::InvalidState(message)) if message.contains("value limit"))
+        );
+        let mut engine = Engine::with_rules("(defglobal ?*value* = 0)").unwrap();
+        engine.globals.set(
+            engine.module_registry.main_module_id(),
+            "value",
+            Value::Multifield(Box::new(
+                vec![Value::ExternalAddress(ferric_rules_core::ExternalAddress {
+                    type_id: ferric_rules_core::ExternalTypeId(1),
+                    token: 42,
+                })]
+                .into_iter()
+                .collect(),
+            )),
+        );
+        assert!(matches!(
+            engine.serialize(SerializationFormat::Cbor),
+            Err(SerializationError::ExternalAddressPresent)
+        ));
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .assert_ordered(
+                "large",
+                vec![Value::String(ferric_rules_core::FerricString::Utf8(
+                    "x".repeat(MAX_SNAPSHOT_BYTES).into_boxed_str(),
+                ))],
+            )
+            .unwrap();
+        assert!(
+            matches!(engine.serialize(SerializationFormat::Cbor), Err(SerializationError::Encode(message)) if message.contains("byte limit"))
+        );
+    }
+
+    #[test]
+    fn complete_compiler_caches_preserve_distinct_paths_with_shared_prefixes() {
+        let mut engine = Engine::with_rules("(defrule first (edge 1 ?x) => (assert (first ?x))) (defrule second (edge 1 2) => (assert (second)))").unwrap();
+        engine.load_str("(assert (edge 1 2))").unwrap();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+            restored
+                .load_str("(defrule third (edge 1 ?x) => (assert (third ?x))) (assert (edge 1 3))")
+                .unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 3);
+            assert_eq!(restored.find_facts("first").unwrap().len(), 2);
+            assert_eq!(restored.find_facts("second").unwrap().len(), 1);
+            assert_eq!(restored.find_facts("third").unwrap().len(), 2);
+        }
+        for pointer in ["/compiler/alpha_path_cache", "/compiler/join_node_cache"] {
+            let result = alter_state(&engine, |state| {
+                state
+                    .pointer_mut(pointer)
+                    .unwrap()
+                    .as_array_mut()
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "{pointer}"
             );
         }
     }

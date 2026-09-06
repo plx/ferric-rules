@@ -142,6 +142,14 @@ impl Engine {
             ensure(modules.get(*module).is_some(), "global has dangling module")?;
             for (name, value) in values {
                 ensure(!name.is_empty(), "empty global name")?;
+                ensure(
+                    self.global_modules
+                        .get(module)
+                        .and_then(|entries| entries.get(name))
+                        .copied()
+                        == Some(*module),
+                    "global missing from owner index",
+                )?;
                 self.symbol_table.validate_snapshot_value(value)?;
             }
         }
@@ -160,6 +168,14 @@ impl Engine {
             )?;
             for (name, function) in functions {
                 ensure(name.as_ref() == function.name, "inconsistent function name")?;
+                ensure(
+                    self.function_modules
+                        .get(module)
+                        .and_then(|entries| entries.get(name))
+                        .copied()
+                        == Some(*module),
+                    "function missing from owner index",
+                )?;
                 for expr in &function.body {
                     validate_action(expr)?;
                 }
@@ -172,6 +188,14 @@ impl Engine {
             )?;
             for (name, generic) in generics {
                 ensure(name.as_ref() == generic.name, "inconsistent generic name")?;
+                ensure(
+                    self.generic_modules
+                        .get(module)
+                        .and_then(|entries| entries.get(name))
+                        .copied()
+                        == Some(*module),
+                    "generic missing from owner index",
+                )?;
                 ensure(
                     generic.next_index > 0 && generic.next_index < i32::MAX,
                     "invalid next method index",

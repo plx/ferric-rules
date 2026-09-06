@@ -323,6 +323,14 @@ impl ReteNetwork {
             } else {
                 require_eq!(id, root);
             }
+            require!(
+                children(node)
+                    .iter()
+                    .collect::<rustc_hash::FxHashSet<_>>()
+                    .len()
+                    == children(node).len(),
+                "duplicate beta child"
+            );
             for child in children(node) {
                 require!(
                     self.beta.nodes.get(child).and_then(parent) == Some(id),
@@ -492,6 +500,7 @@ impl ReteNetwork {
             .and_then(|id| self.beta.get_memory(id))
             .ok_or("missing root memory")?;
         require_eq!(root_memory.len(), 1);
+        let mut passthrough_parents = rustc_hash::FxHashSet::default();
         for (id, token) in &self.token_store.tokens {
             work.step()?;
             let node = self
@@ -523,6 +532,12 @@ impl ReteNetwork {
                     }
                 }
                 _ => return Err("invalid token ancestry".to_owned()),
+            }
+            if token.fact.is_none() {
+                require!(
+                    passthrough_parents.insert((token.owner_node, token.parent)),
+                    "duplicate pass-through match"
+                );
             }
             if let Some(fact) = token.fact {
                 require!(facts.get(fact).is_some(), "dangling token fact");
@@ -792,6 +807,12 @@ impl ReteNetwork {
                         matches!(self.beta.get_node(*partner), Some(BetaNode::NccPartner { ncc_node, ncc_memory: partner_memory, .. }) if *ncc_node == node_id && partner_memory == ncc_memory),
                         "invalid NCC partner link"
                     );
+                    let output = self
+                        .beta
+                        .memory_id_for_node(node_id)
+                        .and_then(|id| self.beta.get_memory(id))
+                        .ok_or("missing NCC output memory")?;
+                    require_eq!(output.len(), memory.unblocked.len());
                     let upstream = self
                         .beta
                         .memory_id_for_node(*parent)
@@ -938,6 +959,12 @@ impl ReteNetwork {
                     .get_exists_memory(id)
                     .ok_or("missing exists memory")?;
                 require_eq!(tracked.len(), memory.support.len());
+                let output = self
+                    .beta
+                    .memory_id_for_node(node_id)
+                    .and_then(|id| self.beta.get_memory(id))
+                    .ok_or("missing exists output memory")?;
+                require_eq!(output.len(), memory.satisfied.len());
             }
         }
         Ok(())
@@ -1109,48 +1136,72 @@ impl crate::compiler::ReteCompiler {
                 );
             }
         }
-        for (key, expected_memory) in &self.alpha_path_cache {
-            let mut id = *rete
-                .alpha
-                .entry_nodes
-                .get(&key.entry_type)
-                .ok_or("cached alpha entry missing")?;
-            for test in &key.tests {
-                let node = rete
-                    .alpha
-                    .nodes
-                    .get(id.0 as usize)
-                    .ok_or("cached alpha path missing")?;
-                let children = match node {
-                    AlphaNode::Entry { children, .. }
-                    | AlphaNode::ConstantTest { children, .. } => children,
-                };
-                let comparison_size = match &test.test_type {
+        require_eq!(self.alpha_path_cache.len(), rete.alpha.memories.len());
+        let mut parents = vec![None; rete.alpha.nodes.len()];
+        let mut owners = vec![None; rete.alpha.memories.len()];
+        for (index, node) in rete.alpha.nodes.iter().enumerate() {
+            let id = NodeId(u32::try_from(index).map_err(|_| "oversized alpha graph")?);
+            let (children, memory) = match node {
+                AlphaNode::Entry {
+                    children, memory, ..
+                }
+                | AlphaNode::ConstantTest {
+                    children, memory, ..
+                } => (children, memory),
+            };
+            for child in children {
+                *parents
+                    .get_mut(child.0 as usize)
+                    .ok_or("dangling alpha child")? = Some(id);
+            }
+            if let Some(memory) = memory {
+                *owners
+                    .get_mut(memory.0 as usize)
+                    .ok_or("dangling alpha memory")? = Some(id);
+            }
+        }
+        let mut cached_memories = rustc_hash::FxHashSet::default();
+        for (key, memory) in &self.alpha_path_cache {
+            require!(
+                cached_memories.insert(*memory),
+                "duplicate cached alpha memory"
+            );
+            let mut id = owners
+                .get(memory.0 as usize)
+                .copied()
+                .flatten()
+                .ok_or("cached alpha memory lacks owner")?;
+            for expected in key.tests.iter().rev() {
+                work.spend(match &expected.test_type {
                     crate::alpha::ConstantTestType::EqualAny(values) => values.len() + 1,
                     _ => 1,
-                };
-                work.spend(
-                    children
-                        .len()
-                        .checked_mul(comparison_size)
-                        .ok_or("compiler validation work overflow")?,
-                )?;
-                id = *children.iter().find(|id| matches!(rete.alpha.nodes.get(id.0 as usize), Some(AlphaNode::ConstantTest { test: actual, .. }) if actual == test)).ok_or("cached alpha test missing")?;
+                })?;
+                require!(
+                    matches!(rete.alpha.nodes.get(id.0 as usize), Some(AlphaNode::ConstantTest { test, .. }) if test == expected),
+                    "cached alpha test mismatch"
+                );
+                id = parents
+                    .get(id.0 as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or("cached alpha path lacks ancestor")?;
             }
-            let node = rete
-                .alpha
-                .nodes
-                .get(id.0 as usize)
-                .ok_or("cached alpha leaf missing")?;
-            let memory = match node {
-                AlphaNode::Entry { memory, .. } | AlphaNode::ConstantTest { memory, .. } => memory,
-            };
             require!(
-                memory.as_ref() == Some(expected_memory),
-                "cached alpha memory mismatch"
+                matches!(rete.alpha.nodes.get(id.0 as usize), Some(AlphaNode::Entry { entry_type, .. }) if *entry_type == key.entry_type),
+                "cached alpha entry mismatch"
             );
         }
+        require_eq!(
+            self.join_node_cache.len(),
+            rete.beta
+                .nodes
+                .values()
+                .filter(|node| matches!(node, BetaNode::Join { .. }))
+                .count()
+        );
+        let mut cached_joins = rustc_hash::FxHashSet::default();
         for (key, id) in &self.join_node_cache {
+            require!(cached_joins.insert(*id), "duplicate cached join node");
             require!(
                 matches!(rete.beta.nodes.get(id), Some(BetaNode::Join { parent, alpha_memory, tests, bindings, .. }) if *parent == key.parent && *alpha_memory == key.alpha_memory && tests.as_ref() == key.tests.as_slice() && bindings.as_ref() == key.bindings.as_slice()),
                 "cached join node mismatch"
