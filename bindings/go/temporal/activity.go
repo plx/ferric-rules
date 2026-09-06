@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	ferric "github.com/prb/ferric-rules/bindings/go"
+	ferric "github.com/plx/ferric-rules/bindings/go"
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/worker"

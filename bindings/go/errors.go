@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
+	"github.com/plx/ferric-rules/bindings/go/internal/ffi"
 )
 
 // ---------------------------------------------------------------------------
@@ -120,6 +120,10 @@ func (e *ThreadViolationError) Is(target error) bool {
 // InvalidArgumentError is returned when an argument to an API call is invalid.
 type InvalidArgumentError struct {
 	FerricError
+}
+
+func invalidArgument(message string) *InvalidArgumentError {
+	return &InvalidArgumentError{FerricError{Code: int(ffi.ErrInvalidArgument), Message: message}}
 }
 
 // Is reports whether target matches ErrInvalidArgument.

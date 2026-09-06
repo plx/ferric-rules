@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	ferric "github.com/prb/ferric-rules/bindings/go"
+	ferric "github.com/plx/ferric-rules/bindings/go"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"go.temporal.io/sdk/activity"

@@ -1,7 +1,7 @@
 //nolint:gochecknoglobals // Package-level FFI hooks let tests simulate native edge cases deterministically.
 package ferric
 
-import "github.com/prb/ferric-rules/bindings/go/internal/ffi"
+import "github.com/plx/ferric-rules/bindings/go/internal/ffi"
 
 var (
 	ffiEngineNew                    = ffi.EngineNew

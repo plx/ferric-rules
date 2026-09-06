@@ -259,7 +259,7 @@ func (p *PinnedEngine) Run(ctx context.Context) (*RunResult, error) {
 }
 
 // RunWithLimit runs the engine with a maximum number of rule firings.
-// A limit of 0 means unlimited. Context cancellation before the worker starts
+// A limit of 0 means unlimited; negative limits are invalid. Context cancellation before the worker starts
 // removes a queued run and returns a nil result with an error wrapping
 // ctx.Err(). Once started, RunWithLimit waits for the cooperative worker
 // response; context cancellation returns a partial RunResult with HaltRequested
@@ -268,6 +268,9 @@ func (p *PinnedEngine) Run(ctx context.Context) (*RunResult, error) {
 // result or completed explicit limit wins first; at an internal batch boundary,
 // caller context cancellation wins over simultaneous Halt or Close interruption.
 func (p *PinnedEngine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error) {
+	if err := validateRunLimit(limit); err != nil {
+		return nil, err
+	}
 	response := pinnedCall(ctx, p, func(e *Engine) (*RunResult, error) {
 		control := &pinnedRunControl{}
 		p.activeRun.Store(control)

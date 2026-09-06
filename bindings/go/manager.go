@@ -131,6 +131,9 @@ func (m *Manager) Evaluate(ctx context.Context, req *EvaluateRequest) (*Evaluate
 	if req == nil {
 		return nil, errNilEvaluateRequest
 	}
+	if err := validateRunLimit(req.Limit); err != nil {
+		return nil, err
+	}
 
 	o := m.coord.obs
 	specAttr := attribute.String("ferric.spec", m.specName)
@@ -208,10 +211,7 @@ func assertWireFacts(e *Engine, facts []WireFactInput) error {
 }
 
 func runEvaluate(ctx context.Context, e *Engine, limit int) (*RunResult, error) {
-	if limit > 0 {
-		return e.RunWithLimit(ctx, limit)
-	}
-	return e.Run(ctx)
+	return e.RunWithLimit(ctx, limit)
 }
 
 func buildEvaluateResult(e *Engine, runResult *RunResult) (*EvaluateResult, error) {

@@ -274,14 +274,14 @@ func TestManualCopyAndFreeBytesBranches(t *testing.T) {
 	// Serialization copies Rust-owned bytes and must always invoke the provided
 	// free callback, including the zero-length edge case.
 	freed := false
-	if got := copyAndFreeBytes(nil, 0, func() { freed = true }); got != nil || !freed {
+	if got, rc := copyAndFreeBytes(nil, 0, func() { freed = true }); got != nil || !freed || rc != ErrOK {
 		t.Fatalf("zero copy = (%v, freed=%v), want nil freed", got, freed)
 	}
 
 	src := []byte{1, 2, 3}
 	freed = false
-	got := copyAndFreeBytes(unsafe.Pointer(&src[0]), uintptr(len(src)), func() { freed = true }) //nolint:gosec // intentional &slice pointer to exercise copyAndFreeBytes' non-empty path
-	if !freed || len(got) != len(src) || got[0] != 1 || got[2] != 3 {
+	got, rc := copyAndFreeBytes(unsafe.Pointer(&src[0]), uintptr(len(src)), func() { freed = true }) //nolint:gosec // intentional &slice pointer to exercise copyAndFreeBytes' non-empty path
+	if rc != ErrOK || !freed || len(got) != len(src) || got[0] != 1 || got[2] != 3 {
 		t.Fatalf("copy = (%v, freed=%v), want copied bytes freed", got, freed)
 	}
 	if len(src) > 0 {
@@ -509,8 +509,8 @@ func TestPropertyCopyAndFreeBytes(t *testing.T) {
 		if len(src) > 0 {
 			ptr = unsafe.Pointer(&src[0]) //nolint:gosec // intentional &slice pointer to exercise copyAndFreeBytes' non-empty path
 		}
-		got := copyAndFreeBytes(ptr, uintptr(len(src)), func() { freed = true })
-		if !freed {
+		got, rc := copyAndFreeBytes(ptr, uintptr(len(src)), func() { freed = true })
+		if rc != ErrOK || !freed {
 			t.Fatal("copyAndFreeBytes must always call free")
 		}
 		if !bytes.Equal(got, src) {

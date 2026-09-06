@@ -1,7 +1,7 @@
 package temporal
 
 import (
-	ferric "github.com/prb/ferric-rules/bindings/go"
+	ferric "github.com/plx/ferric-rules/bindings/go"
 )
 
 // ActivityOption configures a RulesActivity.

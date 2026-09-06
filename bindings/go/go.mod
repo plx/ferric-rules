@@ -1,4 +1,4 @@
-module github.com/prb/ferric-rules/bindings/go
+module github.com/plx/ferric-rules/bindings/go
 
 go 1.25.0
 

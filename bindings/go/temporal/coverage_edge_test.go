@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	ferric "github.com/prb/ferric-rules/bindings/go"
+	ferric "github.com/plx/ferric-rules/bindings/go"
 )
 
 func TestManualRulesActivityErrorOptionsAndRegisteredClosure(t *testing.T) {
