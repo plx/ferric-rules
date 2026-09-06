@@ -632,7 +632,6 @@ impl Engine {
     ///
     /// The `Result` return type is retained for API compatibility.
     pub fn get_fact(&self, fact_id: FactId) -> Result<Option<&Fact>, EngineError> {
-
         if Some(fact_id) == self.initial_fact_id {
             return Ok(None);
         }

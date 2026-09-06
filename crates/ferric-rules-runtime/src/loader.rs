@@ -526,19 +526,19 @@ impl Engine {
                         };
                         match owning_module {
                             Ok(module) => {
-                        for fact in &facts.facts {
-                            if let FactBody::Ordered(fact) = fact {
-                                if self
-                                    .resolve_template_reference(&fact.relation, module)
-                                    .is_err()
-                                {
-                                    pending_ordered_fact_names
-                                        .insert(Self::template_local_name(&fact.relation));
+                                for fact in &facts.facts {
+                                    if let FactBody::Ordered(fact) = fact {
+                                        if self
+                                            .resolve_template_reference(&fact.relation, module)
+                                            .is_err()
+                                        {
+                                            pending_ordered_fact_names
+                                                .insert(Self::template_local_name(&fact.relation));
+                                        }
+                                    }
                                 }
-                            }
-                        }
                                 deffacts_constructs.push((facts, module));
-                            },
+                            }
                             Err(error) => errors.push(error),
                         }
                     }
