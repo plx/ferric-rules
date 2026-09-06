@@ -1,5 +1,5 @@
 (defmodule MAIN (export ?ALL))
-(deftemplate item (slot id) (slot state))
+(deftemplate item (slot id (type INTEGER)) (slot state (type SYMBOL)))
 (defglobal ?*seen* = 0)
 (deffacts items
   (item (id 1) (state ready))
