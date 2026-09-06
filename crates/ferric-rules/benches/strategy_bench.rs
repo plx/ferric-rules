@@ -1,3 +1,5 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -11,8 +13,8 @@ use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 /// every `BTreeMap` operation compare up to 4 timestamps element-by-element.
 /// MEA has separate first-recency and rest-recency fields.
 /// Many-activations benchmark: N items compete for agenda ordering.
-/// Each item triggers all 3 rules, producing 3*N activations for the
-/// conflict-resolution strategy to sort.
+/// Items trigger different subsets of three rules according to priority and
+/// category, producing up to 3*N activations for the strategy to sort.
 fn generate_many_activations_source(n_items: usize) -> String {
     let mut source = String::from(
         "\
@@ -95,7 +97,7 @@ fn generate_churn_source(n_items: usize) -> String {
 
 (defrule finish
     (declare (salience -10))
-    (not (item))
+    (not (item (id ?)))
     =>
     (assert (finished)))
 ",
@@ -108,8 +110,39 @@ fn bench_with_strategy(
     name: &str,
     source: &str,
     strategy: ConflictResolutionStrategy,
+    n_items: usize,
+    churn: bool,
 ) {
     group.bench_function(name, |b| {
+        let mut oracle = Engine::new(EngineConfig::utf8().with_strategy(strategy));
+        oracle.load_str(source).unwrap();
+        if churn {
+            support::verify_reset_run(&mut oracle, 2 * n_items + 1);
+            assert!(support::template_ids(&oracle, "item").is_empty());
+            assert_eq!(oracle.find_facts("finished").unwrap().len(), 1);
+        } else {
+            let a = (0..n_items).filter(|i| i % 10 > 3).count();
+            let b = (0..n_items).filter(|i| i % 4 != 3).count();
+            support::verify_reset_run(&mut oracle, a + b + n_items);
+            for (relation, indices) in [
+                (
+                    "processed-a",
+                    (0..n_items).filter(|i| i % 10 > 3).collect::<Vec<_>>(),
+                ),
+                (
+                    "processed-b",
+                    (0..n_items).filter(|i| i % 4 != 3).collect::<Vec<_>>(),
+                ),
+                ("processed-c", (0..n_items).collect::<Vec<_>>()),
+            ] {
+                let mut expected = indices
+                    .into_iter()
+                    .map(|i| format!("i{i}"))
+                    .collect::<Vec<_>>();
+                expected.sort_unstable();
+                assert_eq!(support::template_symbols(&oracle, relation, "id"), expected);
+            }
+        }
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8().with_strategy(strategy));
             engine.load_str(source).unwrap();
@@ -128,15 +161,33 @@ fn bench_strategy_activations(c: &mut Criterion) {
         "depth",
         &source,
         ConflictResolutionStrategy::Depth,
+        200,
+        false,
     );
     bench_with_strategy(
         &mut group,
         "breadth",
         &source,
         ConflictResolutionStrategy::Breadth,
+        200,
+        false,
     );
-    bench_with_strategy(&mut group, "lex", &source, ConflictResolutionStrategy::Lex);
-    bench_with_strategy(&mut group, "mea", &source, ConflictResolutionStrategy::Mea);
+    bench_with_strategy(
+        &mut group,
+        "lex",
+        &source,
+        ConflictResolutionStrategy::Lex,
+        200,
+        false,
+    );
+    bench_with_strategy(
+        &mut group,
+        "mea",
+        &source,
+        ConflictResolutionStrategy::Mea,
+        200,
+        false,
+    );
     group.finish();
 }
 
@@ -149,15 +200,33 @@ fn bench_strategy_churn(c: &mut Criterion) {
         "depth",
         &source,
         ConflictResolutionStrategy::Depth,
+        1000,
+        true,
     );
     bench_with_strategy(
         &mut group,
         "breadth",
         &source,
         ConflictResolutionStrategy::Breadth,
+        1000,
+        true,
     );
-    bench_with_strategy(&mut group, "lex", &source, ConflictResolutionStrategy::Lex);
-    bench_with_strategy(&mut group, "mea", &source, ConflictResolutionStrategy::Mea);
+    bench_with_strategy(
+        &mut group,
+        "lex",
+        &source,
+        ConflictResolutionStrategy::Lex,
+        1000,
+        true,
+    );
+    bench_with_strategy(
+        &mut group,
+        "mea",
+        &source,
+        ConflictResolutionStrategy::Mea,
+        1000,
+        true,
+    );
     group.finish();
 }
 

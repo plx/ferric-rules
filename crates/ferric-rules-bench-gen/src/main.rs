@@ -111,8 +111,9 @@ fn generate_manners_source(n_guests: usize) -> String {
     (declare (salience 40))
     (phase assign)
     (guest (name ?n) (hobby ?h))
-    (count (value 0))
+    ?c <- (count (value 0))
     =>
+    (retract ?c)
     (assert (seating (seat 1) (guest ?n)))
     (assert (count (value 1))))
 
@@ -203,7 +204,7 @@ fn generate_churn_source(n_items: usize) -> String {
 (defrule all-done
     (declare (salience -10))
     (phase (name run))
-    (not (item))
+    (not (item (id ?)))
     =>
     (printout t \"All items processed\" crlf))
 ",
@@ -237,7 +238,7 @@ fn generate_negation_source(n_blockers: usize) -> String {
 (defrule remove-blocker
     (declare (salience 10))
     (phase (name clear))
-    ?b <- (blocker)
+    ?b <- (blocker (seq ?))
     =>
     (retract ?b))
 

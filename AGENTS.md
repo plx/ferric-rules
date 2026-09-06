@@ -14,7 +14,7 @@ Please always run `just preflight-pr` before opening a PR or pushing code to upd
 
 **Performance numbers in commit messages and PR descriptions must come from `cargo bench` (release profile) output.** Never report timings from `cargo test`, `cargo test --bench`, or debug-mode runs—these compile without optimizations and produce numbers 10–25x slower than release, which is what CI measures and what users experience.
 
-Use the `just bench-*` targets (e.g. `just bench-join`, `just bench-waltz`) or `cargo bench -p ferric` directly. These always compile in release mode with LTO.
+Use the `just bench-*` targets (e.g. `just bench-join`, `just bench-waltz`) or `cargo bench -p ferric-rules` directly. These always compile in release mode with LTO.
 
 When claiming performance improvements:
 - Run `cargo bench` **before and after** the change, on the same machine, in the same profile.

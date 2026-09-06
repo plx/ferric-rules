@@ -10,7 +10,59 @@ use std::fmt::Write;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use ferric_rules_runtime::config::EngineConfig;
 use ferric_rules_runtime::serialization::SerializationFormat;
-use ferric_rules_runtime::Engine;
+use ferric_rules_runtime::{Engine, HaltReason, RunLimit};
+
+/// Independent output model for the programs below. Validate both stored fact
+/// counts and pending rule behavior, outside Criterion's timed iteration.
+fn verify_snapshot(name: &str, bytes: &[u8], format: SerializationFormat) {
+    let (fact_count, mut expected): (usize, Vec<String>) = match name {
+        "empty" => (0, Vec::new()),
+        "small" => (3, vec!["ALERT 2".to_owned()]),
+        "medium" => {
+            let mut lines = vec![
+                "Escalate task 1".to_owned(),
+                "Escalate task 5".to_owned(),
+                "Low budget: Beta".to_owned(),
+                "Task 4 completed".to_owned(),
+                "Onboarding Charlie".to_owned(),
+            ];
+            for task in [1, 3, 5] {
+                for engineer in ["Alice", "Bob"] {
+                    lines.push(format!("Assign task {task} to {engineer}"));
+                }
+            }
+            (12, lines)
+        }
+        "large" => {
+            let mut lines = Vec::new();
+            for rule in 0..20 {
+                for item in (0..100).step_by(3) {
+                    if item > 4 * (rule + 1) {
+                        lines.push(format!("Rule {rule} matched item {item}"));
+                    }
+                }
+            }
+            (150, lines)
+        }
+        _ => panic!("missing snapshot workload oracle: {name}"),
+    };
+    let mut restored = Engine::deserialize(bytes, format).unwrap();
+    assert_eq!(restored.facts().unwrap().count(), fact_count);
+    let result = restored.run(RunLimit::Unlimited).unwrap();
+    assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
+    assert_eq!(result.rules_fired, expected.len());
+    let mut actual = restored
+        .get_output("t")
+        .unwrap_or("")
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    actual.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(actual, expected);
+    assert_eq!(restored.facts().unwrap().count(), fact_count);
+    assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+}
 
 /// Create a minimal engine (no rules, no facts — just default state).
 fn engine_empty() -> Engine {
@@ -190,6 +242,7 @@ fn bench_serialize(c: &mut Criterion) {
         for &format in SerializationFormat::ALL {
             let id = BenchmarkId::new(format.name(), engine_name);
             group.bench_with_input(id, &(engine, format), |b, (engine, format)| {
+                verify_snapshot(engine_name, &engine.serialize(*format).unwrap(), *format);
                 b.iter(|| engine.serialize(*format).unwrap());
             });
         }
@@ -213,6 +266,7 @@ fn bench_deserialize(c: &mut Criterion) {
             let bytes = engine.serialize(format).unwrap();
             let id = BenchmarkId::new(format.name(), engine_name);
             group.bench_with_input(id, &(bytes, format), |b, (bytes, format)| {
+                verify_snapshot(engine_name, bytes, *format);
                 b.iter(|| Engine::deserialize(bytes, *format).unwrap());
             });
         }
@@ -256,6 +310,11 @@ fn bench_size_report(c: &mut Criterion) {
     // Trivial benchmark so criterion doesn't complain about empty groups.
     let engine = engine_small();
     group.bench_function("small_bincode", |b| {
+        verify_snapshot(
+            "small",
+            &engine.serialize(SerializationFormat::Bincode).unwrap(),
+            SerializationFormat::Bincode,
+        );
         b.iter(|| engine.serialize(SerializationFormat::Bincode).unwrap());
     });
 

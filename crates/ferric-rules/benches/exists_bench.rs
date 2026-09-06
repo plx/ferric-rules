@@ -1,7 +1,22 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
+
+fn validate_workload(source: &str, n_sensors: usize, m_readings: usize) {
+    let engine = support::verify_source(source, n_sensors);
+    assert_eq!(
+        support::template_symbols(&engine, "has-data", "sensor-id"),
+        support::expected_symbols("s", n_sensors)
+    );
+    assert_eq!(support::template_ids(&engine, "sensor").len(), n_sensors);
+    assert_eq!(
+        support::template_ids(&engine, "reading").len(),
+        n_sensors * m_readings
+    );
+}
 
 /// Exists CE benchmark: scales the number of supporting facts per parent token.
 ///
@@ -92,6 +107,7 @@ fn generate_tuple_exists_source(n_sensors: usize, m_support_tuples: usize) -> St
 fn bench_exists_10s_5r(c: &mut Criterion) {
     let source = generate_exists_source(10, 5);
     c.bench_function("exists_10s_5r", |b| {
+        validate_workload(&source, 10, 5);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -104,6 +120,7 @@ fn bench_exists_10s_5r(c: &mut Criterion) {
 fn bench_exists_50s_10r(c: &mut Criterion) {
     let source = generate_exists_source(50, 10);
     c.bench_function("exists_50s_10r", |b| {
+        validate_workload(&source, 50, 10);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -116,6 +133,7 @@ fn bench_exists_50s_10r(c: &mut Criterion) {
 fn bench_exists_100s_20r(c: &mut Criterion) {
     let source = generate_exists_source(100, 20);
     c.bench_function("exists_100s_20r", |b| {
+        validate_workload(&source, 100, 20);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -130,6 +148,7 @@ fn bench_exists_200s_50r(c: &mut Criterion) {
     let mut group = c.benchmark_group("exists_200s_50r");
     group.sample_size(10);
     group.bench_function("exists_200s_50r", |b| {
+        validate_workload(&source, 200, 50);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -145,6 +164,7 @@ fn bench_exists_500s_100r(c: &mut Criterion) {
     let mut group = c.benchmark_group("exists_500s_100r");
     group.sample_size(10);
     group.bench_function("exists_500s_100r", |b| {
+        validate_workload(&source, 500, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -160,6 +180,7 @@ fn bench_exists_1000s_50r(c: &mut Criterion) {
     let mut group = c.benchmark_group("exists_1000s_50r");
     group.sample_size(10);
     group.bench_function("exists_1000s_50r", |b| {
+        validate_workload(&source, 1000, 50);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -175,6 +196,7 @@ fn bench_exists_10s_5r_run_only(c: &mut Criterion) {
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     c.bench_function("exists_10s_5r_run_only", |b| {
+        validate_workload(&source, 10, 5);
         b.iter(|| {
             engine.reset().unwrap();
             engine.run(RunLimit::Unlimited).unwrap()
@@ -186,16 +208,20 @@ fn bench_tuple_exists_50s_50t(c: &mut Criterion) {
     const SENSOR_COUNT: usize = 50;
     let source = generate_tuple_exists_source(SENSOR_COUNT, 50);
 
-    let mut oracle = Engine::new(EngineConfig::utf8());
-    oracle.load_str(&source).unwrap();
-    oracle.reset().unwrap();
-    assert_eq!(
-        oracle.run(RunLimit::Unlimited).unwrap().rules_fired,
-        SENSOR_COUNT,
-        "tuple supports must collapse to one activation per sensor"
-    );
-
     c.bench_function("tuple_exists_50s_50t", |b| {
+        let oracle = support::verify_source(&source, SENSOR_COUNT);
+        assert_eq!(
+            support::ordered_symbols(&oracle, "ready"),
+            support::expected_symbols("s", SENSOR_COUNT)
+        );
+        assert_eq!(
+            support::template_ids(&oracle, "reading").len(),
+            SENSOR_COUNT * 50
+        );
+        assert_eq!(
+            support::template_ids(&oracle, "calibration").len(),
+            SENSOR_COUNT * 50
+        );
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();

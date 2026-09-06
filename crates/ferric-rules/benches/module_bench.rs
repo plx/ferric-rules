@@ -1,7 +1,24 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
+
+fn validate_workload(source: &str, n_modules: usize, n_items: usize) {
+    let engine = support::verify_source(source, n_modules * n_items + 2);
+    assert_eq!(
+        support::template_symbols(&engine, "MAIN::item", "id"),
+        support::expected_symbols("i", n_items)
+    );
+    for id in support::template_ids(&engine, "MAIN::item") {
+        assert_eq!(
+            support::integer(engine.get_fact_slot_by_name(id, "stage").unwrap()),
+            i64::try_from(n_modules).unwrap()
+        );
+    }
+    assert_eq!(engine.find_facts("finished").unwrap().len(), 1);
+}
 
 /// Multi-module focus stack benchmark.
 ///
@@ -63,6 +80,7 @@ fn generate_module_source(n_modules: usize, n_items: usize) -> String {
 fn bench_module_3m_100i(c: &mut Criterion) {
     let source = generate_module_source(3, 100);
     c.bench_function("module_3m_100i", |b| {
+        validate_workload(&source, 3, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -77,6 +95,7 @@ fn bench_module_5m_100i(c: &mut Criterion) {
     let mut group = c.benchmark_group("module_5m_100i");
     group.sample_size(10);
     group.bench_function("module_5m_100i", |b| {
+        validate_workload(&source, 5, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -92,6 +111,7 @@ fn bench_module_10m_50i(c: &mut Criterion) {
     let mut group = c.benchmark_group("module_10m_50i");
     group.sample_size(10);
     group.bench_function("module_10m_50i", |b| {
+        validate_workload(&source, 10, 50);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -107,6 +127,7 @@ fn bench_module_20m_20i(c: &mut Criterion) {
     let mut group = c.benchmark_group("module_20m_20i");
     group.sample_size(10);
     group.bench_function("module_20m_20i", |b| {
+        validate_workload(&source, 20, 20);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -122,6 +143,7 @@ fn bench_module_3m_100i_run_only(c: &mut Criterion) {
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     c.bench_function("module_3m_100i_run_only", |b| {
+        validate_workload(&source, 3, 100);
         b.iter(|| {
             engine.reset().unwrap();
             engine.run(RunLimit::Unlimited).unwrap()

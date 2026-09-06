@@ -1,7 +1,51 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
+
+fn validate_disjunction(source: &str, _n_alternatives: usize, n_facts: usize) {
+    let expected = (0..n_facts)
+        .step_by(2)
+        .map(|i| i64::try_from(i).unwrap())
+        .collect::<Vec<_>>();
+    let engine = support::verify_source(source, expected.len());
+    assert_eq!(support::template_ids(&engine, "event").len(), n_facts);
+    let mut actual = support::template_ids(&engine, "matched")
+        .into_iter()
+        .map(|id| support::integer(engine.get_fact_slot_by_name(id, "value").unwrap()))
+        .collect::<Vec<_>>();
+    actual.sort_unstable();
+    assert_eq!(actual, expected);
+}
+
+fn validate_predicate(source: &str, n_facts: usize) {
+    let mut expected = (0..n_facts)
+        .filter(|i| (26..75).contains(&(i % 100)))
+        .map(|i| format!("s{i}"))
+        .collect::<Vec<_>>();
+    expected.sort_unstable();
+    let engine = support::verify_source(source, expected.len());
+    assert_eq!(
+        support::template_symbols(&engine, "in-range", "id"),
+        expected
+    );
+}
+
+fn validate_negation(source: &str, n_facts: usize) {
+    let matching = (0..n_facts).filter(|i| i % 3 != 1).collect::<Vec<_>>();
+    let expected = matching
+        .iter()
+        .map(|i| format!("cat{}", i % 20))
+        .collect::<std::collections::BTreeSet<_>>();
+    let engine = support::verify_source(source, matching.len());
+    assert_eq!(support::template_ids(&engine, "item").len(), n_facts);
+    assert_eq!(
+        support::template_symbols(&engine, "active-item", "category"),
+        expected.into_iter().collect::<Vec<_>>()
+    );
+}
 
 /// Compound constraint benchmark: disjunctive (|), predicate (:), and
 /// negation (~) constraints.
@@ -70,7 +114,7 @@ fn generate_predicate_source(n_facts: usize) -> String {
 fn generate_negation_constraint_source(n_facts: usize) -> String {
     let mut source = String::from(
         "\
-(deftemplate item (slot category) (slot status))
+(deftemplate item (slot id) (slot category) (slot status))
 (deftemplate active-item (slot category))
 
 (deffacts items\n",
@@ -81,7 +125,7 @@ fn generate_negation_constraint_source(n_facts: usize) -> String {
         let status = statuses[i % statuses.len()];
         writeln!(
             source,
-            "    (item (category cat{}) (status {status}))",
+            "    (item (id {i}) (category cat{}) (status {status}))",
             i % 20
         )
         .unwrap();
@@ -104,6 +148,7 @@ fn bench_constraint_disjunction(c: &mut Criterion) {
 
     let source_4 = generate_disjunction_source(4, 200);
     group.bench_function("constraint_disj_4", |b| {
+        validate_disjunction(&source_4, 4, 200);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_4).unwrap();
@@ -114,6 +159,7 @@ fn bench_constraint_disjunction(c: &mut Criterion) {
 
     let source_8 = generate_disjunction_source(8, 200);
     group.bench_function("constraint_disj_8", |b| {
+        validate_disjunction(&source_8, 8, 200);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_8).unwrap();
@@ -125,6 +171,7 @@ fn bench_constraint_disjunction(c: &mut Criterion) {
     let source_16 = generate_disjunction_source(16, 200);
     group.sample_size(10);
     group.bench_function("constraint_disj_16", |b| {
+        validate_disjunction(&source_16, 16, 200);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_16).unwrap();
@@ -135,6 +182,7 @@ fn bench_constraint_disjunction(c: &mut Criterion) {
 
     let source_32 = generate_disjunction_source(32, 200);
     group.bench_function("constraint_disj_32", |b| {
+        validate_disjunction(&source_32, 32, 200);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_32).unwrap();
@@ -151,6 +199,7 @@ fn bench_constraint_predicate(c: &mut Criterion) {
 
     let source_100 = generate_predicate_source(100);
     group.bench_function("constraint_pred_100", |b| {
+        validate_predicate(&source_100, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_100).unwrap();
@@ -162,6 +211,7 @@ fn bench_constraint_predicate(c: &mut Criterion) {
     let source_500 = generate_predicate_source(500);
     group.sample_size(10);
     group.bench_function("constraint_pred_500", |b| {
+        validate_predicate(&source_500, 500);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_500).unwrap();
@@ -172,6 +222,7 @@ fn bench_constraint_predicate(c: &mut Criterion) {
 
     let source_1000 = generate_predicate_source(1000);
     group.bench_function("constraint_pred_1000", |b| {
+        validate_predicate(&source_1000, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_1000).unwrap();
@@ -188,6 +239,7 @@ fn bench_constraint_negation(c: &mut Criterion) {
 
     let source_100 = generate_negation_constraint_source(100);
     group.bench_function("constraint_neg_100", |b| {
+        validate_negation(&source_100, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_100).unwrap();
@@ -199,6 +251,7 @@ fn bench_constraint_negation(c: &mut Criterion) {
     let source_500 = generate_negation_constraint_source(500);
     group.sample_size(10);
     group.bench_function("constraint_neg_500", |b| {
+        validate_negation(&source_500, 500);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_500).unwrap();
@@ -209,6 +262,7 @@ fn bench_constraint_negation(c: &mut Criterion) {
 
     let source_1000 = generate_negation_constraint_source(1000);
     group.bench_function("constraint_neg_1000", |b| {
+        validate_negation(&source_1000, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source_1000).unwrap();

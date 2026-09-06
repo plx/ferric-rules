@@ -1,6 +1,9 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
+use ferric_rules::core::{Fact, FerricString, Multifield, StringEncoding, Value};
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 
 /// Join-width stress benchmark.
@@ -22,6 +25,29 @@ use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 /// - Variable binding across many patterns
 /// - Token propagation through deep networks
 const N_KEYS: usize = 100;
+
+fn validate_workload(source: &str, width: usize, n_keys: usize) {
+    let engine = support::verify_source(source, n_keys);
+    assert_eq!(
+        support::template_symbols(&engine, "result", "key"),
+        support::expected_symbols("k", n_keys)
+    );
+    for id in support::template_ids(&engine, "result") {
+        assert_eq!(
+            support::symbol(
+                &engine,
+                engine.get_fact_slot_by_name(id, "matched").unwrap()
+            ),
+            "yes"
+        );
+    }
+    for layer in 0..width {
+        assert_eq!(
+            support::template_ids(&engine, &format!("layer-{layer}")).len(),
+            n_keys
+        );
+    }
+}
 
 fn generate_join_source(width: usize, n_keys: usize) -> String {
     let mut source = String::new();
@@ -56,6 +82,7 @@ fn generate_join_source(width: usize, n_keys: usize) -> String {
 fn bench_join_3(c: &mut Criterion) {
     let source = generate_join_source(3, N_KEYS);
     c.bench_function("join_3_wide", |b| {
+        validate_workload(&source, 3, N_KEYS);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -68,6 +95,7 @@ fn bench_join_3(c: &mut Criterion) {
 fn bench_join_5(c: &mut Criterion) {
     let source = generate_join_source(5, N_KEYS);
     c.bench_function("join_5_wide", |b| {
+        validate_workload(&source, 5, N_KEYS);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -80,6 +108,7 @@ fn bench_join_5(c: &mut Criterion) {
 fn bench_join_7(c: &mut Criterion) {
     let source = generate_join_source(7, N_KEYS);
     c.bench_function("join_7_wide", |b| {
+        validate_workload(&source, 7, N_KEYS);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -92,6 +121,7 @@ fn bench_join_7(c: &mut Criterion) {
 fn bench_join_9(c: &mut Criterion) {
     let source = generate_join_source(9, N_KEYS);
     c.bench_function("join_9_wide", |b| {
+        validate_workload(&source, 9, N_KEYS);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -104,6 +134,7 @@ fn bench_join_9(c: &mut Criterion) {
 fn bench_join_11(c: &mut Criterion) {
     let source = generate_join_source(11, N_KEYS);
     c.bench_function("join_11_wide", |b| {
+        validate_workload(&source, 11, N_KEYS);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -116,6 +147,7 @@ fn bench_join_11(c: &mut Criterion) {
 fn bench_join_13(c: &mut Criterion) {
     let source = generate_join_source(13, N_KEYS);
     c.bench_function("join_13_wide", |b| {
+        validate_workload(&source, 13, N_KEYS);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -130,6 +162,7 @@ fn bench_join_15(c: &mut Criterion) {
     let mut group = c.benchmark_group("join_15");
     group.sample_size(10);
     group.bench_function("join_15_wide", |b| {
+        validate_workload(&source, 15, N_KEYS);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -145,6 +178,7 @@ fn bench_join_17(c: &mut Criterion) {
     let mut group = c.benchmark_group("join_17");
     group.sample_size(10);
     group.bench_function("join_17_wide", |b| {
+        validate_workload(&source, 17, N_KEYS);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -160,6 +194,7 @@ fn bench_join_19(c: &mut Criterion) {
     let mut group = c.benchmark_group("join_19");
     group.sample_size(10);
     group.bench_function("join_19_wide", |b| {
+        validate_workload(&source, 19, N_KEYS);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -175,6 +210,7 @@ fn bench_join_21(c: &mut Criterion) {
     let mut group = c.benchmark_group("join_21");
     group.sample_size(10);
     group.bench_function("join_21_wide", |b| {
+        validate_workload(&source, 21, N_KEYS);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -190,11 +226,104 @@ fn bench_join_3_run_only(c: &mut Criterion) {
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     c.bench_function("join_3_wide_run_only", |b| {
+        validate_workload(&source, 3, N_KEYS);
         b.iter(|| {
             engine.reset().unwrap();
             engine.run(RunLimit::Unlimited).unwrap()
         });
     });
+}
+
+const PAYLOAD_RULE: &str = "
+    (defrule join-payload
+        (left ?key ?payload)
+        (middle ?key ?middle)
+        (right ?key ?right)
+        => (assert (result ?key ?payload)))";
+
+fn payload(key: usize, nested: bool) -> Value {
+    let text = Value::String(
+        FerricString::new(
+            &format!(
+                "key-{key}: UTF-8 payload café — {}",
+                "shared-value-content/".repeat(6)
+            ),
+            StringEncoding::Utf8,
+        )
+        .unwrap(),
+    );
+    if nested {
+        let inner = Value::Multifield(Box::new(
+            [text.clone(), Value::Integer(i64::try_from(key).unwrap())]
+                .into_iter()
+                .collect::<Multifield>(),
+        ));
+        Value::Multifield(Box::new(
+            [text, inner.clone(), inner]
+                .into_iter()
+                .collect::<Multifield>(),
+        ))
+    } else {
+        text
+    }
+}
+
+fn prepare_payload_join(n_keys: usize, nested: bool) -> Engine {
+    let mut engine = Engine::new(EngineConfig::utf8());
+    engine.load_str(PAYLOAD_RULE).unwrap();
+    engine.reset().unwrap();
+    for key in 0..n_keys {
+        let value = payload(key, nested);
+        for relation in ["left", "middle", "right"] {
+            engine
+                .assert_ordered(
+                    relation,
+                    vec![Value::Integer(i64::try_from(key).unwrap()), value.clone()],
+                )
+                .unwrap();
+        }
+    }
+    engine
+}
+
+fn validate_payload_join(n_keys: usize, nested: bool) {
+    let mut engine = prepare_payload_join(n_keys, nested);
+    support::verify_run(&mut engine, n_keys);
+    let results = engine.find_facts("result").unwrap();
+    assert_eq!(results.len(), n_keys);
+    let mut keys = std::collections::BTreeSet::new();
+    for (_, fact) in results {
+        let Fact::Ordered(fact) = fact else {
+            unreachable!()
+        };
+        let key = usize::try_from(support::integer(&fact.fields[0])).unwrap();
+        assert!(key < n_keys);
+        assert!(keys.insert(key));
+        // Ordered RHS assertions splice the outer multifield; its nested
+        // members remain values and must survive the join without flattening.
+        let expected = match payload(key, nested) {
+            Value::Multifield(values) => values.into_iter().collect::<Vec<_>>(),
+            value => vec![value],
+        };
+        assert_eq!(fact.fields.len(), expected.len() + 1);
+        for (actual, expected) in fact.fields[1..].iter().zip(&expected) {
+            assert!(actual.structural_eq(expected));
+        }
+    }
+}
+
+fn bench_payload_joins(c: &mut Criterion) {
+    for (kind, nested) in [("strings", false), ("nested_multifields", true)] {
+        for n_keys in [100, 1_000] {
+            c.bench_function(&format!("join_{kind}_{n_keys}"), |b| {
+                validate_payload_join(n_keys, nested);
+                b.iter(|| {
+                    let mut engine = prepare_payload_join(n_keys, nested);
+                    engine.run(RunLimit::Unlimited).unwrap()
+                });
+            });
+        }
+    }
 }
 
 criterion_group!(
@@ -210,5 +339,6 @@ criterion_group!(
     bench_join_19,
     bench_join_21,
     bench_join_3_run_only,
+    bench_payload_joins,
 );
 criterion_main!(benches);
