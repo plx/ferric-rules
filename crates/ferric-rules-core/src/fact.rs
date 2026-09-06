@@ -294,7 +294,7 @@ fn hash_value_structurally(value: &Value, hasher: &mut FxHasher) {
         Value::ExternalAddress(address) => {
             5_u8.hash(hasher);
             address.type_id.hash(hasher);
-            (address.pointer as usize).hash(hasher);
+            address.token.hash(hasher);
         }
         Value::Void => {
             6_u8.hash(hasher);
