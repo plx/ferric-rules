@@ -1,253 +1,235 @@
 # Ferric rehabilitation
 
-Owner scope: September 6, 2026 rehabilitation execution instructions. This
-record supersedes the old production-readiness goal, epic approval checkpoints,
-and re-audit exit contract. Retired requirements are not completed audit gates.
+This is the execution record for the owner's September 6, 2026 instructions.
+It replaces the old production-readiness scope, scheduling and exit contract.
+Retired obligations are **not** a successful original audit. Required work below
+remains open until its implementation PR is merged.
 
-## Baseline and execution
+## Baseline and supported scope
 
-- Repository: `plx/ferric-rules`; target `origin/main`.
-- Starting HEAD and fetched main: `a38de6a852cce3f503467cd000ba7b182c4b5b30`.
-- Starting branch retained: `plx/review-sol-readiness-work`. Only the supplied
-  `astra-remediation-prompt.md` was untracked before work; preserve it.
-- Live September 6 cohort: 141 issues, 60 closed, 81 open; no open PRs or
-  active CI runs. Existing other worktrees are not part of this execution.
-- Effective main ruleset requires `PR Compatibility Gate`; no required review
-  rule is configured. Consequential changes still receive fresh review.
-- Local baseline: Apple M4 Max, 64 GiB, macOS 27, Rust/Cargo 1.93.0,
-  Node 26.8.1, Python 3.14.7, Swift 6.4, macOS/iOS/simulator SDK 27.
-  Declared consumer minima remain subject to their existing supported contracts.
-- Raw state, issue bodies, rulesets, environment and experiment logs live in
-  `.context/rehabilitation/`. This document retains concise durable conclusions.
-- Refreshed pinned CLIPS 6.30 lane passes its existing exact policy: 22
-  scenarios, 11 equivalent and 11 known divergences (not 22 equivalences).
-  Reference Debian package `6.30-4.1`, ARM64 binary SHA-256
-  `a9fca5ca7d0f9a71626553245bb7fe9d4cde9ea79c4afcb7c6ec3b6607247450`.
-  Existing selector offline tests: 57 passed.
-- One coordinator; no selector runs until the replacement cohort is fully
-  migrated and verified. Preserve native dependency history before editing it.
+Repository `plx/ferric-rules`; initial main and HEAD
+`a38de6a852cce3f503467cd000ba7b182c4b5b30`. The starting branch
+`plx/review-sol-readiness-work` is retained, with the supplied prompt and user
+AGENTS.md changes preserved. Discovery found 141 program issues (60 closed,
+81 open), no open PRs or active CI, and 208 native dependency edges. Exact
+before-state, toolchain, experiment and issue logs are in `.context/rehabilitation/`.
 
-## Supported product
+The supported product is the Rust engine/CLI, TypeScript, Python and a local
+Swift package over a healthy C ABI. Go and standalone C distribution receive
+maintenance support. Common embedding operations include owned typed values and
+errors, create/close, load/reset, assert/retract/query, limited runs, output and
+versioned persistence. See [compatibility](../compatibility.md),
+[host values](../host-api.md), [snapshots](../snapshots.md) and
+[migration notes](../migration.md) for the precise contracts and pre-1.0 breaks.
 
-Rust engine and CLI; TypeScript then Python bindings; a local Swift package over
-the C ABI. Required common operations: create/close, load/reset, typed facts,
-assert/retract/query, limited runs, output/errors, snapshot/restore. Serialized
-work must be usable across host threads, using transfer or a tested native
-worker boundary. Concurrent mutation of one engine is not a goal.
+Core scope retains ordered/template facts, ordinary joins and supported
+`not`/`exists`/`test`, static salience, depth/breadth ordering, named deffacts/reset,
+rule replacement and basic module export/focus. Unsupported semantics fail
+explicitly. There is no task scheduler, durable-execution framework, public
+publication requirement, expanded platform matrix or recurring owner renewal.
 
-Core scope includes ordered/template facts, ordinary joins, supported
-`not`/`exists`/`test`, static salience, depth/breadth, named deffacts/reset,
-rule replacement, and basic module exports/focus. Optional semantics must fail
-explicitly when unsupported. Existing meaningful pinned CLIPS 6.30 evidence
-remains; add at least 25 distinct useful scenarios and one shared launch/modal
-selection example, including persistence/resume, across all four host languages.
+## Finite integration checklist
 
-## Finite work checklist
+All 81 formerly open issues were triaged once. The prepared replacement has
+13 work/gate members, consolidating overlapping defects rather than making
+one PR per obsolete ticket. The live label/dependency batch is **not applied**.
+It preserves issue history, retires 72 items as not planned, removes 180 obsolete
+edges, adds 18 finite-cohort edges and preserves 41 unrelated edges. The existing
+selector defaults to the new cohort and fails closed while that cohort is empty;
+no selector is run during migration.
 
-- [x] Replace dependency-policy machinery ([#297](https://github.com/plx/ferric-rules/issues/297)) with standard scanners, actionable
-  scoped exceptions, and retained license notices; validate positive/negative cases.
-- [x] Establish benchmark correctness oracles (#100), measure the threading
-  choice, and implement transferable Rust/C engine contracts and regressions.
-  Remaining binding delivery is tracked below.
-- [x] Correct template RHS assertions/cardinality and declared slot types,
-  correlated last-blocker `not`, multifield equality, and repeated ordinary joins
-  discovered by the required evidence workloads.
-- [x] Correct rule replacement/removal and template load safety (#157, #158,
-  #191); depth/breadth (#154); reset/named deffacts/initial-fact (#156, #161, #204).
-- [x] Correct basic module export/focus (#160, #192, #193); document incremental
-  load (#159); reject unsupported logical/optional strategy/module/salience cases
-  (#164, #155, #205, #209, #210), retaining PR #254's complex-negation disclosure ([#300](https://github.com/plx/ferric-rules/issues/300)).
-- [ ] Validate host fact shape/provenance (#202, #203) and bound reachable
-  dangerous construct expansion/depth (#200, #201), without a RETE redesign.
-- [ ] Version, bound, and validate snapshots with a concrete compatibility
-  policy and behavioral round trips (#194, #151).
-- [ ] Complete TS values/errors/imports/lifecycle/runtime contract (#166, #167,
-  #171, #181–#186, #206, #207); Python values/errors/config/threading (#187–#190,
-  #208); use existing workers where useful.
-- [ ] Deliver Swift strict-concurrency wrapper, owned values/errors, local
-  macOS/iOS build path, external consumer and task/lifecycle/persistence tests.
-- [ ] Verify packaged Rust/CLI, TS and Python external consumers (#153, focused
-  #124); make C header generation safe for packaging (#170).
-- [ ] Repair cheap serious Go defects (#174, #176, #177, #179), preserve working
-  source-build support and document remaining maintenance-only limitations.
-- [ ] Integrate example and differential evidence; retain meaningful release,
-  scaling and safety CI (#143, focused #142/#145/#150); finish reviewed merges.
-- [ ] Complete one coherent label/dependency migration, retire obsolete issues
-  as not planned, and point existing scheduling/docs to this finite scope.
+| Item | Concrete outcome | Integration state |
+| --- | --- | --- |
+| #297 | Standard dependency checks and retired scope | [#298](https://github.com/plx/ferric-rules/pull/298), merged `142c8d6b` |
+| #299 | Template assertions and fact identity | [#301](https://github.com/plx/ferric-rules/pull/301), merged `21e007a1` |
+| #100 | Retained benchmark correctness oracles | [#302](https://github.com/plx/ferric-rules/pull/302), merged `5f42ab13` |
+| #303 | Measured Rust/C transfer contract | [#304](https://github.com/plx/ferric-rules/pull/304), merged `b6015037` |
+| #157 | Selected core semantics and CLIPS evidence | [#306](https://github.com/plx/ferric-rules/pull/306), merged `56d0748b` |
+| #194 | Versioned, bounded and validated snapshots | [#307](https://github.com/plx/ferric-rules/pull/307), merged `502a0360` |
+| #171 | Node values, lifetimes and package imports | [#308](https://github.com/plx/ferric-rules/pull/308), prepared and validated |
+| #190 | Python values, configuration and packages | [#309](https://github.com/plx/ferric-rules/pull/309), prepared and validated |
+| #174 | Go module path and cheap lifecycle repairs | [#310](https://github.com/plx/ferric-rules/pull/310), prepared and validated |
+| #203 | Host value/fact provenance across adapters | Prepared and validated; merge pending |
+| #305 | Swift package and explicit header generation | Prepared and validated; merge pending |
+| #153 | Exact Rust/CLI consumers and shared example | Prepared and validated; merge pending |
+| #143 | Integrated evidence, CI and backlog migration | Final measurements complete; preceding merges/migration pending |
 
-These are behavior groups, not a promise of one PR per historical issue.
-All 81 open historical issues have a locally prepared disposition. The finite
-cohort has 13 retained/consolidated issues, including dependency/threading/Swift
-additions; superseded obligations retain their history through retirement.
-The saved native baseline has 208 edges. Migration is not applied yet.
-Consolidate overlaps before selecting; each closing PR covers only one active
-cohort item. Required behavior may not be retired to complete the checklist.
+## Decisions and evidence
 
-## Decisions and deferrals
+**Dependencies.** Standard cargo-deny, npm audit and uv/pip-audit replace about
+17,300 lines of bespoke policy and tests. License notices and actionable scanner
+results remain. Scoped advisory records explain the actual affected path and
+an event that requires reconsideration; no expiry-date reset or whole-graph
+waiver hash remains. Positive scans, representative applicable findings and
+malformed configuration checks pass. PR #298's review and 99 CI checks passed.
 
-- No registry/tag/release publication, standalone C SDK productization, broad
-  Go distribution/parity, platform proliferation, production SLO/soak/shadow
-  program, task scheduler, or recurring owner waiver renewal.
-- Defer speculative RETE architecture/index/refcount projects (#163,
-  #195–#199) unless reproduced scaling or selected measurements establish need;
-  broad evaluator consolidation (#180), invariant expansion (#162), and fuzz
-  campaigns (#165) are not prerequisites for the bounded product.
-- Benchmark families selected before timing: Waltz 100/500, churn 500/2000,
-  load/reset/run 100/1000, string and nested-multifield joins 100/1000. Oracles
-  must validate the same work outside timing. Manners currently leaves its
-  initial counter live; repair on the common benchmark base and do not compare
-  to old timings that measured incorrect work.
-- Select one structurally `Send + Sync` Rust engine. Paired measurements below
-  show no 10% end-to-end regression, so no optimization experiments or parallel
-  Rc/Arc implementations are needed. C calls remain serialized; shared Rust reads
-  do not authorize concurrent C access. External addresses become explicit host
-  registry tokens; unsupported binding and snapshot values are rejected.
+**Threading.** Rust `Engine` is structurally `Send + Sync`, with immutable shared
+values using `Arc`; mutation remains exclusive. Escaped values and destruction
+are covered, with no blanket unsafe trait implementation. External addresses are
+explicit opaque host registry tokens, never pointer casts or silent nulls.
+C handles require external serialization and retain call/reentrancy protection;
+borrowed output and thread-local errors are copied under their lifetime boundary.
+Python releases the GIL before waiting for the engine mutex or doing long work.
+Node workers retain event-loop offload/pools. Swift uses a protected native owner
+and dispatch queue, with owned results and no unchecked Sendable assertion.
 
-## Current next action
+The initial core threading comparison used common base
+`36a6a53e81d61868d9c09acd40628c65184ec96c` and candidate
+`63ec35315f9270b69128de9eb842aad6427d1d2e`. Both use identical oracle-checked
+benchmarks, Rust 1.93, serde, release LTO and one codegen unit. Quiet AMD EPYC
+7763 runners built both revisions before alternating A/B/A/B runs, with 30
+samples (existing Waltz500/medium-snapshot overrides use ten), 1s warmup and 3s
+measurement. [Core artifacts](https://github.com/plx/ferric-rules/actions/runs/34056683658)
+and [C ABI artifacts](https://github.com/plx/ferric-rules/actions/runs/34057468971)
+retain all actual Criterion median estimates and samples. The C ABI comparison
+used baseline `3b8faf6662f5e2c5cb3abd8737687f82cdc9df41` and candidate
+`a3a372f9ff120740d8b6fe195791fb3a40b2f3f6`. End-to-end core deltas
+were -2.68% to +3.49%; raw snapshot deltas reached +5.41%. No 10% investigation
+trigger was reached. C lifecycle deltas were -1.08% to +1.20%.
 
-Dependency replacement [PR #298](https://github.com/plx/ferric-rules/pull/298)
-merged at `142c8d6b03a785b829d65e04efd9273dcf2609e1`; all 99 CI checks and
-independent review passed. Standard scanners, scoped applicability records,
-negative/malformed-input tests and license notices replace the retired policy.
-Portable scanner tests and exact-set npm validation fix initial CI findings.
+Representative actual medians in microseconds, in alternating base/candidate pairs:
 
-Template repair [PR #301](https://github.com/plx/ferric-rules/pull/301) merged at
-`21e007a1295cb380b49d515847e8ae26b8112df8`: all 100 checks completed successfully
-or intentionally skipped, with the ordered/template identity review finding
-fixed before merge. Benchmark oracles merged in PR #302 at `5f42ab13716f2c9f4b63934cd2189d2b34e51168`;
-the measured threading contract merged in PR #304 at `b601503766f98667525a6e20ce4a3dd8019f0951`.
-Their essential checks and fresh reviews passed. Core PR #306 and versioned
-persistence are the next integrations, followed by the prepared binding consumers.
+| Initial threading workload | Base A | Candidate A | Base B | Candidate B |
+| --- | ---: | ---: | ---: | ---: |
+| Nested multifield joins, 1000 keys | 7327.801 | 7421.159 | 7175.505 | 7426.017 |
+| Load/reset/run, 1000 facts | 3371.073 | 3286.173 | 3307.434 | 3287.311 |
+| Raw Bincode small snapshot write | 27.089 | 26.726 | 26.296 | 27.719 |
+| C lifecycle, 1000 facts | 4227.374 | 4181.535 | 4159.138 | 4201.571 |
 
-All 17 retained facade benchmark suites now pass correctness oracles, as do
-runtime snapshot/fact-duplication suites. Repairs include invalid template RHS
-execution and historical Manners, duplicate-input, query and deffunction-sum
-workloads. New query/deffunction names avoid false historical comparisons.
-No performance claim uses old skipped work or correctness-only test timings.
+**Core behavior.** The pinned CLIPS 6.30 lane now passes 57 scenarios: 55 match,
+two retain exact documented LEX/MEA differences. All 35 additions beyond the
+refreshed 22-case baseline match real CLIPS; the original 22 now have 20 matches.
+The Debian 6.30-4.1 ARM64 reference binary SHA-256 is
+`a9fca5ca7d0f9a71626553245bb7fe9d4cde9ea79c4afcb7c6ec3b6607247450`.
+Reference firing behavior, facts, output and relevant errors remain meaningful;
+Ferric output was never used as its own oracle. Repairs cover replacement and
+reload, reset/named seeds, activation/join chronology, module exports/focus,
+primitive slot validation and clear unsupported-form rejection. PR #306 passed
+102 successful or intentionally skipped checks after its review findings were fixed.
 
-The measured common base is `36a6a53e81d61868d9c09acd40628c65184ec96c`; candidate
-`63ec35315f9270b69128de9eb842aad6427d1d2e` adds transferable shared values and
-structural `Send + Sync`. Exclusive evaluation remains required; private
-configuration atomics permit shared reads. Trait, handoff/destruction, escaped
-value, concurrent-read, serde/tracing and independent reachability review pass.
-C calls remain serialized. Python/Go lifetime, reentrancy and TLS changes pass
-339 Python tests, C tests and sanitizer harnesses, and Go race tests; independent
-review findings are addressed. These changes and Swift are not yet landed.
+**Persistence.** The recommended format is CBOR in a bounded version-one envelope
+with a corruption checksum, input/decoder limits and restored-state validation.
+The stored schema fixture resumes actual pending work and later blocker changes.
+Raw legacy snapshots are explicitly rejected; application data must be exported
+using its producing version before upgrading. Alternative codecs remain
+experimental. External values fail explicitly, including nested values. Counter
+exhaustion returns errors while reads/persistence remain available; failed modify
+and replacement preserve prior state. Review regressions also cover root/negative
+metadata, strategy agreement and registered global identities. All 59 snapshot
+tests pass; this is an application persistence contract, not permanent migration
+of arbitrary RETE internals or hostile-input certification.
 
-The [paired experiment](https://github.com/plx/ferric-rules/actions/runs/34056683658)
-uses the existing performance workflow with an optional bounded workload set.
-Both revisions build first and run baseline/candidate/baseline/candidate on one
-runner. Local unrelated CPU activity made that preferable to timing this host.
-Criterion median/sample artifacts retain every run. The core runner was AMD
-EPYC 7763 (4 vCPUs), Ubuntu, Rust 1.93, serde, release LTO/one codegen unit;
-30 samples, 1s warmup/3s measurement, with existing Waltz-500 and medium snapshot
-10-sample overrides identical on both revisions. Timings below come from
-`cargo bench` median point estimates, never correctness-only tests.
+**Validation scope.** Reuse existing deterministic regressions, meaningful
+consumer smokes and relevant sanitizer checks. They establish owned-value/error
+lifetimes, serialized close/use and rule behavior after restore. No new fuzzing
+campaign or wider pointer-probing program is required. Mandatory preflight still
+runs before PR creation/updates; repeat other suites for actual changed paths or
+review findings.
 
-Actual medians in microseconds; A and B are alternating baseline/candidate pairs:
+## Final performance and consumer checkpoint
 
-| Workload | Base A | Candidate A | Delta A | Base B | Candidate B | Delta B |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| churn_2000_facts | 14373.123 | 14744.452 | +2.58% | 14142.558 | 14100.016 | -0.30% |
-| churn_500_facts | 3537.776 | 3638.118 | +2.84% | 3490.906 | 3490.227 | -0.02% |
-| join_nested_multifields_100 | 770.020 | 781.393 | +1.48% | 774.438 | 774.427 | -0.00% |
-| join_nested_multifields_1000 | 7327.801 | 7421.159 | +1.27% | 7175.505 | 7426.017 | +3.49% |
-| join_strings_100 | 459.244 | 463.093 | +0.84% | 460.687 | 456.840 | -0.84% |
-| join_strings_1000 | 4375.099 | 4401.259 | +0.60% | 4375.358 | 4351.902 | -0.54% |
-| lifecycle_load_reset_run_100 | 348.883 | 339.539 | -2.68% | 345.226 | 343.497 | -0.50% |
-| lifecycle_load_reset_run_1000 | 3371.073 | 3286.173 | -2.52% | 3307.434 | 3287.311 | -0.61% |
-| lifecycle_reset_run_100 | 179.479 | 178.031 | -0.81% | 175.657 | 178.818 | +1.80% |
-| lifecycle_reset_run_1000 | 1901.301 | 1852.289 | -2.58% | 1833.459 | 1855.230 | +1.19% |
-| serde_medium/deserialize | 674.826 | 672.591 | -0.33% | 677.940 | 691.590 | +2.01% |
-| serde_medium/serialize | 278.475 | 272.755 | -2.05% | 271.496 | 274.780 | +1.21% |
-| serde_small/deserialize | 75.935 | 75.862 | -0.10% | 75.766 | 77.319 | +2.05% |
-| serde_small/serialize | 27.089 | 26.726 | -1.34% | 26.296 | 27.719 | +5.41% |
-| waltz_100_junctions | 1356.475 | 1342.975 | -1.00% | 1342.676 | 1368.999 | +1.96% |
-| waltz_500/waltz_500_junctions | 6145.343 | 6088.864 | -0.92% | 6125.077 | 6233.813 | +1.78% |
-| capi/lifecycle/100 | 437.163 | 434.313 | -0.65% | 438.303 | 443.571 | +1.20% |
-| capi/lifecycle/1000 | 4227.374 | 4181.535 | -1.08% | 4159.138 | 4201.571 | +1.02% |
-| capi/read_output/100 | 15.372 | 14.395 | -6.36% | 15.439 | 14.459 | -6.35% |
-| capi/read_output/1000 | 159.280 | 152.703 | -4.13% | 160.238 | 152.100 | -5.08% |
+The accepted final comparison uses baseline
+`dd6adee5245dce7a9f1c94ce0078a236df6bf8ee` and candidate
+`f7e8ca35a9aa8bb6637ebb24a0a4122fefaee7c9` (product `99d23897` plus the common
+CBOR harness/collector). This baseline **already contains transferable threading**;
+these deltas measure subsequent semantic/lifecycle repairs, checked host ownership
+and validated persistence. Both revisions use the same expected firing/final-state
+oracles and identical benchmark/helper objects. All 20 release correctness checks
+pass on both sources. No skipped work or test/profile duration is a speedup claim.
 
-End-to-end core changes range from -2.68% to +3.49% across both pairs; the
-largest snapshot change is +5.41%. No workload reaches the 10% investigation
-trigger. Small differences should not be treated as reliable speedups.
-The [C ABI comparison](https://github.com/plx/ferric-rules/actions/runs/34057468971)
-uses base `3b8faf6662f5e2c5cb3abd8737687f82cdc9df41` and candidate
-`a3a372f9ff120740d8b6fe195791fb3a40b2f3f6`, with 30 samples for all four
-workloads. C lifecycle changes range from -1.08% to +1.20%; read/output copying
-improves 4.13–6.37%. Snapshot timings here measure the existing raw format;
-versioned persistence will receive its own validation and comparison.
+The final [core](https://github.com/plx/ferric-rules/actions/runs/34077615293) and
+[C ABI](https://github.com/plx/ferric-rules/actions/runs/34077623211) A/B/A/B runs
+pass, with all 80 median estimates/sample counts and clean source identities
+verified. Rust 1.93, serde, release LTO/one codegen unit, sample/warmup/measurement
+settings match the earlier procedure. Core uses EPYC 7763 and C ABI uses EPYC 9V74,
+each a quiet four-vCPU runner; compare within pairs, never across runners.
+Reproduce with `scripts/bench-threading.sh <base> <candidate> <output> threading`
+(or `threading-capi`). Raw logs, samples, estimates/confidence intervals and source
+IDs are in the linked artifacts and `.context/rehabilitation/measurements/`.
 
-## Integration checkpoint
+Actual Criterion median point estimates in microseconds:
 
-Dependency simplification is merged in PR #298 (`142c8d6b`); template RHS and
-identity repair is merged in PR #301 (`21e007a1`). Benchmark PR #302 (`5f42ab13`)
-and measured thread-transfer PR #304 (`b6015037`) are also merged after full CI.
-The core repairs are merged in PR #306 (`56d0748b`).
-The benchmark review identified a
-missing guard against comparing different workload sources. The guard is fixed
-and passes 19 focused tests; recorded ABAB sources also pass it unchanged.
+| Workload | Base A µs | Final A µs | Δ A | Base B µs | Final B µs | Δ B |
+|---|---:|---:|---:|---:|---:|---:|
+| churn_2000_facts | 14577.371 | 13901.732 | -4.63% | 14452.016 | 14008.392 | -3.07% |
+| churn_500_facts | 3599.614 | 3434.560 | -4.59% | 3553.456 | 3451.861 | -2.86% |
+| join_nested_multifields_100 | 797.430 | 901.759 | +13.08% | 790.081 | 900.779 | +14.01% |
+| join_nested_multifields_1000 | 7932.421 | 8801.138 | +10.95% | 7837.415 | 8860.593 | +13.06% |
+| join_strings_100 | 482.274 | 547.732 | +13.57% | 475.870 | 551.964 | +15.99% |
+| join_strings_1000 | 4899.573 | 6127.940 | +25.07% | 4524.786 | 5214.922 | +15.25% |
+| lifecycle_load_reset_run_100 | 363.094 | 301.710 | -16.91% | 362.543 | 298.817 | -17.58% |
+| lifecycle_load_reset_run_1000 | 3527.724 | 2905.255 | -17.65% | 3491.687 | 2872.968 | -17.72% |
+| lifecycle_reset_run_100 | 179.184 | 190.357 | +6.23% | 179.726 | 186.869 | +3.97% |
+| lifecycle_reset_run_1000 | 1866.091 | 2014.902 | +7.97% | 1880.740 | 1987.838 | +5.69% |
+| snapshot_cbor_medium/deserialize | 5290.351 | 6478.903 | +22.47% | 5414.523 | 6492.787 | +19.91% |
+| snapshot_cbor_medium/serialize | 1839.528 | 9563.153 | +419.87% | 1833.045 | 9589.211 | +423.13% |
+| snapshot_cbor_small/deserialize | 607.232 | 788.377 | +29.83% | 621.010 | 792.788 | +27.66% |
+| snapshot_cbor_small/serialize | 203.575 | 1159.837 | +469.73% | 207.854 | 1162.624 | +459.35% |
+| waltz_100_junctions | 1362.535 | 1179.840 | -13.41% | 1369.632 | 1176.534 | -14.10% |
+| waltz_500/waltz_500_junctions | 6213.700 | 5275.022 | -15.11% | 6235.595 | 5266.352 | -15.54% |
+| capi/lifecycle/100 | 464.982 | 377.986 | -18.71% | 465.672 | 382.503 | -17.86% |
+| capi/lifecycle/1000 | 4583.311 | 3566.064 | -22.19% | 4559.923 | 3618.437 | -20.65% |
+| capi/read_output/100 | 15.521 | 17.435 | +12.33% | 15.367 | 17.507 | +13.93% |
+| capi/read_output/1000 | 152.436 | 179.142 | +17.52% | 152.943 | 175.026 | +14.44% |
 
-The integrated core candidate passes 57 authenticated pinned-CLIPS scenarios:
-55 equivalent, two exact documented LEX/MEA divergences. All 35 added scenarios
-match. Existing 22 scenarios now have 20 equivalences. Existing reference facts,
-output and firing expectations are preserved; FR-RETE-012's error category was
-corrected to the newly observed CLIPS CSTRCPSR4 load/construct error. The repaired
-empty-LHS reset chronology makes its original output match. No Ferric output
-was used as its own reference.
+Accept these explicit costs. Checked ownership prevents foreign/stale handles
+from silently addressing another engine's facts. String/nested joins add about
+0.07–1.23 ms across the selected sizes. The 1000-key string result varies materially
+between pairs (6.128 ms versus 5.215 ms); retain both +25.07% and +15.25%, without
+averaging away the regression. The five retained scaling checks pass separately;
+their timings are not latency evidence.
 
-Core repairs cover replacement/reload, named seeds/reset, activation/join order,
-module exports/focus, primitive slot validation, incremental globals, and clear
-unsupported-form rejection. Focused regressions and independent review accompany
-each family. Core preflight, release core/runtime tests and all five scaling checks pass.
-Invariant helpers are callable from release-built dependent tests, preserving
-the same checks across profiles. Independent integration review also found a
-cross-module public template-name collision; the candidate rejects it before
-metadata changes and supports distinct qualified declarations. Its persistence
-and state-preservation regressions pass; CLIPS accepts the unqualified case, so
-the limitation is explicit rather than counted as an equivalence.
+For 20 templates/100 rules/500 input facts, CBOR write rises from about 1.83 ms to
+9.56–9.59 ms and restore from 5.29–5.41 ms to 6.48–6.49 ms. Small write/restore cost
+about 1.16 ms/0.79 ms. Keep the checks so a successful persisted snapshot satisfies
+the same documented restore limits. Profiles identify decode-budget verification,
+encoding and checksum work, not graph validation alone, as the main write costs.
+C checked read/output adds 22–27 µs per 1000 facts (+14.44–17.52%); accept this
+separately from the faster complete C lifecycle. These costs and the passing
+scaling evidence justify retaining the implementation without a broader redesign.
 
-Version-one CBOR persistence has a stored schema fixture, bounded input,
-explicit legacy rejection and validated resume behavior. Fresh review found
-invalid root/negative-output metadata and counter-exhaustion defects; focused
-public restore regressions and checked allocation fix them. Failed modify and
-rule replacement preserve the original state. Snapshot preflight, feature and
-release tests, and all five scaling checks pass. A release/scaling CI job now
-protects these paths. The schema and host values are unchanged by these repairs.
+Earlier integrated results triggered one bounded host-validation optimization
+experiment. It was rejected: the 1000-key string join changed from 5182.542 to
+6008.728 microseconds (+15.94%) and 5305.634 to 5976.186 (+12.64%) in the two
+[release pairs](https://github.com/plx/ferric-rules/actions/runs/34075912463).
+Small gains elsewhere do not erase this regression. Keep the simpler original
+host implementation; no second optimization experiment or RETE redesign is
+warranted. Short CPU profiles identified decoder verification, encoding and
+checksum work as the main snapshot-write costs. Full snapshot checks remain.
 
-The combined consumer candidate passed preflight, all 372 Python tests, exact
-packaged Rust/CLI installs and meaningful launch/snapshot resume. Node's real
-package consumers and Swift's three native library slices, 14 strict-concurrency
-tests, 14 sanitizer tests and copied external consumer also passed on their
-recorded candidates. Later integration edits receive the affected checks.
-Final paired measurements are recorded in CI runs 34067449993 and 34067708016;
-join and persistence overhead triggered one bounded host-validation experiment.
-The experiment did not resolve the representative string-join regression and
-was rejected. Retain the original host implementation; no second experiment or
-RETE redesign is planned. Final median details and the accepted absolute cost
-remain to be recorded; no correctness-only run is a performance claim.
+Frozen consumer candidates pass the common launch-selection source and pending
+snapshot resume. Its several candidates select at most one action per session.
+Exact Rust/CLI archives install and run outside the checkout, including invalid
+input diagnostics. Node real packages pass CJS/ESM/type resolution and Node22/26
+consumer smokes; Python exact wheels and normalized source packages pass their
+external consumers. The host migration passes 27 shared cases across five
+adapters (12 documented deviations), 12 provenance tests and all five existing
+release scaling checks. Swift's three native slices, 14 Swift6 strict tests,
+14 Swift-ASan tests, iOS device/simulator wrapper builds and copied external
+macOS package consumer pass. Swift-ASan instruments Swift, not all native Rust.
+Current local Apple Silicon SDK27 builds target Swift6/macOS15/iOS18; existing CI
+covers declared environments unavailable locally. No iOS device execution is claimed.
 
-Persistence PR #307 and the Node/Python consumer PRs #308/#309 are open. Fresh
-snapshot review added two precise checks for configuration/agenda strategy
-agreement and registered global identities, preserving rule order and reset
-values after restore. The focused regressions and all 59 snapshot tests pass.
-Prepared Go, host-value, Swift and external-consumer changes follow in order.
-Native implementation is frozen for the final consumer pass. The Swift package
-is being rebuilt against those native inputs; earlier artifact results do not
-stand in for that fresh build. Full CI for stacked consumer PRs runs after
-retargeting to main and the normal validated head update.
+Essential merge evidence includes core quality/MSRV/features, optimized behavior
+and scaling, pinned CLIPS, affected binding and package consumers, dependency
+scans/license notices and relevant existing C/lifecycle sanitizer checks. The
+protected `PR Compatibility Gate` is required but is not the entire quality bar.
+Consequential changes receive fresh review; red checks are fixed, never bypassed.
 
-Validation stays focused on supported embedding contracts: owned values and
-errors remain usable after native calls, serialized close/use preserves handle
-lifetimes, and restored state continues the same rules. Reuse the existing
-deterministic regressions, consumer smokes and relevant sanitizer jobs. Do not
-start a new fuzzing campaign or broaden pointer probing. Run preflight before
-PR creation/updates, and repeat other suites only for changed paths or findings.
+## Deliberate deferrals and next action
 
-Next: finish fresh consumer validation and merge persistence after its checks,
-then the prepared TS,
-Python, Go, host API, Swift and external-consumer changes in dependency order.
-Finish the one performance experiment and final integrated validation, then
-apply and verify the prepared finite backlog migration. Required outcomes
-remain open until their implementation PRs are merged.
+Deferred: broad Go/C distribution or parity, public tags/registries/releases,
+new platform certification, production SLO/soak/shadow programs, a task scheduler,
+recurring owner renewals, and speculative RETE/index/refcount redesigns without
+reproduced need. Logical CEs and unsupported optional module/query/strategy forms
+fail explicitly. LEX/MEA remain experimental. CLIPS-valid complex negated
+constraints rejected by PR #254 remain disclosed and tracked in
+[#300](https://github.com/plx/ferric-rules/issues/300); this was not silently closed.
+Qualified distinct template declarations work; unsupported unqualified cross-module
+name collisions fail before state changes. Migration notes describe Python string,
+Node version/precision, Go cancellation/path, host handles and legacy snapshot breaks.
+
+Next: merge Node, Python, Go, host, Swift and external-consumer changes in
+dependency order after their checks. Apply and verify the prepared issue/label/native-dependency batch, complete final
+validation and merge #143's closing record. Reconcile the starting checkout while
+preserving user changes. Completion requires all accepted implementation PRs merged.
