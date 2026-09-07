@@ -95,7 +95,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 1")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 2")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -133,6 +133,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
+const SCHEMA_VERSION: u16 = 2;
 
 fn format_id(format: SerializationFormat) -> u8 {
     match format {
@@ -150,9 +151,9 @@ fn envelope(payload: Vec<u8>, format: SerializationFormat) -> Result<Vec<u8>, Se
     }
     let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
     bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
     bytes.push(format_id(format));
-    bytes.push(0); // No optional capabilities in schema 1.
+    bytes.push(0); // No optional capabilities in schema 2.
     bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     let mut checksum = Sha256::new();
     checksum.update(&bytes);
@@ -175,7 +176,7 @@ fn open_envelope(data: &[u8], format: SerializationFormat) -> Result<&[u8], Seri
         ));
     }
     let version = u16::from_le_bytes([data[8], data[9]]);
-    if version != 1 {
+    if version != SCHEMA_VERSION {
         return Err(SerializationError::UnsupportedVersion(version));
     }
     if data[10] != format_id(format) {
@@ -853,10 +854,10 @@ mod tests {
         for &format in SerializationFormat::ALL {
             let bytes = engine.serialize(format).unwrap();
             let mut changed = bytes.clone();
-            changed[8..10].copy_from_slice(&2_u16.to_le_bytes());
+            changed[8..10].copy_from_slice(&(SCHEMA_VERSION + 1).to_le_bytes());
             assert!(matches!(
                 Engine::deserialize(&changed, format),
-                Err(SerializationError::UnsupportedVersion(2))
+                Err(SerializationError::UnsupportedVersion(version)) if version == SCHEMA_VERSION + 1
             ));
             changed = bytes.clone();
             changed[11] = 1;
@@ -1466,10 +1467,12 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_one_snapshot_preserves_resume_and_reset_behavior() {
+    fn committed_schema_one_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-1.cbor");
-        let restored = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
-        verify_schema_one_resume(restored);
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(1))
+        ));
     }
 
     #[test]
@@ -1478,6 +1481,66 @@ mod tests {
         let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
         let restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
         verify_schema_one_resume(restored);
+    }
+
+    fn schema_two_cardinality_fixture_engine() -> Engine {
+        let mut engine =
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-2.clp")).unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
+        assert_eq!(engine.get_output("t"), Some("one field\n"));
+        engine
+    }
+
+    fn verify_schema_two_cardinality_resume(mut engine: Engine) {
+        assert_eq!(engine.get_output("t"), Some("one field\n"));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
+        // Restored compiled paths must reject new facts of the wrong width.
+        engine.load_str("(assert (row) (row c d))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        engine.load_str("(assert (row c))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(3))));
+        // Later compilation also preserves the guard while backfilling facts.
+        engine
+            .load_str("(defrule later (row ?x&~z) => (printout t later crlf))")
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 3);
+        engine.load_str("(assert (row d e f))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        engine.reset().unwrap();
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(0))));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 4);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
+        assert!(engine.action_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn committed_schema_two_cardinality_snapshot_preserves_resume_behavior() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-2.cbor");
+        let restored = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        verify_schema_two_cardinality_resume(restored);
+    }
+
+    #[test]
+    fn ordered_cardinality_roundtrips_in_all_snapshot_formats() {
+        let engine = schema_two_cardinality_fixture_engine();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            verify_schema_two_cardinality_resume(Engine::deserialize(&bytes, format).unwrap());
+        }
+    }
+
+    #[test]
+    #[ignore = "regenerates the committed schema-2 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_two_cardinality_fixture() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/snapshots/schema-2.cbor");
+        let bytes = schema_two_cardinality_fixture_engine()
+            .serialize(SerializationFormat::Cbor)
+            .unwrap();
+        std::fs::write(path, bytes).unwrap();
     }
 
     #[test]

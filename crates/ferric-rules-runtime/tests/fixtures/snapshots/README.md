@@ -23,9 +23,20 @@ construct with `Engine::with_rules`, set focus to `WORK`, run exactly one firing
 then call `serialize(SerializationFormat::Cbor)`. At this checkpoint item 3 is
 `done`, global `seen` is 1, item 1 is pending, and item 2 is blocked.
 
-The committed-byte regression resumes item 1, retracts item 2's blocker and resumes
-it, checks exact output/global/final facts and quiescence, then resets and reruns
-the named seeds. Host handles are freshly queried after restore. This fixture
-records the supported versioned layout; a future incompatible layout needs a
-new envelope version or an explicit migration, rather than silently replacing
-this fixture to accept previously unreadable persisted data.
+Schema 2 rejects these unchanged schema-1 bytes with `UnsupportedVersion(1)`.
+The source still exercises resume/reset behavior after a current-format roundtrip.
+Keep this prior fixture: replacing it would conceal an incompatible semantic change.
+
+`schema-2.cbor` contains the explicit field-count tests required by ordered
+patterns. Its source is `schema-2.clp`: construct with `Engine::with_rules`, run
+exactly one firing, and serialize with CBOR. Two one-field facts match `(row ?)`;
+a two-field fact does not. One valid activation remains pending at the checkpoint.
+The committed-byte regression resumes it, asserts shorter and longer facts,
+asserts a valid fact, installs another rule against the restored facts, then
+resets and checks the named seeds. The same scenario runs through all codecs.
+
+Regenerate only after an intentional schema change with:
+
+```sh
+cargo test -p ferric-rules-runtime --features serde regenerate_schema_two_cardinality_fixture -- --ignored
+```
