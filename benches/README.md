@@ -119,6 +119,14 @@ Do not compare old timings that skipped this work with repaired benchmarks.
 Apply workload and necessary semantic fixes to a common base before measuring
 implementation changes. A failing oracle invalidates that workload's timing.
 
+### Owned template fact capture
+
+`cargo bench -p ferric-rules-runtime --bench template_registry_bench -- owned_template_fact`
+measures public owned-fact reads at 8 and 64 slots. Before timing, each workload
+checks all values, retracts the source, reasserts the captured fact, and checks the
+recaptured values. The measured read includes the owned fact's allocation and
+destruction and retention of its template definition.
+
 ## Adding new benchmarks
 
 1. Add your benchmark functions to `crates/ferric-rules/benches/engine_bench.rs`, or
