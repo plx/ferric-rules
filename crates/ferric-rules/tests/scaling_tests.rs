@@ -457,3 +457,56 @@ fn test_scaling_independent_negative_cleanup() {
         8.0,
     );
 }
+
+/// Focus selection must not rescan every dormant activation for each firing.
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_dormant_focus_selection() {
+    fn measure(n: usize) -> Duration {
+        let mut source = String::from(
+            "(defmodule MAIN (export ?ALL))\n\
+             (deftemplate MAIN::item (slot id))\n\
+             (deffacts MAIN::seed\n",
+        );
+        for id in 0..n {
+            writeln!(source, "(item (id {id}))").unwrap();
+        }
+        source.push_str(
+            ")\n\
+             (defmodule DORMANT (import MAIN ?ALL))\n\
+             (defmodule ACTIVE (import MAIN ?ALL))\n\
+             (defrule DORMANT::wait (declare (salience 100)) (MAIN::item (id ?id)) =>)\n\
+             (defrule ACTIVE::work (MAIN::item (id ?id)) =>)\n\
+             (defrule MAIN::start => (focus ACTIVE))\n",
+        );
+        measure_op_median(
+            || {
+                let mut engine = Engine::with_rules(&source).unwrap();
+                engine.reset().unwrap();
+                assert_eq!(engine.agenda_len(), 2 * n + 1);
+                engine
+            },
+            |mut engine| {
+                let result = engine.run(RunLimit::Unlimited).unwrap();
+                assert_eq!(result.rules_fired, n + 1);
+                assert_eq!(
+                    result.halt_reason,
+                    ferric_rules::runtime::HaltReason::AgendaEmpty
+                );
+                assert_eq!(engine.agenda_len(), n);
+                assert!(engine.action_diagnostics().is_empty());
+                assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+                black_box(engine);
+            },
+        )
+    }
+    let (small, large) = (1024, 4096);
+    assert_scaling(
+        "dormant_focus_selection",
+        small,
+        large,
+        measure(small),
+        measure(large),
+        8.0,
+    );
+}
