@@ -26,6 +26,13 @@ impl Engine {
         self.rete
             .validate_snapshot(&self.fact_base, &self.symbol_table)?;
         self.compiler.validate_snapshot(&self.rete)?;
+        // Installation allocates sequential IDs and reuses removed slots. The
+        // index retains its capacity after removal; only a new engine is empty.
+        // A forged counter must not make the next load allocate a sparse Vec.
+        ensure(
+            self.compiler.snapshot_next_rule_id() as usize == self.rule_info.len().max(1),
+            "compiler rule allocator disagrees with runtime rule capacity",
+        )?;
         let modules = &self.module_registry;
         modules.validate_snapshot()?;
         // Requested call depth is application configuration; the evaluator

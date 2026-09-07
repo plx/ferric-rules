@@ -1299,7 +1299,10 @@ impl BetaNetwork {
         );
 
         let Some(BetaNode::Root { memory, .. }) = self.nodes.get(&self.root_id) else {
-            panic!("Root node {:?} is not a Root variant", self.root_id);
+            return Err(format!(
+                "Root node {:?} is not a Root variant",
+                self.root_id
+            ));
         };
         crate::snapshot::require!(
             self.memory(*memory).is_some(),
