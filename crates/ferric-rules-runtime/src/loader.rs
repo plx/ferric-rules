@@ -1582,7 +1582,7 @@ impl Engine {
             .assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
                 relation,
                 fields: fields.into_iter().collect(),
-            }))
+            }))?
             .fact_id())
     }
 
