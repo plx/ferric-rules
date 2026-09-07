@@ -25,6 +25,10 @@ impl Engine {
         self.fact_base.validate_snapshot(&self.symbol_table)?;
         self.rete
             .validate_snapshot(&self.fact_base, &self.symbol_table)?;
+        ensure(
+            self.config.strategy == self.rete.agenda.strategy(),
+            "configured strategy disagrees with restored agenda",
+        )?;
         self.compiler.validate_snapshot(&self.rete)?;
         // Installation allocates sequential IDs and reuses removed slots. The
         // index retains its capacity after removal; only a new engine is empty.
@@ -187,10 +191,25 @@ impl Engine {
             }
         }
         ensure(self.globals.gensym_counter >= 1, "invalid gensym counter")?;
-        for (module, _, value) in &self.registered_globals {
+        let mut global_names = rustc_hash::FxHashSet::default();
+        for (module, name, value) in &self.registered_globals {
             ensure(
                 modules.get(*module).is_some(),
                 "registered global has dangling module",
+            )?;
+            ensure(
+                global_names.insert((*module, name.as_str())),
+                "duplicate registered global definition",
+            )?;
+            ensure(
+                self.globals.contains(*module, name)
+                    && self
+                        .global_modules
+                        .get(module)
+                        .and_then(|entries| entries.get(name.as_str()))
+                        .copied()
+                        == Some(*module),
+                "registered global missing from runtime or owner index",
             )?;
             self.symbol_table.validate_snapshot_value(value)?;
         }
