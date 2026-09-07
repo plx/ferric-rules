@@ -60,6 +60,9 @@ EXPECTED_SMOKE_CHECKS = (
     "unicode-roundtrip",
     "typed-parse-error",
     "serialize-restore",
+    "shared-launch-selection-and-resume",
+    "typed-values-errors-and-call-depth",
+    "cross-thread-use-after-creator-exit",
     "close-lifecycle",
 )
 
@@ -108,6 +111,58 @@ restored = ferric.Engine.from_snapshot(snapshot)
 restored_facts = restored.find_facts("package-result")
 assert len(restored_facts) == 1
 assert str(restored_facts[0].fields[0]) == unicode_value
+
+# The shared source is copied verbatim into this external consumer directory.
+launch_source = Path(sys.argv[2]).read_text(encoding="utf-8")
+with ferric.Engine.from_source(launch_source, max_call_depth=8) as launch:
+    assert launch.run(limit=0).rules_fired == 0
+    pending = launch.serialize()
+    assert pending[:8] == b"FERRIC\0S" and pending[10] == 2
+    assert launch.run(limit=1).rules_fired == 1
+    assert launch.run().rules_fired == 0
+    assert launch.get_output("t") == "action session-42 sign-in\n"
+    expected = [ferric.Symbol("session-42"), ferric.Symbol("sign-in")]
+    assert [fact.fields for fact in launch.find_facts("action")] == [expected]
+with ferric.Engine.from_snapshot(pending) as resumed:
+    assert resumed.max_call_depth == 8
+    assert resumed.run().rules_fired == 1
+    owned = resumed.find_facts("action")
+    completed = resumed.serialize()
+assert owned[0].fields == expected
+with ferric.Engine.from_snapshot(completed) as resumed:
+    assert resumed.run().rules_fired == 0
+    assert [fact.fields for fact in resumed.find_facts("action")] == [expected]
+with ferric.Engine() as values:
+    identifier = values.assert_fact("typed", "text", ferric.Symbol("text"), [2**63 - 1, -(2**63)])
+    assert values.get_fact(identifier).fields == [ferric.String("text"), ferric.Symbol("text"), [2**63 - 1, -(2**63)]]
+    values.retract(identifier)
+    assert values.get_fact(identifier) is None
+    try:
+        values.load("(defclass Unsupported (is-a USER))")
+    except ferric.FerricCompileError:
+        pass
+    else:
+        raise AssertionError("unsupported source did not raise typed compile error")
+try:
+    ferric.Engine.from_snapshot(b"legacy")
+except ferric.FerricSerializationError:
+    pass
+else:
+    raise AssertionError("bad snapshot did not raise typed serialization error")
+
+import queue
+import threading
+handoff = queue.Queue()
+def create_engine():
+    handoff.put(ferric.Engine.from_source(launch_source))
+creator = threading.Thread(target=create_engine)
+creator.start()
+creator.join()
+transferred = handoff.get_nowait()
+assert transferred.run().rules_fired == 1
+assert transferred.find_facts("action")[0].fields == expected
+transferred.close()
+transferred.close()
 
 broken = ferric.Engine()
 try:
@@ -2076,8 +2131,19 @@ def execute_wheel_smoke(
                 "offline exact-wheel install failed:\n"
                 f"stdout:\n{install.stdout}\nstderr:\n{install.stderr}"
             )
+        launch_source = consumer / "launch-selection.clp"
+        launch_source.write_bytes(
+            (REPO_ROOT / "examples" / "embedding" / "launch-selection.clp").read_bytes()
+        )
         smoke = run_checked(
-            [str(venv_python), "-I", "-c", WHEEL_SMOKE_PROGRAM, str(venv_root)],
+            [
+                str(venv_python),
+                "-I",
+                "-c",
+                WHEEL_SMOKE_PROGRAM,
+                str(venv_root),
+                str(launch_source),
+            ],
             cwd=consumer,
             environment=environment,
             context="installed-wheel lifecycle smoke",

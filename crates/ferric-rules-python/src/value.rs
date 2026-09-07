@@ -8,7 +8,7 @@ use ferric_rules_runtime::{Engine, Multifield, Value};
 /// A CLIPS symbol value.
 ///
 /// Wraps a Python string and converts to `Value::Symbol` on the Rust side.
-/// Plain Python `str` also maps to Symbol by default.
+/// Use this explicit marker for unquoted CLIPS symbols.
 #[pyclass(name = "Symbol", module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct Symbol {
@@ -35,21 +35,18 @@ impl Symbol {
         if let Ok(sym) = other.downcast::<Symbol>() {
             return self.value == sym.borrow().value;
         }
-        if let Ok(s) = other.extract::<String>() {
-            return self.value == s;
-        }
         false
     }
 
     fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
-        PyString::new(py, &self.value).hash()
+        PyTuple::new(py, ["ferric.Symbol", &self.value])?.hash()
     }
 }
 
 /// A CLIPS string value (distinct from a symbol).
 ///
-/// Without this wrapper, Python `str` maps to `Value::Symbol`.
-/// Use `String("text")` to create a CLIPS string literal.
+/// Plain Python `str` also maps to a CLIPS string literal.
+/// Returned values retain this wrapper to preserve their native type.
 #[pyclass(name = "String", module = "ferric")]
 #[derive(Clone, Debug)]
 pub struct ClipsString {
@@ -76,14 +73,11 @@ impl ClipsString {
         if let Ok(cs) = other.downcast::<ClipsString>() {
             return self.value == cs.borrow().value;
         }
-        if let Ok(s) = other.extract::<String>() {
-            return self.value == s;
-        }
         false
     }
 
     fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
-        PyString::new(py, &self.value).hash()
+        PyTuple::new(py, ["ferric.String", &self.value])?.hash()
     }
 }
 
@@ -131,76 +125,103 @@ pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult
 /// # Errors
 ///
 /// Returns a `PyErr` if the Python object cannot be converted.
-pub fn python_to_value(obj: &Bound<'_, PyAny>, engine: &mut Engine) -> PyResult<Value> {
-    // Check marker types first: Symbol and ClipsString
-    if let Ok(cs) = obj.downcast::<ClipsString>() {
-        let val = cs.borrow().value.clone();
-        let fs = engine
-            .create_string(&val)
-            .map_err(crate::error::engine_error_to_pyerr)?;
-        return Ok(Value::String(fs));
+#[derive(Default)]
+pub struct PythonValueBudget {
+    items: usize,
+}
+
+impl PythonValueBudget {
+    pub fn convert(&mut self, obj: &Bound<'_, PyAny>, engine: &mut Engine) -> PyResult<Value> {
+        self.convert_at_depth(obj, engine, 0)
     }
 
-    if let Ok(sym) = obj.downcast::<Symbol>() {
-        let val = sym.borrow().value.clone();
-        let sid = engine
-            .intern_symbol(&val)
-            .map_err(crate::error::engine_error_to_pyerr)?;
-        return Ok(Value::Symbol(sid));
-    }
+    fn convert_at_depth(
+        &mut self,
+        obj: &Bound<'_, PyAny>,
+        engine: &mut Engine,
+        depth: usize,
+    ) -> PyResult<Value> {
+        self.items += 1;
+        if self.items > 1_000_000 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "host input exceeds 1000000 values",
+            ));
+        }
+        if depth >= 32 && (obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyTuple>()) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "host multifield nesting exceeds 32 levels",
+            ));
+        }
+        // Check marker types first: Symbol and ClipsString
+        if let Ok(cs) = obj.downcast::<ClipsString>() {
+            let val = cs.borrow().value.clone();
+            let fs = engine
+                .create_string(&val)
+                .map_err(crate::error::engine_error_to_pyerr)?;
+            return Ok(Value::String(fs));
+        }
 
-    // Check bool before int (bool is a subclass of int in Python)
-    if let Ok(b) = obj.downcast::<PyBool>() {
-        let sym_name = if b.is_true() { "TRUE" } else { "FALSE" };
-        let sym = engine
-            .intern_symbol(sym_name)
-            .map_err(crate::error::engine_error_to_pyerr)?;
-        return Ok(Value::Symbol(sym));
-    }
+        if let Ok(sym) = obj.downcast::<Symbol>() {
+            let val = sym.borrow().value.clone();
+            let sid = engine
+                .intern_symbol(&val)
+                .map_err(crate::error::engine_error_to_pyerr)?;
+            return Ok(Value::Symbol(sid));
+        }
 
-    if let Ok(i) = obj.downcast::<PyInt>() {
-        let val: i64 = i.extract()?;
-        return Ok(Value::Integer(val));
-    }
+        // Check bool before int (bool is a subclass of int in Python)
+        if let Ok(b) = obj.downcast::<PyBool>() {
+            let sym_name = if b.is_true() { "TRUE" } else { "FALSE" };
+            let sym = engine
+                .intern_symbol(sym_name)
+                .map_err(crate::error::engine_error_to_pyerr)?;
+            return Ok(Value::Symbol(sym));
+        }
 
-    if let Ok(f) = obj.downcast::<PyFloat>() {
-        let val: f64 = f.extract()?;
-        return Ok(Value::Float(val));
-    }
+        if let Ok(i) = obj.downcast::<PyInt>() {
+            let val: i64 = i.extract()?;
+            return Ok(Value::Integer(val));
+        }
 
-    // Plain Python str defaults to Symbol (backward-compatible).
-    if let Ok(s) = obj.downcast::<PyString>() {
-        let val: String = s.extract()?;
-        let sym = engine
-            .intern_symbol(&val)
-            .map_err(crate::error::engine_error_to_pyerr)?;
-        return Ok(Value::Symbol(sym));
-    }
+        if let Ok(f) = obj.downcast::<PyFloat>() {
+            let val: f64 = f.extract()?;
+            return Ok(Value::Float(val));
+        }
 
-    if obj.is_none() {
-        return Ok(Value::Void);
-    }
+        // Match the other embedding surfaces: host strings are CLIPS strings.
+        if let Ok(s) = obj.downcast::<PyString>() {
+            let val: String = s.extract()?;
+            let string = engine
+                .create_string(&val)
+                .map_err(crate::error::engine_error_to_pyerr)?;
+            return Ok(Value::String(string));
+        }
 
-    if let Ok(list) = obj.downcast::<PyList>() {
-        let items: PyResult<Vec<Value>> = list
-            .iter()
-            .map(|item| python_to_value(&item, engine))
-            .collect();
-        let mf: Multifield = items?.into_iter().collect();
-        return Ok(Value::Multifield(Box::new(mf)));
-    }
+        if obj.is_none() {
+            return Ok(Value::Void);
+        }
 
-    if let Ok(tuple) = obj.downcast::<PyTuple>() {
-        let items: PyResult<Vec<Value>> = tuple
-            .iter()
-            .map(|item| python_to_value(&item, engine))
-            .collect();
-        let mf: Multifield = items?.into_iter().collect();
-        return Ok(Value::Multifield(Box::new(mf)));
-    }
+        if let Ok(list) = obj.downcast::<PyList>() {
+            let items: PyResult<Vec<Value>> = list
+                .iter()
+                .map(|item| self.convert_at_depth(&item, engine, depth + 1))
+                .collect();
+            let mf: Multifield = items?.into_iter().collect();
+            return Ok(Value::Multifield(Box::new(mf)));
+        }
 
-    Err(pyo3::exceptions::PyTypeError::new_err(format!(
-        "cannot convert {} to a ferric Value",
-        obj.get_type().name()?
-    )))
+        if let Ok(tuple) = obj.downcast::<PyTuple>() {
+            let items: PyResult<Vec<Value>> = tuple
+                .iter()
+                .map(|item| self.convert_at_depth(&item, engine, depth + 1))
+                .collect();
+            let mf: Multifield = items?.into_iter().collect();
+            return Ok(Value::Multifield(Box::new(mf)));
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "cannot convert {} to a ferric Value",
+            obj.get_type().name()?
+        )))
+    }
 }

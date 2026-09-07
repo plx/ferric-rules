@@ -64,6 +64,13 @@ create_exception!(
     "Requested slot does not exist in template."
 );
 
+create_exception!(
+    ferric,
+    FerricSerializationError,
+    FerricError,
+    "Invalid, unsupported, corrupt, or unrepresentable engine snapshot."
+);
+
 /// Convert an `EngineError` into a Python exception.
 pub fn engine_error_to_pyerr(err: EngineError) -> PyErr {
     match err {
@@ -94,18 +101,34 @@ pub fn load_errors_to_pyerr(errors: Vec<LoadError>) -> PyErr {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Classify by scanning for parse errors first, then compile errors.
-    let has_parse = errors.iter().any(|e| matches!(e, LoadError::Parse(_)));
-    let has_compile = errors
-        .iter()
-        .any(|e| matches!(e, LoadError::Compile(_) | LoadError::ResourceLimit { .. }));
-
-    if has_parse {
-        FerricParseError::new_err(msg)
-    } else if has_compile {
-        FerricCompileError::new_err(msg)
-    } else {
-        FerricError::new_err(msg)
+    // Classify exhaustively so adding a native error requires an explicit
+    // binding decision. Preserve every message while parse takes precedence
+    // over compile errors, then use the first remaining error's family.
+    let classification = |error: &LoadError| match error {
+        LoadError::Parse(_) | LoadError::Interpret(_) => 0,
+        LoadError::UnsupportedForm { .. }
+        | LoadError::InvalidAssert(_)
+        | LoadError::InvalidDefrule(_)
+        | LoadError::Compile(_)
+        | LoadError::Validation(_)
+        | LoadError::ResourceLimit { .. } => 1,
+        LoadError::Engine(_) | LoadError::Io(_) => 2,
+    };
+    match errors.iter().map(classification).min() {
+        Some(0) => FerricParseError::new_err(msg),
+        Some(1) => FerricCompileError::new_err(msg),
+        _ => match errors.into_iter().next() {
+            Some(LoadError::Io(_)) => pyo3::exceptions::PyIOError::new_err(msg),
+            Some(LoadError::Engine(error)) => {
+                // Preserve the selected concrete exception type and attach the
+                // full diagnostic list, including later failures.
+                Python::with_gil(|py| {
+                    let kind = engine_error_to_pyerr(error).get_type(py);
+                    PyErr::from_type(kind, (msg,))
+                })
+            }
+            _ => FerricError::new_err(msg),
+        },
     }
 }
 
@@ -120,6 +143,10 @@ pub fn init_error_to_pyerr(err: InitError) -> PyErr {
 /// Register exception types on the module.
 pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("FerricError", m.py().get_type::<FerricError>())?;
+    m.add(
+        "FerricSerializationError",
+        m.py().get_type::<FerricSerializationError>(),
+    )?;
     m.add("FerricParseError", m.py().get_type::<FerricParseError>())?;
     m.add(
         "FerricCompileError",

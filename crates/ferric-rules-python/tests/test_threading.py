@@ -269,7 +269,7 @@ class TestInstanceCount:
         fact = engine.get_fact(fact_id)
         assert fact is not None
         assert fact.relation == "constructor"
-        assert fact.fields[0] == constructor
+        assert fact.fields[0] == ferric.String(constructor)
         assert fact.engine_id > 0
         del fact
         assert ferric.engine_instance_count() == baseline + 1
