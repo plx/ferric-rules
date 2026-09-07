@@ -1,7 +1,16 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
+
+fn validate_workload(source: &str, n_items: usize) {
+    let engine = support::verify_source(source, 2 * n_items + 1);
+    assert!(support::template_ids(&engine, "item").is_empty());
+    assert_eq!(support::template_symbols(&engine, "phase", "name"), ["run"]);
+    assert_eq!(engine.get_output("t"), Some("All items processed\n"));
+}
 
 /// Fact assert/retract churn benchmark.
 ///
@@ -59,7 +68,7 @@ fn generate_churn_source(n_items: usize) -> String {
 (defrule all-done
     (declare (salience -10))
     (phase (name run))
-    (not (item))
+    (not (item (id ?)))
     =>
     (printout t \"All items processed\" crlf))
 ",
@@ -70,6 +79,7 @@ fn generate_churn_source(n_items: usize) -> String {
 fn bench_churn_100(c: &mut Criterion) {
     let source = generate_churn_source(100);
     c.bench_function("churn_100_facts", |b| {
+        validate_workload(&source, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -82,6 +92,7 @@ fn bench_churn_100(c: &mut Criterion) {
 fn bench_churn_250(c: &mut Criterion) {
     let source = generate_churn_source(250);
     c.bench_function("churn_250_facts", |b| {
+        validate_workload(&source, 250);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -94,6 +105,7 @@ fn bench_churn_250(c: &mut Criterion) {
 fn bench_churn_500(c: &mut Criterion) {
     let source = generate_churn_source(500);
     c.bench_function("churn_500_facts", |b| {
+        validate_workload(&source, 500);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -106,6 +118,7 @@ fn bench_churn_500(c: &mut Criterion) {
 fn bench_churn_1000(c: &mut Criterion) {
     let source = generate_churn_source(1000);
     c.bench_function("churn_1000_facts", |b| {
+        validate_workload(&source, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -118,6 +131,7 @@ fn bench_churn_1000(c: &mut Criterion) {
 fn bench_churn_2000(c: &mut Criterion) {
     let source = generate_churn_source(2000);
     c.bench_function("churn_2000_facts", |b| {
+        validate_workload(&source, 2000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -130,6 +144,7 @@ fn bench_churn_2000(c: &mut Criterion) {
 fn bench_churn_5000(c: &mut Criterion) {
     let source = generate_churn_source(5000);
     c.bench_function("churn_5000_facts", |b| {
+        validate_workload(&source, 5000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -144,6 +159,7 @@ fn bench_churn_10000(c: &mut Criterion) {
     let mut group = c.benchmark_group("churn_10000");
     group.sample_size(10);
     group.bench_function("churn_10000_facts", |b| {
+        validate_workload(&source, 10_000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -159,6 +175,7 @@ fn bench_churn_25000(c: &mut Criterion) {
     let mut group = c.benchmark_group("churn_25000");
     group.sample_size(10);
     group.bench_function("churn_25000_facts", |b| {
+        validate_workload(&source, 25_000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -174,6 +191,7 @@ fn bench_churn_50000(c: &mut Criterion) {
     let mut group = c.benchmark_group("churn_50000");
     group.sample_size(10);
     group.bench_function("churn_50000_facts", |b| {
+        validate_workload(&source, 50_000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -189,6 +207,7 @@ fn bench_churn_100000(c: &mut Criterion) {
     let mut group = c.benchmark_group("churn_100000");
     group.sample_size(10);
     group.bench_function("churn_100000_facts", |b| {
+        validate_workload(&source, 100_000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -204,6 +223,7 @@ fn bench_churn_100_run_only(c: &mut Criterion) {
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     c.bench_function("churn_100_facts_run_only", |b| {
+        validate_workload(&source, 100);
         b.iter(|| {
             engine.reset().unwrap();
             engine.run(RunLimit::Unlimited).unwrap()

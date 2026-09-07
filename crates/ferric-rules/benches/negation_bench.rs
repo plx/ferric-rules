@@ -1,7 +1,20 @@
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
+
+fn validate_workload(source: &str, n_blockers: usize) {
+    let engine = support::verify_source(source, n_blockers + 1);
+    assert!(support::template_ids(&engine, "blocker").is_empty());
+    assert_eq!(support::template_symbols(&engine, "signal", "name"), ["S"]);
+    assert_eq!(
+        support::template_symbols(&engine, "phase", "name"),
+        ["clear"]
+    );
+    assert_eq!(engine.get_output("t"), Some("Signal clear\n"));
+}
 
 /// Negative node pressure benchmark.
 ///
@@ -44,7 +57,7 @@ fn generate_negation_source(n_blockers: usize) -> String {
 (defrule remove-blocker
     (declare (salience 10))
     (phase (name clear))
-    ?b <- (blocker)
+    ?b <- (blocker (seq ?))
     =>
     (retract ?b))
 
@@ -63,6 +76,7 @@ fn generate_negation_source(n_blockers: usize) -> String {
 fn bench_negation_50(c: &mut Criterion) {
     let source = generate_negation_source(50);
     c.bench_function("negation_50_blockers", |b| {
+        validate_workload(&source, 50);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -75,6 +89,7 @@ fn bench_negation_50(c: &mut Criterion) {
 fn bench_negation_100(c: &mut Criterion) {
     let source = generate_negation_source(100);
     c.bench_function("negation_100_blockers", |b| {
+        validate_workload(&source, 100);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -87,6 +102,7 @@ fn bench_negation_100(c: &mut Criterion) {
 fn bench_negation_200(c: &mut Criterion) {
     let source = generate_negation_source(200);
     c.bench_function("negation_200_blockers", |b| {
+        validate_workload(&source, 200);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -99,6 +115,7 @@ fn bench_negation_200(c: &mut Criterion) {
 fn bench_negation_500(c: &mut Criterion) {
     let source = generate_negation_source(500);
     c.bench_function("negation_500_blockers", |b| {
+        validate_workload(&source, 500);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -111,6 +128,7 @@ fn bench_negation_500(c: &mut Criterion) {
 fn bench_negation_1000(c: &mut Criterion) {
     let source = generate_negation_source(1000);
     c.bench_function("negation_1000_blockers", |b| {
+        validate_workload(&source, 1000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -123,6 +141,7 @@ fn bench_negation_1000(c: &mut Criterion) {
 fn bench_negation_2500(c: &mut Criterion) {
     let source = generate_negation_source(2500);
     c.bench_function("negation_2500_blockers", |b| {
+        validate_workload(&source, 2500);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -137,6 +156,7 @@ fn bench_negation_5000(c: &mut Criterion) {
     let mut group = c.benchmark_group("negation_5000");
     group.sample_size(10);
     group.bench_function("negation_5000_blockers", |b| {
+        validate_workload(&source, 5000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -152,6 +172,7 @@ fn bench_negation_10000(c: &mut Criterion) {
     let mut group = c.benchmark_group("negation_10000");
     group.sample_size(10);
     group.bench_function("negation_10000_blockers", |b| {
+        validate_workload(&source, 10_000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -167,6 +188,7 @@ fn bench_negation_25000(c: &mut Criterion) {
     let mut group = c.benchmark_group("negation_25000");
     group.sample_size(10);
     group.bench_function("negation_25000_blockers", |b| {
+        validate_workload(&source, 25_000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -182,6 +204,7 @@ fn bench_negation_50000(c: &mut Criterion) {
     let mut group = c.benchmark_group("negation_50000");
     group.sample_size(10);
     group.bench_function("negation_50000_blockers", |b| {
+        validate_workload(&source, 50_000);
         b.iter(|| {
             let mut engine = Engine::new(EngineConfig::utf8());
             engine.load_str(&source).unwrap();
@@ -197,6 +220,7 @@ fn bench_negation_50_run_only(c: &mut Criterion) {
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
     c.bench_function("negation_50_blockers_run_only", |b| {
+        validate_workload(&source, 50);
         b.iter(|| {
             engine.reset().unwrap();
             engine.run(RunLimit::Unlimited).unwrap()

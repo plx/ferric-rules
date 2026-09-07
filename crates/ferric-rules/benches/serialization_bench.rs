@@ -1,5 +1,7 @@
 #![cfg(feature = "serde")]
 
+mod support;
+
 use std::fmt::Write as FmtWrite;
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -9,8 +11,62 @@ use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 /// Engine serialization/deserialization benchmark.
 ///
 /// Measures `serialize()`/`deserialize()` round-trip latency at varying engine
-/// sizes. Also benchmarks compilation as a baseline to validate that
-/// deserialization is faster than full compilation.
+/// sizes. Compilation is a separate comparison workload; no relative speed is
+/// assumed. The generated distinct keys intentionally leave joins unmatched.
+/// The untimed oracle checks stored facts and completes a join after restore.
+fn validate_snapshot(
+    engine: &Engine,
+    bytes: &[u8],
+    format: SerializationFormat,
+    n_templates: usize,
+    n_rules: usize,
+    n_facts: usize,
+) {
+    let mut restored = Engine::deserialize(bytes, format).unwrap();
+    for state in [engine, &restored] {
+        let mut seen = std::collections::BTreeSet::new();
+        for template in 0..n_templates {
+            for id in support::template_ids(state, &format!("t{template}")) {
+                let slot =
+                    |name| support::symbol(state, state.get_fact_slot_by_name(id, name).unwrap());
+                let i: usize = slot("s0").strip_prefix('v').unwrap().parse().unwrap();
+                assert!(i < n_facts);
+                assert_eq!(i % n_templates, template);
+                assert!(seen.insert(i));
+                assert_eq!(slot("s1"), format!("a{}", i % 10));
+                assert_eq!(slot("s2"), format!("b{}", i % 7));
+                assert_eq!(slot("s3"), format!("c{}", i % 5));
+            }
+        }
+        assert_eq!(seen.len(), n_facts);
+    }
+    support::verify_run(&mut restored, 0);
+    restored
+        .load_str("(assert (t1 (s0 v0) (s2 probe)))")
+        .unwrap();
+    support::verify_run(
+        &mut restored,
+        (0..n_rules).filter(|r| r % n_templates == 0).count(),
+    );
+    for rule in 0..n_rules {
+        let facts = restored.find_facts(&format!("result-{rule}")).unwrap();
+        if rule % n_templates == 0 {
+            assert_eq!(facts.len(), 1);
+            let ferric_rules::core::Fact::Ordered(fact) = facts[0].1 else {
+                unreachable!()
+            };
+            assert_eq!(
+                fact.fields
+                    .iter()
+                    .map(|value| support::symbol(&restored, value))
+                    .collect::<Vec<_>>(),
+                ["v0", "a0", "probe"]
+            );
+        } else {
+            assert!(facts.is_empty());
+        }
+    }
+}
 fn generate_serde_source(n_templates: usize, n_rules: usize, n_facts: usize) -> String {
     let mut source = String::new();
 
@@ -67,6 +123,7 @@ fn bench_serde_small(c: &mut Criterion) {
     engine.reset().unwrap();
     engine.run(RunLimit::Unlimited).unwrap();
     let bytes = engine.serialize(format).unwrap();
+    validate_snapshot(&engine, &bytes, format, 5, 10, 50);
 
     let mut group = c.benchmark_group("serde_small");
 
@@ -99,6 +156,7 @@ fn bench_serde_medium(c: &mut Criterion) {
     engine.reset().unwrap();
     engine.run(RunLimit::Unlimited).unwrap();
     let bytes = engine.serialize(format).unwrap();
+    validate_snapshot(&engine, &bytes, format, 20, 100, 500);
 
     let mut group = c.benchmark_group("serde_medium");
     group.sample_size(10);
@@ -132,6 +190,7 @@ fn bench_serde_large(c: &mut Criterion) {
     engine.reset().unwrap();
     engine.run(RunLimit::Unlimited).unwrap();
     let bytes = engine.serialize(format).unwrap();
+    validate_snapshot(&engine, &bytes, format, 50, 500, 2000);
 
     let mut group = c.benchmark_group("serde_large");
     group.sample_size(10);

@@ -25,11 +25,11 @@ Criterion defaults are used unless overridden per-benchmark:
 
 - **Warmup:** 3 seconds
 - **Measurement time:** 5 seconds
-- **Sample size:** 100 iterations
+- **Sample size:** 100 samples
 - **Noise threshold:** 0.01 (1%)
 
-These provide good signal for microbenchmarks while keeping total run time under
-2 minutes for the full suite.
+Each benchmark is sampled separately; a full suite can take many minutes. Use
+explicit filters and identical settings for a bounded before/after comparison.
 
 ## Environment Guidance
 
@@ -54,12 +54,21 @@ These provide good signal for microbenchmarks while keeping total run time under
 
 - **Do not** interpret sub-1% changes as meaningful — they are likely noise.
 - **Do** run benchmarks at least twice before reporting regressions.
-- **Do** check `target/criterion/<name>/new/estimates.json` for confidence
-  intervals rather than relying solely on mean values.
+- **Do** report `median.point_estimate` from each run's
+  `target/criterion/<name>/new/estimates.json`, including units and deltas. The
+  slope or mean printed in Criterion's summary is not the median.
 - **Do not** mix benchmark runs across different hardware or OS versions.
 - **Do** document the hardware/environment when publishing baseline numbers.
 
 ## Baseline Capture
+
+Record both exact revisions, compiler/features/profile, workload inputs, sampling
+settings, and hardware. Validate the same workload oracles on both revisions
+before timing, and stop competing builds or workers during measurements. Preserve
+logs and Criterion estimates for each run. Repeat a decision-changing comparison
+with alternating baseline/candidate runs, and report instability rather than
+selecting a favorable run. See [the workload notes](README.md) for invalid
+historical comparisons discovered by correctness oracles.
 
 To save a named baseline for comparison:
 
