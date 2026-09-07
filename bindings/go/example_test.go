@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/prb/ferric-rules/bindings/go"
+	"github.com/plx/ferric-rules/bindings/go"
 )
 
 // ---------------------------------------------------------------------------

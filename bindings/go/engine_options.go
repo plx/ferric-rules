@@ -3,7 +3,7 @@ package ferric
 import (
 	"fmt"
 
-	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
+	"github.com/plx/ferric-rules/bindings/go/internal/ffi"
 )
 
 // EngineOption configures an Engine.
@@ -43,6 +43,22 @@ func (c *engineConfig) hasSnapshot() bool {
 	return c.snapshotSet && c.snapshot != nil
 }
 
+// validateInputs rejects ambiguous construction before any native allocation.
+func (c *engineConfig) validateInputs() error {
+	if c.snapshotSet {
+		if c.sourceSet {
+			return invalidArgument("WithSource and WithSnapshot are mutually exclusive")
+		}
+		if len(c.snapshot) == 0 {
+			return invalidArgument("snapshot data is empty")
+		}
+		if c.hasEngineConfig() {
+			return invalidArgument("snapshot configuration is restored as saved; overrides are unsupported")
+		}
+	}
+	return nil
+}
+
 // WithStrategy sets the conflict resolution strategy.
 func WithStrategy(s Strategy) EngineOption {
 	return func(c *engineConfig) {
@@ -78,7 +94,8 @@ func WithSource(clips string) EngineOption {
 // WithSnapshot creates the engine by deserializing a snapshot previously
 // produced by Engine.Serialize. The format must match the one used during
 // serialization. This skips parsing and compilation, providing fast engine
-// instantiation. Mutually exclusive with WithSource.
+// instantiation. Nil/empty snapshots are invalid. Mutually exclusive with
+// WithSource and all engine configuration overrides; saved configuration wins.
 func WithSnapshot(data []byte, format Format) EngineOption {
 	return func(c *engineConfig) {
 		c.snapshot = data
