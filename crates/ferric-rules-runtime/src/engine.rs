@@ -183,7 +183,10 @@ pub struct Engine {
     /// Registered template definitions: name → `TemplateId`.
     pub(crate) template_ids: HashMap<Box<str>, TemplateId>,
     /// Template slot metadata indexed by `TemplateId`.
-    pub(crate) template_defs: slotmap::SlotMap<TemplateId, RegisteredTemplate>,
+    // Definitions are immutable after installation. Actions and owned host facts
+    // retain a cheap handle; redefinition installs a fresh allocation so captured
+    // facts keep the exact shape against which they were validated.
+    pub(crate) template_defs: slotmap::SlotMap<TemplateId, Arc<RegisteredTemplate>>,
     /// Output router for capturing `printout` and related I/O.
     pub(crate) router: OutputRouter,
     /// Registry of user-defined functions loaded via `deffunction`.

@@ -2024,7 +2024,7 @@ fn format_value_for_fct(value: &Value, symbol_table: &SymbolTable, output: &mut 
 fn format_fact_for_fct(
     fact: &Fact,
     symbol_table: &SymbolTable,
-    template_defs: &slotmap::SlotMap<TemplateId, crate::templates::RegisteredTemplate>,
+    template_defs: &slotmap::SlotMap<TemplateId, Arc<crate::templates::RegisteredTemplate>>,
 ) -> String {
     let mut out = String::new();
     match fact {

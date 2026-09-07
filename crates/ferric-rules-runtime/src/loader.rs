@@ -1333,10 +1333,10 @@ impl Engine {
             // construct can observe the new slot layout, and repeated unused
             // definitions do not leave orphaned registry entries behind.
             registered.name.clone_from(&self.template_defs[id].name);
-            self.template_defs[id] = registered;
+            self.template_defs[id] = Arc::new(registered);
             id
         } else {
-            let id = self.template_defs.insert(registered);
+            let id = self.template_defs.insert(Arc::new(registered));
             self.template_ids
                 .insert(template.name.clone().into_boxed_str(), id);
             id

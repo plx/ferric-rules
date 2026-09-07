@@ -4,7 +4,7 @@
 //! ordinary host input from silently treating another engine's keys as local.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use ferric_rules_core::{Fact, FactBase, FactId, FerricString, Symbol, Value};
 use rustc_hash::FxHashMap;
@@ -204,7 +204,7 @@ field!(HostValue, SymbolHandle, Value, i64, i32, f64, FerricString);
 pub struct HostFact {
     pub(crate) owner: u64,
     pub(crate) fact: Fact,
-    pub(crate) template: Option<crate::templates::RegisteredTemplate>,
+    pub(crate) template: Option<Arc<crate::templates::RegisteredTemplate>>,
 }
 impl HostFact {
     /// Borrow the underlying representation for low-level inspection.

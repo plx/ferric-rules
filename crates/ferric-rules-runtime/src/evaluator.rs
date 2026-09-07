@@ -10,6 +10,7 @@
 #[cfg(feature = "tracing")]
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_rules_core::string::FerricString;
@@ -330,7 +331,10 @@ pub struct EvalContext<'a> {
     pub fact_base: Option<&'a ferric_rules_core::FactBase>,
     /// Optional read-only access to template definitions for introspection builtins.
     pub(crate) template_defs: Option<
-        &'a slotmap::SlotMap<ferric_rules_core::TemplateId, crate::templates::RegisteredTemplate>,
+        &'a slotmap::SlotMap<
+            ferric_rules_core::TemplateId,
+            Arc<crate::templates::RegisteredTemplate>,
+        >,
     >,
 }
 
