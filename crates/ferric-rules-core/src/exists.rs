@@ -45,16 +45,16 @@ pub struct ExistsMemory {
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
     )]
-    support: HashMap<TokenId, HashSet<FactId>>,
+    pub(crate) support: HashMap<TokenId, HashSet<FactId>>,
     /// Parent token → pass-through token (when supported, count > 0)
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    satisfied: HashMap<TokenId, TokenId>,
+    pub(crate) satisfied: HashMap<TokenId, TokenId>,
     /// Reverse index: fact → parent tokens it supports
     #[cfg_attr(
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
     )]
-    fact_to_parents: HashMap<FactId, HashSet<TokenId>>,
+    pub(crate) fact_to_parents: HashMap<FactId, HashSet<TokenId>>,
 }
 
 impl ExistsMemory {
@@ -183,16 +183,24 @@ impl ExistsMemory {
 
     /// Verify internal consistency of the exists memory.
     pub fn debug_assert_consistency(&self) {
+        self.validate_consistency()
+            .expect("inconsistent engine state");
+    }
+
+    /// Validate internal indexes without panicking.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_lines)]
+    pub fn validate_consistency(&self) -> Result<(), String> {
         // Check 1: forward and reverse support indices are consistent
         for (&token_id, facts) in &self.support {
-            assert!(
+            crate::snapshot::require!(
                 !facts.is_empty(),
                 "ExistsMemory {:?}: empty support set for token {token_id:?}",
                 self.id
             );
             for &fact_id in facts {
                 let parents = self.fact_to_parents.get(&fact_id);
-                assert!(
+                crate::snapshot::require!(
                     parents.is_some_and(|p| p.contains(&token_id)),
                     "ExistsMemory {:?}: token {token_id:?} supported by fact {fact_id:?} but reverse index missing",
                     self.id
@@ -201,14 +209,14 @@ impl ExistsMemory {
         }
 
         for (&fact_id, parents) in &self.fact_to_parents {
-            assert!(
+            crate::snapshot::require!(
                 !parents.is_empty(),
                 "ExistsMemory {:?}: empty reverse set for fact {fact_id:?}",
                 self.id
             );
             for &token_id in parents {
                 let facts = self.support.get(&token_id);
-                assert!(
+                crate::snapshot::require!(
                     facts.is_some_and(|f| f.contains(&fact_id)),
                     "ExistsMemory {:?}: reverse index says fact {fact_id:?} supports token {token_id:?} but forward missing",
                     self.id
@@ -218,12 +226,13 @@ impl ExistsMemory {
 
         // Check 2: satisfied tokens should have non-empty support
         for parent_token_id in self.satisfied.keys() {
-            assert!(
+            crate::snapshot::require!(
                 self.support.get(parent_token_id).map_or(0, HashSet::len) > 0,
                 "ExistsMemory {:?}: parent token {parent_token_id:?} is satisfied but has no support",
                 self.id
             );
         }
+        Ok(())
     }
 }
 

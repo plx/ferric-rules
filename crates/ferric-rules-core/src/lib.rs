@@ -71,8 +71,8 @@ pub use compiler::{
 pub use encoding::{EncodingError, StringEncoding};
 pub use exists::{ExistsMemory, ExistsMemoryId};
 pub use fact::{
-    Fact, FactBase, FactEntry, FactId, FactInsertionResult, OrderedFact, TemplateFact, TemplateId,
-    Timestamp,
+    Fact, FactBase, FactEntry, FactId, FactInsertionResult, FactTimestampExhausted, OrderedFact,
+    TemplateFact, TemplateId, Timestamp,
 };
 pub use ncc::{NccMemory, NccMemoryId};
 pub use negative::{NegativeMemory, NegativeMemoryId};
@@ -83,3 +83,5 @@ pub use symbol::{Symbol, SymbolTable};
 pub use token::{NodeId, Token, TokenId, TokenStore};
 pub use validation::{PatternValidationError, PatternViolation, SourceLocation, ValidationStage};
 pub use value::{AtomKey, ExternalAddress, ExternalTypeId, IntoFieldValues, Multifield, Value};
+
+mod snapshot;

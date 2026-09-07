@@ -729,24 +729,29 @@ thaw it later. This is useful for:
 ```rust
     // Offline: compile once, save a baseline snapshot.
     let engine = Engine::with_rules(rules)?;
-    let bytes = engine.serialize(SerializationFormat::Bincode)?;
+    let bytes = engine.serialize(SerializationFormat::Cbor)?;
     println!("snapshot size: {} bytes", bytes.len());
 
     // Online: fast path — no parsing, no compilation.
-    let mut engine = Engine::deserialize(&bytes, SerializationFormat::Bincode)?;
+    let mut engine = Engine::deserialize(&bytes, SerializationFormat::Cbor)?;
     engine.assert_ordered("reading", 7_i64)?;
     engine.run(RunLimit::Unlimited)?;
 ```
 
-Available formats: `Bincode` (default, compact), `Json` (human-readable),
-`Cbor`, `MessagePack`, `Postcard`. Pass the same format to `deserialize`
-that you used for `serialize`; cross-format reads fail through the selected
-decoder. Snapshot bytes are ferric's internal serde representation, not a
-stable long-term storage format, so recreate them after upgrading ferric.
+Use `Cbor` for persistence. All formats include a versioned envelope, size
+limits, a corruption checksum, and validation of restored engine state. Facts,
+globals, rules, output, focus, and pending activations survive a round trip;
+resuming does not re-fire an activation that already fired.
 
-`ExternalAddress` values in facts, registered globals, or `deffacts` are
-rejected at serialize time because they reference host pointers that cannot
-meaningfully round-trip.
+`Bincode`, `Json`, `MessagePack`, and `Postcard` remain experimental formats.
+Pass the same format to `deserialize` that you used for `serialize`. JSON's
+payload is readable after the binary envelope and rejects non-finite floats.
+
+Legacy unversioned snapshots are explicitly rejected. Use the producing Ferric
+version to export durable application data before upgrading; rebuilding a
+compiled engine cache is separate from recovering that data. Host-owned
+`ExternalAddress` identities are rejected instead of discarded. See the
+[snapshot contract](snapshots.md) for limits, version compatibility, and errors.
 
 ---
 

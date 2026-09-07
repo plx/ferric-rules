@@ -28,8 +28,8 @@ pub struct VarId(pub u16);
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VarMap {
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    by_name: FxHashMap<Symbol, VarId>,
-    by_id: Vec<Symbol>,
+    pub(crate) by_name: FxHashMap<Symbol, VarId>,
+    pub(crate) by_id: Vec<Symbol>,
 }
 
 impl VarMap {
@@ -153,7 +153,7 @@ impl std::ops::Deref for ValueRef {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BindingSet {
-    bindings: SmallVec<[Option<ValueRef>; 4]>,
+    pub(crate) bindings: SmallVec<[Option<ValueRef>; 4]>,
 }
 
 impl BindingSet {

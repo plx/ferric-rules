@@ -34,9 +34,15 @@ impl Timestamp {
         self.0
     }
 
+    /// # Panics
+    /// Panics when no subsequent timestamp is representable.
     #[must_use]
     pub fn next(self) -> Self {
-        Self(self.0 + 1)
+        Self(
+            self.0
+                .checked_add(1)
+                .expect("fact timestamp capacity exhausted"),
+        )
     }
 }
 
@@ -73,9 +79,9 @@ fn remove_from_candidate_index(
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-struct SymbolMap<T> {
-    ascii: Vec<Option<T>>,
-    utf8: Vec<Option<T>>,
+pub(crate) struct SymbolMap<T> {
+    pub(crate) ascii: Vec<Option<T>>,
+    pub(crate) utf8: Vec<Option<T>>,
 }
 
 impl<T> SymbolMap<T> {
@@ -348,13 +354,13 @@ pub enum FactInsertionResult {
 /// Maintains indices for fast lookup by relation and template.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactBase {
-    facts: SlotMap<FactId, FactEntry>,
+    pub(crate) facts: SlotMap<FactId, FactEntry>,
     #[cfg_attr(
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
     )]
-    by_template: HashMap<TemplateId, HashSet<FactId>>,
-    by_relation: SymbolMap<HashSet<FactId>>,
+    pub(crate) by_template: HashMap<TemplateId, HashSet<FactId>>,
+    pub(crate) by_relation: SymbolMap<HashSet<FactId>>,
     /// Structural fingerprint → candidate fact IDs.
     ///
     /// Fingerprints are only an accelerator. Every lookup confirms the full
@@ -367,9 +373,15 @@ pub struct FactBase {
     /// no-duplicate case keeps its sole candidate inline without a heap
     /// allocation.
     #[cfg_attr(feature = "serde", serde(skip))]
-    by_structural_fingerprint: Option<HashMap<u64, SmallVec<[FactId; 1]>>>,
-    next_timestamp: Timestamp,
+    pub(crate) by_structural_fingerprint: Option<HashMap<u64, SmallVec<[FactId; 1]>>>,
+    pub(crate) next_timestamp: Timestamp,
 }
+
+/// Fact chronology has used every representable timestamp. Resetting the engine
+/// starts a fresh fact base; existing facts remain readable and retractable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("fact timestamp capacity exhausted; reset the engine before asserting more facts")]
+pub struct FactTimestampExhausted;
 
 impl FactBase {
     /// Create a new, empty fact base.
@@ -384,9 +396,18 @@ impl FactBase {
         }
     }
 
-    fn insert_fact(&mut self, fact: Fact, fingerprint: Option<u64>) -> FactId {
+    fn insert_fact(
+        &mut self,
+        fact: Fact,
+        fingerprint: Option<u64>,
+    ) -> Result<FactId, FactTimestampExhausted> {
         let timestamp = self.next_timestamp;
-        self.next_timestamp = self.next_timestamp.next();
+        self.next_timestamp = Timestamp(
+            self.next_timestamp
+                .0
+                .checked_add(1)
+                .ok_or(FactTimestampExhausted)?,
+        );
 
         let id = self.facts.insert_with_key(|id| FactEntry {
             fact,
@@ -397,7 +418,16 @@ impl FactBase {
         {
             index.entry(fingerprint).or_default().push(id);
         }
-        id
+        Ok(id)
+    }
+
+    /// Check insertion capacity before a destructive replacement of an existing fact.
+    pub fn ensure_assertion_capacity(&self) -> Result<(), FactTimestampExhausted> {
+        self.next_timestamp
+            .0
+            .checked_add(1)
+            .map(|_| ())
+            .ok_or(FactTimestampExhausted)
     }
 
     fn ensure_structural_index(&mut self) {
@@ -461,7 +491,22 @@ impl FactBase {
     /// When `allow_duplicates` is `false`, lookup and insertion share one
     /// structural fingerprint calculation. When it is `true`, the derived
     /// duplicate index is invalidated and no structural hashing is performed.
+    ///
+    /// # Panics
+    /// Panics when timestamps are exhausted. Use [`Self::try_assert_fact`] for
+    /// restored state or other callers that need to handle exhaustion.
     pub fn assert_fact(&mut self, fact: Fact, allow_duplicates: bool) -> FactInsertionResult {
+        self.try_assert_fact(fact, allow_duplicates)
+            .expect("fact timestamp capacity exhausted")
+    }
+
+    /// Insert a fact without overflowing its chronology counter. Duplicate
+    /// suppression remains available even when no new timestamp can be allocated.
+    pub fn try_assert_fact(
+        &mut self,
+        fact: Fact,
+        allow_duplicates: bool,
+    ) -> Result<FactInsertionResult, FactTimestampExhausted> {
         let fingerprint = if allow_duplicates {
             self.by_structural_fingerprint = None;
             None
@@ -469,7 +514,7 @@ impl FactBase {
             self.ensure_structural_index();
             let fingerprint = structural_fingerprint(&fact);
             if let Some(existing) = self.find_equivalent_with_fingerprint(&fact, fingerprint) {
-                return FactInsertionResult::Duplicate(existing);
+                return Ok(FactInsertionResult::Duplicate(existing));
             }
             Some(fingerprint)
         };
@@ -477,7 +522,7 @@ impl FactBase {
         let id = match &fact {
             Fact::Ordered(ordered) => {
                 let relation = ordered.relation;
-                let id = self.insert_fact(fact, fingerprint);
+                let id = self.insert_fact(fact, fingerprint)?;
                 self.by_relation
                     .get_or_insert_with(relation, HashSet::default)
                     .insert(id);
@@ -485,13 +530,13 @@ impl FactBase {
             }
             Fact::Template(template) => {
                 let template_id = template.template_id;
-                let id = self.insert_fact(fact, fingerprint);
+                let id = self.insert_fact(fact, fingerprint)?;
                 self.by_template.entry(template_id).or_default().insert(id);
                 id
             }
         };
 
-        FactInsertionResult::Inserted(id)
+        Ok(FactInsertionResult::Inserted(id))
     }
 
     /// Assert an ordered fact into working memory.

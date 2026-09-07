@@ -49,16 +49,16 @@ pub struct NegativeMemory {
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
     )]
-    blocked: HashMap<TokenId, HashSet<FactId>>,
+    pub(crate) blocked: HashMap<TokenId, HashSet<FactId>>,
     /// Reverse index: blocking fact → set of parent tokens it blocks.
     #[cfg_attr(
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
     )]
-    fact_to_blocked: HashMap<FactId, HashSet<TokenId>>,
+    pub(crate) fact_to_blocked: HashMap<FactId, HashSet<TokenId>>,
     /// Unblocked parent tokens → their pass-through token IDs.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    unblocked: HashMap<TokenId, TokenId>,
+    pub(crate) unblocked: HashMap<TokenId, TokenId>,
 }
 
 impl NegativeMemory {
@@ -204,16 +204,24 @@ impl NegativeMemory {
 
     /// Verify internal consistency of the negative memory.
     pub fn debug_assert_consistency(&self) {
+        self.validate_consistency()
+            .expect("inconsistent engine state");
+    }
+
+    /// Validate internal indexes without panicking.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_lines)]
+    pub fn validate_consistency(&self) -> Result<(), String> {
         // Check 1: forward and reverse blocker indices are consistent
         for (&token_id, blockers) in &self.blocked {
-            assert!(
+            crate::snapshot::require!(
                 !blockers.is_empty(),
                 "NegativeMemory {:?}: empty blocker set for token {token_id:?}",
                 self.id
             );
             for &fact_id in blockers {
                 let tokens = self.fact_to_blocked.get(&fact_id);
-                assert!(
+                crate::snapshot::require!(
                     tokens.is_some_and(|t| t.contains(&token_id)),
                     "NegativeMemory {:?}: token {token_id:?} blocked by fact {fact_id:?} but reverse index missing",
                     self.id
@@ -222,14 +230,14 @@ impl NegativeMemory {
         }
 
         for (&fact_id, tokens) in &self.fact_to_blocked {
-            assert!(
+            crate::snapshot::require!(
                 !tokens.is_empty(),
                 "NegativeMemory {:?}: empty reverse set for fact {fact_id:?}",
                 self.id
             );
             for &token_id in tokens {
                 let blockers = self.blocked.get(&token_id);
-                assert!(
+                crate::snapshot::require!(
                     blockers.is_some_and(|b| b.contains(&fact_id)),
                     "NegativeMemory {:?}: reverse index says fact {fact_id:?} blocks token {token_id:?} but forward missing",
                     self.id
@@ -239,12 +247,13 @@ impl NegativeMemory {
 
         // Check 2: no token is both blocked and unblocked
         for parent_token_id in self.unblocked.keys() {
-            assert!(
+            crate::snapshot::require!(
                 !self.blocked.contains_key(parent_token_id),
                 "NegativeMemory {:?}: parent token {parent_token_id:?} is both blocked and unblocked",
                 self.id
             );
         }
+        Ok(())
     }
 }
 

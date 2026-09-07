@@ -591,11 +591,16 @@ impl Engine {
     #[cfg(feature = "serde")]
     #[napi(factory)]
     pub fn from_snapshot_file(path: String, format: Option<crate::config::Format>) -> Result<Self> {
-        let data = std::fs::read(&path)
-            .map_err(|e| napi::Error::new(napi::Status::GenericFailure, e.to_string()))?;
         let fmt = format.unwrap_or(crate::config::Format::Bincode).into();
-        let engine =
-            FerricEngine::deserialize(&data, fmt).map_err(crate::error::serde_error_to_napi)?;
+        let engine = FerricEngine::deserialize_from_file(std::path::Path::new(&path), fmt)
+            .map_err(|error| match error {
+                ferric_rules_runtime::SnapshotFileError::Io(error) => {
+                    napi::Error::new(napi::Status::GenericFailure, error.to_string())
+                }
+                ferric_rules_runtime::SnapshotFileError::Serialization(error) => {
+                    crate::error::serde_error_to_napi(error)
+                }
+            })?;
         Ok(Self {
             inner: Some(engine),
         })

@@ -120,17 +120,17 @@ pub struct BetaMemoryId(pub u32);
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BetaMemory {
     pub id: BetaMemoryId,
-    tokens: OrderedSet<TokenId>,
+    pub(crate) tokens: OrderedSet<TokenId>,
     /// Variable indices: `VarId` → `AtomKey` → set of `TokenId`s with that binding value.
     /// Enables O(1) lookup during right activation instead of full parent-token scans.
     #[cfg_attr(
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_map")
     )]
-    var_indices: HashMap<VarId, HashMap<AtomKey, SmallVec<[TokenId; 4]>>>,
+    pub(crate) var_indices: HashMap<VarId, HashMap<AtomKey, SmallVec<[TokenId; 4]>>>,
     /// Which variables are currently indexed. Survives `clear()` (like alpha memory's
     /// `indexed_slots`), since the index configuration is a compile-time decision.
-    indexed_vars: SmallVec<[VarId; 4]>,
+    pub(crate) indexed_vars: SmallVec<[VarId; 4]>,
 }
 
 impl BetaMemory {
@@ -385,26 +385,26 @@ pub enum BetaNode {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BetaNetwork {
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    nodes: HashMap<NodeId, BetaNode>,
-    memories: Vec<BetaMemory>,
-    neg_memories: Vec<NegativeMemory>,
-    ncc_memories: Vec<NccMemory>,
-    exists_memories: Vec<ExistsMemory>,
-    root_id: NodeId,
-    next_node_id: u32,
-    next_memory_id: u32,
-    next_neg_memory_id: u32,
-    next_ncc_memory_id: u32,
-    next_exists_memory_id: u32,
+    pub(crate) nodes: HashMap<NodeId, BetaNode>,
+    pub(crate) memories: Vec<BetaMemory>,
+    pub(crate) neg_memories: Vec<NegativeMemory>,
+    pub(crate) ncc_memories: Vec<NccMemory>,
+    pub(crate) exists_memories: Vec<ExistsMemory>,
+    pub(crate) root_id: NodeId,
+    pub(crate) next_node_id: u32,
+    pub(crate) next_memory_id: u32,
+    pub(crate) next_neg_memory_id: u32,
+    pub(crate) next_ncc_memory_id: u32,
+    pub(crate) next_exists_memory_id: u32,
     /// Reverse index: alpha memory -> list of join nodes that subscribe to it.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    alpha_to_joins: HashMap<AlphaMemoryId, FanoutNodes>,
+    pub(crate) alpha_to_joins: HashMap<AlphaMemoryId, FanoutNodes>,
     /// Reverse index: alpha memory -> list of negative nodes that subscribe to it.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    alpha_to_negatives: HashMap<AlphaMemoryId, FanoutNodes>,
+    pub(crate) alpha_to_negatives: HashMap<AlphaMemoryId, FanoutNodes>,
     /// Reverse index: alpha memory -> list of exists nodes that subscribe to it.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    alpha_to_exists: HashMap<AlphaMemoryId, FanoutNodes>,
+    pub(crate) alpha_to_exists: HashMap<AlphaMemoryId, FanoutNodes>,
 }
 
 impl BetaNetwork {
@@ -629,8 +629,7 @@ impl BetaNetwork {
         tests: Vec<JoinTest>,
         bindings: Vec<(SlotIndex, VarId)>,
     ) -> (NodeId, BetaMemoryId) {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
         self.next_memory_id += 1;
@@ -669,8 +668,7 @@ impl BetaNetwork {
         rule: RuleId,
         condition_index: u32,
     ) -> (NodeId, BetaMemoryId) {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
         self.next_memory_id += 1;
@@ -701,8 +699,7 @@ impl BetaNetwork {
         rule: RuleId,
         salience: Salience,
     ) -> NodeId {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let node = BetaNode::Terminal {
             parent,
@@ -729,8 +726,7 @@ impl BetaNetwork {
         alpha_memory: AlphaMemoryId,
         tests: Vec<JoinTest>,
     ) -> (NodeId, BetaMemoryId, NegativeMemoryId) {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
         self.next_memory_id += 1;
@@ -790,8 +786,7 @@ impl BetaNetwork {
         partner: NodeId,
         ncc_memory_id: NccMemoryId,
     ) -> (NodeId, BetaMemoryId) {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
         self.next_memory_id += 1;
@@ -827,8 +822,7 @@ impl BetaNetwork {
         ncc_node_id: NodeId,
         ncc_memory_id: NccMemoryId,
     ) -> NodeId {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let node = BetaNode::NccPartner {
             parent,
@@ -865,8 +859,7 @@ impl BetaNetwork {
         alpha_memory: AlphaMemoryId,
         tests: Vec<JoinTest>,
     ) -> (NodeId, BetaMemoryId, ExistsMemoryId) {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
         self.next_memory_id += 1;
@@ -1051,13 +1044,35 @@ impl BetaNetwork {
         }
     }
 
+    /// Check a rule installation's conservative node demand before any graph mutation.
+    pub fn ensure_node_capacity(
+        &self,
+        required: usize,
+    ) -> Result<(), crate::compiler::CompileError> {
+        let available = (u32::MAX - self.next_node_id) as usize;
+        if required > available {
+            return Err(crate::compiler::CompileError::ResourceLimit {
+                resource: "remaining beta node IDs",
+                required,
+                limit: available,
+            });
+        }
+        Ok(())
+    }
+
     /// Allocate a new node ID without creating a node.
     ///
     /// This is exposed for coordination with other ID allocation (e.g., `ReteNetwork`).
-    #[allow(clippy::cast_possible_truncation)] // Node count will never reach u32::MAX in practice.
+    ///
+    /// # Panics
+    /// Panics if node IDs are exhausted. Rule loaders must first call
+    /// [`Self::ensure_node_capacity`] with the complete installation demand.
     pub fn allocate_node_id(&mut self) -> NodeId {
         let id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        self.next_node_id = self
+            .next_node_id
+            .checked_add(1)
+            .expect("beta node ID capacity exhausted");
         id
     }
 
@@ -1115,6 +1130,14 @@ impl BetaNetwork {
     /// Panics if any inconsistencies are detected, in any build profile.
     #[allow(clippy::too_many_lines)]
     pub fn debug_assert_consistency(&self) {
+        self.validate_consistency()
+            .expect("inconsistent engine state");
+    }
+
+    /// Validate internal indexes without panicking.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_lines)]
+    pub fn validate_consistency(&self) -> Result<(), String> {
         // Check 1: All node IDs in children fields exist in nodes map
         for (node_id, node) in &self.nodes {
             let children = match node {
@@ -1128,7 +1151,7 @@ impl BetaNetwork {
             };
 
             for child_id in children.iter() {
-                assert!(
+                crate::snapshot::require!(
                     self.nodes.contains_key(child_id),
                     "Node {node_id:?} has non-existent child {child_id:?}"
                 );
@@ -1148,7 +1171,7 @@ impl BetaNetwork {
                 BetaNode::Root { .. } => continue,
             };
 
-            assert!(
+            crate::snapshot::require!(
                 self.nodes.contains_key(&parent),
                 "Node {node_id:?} has non-existent parent {parent:?}"
             );
@@ -1158,13 +1181,13 @@ impl BetaNetwork {
         for (node_id, node) in &self.nodes {
             match node {
                 BetaNode::Join { memory, .. } => {
-                    assert!(
+                    crate::snapshot::require!(
                         self.memory(*memory).is_some(),
                         "Join node {node_id:?} references non-existent memory {memory:?}"
                     );
                 }
                 BetaNode::Predicate { memory, .. } => {
-                    assert!(
+                    crate::snapshot::require!(
                         self.memory(*memory).is_some(),
                         "Predicate node {node_id:?} references non-existent memory {memory:?}"
                     );
@@ -1172,11 +1195,11 @@ impl BetaNetwork {
                 BetaNode::Negative {
                     memory, neg_memory, ..
                 } => {
-                    assert!(
+                    crate::snapshot::require!(
                         self.memory(*memory).is_some(),
                         "Negative node {node_id:?} references non-existent beta memory {memory:?}"
                     );
-                    assert!(
+                    crate::snapshot::require!(
                         self.neg_memory(*neg_memory).is_some(),
                         "Negative node {node_id:?} references non-existent negative memory {neg_memory:?}"
                     );
@@ -1187,15 +1210,15 @@ impl BetaNetwork {
                     partner,
                     ..
                 } => {
-                    assert!(
+                    crate::snapshot::require!(
                         self.memory(*memory).is_some(),
                         "NCC node {node_id:?} references non-existent beta memory {memory:?}"
                     );
-                    assert!(
+                    crate::snapshot::require!(
                         self.ncc_memory(*ncc_memory).is_some(),
                         "NCC node {node_id:?} references non-existent NCC memory {ncc_memory:?}"
                     );
-                    assert!(
+                    crate::snapshot::require!(
                         self.nodes.contains_key(partner),
                         "NCC node {node_id:?} references non-existent partner node {partner:?}"
                     );
@@ -1205,11 +1228,11 @@ impl BetaNetwork {
                     ncc_memory,
                     ..
                 } => {
-                    assert!(
+                    crate::snapshot::require!(
                         self.nodes.contains_key(ncc_node),
                         "NCC partner node {node_id:?} references non-existent NCC node {ncc_node:?}"
                     );
-                    assert!(
+                    crate::snapshot::require!(
                         self.ncc_memory(*ncc_memory).is_some(),
                         "NCC partner node {node_id:?} references non-existent NCC memory {ncc_memory:?}"
                     );
@@ -1219,11 +1242,11 @@ impl BetaNetwork {
                     exists_memory,
                     ..
                 } => {
-                    assert!(
+                    crate::snapshot::require!(
                         self.memory(*memory).is_some(),
                         "Exists node {node_id:?} references non-existent beta memory {memory:?}"
                     );
-                    assert!(
+                    crate::snapshot::require!(
                         self.exists_memory(*exists_memory).is_some(),
                         "Exists node {node_id:?} references non-existent exists memory {exists_memory:?}"
                     );
@@ -1235,12 +1258,12 @@ impl BetaNetwork {
         // Check 4: All join nodes referenced in alpha_to_joins exist in nodes map
         for (alpha_mem_id, join_nodes) in &self.alpha_to_joins {
             for join_node_id in join_nodes {
-                assert!(
+                crate::snapshot::require!(
                     self.nodes.contains_key(join_node_id),
                     "Alpha memory {alpha_mem_id:?} references non-existent join node {join_node_id:?}"
                 );
 
-                assert!(
+                crate::snapshot::require!(
                     matches!(self.nodes.get(join_node_id), Some(BetaNode::Join { .. })),
                     "Alpha memory {alpha_mem_id:?} references node {join_node_id:?} which is not a join node"
                 );
@@ -1250,12 +1273,12 @@ impl BetaNetwork {
         // Check 4b: All negative nodes referenced in alpha_to_negatives exist
         for (alpha_mem_id, neg_nodes) in &self.alpha_to_negatives {
             for neg_node_id in neg_nodes {
-                assert!(
+                crate::snapshot::require!(
                     self.nodes.contains_key(neg_node_id),
                     "Alpha memory {alpha_mem_id:?} references non-existent negative node {neg_node_id:?}"
                 );
 
-                assert!(
+                crate::snapshot::require!(
                     matches!(
                         self.nodes.get(neg_node_id),
                         Some(BetaNode::Negative { .. })
@@ -1268,12 +1291,12 @@ impl BetaNetwork {
         // Check 4c: All exists nodes referenced in alpha_to_exists exist
         for (alpha_mem_id, exists_nodes) in &self.alpha_to_exists {
             for exists_node_id in exists_nodes {
-                assert!(
+                crate::snapshot::require!(
                     self.nodes.contains_key(exists_node_id),
                     "Alpha memory {alpha_mem_id:?} references non-existent exists node {exists_node_id:?}"
                 );
 
-                assert!(
+                crate::snapshot::require!(
                     matches!(
                         self.nodes.get(exists_node_id),
                         Some(BetaNode::Exists { .. })
@@ -1284,16 +1307,19 @@ impl BetaNetwork {
         }
 
         // Check 5: Root node exists and is actually a Root variant
-        assert!(
+        crate::snapshot::require!(
             self.nodes.contains_key(&self.root_id),
             "Root node {:?} does not exist in nodes map",
             self.root_id
         );
 
         let Some(BetaNode::Root { memory, .. }) = self.nodes.get(&self.root_id) else {
-            panic!("Root node {:?} is not a Root variant", self.root_id);
+            return Err(format!(
+                "Root node {:?} is not a Root variant",
+                self.root_id
+            ));
         };
-        assert!(
+        crate::snapshot::require!(
             self.memory(*memory).is_some(),
             "Root node {:?} references non-existent beta memory {memory:?}",
             self.root_id
@@ -1301,18 +1327,19 @@ impl BetaNetwork {
 
         // Check 6: All negative memories are internally consistent
         for neg_mem in &self.neg_memories {
-            neg_mem.debug_assert_consistency();
+            neg_mem.validate_consistency()?;
         }
 
         // Check 7: All NCC memories are internally consistent
         for ncc_mem in &self.ncc_memories {
-            ncc_mem.debug_assert_consistency();
+            ncc_mem.validate_consistency()?;
         }
 
         // Check 8: All exists memories are internally consistent
         for exists_mem in &self.exists_memories {
-            exists_mem.debug_assert_consistency();
+            exists_mem.validate_consistency()?;
         }
+        Ok(())
     }
 
     fn memory(&self, id: BetaMemoryId) -> Option<&BetaMemory> {

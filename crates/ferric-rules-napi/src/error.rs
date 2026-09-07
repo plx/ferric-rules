@@ -24,7 +24,8 @@ pub fn engine_error_to_napi(err: EngineError) -> Error {
         EngineError::Encoding(_) => {
             format!("FerricEncodingError: {err}")
         }
-        EngineError::WrongThread { .. }
+        EngineError::FactTimestampExhausted(_)
+        | EngineError::WrongThread { .. }
         | EngineError::NotATemplateFact(_)
         | EngineError::SlotCountMismatch { .. }
         | EngineError::DuplicateSlot { .. }

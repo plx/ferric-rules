@@ -29,7 +29,10 @@ pub mod fx_hash_map {
         D: Deserializer<'de>,
     {
         let entries: Vec<(K, V)> = Vec::deserialize(deserializer)?;
-        Ok(entries.into_iter().collect())
+        let count = entries.len();
+        let map: FxHashMap<K, V> = entries.into_iter().collect();
+        super::check_unique::<D::Error>(count, map.len())?;
+        Ok(map)
     }
 }
 
@@ -56,7 +59,10 @@ pub mod fx_hash_set {
         D: Deserializer<'de>,
     {
         let items: Vec<T> = Vec::deserialize(deserializer)?;
-        Ok(items.into_iter().collect())
+        let count = items.len();
+        let set: FxHashSet<T> = items.into_iter().collect();
+        super::check_unique::<D::Error>(count, set.len())?;
+        Ok(set)
     }
 }
 
@@ -92,10 +98,16 @@ pub mod fx_hash_map_of_fx_hash_set {
         D: Deserializer<'de>,
     {
         let entries: Vec<(K, Vec<V>)> = Vec::deserialize(deserializer)?;
-        Ok(entries
-            .into_iter()
-            .map(|(k, vs)| (k, vs.into_iter().collect()))
-            .collect())
+        let count = entries.len();
+        let mut result = FxHashMap::default();
+        for (key, items) in entries {
+            let item_count = items.len();
+            let set: FxHashSet<V> = items.into_iter().collect();
+            super::check_unique::<D::Error>(item_count, set.len())?;
+            result.insert(key, set);
+        }
+        super::check_unique::<D::Error>(count, result.len())?;
+        Ok(result)
     }
 }
 
@@ -135,10 +147,16 @@ pub mod fx_hash_map_of_fx_hash_map {
         D: Deserializer<'de>,
     {
         let entries: Vec<(K, Vec<(K2, V)>)> = Vec::deserialize(deserializer)?;
-        Ok(entries
-            .into_iter()
-            .map(|(k, inner)| (k, inner.into_iter().collect()))
-            .collect())
+        let count = entries.len();
+        let mut result = FxHashMap::default();
+        for (key, entries) in entries {
+            let inner_count = entries.len();
+            let inner: FxHashMap<K2, V> = entries.into_iter().collect();
+            super::check_unique::<D::Error>(inner_count, inner.len())?;
+            result.insert(key, inner);
+        }
+        super::check_unique::<D::Error>(count, result.len())?;
+        Ok(result)
     }
 }
 
@@ -187,18 +205,22 @@ pub mod fx_hash_map_of_fx_hash_map_of_fx_hash_set {
         D: Deserializer<'de>,
     {
         let entries: Vec<(K, Vec<(K2, Vec<V>)>)> = Vec::deserialize(deserializer)?;
-        Ok(entries
-            .into_iter()
-            .map(|(k, inner)| {
-                (
-                    k,
-                    inner
-                        .into_iter()
-                        .map(|(k2, vs)| (k2, vs.into_iter().collect()))
-                        .collect(),
-                )
-            })
-            .collect())
+        let count = entries.len();
+        let mut result = FxHashMap::default();
+        for (key, entries) in entries {
+            let inner_count = entries.len();
+            let mut inner = FxHashMap::default();
+            for (key, items) in entries {
+                let item_count = items.len();
+                let set: FxHashSet<V> = items.into_iter().collect();
+                super::check_unique::<D::Error>(item_count, set.len())?;
+                inner.insert(key, set);
+            }
+            super::check_unique::<D::Error>(inner_count, inner.len())?;
+            result.insert(key, inner);
+        }
+        super::check_unique::<D::Error>(count, result.len())?;
+        Ok(result)
     }
 }
 
@@ -231,7 +253,10 @@ pub mod btree_map {
         D: Deserializer<'de>,
     {
         let entries: Vec<(K, V)> = Vec::deserialize(deserializer)?;
-        Ok(entries.into_iter().collect())
+        let count = entries.len();
+        let map: BTreeMap<K, V> = entries.into_iter().collect();
+        super::check_unique::<D::Error>(count, map.len())?;
+        Ok(map)
     }
 }
 
@@ -262,6 +287,18 @@ pub mod std_hash_set {
         D: Deserializer<'de>,
     {
         let items: Vec<T> = Vec::deserialize(deserializer)?;
-        Ok(items.into_iter().collect())
+        let count = items.len();
+        let set: HashSet<T> = items.into_iter().collect();
+        super::check_unique::<D::Error>(count, set.len())?;
+        Ok(set)
     }
+}
+
+// Serde's map/set collections otherwise silently discard duplicate entries.
+// Persisted engine identities and memberships must be unambiguous.
+fn check_unique<E: serde::de::Error>(entries: usize, collected: usize) -> Result<(), E> {
+    if entries != collected {
+        return Err(E::custom("duplicate persisted map/set entry"));
+    }
+    Ok(())
 }

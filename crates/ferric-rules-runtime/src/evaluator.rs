@@ -104,6 +104,9 @@ pub enum EvalError {
         span: Option<SourceSpan>,
     },
 
+    #[error("expression nesting limit exceeded (limit {limit})")]
+    ExpressionNestingLimit { limit: usize },
+
     #[error("action iteration limit exceeded in `{function}` (limit {limit}) at {}", format_span(.span.as_ref()))]
     ActionIterationLimit {
         function: String,
@@ -307,6 +310,8 @@ pub struct EvalContext<'a> {
     pub generics: &'a GenericRegistry,
     /// Current call depth, for recursion limit enforcement.
     pub call_depth: usize,
+    /// Active evaluator frames, inherited by callable and loop contexts.
+    pub(crate) expression_depth: usize,
     /// The module that the current evaluation is executing in.
     pub current_module: crate::modules::ModuleId,
     /// Module registry for visibility checks.
@@ -501,8 +506,26 @@ fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, Eva
     }
 }
 
-#[allow(clippy::too_many_lines)] // The visibility checks add necessary verbosity
+/// Limit active evaluator frames across callable bodies and nested expressions.
+/// Counting only user calls lets nested `if`/argument expressions multiply the
+/// native stack at each recursion level. This counter is local to evaluation;
+/// it introduces no shared mutable state or atomics on the expression path.
+const MAX_EXPRESSION_DEPTH: usize = 64;
+
 fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
+    if ctx.expression_depth >= MAX_EXPRESSION_DEPTH {
+        return Err(EvalError::ExpressionNestingLimit {
+            limit: MAX_EXPRESSION_DEPTH,
+        });
+    }
+    ctx.expression_depth += 1;
+    let result = eval_dispatch(ctx, expr);
+    ctx.expression_depth -= 1;
+    result
+}
+
+#[allow(clippy::too_many_lines)] // The visibility checks add necessary verbosity
+fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, EvalError> {
     match expr {
         RuntimeExpr::Literal(v) => Ok(v.clone()),
         RuntimeExpr::BoundVar { name, span } => {
@@ -772,6 +795,7 @@ fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Ev
                     globals: ctx.globals,
                     generics: ctx.generics,
                     call_depth: ctx.call_depth,
+                    expression_depth: ctx.expression_depth,
                     current_module: ctx.current_module,
                     module_registry: ctx.module_registry,
                     function_modules: ctx.function_modules,
@@ -875,6 +899,7 @@ fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Ev
                     globals: ctx.globals,
                     generics: ctx.generics,
                     call_depth: ctx.call_depth,
+                    expression_depth: ctx.expression_depth,
                     current_module: ctx.current_module,
                     module_registry: ctx.module_registry,
                     function_modules: ctx.function_modules,
@@ -1151,6 +1176,7 @@ fn execute_callable_body(
         globals: ctx.globals,
         generics: ctx.generics,
         call_depth: ctx.call_depth + 1,
+        expression_depth: ctx.expression_depth,
         current_module,
         module_registry: ctx.module_registry,
         function_modules: ctx.function_modules,
@@ -1173,21 +1199,6 @@ fn execute_callable_body(
     Ok(result)
 }
 
-fn effective_max_call_depth(ctx: &EvalContext<'_>) -> usize {
-    #[cfg(feature = "tracing")]
-    {
-        // Tracing increases per-frame stack pressure in deep recursive call paths.
-        // Clamp to a conservative ceiling until recursive evaluation is replaced
-        // with an iterative frame stack.
-        ctx.config.max_call_depth.min(32)
-    }
-
-    #[cfg(not(feature = "tracing"))]
-    {
-        ctx.config.max_call_depth
-    }
-}
-
 /// Dispatch a call to a user-defined function.
 #[allow(clippy::too_many_lines)]
 fn dispatch_user_function(
@@ -1198,7 +1209,7 @@ fn dispatch_user_function(
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
     let span_ref = span.as_ref();
-    let max_call_depth = effective_max_call_depth(ctx);
+    let max_call_depth = ctx.config.effective_max_call_depth();
 
     // Check recursion limit before doing anything else.
     if ctx.call_depth >= max_call_depth {
@@ -1432,7 +1443,7 @@ fn dispatch_generic(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let max_call_depth = effective_max_call_depth(ctx);
+    let max_call_depth = ctx.config.effective_max_call_depth();
     // Evaluate all arguments first (eager evaluation).
     let arg_values = eval_args(ctx, args)?;
 
@@ -1513,7 +1524,7 @@ fn dispatch_call_next_method(
     args: &[RuntimeExpr],
     span: Option<SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let max_call_depth = effective_max_call_depth(ctx);
+    let max_call_depth = ctx.config.effective_max_call_depth();
     // call-next-method takes no arguments.
     if !args.is_empty() {
         return Err(EvalError::ArityMismatch {
@@ -1674,9 +1685,84 @@ fn bind_parameter(
 // Translation: ActionExpr -> RuntimeExpr
 // ---------------------------------------------------------------------------
 
+pub(crate) fn validate_action_depth(
+    root: &ferric_rules_parser::ActionExpr,
+) -> Result<(), EvalError> {
+    use ferric_rules_parser::ActionExpr;
+    let mut pending = vec![(root, 0)];
+    while let Some((expr, depth)) = pending.pop() {
+        if depth >= 16 {
+            return Err(EvalError::ExpressionNestingLimit { limit: 16 });
+        }
+        let mut branches = Vec::new();
+        match expr {
+            ActionExpr::Literal(_) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => {}
+            ActionExpr::FunctionCall(call) => branches.push(&call.args),
+            ActionExpr::If {
+                condition,
+                then_actions,
+                else_actions,
+                ..
+            } => {
+                pending.push((condition, depth + 1));
+                branches.extend([then_actions, else_actions]);
+            }
+            ActionExpr::While {
+                condition, body, ..
+            } => {
+                pending.push((condition, depth + 1));
+                branches.push(body);
+            }
+            ActionExpr::LoopForCount {
+                start, end, body, ..
+            } => {
+                pending.extend([(start.as_ref(), depth + 1), (end.as_ref(), depth + 1)]);
+                branches.push(body);
+            }
+            ActionExpr::Progn {
+                list_expr, body, ..
+            } => {
+                pending.push((list_expr, depth + 1));
+                branches.push(body);
+            }
+            ActionExpr::QueryAction { query, body, .. } => {
+                pending.push((query, depth + 1));
+                branches.push(body);
+            }
+            ActionExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                pending.push((expr, depth + 1));
+                for (case, body) in cases {
+                    pending.push((case, depth + 1));
+                    branches.push(body);
+                }
+                branches.extend(default.iter());
+            }
+        }
+        for branch in branches {
+            pending.extend(branch.iter().map(|expr| (expr, depth + 1)));
+        }
+    }
+    Ok(())
+}
+
+/// Translate a parser expression after bounding recursive conversion and cloning.
+pub fn from_action_expr(
+    expr: &ferric_rules_parser::ActionExpr,
+    symbol_table: &mut SymbolTable,
+    config: &EngineConfig,
+) -> Result<RuntimeExpr, EvalError> {
+    validate_action_depth(expr)?;
+    from_action_expr_inner(expr, symbol_table, config)
+}
+
 /// Translate a parser `ActionExpr` to a `RuntimeExpr`.
 #[allow(clippy::too_many_lines)] // Each new loop form adds ~20 lines of translation boilerplate
-pub fn from_action_expr(
+fn from_action_expr_inner(
     expr: &ferric_rules_parser::ActionExpr,
     symbol_table: &mut SymbolTable,
     config: &EngineConfig,
@@ -1703,7 +1789,7 @@ pub fn from_action_expr(
         ferric_rules_parser::ActionExpr::FunctionCall(call) => {
             let mut args = Vec::with_capacity(call.args.len());
             for arg in &call.args {
-                args.push(from_action_expr(arg, symbol_table, config)?);
+                args.push(from_action_expr_inner(arg, symbol_table, config)?);
             }
             Ok(RuntimeExpr::Call {
                 name: call.name.clone(),
@@ -1720,15 +1806,19 @@ pub fn from_action_expr(
             else_actions,
             span,
         } => {
-            let condition_rt = from_action_expr(condition, symbol_table, config)?;
+            let condition_rt = from_action_expr_inner(condition, symbol_table, config)?;
             let mut then_branch = Vec::with_capacity(then_actions.len());
             for a in then_actions {
-                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                let rt = from_action_expr_inner(a, symbol_table, config)
+                    .ok()
+                    .map(Box::new);
                 then_branch.push((a.clone(), rt));
             }
             let mut else_branch = Vec::with_capacity(else_actions.len());
             for a in else_actions {
-                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                let rt = from_action_expr_inner(a, symbol_table, config)
+                    .ok()
+                    .map(Box::new);
                 else_branch.push((a.clone(), rt));
             }
             Ok(RuntimeExpr::If {
@@ -1746,10 +1836,12 @@ pub fn from_action_expr(
             body,
             span,
         } => {
-            let condition_rt = from_action_expr(condition, symbol_table, config)?;
+            let condition_rt = from_action_expr_inner(condition, symbol_table, config)?;
             let mut body_rt = Vec::with_capacity(body.len());
             for a in body {
-                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                let rt = from_action_expr_inner(a, symbol_table, config)
+                    .ok()
+                    .map(Box::new);
                 body_rt.push((a.clone(), rt));
             }
             Ok(RuntimeExpr::While {
@@ -1768,11 +1860,13 @@ pub fn from_action_expr(
             body,
             span,
         } => {
-            let start_rt = from_action_expr(start, symbol_table, config)?;
-            let end_rt = from_action_expr(end, symbol_table, config)?;
+            let start_rt = from_action_expr_inner(start, symbol_table, config)?;
+            let end_rt = from_action_expr_inner(end, symbol_table, config)?;
             let mut body_rt = Vec::with_capacity(body.len());
             for a in body {
-                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                let rt = from_action_expr_inner(a, symbol_table, config)
+                    .ok()
+                    .map(Box::new);
                 body_rt.push((a.clone(), rt));
             }
             Ok(RuntimeExpr::LoopForCount {
@@ -1792,10 +1886,12 @@ pub fn from_action_expr(
             body,
             span,
         } => {
-            let list_rt = from_action_expr(list_expr, symbol_table, config)?;
+            let list_rt = from_action_expr_inner(list_expr, symbol_table, config)?;
             let mut body_rt = Vec::with_capacity(body.len());
             for a in body {
-                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                let rt = from_action_expr_inner(a, symbol_table, config)
+                    .ok()
+                    .map(Box::new);
                 body_rt.push((a.clone(), rt));
             }
             Ok(RuntimeExpr::Progn {
@@ -1815,10 +1911,12 @@ pub fn from_action_expr(
             body,
             span,
         } => {
-            let query_rt = from_action_expr(query, symbol_table, config)?;
+            let query_rt = from_action_expr_inner(query, symbol_table, config)?;
             let mut body_rt = Vec::with_capacity(body.len());
             for a in body {
-                let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                let rt = from_action_expr_inner(a, symbol_table, config)
+                    .ok()
+                    .map(Box::new);
                 body_rt.push((a.clone(), rt));
             }
             Ok(RuntimeExpr::QueryAction {
@@ -1838,13 +1936,15 @@ pub fn from_action_expr(
             default,
             span,
         } => {
-            let expr_rt = from_action_expr(expr, symbol_table, config)?;
+            let expr_rt = from_action_expr_inner(expr, symbol_table, config)?;
             let mut cases_rt = Vec::with_capacity(cases.len());
             for (test_val, actions) in cases {
-                let test_rt = from_action_expr(test_val, symbol_table, config)?;
+                let test_rt = from_action_expr_inner(test_val, symbol_table, config)?;
                 let mut actions_rt = Vec::with_capacity(actions.len());
                 for a in actions {
-                    let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                    let rt = from_action_expr_inner(a, symbol_table, config)
+                        .ok()
+                        .map(Box::new);
                     actions_rt.push((a.clone(), rt));
                 }
                 cases_rt.push((test_rt, actions_rt));
@@ -1853,7 +1953,9 @@ pub fn from_action_expr(
                 actions
                     .iter()
                     .map(|a| {
-                        let rt = from_action_expr(a, symbol_table, config).ok().map(Box::new);
+                        let rt = from_action_expr_inner(a, symbol_table, config)
+                            .ok()
+                            .map(Box::new);
                         (a.clone(), rt)
                     })
                     .collect()
@@ -1877,6 +1979,23 @@ pub fn from_action_expr(
 /// The first element of a list is the function name, remaining elements are
 /// arguments. Atoms are interpreted as literals or variable references.
 pub fn from_sexpr(
+    expr: &ferric_rules_parser::SExpr,
+    symbol_table: &mut SymbolTable,
+    config: &EngineConfig,
+) -> Result<RuntimeExpr, EvalError> {
+    let mut pending = vec![(expr, 0)];
+    while let Some((value, depth)) = pending.pop() {
+        if depth >= 16 {
+            return Err(EvalError::ExpressionNestingLimit { limit: 16 });
+        }
+        if let ferric_rules_parser::SExpr::List(items, _) = value {
+            pending.extend(items.iter().map(|value| (value, depth + 1)));
+        }
+    }
+    from_sexpr_inner(expr, symbol_table, config)
+}
+
+fn from_sexpr_inner(
     expr: &ferric_rules_parser::SExpr,
     symbol_table: &mut SymbolTable,
     config: &EngineConfig,
@@ -1912,7 +2031,7 @@ pub fn from_sexpr(
             };
             let mut args = Vec::with_capacity(items.len() - 1);
             for item in &items[1..] {
-                args.push(from_sexpr(item, symbol_table, config)?);
+                args.push(from_sexpr_inner(item, symbol_table, config)?);
             }
             Ok(RuntimeExpr::Call {
                 name: func_name,
@@ -5901,6 +6020,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: main_id,
             module_registry: &mr,
             function_modules: &em,
@@ -5991,6 +6111,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6036,6 +6157,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6087,6 +6209,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6122,6 +6245,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6160,6 +6284,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6201,6 +6326,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6269,6 +6395,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6313,6 +6440,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6341,6 +6469,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6380,6 +6509,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6425,6 +6555,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6481,6 +6612,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6539,6 +6671,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6591,6 +6724,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6769,6 +6903,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6796,6 +6931,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6823,6 +6959,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6850,6 +6987,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6877,6 +7015,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6904,6 +7043,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6935,6 +7075,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6962,6 +7103,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -6995,6 +7137,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7030,6 +7173,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7065,6 +7209,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7099,6 +7244,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7127,6 +7273,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7184,6 +7331,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7211,6 +7359,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7238,6 +7387,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7265,6 +7415,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7292,6 +7443,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7320,6 +7472,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7348,6 +7501,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7380,6 +7534,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7408,6 +7563,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7435,6 +7591,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7474,6 +7631,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7504,6 +7662,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7541,6 +7700,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7568,6 +7728,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7595,6 +7756,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7638,6 +7800,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7665,6 +7828,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7692,6 +7856,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7754,6 +7919,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7804,6 +7970,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -7859,6 +8026,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -8273,6 +8441,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -8306,6 +8475,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -8339,6 +8509,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -8384,6 +8555,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -8477,6 +8649,7 @@ mod tests {
                 globals: &mut gs,
                 generics: &generics,
                 call_depth: 0,
+                expression_depth: 0,
                 current_module: mr.main_module_id(),
                 module_registry: &mr,
                 function_modules: &em,
@@ -8546,6 +8719,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9076,6 +9250,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9104,6 +9279,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9153,6 +9329,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9187,6 +9364,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9217,6 +9395,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9251,6 +9430,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9281,6 +9461,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9315,6 +9496,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9345,6 +9527,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9398,6 +9581,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9440,6 +9624,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9662,6 +9847,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9691,6 +9877,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9720,6 +9907,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9752,6 +9940,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9785,6 +9974,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9821,6 +10011,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9853,6 +10044,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9886,6 +10078,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: mr.main_module_id(),
             module_registry: &mr,
             function_modules: &em,
@@ -9951,6 +10144,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: main_id,
             module_registry: &mr,
             function_modules: &em,
@@ -9995,6 +10189,7 @@ mod tests {
             globals: &mut gs,
             generics: &generics,
             call_depth: 0,
+            expression_depth: 0,
             current_module: main_id,
             module_registry: &mr,
             function_modules: &em,

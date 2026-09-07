@@ -382,19 +382,27 @@ impl Agenda {
     ///
     /// Available in all profiles so dependent crates can run release tests.
     pub fn debug_assert_consistency(&self) {
+        self.validate_consistency()
+            .expect("inconsistent engine state");
+    }
+
+    /// Validate activation identity and ordering indexes without panicking.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_lines)]
+    pub fn validate_consistency(&self) -> Result<(), String> {
         // 1. Every key in ordering references a live activation and a matching reverse key.
         for (key, activation_id) in &self.ordering {
-            assert!(
+            crate::snapshot::require!(
                 self.activations.contains_key(*activation_id),
                 "ordering references non-existent activation {activation_id:?}"
             );
 
             let reverse_key = self.id_to_key.get(*activation_id);
-            assert!(
+            crate::snapshot::require!(
                 reverse_key.is_some(),
                 "activation {activation_id:?} missing from id_to_key"
             );
-            assert_eq!(
+            crate::snapshot::require_eq!(
                 reverse_key,
                 Some(key),
                 "id_to_key mismatch for activation {activation_id:?}"
@@ -403,17 +411,17 @@ impl Agenda {
 
         // 2. Every reverse key references the same entry in ordering and a live activation.
         for (activation_id, key) in &self.id_to_key {
-            assert!(
+            crate::snapshot::require!(
                 self.activations.contains_key(activation_id),
                 "id_to_key references non-existent activation {activation_id:?}"
             );
 
             let ordered_id = self.ordering.get(key);
-            assert!(
+            crate::snapshot::require!(
                 ordered_id.is_some(),
                 "id_to_key key missing from ordering for activation {activation_id:?}"
             );
-            assert_eq!(
+            crate::snapshot::require_eq!(
                 ordered_id,
                 Some(&activation_id),
                 "ordering mismatch for activation {activation_id:?}"
@@ -423,18 +431,23 @@ impl Agenda {
         // 3. token_to_activations entries are non-empty and point to live activations
         //    whose token field matches the map key.
         for (token_id, activation_ids) in &self.token_to_activations {
-            assert!(
+            crate::snapshot::require!(
                 !activation_ids.is_empty(),
                 "token_to_activations contains empty entry for token {token_id:?}"
             );
 
+            let unique: rustc_hash::FxHashSet<_> = activation_ids.iter().collect();
+            crate::snapshot::require!(
+                unique.len() == activation_ids.len(),
+                "duplicate token activation index entry"
+            );
             for activation_id in activation_ids {
                 let activation = self.activations.get(*activation_id);
-                assert!(
+                crate::snapshot::require!(
                     activation.is_some(),
                     "token_to_activations references non-existent activation {activation_id:?}"
                 );
-                assert_eq!(
+                crate::snapshot::require_eq!(
                     activation.map(|a| a.token),
                     Some(*token_id),
                     "token_to_activations token mismatch for activation {activation_id:?}"
@@ -445,12 +458,12 @@ impl Agenda {
         // 4. Every live activation appears in both reverse indices.
         for (activation_id, activation) in &self.activations {
             let key = self.id_to_key.get(activation_id);
-            assert!(
+            crate::snapshot::require!(
                 key.is_some(),
                 "live activation {activation_id:?} missing from id_to_key"
             );
             if let Some(k) = key {
-                assert_eq!(
+                crate::snapshot::require_eq!(
                     self.ordering.get(k),
                     Some(&activation_id),
                     "live activation {activation_id:?} missing from ordering"
@@ -458,16 +471,35 @@ impl Agenda {
             }
 
             let token_acts = self.token_to_activations.get(&activation.token);
-            assert!(
+            crate::snapshot::require!(
                 token_acts.is_some(),
                 "live activation {activation_id:?} missing from token_to_activations"
             );
-            assert!(
+            crate::snapshot::require!(
                 token_acts.is_some_and(|ids| ids.contains(&activation_id)),
                 "live activation {activation_id:?} not indexed under token {:?}",
                 activation.token
             );
         }
+        let mut sequences = rustc_hash::FxHashSet::default();
+        for (id, activation) in &self.activations {
+            crate::snapshot::require_eq!(id, activation.id);
+            crate::snapshot::require!(
+                sequences.insert(activation.activation_seq),
+                "duplicate activation sequence"
+            );
+            crate::snapshot::require!(
+                activation.activation_seq < self.next_seq,
+                "activation sequence exceeds next sequence"
+            );
+            let key = self.build_key(activation);
+            crate::snapshot::require!(
+                self.id_to_key.get(id) == Some(&key),
+                "activation ordering key does not match current strategy"
+            );
+        }
+
+        Ok(())
     }
 }
 

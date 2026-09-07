@@ -77,6 +77,35 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: ./scripts/preflight.sh test
 
+  release-core-and-scaling:
+    name: Release Core and Scaling
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@just
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Test optimized core and persistence behavior
+        run: |
+          set -o pipefail
+          cargo test -p ferric-rules-core -p ferric-rules-runtime \
+            --all-features --release --locked 2>&1 | tee release-core.log
+      - name: Check release scaling without concurrent test workloads
+        run: |
+          set -o pipefail
+          just scaling-check 2>&1 | tee scaling-check.log
+      - name: Retain release and scaling results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-core-and-scaling-${{ github.sha }}
+          retention-days: 14
+          path: |
+            release-core.log
+            scaling-check.log
+
   tracing:
     name: Tracing Feature
     runs-on: ubuntu-latest

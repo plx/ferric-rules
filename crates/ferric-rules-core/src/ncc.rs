@@ -43,13 +43,13 @@ pub struct NccMemory {
     pub id: NccMemoryId,
     /// Parent token → count of subnetwork result tokens
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    result_count: HashMap<TokenId, usize>,
+    pub(crate) result_count: HashMap<TokenId, usize>,
     /// Subnetwork result token → NCC parent token it blocks.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    result_owner: HashMap<TokenId, TokenId>,
+    pub(crate) result_owner: HashMap<TokenId, TokenId>,
     /// Parent token → pass-through token (when unblocked, count == 0)
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
-    unblocked: HashMap<TokenId, TokenId>,
+    pub(crate) unblocked: HashMap<TokenId, TokenId>,
 }
 
 impl NccMemory {
@@ -179,9 +179,17 @@ impl NccMemory {
 
     /// Verify internal consistency of the NCC memory.
     pub fn debug_assert_consistency(&self) {
+        self.validate_consistency()
+            .expect("inconsistent engine state");
+    }
+
+    /// Validate internal indexes without panicking.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_lines)]
+    pub fn validate_consistency(&self) -> Result<(), String> {
         // Check 1: no token is both in result_count (blocked) and unblocked
         for parent_token_id in self.unblocked.keys() {
-            assert!(
+            crate::snapshot::require!(
                 !self.result_count.contains_key(parent_token_id),
                 "NccMemory {:?}: parent token {parent_token_id:?} is both blocked (count > 0) and unblocked",
                 self.id
@@ -190,7 +198,7 @@ impl NccMemory {
 
         // Check 2: all entries in result_count should have count > 0
         for (&token_id, &count) in &self.result_count {
-            assert!(
+            crate::snapshot::require!(
                 count > 0,
                 "NccMemory {:?}: token {token_id:?} has zero count in result_count map",
                 self.id
@@ -201,7 +209,7 @@ impl NccMemory {
         let mut per_parent_results: HashMap<TokenId, usize> = HashMap::default();
         for (&result_token, &parent_token) in &self.result_owner {
             let _ = result_token;
-            assert!(
+            crate::snapshot::require!(
                 self.result_count.contains_key(&parent_token),
                 "NccMemory {:?}: result token references parent {parent_token:?} with no count entry",
                 self.id
@@ -212,12 +220,13 @@ impl NccMemory {
         // Check 4: parent counts match tracked result tokens.
         for (&parent_token, &count) in &self.result_count {
             let tracked = per_parent_results.get(&parent_token).copied().unwrap_or(0);
-            assert_eq!(
+            crate::snapshot::require_eq!(
                 tracked, count,
                 "NccMemory {:?}: parent {parent_token:?} count mismatch: count={count}, tracked-results={tracked}",
                 self.id
             );
         }
+        Ok(())
     }
 }
 

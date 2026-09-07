@@ -38,10 +38,8 @@ impl ReplSession {
         path: &std::path::Path,
         format: ferric_rules_runtime::serialization::SerializationFormat,
     ) -> Result<Self, String> {
-        let data =
-            std::fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-        let engine = Engine::deserialize(&data, format)
-            .map_err(|e| format!("deserialization failed: {e}"))?;
+        let engine = Engine::deserialize_from_file(path, format)
+            .map_err(|e| format!("failed to restore {}: {e}", path.display()))?;
         Ok(Self {
             engine,
             watch_facts: false,

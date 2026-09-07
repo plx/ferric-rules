@@ -158,8 +158,8 @@ pub struct GlobalStore {
         feature = "serde",
         serde(with = "ferric_rules_core::serde_helpers::fx_hash_map_of_fx_hash_map")
     )]
-    values: ModuleNameMap<Value>,
-    gensym_counter: i64,
+    pub(crate) values: ModuleNameMap<Value>,
+    pub(crate) gensym_counter: i64,
     printout_events: Vec<(String, String)>,
 }
 
@@ -283,7 +283,7 @@ pub struct GenericFunction {
     /// Methods sorted by index (ascending).
     pub methods: Vec<RegisteredMethod>,
     /// Next auto-assigned index.
-    next_index: i32,
+    pub(crate) next_index: i32,
 }
 
 impl GenericFunction {
@@ -321,7 +321,7 @@ pub struct GenericRegistry {
         feature = "serde",
         serde(with = "ferric_rules_core::serde_helpers::fx_hash_map_of_fx_hash_map")
     )]
-    generics: ModuleNameMap<GenericFunction>,
+    pub(crate) generics: ModuleNameMap<GenericFunction>,
 }
 
 impl GenericRegistry {

@@ -45,17 +45,17 @@ pub struct Token {
 /// These indices enable efficient cascading deletion when facts are retracted.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TokenStore {
-    tokens: SlotMap<TokenId, Token>,
+    pub(crate) tokens: SlotMap<TokenId, Token>,
     #[cfg_attr(
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
     )]
-    fact_to_tokens: HashMap<FactId, HashSet<TokenId>>,
+    pub(crate) fact_to_tokens: HashMap<FactId, HashSet<TokenId>>,
     #[cfg_attr(
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
     )]
-    parent_to_children: HashMap<TokenId, HashSet<TokenId>>,
+    pub(crate) parent_to_children: HashMap<TokenId, HashSet<TokenId>>,
 }
 
 impl TokenStore {
@@ -267,10 +267,18 @@ impl TokenStore {
     ///
     /// Available in all profiles so dependent crates can run release tests.
     pub fn debug_assert_consistency(&self) {
+        self.validate_consistency()
+            .expect("inconsistent engine state");
+    }
+
+    /// Validate internal indexes without panicking.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_lines)]
+    pub fn validate_consistency(&self) -> Result<(), String> {
         // 1. Every TokenId in fact_to_tokens exists in the tokens SlotMap
         for (fact_id, token_ids) in &self.fact_to_tokens {
             for &token_id in token_ids {
-                assert!(
+                crate::snapshot::require!(
                     self.tokens.contains_key(token_id),
                     "fact_to_tokens references non-existent token {token_id:?} for fact {fact_id:?}"
                 );
@@ -279,12 +287,12 @@ impl TokenStore {
 
         // 2. Every TokenId in parent_to_children (both keys and values) exists in tokens
         for (&parent_id, children) in &self.parent_to_children {
-            assert!(
+            crate::snapshot::require!(
                 self.tokens.contains_key(parent_id),
                 "parent_to_children has non-existent parent {parent_id:?}"
             );
             for &child_id in children {
-                assert!(
+                crate::snapshot::require!(
                     self.tokens.contains_key(child_id),
                     "parent_to_children references non-existent child {child_id:?}"
                 );
@@ -295,11 +303,11 @@ impl TokenStore {
         for (token_id, token) in &self.tokens {
             if let Some(fact_id) = token.fact {
                 let indexed_tokens = self.fact_to_tokens.get(&fact_id);
-                assert!(
+                crate::snapshot::require!(
                     indexed_tokens.is_some(),
                     "token {token_id:?} has fact {fact_id:?} but fact_to_tokens has no entry"
                 );
-                assert!(
+                crate::snapshot::require!(
                     indexed_tokens.unwrap().contains(&token_id),
                     "token {token_id:?} has fact {fact_id:?} but is not in fact_to_tokens index"
                 );
@@ -312,11 +320,11 @@ impl TokenStore {
                 // Only check if parent still exists (orphaned tokens are allowed after non-cascading remove)
                 if self.tokens.contains_key(parent_id) {
                     let children = self.parent_to_children.get(&parent_id);
-                    assert!(
+                    crate::snapshot::require!(
                         children.is_some(),
                         "token {token_id:?} has parent {parent_id:?} but parent has no children entry"
                     );
-                    assert!(
+                    crate::snapshot::require!(
                         children.unwrap().contains(&token_id),
                         "token {token_id:?} has parent {parent_id:?} but is not in parent's children list"
                     );
@@ -326,18 +334,19 @@ impl TokenStore {
 
         // 5. No empty sets exist in the index maps
         for (fact_id, tokens) in &self.fact_to_tokens {
-            assert!(
+            crate::snapshot::require!(
                 !tokens.is_empty(),
                 "fact_to_tokens has empty entry for fact {fact_id:?}"
             );
         }
 
         for (parent_id, children) in &self.parent_to_children {
-            assert!(
+            crate::snapshot::require!(
                 !children.is_empty(),
                 "parent_to_children has empty entry for parent {parent_id:?}"
             );
         }
+        Ok(())
     }
 }
 
