@@ -2490,7 +2490,7 @@ fn execute_assert(
                         context.engine,
                         template_id,
                         slots.into_boxed_slice(),
-                    );
+                    )?;
                     continue;
                 }
                 let relation_sym = context
@@ -2515,7 +2515,7 @@ fn execute_assert(
                     }
                 }
 
-                assert_ordered_and_propagate(context.engine, relation_sym, fields);
+                assert_ordered_and_propagate(context.engine, relation_sym, fields)?;
             }
             _ => return Err(ActionError::InvalidAssert),
         }
@@ -2640,6 +2640,11 @@ fn execute_fact_mutation(
                 collected_facts,
             )?;
             if mode.retract_original() {
+                context
+                    .engine
+                    .fact_base
+                    .ensure_assertion_capacity()
+                    .map_err(|error| ActionError::EvalError(error.to_string()))?;
                 retract_original_fact(
                     &mut context.engine.fact_base,
                     &mut context.engine.rete,
@@ -2647,7 +2652,7 @@ fn execute_fact_mutation(
                     &original_fact,
                 );
             }
-            assert_ordered_and_propagate(context.engine, relation, fields);
+            assert_ordered_and_propagate(context.engine, relation, fields)?;
         }
         Fact::Template(template) => {
             let registered = context
@@ -2676,6 +2681,11 @@ fn execute_fact_mutation(
                 .validate_slots(&slots)
                 .map_err(ActionError::EvalError)?;
             if mode.retract_original() {
+                context
+                    .engine
+                    .fact_base
+                    .ensure_assertion_capacity()
+                    .map_err(|error| ActionError::EvalError(error.to_string()))?;
                 retract_original_fact(
                     &mut context.engine.fact_base,
                     &mut context.engine.rete,
@@ -2687,7 +2697,7 @@ fn execute_fact_mutation(
                 context.engine,
                 template.template_id,
                 slots.into_boxed_slice(),
-            );
+            )?;
         }
     }
 
@@ -2698,19 +2708,23 @@ fn assert_ordered_and_propagate(
     engine: &mut Engine,
     relation: Symbol,
     fields: OrderedFields,
-) -> crate::FactAssertionResult<FactId> {
-    engine.assert_fact_internal(Fact::Ordered(OrderedFact { relation, fields }))
+) -> Result<crate::FactAssertionResult<FactId>, ActionError> {
+    engine
+        .assert_fact_internal(Fact::Ordered(OrderedFact { relation, fields }))
+        .map_err(|error| ActionError::EvalError(error.to_string()))
 }
 
 fn assert_template_and_propagate(
     engine: &mut Engine,
     template_id: TemplateId,
     slots: Box<[Value]>,
-) -> crate::FactAssertionResult<FactId> {
-    engine.assert_fact_internal(Fact::Template(ferric_rules_core::TemplateFact {
-        template_id,
-        slots,
-    }))
+) -> Result<crate::FactAssertionResult<FactId>, ActionError> {
+    engine
+        .assert_fact_internal(Fact::Template(ferric_rules_core::TemplateFact {
+            template_id,
+            slots,
+        }))
+        .map_err(|error| ActionError::EvalError(error.to_string()))
 }
 
 fn retract_original_fact(

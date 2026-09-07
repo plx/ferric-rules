@@ -336,15 +336,23 @@ impl Engine {
         self.config.set_fact_duplication(enabled)
     }
 
-    pub(crate) fn assert_fact_internal(&mut self, fact: Fact) -> FactAssertionResult<FactId> {
-        match self.fact_base.assert_fact(fact, self.fact_duplication()) {
-            FactInsertionResult::Inserted(fact_id) => {
-                propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
-                self.drain_pending_predicate_matches();
-                FactAssertionResult::Asserted(fact_id)
-            }
-            FactInsertionResult::Duplicate(fact_id) => FactAssertionResult::Duplicate(fact_id),
-        }
+    pub(crate) fn assert_fact_internal(
+        &mut self,
+        fact: Fact,
+    ) -> Result<FactAssertionResult<FactId>, EngineError> {
+        Ok(
+            match self
+                .fact_base
+                .try_assert_fact(fact, self.fact_duplication())?
+            {
+                FactInsertionResult::Inserted(fact_id) => {
+                    propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
+                    self.drain_pending_predicate_matches();
+                    FactAssertionResult::Asserted(fact_id)
+                }
+                FactInsertionResult::Duplicate(fact_id) => FactAssertionResult::Duplicate(fact_id),
+            },
+        )
     }
 
     pub(crate) fn drain_pending_predicate_matches(&mut self) {
@@ -519,7 +527,7 @@ impl Engine {
         let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
             relation: relation_sym,
             fields: fields_small,
-        }));
+        }))?;
         Ok(self.host_assertion_result(result))
     }
 
@@ -560,7 +568,7 @@ impl Engine {
                 .validate_slots(&template.slots)
                 .map_err(EngineError::InvalidHostValue)?;
         }
-        let result = self.assert_fact_internal(fact.fact);
+        let result = self.assert_fact_internal(fact.fact)?;
         Ok(self.host_assertion_result(result))
     }
 
@@ -676,7 +684,7 @@ impl Engine {
             slots,
         });
 
-        let result = self.assert_fact_internal(fact);
+        let result = self.assert_fact_internal(fact)?;
         Ok(self.host_assertion_result(result))
     }
 
@@ -1381,7 +1389,7 @@ impl Engine {
         let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
             relation: initial_sym,
             fields: smallvec::SmallVec::new(),
-        }));
+        }))?;
         self.initial_fact_id = Some(result.fact_id());
 
         // CLIPS traverses modules in creation order, then each module's current
@@ -1390,7 +1398,7 @@ impl Engine {
         definitions.sort_by_key(|definition| definition.module.0);
         for definition in definitions {
             for fact in definition.facts {
-                self.assert_fact_internal(fact);
+                self.assert_fact_internal(fact)?;
             }
         }
 
@@ -1776,6 +1784,9 @@ pub enum EngineError {
 
     #[error("encoding error: {0}")]
     Encoding(#[from] EncodingError),
+
+    #[error(transparent)]
+    FactTimestampExhausted(#[from] ferric_rules_core::FactTimestampExhausted),
 
     #[error("fact not found: {0:?}")]
     FactNotFound(FactHandle),

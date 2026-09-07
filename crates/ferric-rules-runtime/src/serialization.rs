@@ -667,6 +667,186 @@ mod tests {
     }
 
     #[test]
+    fn timestamp_exhaustion_is_fallible_and_remains_persistable() {
+        let engine = Engine::with_rules("").unwrap();
+        let mut restored = alter_state(&engine, |state| {
+            state["fact_base"]["next_timestamp"] = serde_json::json!(u64::MAX - 1);
+        })
+        .unwrap();
+        let last = restored
+            .assert_ordered("last", Vec::<Value>::new())
+            .unwrap();
+        let failure = restored
+            .assert_ordered("overflow", Vec::<Value>::new())
+            .unwrap_err();
+        assert!(matches!(
+            failure,
+            crate::EngineError::FactTimestampExhausted(_)
+        ));
+        assert!(failure.to_string().contains("reset the engine"));
+        assert!(restored.find_facts("overflow").unwrap().is_empty());
+        assert!(restored.get_fact(last).unwrap().is_some());
+        // Existing duplicates require no new timestamp.
+        restored.set_fact_duplication(false);
+        assert_eq!(
+            restored
+                .assert_ordered("last", Vec::<Value>::new())
+                .unwrap(),
+            last
+        );
+        for &format in SerializationFormat::ALL {
+            let bytes = restored.serialize(format).unwrap();
+            let mut again = Engine::deserialize(&bytes, format).unwrap();
+            assert!(again
+                .assert_ordered("overflow", Vec::<Value>::new())
+                .is_err());
+            // Host handles belong to their restored engine; resolve afresh.
+            let restored_last = again.find_facts("last").unwrap()[0].0;
+            again.retract(restored_last).unwrap();
+            again.reset().unwrap();
+            again
+                .assert_ordered("after-reset", Vec::<Value>::new())
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn rhs_assertion_stops_at_timestamp_exhaustion_without_wrapping() {
+        for (definition, first, second) in [
+            ("", "(first 1)", "(second 2)"),
+            (
+                "(deftemplate item (slot value))",
+                "(item (value 1))",
+                "(item (value 2))",
+            ),
+        ] {
+            let source = format!("{definition} (defrule create => (assert {first}) (assert {second}) (printout t after crlf))");
+            let engine = Engine::with_rules(&source).unwrap();
+            let mut restored = alter_state(&engine, |state| {
+                state["fact_base"]["next_timestamp"] = serde_json::json!(u64::MAX - 1);
+            })
+            .unwrap();
+            let before = restored.facts().unwrap().count();
+            let run = restored.run(RunLimit::Unlimited).unwrap();
+            assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
+            assert_eq!(restored.facts().unwrap().count(), before + 1);
+            assert!(restored.action_diagnostics()[0]
+                .to_string()
+                .contains("timestamp capacity exhausted"));
+            assert!(restored.get_output("t").map_or(true, str::is_empty));
+            let bytes = restored.serialize(SerializationFormat::Cbor).unwrap();
+            Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+        }
+    }
+
+    #[test]
+    fn exhausted_modify_keeps_original_fact_and_stops_rhs() {
+        for (definition, seed, pattern, replacement) in [
+            ("", "(item 1)", "(item ?value)", ""),
+            (
+                "(deftemplate item (slot value))",
+                "(item (value 1))",
+                "(item (value ?value))",
+                "(value 2)",
+            ),
+        ] {
+            let source = format!("{definition} (deffacts seed {seed}) (defrule change ?fact <- {pattern} => (modify ?fact {replacement}) (assert (after)))");
+            let engine = Engine::with_rules(&source).unwrap();
+            let mut restored = alter_state(&engine, |state| {
+                state["fact_base"]["next_timestamp"] = serde_json::json!(u64::MAX);
+            })
+            .unwrap();
+            let before: Vec<_> = restored
+                .facts()
+                .unwrap()
+                .map(|(id, fact)| (id, fact.clone()))
+                .collect();
+            let run = restored.run(RunLimit::Unlimited).unwrap();
+            assert_eq!(run.halt_reason, crate::HaltReason::ActionError);
+            assert_eq!(run.rules_fired, 1);
+            assert!(restored.action_diagnostics()[0]
+                .to_string()
+                .contains("timestamp capacity exhausted"));
+            let after: Vec<_> = restored.facts().unwrap().collect();
+            assert_eq!(after.len(), before.len());
+            for (id, fact) in before {
+                assert!(restored.get_fact(id).unwrap().unwrap().structural_eq(&fact));
+            }
+            assert!(restored.find_facts("after").unwrap().is_empty());
+            let bytes = restored.serialize(SerializationFormat::Cbor).unwrap();
+            Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+        }
+    }
+
+    #[test]
+    fn beta_node_exhaustion_preserves_old_rule_and_all_or_variants() {
+        let engine = Engine::with_rules(
+            "(deffacts seed (ready)) (defrule choose (ready) => (printout t old crlf))",
+        )
+        .unwrap();
+        for (next, replacement) in [
+            (
+                u32::MAX - 1,
+                "(defrule choose (different) => (printout t new crlf))",
+            ),
+            // Each arm fits separately; the complete replacement does not.
+            (
+                u32::MAX - 3,
+                "(defrule choose (or (different) (another)) => (printout t new crlf))",
+            ),
+            (u32::MAX, "(defrule choose => (printout t new crlf))"),
+            (
+                u32::MAX - 4,
+                "(defrule choose (not (and (different) (another))) => (printout t new crlf))",
+            ),
+        ] {
+            let mut restored = alter_state(&engine, |state| {
+                state["rete"]["beta"]["next_node_id"] = serde_json::json!(next);
+            })
+            .unwrap();
+            let errors = restored.load_str(replacement).unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.to_string().contains("remaining beta node IDs")),
+                "{errors:?}"
+            );
+            assert_eq!(restored.rules().len(), 1);
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert_eq!(restored.get_output("t"), Some("old\n"));
+            let bytes = restored.serialize(SerializationFormat::Cbor).unwrap();
+            Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+        }
+        // The last ID can be allocated once; a subsequent load fails without
+        // wrapping onto an existing node. Unconditional rules need one terminal.
+        let mut restored = alter_state(&engine, |state| {
+            state["rete"]["beta"]["next_node_id"] = serde_json::json!(u32::MAX - 1);
+        })
+        .unwrap();
+        restored
+            .load_str("(defrule final => (printout t final crlf))")
+            .unwrap();
+        assert!(restored.load_str("(defrule overflow =>)").is_err());
+        assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        let bytes = restored.serialize(SerializationFormat::Cbor).unwrap();
+        Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+    }
+
+    #[test]
+    fn module_allocator_must_match_dense_registry() {
+        let engine = Engine::with_rules("(defmodule A) (defmodule B) (defmodule A)").unwrap();
+        for next in [1, 1000, u32::MAX - 1, u32::MAX] {
+            let result = alter_state(&engine, |state| {
+                state["module_registry"]["next_id"] = serde_json::json!(next);
+            });
+            assert!(matches!(result, Err(SerializationError::InvalidState(_))));
+        }
+        let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
+        let mut restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
+        restored.load_str("(defmodule C)").unwrap();
+    }
+
+    #[test]
     fn versioned_envelope_rejects_unknown_corrupt_and_mismatched_inputs() {
         let engine = Engine::new(EngineConfig::default());
         for &format in SerializationFormat::ALL {

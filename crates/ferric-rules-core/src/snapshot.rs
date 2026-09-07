@@ -83,10 +83,8 @@ impl SymbolTable {
 impl FactBase {
     #[doc(hidden)]
     pub fn validate_snapshot(&self, symbols: &SymbolTable) -> Result<(), String> {
-        require!(
-            self.next_timestamp.get() < u64::MAX,
-            "invalid fact timestamp allocation counter"
-        );
+        // MAX is the exhausted sentinel. Checked insertion preserves this state
+        // for reads, retraction, persistence, and reset instead of wrapping.
         let mut timestamps = rustc_hash::FxHashSet::default();
         let mut by_template = rustc_hash::FxHashMap::default();
         let mut by_relation = rustc_hash::FxHashMap::default();
@@ -284,10 +282,8 @@ impl ReteNetwork {
         );
         let mut work = Work(10_000_000);
         self.validate_alpha_snapshot(facts, symbols, &mut work)?;
-        require!(
-            self.beta.next_node_id < u32::MAX,
-            "invalid beta allocation counter"
-        );
+        // MAX is a valid exhausted sentinel; rule loading checks capacity before
+        // reclaiming or installing anything. Existing graph IDs remain below it.
         let root = self.beta.root_id;
         require!(
             matches!(self.beta.nodes.get(&root), Some(BetaNode::Root { .. })),

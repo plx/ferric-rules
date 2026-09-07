@@ -798,7 +798,7 @@ impl Engine {
         let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
             relation: initial_sym,
             fields: smallvec::SmallVec::new(),
-        }));
+        }))?;
         self.initial_fact_id = Some(result.fact_id());
 
         Ok(())
@@ -888,7 +888,7 @@ impl Engine {
             if let Construct::Facts(definition) = construct {
                 for body in definition.facts {
                     let fact = self.build_fact_body(&body, &mut result)?;
-                    self.assert_fact_internal(fact);
+                    self.assert_fact_internal(fact)?;
                     count += 1;
                 }
             }
@@ -1640,7 +1640,7 @@ impl Engine {
             .assert_fact_internal(Fact::Template(TemplateFact {
                 template_id,
                 slots: slots.into_boxed_slice(),
-            }))
+            }))?
             .fact_id())
     }
 
@@ -1742,6 +1742,15 @@ impl Engine {
                     return Err(error);
                 }
             }
+        }
+
+        let maximum_new_nodes = prepared_rules
+            .iter()
+            .map(|prepared| prepared.plan.maximum_new_beta_nodes())
+            .sum();
+        if let Err(error) = self.rete.beta.ensure_node_capacity(maximum_new_nodes) {
+            self.symbol_table.restore(symbol_table_checkpoint);
+            return Err(LoadError::Compile(error.to_string()));
         }
 
         // Rule identity is its owning module plus local name. Retire all

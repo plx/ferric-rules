@@ -103,3 +103,12 @@ existing engine. Callers receive owned errors distinguishing legacy data, unknow
 version/capabilities, wrong format, limits, checksum failure, codec failure, and
 invalid restored state. The C and language bindings preserve useful diagnostics
 through their existing snapshot error categories.
+
+Fact timestamps and beta node IDs use checked allocation. An exhausted counter
+remains a valid snapshot state: reads, retraction, and persistence still work.
+A new assertion returns an owned error; an unsuccessful `modify` preserves the
+original fact. Reset starts a fresh fact chronology and the documented seed
+state. Rule loading checks the complete definition (including all `or` variants)
+before replacing an old rule, and reports exhaustion without partially changing
+the network. A fresh engine is needed for further rule installation once beta
+node IDs are exhausted. No counter wraps or silently reuses an old identity.

@@ -74,7 +74,8 @@ create_exception!(
 /// Convert an `EngineError` into a Python exception.
 pub fn engine_error_to_pyerr(err: EngineError) -> PyErr {
     match err {
-        EngineError::ForeignHandle
+        EngineError::FactTimestampExhausted(_)
+        | EngineError::ForeignHandle
         | EngineError::InvalidHostValue(_)
         | EngineError::WrongThread { .. }
         | EngineError::NotATemplateFact(_)
