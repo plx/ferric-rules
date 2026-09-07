@@ -1000,31 +1000,25 @@ impl ReteNetwork {
         {
             return;
         }
-        let Some(children) = self
-            .beta
-            .get_node(owner)
-            .and_then(BetaNode::child_nodes)
-            .cloned()
-        else {
+        let Some(children) = self.beta.nodes.get(&owner).and_then(BetaNode::child_nodes) else {
             return;
         };
         for &child in children.iter() {
-            match self.beta.get_node(child) {
+            match self.beta.nodes.get(&child) {
                 Some(BetaNode::Negative { neg_memory, .. }) => {
-                    let memory = *neg_memory;
-                    if let Some(memory) = self.beta.get_neg_memory_mut(memory) {
+                    if let Some(memory) = self.beta.neg_memories.get_mut(neg_memory.0 as usize) {
                         memory.remove_parent_token(token_id);
                     }
                 }
                 Some(BetaNode::Ncc { ncc_memory, .. }) => {
-                    let memory = *ncc_memory;
-                    if let Some(memory) = self.beta.get_ncc_memory_mut(memory) {
+                    if let Some(memory) = self.beta.ncc_memories.get_mut(ncc_memory.0 as usize) {
                         memory.remove_parent_token(token_id);
                     }
                 }
                 Some(BetaNode::Exists { exists_memory, .. }) => {
-                    let memory = *exists_memory;
-                    if let Some(memory) = self.beta.get_exists_memory_mut(memory) {
+                    if let Some(memory) =
+                        self.beta.exists_memories.get_mut(exists_memory.0 as usize)
+                    {
                         memory.remove_parent_token(token_id);
                     }
                 }

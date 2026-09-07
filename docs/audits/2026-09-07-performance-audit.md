@@ -336,3 +336,18 @@ allocation reuse. New `beta_membership_sizes` controls measure cold construction
 traversal, and removal at 1, 2, 3, 32, and 1,024 members, with duplicate/order and
 empty-result oracles. Core storage, join, cascade, churn, alpha fanout, engine,
 and Manners workloads remain paired controls.
+
+## Cascade traversal overhead
+
+Cascade removal stores its first eight pending token IDs inline and spills to
+the heap for wider traversals. The existing LIFO order, hash-set child order,
+returned token sequence, and index cleanup are unchanged. Conditional parent
+cleanup borrows the owner's child array and the disjoint negative/NCC/exists
+memory vectors directly, avoiding an atomic reference-count update per removed
+token without changing traversal order or propagation.
+
+A regression test compares removal order with the original vector-stack
+traversal across zero, one, seven, eight, nine, and 32 branches, each 12 tokens
+deep, and verifies unrelated tokens and reverse-index membership survive.
+`token_cascade_stack` controls separately cover a 32-token chain and fanouts of
+four and 32, with exact traversal and empty-result oracles before measurement.
