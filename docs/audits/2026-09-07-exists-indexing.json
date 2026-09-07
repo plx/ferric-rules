@@ -1,0 +1,266 @@
+{
+  "baseline_revision": "8e53e793",
+  "candidate_revision": "a04b810bc021b060a35369be5264f1ed223309e6",
+  "environment": {
+    "machine": "Apple M4 Max",
+    "host": "aarch64-apple-darwin",
+    "os": "Darwin 27.0.0",
+    "rustc": "1.93.0 (254b59607 2026-01-19)",
+    "profile": "cargo bench, release opt-level=3, lto=true, codegen-units=1",
+    "features": [
+      "serde"
+    ],
+    "sampling": {
+      "sample_size": 20,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 1,
+      "note": "Existing benchmark groups retain their explicit sample-size overrides; Criterion may extend measurement for slow workloads."
+    }
+  },
+  "command": "cargo bench -p ferric-rules --features serde --bench exists_bench -- --noplot --sample-size 20 --warm-up-time 1 --measurement-time 1 --save-baseline LABEL",
+  "control_command": "Same command with --bench engine_bench.",
+  "control_note": "The first engine control baseline is the preceding PR measurement at 4c51f5f6, whose production code is identical to 8e53e793; the control repeat uses the isolated 8e53e793 checkout.",
+  "first_pass": {
+    "before": "audit-exists-before",
+    "after": "audit-exists-after",
+    "unit": "ns",
+    "workloads": {
+      "exists_10s_5r": {
+        "before": 89162.84202250911,
+        "after": 92511.95887706045,
+        "delta_percent": 3.7561800169019444
+      },
+      "tuple_exists_50s_50t": {
+        "before": 8663815.410714285,
+        "after": 8847739.39090909,
+        "delta_percent": 2.1228981860272667
+      },
+      "exists_100s_20r": {
+        "before": 4730139.0,
+        "after": 2367808.922222222,
+        "delta_percent": -49.94208579870016
+      },
+      "exists_10s_5r_run_only": {
+        "before": 28829.331818181818,
+        "after": 29048.26618881119,
+        "delta_percent": 0.7594153482644916
+      },
+      "exists_50s_10r": {
+        "before": 921319.1702614379,
+        "after": 644704.1331407563,
+        "delta_percent": -30.0238013111339
+      },
+      "exists_200s_50r/exists_200s_50r": {
+        "before": 38702701.33333333,
+        "after": 12757316.7,
+        "delta_percent": -67.03765819825979
+      },
+      "exists_500s_100r/exists_500s_100r": {
+        "before": 375881062.5,
+        "after": 65552781.5,
+        "delta_percent": -82.56023299923496
+      },
+      "exists_1000s_50r/exists_1000s_50r": {
+        "before": 809081895.5,
+        "after": 66953395.75,
+        "delta_percent": -91.72476901011068
+      }
+    }
+  },
+  "alternating_repeat": {
+    "before": "audit-exists-before-repeat",
+    "after": "audit-exists-after-repeat",
+    "unit": "ns",
+    "workloads": {
+      "exists_10s_5r": {
+        "before": 90080.95072115384,
+        "after": 89522.81898148148,
+        "delta_percent": -0.6195890864873932
+      },
+      "tuple_exists_50s_50t": {
+        "before": 9310724.0,
+        "after": 8754943.402777778,
+        "delta_percent": -5.969252200175001
+      },
+      "exists_100s_20r": {
+        "before": 4941971.925,
+        "after": 2370645.8125,
+        "delta_percent": -52.03036665369159
+      },
+      "exists_10s_5r_run_only": {
+        "before": 29178.37491531165,
+        "after": 28597.25590674386,
+        "delta_percent": -1.9916085465844224
+      },
+      "exists_50s_10r": {
+        "before": 974666.1192307692,
+        "after": 627253.0516826923,
+        "delta_percent": -35.64431559622325
+      },
+      "exists_200s_50r/exists_200s_50r": {
+        "before": 37499729.33333333,
+        "after": 12079130.40625,
+        "delta_percent": -67.78875308971118
+      },
+      "exists_500s_100r/exists_500s_100r": {
+        "before": 387394187.5,
+        "after": 64491323.0,
+        "delta_percent": -83.35253210271773
+      },
+      "exists_1000s_50r/exists_1000s_50r": {
+        "before": 856354375.5,
+        "after": 66446343.75,
+        "delta_percent": -92.24078890106634
+      }
+    }
+  },
+  "engine_controls": {
+    "before": "audit-template",
+    "after": "audit-exists-controls",
+    "unit": "ns",
+    "workloads": {
+      "reset_run_negation": {
+        "before": 2656.056819482601,
+        "after": 2705.990735506564,
+        "delta_percent": 1.8800018003263252
+      },
+      "compile_template_rule": {
+        "before": 8421.456514084508,
+        "after": 8697.325251371116,
+        "delta_percent": 3.275784145239369
+      },
+      "lifecycle_reset_run_1000": {
+        "before": 904180.9444444445,
+        "after": 937011.71875,
+        "delta_percent": 3.6309960420287
+      },
+      "lifecycle_reset_run_100": {
+        "before": 85222.93201754386,
+        "after": 88807.29320987655,
+        "delta_percent": 4.2058646745394945
+      },
+      "reset_run_20_facts": {
+        "before": 13212.141477920808,
+        "after": 13349.958102493074,
+        "delta_percent": 1.0431058795621784
+      },
+      "reset_run_join_3": {
+        "before": 3791.3015626280003,
+        "after": 3819.7600057372347,
+        "delta_percent": 0.7506246242651393
+      },
+      "load_and_run_simple": {
+        "before": 8165.085511854294,
+        "after": 8172.4542025862065,
+        "delta_percent": 0.09024633877030563
+      },
+      "lifecycle_load_reset_run_100": {
+        "before": 128819.17664092663,
+        "after": 133434.98310185183,
+        "delta_percent": 3.5831671815380384
+      },
+      "reset_run_simple": {
+        "before": 2348.102329038652,
+        "after": 2263.090232193056,
+        "delta_percent": -3.620459627941386
+      },
+      "lifecycle_load_reset_run_1000": {
+        "before": 1249126.074718045,
+        "after": 1311869.9284188035,
+        "delta_percent": 5.023020091460428
+      },
+      "engine_create": {
+        "before": 363.68280019848834,
+        "after": 361.29659390587653,
+        "delta_percent": -0.6561229432102578
+      },
+      "reset_run_retract_3": {
+        "before": 3176.709088986242,
+        "after": 3212.1931777176364,
+        "delta_percent": 1.117007813350579
+      },
+      "load_and_run_chain_4": {
+        "before": 19887.075159524393,
+        "after": 19970.51645833333,
+        "delta_percent": 0.4195755189720707
+      }
+    }
+  },
+  "engine_controls_repeat": {
+    "before": "audit-exists-control-before-repeat",
+    "after": "audit-exists-control-after-repeat",
+    "unit": "ns",
+    "workloads": {
+      "reset_run_negation": {
+        "before": 2545.738636363636,
+        "after": 2628.141200113407,
+        "delta_percent": 3.236882316696743
+      },
+      "compile_template_rule": {
+        "before": 8432.94172932331,
+        "after": 8381.242668178384,
+        "delta_percent": -0.6130608132290938
+      },
+      "lifecycle_reset_run_1000": {
+        "before": 903874.3169070513,
+        "after": 913191.4097222222,
+        "delta_percent": 1.0307951715071262
+      },
+      "lifecycle_reset_run_100": {
+        "before": 86326.31456043955,
+        "after": 87552.26006624954,
+        "delta_percent": 1.4201295538357028
+      },
+      "reset_run_20_facts": {
+        "before": 13384.963078470824,
+        "after": 13199.509891456582,
+        "delta_percent": -1.3855337958498803
+      },
+      "reset_run_join_3": {
+        "before": 3672.004960588887,
+        "after": 3730.95361032197,
+        "delta_percent": 1.6053532161794504
+      },
+      "load_and_run_simple": {
+        "before": 8136.943597178683,
+        "after": 8072.090088168373,
+        "delta_percent": -0.7970254215943773
+      },
+      "lifecycle_load_reset_run_100": {
+        "before": 130167.02027027027,
+        "after": 130034.42736486487,
+        "delta_percent": -0.10186367109740191
+      },
+      "reset_run_simple": {
+        "before": 2264.08227059064,
+        "after": 2274.529987520563,
+        "delta_percent": 0.46145482722221853
+      },
+      "lifecycle_load_reset_run_1000": {
+        "before": 1261701.7834595959,
+        "after": 1286243.9375,
+        "delta_percent": 1.9451628239051333
+      },
+      "engine_create": {
+        "before": 362.11546144938825,
+        "after": 357.3031670161589,
+        "delta_percent": -1.3289392322459403
+      },
+      "reset_run_retract_3": {
+        "before": 3020.0493333333334,
+        "after": 3192.1228846582053,
+        "delta_percent": 5.697706637624633
+      },
+      "load_and_run_chain_4": {
+        "before": 19732.89013040901,
+        "after": 20191.477243142726,
+        "delta_percent": 2.3239733749240266
+      }
+    }
+  },
+  "scaling_gate": {
+    "parent": "rejected by new exists support gate",
+    "candidate": "all six gates passed",
+    "timing_claim": false
+  }
+}

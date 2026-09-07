@@ -33,7 +33,7 @@ These are local measurements; CI machines can produce different absolute times.
 | Area | Finding | Disposition |
 | --- | --- | --- |
 | Template actions and host reads | Assertions, modifications, and owned reads deep-copy immutable template metadata. | Share immutable definitions; measure engine workloads and owned capture separately. |
-| Existential joins | The compiler builds equality indexes, but right-side `exists` activation scans every parent. | Exercise the existing indexed candidate lookup, including order, backfill, and non-indexable values. |
+| Existential joins | The compiler builds equality indexes, but right-side `exists` activation scans every parent. | Reuse the indexed candidate lookup; verify order, backfill, non-indexable values, and a new scaling gate. |
 | Template resolution | Every lookup scans all templates and allocates parsed names for each definition. | Investigate a derived local-name index without caching visibility decisions. |
 | Action loops | Counted loops copy token bindings and rule metadata for every iteration; runtime local bindings are rebuilt for expression evaluation. | Investigate frame reuse and removal of intermediate copies. |
 | Retraction | Every removed token scans all negative, NCC, and exists memories for parent cleanup. | Investigate cleanup through the token owner's child nodes. |
@@ -83,3 +83,48 @@ for an arbitrary application. The two small ordered reset cases also regressed
 in the first pass (+2.82% and +2.02% respectively), so they remain explicit
 cumulative-audit checks. The template and owned-read gains justify retaining
 this change; the small regressions are not classified as noise.
+
+## Indexed existential support
+
+The compiler already requests equality indexes for the parent memory of an
+`exists` node. Right activation now uses the same candidate lookup as positive
+joins instead of collecting every parent token. Matching candidates retain
+newest-first traversal, all join predicates are still evaluated, and small
+memories, absent indexes, and non-indexable values retain the scan fallback.
+No persisted fields or public APIs change.
+
+The integration regression test covers both sides of the index threshold,
+online installation onto a populated shared prefix, integer/string/multifield
+keys, multiple witnesses, last-witness removal, and refiring order. It passed on
+the parent implementation before the optimization and on the candidate.
+
+`just scaling-check` now includes existential support assertion. It fixes the
+number of readings per sensor and increases the number of sensors, exposing the
+quadratic scan of unrelated parents. The new gate rejects the parent revision
+in an isolated release run; all six gates pass on the candidate. These gate
+results are correctness evidence for scaling, not benchmark timing claims.
+
+Validation also includes `just preflight-pr` and 1,485 optimized core/runtime
+tests with all features, including snapshot validation and resume behavior.
+
+Measured implementation: `a04b810b`, against the shared-template parent
+`8e53e793`. All eight `exists` workloads were measured twice, with the repeat
+alternating an isolated parent checkout and the candidate. The complete
+[measurement record](2026-09-07-exists-indexing.json) includes both passes and
+13 engine controls measured twice.
+
+| Workload | Before median | After median | Change |
+| --- | ---: | ---: | ---: |
+| 50 sensors × 10 readings | 974.67 µs | 627.25 µs | -35.64% |
+| 100 sensors × 20 readings | 4.94 ms | 2.37 ms | -52.03% |
+| 200 sensors × 50 readings | 37.50 ms | 12.08 ms | -67.79% |
+| 500 sensors × 100 readings | 387.39 ms | 64.49 ms | -83.35% |
+| 1,000 sensors × 50 readings | 856.35 ms | 66.45 ms | -92.24% |
+
+The first pass also improved every indexed workload (30.02–91.72%). Small
+scan-fallback and tuple-based workloads moved in both directions between passes;
+their repeat medians improved 0.62–5.97%. Engine controls had smaller mixed
+movements, including a +5.70% repeated result for `reset_run_retract_3` (first
+pass +1.12%). They remain in the cumulative audit rather than being omitted
+from the record. The substantial, repeatable indexed-workload gains justify
+retaining the change.
