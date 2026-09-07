@@ -24,7 +24,12 @@ pub fn engine_error_to_napi(err: EngineError) -> Error {
         EngineError::Encoding(_) => {
             format!("FerricEncodingError: {err}")
         }
-        EngineError::WrongThread { .. } | EngineError::NotATemplateFact(_) => {
+        EngineError::WrongThread { .. }
+        | EngineError::NotATemplateFact(_)
+        | EngineError::SlotCountMismatch { .. }
+        | EngineError::DuplicateSlot { .. }
+        | EngineError::InvalidSlotValue { .. }
+        | EngineError::ProtectedInitialFact => {
             format!("FerricRuntimeError: {err}")
         }
     };
@@ -43,7 +48,9 @@ pub fn load_errors_to_napi(errors: Vec<LoadError>) -> Error {
         .join("\n");
 
     let has_parse = errors.iter().any(|e| matches!(e, LoadError::Parse(_)));
-    let has_compile = errors.iter().any(|e| matches!(e, LoadError::Compile(_)));
+    let has_compile = errors
+        .iter()
+        .any(|e| matches!(e, LoadError::Compile(_) | LoadError::ResourceLimit { .. }));
 
     let prefix = if has_parse {
         "FerricParseError"

@@ -178,7 +178,6 @@ impl NccMemory {
     }
 
     /// Verify internal consistency of the NCC memory.
-    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
         // Check 1: no token is both in result_count (blocked) and unblocked
         for parent_token_id in self.unblocked.keys() {

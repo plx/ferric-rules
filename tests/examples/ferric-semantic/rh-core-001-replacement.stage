@@ -1,0 +1,2 @@
+; RH-CORE-001: same-name replacement after reset removes old queued activations.
+(defrule choose (right ready) => (printout t "new" crlf) (assert (result new)))

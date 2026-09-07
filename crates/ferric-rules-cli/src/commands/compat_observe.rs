@@ -1068,6 +1068,7 @@ fn load_error_diagnostic_with_continuation(error: &LoadError, continued: bool) -
         | LoadError::InvalidAssert(_)
         | LoadError::InvalidDefrule(_)
         | LoadError::Compile(_)
+        | LoadError::ResourceLimit { .. }
         | LoadError::Validation(_)
         | LoadError::Engine(_)
         | LoadError::Io(_) => (Phase::Load, "construct-error"),

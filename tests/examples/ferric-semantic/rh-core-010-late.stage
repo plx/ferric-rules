@@ -1,0 +1,2 @@
+; RH-CORE-010: deffacts loaded after a reset become active on the next reset.
+(deffacts late-data (late ready))

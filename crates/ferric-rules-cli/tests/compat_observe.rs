@@ -266,11 +266,8 @@ fn successful_observation_captures_typed_state_and_lifecycle() {
     assert_eq!(channel("stdout")["text"], "");
 
     assert_eq!(observation["modules"]["current"], "MAIN");
-    assert_eq!(observation["modules"]["focus"], "MAIN");
-    assert_eq!(
-        observation["modules"]["focus_stack"],
-        serde_json::json!(["MAIN"])
-    );
+    assert!(observation["modules"]["focus"].is_null());
+    assert_eq!(observation["modules"]["focus_stack"], serde_json::json!([]));
     assert_eq!(observation["capabilities"]["fact_modules"], true);
     assert_eq!(observation["capabilities"]["fired_rule_names"], false);
     assert_eq!(
@@ -650,9 +647,9 @@ fn scenario_applies_the_declared_conflict_strategy() {
     let repo = tempfile::tempdir().expect("create scenario repository");
     let primary_path = "tests/examples/strategy.clp";
     let primary = r"
-(deffacts seed (go))
-(defrule first (go) => (printout t first crlf))
-(defrule second (go) => (printout t second crlf))
+(deffacts seed (go first) (go second))
+(defrule first (go first) => (printout t first crlf))
+(defrule second (go second) => (printout t second crlf))
 ";
     write_scenario_source(repo.path(), primary_path, primary);
     let primary_digest = sha256(primary.as_bytes());
@@ -670,7 +667,7 @@ fn scenario_applies_the_declared_conflict_strategy() {
     assert_exit_code(&output, 0);
     let observation = parse_single_observation(&output);
     assert_eq!(observation["run"]["rules_fired"], 2);
-    assert_eq!(channel_text(&observation, "t"), "second\nfirst\n");
+    assert_eq!(channel_text(&observation, "t"), "first\nsecond\n");
 }
 
 #[test]

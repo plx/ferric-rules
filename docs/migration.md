@@ -5,6 +5,37 @@ to Ferric. For detailed feature compatibility, see [compatibility.md](compatibil
 
 ---
 
+## Pre-1.0 seed and reset changes
+
+Loading `deffacts` now registers a named definition without asserting its facts.
+Call `reset()` after loading startup rules and seeds, or use Rust
+`Engine::with_rules`, which already loads and resets. A later load leaves
+existing application facts unchanged until the next reset. `LoadResult` no
+longer reports deffacts seeds as newly asserted facts. Explicit `assert` and
+`load-facts` continue to add facts immediately.
+
+A definition is identified by module and local name. Successful replacement
+moves it to the end of that module's definition order; reset visits modules
+in creation order, then their definitions in order. `undeffacts` removes
+definitions without retracting current facts; its `*` selector applies only to
+the current module. An invalid individual definition
+leaves its previous definition intact. This atomic replacement is deliberately
+stronger than CLIPS 6.30, which removes the old same-name definition before
+reporting some replacement errors.
+
+The internal `(initial-fact)` remains matchable by rules but is hidden from
+host fact lookup/enumeration and protected against retract, modify, and
+duplicate. Replacing `MAIN::initial-fact` with a user `deffacts` is rejected.
+These restrictions differ from CLIPS; keep application bootstrap state in
+ordinary named facts. Empty and leading-negative rule conditions use the
+independent RETE root token. Reset establishes that root and the internal
+initial fact before asserting application seeds.
+
+Core-internal consumers of `AlphaMemory::lookup_by_slot` now receive an
+iterator in insertion order instead of a borrowed hash set. Collect that
+iterator when a materialized collection is needed. Public engine fact APIs
+retain their existing result types.
+
 ## Step 1: Check Feature Coverage
 
 Review your CLIPS codebase for features that Ferric does not support:
@@ -234,3 +265,33 @@ engine borrowed inside a manager callback.
 | `defclass` / COOL | Not supported |
 | `if` / `then` / `else` | Not yet implemented |
 | Certainty factors | Not supported |
+
+## Primitive template slot types
+
+Ferric now retains `(type ...)` declarations for `SYMBOL`, `STRING`, `INTEGER`,
+`FLOAT`, `NUMBER`, `LEXEME`, and `EXTERNAL-ADDRESS`. Type lists form a union;
+`NUMBER` means integer or float, and `LEXEME` means symbol or string. Omitted
+constraints and `(type ?VARIABLE)` permit any supported value kind. Each field
+of a constrained multislot must satisfy its declared union.
+
+Defaults follow CLIPS' primitive preference: symbol `nil`, empty string,
+integer `0`, then float `0.0`, independent of the type list's spelling order.
+Multislot defaults are empty unless specified. Literal multifield defaults,
+including literal `create$` forms, retain every field. External-address slots
+require `(default ?NONE)`; Ferric does not manufacture host identity tokens.
+
+Invalid literal assertions reject a rule before installation or replacement.
+Defaults and named deffacts are checked before registration. Runtime assertions,
+`modify`, `duplicate`, and host template assertions also validate types before
+changing facts. This runtime checking is intentionally stricter than CLIPS
+6.30's default `FALSE` dynamic-constraint setting: applications must supply
+values matching their declarations. A failed `modify` leaves the original fact
+intact; a failed RHS action produces an action diagnostic and stops that RHS.
+
+Previously ignored `range`, `allowed-*`, `cardinality`, `default-dynamic`, and
+other optional slot attributes now produce an explicit unsupported error.
+Arbitrary computed defaults are also unsupported; use literal defaults or
+`?DERIVE`, and calculate dynamic values before assertion. `FACT-ADDRESS` and
+instance type declarations are rejected because the supported value model has
+no corresponding tagged value. These restrictions do not add CLIPS class
+constraints, general static type inference, or dynamic constraint toggles.

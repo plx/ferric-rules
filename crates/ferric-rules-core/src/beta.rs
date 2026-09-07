@@ -3,6 +3,7 @@
 //! The beta network is the second stage of the Rete algorithm. It performs
 //! joins between alpha memories (facts) and beta memories (partial matches/tokens).
 
+use crate::ordered_set::OrderedSet;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -16,6 +17,25 @@ use crate::token::{NodeId, TokenId, TokenStore};
 use crate::value::AtomKey;
 
 type FanoutNodes = SmallVec<[NodeId; 4]>;
+
+fn compact_memories<T>(
+    memories: &mut Vec<T>,
+    retained: &[bool],
+    mut set_id: impl FnMut(&mut T, u32),
+) -> Vec<Option<u32>> {
+    let mut mapping = vec![None; memories.len()];
+    let mut live = Vec::new();
+    for (old, mut memory) in memories.drain(..).enumerate() {
+        if retained[old] {
+            let id = u32::try_from(live.len()).expect("compaction cannot increase memory count");
+            mapping[old] = Some(id);
+            set_id(&mut memory, id);
+            live.push(memory);
+        }
+    }
+    *memories = live;
+    mapping
+}
 
 /// Rule priority in CLIPS.
 ///
@@ -100,8 +120,7 @@ pub struct BetaMemoryId(pub u32);
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BetaMemory {
     pub id: BetaMemoryId,
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_set"))]
-    tokens: HashSet<TokenId>,
+    tokens: OrderedSet<TokenId>,
     /// Variable indices: `VarId` → `AtomKey` → set of `TokenId`s with that binding value.
     /// Enables O(1) lookup during right activation instead of full parent-token scans.
     #[cfg_attr(
@@ -120,7 +139,7 @@ impl BetaMemory {
     pub fn new(id: BetaMemoryId) -> Self {
         Self {
             id,
-            tokens: HashSet::default(),
+            tokens: OrderedSet::default(),
             var_indices: HashMap::default(),
             indexed_vars: SmallVec::new(),
         }
@@ -195,7 +214,9 @@ impl BetaMemory {
     /// If the memory has indexed variables, extracts the corresponding binding
     /// values and adds the token to the appropriate index entries.
     pub fn insert_indexed(&mut self, token_id: TokenId, bindings: &BindingSet) {
-        self.tokens.insert(token_id);
+        if !self.tokens.insert(token_id) {
+            return;
+        }
         for &var_id in &self.indexed_vars {
             if let Some(value) = bindings.get(var_id) {
                 if let Some(key) = AtomKey::from_value(value) {
@@ -245,9 +266,10 @@ impl BetaMemory {
         self.tokens.contains(&token_id)
     }
 
-    /// Iterate over all tokens in the memory.
+    /// Iterate over tokens in reverse insertion order (newest first).
+    /// This is the CLIPS beta traversal order when a new right fact arrives.
     pub fn iter(&self) -> impl Iterator<Item = TokenId> + '_ {
-        self.tokens.iter().copied()
+        self.tokens.iter().rev().copied()
     }
 
     /// Check if the memory is empty.
@@ -437,6 +459,163 @@ impl BetaNetwork {
     #[doc(hidden)]
     pub fn iter_nodes(&self) -> impl Iterator<Item = (NodeId, &BetaNode)> {
         self.nodes.iter().map(|(node_id, node)| (*node_id, node))
+    }
+
+    /// Find the graph still needed by surviving terminals, including NCC
+    /// partner subnetworks which are not ordinary ancestors of the terminal.
+    pub(crate) fn retained_nodes(&self, removed_rules: &HashSet<RuleId>) -> HashSet<NodeId> {
+        let mut pending: Vec<_> = self
+            .nodes
+            .iter()
+            .filter_map(|(&id, node)| {
+                matches!(node, BetaNode::Terminal { rule, .. } if !removed_rules.contains(rule))
+                    .then_some(id)
+            })
+            .collect();
+        pending.push(self.root_id);
+        let mut retained = HashSet::default();
+        while let Some(id) = pending.pop() {
+            if !retained.insert(id) {
+                continue;
+            }
+            match &self.nodes[&id] {
+                BetaNode::Root { .. } => {}
+                BetaNode::Ncc {
+                    parent, partner, ..
+                } => {
+                    pending.push(*parent);
+                    pending.push(*partner);
+                }
+                BetaNode::Join { parent, .. }
+                | BetaNode::Predicate { parent, .. }
+                | BetaNode::Terminal { parent, .. }
+                | BetaNode::Negative { parent, .. }
+                | BetaNode::NccPartner { parent, .. }
+                | BetaNode::Exists { parent, .. } => pending.push(*parent),
+            }
+        }
+        retained
+    }
+
+    /// Retain live nodes and compact only memory IDs. Node and token identities
+    /// stay stable, so surviving matches and their agenda chronology are intact.
+    pub(crate) fn retain_nodes(&mut self, retained: &HashSet<NodeId>) -> HashSet<AlphaMemoryId> {
+        self.nodes.retain(|id, _| retained.contains(id));
+        let mut memory_ids = vec![false; self.memories.len()];
+        let mut negative_ids = vec![false; self.neg_memories.len()];
+        let mut ncc_ids = vec![false; self.ncc_memories.len()];
+        let mut exists_ids = vec![false; self.exists_memories.len()];
+        let mut alpha_ids = HashSet::default();
+        for node in self.nodes.values_mut() {
+            match node {
+                BetaNode::Root { memory, children }
+                | BetaNode::Join {
+                    memory, children, ..
+                }
+                | BetaNode::Predicate {
+                    memory, children, ..
+                }
+                | BetaNode::Negative {
+                    memory, children, ..
+                }
+                | BetaNode::Ncc {
+                    memory, children, ..
+                }
+                | BetaNode::Exists {
+                    memory, children, ..
+                } => {
+                    memory_ids[memory.0 as usize] = true;
+                    *children = children
+                        .iter()
+                        .copied()
+                        .filter(|id| retained.contains(id))
+                        .collect::<Vec<_>>()
+                        .into();
+                }
+                BetaNode::Terminal { .. } | BetaNode::NccPartner { .. } => {}
+            }
+            match node {
+                BetaNode::Join { alpha_memory, .. }
+                | BetaNode::Negative { alpha_memory, .. }
+                | BetaNode::Exists { alpha_memory, .. } => {
+                    alpha_ids.insert(*alpha_memory);
+                }
+                _ => {}
+            }
+            match node {
+                BetaNode::Negative { neg_memory, .. } => negative_ids[neg_memory.0 as usize] = true,
+                BetaNode::Ncc { ncc_memory, .. } | BetaNode::NccPartner { ncc_memory, .. } => {
+                    ncc_ids[ncc_memory.0 as usize] = true;
+                }
+                BetaNode::Exists { exists_memory, .. } => {
+                    exists_ids[exists_memory.0 as usize] = true;
+                }
+                _ => {}
+            }
+        }
+        let memories = compact_memories(&mut self.memories, &memory_ids, |memory, id| {
+            memory.id = BetaMemoryId(id);
+        });
+        let negatives = compact_memories(&mut self.neg_memories, &negative_ids, |memory, id| {
+            memory.id = NegativeMemoryId(id);
+        });
+        let nccs = compact_memories(&mut self.ncc_memories, &ncc_ids, |memory, id| {
+            memory.id = NccMemoryId(id);
+        });
+        let exists = compact_memories(&mut self.exists_memories, &exists_ids, |memory, id| {
+            memory.id = ExistsMemoryId(id);
+        });
+        for node in self.nodes.values_mut() {
+            match node {
+                BetaNode::Root { memory, .. }
+                | BetaNode::Join { memory, .. }
+                | BetaNode::Predicate { memory, .. }
+                | BetaNode::Negative { memory, .. }
+                | BetaNode::Ncc { memory, .. }
+                | BetaNode::Exists { memory, .. } => {
+                    *memory = BetaMemoryId(memories[memory.0 as usize].unwrap());
+                }
+                _ => {}
+            }
+            match node {
+                BetaNode::Negative { neg_memory, .. } => {
+                    *neg_memory = NegativeMemoryId(negatives[neg_memory.0 as usize].unwrap());
+                }
+                BetaNode::Ncc { ncc_memory, .. } | BetaNode::NccPartner { ncc_memory, .. } => {
+                    *ncc_memory = NccMemoryId(nccs[ncc_memory.0 as usize].unwrap());
+                }
+                BetaNode::Exists { exists_memory, .. } => {
+                    *exists_memory = ExistsMemoryId(exists[exists_memory.0 as usize].unwrap());
+                }
+                _ => {}
+            }
+        }
+        self.next_memory_id = u32::try_from(self.memories.len()).unwrap();
+        self.next_neg_memory_id = u32::try_from(self.neg_memories.len()).unwrap();
+        self.next_ncc_memory_id = u32::try_from(self.ncc_memories.len()).unwrap();
+        self.next_exists_memory_id = u32::try_from(self.exists_memories.len()).unwrap();
+        alpha_ids
+    }
+
+    /// Update the compacted alpha memory references and their subscriber lists.
+    pub(crate) fn remap_alpha_memories(&mut self, mapping: &[Option<AlphaMemoryId>]) {
+        self.alpha_to_joins.clear();
+        self.alpha_to_negatives.clear();
+        self.alpha_to_exists.clear();
+        let mut nodes: Vec<_> = self.nodes.iter_mut().collect();
+        nodes.sort_unstable_by_key(|(id, _)| id.0);
+        for (&id, node) in nodes {
+            let (alpha_memory, subscribers) = match node {
+                BetaNode::Join { alpha_memory, .. } => (alpha_memory, &mut self.alpha_to_joins),
+                BetaNode::Negative { alpha_memory, .. } => {
+                    (alpha_memory, &mut self.alpha_to_negatives)
+                }
+                BetaNode::Exists { alpha_memory, .. } => (alpha_memory, &mut self.alpha_to_exists),
+                _ => continue,
+            };
+            *alpha_memory = mapping[alpha_memory.0 as usize].unwrap();
+            subscribers.entry(*alpha_memory).or_default().push(id);
+        }
     }
 
     /// Create a join node as a child of the given parent.
@@ -933,9 +1112,7 @@ impl BetaNetwork {
 
     /// Verify internal consistency of the beta network.
     ///
-    /// This method is gated behind `test` or `debug_assertions` and will panic
-    /// if any inconsistencies are detected.
-    #[cfg(any(test, debug_assertions))]
+    /// Panics if any inconsistencies are detected, in any build profile.
     #[allow(clippy::too_many_lines)]
     pub fn debug_assert_consistency(&self) {
         // Check 1: All node IDs in children fields exist in nodes map

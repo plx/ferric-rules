@@ -778,20 +778,21 @@ fn cross_module_function_not_visible_without_export() {
 (defrule test-call (go) => (printout t (add 3 4) crlf))
 (deffacts startup (go))
 ";
-    load_ok(&mut engine, source);
+    let errors = engine.load_str(source).unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.to_string().contains("does not export")));
+    // The rejected MAIN import leaves the prior module context intact.
+    assert_eq!(engine.current_module(), "MATH");
     engine.reset().unwrap();
-    engine.run(crate::execution::RunLimit::Unlimited).unwrap();
-    let diagnostics = engine.action_diagnostics();
-    assert!(
-        diagnostics.iter().any(|d| {
-            let msg = format!("{d}");
-            msg.contains("not visible")
-                || msg.contains("not accessible")
-                || msg.contains("unknown")
-                || msg.contains("NotVisible")
-        }),
-        "expected visibility error diagnostic, got: {diagnostics:?}"
+    assert_eq!(
+        engine
+            .run(crate::execution::RunLimit::Unlimited)
+            .unwrap()
+            .rules_fired,
+        0
     );
+    assert_eq!(engine.get_output("t"), None);
 }
 
 #[test]
@@ -865,20 +866,21 @@ fn cross_module_global_not_visible_without_export() {
 (defrule test-global (go) => (printout t ?*threshold* crlf))
 (deffacts startup (go))
 ";
-    load_ok(&mut engine, source);
+    let errors = engine.load_str(source).unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.to_string().contains("does not export")));
+    // The rejected MAIN import leaves the prior module context intact.
+    assert_eq!(engine.current_module(), "CONFIG");
     engine.reset().unwrap();
-    engine.run(crate::execution::RunLimit::Unlimited).unwrap();
-    let diagnostics = engine.action_diagnostics();
-    assert!(
-        diagnostics.iter().any(|d| {
-            let msg = format!("{d}");
-            msg.contains("not visible")
-                || msg.contains("not accessible")
-                || msg.contains("unbound")
-                || msg.contains("NotVisible")
-        }),
-        "expected visibility error for global, got: {diagnostics:?}"
+    assert_eq!(
+        engine
+            .run(crate::execution::RunLimit::Unlimited)
+            .unwrap()
+            .rules_fired,
+        0
     );
+    assert_eq!(engine.get_output("t"), None);
 }
 
 #[test]
@@ -3495,13 +3497,13 @@ fn load_rule_with_delayed_do_for_all_facts() {
     );
 }
 
-/// `any-factp` used as condition inside `if` loads without error.
+/// `any-factp` used as condition inside `if` rejects the unsupported expression context.
 #[test]
-fn load_rule_with_any_factp_in_if_condition() {
+fn reject_rule_with_any_factp_in_if_condition() {
     let mut engine = new_utf8_engine();
-    load_ok(
-        &mut engine,
-        r#"
+    let errors = engine
+        .load_str(
+            r#"
 (deftemplate flag (slot active))
 (defrule check
     (go)
@@ -3511,16 +3513,21 @@ fn load_rule_with_any_factp_in_if_condition() {
         else (printout t "no flags" crlf)))
 (deffacts trigger (go))
 "#,
-    );
+        )
+        .unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.to_string().contains("unsupported")));
+    assert!(engine.rules().is_empty());
 }
 
-/// `find-all-facts` used as the RHS of `bind` loads without error.
+/// `find-all-facts` used as the RHS of `bind` rejects the unsupported expression context.
 #[test]
-fn load_rule_with_find_all_facts_in_bind() {
+fn reject_rule_with_find_all_facts_in_bind() {
     let mut engine = new_utf8_engine();
-    load_ok(
-        &mut engine,
-        r"
+    let errors = engine
+        .load_str(
+            r"
 (deftemplate record (slot id))
 (defrule gather
     (go)
@@ -3529,16 +3536,21 @@ fn load_rule_with_find_all_facts_in_bind() {
     (printout t ?all crlf))
 (deffacts trigger (go))
 ",
-    );
+        )
+        .unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.to_string().contains("unsupported")));
+    assert!(engine.rules().is_empty());
 }
 
-/// `find-fact` used as the RHS of `bind` loads without error.
+/// `find-fact` used as the RHS of `bind` rejects the unsupported expression context.
 #[test]
-fn load_rule_with_find_fact_in_bind() {
+fn reject_rule_with_find_fact_in_bind() {
     let mut engine = new_utf8_engine();
-    load_ok(
-        &mut engine,
-        r"
+    let errors = engine
+        .load_str(
+            r"
 (deftemplate widget (slot id))
 (defrule get-first
     (go)
@@ -3547,7 +3559,12 @@ fn load_rule_with_find_fact_in_bind() {
     (printout t ?w crlf))
 (deffacts trigger (go))
 ",
-    );
+        )
+        .unwrap_err();
+    assert!(errors
+        .iter()
+        .any(|error| error.to_string().contains("unsupported")));
+    assert!(engine.rules().is_empty());
 }
 
 // ===========================================================================
@@ -3573,6 +3590,7 @@ fn save_facts_writes_bare_fact_forms_to_file() {
     );
     let mut engine = new_utf8_engine();
     load_ok(&mut engine, &src);
+    engine.reset().unwrap();
     run_to_completion(&mut engine);
 
     let contents = std::fs::read_to_string(temp.path()).expect("read fct file");
@@ -3622,6 +3640,21 @@ fn load_facts_asserts_facts_from_fct_file() {
         visible_count, 3,
         "expected 3 loaded facts, got {visible_count}"
     );
+}
+
+/// Reject oversized fact source before allocating the deffacts wrapper.
+#[test]
+fn load_facts_checks_source_size_before_wrapping_or_parsing() {
+    let mut engine = new_utf8_engine();
+    let source = " ".repeat(crate::source_limits::MAX_SOURCE_BYTES + 1);
+    assert!(matches!(
+        engine.load_facts_str(&source),
+        Err(crate::LoadError::ResourceLimit {
+            resource: "source bytes",
+            ..
+        })
+    ));
+    assert_eq!(engine.facts().unwrap().count(), 0);
 }
 
 /// `load-facts` loaded facts are NOT re-asserted on reset.
@@ -3694,6 +3727,7 @@ fn save_and_load_facts_roundtrip() {
     // First engine: populate and save.
     let mut engine1 = new_utf8_engine();
     load_ok(&mut engine1, &src);
+    engine1.reset().unwrap();
     run_to_completion(&mut engine1);
 
     // Second engine: load the saved facts.

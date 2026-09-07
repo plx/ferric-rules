@@ -1,0 +1,4 @@
+; RH-CORE-006: unused template can be redefined with a new slot layout.
+(deftemplate record (slot current (type INTEGER) (default 7)))
+(deffacts seed (record))
+(defrule use-current (record (current ?v)) => (printout t "fresh " ?v crlf) (assert (result ?v)))

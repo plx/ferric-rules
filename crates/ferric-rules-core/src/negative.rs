@@ -197,8 +197,12 @@ impl NegativeMemory {
         self.unblocked.iter().map(|(&parent, &pt)| (parent, pt))
     }
 
+    /// Iterate over parents which must retain any additional matching blockers.
+    pub(crate) fn blocked_parents(&self) -> impl Iterator<Item = TokenId> + '_ {
+        self.blocked.keys().copied()
+    }
+
     /// Verify internal consistency of the negative memory.
-    #[cfg(any(test, debug_assertions))]
     pub fn debug_assert_consistency(&self) {
         // Check 1: forward and reverse blocker indices are consistent
         for (&token_id, blockers) in &self.blocked {

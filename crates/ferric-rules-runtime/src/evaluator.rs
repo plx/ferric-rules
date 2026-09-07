@@ -14,7 +14,7 @@ use std::collections::VecDeque;
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_rules_core::string::FerricString;
 use ferric_rules_core::symbol::SymbolTable;
-use ferric_rules_core::value::{Multifield, Value};
+use ferric_rules_core::value::Value;
 use ferric_rules_core::StringEncoding;
 
 use crate::config::EngineConfig;
@@ -137,6 +137,13 @@ pub enum EvalError {
     #[error("internal return control escaped its callable at {}", format_span(.span.as_ref()))]
     ReturnControl {
         value: Value,
+        span: Option<SourceSpan>,
+    },
+
+    #[error("unsupported operation `{operation}`: {reason} at {}", format_span(.span.as_ref()))]
+    UnsupportedOperation {
+        operation: String,
+        reason: String,
         span: Option<SourceSpan>,
     },
 }
@@ -930,24 +937,18 @@ fn eval_inner(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Ev
                 Ok(Value::Void)
             }
         }
-        RuntimeExpr::QueryAction { name, .. } => {
+        RuntimeExpr::QueryAction { name, span, .. } => {
             // Fact-query macros (`do-for-fact`, `any-factp`, etc.) require
             // access to the fact base, which is not available inside the pure
             // expression evaluator.  These forms are fully handled in
             // `execute_single_action` when invoked as top-level RHS actions.
             //
-            // When a query macro appears as a nested expression (e.g.
-            // `(if (any-factp ...) then ...)`) we return a safe default so
-            // the form parses and compiles without error:
-            //   - `any-factp` → FALSE (conservative: "no fact matched")
-            //   - `find-fact` / `find-all-facts` → empty multifield
-            //   - action forms → FALSE
-            match name.as_str() {
-                "find-fact" | "find-all-facts" => {
-                    Ok(Value::Multifield(Box::<Multifield>::default()))
-                }
-                _ => Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding)),
-            }
+            // A fabricated FALSE/empty result would silently change decisions.
+            Err(EvalError::UnsupportedOperation {
+                operation: name.clone(),
+                reason: "fact queries in expression/callable contexts are not supported; use a rule RHS do-for-* action or the host fact API".into(),
+                span: span.clone(),
+            })
         }
     }
 }
@@ -3738,14 +3739,18 @@ fn builtin_get_fact_duplication(
     ))
 }
 
-/// `refresh-agenda` — accepted for compatibility; current runtime performs agenda refresh continuously.
+/// Dynamic salience/agenda refresh is outside the supported static-salience subset.
 fn builtin_refresh_agenda(
-    ctx: &mut EvalContext<'_>,
+    _ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("refresh-agenda", args, 0, span)?;
-    Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
+    Err(EvalError::UnsupportedOperation {
+        operation: "refresh-agenda".into(),
+        reason: "dynamic salience and explicit agenda refresh are not supported".into(),
+        span: span.cloned(),
+    })
 }
 
 /// `watch` — debugging command accepted for compatibility.
@@ -8427,9 +8432,12 @@ mod tests {
     }
 
     #[test]
-    fn refresh_agenda_returns_boolean_symbol() {
-        let result = eval_expr(&call("refresh-agenda", vec![])).unwrap();
-        assert!(matches!(result, Value::Symbol(_)));
+    fn refresh_agenda_reports_unsupported_operation() {
+        let result = eval_expr(&call("refresh-agenda", vec![]));
+        assert!(matches!(
+            result,
+            Err(EvalError::UnsupportedOperation { .. })
+        ));
     }
 
     #[test]

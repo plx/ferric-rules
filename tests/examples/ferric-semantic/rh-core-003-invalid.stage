@@ -1,0 +1,2 @@
+; RH-CORE-003: failed new rule load leaves a previously compiled sibling intact.
+(defrule invalid (subject ?x) => (assert (bad ?missing)))

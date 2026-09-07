@@ -56,13 +56,13 @@ pub struct ModuleRegistry {
 impl ModuleRegistry {
     /// Create a new registry with the default MAIN module.
     ///
-    /// MAIN exports `?ALL` and imports nothing.
+    /// MAIN exports and imports nothing until explicitly configured.
     #[must_use]
     pub fn new() -> Self {
         let main_id = ModuleId(0);
         let main_module = RuntimeModule {
             name: MAIN_MODULE_NAME.to_string(),
-            exports: vec![ModuleSpec::All],
+            exports: vec![],
             imports: vec![],
         };
         let mut modules = HashMap::default();
@@ -109,6 +109,55 @@ impl ModuleRegistry {
         self.modules.insert(id, module);
         self.name_to_id.insert(name_owned.into_boxed_str(), id);
         id
+    }
+
+    /// Check import declarations before installing the importing module.
+    pub(crate) fn validate_imports(&self, imports: &[ImportSpec]) -> Result<(), String> {
+        for import in imports {
+            let Some(module_id) = self.get_by_name(&import.module_name) else {
+                return Err(format!("unknown imported module `{}`", import.module_name));
+            };
+            let module = &self.modules[&module_id];
+            let exports_type = |requested_type: Option<&str>| {
+                module.exports.iter().any(|spec| match spec {
+                    ModuleSpec::All => true,
+                    ModuleSpec::None => false,
+                    ModuleSpec::Specific {
+                        construct_type,
+                        names,
+                    } => {
+                        requested_type.map_or(true, |requested| requested == construct_type)
+                            && names.iter().any(|name| name != "?NONE")
+                    }
+                })
+            };
+            if !exports_type(None) {
+                return Err(format!(
+                    "module `{}` does not export any constructs",
+                    module.name
+                ));
+            }
+            if let ModuleSpec::Specific {
+                construct_type,
+                names,
+            } = &import.spec
+            {
+                for name in names {
+                    let available = match name.as_str() {
+                        "?NONE" => true,
+                        "?ALL" => exports_type(Some(construct_type)),
+                        name => self.module_exports_construct(module_id, construct_type, name),
+                    };
+                    if !available {
+                        return Err(format!(
+                            "module `{}` does not export {construct_type} `{name}`",
+                            module.name
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Get a module by ID.
@@ -232,12 +281,6 @@ impl ModuleRegistry {
             return false;
         };
 
-        // CLIPS default behavior: if no explicit export spec is provided,
-        // the module behaves as though it exports ?ALL.
-        if module.exports.is_empty() {
-            return true;
-        }
-
         module
             .exports
             .iter()
@@ -326,10 +369,7 @@ impl ModuleRegistry {
             "current_module {:?} missing from modules",
             self.current_module
         );
-        assert!(
-            !self.focus_stack.is_empty(),
-            "focus stack must never be empty during consistency checks"
-        );
+        // An empty stack is the normal state after a run drains all focuses.
         for &module_id in &self.focus_stack {
             assert!(
                 self.modules.contains_key(&module_id),
@@ -491,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn visibility_defaults_to_export_all_when_unspecified() {
+    fn visibility_defaults_to_export_none_when_unspecified() {
         let mut registry = ModuleRegistry::new();
         let source_id = registry.register("SOURCE", vec![], vec![]);
         registry.register(
@@ -505,7 +545,7 @@ mod tests {
         );
 
         let main = registry.main_module_id();
-        assert!(registry.is_construct_visible(main, source_id, "deftemplate", "reading"));
+        assert!(!registry.is_construct_visible(main, source_id, "deftemplate", "reading"));
     }
 
     #[test]

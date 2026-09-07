@@ -1,0 +1,2 @@
+; RH-CORE-002: repeated replacement preserves an independent shared-prefix rule.
+(defrule choose (subject ?x) (gate open) (exists (proof ?x)) => (printout t "final" crlf) (assert (result final ?x)))

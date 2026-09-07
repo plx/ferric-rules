@@ -17,6 +17,7 @@
 //! - `test` CE compilation (currently returns compile error).
 //! - Template pattern compilation (currently returns compile error).
 
+use ferric_rules_core::RuleId;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -61,6 +62,11 @@ struct PreparedRuleInstallation {
     plan: ConditionCompilationPlan,
     info: Arc<CompiledRuleInfo>,
     module: crate::modules::ModuleId,
+}
+
+struct RuleRhsScope<'a> {
+    exported: &'a HashSet<String>,
+    existential: &'a HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,6 +251,16 @@ pub enum LoadError {
     #[error("compile error: {0}")]
     Compile(String),
 
+    #[error("rule `{rule}` at line {line}, column {column}: {resource} requires at least {required}, exceeding the supported limit of {limit}")]
+    ResourceLimit {
+        rule: String,
+        resource: &'static str,
+        required: usize,
+        limit: usize,
+        line: u32,
+        column: u32,
+    },
+
     #[error("pattern validation failed")]
     Validation(Vec<ferric_rules_core::PatternValidationError>),
 
@@ -300,6 +316,7 @@ impl Engine {
     /// Parses and processes top-level forms:
     /// - `(assert ...)` — assert facts into working memory
     /// - `(defrule ...)` — register rule definitions
+    /// - `(deffacts ...)` — register named seed facts, asserted only by `reset`
     /// - Other forms produce `UnsupportedForm` errors
     ///
     /// # Errors
@@ -321,6 +338,7 @@ impl Engine {
     #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_str", len = source.len());
+        crate::source_limits::check_source_size(source.len()).map_err(|e| vec![e])?;
 
         // Parse the source into S-expressions (Stage 1)
         let parse_result = {
@@ -421,12 +439,15 @@ impl Engine {
                 }
             }
 
-            // Collect constructs by type (don't assert deffacts yet).
+            // Collect constructs by type; deffacts only register reset seeds.
             //
             // Rules are collected with their owning module captured at the
             // time they appear in source so that defmodule statements
             // interleaved with defrule statements are respected.
-            let mut deffacts_constructs: Vec<ferric_rules_parser::FactsConstruct> = Vec::new();
+            let mut deffacts_constructs: Vec<(
+                ferric_rules_parser::FactsConstruct,
+                crate::modules::ModuleId,
+            )> = Vec::new();
             let mut rules_with_module = Vec::new();
             let mut pending_ordered_fact_names = HashSet::new();
             for construct in interpret_result.constructs {
@@ -471,8 +492,27 @@ impl Engine {
                                         })
                                     })
                             });
+                        let pending_use = self
+                            .template_definition_identity(&template)
+                            .ok()
+                            .and_then(|(_, id)| id)
+                            .is_some_and(|id| {
+                                rules_with_module.iter().any(|(rule, module)| {
+                                    self.rule_uses_template(rule, *module, id)
+                                }) || deffacts_constructs.iter().any(|(facts, module)| {
+                                    facts.facts.iter().any(|fact| {
+                                        let name = match fact {
+                                            FactBody::Ordered(fact) => &fact.relation,
+                                            FactBody::Template(fact) => &fact.template,
+                                        };
+                                        self.template_name_is(name, *module, id)
+                                    })
+                                })
+                            });
                         if pending_ordered_use {
                             errors.push(Self::ordered_template_conflict(&template));
+                        } else if pending_use {
+                            errors.push(Self::template_in_use_error(&template));
                         } else if let Err(e) = self.register_template(&template, &mut result) {
                             errors.push(e);
                         } else {
@@ -480,25 +520,38 @@ impl Engine {
                         }
                     }
                     Construct::Facts(facts) => {
-                        let module = parse_qualified_name(&facts.name)
-                            .ok()
-                            .and_then(|name| {
-                                name.module_name()
-                                    .and_then(|module| self.module_registry.get_by_name(module))
-                            })
-                            .unwrap_or_else(|| self.module_registry.current_module());
-                        for fact in &facts.facts {
-                            if let FactBody::Ordered(fact) = fact {
-                                if self
-                                    .resolve_template_reference(&fact.relation, module)
-                                    .is_err()
-                                {
-                                    pending_ordered_fact_names
-                                        .insert(Self::template_local_name(&fact.relation));
+                        let parsed = parse_qualified_name(&facts.name).map_err(LoadError::Compile);
+                        let owning_module = match parsed {
+                            Ok(name) => match name.module_name() {
+                                Some(module) => {
+                                    self.module_registry.get_by_name(module).ok_or_else(|| {
+                                        LoadError::Compile(format!(
+                                            "unknown module `{module}` for deffacts `{}`",
+                                            facts.name
+                                        ))
+                                    })
                                 }
+                                None => Ok(self.module_registry.current_module()),
+                            },
+                            Err(error) => Err(error),
+                        };
+                        match owning_module {
+                            Ok(module) => {
+                                for fact in &facts.facts {
+                                    if let FactBody::Ordered(fact) = fact {
+                                        if self
+                                            .resolve_template_reference(&fact.relation, module)
+                                            .is_err()
+                                        {
+                                            pending_ordered_fact_names
+                                                .insert(Self::template_local_name(&fact.relation));
+                                        }
+                                    }
+                                }
+                                deffacts_constructs.push((facts, module));
                             }
+                            Err(error) => errors.push(error),
                         }
-                        deffacts_constructs.push(facts);
                     }
                     Construct::Function(func) => {
                         let owning_module = self.module_registry.current_module();
@@ -532,16 +585,6 @@ impl Engine {
                         result.functions.push(func);
                     }
                     Construct::Global(global) => {
-                        // Record the owning module for each global defined in this construct.
-                        let owning_module = self.module_registry.current_module();
-                        for def in &global.globals {
-                            insert_module_entry(
-                                &mut self.global_modules,
-                                owning_module,
-                                def.name.clone(),
-                                owning_module,
-                            );
-                        }
                         // Evaluate initial values and store in the global store.
                         if let Err(e) = self.process_global_construct(&global) {
                             errors.push(e);
@@ -549,6 +592,11 @@ impl Engine {
                         result.globals.push(global);
                     }
                     Construct::Module(module) => {
+                        if let Err(message) = self.module_registry.validate_imports(&module.imports)
+                        {
+                            errors.push(Self::compile_error_at(&module.span, &message));
+                            continue;
+                        }
                         // Register the module (or update its exports/imports if it already
                         // exists). Re-defining a module (including MAIN) is allowed in CLIPS
                         // to set up imports and exports; only truly conflicting definitions
@@ -654,9 +702,10 @@ impl Engine {
             // Restore each rule's owning module before compiling so that
             // cross-module template visibility checks use the correct module.
             let saved_module = self.module_registry.current_module();
+            let mut expansion_budget = crate::source_limits::LoadBudget::default();
             for (rule, owning_module) in &rules_with_module {
                 self.module_registry.set_current_module(*owning_module);
-                match self.compile_rule_construct(rule, source) {
+                match self.compile_rule_construct(rule, source, &mut expansion_budget) {
                     Ok(_) => {}
                     Err(e) => errors.push(e),
                 }
@@ -664,20 +713,20 @@ impl Engine {
             }
             self.module_registry.set_current_module(saved_module);
 
-            // Ensure (initial-fact) is present AFTER rules are compiled but
-            // BEFORE deffacts are asserted. This mirrors CLIPS' built-in fact
-            // and satisfies the implicit condition used for empty-LHS and
-            // test-only rules. It is asserted only once.
+            // Explicit initial-fact patterns use a protected built-in fact.
+            // Empty/negative prefixes use the independent RETE root token.
             if let Err(e) = self.ensure_initial_fact() {
                 errors.push(e);
             }
 
-            // Now process deffacts (facts will flow through compiled rete via assert_ordered).
-            for facts in &deffacts_constructs {
+            // Register dormant definitions; reset will assert their facts.
+            for (facts, owning_module) in &deffacts_constructs {
+                self.module_registry.set_current_module(*owning_module);
                 if let Err(e) = self.process_deffacts_construct(facts, &mut result) {
                     errors.push(e);
                 }
             }
+            self.module_registry.set_current_module(saved_module);
         }
 
         // Process assert forms AFTER rules are compiled so facts flow through rete
@@ -712,9 +761,9 @@ impl Engine {
 
     /// Ensure `(initial-fact)` is present in working memory.
     ///
-    /// `(initial-fact)` mirrors CLIPS' built-in fact and satisfies the implicit
-    /// condition used for empty-LHS and test-only rules. It is asserted once;
-    /// subsequent calls are no-ops.
+    /// Explicit `(initial-fact)` patterns match this protected built-in fact.
+    /// Empty/negative prefixes use the independent RETE root token. It is
+    /// asserted once; subsequent calls are no-ops.
     ///
     /// The `FactId` is stored in `self.initial_fact_id` so that `facts()` can
     /// exclude it from user-visible results.
@@ -740,7 +789,8 @@ impl Engine {
 
     /// Load CLIPS source code from a file.
     ///
-    /// Reads the file contents and delegates to `load_str`.
+    /// Reads at most the supported source limit plus one byte, then delegates
+    /// to `load_str`. Oversized files are rejected before full allocation.
     ///
     /// # Errors
     ///
@@ -749,40 +799,84 @@ impl Engine {
     /// - Source parsing or processing fails
     pub fn load_file(&mut self, path: &Path) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_file", path = %path.display());
-        let source = std::fs::read_to_string(path).map_err(|e| vec![LoadError::Io(e)])?;
+        let source = crate::source_limits::read_source_file(path).map_err(|e| vec![e])?;
         self.load_str(&source)
     }
 
-    /// Process a deffacts construct and assert its facts.
+    /// Prepare all seed facts before replacing the named definition. Loading
+    /// changes metadata only; reset is the sole consumer of these seed facts.
     fn process_deffacts_construct(
         &mut self,
-        facts_construct: &ferric_rules_parser::FactsConstruct,
+        definition: &ferric_rules_parser::FactsConstruct,
         result: &mut LoadResult,
     ) -> Result<(), LoadError> {
-        let mut constructed_facts = Vec::new();
-        for fact_body in &facts_construct.facts {
-            let fact_id = self.process_fact_body(fact_body, result)?;
-            result.asserted_facts.push(fact_id);
-            // Collect the fact for deffacts registration
-            if let Some(entry) = self.fact_base.get(fact_id) {
-                constructed_facts.push(entry.fact.clone());
-            }
+        let name = parse_qualified_name(&definition.name).map_err(LoadError::Compile)?;
+        let module = self.module_registry.current_module();
+        let name = name.local_name().to_string();
+        if module == self.module_registry.main_module_id() && name == "initial-fact" {
+            return Err(LoadError::Compile(
+                "the built-in initial-fact definition is protected".to_string(),
+            ));
         }
-        // Register for reset
-        self.registered_deffacts.push(constructed_facts);
+        let checkpoint = self.symbol_table.checkpoint();
+        let facts = match definition
+            .facts
+            .iter()
+            .map(|body| self.build_fact_body(body, result))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(facts) => facts,
+            Err(error) => {
+                self.symbol_table.restore(checkpoint);
+                return Err(error);
+            }
+        };
+        self.registered_deffacts
+            .retain(|entry| entry.module != module || entry.name != name);
+        self.registered_deffacts
+            .push(crate::engine::RegisteredDeffacts {
+                module,
+                name,
+                facts,
+            });
         Ok(())
     }
 
-    /// Process a single fact body from a deffacts construct.
-    fn process_fact_body(
+    fn build_fact_body(
         &mut self,
-        fact_body: &FactBody,
+        body: &FactBody,
         result: &mut LoadResult,
-    ) -> Result<FactId, LoadError> {
-        match fact_body {
-            FactBody::Ordered(ordered) => self.process_ordered_fact_body(ordered, result),
-            FactBody::Template(template) => self.process_template_fact_body(template, result),
+    ) -> Result<Fact, LoadError> {
+        match body {
+            FactBody::Ordered(ordered) => self.build_ordered_fact_body(ordered, result),
+            FactBody::Template(template) => self.build_template_fact_body(template, result),
         }
+    }
+
+    /// Reuse source fact validation without publishing a temporary definition.
+    pub(crate) fn load_facts_str(&mut self, contents: &str) -> Result<usize, LoadError> {
+        crate::source_limits::check_source_size(contents.len())?;
+        let wrapped = format!("(deffacts __loaded_facts__ {contents})");
+        let parsed = parse_sexprs(&wrapped, FileId(0));
+        if let Some(error) = parsed.errors.into_iter().next() {
+            return Err(LoadError::Parse(error));
+        }
+        let interpreted = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+        if let Some(error) = interpreted.errors.into_iter().next() {
+            return Err(LoadError::Interpret(error));
+        }
+        let mut count = 0;
+        let mut result = LoadResult::default();
+        for construct in interpreted.constructs {
+            if let Construct::Facts(definition) = construct {
+                for body in definition.facts {
+                    let fact = self.build_fact_body(&body, &mut result)?;
+                    self.assert_fact_internal(fact);
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
     }
 
     fn template_local_name(raw: &str) -> String {
@@ -914,11 +1008,11 @@ impl Engine {
     }
 
     /// Process an ordered fact body.
-    fn process_ordered_fact_body(
+    fn build_ordered_fact_body(
         &mut self,
         ordered: &OrderedFactBody,
         result: &mut LoadResult,
-    ) -> Result<FactId, LoadError> {
+    ) -> Result<Fact, LoadError> {
         let current_module = self.module_registry.current_module();
         if let Ok(template_id) = self.resolve_template_reference(&ordered.relation, current_module)
         {
@@ -930,34 +1024,40 @@ impl Engine {
             }
             let registered = &self.template_defs[template_id];
             registered
-                .validate_required_slots(&registered.defaults)
+                .validate_slots(&registered.defaults)
                 .map_err(LoadError::Compile)?;
             let slots = registered.defaults.clone().into_boxed_slice();
-            return Ok(self
-                .assert_fact_internal(Fact::Template(TemplateFact { template_id, slots }))
-                .fact_id());
+            return Ok(Fact::Template(TemplateFact { template_id, slots }));
         }
         let mut fields = Vec::new();
         for fact_value in &ordered.values {
-            if let Some(value) = self.fact_value_to_value(fact_value, result) {
-                match value {
-                    // CLIPS splices multifield values into ordered facts.
-                    Value::Multifield(mf) => fields.extend(mf.as_slice().iter().cloned()),
-                    other => fields.push(other),
-                }
+            let value = self
+                .fact_value_to_value(fact_value, result)
+                .ok_or_else(|| {
+                    LoadError::Compile(format!(
+                        "invalid value in deffacts relation `{}`",
+                        ordered.relation
+                    ))
+                })?;
+            match value {
+                Value::Multifield(mf) => fields.extend(mf.as_slice().iter().cloned()),
+                Value::Void => {}
+                other => fields.push(other),
             }
         }
 
-        self.assert_ordered(&ordered.relation, fields)
-            .map_err(LoadError::Engine)
+        Ok(Fact::Ordered(ferric_rules_core::OrderedFact {
+            relation: self.compile_symbol(&ordered.relation)?,
+            fields: fields.into(),
+        }))
     }
 
     /// Process a template fact body.
-    fn process_template_fact_body(
+    fn build_template_fact_body(
         &mut self,
         template: &TemplateFactBody,
         result: &mut LoadResult,
-    ) -> Result<FactId, LoadError> {
+    ) -> Result<Fact, LoadError> {
         let current_module = self.module_registry.current_module();
         let template_id = match self.resolve_template_reference(&template.template, current_module)
         {
@@ -981,9 +1081,10 @@ impl Engine {
                             })?;
                         fields.push(Value::Symbol(sym));
                     }
-                    return self
-                        .assert_ordered(&template.template, fields)
-                        .map_err(LoadError::Engine);
+                    return Ok(Fact::Ordered(ferric_rules_core::OrderedFact {
+                        relation: self.compile_symbol(&template.template)?,
+                        fields: fields.into(),
+                    }));
                 }
                 return Err(LoadError::Compile(format!("{msg} in deffacts")));
             }
@@ -1003,27 +1104,54 @@ impl Engine {
         // Start with defaults.
         let mut slots: Vec<Value> = registered.defaults.clone();
 
-        // Apply slot values from the deffacts body.
-        for slot_val in &template.slot_values {
-            let slot_idx = registered.slot_index(&slot_val.name).ok_or_else(|| {
+        let mut seen = HashSet::new();
+        for slot in &template.slot_values {
+            let index = registered.slot_index(&slot.name).ok_or_else(|| {
                 LoadError::Compile(format!(
                     "unknown slot `{}` in template `{}`",
-                    slot_val.name, template.template
+                    slot.name, template.template
                 ))
             })?;
-
-            if let Some(value) = self.fact_value_to_value(&slot_val.value, result) {
-                slots[slot_idx] = value;
+            if !seen.insert(index) {
+                return Err(LoadError::Compile(format!(
+                    "duplicate slot `{}` in template `{}`",
+                    slot.name, template.template
+                )));
             }
+            let mut fields = Vec::new();
+            for field in &slot.values {
+                let value = self.fact_value_to_value(field, result).ok_or_else(|| {
+                    LoadError::Compile(format!(
+                        "invalid value for slot `{}` in template `{}`",
+                        slot.name, template.template
+                    ))
+                })?;
+                match value {
+                    Value::Multifield(values) => fields.extend(values.as_slice().iter().cloned()),
+                    Value::Void => {}
+                    value => fields.push(value),
+                }
+            }
+            slots[index] = match registered.slot_types[index] {
+                ferric_rules_parser::SlotType::Single if fields.len() == 1 => fields.pop().unwrap(),
+                ferric_rules_parser::SlotType::Single => {
+                    return Err(LoadError::Compile(format!(
+                        "single-field slot `{}` in template `{}` requires exactly one value",
+                        slot.name, template.template
+                    )))
+                }
+                ferric_rules_parser::SlotType::Multi => {
+                    Value::Multifield(Box::new(fields.into_iter().collect()))
+                }
+            };
         }
-
-        // Assert as a proper template fact.
-        Ok(self
-            .assert_fact_internal(Fact::Template(TemplateFact {
-                template_id,
-                slots: slots.into_boxed_slice(),
-            }))
-            .fact_id())
+        registered
+            .validate_slots(&slots)
+            .map_err(LoadError::Compile)?;
+        Ok(Fact::Template(TemplateFact {
+            template_id,
+            slots: slots.into_boxed_slice(),
+        }))
     }
 
     fn is_ambiguous_empty_template_fact(template: &TemplateFactBody) -> bool {
@@ -1031,7 +1159,7 @@ impl Engine {
             && template
                 .slot_values
                 .iter()
-                .all(|slot| matches!(slot.value, FactValue::EmptyMultifield(_)))
+                .all(|slot| slot.values.is_empty())
     }
 
     fn ordered_template_conflict(template: &TemplateConstruct) -> LoadError {
@@ -1040,29 +1168,115 @@ impl Engine {
         ))
     }
 
-    /// Register a `TemplateConstruct` in the engine's template registry.
-    ///
-    /// Allocates a fresh `TemplateId`, builds slot metadata, and stores both
-    /// the name→id mapping and the `RegisteredTemplate`.
-    #[allow(clippy::unnecessary_wraps)] // Result return kept for future error paths
+    /// Find the owning module and any previous same-name definition.
+    fn template_definition_identity(
+        &self,
+        template: &TemplateConstruct,
+    ) -> Result<
+        (
+            crate::modules::ModuleId,
+            Option<ferric_rules_core::TemplateId>,
+        ),
+        LoadError,
+    > {
+        let name = parse_qualified_name(&template.name)
+            .map_err(|message| Self::compile_error_at(&template.span, &message))?;
+        let module = if let Some(module) = name.module_name() {
+            self.module_registry.get_by_name(module).ok_or_else(|| {
+                Self::compile_error_at(
+                    &template.span,
+                    &format!("unknown module `{module}` for template `{}`", template.name),
+                )
+            })?
+        } else {
+            self.module_registry.current_module()
+        };
+        let existing = self.template_defs.iter().find_map(|(id, definition)| {
+            (self.template_modules.get(id) == Some(&module)
+                && Self::template_local_name(&definition.name) == name.local_name())
+            .then_some(id)
+        });
+        Ok((module, existing))
+    }
+
+    fn template_in_use_error(template: &TemplateConstruct) -> LoadError {
+        Self::compile_error_at(&template.span, &format!(
+            "[CSTRCPSR4] cannot redefine template `{}` while it is in use by facts or constructs", template.name
+        ))
+    }
+
+    /// Prepare one slot default without installing any template metadata.
+    fn template_slot_default(
+        &mut self,
+        slot_def: &ferric_rules_parser::SlotDefinition,
+        result: &mut LoadResult,
+    ) -> Result<Value, LoadError> {
+        let default_val = match &slot_def.default {
+            Some(ferric_rules_parser::DefaultValue::None) => Value::Void,
+            Some(ferric_rules_parser::DefaultValue::Value(literal)) => self
+                .literal_to_value(&literal.value, literal.span.start.line, result)
+                .ok_or_else(|| Self::compile_error_at(&literal.span, "invalid template default"))?,
+            Some(ferric_rules_parser::DefaultValue::Values(literals)) => {
+                let mut values = Vec::with_capacity(literals.len());
+                for literal in literals {
+                    values.push(
+                        self.literal_to_value(&literal.value, literal.span.start.line, result)
+                            .ok_or_else(|| {
+                                Self::compile_error_at(&literal.span, "invalid template default")
+                            })?,
+                    );
+                }
+                Value::Multifield(Box::new(values.into_iter().collect()))
+            }
+            None | Some(ferric_rules_parser::DefaultValue::Derive) => {
+                use ferric_rules_parser::SlotValueType;
+                if slot_def.slot_type == ferric_rules_parser::SlotType::Multi {
+                    Value::Multifield(Box::default())
+                } else {
+                    match slot_def.allowed_types.as_ref().and_then(|types| types.first()) {
+                    None | Some(SlotValueType::Symbol) => Value::Symbol(self.compile_symbol("nil")?),
+                    Some(SlotValueType::String) => Value::String(self.compile_string("")?),
+                    Some(SlotValueType::Integer) => Value::Integer(0),
+                    Some(SlotValueType::Float) => Value::Float(0.0),
+                    Some(SlotValueType::ExternalAddress) => return Err(Self::compile_error_at(&slot_def.span, "an external-address slot requires (default ?NONE); Ferric cannot derive a host-owned token")),
+                }
+                }
+            }
+        };
+        let default_val = match (slot_def.slot_type, default_val) {
+            (ferric_rules_parser::SlotType::Multi, Value::Void) => Value::Void,
+            (ferric_rules_parser::SlotType::Multi, Value::Multifield(fields)) => {
+                Value::Multifield(fields)
+            }
+            (ferric_rules_parser::SlotType::Multi, value) => {
+                Value::Multifield(Box::new([value].into_iter().collect()))
+            }
+            (_, value) => value,
+        };
+        Ok(default_val)
+    }
+
+    /// Install a validated new template or replace an unused definition in place.
     fn register_template(
         &mut self,
         template: &TemplateConstruct,
         result: &mut LoadResult,
     ) -> Result<(), LoadError> {
-        let owning_module = parse_qualified_name(&template.name)
-            .ok()
-            .and_then(|name| {
-                name.module_name()
-                    .and_then(|module| self.module_registry.get_by_name(module))
-            })
-            .unwrap_or_else(|| self.module_registry.current_module());
+        let (owning_module, existing) = self.template_definition_identity(template)?;
+        if existing.is_some_and(|id| self.template_is_in_use(id)) {
+            return Err(Self::template_in_use_error(template));
+        }
+        if existing.is_none() && self.template_ids.contains_key(template.name.as_str()) {
+            return Err(Self::compile_error_at(
+                &template.span,
+                &format!(
+                    "template spelling `{}` already belongs to another module; use a module-qualified declaration such as `MODULE::{}` for a distinct template",
+                    template.name, Self::template_local_name(&template.name)
+                ),
+            ));
+        }
         let local_name = Self::template_local_name(&template.name);
-        let existing = self.template_defs.iter().any(|(id, definition)| {
-            self.template_modules.get(id) == Some(&owning_module)
-                && Self::template_local_name(&definition.name) == local_name
-        });
-        if !existing && self.ordered_identity_is_live(&local_name) {
+        if existing.is_none() && self.ordered_identity_is_live(&local_name) {
             return Err(Self::ordered_template_conflict(template));
         }
         let slot_count = template.slots.len();
@@ -1071,48 +1285,45 @@ impl Engine {
         slot_index.reserve(slot_count);
         let mut defaults = Vec::with_capacity(slot_count);
         let mut slot_types = Vec::with_capacity(slot_count);
+        let mut allowed_types = Vec::with_capacity(slot_count);
 
         for (i, slot_def) in template.slots.iter().enumerate() {
             slot_names.push(slot_def.name.clone());
             slot_index.insert(slot_def.name.clone(), i);
             slot_types.push(slot_def.slot_type);
+            allowed_types.push(slot_def.allowed_types.clone());
 
-            let default_val = match &slot_def.default {
-                Some(ferric_rules_parser::DefaultValue::Value(lit)) => self
-                    .literal_to_value(&lit.value, lit.span.start.line, result)
-                    .unwrap_or(Value::Void),
-                Some(ferric_rules_parser::DefaultValue::None) => Value::Void,
-                _ => match slot_def.slot_type {
-                    ferric_rules_parser::SlotType::Single => {
-                        Value::Symbol(self.compile_symbol("nil")?)
-                    }
-                    ferric_rules_parser::SlotType::Multi => Value::Multifield(Box::default()),
-                },
-            };
-            let default_val = match (slot_def.slot_type, default_val) {
-                (ferric_rules_parser::SlotType::Multi, Value::Void) => Value::Void,
-                (ferric_rules_parser::SlotType::Multi, Value::Multifield(fields)) => {
-                    Value::Multifield(fields)
-                }
-                (ferric_rules_parser::SlotType::Multi, value) => {
-                    Value::Multifield(Box::new([value].into_iter().collect()))
-                }
-                (_, value) => value,
-            };
-            defaults.push(default_val);
+            defaults.push(self.template_slot_default(slot_def, result)?);
         }
 
-        let registered = RegisteredTemplate {
+        let mut registered = RegisteredTemplate {
             name: template.name.clone(),
             slot_names,
             slot_types,
+            allowed_types,
             slot_index,
             defaults,
         };
-        let template_id = self.template_defs.insert(registered);
-
-        self.template_ids
-            .insert(template.name.clone().into_boxed_str(), template_id);
+        for (index, value) in registered.defaults.iter().enumerate() {
+            if !matches!(value, Value::Void) {
+                registered.validate_slot(index, value).map_err(|message| {
+                    Self::compile_error_at(&template.slots[index].span, &message)
+                })?;
+            }
+        }
+        let template_id = if let Some(id) = existing {
+            // The old ID and public spelling remain stable. No fact or compiled
+            // construct can observe the new slot layout, and repeated unused
+            // definitions do not leave orphaned registry entries behind.
+            registered.name.clone_from(&self.template_defs[id].name);
+            self.template_defs[id] = registered;
+            id
+        } else {
+            let id = self.template_defs.insert(registered);
+            self.template_ids
+                .insert(template.name.clone().into_boxed_str(), id);
+            id
+        };
         self.template_modules.insert(template_id, owning_module);
 
         Ok(())
@@ -1174,6 +1385,15 @@ impl Engine {
                     .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
             };
 
+            // CLIPS commits named globals incrementally, even within one
+            // defglobal group. Publish ownership only after this initializer
+            // succeeds, so failed/later names cannot leave phantom metadata.
+            insert_module_entry(
+                &mut self.global_modules,
+                current_module,
+                def.name.clone(),
+                current_module,
+            );
             self.globals.set(current_module, &def.name, value.clone());
             self.registered_globals
                 .push((current_module, def.name.clone(), value));
@@ -1458,7 +1678,10 @@ impl Engine {
         &mut self,
         rule: &RuleConstruct,
         source: &str,
+        expansion_budget: &mut crate::source_limits::LoadBudget,
     ) -> Result<CompileResult, LoadError> {
+        Self::reject_logical_conditions(&rule.patterns)?;
+        crate::source_limits::check_expansion(rule, expansion_budget)?;
         // Validate patterns first (max nesting depth: 4 to support deeply nested NCCs)
         let validation_errors = validate_rule_patterns(&rule.patterns, 4);
         if !validation_errors.is_empty() {
@@ -1469,6 +1692,7 @@ impl Engine {
         // This transforms patterns like (not (and A (or B C))) into
         // (and (not (and A B)) (not (and A C))) which can then be flattened.
         let rule = Self::normalize_nested_or_ces(rule);
+        crate::source_limits::check_expansion(&rule, expansion_budget)?;
 
         // Expand (or ...) CEs via rule duplication: a rule with (or P1 P2) becomes
         // N internal rules, each with one branch substituted. Multiple or CEs produce
@@ -1493,6 +1717,31 @@ impl Engine {
             }
         }
 
+        // Rule identity is its owning module plus local name. Retire all
+        // internal disjunction variants only after the replacement is fully
+        // prepared, leaving failed reloads and unrelated shared matches intact.
+        let local_name = parse_qualified_name(&rule.name)
+            .map_err(|error| LoadError::Compile(error.clone()))?
+            .local_name()
+            .to_string();
+        let module = self.module_registry.current_module();
+        let replaced: Vec<_> = self
+            .rule_info
+            .iter()
+            .enumerate()
+            .filter_map(|(index, info)| {
+                let info = info.as_ref()?;
+                let id = RuleId(u32::try_from(index).ok()?);
+                let same_module =
+                    crate::engine::rule_index_get(&self.rule_modules, id) == Some(&module);
+                (same_module
+                    && parse_qualified_name(&info.name)
+                        .is_ok_and(|name| name.local_name() == local_name))
+                .then_some(id)
+            })
+            .collect();
+        self.remove_compiled_rules(&replaced);
+
         // Every operation from this point through installation is infallible.
         // Return the last result because all expansions share source semantics.
         let mut installed = prepared_rules.into_iter();
@@ -1504,6 +1753,32 @@ impl Engine {
             last_result = self.install_prepared_rule(prepared);
         }
         Ok(last_result)
+    }
+
+    /// Logical support cannot be approximated by an ordinary conjunction.
+    /// Inspect the original tree before normalization can erase its wrapper.
+    fn reject_logical_conditions(patterns: &[Pattern]) -> Result<(), LoadError> {
+        let mut pending: Vec<_> = patterns.iter().collect();
+        while let Some(pattern) = pending.pop() {
+            match pattern {
+                Pattern::Logical(_, span) => {
+                    return Err(Self::unsupported_pattern(
+                        "logical",
+                        span,
+                        "truth maintenance is not implemented; use ordinary stated facts with explicit retraction",
+                    ));
+                }
+                Pattern::Not(inner, _) | Pattern::Assigned { pattern: inner, .. } => {
+                    pending.push(inner);
+                }
+                Pattern::And(children, _)
+                | Pattern::Or(children, _)
+                | Pattern::Exists(children, _)
+                | Pattern::Forall(children, _) => pending.extend(children),
+                Pattern::Ordered(_) | Pattern::Template(_) | Pattern::Test(_, _) => {}
+            }
+        }
+        Ok(())
     }
 
     fn validate_rule_action_callables(
@@ -1524,6 +1799,10 @@ impl Engine {
         rule_name: &str,
     ) -> Result<(), LoadError> {
         match call.name.as_str() {
+            "refresh-agenda" => Err(Self::compile_error_at(
+                &call.span,
+                "refresh-agenda is unsupported: only static salience is supported",
+            )),
             // `(assert (relation ...))`: each argument list represents a fact pattern,
             // so the relation name is data, not a callable. For template facts,
             // slot names are also data and only slot values are expressions.
@@ -1691,13 +1970,10 @@ impl Engine {
                 }
                 Ok(())
             }
-            ActionExpr::QueryAction { query, body, .. } => {
-                self.validate_action_expr_as_expression(query, current_module, rule_name)?;
-                for action in body {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name)?;
-                }
-                Ok(())
-            }
+            ActionExpr::QueryAction { name, span, .. } => Err(Self::compile_error_at(
+                span,
+                &format!("{name} in an expression is unsupported; use a rule RHS do-for-* action or the host fact API"),
+            )),
             ActionExpr::Switch {
                 expr,
                 cases,
@@ -1814,6 +2090,12 @@ impl Engine {
         current_module: crate::modules::ModuleId,
         rule_name: &str,
     ) -> Result<(), LoadError> {
+        if callable == "refresh-agenda" {
+            return Err(Self::compile_error_at(
+                span,
+                "refresh-agenda is unsupported: only static salience is supported",
+            ));
+        }
         if self.is_declared_expression_callable(callable, current_module) {
             return Ok(());
         }
@@ -1880,6 +2162,7 @@ impl Engine {
                 | "set-fact-duplication"
                 | "get-fact-duplication"
                 | "undefrule"
+                | "undeffacts"
                 | "ppdefrule"
                 | "load"
                 | "close"
@@ -1975,7 +2258,18 @@ impl Engine {
     }
 
     fn install_prepared_rule(&mut self, prepared: PreparedRuleInstallation) -> CompileResult {
-        let rule_id = self.compiler.allocate_rule_id();
+        // Reuse retired executable slots so repeated reload/undefine cycles
+        // keep metadata bounded by the maximum number of simultaneous rules.
+        let rule_id = self
+            .rule_info
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, slot)| {
+                slot.is_none()
+                    .then(|| RuleId(u32::try_from(index).unwrap()))
+            })
+            .unwrap_or_else(|| self.compiler.allocate_rule_id());
 
         // Publish executable metadata before network initialization can produce
         // a predicate candidate or terminal activation for this rule.
@@ -2006,12 +2300,12 @@ impl Engine {
     }
 
     /// Recursively flatten a pattern for top-level condition processing.
-    /// - `And`/`Logical`: flatten children.
+    /// - `And`: flatten children. Logical CEs are rejected before translation.
     /// - Double negation remains intact so translation can compile it as exists.
     /// - Everything else: push as-is.
     fn flatten_pattern<'a>(pattern: &'a Pattern, out: &mut Vec<&'a Pattern>) {
         match pattern {
-            Pattern::And(inner, _) | Pattern::Logical(inner, _) => {
+            Pattern::And(inner, _) => {
                 for sub in inner {
                     Self::flatten_pattern(sub, out);
                 }
@@ -2138,27 +2432,19 @@ impl Engine {
         Ok(())
     }
 
-    fn validate_existential_rhs_scope(
+    fn validate_rule_rhs_scope(
         rule: &RuleConstruct,
         existential_locals: &HashSet<String>,
         exported_variables: &HashSet<String>,
     ) -> Result<(), LoadError> {
-        let restricted: HashSet<String> = existential_locals
-            .difference(exported_variables)
-            .cloned()
-            .collect();
-        if restricted.is_empty() {
-            return Ok(());
-        }
+        let scope = RuleRhsScope {
+            exported: exported_variables,
+            existential: existential_locals,
+        };
 
         let mut rhs_locals = HashSet::new();
         for action in &rule.actions {
-            Self::validate_existential_rhs_call(
-                &rule.name,
-                &action.call,
-                &restricted,
-                &mut rhs_locals,
-            )?;
+            Self::validate_rule_rhs_call(&rule.name, &action.call, &scope, &mut rhs_locals)?;
         }
         Ok(())
     }
@@ -2167,16 +2453,16 @@ impl Engine {
         name.strip_prefix("$?").unwrap_or(name)
     }
 
-    fn validate_existential_rhs_call(
+    fn validate_rule_rhs_call(
         rule_name: &str,
         call: &FunctionCall,
-        restricted: &HashSet<String>,
+        scope: &RuleRhsScope<'_>,
         rhs_locals: &mut HashSet<String>,
     ) -> Result<(), LoadError> {
         if call.name == "bind" {
             if let Some(ActionExpr::Variable(name, _)) = call.args.first() {
                 for value in call.args.iter().skip(1) {
-                    Self::validate_existential_rhs_expr(rule_name, value, restricted, rhs_locals)?;
+                    Self::validate_rule_rhs_expr(rule_name, value, scope, rhs_locals)?;
                 }
                 rhs_locals.insert(Self::existential_scope_variable_name(name).to_string());
                 return Ok(());
@@ -2184,36 +2470,41 @@ impl Engine {
         }
 
         for arg in &call.args {
-            Self::validate_existential_rhs_expr(rule_name, arg, restricted, rhs_locals)?;
+            Self::validate_rule_rhs_expr(rule_name, arg, scope, rhs_locals)?;
         }
         Ok(())
     }
 
     #[allow(clippy::too_many_lines)] // Mirrors every structured RHS scope in ActionExpr.
-    fn validate_existential_rhs_expr(
+    fn validate_rule_rhs_expr(
         rule_name: &str,
         expr: &ActionExpr,
-        restricted: &HashSet<String>,
+        scope: &RuleRhsScope<'_>,
         rhs_locals: &mut HashSet<String>,
     ) -> Result<(), LoadError> {
         match expr {
             ActionExpr::Variable(name, span) => {
                 let scope_name = Self::existential_scope_variable_name(name);
-                if restricted.contains(scope_name) && !rhs_locals.contains(scope_name) {
+                if !scope.exported.contains(scope_name) && !rhs_locals.contains(scope_name) {
                     let display_name = if name.starts_with("$?") {
                         name.clone()
                     } else {
                         format!("?{name}")
                     };
+                    let reason = if scope.existential.contains(scope_name) {
+                        "is not exported by existential conditional element"
+                    } else {
+                        "is an unbound RHS variable"
+                    };
                     return Err(LoadError::Compile(format!(
-                        "rule `{rule_name}` variable {display_name} at line {} is not exported by existential conditional element",
+                        "[PRCCODE3] rule `{rule_name}` variable {display_name} at line {} {reason}",
                         span.start.line
                     )));
                 }
                 Ok(())
             }
             ActionExpr::FunctionCall(call) => {
-                Self::validate_existential_rhs_call(rule_name, call, restricted, rhs_locals)
+                Self::validate_rule_rhs_call(rule_name, call, scope, rhs_locals)
             }
             ActionExpr::If {
                 condition,
@@ -2221,24 +2512,14 @@ impl Engine {
                 else_actions,
                 ..
             } => {
-                Self::validate_existential_rhs_expr(rule_name, condition, restricted, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, condition, scope, rhs_locals)?;
                 let mut then_locals = rhs_locals.clone();
                 for action in then_actions {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut then_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut then_locals)?;
                 }
                 let mut else_locals = rhs_locals.clone();
                 for action in else_actions {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut else_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut else_locals)?;
                 }
                 rhs_locals.extend(then_locals);
                 rhs_locals.extend(else_locals);
@@ -2247,15 +2528,10 @@ impl Engine {
             ActionExpr::While {
                 condition, body, ..
             } => {
-                Self::validate_existential_rhs_expr(rule_name, condition, restricted, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, condition, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 for action in body {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut body_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
                 }
                 rhs_locals.extend(body_locals);
                 Ok(())
@@ -2267,19 +2543,14 @@ impl Engine {
                 body,
                 ..
             } => {
-                Self::validate_existential_rhs_expr(rule_name, start, restricted, rhs_locals)?;
-                Self::validate_existential_rhs_expr(rule_name, end, restricted, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, start, scope, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, end, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 if let Some(name) = var_name {
                     body_locals.insert(name.clone());
                 }
                 for action in body {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut body_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
                 }
                 if let Some(name) = var_name {
                     body_locals.remove(name);
@@ -2293,17 +2564,12 @@ impl Engine {
                 body,
                 ..
             } => {
-                Self::validate_existential_rhs_expr(rule_name, list_expr, restricted, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, list_expr, scope, rhs_locals)?;
                 let mut body_locals = rhs_locals.clone();
                 body_locals.insert(var_name.clone());
                 body_locals.insert(format!("{var_name}-index"));
                 for action in body {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut body_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut body_locals)?;
                 }
                 body_locals.remove(var_name);
                 body_locals.remove(&format!("{var_name}-index"));
@@ -2318,19 +2584,9 @@ impl Engine {
             } => {
                 let mut query_locals = rhs_locals.clone();
                 query_locals.extend(bindings.iter().map(|(name, _)| name.clone()));
-                Self::validate_existential_rhs_expr(
-                    rule_name,
-                    query,
-                    restricted,
-                    &mut query_locals,
-                )?;
+                Self::validate_rule_rhs_expr(rule_name, query, scope, &mut query_locals)?;
                 for action in body {
-                    Self::validate_existential_rhs_expr(
-                        rule_name,
-                        action,
-                        restricted,
-                        &mut query_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, action, scope, &mut query_locals)?;
                 }
                 for (name, _) in bindings {
                     query_locals.remove(name);
@@ -2344,29 +2600,22 @@ impl Engine {
                 default,
                 ..
             } => {
-                Self::validate_existential_rhs_expr(rule_name, expr, restricted, rhs_locals)?;
+                Self::validate_rule_rhs_expr(rule_name, expr, scope, rhs_locals)?;
                 for (case_expr, actions) in cases {
-                    Self::validate_existential_rhs_expr(
-                        rule_name, case_expr, restricted, rhs_locals,
-                    )?;
+                    Self::validate_rule_rhs_expr(rule_name, case_expr, scope, rhs_locals)?;
                     let mut case_locals = rhs_locals.clone();
                     for action in actions {
-                        Self::validate_existential_rhs_expr(
-                            rule_name,
-                            action,
-                            restricted,
-                            &mut case_locals,
-                        )?;
+                        Self::validate_rule_rhs_expr(rule_name, action, scope, &mut case_locals)?;
                     }
                     rhs_locals.extend(case_locals);
                 }
                 if let Some(actions) = default {
                     let mut default_locals = rhs_locals.clone();
                     for action in actions {
-                        Self::validate_existential_rhs_expr(
+                        Self::validate_rule_rhs_expr(
                             rule_name,
                             action,
-                            restricted,
+                            scope,
                             &mut default_locals,
                         )?;
                     }
@@ -2724,11 +2973,11 @@ impl Engine {
     /// Also expands slot-level `Constraint::Or` disjunctions inside patterns.
     /// Returns a vec of rule variants (1 if no disjunctions, N*M*... for Cartesian product).
     fn expand_or_patterns(rule: &RuleConstruct) -> Vec<RuleConstruct> {
-        // First flatten top-level And/Logical to expose Or patterns
+        // First flatten top-level And to expose Or patterns
         let mut flat_patterns: Vec<Pattern> = Vec::new();
         for pattern in &rule.patterns {
             match pattern {
-                Pattern::And(inner, _) | Pattern::Logical(inner, _) => {
+                Pattern::And(inner, _) => {
                     flat_patterns.extend(inner.iter().cloned());
                 }
                 _ => flat_patterns.push(pattern.clone()),
@@ -2975,10 +3224,8 @@ impl Engine {
         let mut exported_variables = HashSet::new();
         let mut existential_locals = HashSet::new();
 
-        // Flatten top-level Pattern::And and Pattern::Logical into their children.
+        // Flatten ordinary conjunctions. Logical CEs have already been rejected.
         // CLIPS treats (and ...) as a grouping CE equivalent to listing sub-patterns directly.
-        // (logical ...) is a truth-maintenance wrapper; we strip it (no TMS yet) and treat
-        // children as top-level conditions.
         // Double negation stays intact and is translated through an exists node.
         let mut flat_patterns: Vec<&Pattern> = Vec::new();
         for pattern in &rule.patterns {
@@ -3104,26 +3351,10 @@ impl Engine {
             }
         }
 
-        // Empty-LHS and test-only rules use CLIPS' built-in (initial-fact)
-        // mechanism. Conditional elements, including a leading NCC, are seeded
-        // uniformly by the beta root's empty-prefix token.
-        if conditions.is_empty() {
-            let initial_sym = self
-                .symbol_table
-                .intern_symbol("initial-fact", self.config.string_encoding)
-                .map_err(|e| LoadError::Compile(format!("initial-fact symbol: {e}")))?;
-            let initial_pattern = CompilablePattern {
-                entry_type: AlphaEntryType::OrderedRelation(initial_sym),
-                constant_tests: Vec::new(),
-                variable_slots: Vec::new(),
-                negated_variable_slots: Vec::new(),
-                negated: false,
-                exists: false,
-            };
-            conditions.insert(0, CompilableCondition::Pattern(initial_pattern));
-        }
+        // Empty conjunctions attach directly to the existing non-fact root.
+        // The visible initial-fact is separate state, not support for this match.
 
-        Self::validate_existential_rhs_scope(rule, &existential_locals, &exported_variables)?;
+        Self::validate_rule_rhs_scope(rule, &existential_locals, &exported_variables)?;
 
         Ok(TranslatedRule {
             salience: Salience::new(rule.salience),
@@ -3381,7 +3612,7 @@ impl Engine {
             Pattern::Logical(_, span) => Err(Self::unsupported_pattern(
                 "logical",
                 span,
-                "logical CE is only supported at top-level of rule LHS",
+                "truth maintenance is not implemented",
             )),
             Pattern::Or(_, span) => Err(Self::unsupported_pattern(
                 "or",
@@ -3580,7 +3811,7 @@ impl Engine {
             Pattern::Logical(_, span) => Err(Self::unsupported_pattern(
                 "logical",
                 span,
-                "logical CE reached translate_pattern unexpectedly (should be flattened at top level)",
+                "truth maintenance is not implemented",
             )),
             Pattern::Or(_, span) => Err(Self::unsupported_pattern(
                 "or",
@@ -5153,6 +5384,7 @@ mod tests {
                 (assert (matched ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(
@@ -5197,6 +5429,7 @@ mod tests {
               (assert (hit ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 2);
@@ -5221,6 +5454,7 @@ mod tests {
               (assert (gt2 ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let rule_info = engine
             .rule_info
@@ -5253,6 +5487,7 @@ mod tests {
               (assert (ok ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5275,6 +5510,7 @@ mod tests {
               (assert (pos ?y)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5297,6 +5533,7 @@ mod tests {
               (assert (tpl-ok ?a)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5321,6 +5558,7 @@ mod tests {
               (assert (safe ?min)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5345,6 +5583,7 @@ mod tests {
               (assert (safe-offset ?min)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5369,6 +5608,7 @@ mod tests {
               (assert (safe-bump ?min)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5392,6 +5632,7 @@ mod tests {
               (assert (safe-nested ?min)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5415,6 +5656,7 @@ mod tests {
               (assert (min-answer ?a)))
             "#,
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5439,6 +5681,7 @@ mod tests {
               (assert (missing ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5486,6 +5729,7 @@ mod tests {
               (assert (missing-offset ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5511,6 +5755,7 @@ mod tests {
               (assert (missing-nested ?x)))
             ",
         );
+        engine.reset().unwrap();
 
         let run = run_to_completion(&mut engine);
         assert_eq!(run.rules_fired, 1);
@@ -5814,6 +6059,38 @@ mod tests {
     }
 
     #[test]
+    fn failed_global_initializers_cannot_leave_phantom_persisted_metadata() {
+        let mut engine = Engine::new(EngineConfig::default());
+        let errors = engine
+            .load_str(include_str!(
+                "../tests/fixtures/global_incremental_failure.clp"
+            ))
+            .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        // Snapshot restoration and module visibility must describe the same set
+        // of globals as the active value store, even after a partial load.
+        for (module, names) in &engine.global_modules {
+            for (name, owner) in names {
+                assert_eq!(module, owner);
+                assert!(
+                    engine.globals.contains(*module, name),
+                    "phantom global {module:?}::{name}"
+                );
+            }
+        }
+        for (module, name, _) in &engine.registered_globals {
+            assert!(engine.globals.contains(*module, name));
+            assert_eq!(
+                engine
+                    .global_modules
+                    .get(module)
+                    .and_then(|names| names.get(name.as_str())),
+                Some(module)
+            );
+        }
+    }
+
+    #[test]
     fn load_defglobal_succeeds() {
         let mut engine = new_utf8_engine();
         let result = load_ok(&mut engine, "(defglobal ?*threshold* = 50)");
@@ -6008,8 +6285,9 @@ mod tests {
                 (person Bob))
         ";
         let result = load_ok(&mut engine, source);
+        engine.reset().unwrap();
 
-        assert_eq!(result.asserted_facts.len(), 2);
+        assert!(result.asserted_facts.is_empty());
         assert!(result.rules.is_empty());
     }
 
@@ -6024,10 +6302,11 @@ mod tests {
                 (foo (clear)))
             ",
         );
+        engine.reset().unwrap();
 
-        assert_eq!(result.asserted_facts.len(), 2);
+        assert!(result.asserted_facts.is_empty());
 
-        let fact_id = result.asserted_facts[1];
+        let fact_id = engine.find_facts("foo").unwrap()[1].0;
         let entry = engine
             .fact_base
             .get(fact_id)

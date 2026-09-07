@@ -610,8 +610,8 @@ def test_policy_requires_every_scenario_id_exactly_once(tmp_path: Path) -> None:
     policy_path = tmp_path / "policy.json"
     policy_path.write_text(json.dumps(raw), encoding="utf-8")
     policy = load_policy(policy_path)
-    assert len(policy.cases) == 28
-    assert len({case.issue for case in policy.cases}) == 21
+    assert len(policy.cases) == 57
+    assert len({case.issue for case in policy.cases}) == 22
 
     raw["cases"].pop()
     policy_path.write_text(json.dumps(raw), encoding="utf-8")

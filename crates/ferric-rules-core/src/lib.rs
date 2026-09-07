@@ -31,6 +31,8 @@
 
 mod tracing_support;
 
+mod ordered_set;
+
 #[cfg(feature = "serde")]
 pub mod serde_helpers;
 

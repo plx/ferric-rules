@@ -17,6 +17,12 @@ use crate::symbol::{Symbol, SymbolId};
 use crate::token::NodeId;
 use crate::validation::{PatternValidationError, PatternViolation, ValidationStage};
 
+/// Maximum condition nodes in one compiled rule, including nested NCC nodes.
+/// This bounds recursive propagation depth without a second execution engine.
+pub const MAX_RULE_CONDITIONS: usize = 64;
+/// Maximum constant tests in one alpha path.
+pub const MAX_ALPHA_TESTS: usize = 64;
+
 /// A rule ready for compilation into rete structures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompilableRule {
@@ -98,6 +104,12 @@ pub enum CompileError {
     EmptyRule,
     #[error("too many variables in rule (limit: 65536)")]
     VarMapOverflow,
+    #[error("{resource} requires {required}, exceeding the supported limit of {limit}")]
+    ResourceLimit {
+        resource: &'static str,
+        required: usize,
+        limit: usize,
+    },
     #[error("pattern validation failed")]
     Validation(Vec<crate::validation::PatternValidationError>),
 }
@@ -206,6 +218,32 @@ impl ReteCompiler {
         id
     }
 
+    /// Retire rules and their uniquely owned network state while preserving
+    /// surviving shared matches. Reload work is bounded by the current graph.
+    pub fn remove_rules(&mut self, rete: &mut ReteNetwork, rules: &[RuleId]) {
+        if rules.is_empty() {
+            return;
+        }
+        let mapping = rete.remove_rules(rules);
+        self.alpha_path_cache.retain(|_, memory| {
+            if let Some(new_id) = mapping[memory.0 as usize] {
+                *memory = new_id;
+                true
+            } else {
+                false
+            }
+        });
+        self.join_node_cache = self
+            .join_node_cache
+            .drain()
+            .filter_map(|(mut key, node)| {
+                rete.beta.get_node(node)?;
+                key.alpha_memory = mapping[key.alpha_memory.0 as usize].unwrap();
+                Some((key, node))
+            })
+            .collect();
+    }
+
     /// Compile a rule into the rete network.
     ///
     /// Creates (or reuses) alpha paths for each pattern, builds the beta
@@ -217,6 +255,10 @@ impl ReteCompiler {
         rule: &CompilableRule,
     ) -> Result<CompileResult, CompileError> {
         Self::ensure_non_empty(&rule.patterns)?;
+        Self::check_limit("rule conditions", rule.patterns.len(), MAX_RULE_CONDITIONS)?;
+        for pattern in &rule.patterns {
+            Self::check_limit("alpha tests", pattern.constant_tests.len(), MAX_ALPHA_TESTS)?;
+        }
         Self::validate_rule_patterns(&rule.patterns)?;
         let conditions = Self::patterns_as_conditions(&rule.patterns);
         let var_map = Self::prepare_var_map(&conditions)?;
@@ -230,7 +272,8 @@ impl ReteCompiler {
         ))
     }
 
-    /// Compile a sequence of conditional elements into the rete network.
+    /// Compile conditional elements into the rete network. An empty sequence
+    /// is an unconditional conjunction attached to the non-fact beta root.
     pub fn compile_conditions(
         &mut self,
         rete: &mut ReteNetwork,
@@ -239,7 +282,6 @@ impl ReteCompiler {
         salience: Salience,
         conditions: &[CompilableCondition],
     ) -> Result<CompileResult, CompileError> {
-        Self::ensure_non_empty(conditions)?;
         Self::validate_conditions(conditions)?;
         let var_map = Self::prepare_var_map(conditions)?;
         Ok(self
@@ -253,7 +295,6 @@ impl ReteCompiler {
         salience: Salience,
         conditions: Vec<CompilableCondition>,
     ) -> Result<ConditionCompilationPlan, CompileError> {
-        Self::ensure_non_empty(&conditions)?;
         Self::validate_conditions(&conditions)?;
         let var_map = Self::prepare_var_map(&conditions)?;
         Ok(ConditionCompilationPlan {
@@ -438,6 +479,25 @@ impl ReteCompiler {
     }
 
     fn validate_conditions(conditions: &[CompilableCondition]) -> Result<(), CompileError> {
+        // Inspect iteratively before entering any recursive validation or
+        // compilation path. No network state has been installed at this point.
+        let mut pending: Vec<_> = conditions.iter().collect();
+        let mut count = 0;
+        while let Some(condition) = pending.pop() {
+            count += 1;
+            Self::check_limit("rule conditions", count, MAX_RULE_CONDITIONS)?;
+            match condition {
+                CompilableCondition::Pattern(pattern) => {
+                    Self::check_limit(
+                        "alpha tests",
+                        pattern.constant_tests.len(),
+                        MAX_ALPHA_TESTS,
+                    )?;
+                }
+                CompilableCondition::Ncc(children) => pending.extend(children),
+                CompilableCondition::Predicate { .. } => {}
+            }
+        }
         let mut errors = Vec::new();
         for (condition_idx, condition) in conditions.iter().enumerate() {
             match condition {
@@ -466,6 +526,21 @@ impl ReteCompiler {
             }
         }
         Self::finish_validation(errors)
+    }
+
+    fn check_limit(
+        resource: &'static str,
+        required: usize,
+        limit: usize,
+    ) -> Result<(), CompileError> {
+        if required > limit {
+            return Err(CompileError::ResourceLimit {
+                resource,
+                required,
+                limit,
+            });
+        }
+        Ok(())
     }
 
     /// Validate NCC sub-conditions recursively.
@@ -2739,7 +2814,7 @@ mod tests {
             let key = AtomKey::Symbol(name);
             let hits = alpha_mem.lookup_by_slot(SlotIndex::Ordered(0), &key);
             assert!(
-                hits.is_some() && !hits.unwrap().is_empty(),
+                hits.is_some_and(|hits| hits.len() > 0),
                 "fact name{i} should be found via indexed lookup"
             );
         }

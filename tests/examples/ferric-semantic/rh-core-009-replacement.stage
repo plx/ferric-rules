@@ -1,0 +1,2 @@
+; RH-CORE-009: replacing one deffacts preserves independent definitions.
+(deffacts first (version new))

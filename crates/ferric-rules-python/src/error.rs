@@ -67,9 +67,12 @@ create_exception!(
 /// Convert an `EngineError` into a Python exception.
 pub fn engine_error_to_pyerr(err: EngineError) -> PyErr {
     match err {
-        EngineError::WrongThread { .. } | EngineError::NotATemplateFact(_) => {
-            FerricRuntimeError::new_err(err.to_string())
-        }
+        EngineError::WrongThread { .. }
+        | EngineError::NotATemplateFact(_)
+        | EngineError::SlotCountMismatch { .. }
+        | EngineError::DuplicateSlot { .. }
+        | EngineError::InvalidSlotValue { .. }
+        | EngineError::ProtectedInitialFact => FerricRuntimeError::new_err(err.to_string()),
         EngineError::FactNotFound(_) => FerricFactNotFoundError::new_err(err.to_string()),
         EngineError::Encoding(_) => FerricEncodingError::new_err(err.to_string()),
         EngineError::ModuleNotFound(_) => FerricModuleNotFoundError::new_err(err.to_string()),
@@ -92,7 +95,9 @@ pub fn load_errors_to_pyerr(errors: Vec<LoadError>) -> PyErr {
 
     // Classify by scanning for parse errors first, then compile errors.
     let has_parse = errors.iter().any(|e| matches!(e, LoadError::Parse(_)));
-    let has_compile = errors.iter().any(|e| matches!(e, LoadError::Compile(_)));
+    let has_compile = errors
+        .iter()
+        .any(|e| matches!(e, LoadError::Compile(_) | LoadError::ResourceLimit { .. }));
 
     if has_parse {
         FerricParseError::new_err(msg)

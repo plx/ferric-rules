@@ -19,18 +19,11 @@ change, and it rejects every unexplained divergence.
 
 | Area | Current difference from pinned CLIPS | Policy cases | Tracking |
 |------|--------------------------------------|--------------|----------|
-| Depth and breadth agenda order | Recreated activations use different chronology in an order-sensitive case. | `FR-RETE-008` depth activation chronology; `FR-RETE-008-BREADTH` breadth activation chronology | [#154](https://github.com/plx/ferric-rules/issues/154) |
 | LEX and MEA agenda order | Recency vectors and the MEA tiebreak differ for selected multi-pattern activations. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
-| Reset ordering | `deffacts`-derived and `initial-fact` activations are inserted in the opposite order. | `FR-RETE-010` reset bootstrap ordering | [#156](https://github.com/plx/ferric-rules/issues/156) |
-| Rule replacement | A superseded same-name rule can remain live and fire alongside its replacement. | `FR-RETE-011` same-name rule replacement | [#157](https://github.com/plx/ferric-rules/issues/157) |
-| Template redefinition | A rejected live-template redefinition can corrupt later load state. | `FR-RETE-012` in-use template redefinition | [#158](https://github.com/plx/ferric-rules/issues/158) |
-| Module imports | An import from a module that exports nothing can be accepted and leak a qualified fact. | `FR-RETE-015` module export visibility | [#160](https://github.com/plx/ferric-rules/issues/160) |
-| Immediate focus-stack reporting | `list-focus-stack` can omit a module that was just focused. | `FR-RETE-016` immediate focus changes | [#192](https://github.com/plx/ferric-rules/issues/192) |
-| Drained focus stack | Ferric can retain `MAIN` after pinned CLIPS reports an empty stack. | `FR-RETE-017` focus-stack draining | [#193](https://github.com/plx/ferric-rules/issues/193) |
-| Late `deffacts` loading | A `deffacts` construct loaded after reset is asserted without another reset. | `FR-RETE-018` deffacts reset lifecycle | [#161](https://github.com/plx/ferric-rules/issues/161) |
 
-The reviewed differential policy covers 22 scenarios for 20 production-audit
-IDs plus one generated-harness control. It does not turn undeclared corpus
+The reviewed differential policy covers 57 scenarios: the existing 22 cases
+and 35 distinct rehabilitation scenarios, plus a generated-harness control.
+55 cases are equivalent; the two LEX/MEA cases retain exact known divergences. It does not turn undeclared corpus
 fixtures into compatibility claims; those remain pending or incompatible
 until they receive a structured oracle and reviewed policy entry. See
 [Compatibility assessment oracles](compatibility-assessment.md) for the exact
@@ -182,20 +175,26 @@ including all commonly used conditional elements and RHS actions.
 
 ### Conflict Resolution Strategies
 
-Four strategies are implemented and configurable:
+Depth and breadth are the supported CLIPS ordering strategies. The host API
+also retains two experimental Ferric orderings for existing consumers:
 
 | Strategy | Description |
 |----------|-------------|
 | **Depth** | Most recent activation fires first (default) |
 | **Breadth** | Oldest activation fires first |
-| **LEX** | Lexicographic recency comparison |
-| **MEA** | First-pattern recency, then LEX tiebreak |
+| **LEX** (experimental) | Ferric's pattern-order recency comparison; not CLIPS LEX |
+| **MEA** (experimental) | Ferric's first-pattern recency, then its LEX tiebreak; not CLIPS MEA |
 
-Not implemented: `Simplicity`, `Complexity`, `Random`.
+CLIPS LEX/MEA specificity and sorted-recency semantics are deferred (#155).
+Use depth/breadth for portable rules. `Simplicity`, `Complexity`, and `Random`
+are not implemented. CLIPS `set-strategy`/`get-strategy` source commands are
+unsupported and produce missing-function diagnostics; configure a declared
+strategy through the host API. Bindings reject unknown enum/name values.
 
 ### Salience
 
-Rules may declare an integer salience. Higher salience fires first within the
+Rules may declare one static integer salience in -10000 through 10000.
+Higher salience fires first within the
 chosen conflict resolution strategy:
 
 ```clp
@@ -207,6 +206,22 @@ chosen conflict resolution strategy:
     (declare (salience 10))
     (go) => (printout t "low" crlf))
 ```
+
+Dynamic salience expressions, salience-evaluation modes, `refresh-agenda`, and
+`auto-focus` declarations are unsupported. Invalid/unsupported declarations
+reject the construct; they never become salience zero. `refresh-agenda` now
+reports an error instead of returning a successful no-op. These are deliberate
+pre-1.0 corrections to previously silent behavior.
+
+### Fact-query expressions
+
+Use the host fact inspection API for queries. RHS `do-for-*` actions retain
+their existing fact iteration, but CLIPS query expressions (`any-factp`,
+`find-fact`, `find-all-facts`) in expressions or callable bodies are unsupported.
+They now report a load or execution error rather than inventing FALSE/empty
+results. Query-bound `?fact:slot` expressions remain unsupported; ordinary
+rule LHS fact-address slot access remains available. This limitation does not
+restrict normal joins or host-side typed fact inspection.
 
 ### Activation Ordering Contract
 
@@ -359,6 +374,30 @@ All of the following are supported:
 - **Negated conjunction**: `(not (and (P) (Q)))`
 - **Constraint connectives**: `&`, `|`, `~`
 
+### Source and compiled network limits
+
+Source loading rejects input above 16 MiB before parsing. Rule normalization
+and disjunction expansion use checked, conservative work estimates: at most
+256 alternatives, 16,384 expanded pattern/constraint nodes, and 8 MiB of
+expanded source per rule. Both normalization passes also share a per-load
+budget of 1,048,576 estimated nodes and 32 MiB of expanded source. The estimate
+may reject an unusually redundant OR expression that could be optimized to
+less work; Ferric does not perform that optimization implicitly.
+
+Each compiled rule allows at most 64 condition nodes, counting predicates and
+nested NCC wrappers/children, and each alpha path allows at most 64 constant
+tests. These bounds keep recursive propagation practical without adding a
+resumable execution subsystem. Boundary regressions exercise combined alpha
+and beta depth, assertion, run, reset, and retraction on a 512 KiB native stack.
+Over-limit constructs fail before installation; previously installed rules and
+facts remain usable. Loading multiple constructs remains incremental, so a
+later failure does not roll back earlier successful constructs.
+
+These are implementation limits for the current pre-1.0 engine, not CLIPS
+language limits or a guarantee that arbitrary large fact populations fit a
+host's memory. The recommended snapshot envelope applies its own input and
+restored-graph validation limits.
+
 ### Pattern Nesting Restrictions
 
 Ferric supports single-level negation, exists, forall, and NCC. The following
@@ -379,6 +418,14 @@ nestings are **not** supported:
     =>
     (assert (has-undone-item)))
 ```
+
+### Logical support
+
+Every `logical` CE is rejected during rule loading, including nested and
+disjunctive positions. Ferric does not track the support that CLIPS uses to
+retract derived facts automatically. A rejected replacement preserves the
+previous installed rule. Use ordinary stated facts and explicit retraction
+when the application owns that lifecycle.
 
 ### forall Semantics
 
@@ -429,6 +476,11 @@ silently ignore invalid patterns.
 ## 16.6 Defglobals
 
 Ferric supports `defglobal` with the `?*name*` naming convention.
+
+Each named global is installed after its initializer succeeds. Earlier names in
+one `defglobal` group remain available to later initializers. If an initializer
+fails, its name and later names in that group are not installed; earlier globals
+and following top-level constructs retain their incremental load behavior.
 
 ```clp
 (defglobal ?*count* = 0)
@@ -624,6 +676,18 @@ Constructs can be referenced with `MODULE::name` syntax:
 - Only rules in the current focus-stack module are eligible to fire.
 - When a module's agenda is empty, it is popped and the next module resumes.
 
+### Template declaration spellings across modules
+
+CLIPS 6.30 accepts the same unqualified template declaration name in different
+modules. Ferric currently requires distinct public declaration spellings: after
+`(defmodule A) (deftemplate item ...)`, declare a second identity as
+`(defmodule B) (deftemplate B::item ...)`. Unqualified references inside module B
+still resolve its local template. A second conflicting unqualified declaration
+is rejected before installing metadata; previously it could overwrite the
+public name index and make snapshots invalid. This is an explicit module support
+limitation, not a claim of CLIPS equivalence. Existing qualified identities and
+same-module unused-template replacement retain their behavior.
+
 ### Facts Are Global
 
 Facts exist in a single global working memory. Module scoping affects only
@@ -784,7 +848,7 @@ The following features are explicitly out of scope.
 | `Complexity` strategy | Deferred | Until fully specified |
 | `Random` strategy | Deferred | Until fully specified |
 | Replay-identical ordering | Not guaranteed | Total order within a run, but not reproducible across runs |
-| Truth maintenance (`logical` CE) | Not planned | Performance/serialization costs outweigh benefits |
+| Truth maintenance (`logical` CE) | Explicitly rejected | Logical support is outside the current supported subset; no performance claim is implied |
 | Triple-nested negation | Not supported | Decompose into multiple rules |
 | `(exists (not ...))` | Not supported | Use separate rules |
 | Nested `(forall ...)` | Not supported | Decompose with phase facts |
@@ -1226,3 +1290,14 @@ ferric run --json rules.clp 2> diagnostics.json
 
 Standard output (stdout) contains the rule engine's normal output. All
 diagnostics are emitted to stderr.
+
+### Template type declarations
+
+Primitive template slot unions (`SYMBOL`, `STRING`, `INTEGER`, `FLOAT`,
+`NUMBER`, `LEXEME`, `EXTERNAL-ADDRESS`) are retained and checked. Default values,
+seed facts, and literal rule assertions are validated before their construct is
+installed; runtime values and host template assertions are always validated.
+Unlike CLIPS 6.30 with its default dynamic checking disabled, Ferric rejects
+runtime values that violate a declared slot type. See
+[the migration notes](migration.md#primitive-template-slot-types) for default
+priority, external token handling, and explicit unsupported optional attributes.

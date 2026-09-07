@@ -1,0 +1,2 @@
+; RH-CORE-019: named export does not expose an unexported sibling template.
+(defmodule BAD (import DATA deftemplate hidden))

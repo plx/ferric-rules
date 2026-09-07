@@ -156,7 +156,12 @@ pub(crate) fn map_engine_error(err: &EngineError) -> FerricError {
         | EngineError::ModuleNotFound(_)
         | EngineError::TemplateNotFound(_)
         | EngineError::SlotNotFound { .. } => FerricError::NotFound,
-        EngineError::NotATemplateFact(_) | EngineError::Encoding(_) => FerricError::InvalidArgument,
+        EngineError::NotATemplateFact(_)
+        | EngineError::Encoding(_)
+        | EngineError::SlotCountMismatch { .. }
+        | EngineError::DuplicateSlot { .. }
+        | EngineError::InvalidSlotValue { .. }
+        | EngineError::ProtectedInitialFact => FerricError::InvalidArgument,
         #[allow(unreachable_patterns)]
         _ => FerricError::InternalError,
     }
@@ -170,6 +175,7 @@ pub(crate) fn map_load_error(err: &LoadError) -> FerricError {
         | LoadError::InvalidAssert(_)
         | LoadError::InvalidDefrule(_)
         | LoadError::Compile(_)
+        | LoadError::ResourceLimit { .. }
         | LoadError::Validation(_) => FerricError::CompileError,
         LoadError::Engine(e) => map_engine_error(e),
         LoadError::Io(_) => FerricError::IoError,

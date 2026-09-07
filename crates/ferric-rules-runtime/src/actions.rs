@@ -37,7 +37,6 @@ const FACT_SLOT_REF_FN: &str = "__fact_slot_ref";
 
 pub(crate) struct ActionExecutionContext<'a> {
     pub engine: &'a mut Engine,
-    pub focus_requests: &'a mut Vec<String>,
     pub current_module: crate::modules::ModuleId,
 }
 
@@ -710,6 +709,14 @@ fn execute_single_action(
             collected_facts,
         ),
         "undefrule" => execute_undefrule(
+            token,
+            rule_info,
+            &call.args,
+            context,
+            eval_env,
+            collected_facts,
+        ),
+        "undeffacts" => execute_undeffacts(
             token,
             rule_info,
             &call.args,
@@ -1453,9 +1460,8 @@ fn execute_loop_body(
 ///
 /// For action forms (`do-for-*`), executes `body` for each matching fact and
 /// returns `Ok(())`. For expression forms (`any-factp`, `find-*`), the return
-/// value cannot be propagated here; call-sites that need it should go through
-/// `eval()` instead (which returns a default value since it lacks fact-base
-/// access — see `RuntimeExpr::QueryAction` eval arm).
+/// value is discarded here. Fact queries used as expressions are explicitly
+/// unsupported because the pure evaluator has no fact-base access.
 #[allow(clippy::too_many_arguments)]
 fn execute_query_action(
     reset_requested: &mut bool,
@@ -1589,9 +1595,8 @@ fn execute_query_action(
 
 /// Execute a `focus` action: push module(s) onto the focus stack.
 ///
-/// Arguments are evaluated to symbols and collected as focus requests.
-/// They are applied by the engine after all actions complete, in reverse
-/// order so the first argument becomes the top of the focus stack.
+/// Resolve all arguments, then push in reverse order so the first argument
+/// becomes the top of the stack before the next RHS action executes.
 #[allow(clippy::too_many_arguments)]
 fn execute_focus(
     token: &Token,
@@ -1601,18 +1606,26 @@ fn execute_focus(
     eval_env: &mut ActionEvalEnv,
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
+    let mut modules = Vec::with_capacity(args.len());
     for arg in args {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
         match value {
             Value::Symbol(sym) => {
-                if let Some(name) = context.engine.symbol_table.resolve_symbol_str(sym) {
-                    if context.engine.module_registry.get_by_name(name).is_none() {
-                        return Err(ActionError::EvalError(format!(
-                            "focus: unknown module `{name}`"
-                        )));
-                    }
-                    context.focus_requests.push(name.to_string());
-                }
+                let name = context
+                    .engine
+                    .symbol_table
+                    .resolve_symbol_str(sym)
+                    .ok_or_else(|| {
+                        ActionError::EvalError("focus: invalid symbol argument".to_string())
+                    })?;
+                let module = context
+                    .engine
+                    .module_registry
+                    .get_by_name(name)
+                    .ok_or_else(|| {
+                        ActionError::EvalError(format!("focus: unknown module `{name}`"))
+                    })?;
+                modules.push(module);
             }
             _ => {
                 return Err(ActionError::EvalError(
@@ -1620,6 +1633,9 @@ fn execute_focus(
                 ));
             }
         }
+    }
+    for module in modules.into_iter().rev() {
+        context.engine.module_registry.push_focus(module);
     }
     Ok(())
 }
@@ -1742,16 +1758,72 @@ fn execute_undefrule(
         "undefrule",
     )?;
 
-    for rule_id in selected {
-        if let Some(slot) = context.engine.rule_info.get_mut(rule_id.0 as usize) {
-            *slot = None;
-        }
-        if let Some(slot) = context.engine.rule_modules.get_mut(rule_id.0 as usize) {
-            *slot = None;
-        }
-        context.engine.rete.disable_rule(rule_id);
-    }
+    context
+        .engine
+        .remove_compiled_rules(&selected.into_iter().collect::<Vec<_>>());
 
+    Ok(())
+}
+
+fn execute_undeffacts(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    args: &[ActionExpr],
+    context: &mut ActionExecutionContext<'_>,
+    eval_env: &mut ActionEvalEnv,
+    collected_facts: &[FactId],
+) -> Result<(), ActionError> {
+    if args.len() != 1 {
+        return Err(ActionError::EvalError(
+            "undeffacts: expected one name or *".to_string(),
+        ));
+    }
+    let selectors = evaluated_rule_selectors(
+        "undeffacts",
+        token,
+        rule_info,
+        args,
+        context,
+        eval_env,
+        collected_facts,
+    )?;
+    if selectors[0] == "*" {
+        context
+            .engine
+            .registered_deffacts
+            .retain(|definition| definition.module != context.current_module);
+        return Ok(());
+    }
+    let name = parse_qualified_name(&selectors[0])
+        .map_err(|error| ActionError::EvalError(format!("undeffacts: {error}")))?;
+    let module = match name.module_name() {
+        Some(module) => context
+            .engine
+            .module_registry
+            .get_by_name(module)
+            .ok_or_else(|| {
+                ActionError::EvalError(format!("undeffacts: unknown module `{module}`"))
+            })?,
+        None => context.current_module,
+    };
+    if module == context.engine.module_registry.main_module_id()
+        && name.local_name() == "initial-fact"
+    {
+        return Err(ActionError::EvalError(
+            "the built-in initial-fact definition is protected".to_string(),
+        ));
+    }
+    let before = context.engine.registered_deffacts.len();
+    context
+        .engine
+        .registered_deffacts
+        .retain(|definition| definition.module != module || definition.name != name.local_name());
+    if before == context.engine.registered_deffacts.len() {
+        return Err(ActionError::EvalError(format!(
+            "undeffacts: unknown definition `{}`",
+            selectors[0]
+        )));
+    }
     Ok(())
 }
 
@@ -2116,31 +2188,19 @@ fn execute_load_facts(
         collected_facts,
     )?;
 
-    // Read file contents.
-    let Ok(contents) = std::fs::read_to_string(&filename) else {
-        return Ok(()); // I/O failure — return void (FALSE in expression context)
+    let contents = match crate::source_limits::read_source_file(std::path::Path::new(&filename)) {
+        Ok(contents) => contents,
+        // Preserve the existing I/O-failure behavior, but report resource limits.
+        Err(crate::loader::LoadError::Io(_)) => return Ok(()),
+        Err(error) => return Err(ActionError::EvalError(format!("load-facts: {error}"))),
     };
 
-    // Wrap the file contents as a temporary deffacts construct so we can
-    // reuse the full parsing + interpretation pipeline without duplicating logic.
-    let wrapped = format!("(deffacts __ferric_load_facts_scratch__\n{contents}\n)");
-    let deffacts_count_before = context.engine.registered_deffacts.len();
-    let load_result = context.engine.load_str(&wrapped);
-
-    // Only pop if load_str actually registered the scratch deffacts.
-    // If parsing failed before reaching deffacts registration, popping
-    // would remove an unrelated pre-existing entry and corrupt state.
-    if context.engine.registered_deffacts.len() > deffacts_count_before {
-        context.engine.registered_deffacts.pop();
-    }
-
-    if load_result.is_err() {
-        // Parse or assertion error — facts may have been partially asserted.
-        // CLIPS returns FALSE in this case.
-    }
-    // Return void (the TRUE/FALSE return value is only meaningful when
-    // load-facts is used as an expression, e.g., (bind ?r (load-facts "f")).
-    // In that context the evaluator stub in evaluator.rs handles it.
+    // Loading facts must not mutate named reset seeds or collide with a source
+    // definition. The shared fact builder validates and asserts file facts.
+    context
+        .engine
+        .load_facts_str(&contents)
+        .map_err(|error| ActionError::EvalError(format!("load-facts: {error}")))?;
     Ok(())
 }
 
@@ -2422,7 +2482,7 @@ fn execute_assert(
                         collected_facts,
                     )?;
                     registered
-                        .validate_required_slots(&slots)
+                        .validate_slots(&slots)
                         .map_err(ActionError::EvalError)?;
                     assert_template_and_propagate(
                         context.engine,
@@ -2471,6 +2531,12 @@ fn execute_retract(
         match arg {
             ActionExpr::Variable(var_name, _) => {
                 let fact_id = resolve_fact_address(collected_facts, rule_info, var_name)?;
+                if Some(fact_id) == context.engine.initial_fact_id {
+                    return Err(ActionError::EvalError(
+                        "the internal initial-fact is protected and cannot be retracted"
+                            .to_string(),
+                    ));
+                }
                 let fact = get_fact_or_error(&context.engine.fact_base, fact_id)?;
                 context
                     .engine
@@ -2550,6 +2616,12 @@ fn execute_fact_mutation(
     collected_facts: &[FactId],
 ) -> Result<(), ActionError> {
     let fact_id = resolve_target_fact_id(args, collected_facts, rule_info)?;
+    if Some(fact_id) == context.engine.initial_fact_id {
+        return Err(ActionError::EvalError(
+            "the internal initial-fact is protected and cannot be modified or duplicated"
+                .to_string(),
+        ));
+    }
     let original_fact = get_fact_or_error(&context.engine.fact_base, fact_id)?;
 
     match &original_fact {
@@ -2598,6 +2670,9 @@ fn execute_fact_mutation(
                 eval_env,
                 collected_facts,
             )?;
+            registered
+                .validate_slots(&slots)
+                .map_err(ActionError::EvalError)?;
             if mode.retract_original() {
                 retract_original_fact(
                     &mut context.engine.fact_base,

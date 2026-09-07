@@ -65,7 +65,9 @@ pub mod qualified_name;
 pub mod router;
 #[cfg(feature = "serde")]
 pub mod serialization;
+mod source_limits;
 mod template_identity;
+mod template_reload;
 pub(crate) mod templates;
 
 #[cfg(test)]

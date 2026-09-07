@@ -227,6 +227,8 @@ pub enum ActionExpr {
 pub struct SlotDefinition {
     pub name: String,
     pub slot_type: SlotType,
+    /// Canonical primitive type union; None means unconstrained.
+    pub allowed_types: Option<Vec<SlotValueType>>,
     pub default: Option<DefaultValue>,
     pub span: Span,
 }
@@ -238,6 +240,18 @@ pub enum SlotType {
     Multi,
 }
 
+/// Primitive value kinds accepted by a template slot's `(type ...)` attribute.
+/// Ordering also matches CLIPS' derived-default preference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SlotValueType {
+    Symbol,
+    String,
+    Integer,
+    Float,
+    ExternalAddress,
+}
+
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DefaultValue {
@@ -247,6 +261,8 @@ pub enum DefaultValue {
     Derive,
     /// (default <value>)
     Value(LiteralValue),
+    /// All literal fields of an explicit multifield default, including empty.
+    Values(Vec<LiteralValue>),
 }
 
 // ============================================================================
@@ -280,7 +296,8 @@ pub struct TemplateFactBody {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactSlotValue {
     pub name: String,
-    pub value: FactValue,
+    /// Every supplied field, in order. Empty is valid for a multislot.
+    pub values: Vec<FactValue>,
     pub span: Span,
 }
 
@@ -830,6 +847,7 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
 
     let mut idx = 1;
     let mut salience = 0;
+    let mut salience_set = false;
 
     // Check for optional comment (string as second element)
     let comment = parse_optional_comment(elements, &mut idx);
@@ -838,18 +856,38 @@ fn interpret_rule(elements: &[SExpr], span: Span) -> Result<RuleConstruct, Inter
     while idx < elements.len() {
         if let Some(declare_list) = elements[idx].as_list() {
             if !declare_list.is_empty() && declare_list[0].as_symbol() == Some("declare") {
-                // Process declare form - look for (salience N)
                 for decl_item in &declare_list[1..] {
-                    if let Some(item_list) = decl_item.as_list() {
-                        if item_list.len() == 2 && item_list[0].as_symbol() == Some("salience") {
-                            if let Some(Atom::Integer(sal)) = item_list[1].as_atom() {
-                                #[allow(clippy::cast_possible_truncation)]
-                                {
-                                    salience = *sal as i32;
-                                }
-                            }
-                        }
+                    let item_list = decl_item.as_list().ok_or_else(|| {
+                        InterpretError::expected(
+                            "a (salience <integer>) declaration",
+                            decl_item.span(),
+                        )
+                    })?;
+                    if item_list.first().and_then(SExpr::as_symbol) != Some("salience") {
+                        return Err(InterpretError::expected(
+                            "a supported declaration: only static salience is implemented (auto-focus is unsupported)",
+                            decl_item.span(),
+                        ));
                     }
+                    let Some(Atom::Integer(sal)) = item_list.get(1).and_then(SExpr::as_atom) else {
+                        return Err(InterpretError::expected(
+                            "static integer salience; dynamic expressions are unsupported",
+                            decl_item.span(),
+                        ));
+                    };
+                    if item_list.len() != 2 || !(-10_000..=10_000).contains(sal) {
+                        return Err(InterpretError::expected(
+                            "one salience integer in -10000..=10000",
+                            decl_item.span(),
+                        ));
+                    }
+                    if std::mem::replace(&mut salience_set, true) {
+                        return Err(InterpretError::expected(
+                            "only one salience declaration per rule",
+                            decl_item.span(),
+                        ));
+                    }
+                    salience = i32::try_from(*sal).expect("validated salience range");
                 }
                 idx += 1;
             } else {
@@ -2782,28 +2820,88 @@ fn interpret_slot_definition(expr: &SExpr) -> Result<SlotDefinition, InterpretEr
         .ok_or_else(|| InterpretError::expected("slot name (symbol)", list[name_idx].span()))?
         .to_string();
 
-    // Check for optional default value
     let mut default = None;
-    if list.len() > name_idx + 1 {
-        // Look for (default ...) form
-        for option_expr in &list[name_idx + 1..] {
-            if let Some(option_list) = option_expr.as_list() {
-                if !option_list.is_empty() && option_list[0].as_symbol() == Some("default") {
-                    if option_list.len() < 2 {
-                        return Err(InterpretError::missing("default value", option_expr.span()));
-                    }
-                    default = Some(interpret_default_value(&option_list[1])?);
+    let mut allowed_types = None;
+    let mut saw_type = false;
+    for option_expr in &list[name_idx + 1..] {
+        let option = option_expr
+            .as_list()
+            .ok_or_else(|| InterpretError::expected("slot attribute list", option_expr.span()))?;
+        match option.first().and_then(SExpr::as_symbol) {
+            Some("default") => {
+                if default.is_some() {
+                    return Err(InterpretError::invalid("duplicate default attribute", option_expr.span()));
                 }
+                let values = &option[1..];
+                let parsed = if values.len() == 1 {
+                    interpret_default_value(&values[0])?
+                } else {
+                    let mut fields = Vec::new();
+                    for value in values {
+                        match interpret_default_value(value)? {
+                            DefaultValue::Value(value) => fields.push(value),
+                            DefaultValue::Values(values) => fields.extend(values),
+                            _ => return Err(InterpretError::invalid("?NONE and ?DERIVE must be the entire default", option_expr.span())),
+                        }
+                    }
+                    DefaultValue::Values(fields)
+                };
+                if slot_type == SlotType::Single && matches!(&parsed, DefaultValue::Values(_)) {
+                    return Err(InterpretError::invalid("single-field default requires one scalar value", option_expr.span()));
+                }
+                default = Some(parsed);
             }
+            Some("type") => {
+                if std::mem::replace(&mut saw_type, true) {
+                    return Err(InterpretError::invalid("duplicate type attribute", option_expr.span()));
+                }
+                allowed_types = interpret_slot_types(&option[1..], option_expr.span())?;
+            }
+            Some(attribute) => return Err(InterpretError::invalid(
+                &format!("unsupported slot attribute `{attribute}`; supported attributes are type and literal default"), option_expr.span())),
+            None => return Err(InterpretError::expected("slot attribute name", option_expr.span())),
         }
     }
 
     Ok(SlotDefinition {
         name,
         slot_type,
+        allowed_types,
         default,
         span: expr.span(),
     })
+}
+
+fn interpret_slot_types(
+    values: &[SExpr],
+    span: Span,
+) -> Result<Option<Vec<SlotValueType>>, InterpretError> {
+    if values.len() == 1
+        && matches!(values[0].as_atom(), Some(Atom::SingleVar(name)) if name == "VARIABLE")
+    {
+        return Ok(None);
+    }
+    if values.is_empty() {
+        return Err(InterpretError::missing("type name", span));
+    }
+    let mut types = Vec::new();
+    for value in values {
+        use SlotValueType::{ExternalAddress, Float, Integer, String, Symbol};
+        let kinds: &[_] = match value.as_symbol() {
+            Some("SYMBOL") => &[Symbol],
+            Some("STRING") => &[String],
+            Some("INTEGER") => &[Integer],
+            Some("FLOAT") => &[Float],
+            Some("NUMBER") => &[Integer, Float],
+            Some("LEXEME") => &[Symbol, String],
+            Some("EXTERNAL-ADDRESS") => &[ExternalAddress],
+            _ => return Err(InterpretError::invalid("unsupported slot type; expected SYMBOL, STRING, INTEGER, FLOAT, NUMBER, LEXEME, or EXTERNAL-ADDRESS", value.span())),
+        };
+        types.extend_from_slice(kinds);
+    }
+    types.sort_unstable();
+    types.dedup();
+    Ok(Some(types))
 }
 
 /// Interpret a default value specification.
@@ -2817,16 +2915,27 @@ fn interpret_default_value(expr: &SExpr) -> Result<DefaultValue, InterpretError>
         }
     }
 
-    // Handle function-call default values like `(create$)` or `(create$ val1 val2)`.
-    // `(create$)` with no args produces an empty multifield default.
     if let Some(list) = expr.as_list() {
-        if !list.is_empty() && list[0].as_symbol() == Some("create$") {
-            // (create$) → empty multifield default.  With args, we still treat
-            // it as Derive since we'd need full expression evaluation.
-            return Ok(DefaultValue::Derive);
+        if list.first().and_then(SExpr::as_symbol) != Some("create$") {
+            return Err(InterpretError::invalid(
+                "unsupported default expression; use literal values or ?DERIVE",
+                expr.span(),
+            ));
         }
-        // Other function-call defaults: accept but treat as Derive.
-        return Ok(DefaultValue::Derive);
+        let mut fields = Vec::new();
+        for value in &list[1..] {
+            match interpret_default_value(value)? {
+                DefaultValue::Value(value) => fields.push(value),
+                DefaultValue::Values(values) => fields.extend(values),
+                _ => {
+                    return Err(InterpretError::invalid(
+                        "create$ default requires literal fields",
+                        value.span(),
+                    ))
+                }
+            }
+        }
+        return Ok(DefaultValue::Values(fields));
     }
 
     // Otherwise, treat as a literal value
@@ -2924,21 +3033,14 @@ fn interpret_fact_slot_value(slot_expr: &SExpr) -> Result<FactSlotValue, Interpr
         .ok_or_else(|| InterpretError::expected("slot name (symbol)", slot_list[0].span()))?
         .to_string();
 
-    if slot_list.len() < 2 {
-        // Empty slot: `(slot-name)` with no values — valid for multislots,
-        // produces an empty multifield value.
-        return Ok(FactSlotValue {
-            name: slot_name,
-            value: FactValue::EmptyMultifield(slot_expr.span()),
-            span: slot_expr.span(),
-        });
-    }
-
-    let value = interpret_fact_value(&slot_list[1])?;
+    let values = slot_list[1..]
+        .iter()
+        .map(interpret_fact_value)
+        .collect::<Result<_, _>>()?;
 
     Ok(FactSlotValue {
         name: slot_name,
-        value,
+        values,
         span: slot_expr.span(),
     })
 }

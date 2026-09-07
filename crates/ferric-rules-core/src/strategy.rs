@@ -1,21 +1,10 @@
 //! Conflict resolution strategies for the agenda.
 //!
-//! CLIPS supports four conflict resolution strategies that determine the order
-//! in which activations are fired:
-//!
-//! - **Depth** (default): Higher salience first, then most recent first.
-//! - **Breadth**: Higher salience first, then least recent first.
-//! - **LEX**: Higher salience first, then lexicographic comparison of fact
-//!   recency (most recent fact in token compared first).
-//! - **MEA**: Higher salience first, then the recency of the first pattern's
-//!   fact determines order.
-//!
-//! Phase 1 implements depth only. Phase 2 adds all four strategies with
-//! stable total ordering.
-//!
-//! ## Phase 2 implementation plan
-//!
-//! - Pass 007: Agenda conflict strategies and ordering contract
+//! Depth and breadth provide the supported CLIPS ordering contract, with
+//! salience taking precedence over activation chronology. The retained Lex and
+//! Mea variants are experimental Ferric orderings; they do not implement CLIPS
+//! sorted-recency and specificity tie-breaking. Use depth/breadth for portable
+//! rules. Simplicity, complexity and random strategies are not implemented.
 
 /// Conflict resolution strategies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -24,7 +13,9 @@ pub enum ConflictResolutionStrategy {
     #[default]
     Depth,
     Breadth,
+    /// Experimental Ferric ordering, not CLIPS LEX compatibility.
     Lex,
+    /// Experimental Ferric ordering, not CLIPS MEA compatibility.
     Mea,
 }
 

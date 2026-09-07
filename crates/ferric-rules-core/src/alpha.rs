@@ -3,6 +3,7 @@
 //! The alpha network is the first stage of the Rete algorithm. It discriminates
 //! facts by type (template or ordered relation) and applies constant tests.
 
+use crate::ordered_set::OrderedSet;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use slotmap::SparseSecondaryMap;
 use smallvec::SmallVec;
@@ -133,14 +134,13 @@ impl AlphaNode {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlphaMemory {
     pub id: AlphaMemoryId,
-    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_set"))]
-    facts: HashSet<FactId>,
+    facts: OrderedSet<FactId>,
     /// Slot indices: `SlotIndex` -> `AtomKey` -> `FactId`s with that key in that slot.
     #[cfg_attr(
         feature = "serde",
-        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_map_of_fx_hash_set")
+        serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_map")
     )]
-    slot_indices: HashMap<SlotIndex, HashMap<AtomKey, HashSet<FactId>>>,
+    slot_indices: HashMap<SlotIndex, HashMap<AtomKey, OrderedSet<FactId>>>,
     /// Which slots are currently indexed.
     indexed_slots: SmallVec<[SlotIndex; 4]>,
 }
@@ -151,7 +151,7 @@ impl AlphaMemory {
     pub fn new(id: AlphaMemoryId) -> Self {
         Self {
             id,
-            facts: HashSet::default(),
+            facts: OrderedSet::default(),
             slot_indices: HashMap::default(),
             indexed_slots: SmallVec::new(),
         }
@@ -253,8 +253,12 @@ impl AlphaMemory {
     ///
     /// Returns `None` if the slot is not indexed or the key is not present.
     #[must_use]
-    pub fn lookup_by_slot(&self, slot: SlotIndex, key: &AtomKey) -> Option<&HashSet<FactId>> {
-        self.slot_indices.get(&slot)?.get(key)
+    pub fn lookup_by_slot(
+        &self,
+        slot: SlotIndex,
+        key: &AtomKey,
+    ) -> Option<impl ExactSizeIterator<Item = FactId> + '_> {
+        Some(self.slot_indices.get(&slot)?.get(key)?.iter().copied())
     }
 
     /// Clear all facts and indices from this memory, preserving its ID and structure.
@@ -264,7 +268,7 @@ impl AlphaMemory {
         // indexed_slots stays — it tracks which slots SHOULD be indexed
     }
 
-    /// Iterate over all fact IDs in this memory.
+    /// Iterate over fact IDs in insertion order (oldest first).
     pub fn iter(&self) -> impl Iterator<Item = FactId> + '_ {
         self.facts.iter().copied()
     }
@@ -301,7 +305,7 @@ pub fn get_slot_value(fact: &Fact, slot: SlotIndex) -> Option<&Value> {
 }
 
 fn remove_from_slot_index(
-    slot_indices: &mut HashMap<SlotIndex, HashMap<AtomKey, HashSet<FactId>>>,
+    slot_indices: &mut HashMap<SlotIndex, HashMap<AtomKey, OrderedSet<FactId>>>,
     slot: SlotIndex,
     key: &AtomKey,
     fact_id: FactId,
@@ -362,6 +366,82 @@ impl AlphaNetwork {
     /// Fact identities referenced by compiled alpha paths.
     pub fn entry_types(&self) -> impl Iterator<Item = &AlphaEntryType> {
         self.entry_nodes.keys()
+    }
+
+    /// Reclaim paths no longer consumed by a live beta node. Compaction
+    /// preserves fact membership and returns the old-to-new memory mapping.
+    pub(crate) fn retain_memories(
+        &mut self,
+        retained: &HashSet<AlphaMemoryId>,
+    ) -> Vec<Option<AlphaMemoryId>> {
+        let mut memory_map = vec![None; self.memories.len()];
+        let mut memories = Vec::with_capacity(retained.len());
+        for mut memory in self.memories.drain(..) {
+            if retained.contains(&memory.id) {
+                let new_id = AlphaMemoryId(u32::try_from(memories.len()).unwrap());
+                memory_map[memory.id.0 as usize] = Some(new_id);
+                memory.id = new_id;
+                memories.push(memory);
+            }
+        }
+        self.memories = memories;
+
+        // Alpha paths are created parent-first. Keep a node if it owns a live
+        // memory or leads to one; no historical rule ownership table is needed.
+        let mut keep = vec![false; self.nodes.len()];
+        for (index, node) in self.nodes.iter().enumerate().rev() {
+            keep[index] = node.memory().is_some_and(|id| retained.contains(&id))
+                || node.children().iter().any(|id| keep[id.0 as usize]);
+        }
+        let mut node_map = vec![None; self.nodes.len()];
+        let mut next = 0;
+        for (index, &live) in keep.iter().enumerate() {
+            if live {
+                node_map[index] = Some(NodeId(next));
+                next += 1;
+            }
+        }
+        self.nodes = self
+            .nodes
+            .drain(..)
+            .enumerate()
+            .filter_map(|(index, mut node)| {
+                if !keep[index] {
+                    return None;
+                }
+                *node.children_mut() = node
+                    .children()
+                    .iter()
+                    .filter_map(|id| node_map[id.0 as usize])
+                    .collect();
+                *node.memory_mut() = node.memory().and_then(|id| memory_map[id.0 as usize]);
+                Some(node)
+            })
+            .collect();
+        self.entry_nodes.retain(|_, id| {
+            if let Some(new_id) = node_map[id.0 as usize] {
+                *id = new_id;
+                true
+            } else {
+                false
+            }
+        });
+        self.fact_to_memories.retain(|_, ids| {
+            *ids = ids
+                .iter()
+                .filter_map(|id| memory_map[id.0 as usize])
+                .collect();
+            !ids.is_empty()
+        });
+        self.next_node_id = next;
+        self.next_memory_id = u32::try_from(self.memories.len()).unwrap();
+        memory_map
+    }
+
+    /// Whether a compiled alpha path references this fact type.
+    #[must_use]
+    pub fn contains_entry(&self, entry_type: &AlphaEntryType) -> bool {
+        self.entry_nodes.contains_key(entry_type)
     }
 
     /// Get or create an entry node for a given entry type.
@@ -562,9 +642,7 @@ impl AlphaNetwork {
 
     /// Verify internal consistency of the alpha network.
     ///
-    /// This method is gated behind `test` or `debug_assertions` and will panic
-    /// if any inconsistencies are detected.
-    #[cfg(any(test, debug_assertions))]
+    /// Panics if any inconsistencies are detected, in any build profile.
     pub fn debug_assert_consistency(&self) {
         // Check 1: All alpha memory IDs referenced by nodes exist in memories map
         for node in &self.nodes {
@@ -991,7 +1069,10 @@ mod tests {
         mem.insert(fact_id3, &fact3.fact);
 
         let key_42 = AtomKey::Integer(42);
-        let matching_facts = mem.lookup_by_slot(SlotIndex::Ordered(0), &key_42).unwrap();
+        let matching_facts: Vec<_> = mem
+            .lookup_by_slot(SlotIndex::Ordered(0), &key_42)
+            .unwrap()
+            .collect();
 
         assert_eq!(matching_facts.len(), 2);
         assert!(matching_facts.contains(&fact_id1));

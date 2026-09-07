@@ -134,14 +134,32 @@ impl ReteNetwork {
         // 1. Propagate through alpha network
         let affected_memories = self.alpha.assert_fact(fact_id, fact);
 
-        // 2. For each affected alpha memory, perform right activations on subscribed joins
+        // Capture all right-parent candidates before positive propagation. A
+        // new left token can already join this fact in a downstream node; that
+        // token must not be visited again by the same fact's right notification.
+        let mut right_activations: SmallVec<[(NodeId, SmallVec<[TokenId; 8]>); 4]> =
+            SmallVec::new();
         for &alpha_mem_id in &affected_memories {
-            let join_nodes: SmallVec<[NodeId; 4]> =
-                SmallVec::from_slice(self.beta.join_nodes_for_alpha(alpha_mem_id));
-
-            for join_node_id in join_nodes {
-                self.right_activate(join_node_id, fact_id, fact, fact_base, &mut new_activations);
+            for &join_node_id in self.beta.join_nodes_for_alpha(alpha_mem_id) {
+                right_activations.push((
+                    join_node_id,
+                    self.right_parent_candidates(join_node_id, fact),
+                ));
             }
+        }
+        // Beta nodes are allocated after their parents and IDs are not reused.
+        // Notify descendants before ancestors: later left propagation from an
+        // ancestor then creates the newest combinations, as CLIPS does.
+        right_activations.sort_unstable_by_key(|(node, _)| std::cmp::Reverse(node.0));
+        for (join_node_id, parents) in right_activations {
+            self.right_activate(
+                join_node_id,
+                parents,
+                fact_id,
+                fact,
+                fact_base,
+                &mut new_activations,
+            );
         }
 
         // 3. For each affected alpha memory, perform right activations on subscribed negative nodes
@@ -271,10 +289,14 @@ impl ReteNetwork {
         self.agenda = Agenda::with_strategy(strategy);
 
         let root_token = self.seed_root_token();
-        let root_children = match self.beta.get_node(self.beta.root_id()) {
-            Some(BetaNode::Root { children, .. }) => children.clone(),
+        let mut root_children: SmallVec<[NodeId; 8]> = match self.beta.get_node(self.beta.root_id())
+        {
+            Some(BetaNode::Root { children, .. }) => SmallVec::from_slice(children),
             _ => return,
         };
+        // CLIPS seeds newer root branches first during reset. Their activation
+        // creation order matters for depth/breadth, including empty-LHS rules.
+        root_children.reverse();
         let mut new_activations = Vec::new();
         self.propagate_token(
             root_token,
@@ -379,6 +401,40 @@ impl ReteNetwork {
             .retain(|pending| pending.rule != rule_id);
     }
 
+    /// Reclaim rule-exclusive state without replaying facts into live siblings.
+    /// The compiler must remap its caches using the returned alpha memory map.
+    pub(crate) fn remove_rules(&mut self, rules: &[RuleId]) -> Vec<Option<AlphaMemoryId>> {
+        use rustc_hash::FxHashSet as HashSet;
+        let removed: HashSet<_> = rules.iter().copied().collect();
+        let retained = self.beta.retained_nodes(&removed);
+        let dead_tokens: HashSet<_> = self
+            .beta
+            .iter_nodes()
+            .filter(|(id, _)| !retained.contains(id))
+            .filter_map(|(id, _)| self.beta.memory_id_for_node(id))
+            .filter_map(|memory| self.beta.get_memory(memory))
+            .flat_map(BetaMemory::iter)
+            .collect();
+        // No live node descends from a removed node: retained ancestors include
+        // every NCC partner path. Removed token cascades therefore cannot alter
+        // a surviving rule's support or agenda entry.
+        for root in self.token_store.retraction_roots(&dead_tokens) {
+            for (token, _) in self.token_store.remove_cascade(root) {
+                self.agenda.remove_activations_for_token(token);
+            }
+        }
+        for rule in rules {
+            self.agenda.remove_activations_for_rule(*rule);
+            self.disabled_rules.remove(rule);
+        }
+        self.pending_predicate_matches
+            .retain(|pending| retained.contains(&pending.node));
+        let alpha_memories = self.beta.retain_nodes(&retained);
+        let mapping = self.alpha.retain_memories(&alpha_memories);
+        self.beta.remap_alpha_memories(&mapping);
+        mapping
+    }
+
     /// Return whether a rule's retained network nodes have been disabled.
     #[must_use]
     #[doc(hidden)]
@@ -466,15 +522,29 @@ impl ReteNetwork {
         new_activations
     }
 
+    /// Capture existing right-join parents without allowing propagation to grow
+    /// the candidate set during this assertion. Uses the same indexed lookup
+    /// as ordinary joins, including the fallback for non-indexable keys.
+    fn right_parent_candidates(&self, join_node_id: NodeId, fact: &Fact) -> SmallVec<[TokenId; 8]> {
+        let Some(BetaNode::Join { parent, tests, .. }) = self.beta.get_node(join_node_id) else {
+            return SmallVec::new();
+        };
+        self.find_memory_for_node(*parent)
+            .and_then(|memory| self.beta.get_memory(memory))
+            .map(|memory| collect_candidate_parent_tokens(memory, tests, fact))
+            .unwrap_or_default()
+    }
+
     /// Perform a right activation on a join node.
     ///
     /// When a new fact enters an alpha memory, this function:
-    /// 1. Gets all tokens from the parent beta memory
+    /// 1. Uses parent candidates captured before positive propagation
     /// 2. For each token, evaluates join tests against the new fact
     /// 3. If tests pass, creates a new token and propagates it
     fn right_activate(
         &mut self,
         join_node_id: NodeId,
+        parent_tokens: SmallVec<[TokenId; 8]>,
         fact_id: FactId,
         fact: &Fact,
         fact_base: &FactBase,
@@ -485,32 +555,16 @@ impl ReteNetwork {
             return;
         };
 
-        let (parent_id, tests, bindings, join_memory_id, children) = match join_node {
+        let (tests, bindings, join_memory_id, children) = match join_node {
             BetaNode::Join {
-                parent,
                 tests,
                 bindings,
                 memory,
                 children,
                 ..
-            } => (
-                *parent,
-                tests.clone(),
-                bindings.clone(),
-                *memory,
-                children.clone(),
-            ),
+            } => (tests.clone(), bindings.clone(), *memory, children.clone()),
             _ => return,
         };
-
-        // Get parent tokens (indexed when possible for O(1) lookup). The root
-        // participates through its real one-token beta memory, so the same path
-        // handles the first join and every later join.
-        let parent_tokens: SmallVec<[TokenId; 8]> = self
-            .find_memory_for_node(parent_id)
-            .and_then(|mem_id| self.beta.get_memory(mem_id))
-            .map(|mem| collect_candidate_parent_tokens(mem, &tests, fact))
-            .unwrap_or_default();
 
         for parent_token_id in parent_tokens {
             let Some(parent_token) = self.token_store.get(parent_token_id) else {
@@ -739,8 +793,8 @@ impl ReteNetwork {
     /// Perform a right activation on a negative node.
     ///
     /// When a new fact enters the alpha memory subscribed by a negative node:
-    /// 1. For each unblocked pass-through token, evaluate join tests
-    /// 2. If the fact matches, block the parent token:
+    /// 1. Record matching facts for already blocked parents as well as unblocked ones.
+    /// 2. For a newly blocked parent:
     ///    - Cascade-retract the pass-through token (removes downstream tokens/activations)
     ///    - Move from unblocked to blocked in negative memory
     fn negative_right_activate(
@@ -770,6 +824,21 @@ impl ReteNetwork {
             return;
         };
         let unblocked_entries: Vec<(TokenId, TokenId)> = neg_mem.iter_unblocked().collect();
+        let blocked_parents: Vec<TokenId> = neg_mem.blocked_parents().collect();
+
+        // A blocked parent has no pass-through token, but still needs every
+        // later matching fact recorded. Otherwise retracting its first blocker
+        // would allow it through while another blocker remains in working memory.
+        for parent_token_id in blocked_parents {
+            let Some(parent_token) = self.token_store.get(parent_token_id) else {
+                continue;
+            };
+            if evaluate_join(fact, Some(parent_token), &tests) {
+                if let Some(neg_mem) = self.beta.get_neg_memory_mut(neg_memory_id) {
+                    neg_mem.add_blocker(parent_token_id, fact_id);
+                }
+            }
+        }
 
         // For each unblocked token, check if the new fact blocks it
         let mut to_block = Vec::new();
@@ -1517,8 +1586,7 @@ impl ReteNetwork {
     /// Checks all substructures and cross-structure invariants. Extended
     /// incrementally as Phase 2 adds negative, NCC, and exists nodes.
     ///
-    /// Intended for use in tests and debug builds.
-    #[cfg(any(test, debug_assertions))]
+    /// Available in all profiles so dependent crates can run release tests.
     pub fn debug_assert_consistency(&self) {
         // --- Phase 1 substructure checks ---
         self.token_store.debug_assert_consistency();
@@ -1640,7 +1708,7 @@ fn collect_candidate_facts(
                     if let Some(key) = AtomKey::from_value(bound_value) {
                         return alpha_memory
                             .lookup_by_slot(alpha_slot, &key)
-                            .map(|set| set.iter().copied().collect())
+                            .map(Iterator::collect)
                             .unwrap_or_default();
                     }
                 }
@@ -1668,7 +1736,7 @@ fn collect_candidate_parent_tokens(
                     if let Some(key) = AtomKey::from_value(fact_value) {
                         return parent_memory
                             .lookup_by_var(beta_var, &key)
-                            .map(|tokens| tokens.iter().copied().collect())
+                            .map(|tokens| tokens.iter().rev().copied().collect())
                             .unwrap_or_default();
                     }
                 }
@@ -1692,8 +1760,8 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
         };
 
         let matches = match test.test_type {
-            JoinTestType::Equal => values_atom_eq(fact_value, token_value).unwrap_or(false),
-            JoinTestType::NotEqual => values_atom_eq(fact_value, token_value).is_some_and(|eq| !eq),
+            JoinTestType::Equal => values_join_eq(fact_value, token_value).unwrap_or(false),
+            JoinTestType::NotEqual => values_join_eq(fact_value, token_value).is_some_and(|eq| !eq),
             JoinTestType::GreaterThan => numeric_compare_matches(fact_value, token_value, |ord| {
                 matches!(ord, Ordering::Greater)
             }),
@@ -1769,24 +1837,25 @@ fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool
     true
 }
 
-/// Direct atom-level equality test between two values.
+/// Equality for join values, including complete multifield slot values.
 ///
-/// Returns `Some(true)` when both values are the same atomic type and equal,
-/// `Some(false)` when both are atomic but unequal (including cross-type comparisons),
-/// and `None` when either value is `Multifield` or `Void` (non-comparable).
+/// Returns `Some(true)` for equal values of the same type, `Some(false)` for
+/// unequal values (including cross-type comparisons), and `None` for `Void`.
 ///
-/// This matches CLIPS semantics where `(eq 1 abc)` is FALSE (cross-type atomic
-/// values are definitively not-equal) while multifield comparisons are non-comparable.
-fn values_atom_eq(a: &Value, b: &Value) -> Option<bool> {
+/// Multifields use the same recursive, typed equality as same-fact constraints
+/// and the evaluator's `eq`. They are not atom-indexed, so candidate collection
+/// falls back to scanning when an equality key is a multifield.
+fn values_join_eq(a: &Value, b: &Value) -> Option<bool> {
     match (a, b) {
         (Value::Symbol(a), Value::Symbol(b)) => Some(a == b),
         (Value::Integer(a), Value::Integer(b)) => Some(a == b),
         (Value::Float(a), Value::Float(b)) => Some(a.to_bits() == b.to_bits()),
         (Value::String(a), Value::String(b)) => Some(a == b),
         (Value::ExternalAddress(a), Value::ExternalAddress(b)) => Some(a == b),
-        // Either value is Multifield or Void → non-comparable
-        (Value::Multifield(_) | Value::Void, _) | (_, Value::Multifield(_) | Value::Void) => None,
-        // Cross-type atomic comparisons → definitively not equal
+        (Value::Multifield(_), Value::Multifield(_)) => Some(a.structural_eq(b)),
+        // Void is an internal placeholder, not a comparable join value.
+        (Value::Void, _) | (_, Value::Void) => None,
+        // Cross-type comparisons → definitively not equal
         _ => Some(false),
     }
 }
@@ -3308,9 +3377,22 @@ mod tests {
         assert_eq!(rete.agenda.len(), 1, "Only bob should remain active");
         rete.debug_assert_consistency();
 
-        // Retract (exclude alice) — alice should come back
+        // A distinct later fact must be remembered even though alice is already
+        // blocked. This exercises right activation, unlike blockers that arrive
+        // before the parent and are all discovered during left activation.
+        let later_id =
+            fact_base.assert_ordered(exclude_sym, smallvec![alice_val.clone(), Value::Integer(2)]);
+        let later_fact = fact_base.get(later_id).unwrap().fact.clone();
+        rete.assert_fact(later_id, &later_fact, &fact_base);
+
+        // Retract the first blocker — alice remains blocked by the later fact.
         fact_base.retract(exc_alice_id);
         rete.retract_fact(exc_alice_id, &exc_alice_fact, &fact_base);
+        assert_eq!(rete.agenda.len(), 1, "Alice still has a matching blocker");
+        rete.debug_assert_consistency();
+
+        fact_base.retract(later_id);
+        rete.retract_fact(later_id, &later_fact, &fact_base);
 
         assert_eq!(rete.agenda.len(), 2, "Both should be active again");
         rete.debug_assert_consistency();
@@ -4335,63 +4417,63 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Unit tests for `values_atom_eq`
+    // Unit tests for `values_join_eq`
     // -----------------------------------------------------------------------
 
     #[test]
-    fn values_atom_eq_same_type_equal() {
+    fn values_join_eq_same_type_equal() {
         use crate::encoding::StringEncoding;
         let mut symbol_table = SymbolTable::new();
         let sym = make_symbol(&mut symbol_table, "abc");
 
         assert_eq!(
-            values_atom_eq(&Value::Symbol(sym), &Value::Symbol(sym)),
+            values_join_eq(&Value::Symbol(sym), &Value::Symbol(sym)),
             Some(true)
         );
         assert_eq!(
-            values_atom_eq(&Value::Integer(42), &Value::Integer(42)),
+            values_join_eq(&Value::Integer(42), &Value::Integer(42)),
             Some(true)
         );
         assert_eq!(
-            values_atom_eq(&Value::Float(2.72), &Value::Float(2.72)),
+            values_join_eq(&Value::Float(2.72), &Value::Float(2.72)),
             Some(true)
         );
         let s = FerricString::new("hello", StringEncoding::Ascii).unwrap();
         assert_eq!(
-            values_atom_eq(&Value::String(s.clone()), &Value::String(s)),
+            values_join_eq(&Value::String(s.clone()), &Value::String(s)),
             Some(true)
         );
     }
 
     #[test]
-    fn values_atom_eq_same_type_unequal() {
+    fn values_join_eq_same_type_unequal() {
         use crate::encoding::StringEncoding;
         let mut symbol_table = SymbolTable::new();
         let sym_a = make_symbol(&mut symbol_table, "abc");
         let sym_b = make_symbol(&mut symbol_table, "xyz");
 
         assert_eq!(
-            values_atom_eq(&Value::Symbol(sym_a), &Value::Symbol(sym_b)),
+            values_join_eq(&Value::Symbol(sym_a), &Value::Symbol(sym_b)),
             Some(false)
         );
         assert_eq!(
-            values_atom_eq(&Value::Integer(1), &Value::Integer(2)),
+            values_join_eq(&Value::Integer(1), &Value::Integer(2)),
             Some(false)
         );
         assert_eq!(
-            values_atom_eq(&Value::Float(1.0), &Value::Float(2.0)),
+            values_join_eq(&Value::Float(1.0), &Value::Float(2.0)),
             Some(false)
         );
         let s1 = FerricString::new("hello", StringEncoding::Ascii).unwrap();
         let s2 = FerricString::new("world", StringEncoding::Ascii).unwrap();
         assert_eq!(
-            values_atom_eq(&Value::String(s1), &Value::String(s2)),
+            values_join_eq(&Value::String(s1), &Value::String(s2)),
             Some(false)
         );
     }
 
     #[test]
-    fn values_atom_eq_cross_type_atomic_returns_some_false() {
+    fn values_join_eq_cross_type_atomic_returns_some_false() {
         use crate::encoding::StringEncoding;
         let mut symbol_table = SymbolTable::new();
         let sym = make_symbol(&mut symbol_table, "abc");
@@ -4399,53 +4481,55 @@ mod tests {
 
         // Integer vs Symbol
         assert_eq!(
-            values_atom_eq(&Value::Integer(1), &Value::Symbol(sym)),
+            values_join_eq(&Value::Integer(1), &Value::Symbol(sym)),
             Some(false)
         );
         assert_eq!(
-            values_atom_eq(&Value::Symbol(sym), &Value::Integer(1)),
+            values_join_eq(&Value::Symbol(sym), &Value::Integer(1)),
             Some(false)
         );
         // Float vs String
         assert_eq!(
-            values_atom_eq(&Value::Float(1.0), &Value::String(s.clone())),
+            values_join_eq(&Value::Float(1.0), &Value::String(s.clone())),
             Some(false)
         );
         assert_eq!(
-            values_atom_eq(&Value::String(s), &Value::Float(1.0)),
+            values_join_eq(&Value::String(s), &Value::Float(1.0)),
             Some(false)
         );
         // Integer vs Float (cross-type in the atom sense)
         assert_eq!(
-            values_atom_eq(&Value::Integer(1), &Value::Float(1.0)),
+            values_join_eq(&Value::Integer(1), &Value::Float(1.0)),
             Some(false)
         );
         assert_eq!(
-            values_atom_eq(&Value::Float(1.0), &Value::Integer(1)),
+            values_join_eq(&Value::Float(1.0), &Value::Integer(1)),
             Some(false)
         );
     }
 
     #[test]
-    fn values_atom_eq_multifield_and_void_return_none() {
+    fn join_equality_compares_multifields_and_preserves_void_rejection() {
         let mf = Value::Multifield(Box::default());
 
         // Multifield vs atomic
-        assert_eq!(values_atom_eq(&mf, &Value::Integer(1)), None);
-        assert_eq!(values_atom_eq(&Value::Integer(1), &mf), None);
+        assert_eq!(values_join_eq(&mf, &Value::Integer(1)), Some(false));
+        assert_eq!(values_join_eq(&Value::Integer(1), &mf), Some(false));
         // Multifield vs Multifield
         assert_eq!(
-            values_atom_eq(&mf, &Value::Multifield(Box::default())),
-            None
+            values_join_eq(&mf, &Value::Multifield(Box::default())),
+            Some(true)
         );
+        let populated = Value::Multifield(Box::new([Value::Integer(1)].into_iter().collect()));
+        assert_eq!(values_join_eq(&mf, &populated), Some(false));
         // Void vs atomic
-        assert_eq!(values_atom_eq(&Value::Void, &Value::Integer(1)), None);
-        assert_eq!(values_atom_eq(&Value::Integer(1), &Value::Void), None);
+        assert_eq!(values_join_eq(&Value::Void, &Value::Integer(1)), None);
+        assert_eq!(values_join_eq(&Value::Integer(1), &Value::Void), None);
         // Void vs Void
-        assert_eq!(values_atom_eq(&Value::Void, &Value::Void), None);
+        assert_eq!(values_join_eq(&Value::Void, &Value::Void), None);
         // Multifield vs Void
-        assert_eq!(values_atom_eq(&mf, &Value::Void), None);
-        assert_eq!(values_atom_eq(&Value::Void, &mf), None);
+        assert_eq!(values_join_eq(&mf, &Value::Void), None);
+        assert_eq!(values_join_eq(&Value::Void, &mf), None);
     }
 
     // -----------------------------------------------------------------------
@@ -4703,39 +4787,39 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Property tests for values_atom_eq and negated join semantics
+    // Property tests for values_join_eq and negated join semantics
     // -----------------------------------------------------------------------
 
     proptest! {
-        /// Reflexivity: values_atom_eq(v, v) is Some(true) for all integer/float values.
+        /// Reflexivity: values_join_eq(v, v) is Some(true) for all integer/float values.
         #[test]
-        fn values_atom_eq_reflexive_for_atomics(
+        fn values_join_eq_reflexive_for_atomics(
             i in proptest::num::i64::ANY,
             f in proptest::num::f64::ANY,
         ) {
             prop_assert_eq!(
-                values_atom_eq(&Value::Integer(i), &Value::Integer(i)),
+                values_join_eq(&Value::Integer(i), &Value::Integer(i)),
                 Some(true),
                 "integer reflexivity"
             );
             prop_assert_eq!(
-                values_atom_eq(&Value::Float(f), &Value::Float(f)),
+                values_join_eq(&Value::Float(f), &Value::Float(f)),
                 Some(true),
                 "float reflexivity (bitwise)"
             );
         }
 
-        /// Symmetry: values_atom_eq(a, b) == values_atom_eq(b, a) for cross-type pairs.
+        /// Symmetry: values_join_eq(a, b) == values_join_eq(b, a) for cross-type pairs.
         #[test]
-        fn values_atom_eq_symmetric(
+        fn values_join_eq_symmetric(
             a_int in proptest::num::i64::ANY,
             b_float in proptest::num::f64::ANY,
         ) {
             let a = Value::Integer(a_int);
             let b = Value::Float(b_float);
             prop_assert_eq!(
-                values_atom_eq(&a, &b),
-                values_atom_eq(&b, &a),
+                values_join_eq(&a, &b),
+                values_join_eq(&b, &a),
                 "symmetry for Integer vs Float"
             );
         }
@@ -4749,8 +4833,8 @@ mod tests {
             let base = Value::Integer(base_val);
             let target = Value::Integer(target_val);
 
-            let eq_result = values_atom_eq(&base, &target).unwrap_or(false);
-            let neq_result = values_atom_eq(&base, &target).is_some_and(|eq| !eq);
+            let eq_result = values_join_eq(&base, &target).unwrap_or(false);
+            let neq_result = values_join_eq(&base, &target).is_some_and(|eq| !eq);
 
             prop_assert_eq!(eq_result, !neq_result,
                 "for same-type atomics, NotEqual must be the negation of Equal");
@@ -4765,10 +4849,10 @@ mod tests {
             let int_val = Value::Integer(i);
             let float_val = Value::Float(f);
 
-            let eq_result = values_atom_eq(&int_val, &float_val).unwrap_or(false);
+            let eq_result = values_join_eq(&int_val, &float_val).unwrap_or(false);
             prop_assert!(!eq_result, "cross-type Equal must be false");
 
-            let neq_result = values_atom_eq(&int_val, &float_val).is_some_and(|eq| !eq);
+            let neq_result = values_join_eq(&int_val, &float_val).is_some_and(|eq| !eq);
             prop_assert!(neq_result, "cross-type NotEqual must be true");
         }
     }

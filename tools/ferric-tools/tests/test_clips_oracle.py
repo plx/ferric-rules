@@ -464,7 +464,7 @@ def test_semantic_stderr_is_preserved_around_native_records():
     }
 
 
-@pytest.mark.parametrize("code", ["EXPRNPSR3", "PRCCODE3", "CSTRNCHK1"])
+@pytest.mark.parametrize("code", ["EXPRNPSR3", "PRCCODE3", "CSTRNCHK1", "CSTRCPSR4"])
 def test_diagnostic_channel_separation_uses_only_the_adjacent_authenticated_payload(code):
     user_output = f"[{code}] fixture-authored output outside the diagnostic payload\n"
     message = f"\n[{code}] Authenticated construct-loading rejection.\n"
@@ -554,8 +554,14 @@ def test_load_parser_diagnostic_is_a_completed_parse_failure():
     assert observation["channels"][1]["text"] == ""
 
 
-def test_load_construct_diagnostic_is_distinct_from_parser_failure():
-    message = "\n[EXPRNPSR3] Missing function declaration for missing-function.\n"
+@pytest.mark.parametrize(
+    "message",
+    [
+        "\n[EXPRNPSR3] Missing function declaration for missing-function.\n",
+        "\n[CSTRCPSR4] Cannot redefine deftemplate item while it is in use.\n",
+    ],
+)
+def test_load_construct_diagnostic_is_distinct_from_parser_failure(message):
     stderr = b"".join(
         [
             _native_record("LIFECYCLE", 0, "START", FIXTURE_ID, DIGEST, DIGEST),

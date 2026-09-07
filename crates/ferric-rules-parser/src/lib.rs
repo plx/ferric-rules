@@ -52,8 +52,8 @@ pub use stage2::{
     GlobalConstruct, GlobalDefinition, ImportSpec, InterpretError, InterpretErrorKind,
     InterpretResult, InterpreterConfig, LiteralKind, LiteralValue, MethodConstruct,
     MethodParameter, ModuleConstruct, ModuleSpec, OrderedFactBody, OrderedPattern, Pattern,
-    RuleConstruct, SlotConstraint, SlotDefinition, SlotType, TemplateConstruct, TemplateFactBody,
-    TemplatePattern,
+    RuleConstruct, SlotConstraint, SlotDefinition, SlotType, SlotValueType, TemplateConstruct,
+    TemplateFactBody, TemplatePattern,
 };
 
 #[cfg(test)]

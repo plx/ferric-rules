@@ -5,7 +5,7 @@
 //! engine. Both `loader.rs` and `actions.rs` need access to this type.
 
 use ferric_rules_core::Value;
-use ferric_rules_parser::{ActionExpr, FunctionCall, SlotType};
+use ferric_rules_parser::{ActionExpr, FunctionCall, LiteralKind, SlotType, SlotValueType};
 use rustc_hash::FxHashMap as HashMap;
 
 /// Runtime representation of a registered template.
@@ -22,6 +22,8 @@ pub(crate) struct RegisteredTemplate {
     pub slot_names: Vec<String>,
     /// Single-field versus multifield cardinality for each slot position.
     pub slot_types: Vec<SlotType>,
+    /// Canonical primitive type union for each slot; None is unconstrained.
+    pub allowed_types: Vec<Option<Vec<SlotValueType>>>,
     /// Slot name → positional index mapping.
     #[cfg_attr(
         feature = "serde",
@@ -68,19 +70,116 @@ impl RegisteredTemplate {
                         call.name, self.name
                     ));
                 }
+                for arg in &call.args {
+                    self.validate_literal_expression(index, arg)?;
+                }
                 Ok((index, call))
             })
             .collect()
     }
 
-    pub fn validate_required_slots(&self, slots: &[Value]) -> Result<(), String> {
-        for (index, value) in slots.iter().enumerate() {
-            if matches!(value, Value::Void) && matches!(self.defaults[index], Value::Void) {
-                return Err(format!(
-                    "slot `{}` in template `{}` requires a value because of its (default ?NONE) attribute",
-                    self.slot_names[index], self.name
-                ));
+    /// Definition identity relevant to an already complete, owned fact.
+    #[allow(dead_code)] // Used by the coordinated owned-host-fact boundary.
+    pub fn same_shape(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.slot_names == other.slot_names
+            && self.slot_types == other.slot_types
+            && self.allowed_types == other.allowed_types
+    }
+
+    /// Check only provably literal fields; expression results are checked at run time.
+    pub fn validate_literal_expression(
+        &self,
+        index: usize,
+        expression: &ActionExpr,
+    ) -> Result<(), String> {
+        match expression {
+            ActionExpr::Literal(literal) => self.validate_literal(index, &literal.value),
+            ActionExpr::FunctionCall(call) if call.name == "create$" => {
+                for arg in &call.args {
+                    self.validate_literal_expression(index, arg)?;
+                }
+                Ok(())
             }
+            _ => Ok(()),
+        }
+    }
+
+    pub fn validate_literal(&self, index: usize, literal: &LiteralKind) -> Result<(), String> {
+        let kind = match literal {
+            LiteralKind::Symbol(_) => SlotValueType::Symbol,
+            LiteralKind::String(_) => SlotValueType::String,
+            LiteralKind::Integer(_) => SlotValueType::Integer,
+            LiteralKind::Float(_) => SlotValueType::Float,
+        };
+        self.validate_kind(index, kind)
+    }
+
+    fn validate_kind(&self, index: usize, kind: SlotValueType) -> Result<(), String> {
+        if self.allowed_types[index]
+            .as_ref()
+            .is_some_and(|allowed| !allowed.contains(&kind))
+        {
+            return Err(format!(
+                "value does not match allowed types for slot `{}` in template `{}`",
+                self.slot_names[index], self.name
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_slot(&self, index: usize, value: &Value) -> Result<(), String> {
+        if matches!(value, Value::Void) {
+            return Err(format!(
+                "slot `{}` in template `{}` requires a value because of its (default ?NONE) attribute",
+                self.slot_names[index], self.name
+            ));
+        }
+        let fields = match (self.slot_types[index], value) {
+            (SlotType::Single, Value::Multifield(_)) => {
+                return Err(format!(
+                    "single-field slot `{}` in template `{}` requires one scalar value",
+                    self.slot_names[index], self.name
+                ))
+            }
+            (SlotType::Single, value) => std::slice::from_ref(value),
+            (SlotType::Multi, Value::Multifield(fields)) => fields.as_slice(),
+            (SlotType::Multi, _) => {
+                return Err(format!(
+                    "multifield slot `{}` in template `{}` requires a multifield value",
+                    self.slot_names[index], self.name
+                ))
+            }
+        };
+        for field in fields {
+            let kind = match field {
+                Value::Symbol(_) => SlotValueType::Symbol,
+                Value::String(_) => SlotValueType::String,
+                Value::Integer(_) => SlotValueType::Integer,
+                Value::Float(_) => SlotValueType::Float,
+                Value::ExternalAddress(_) => SlotValueType::ExternalAddress,
+                Value::Multifield(_) if self.allowed_types[index].is_none() => continue,
+                Value::Multifield(_) | Value::Void => {
+                    return Err(format!(
+                        "value does not match allowed types for slot `{}` in template `{}`",
+                        self.slot_names[index], self.name
+                    ))
+                }
+            };
+            self.validate_kind(index, kind)?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_slots(&self, slots: &[Value]) -> Result<(), String> {
+        if slots.len() != self.slot_names.len() {
+            return Err(format!(
+                "wrong number of slots for template `{}`",
+                self.name
+            ));
+        }
+        for (index, value) in slots.iter().enumerate() {
+            self.validate_slot(index, value)?;
         }
         Ok(())
     }
@@ -102,6 +201,7 @@ mod tests {
         RegisteredTemplate {
             name: name.to_string(),
             slot_types: vec![SlotType::Single; slot_names.len()],
+            allowed_types: vec![None; slot_names.len()],
             slot_names,
             slot_index,
             defaults,

@@ -47,7 +47,8 @@ _LOAD_SYNTAX_DIAGNOSTIC_CODES = frozenset({"PRNTUTIL2"})
 # PRCCODE3 rejects undefined RHS variables; CSTRNCHK1 rejects literal slot
 # type/constraint violations during construct loading. Other PRCCODE messages
 # remain evaluation errors only when emitted in an authenticated run/reset phase.
-_LOAD_CONSTRUCT_DIAGNOSTIC_CODES = frozenset({"PRNTUTIL1", "PRCCODE3", "CSTRNCHK1"})
+# CSTRCPSR4 rejects redefinition of an in-use construct, not malformed syntax.
+_LOAD_CONSTRUCT_DIAGNOSTIC_CODES = frozenset({"PRNTUTIL1", "PRCCODE3", "CSTRNCHK1", "CSTRCPSR4"})
 _LOAD_CONSTRUCT_DIAGNOSTIC_FAMILIES = frozenset(
     {
         "ARGACCES",
@@ -251,11 +252,7 @@ def _diagnostic_channel_disposition(
     matches = list(_CLIPS_DIAGNOSTIC_CODE_RE.finditer(message))
     codes = [match.group(1) for match in matches]
     if native_phase == "load":
-        syntax = [
-            code in _LOAD_SYNTAX_DIAGNOSTIC_CODES
-            or any(code.startswith(family) for family in _LOAD_SYNTAX_DIAGNOSTIC_FAMILIES)
-            for code in codes
-        ]
+        syntax = [_is_load_syntax_code(code) for code in codes]
         construct = [
             code in _LOAD_CONSTRUCT_DIAGNOSTIC_CODES
             or any(code.startswith(family) for family in _LOAD_CONSTRUCT_DIAGNOSTIC_FAMILIES)
@@ -552,15 +549,17 @@ def _parse_int(text: str, *, issue: str, issues: list[str]) -> int | None:
         return None
 
 
+def _is_load_syntax_code(code: str) -> bool:
+    return code not in _LOAD_CONSTRUCT_DIAGNOSTIC_CODES and (
+        code in _LOAD_SYNTAX_DIAGNOSTIC_CODES
+        or any(code.startswith(family) for family in _LOAD_SYNTAX_DIAGNOSTIC_FAMILIES)
+    )
+
+
 def _load_diagnostic_taxonomy(message: str) -> tuple[str, str]:
     """Classify only allowlisted CLIPS load-diagnostic families."""
     codes = set(_CLIPS_DIAGNOSTIC_CODE_RE.findall(message))
-    syntax_codes = {
-        code
-        for code in codes
-        if code in _LOAD_SYNTAX_DIAGNOSTIC_CODES
-        or any(code.startswith(family) for family in _LOAD_SYNTAX_DIAGNOSTIC_FAMILIES)
-    }
+    syntax_codes = {code for code in codes if _is_load_syntax_code(code)}
     construct_codes = {
         code
         for code in codes
