@@ -46,11 +46,11 @@ no selector is run during migration.
 | #303 | Measured Rust/C transfer contract | [#304](https://github.com/plx/ferric-rules/pull/304), merged `b6015037` |
 | #157 | Selected core semantics and CLIPS evidence | [#306](https://github.com/plx/ferric-rules/pull/306), merged `56d0748b` |
 | #194 | Versioned, bounded and validated snapshots | [#307](https://github.com/plx/ferric-rules/pull/307), merged `502a0360` |
-| #171 | Node values, lifetimes and package imports | [#308](https://github.com/plx/ferric-rules/pull/308), prepared and validated |
-| #190 | Python values, configuration and packages | [#309](https://github.com/plx/ferric-rules/pull/309), prepared and validated |
+| #171 | Node values, lifetimes and package imports | [#308](https://github.com/plx/ferric-rules/pull/308), merged `8d538d63` |
+| #190 | Python values, configuration and packages | [#309](https://github.com/plx/ferric-rules/pull/309), merged `21fc8586` |
 | #174 | Go module path and cheap lifecycle repairs | [#310](https://github.com/plx/ferric-rules/pull/310), prepared and validated |
-| #203 | Host value/fact provenance across adapters | Prepared and validated; merge pending |
-| #305 | Swift package and explicit header generation | Prepared and validated; merge pending |
+| #203 | Host value/fact provenance across adapters | [#311](https://github.com/plx/ferric-rules/pull/311), prepared and validated |
+| #305 | Swift package and explicit header generation | [#312](https://github.com/plx/ferric-rules/pull/312), prepared and validated |
 | #153 | Exact Rust/CLI consumers and shared example | Prepared and validated; merge pending |
 | #143 | Integrated evidence, CI and backlog migration | Final measurements complete; preceding merges/migration pending |
 
@@ -135,7 +135,9 @@ CBOR harness/collector). This baseline **already contains transferable threading
 these deltas measure subsequent semantic/lifecycle repairs, checked host ownership
 and validated persistence. Both revisions use the same expected firing/final-state
 oracles and identical benchmark/helper objects. All 20 release correctness checks
-pass on both sources. No skipped work or test/profile duration is a speedup claim.
+pass on both sources. No skipped work or test/profile duration is a speedup claim. A later review fix
+keeps symbol-free `HostFact::value` captures portable; no measured workload or
+binding calls that accessor, so the recorded measurement source remains explicit.
 
 The final [core](https://github.com/plx/ferric-rules/actions/runs/34077615293) and
 [C ABI](https://github.com/plx/ferric-rules/actions/runs/34077623211) A/B/A/B runs
@@ -203,18 +205,24 @@ Exact Rust/CLI archives install and run outside the checkout, including invalid
 input diagnostics. Node real packages pass CJS/ESM/type resolution and Node22/26
 consumer smokes; Python exact wheels and normalized source packages pass their
 external consumers. The host migration passes 27 shared cases across five
-adapters (12 documented deviations), 12 provenance tests and all five existing
+adapters (12 documented deviations), 14 provenance tests and all five existing
 release scaling checks. Swift's three native slices, 14 Swift6 strict tests,
 14 Swift-ASan tests, iOS device/simulator wrapper builds and copied external
 macOS package consumer pass. Swift-ASan instruments Swift, not all native Rust.
 Current local Apple Silicon SDK27 builds target Swift6/macOS15/iOS18; existing CI
 covers declared environments unavailable locally. No iOS device execution is claimed.
 
-Essential merge evidence includes core quality/MSRV/features, optimized behavior
-and scaling, pinned CLIPS, affected binding and package consumers, dependency
-scans/license notices and relevant existing C/lifecycle sanitizer checks. The
-protected `PR Compatibility Gate` is required but is not the entire quality bar.
-Consequential changes receive fresh review; red checks are fixed, never bypassed.
+Every merge requires Check, Format, Clippy, Test, MSRV, Dependency Policy,
+License Notices, the pinned CLIPS comparison/gate and protected
+`PR Compatibility Gate`, plus fresh review of consequential changes. Additional
+checks follow the changed inputs: Python's binding matrix and deterministic
+package bundle; Go's lint/race/lifecycle and shared corpus; the host change's
+shared consumers, native artifacts, release/scaling and existing FFI lifetime
+checks; Swift Package plus C/header/Go checks; and packaged Rust/CLI plus changed
+performance collection and Python testing-hook checks for #153. Preserve the
+existing declared target consumers. Broadly triggered jobs with unchanged inputs
+continue normally without becoming extra merge requirements. Inspect and resolve
+every reported failure; no red check is bypassed or cancelled.
 
 ## Deliberate deferrals and next action
 
@@ -229,7 +237,7 @@ Qualified distinct template declarations work; unsupported unqualified cross-mod
 name collisions fail before state changes. Migration notes describe Python string,
 Node version/precision, Go cancellation/path, host handles and legacy snapshot breaks.
 
-Next: merge Node, Python, Go, host, Swift and external-consumer changes in
+Next: merge Go, host, Swift and external-consumer changes in
 dependency order after their checks. Apply and verify the prepared issue/label/native-dependency batch, complete final
 validation and merge #143's closing record. Reconcile the starting checkout while
 preserving user changes. Completion requires all accepted implementation PRs merged.
