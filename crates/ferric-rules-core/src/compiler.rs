@@ -95,6 +95,25 @@ impl ConditionCompilationPlan {
     pub fn var_map(&self) -> &VarMap {
         &self.var_map
     }
+
+    /// Upper bound on newly allocated beta nodes, including the terminal.
+    /// Shared joins can reduce actual demand; each NCC also needs its partner.
+    #[must_use]
+    pub fn maximum_new_beta_nodes(&self) -> usize {
+        maximum_new_beta_nodes(&self.conditions)
+    }
+}
+
+fn maximum_new_beta_nodes(conditions: &[CompilableCondition]) -> usize {
+    // Structural validation bounds both condition count and NCC nesting.
+    1 + conditions
+        .iter()
+        .map(|condition| match condition {
+            CompilableCondition::Pattern(_) | CompilableCondition::Predicate { .. } => 1,
+            // The nested count includes a terminal; replace it with the NCC/partner pair.
+            CompilableCondition::Ncc(children) => 1 + maximum_new_beta_nodes(children),
+        })
+        .sum::<usize>()
 }
 
 /// Errors from compilation.
@@ -214,7 +233,10 @@ impl ReteCompiler {
     /// Allocate the next sequential rule ID.
     pub fn allocate_rule_id(&mut self) -> RuleId {
         let id = RuleId(self.next_rule_id);
-        self.next_rule_id += 1;
+        self.next_rule_id = self
+            .next_rule_id
+            .checked_add(1)
+            .expect("rule ID capacity exhausted");
         id
     }
 
@@ -262,6 +284,8 @@ impl ReteCompiler {
         Self::validate_rule_patterns(&rule.patterns)?;
         let conditions = Self::patterns_as_conditions(&rule.patterns);
         let var_map = Self::prepare_var_map(&conditions)?;
+        rete.beta
+            .ensure_node_capacity(maximum_new_beta_nodes(&conditions))?;
         Ok(self.compile_conditions_unchecked(
             rete,
             fact_base,
@@ -284,6 +308,8 @@ impl ReteCompiler {
     ) -> Result<CompileResult, CompileError> {
         Self::validate_conditions(conditions)?;
         let var_map = Self::prepare_var_map(conditions)?;
+        rete.beta
+            .ensure_node_capacity(maximum_new_beta_nodes(conditions))?;
         Ok(self
             .compile_conditions_unchecked(rete, fact_base, rule_id, salience, conditions, var_map))
     }
@@ -306,8 +332,10 @@ impl ReteCompiler {
 
     /// Install a previously validated condition plan.
     ///
-    /// All validation and capacity checks occur in [`Self::plan_conditions`],
-    /// so this commit phase cannot return a partial-installation error.
+    /// Structural checks occur in [`Self::plan_conditions`]. Before retiring any
+    /// previous rule, the caller must check [`crate::beta::BetaNetwork::ensure_node_capacity`]
+    /// for the sum of [`ConditionCompilationPlan::maximum_new_beta_nodes`] across
+    /// every plan being installed. This commit phase then cannot partially fail.
     pub fn install_condition_plan(
         &mut self,
         rete: &mut ReteNetwork,
