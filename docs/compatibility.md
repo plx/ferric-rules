@@ -71,6 +71,15 @@ Template facts use named slots defined by `deftemplate`:
 (assert (person (name Alice) (age 30)))
 ```
 
+Each constrained multislot matches its complete sequence using the same field
+and multifield rules as ordered patterns. `(tags ?value)` requires exactly one
+value and binds a scalar; `(tags $?values)` binds the entire multifield, and
+`(tags head $?values tail)` captures the values between the fixed fields.
+An explicit `(tags)` requires an empty multislot; omitting `tags` leaves it
+unconstrained. Ambiguous splits in multiple multislots produce every valid
+combination, in written slot-constraint order. Single-valued slots require one
+field constraint and cannot bind a named multifield capture.
+
 RHS assertions resolve declared templates in the rule's module, evaluate named
 slots, fill defaults, and propagate template matches. Multislots splice supplied
 multifield values; both `?items` and `$?items` read the same bound value. Invalid

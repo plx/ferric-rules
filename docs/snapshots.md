@@ -26,19 +26,19 @@ of persisting a handle. See [host-api.md](host-api.md).
 ## Versions and application updates
 
 Schema 2 added ordered field-count guards; older compiled graphs could accept
-facts with the wrong number of fields. Schema 3 stores ordered multifield match plans and each token's capture lengths.
-This distinguishes multiple matches of the same fact and retains scalar and
-multifield bindings through snapshot restoration. It also removes the old
-runtime approximation that reconstructed a trailing capture from fact fields.
+facts with the wrong number of fields. Schema 3 added ordered multifield match
+plans and token capture lengths. Schema 4 represents sequence plans as independent
+source segments, supporting templates with several constrained multislots while
+preserving each segment's boundaries and the full capture identity.
 
-Schemas 1 and 2 are rejected with `UnsupportedVersion(1)` and
-`UnsupportedVersion(2)` before payload decoding. Their unchanged committed
-fixtures remain explicit compatibility regressions, and their source programs
-continue to exercise resume/reset behavior in the current schema. To upgrade
-unique application data, export it with the producing Ferric version and assert
-that durable data into a newly compiled engine. There is no automatic RETE-state
-migration. The schema-3 fixture preserves pending split activations, refraction,
-retraction, subsequent rule loading, and reset behavior.
+Schemas 1, 2, and 3 are rejected with `UnsupportedVersion` before payload decoding.
+Their unchanged committed fixtures remain explicit compatibility regressions,
+and their source programs continue to exercise resume/reset behavior in the
+current schema. To upgrade unique application data, export it with the producing
+Ferric version and assert that durable data into a newly compiled engine. There
+is no automatic RETE-state migration. The schema-4 fixture preserves the pending
+Cartesian product of template-slot matches, refraction, retraction, subsequent
+rule loading, and reset behavior.
 
 Builds supporting a schema must keep its meaning and pass the stored fixture
 and resume regressions. Changes to the serialized layout or runtime semantics
@@ -69,7 +69,7 @@ Every format uses the same binary envelope, including experimental JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`3`) |
+| 8–9 | Little-endian schema version (`4`) |
 | 10 | Codec: bincode `0`, JSON `1`, CBOR `2`, MessagePack `3`, Postcard `4` |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |
