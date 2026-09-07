@@ -596,6 +596,77 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_rejects_nonroot_root_without_panicking() {
+        let engine = Engine::with_rules("(defrule ready (ready) =>)").unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            alter_state(&engine, |state| {
+                let nonroot = state["rete"]["beta"]["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry[1].get("Root").is_none())
+                    .unwrap()[0]
+                    .clone();
+                state["rete"]["beta"]["root_id"] = nonroot;
+            })
+        }));
+        assert!(
+            result.is_ok(),
+            "invalid root must return an error, not unwind"
+        );
+        assert!(matches!(
+            result.unwrap(),
+            Err(SerializationError::InvalidState(_))
+        ));
+    }
+
+    #[test]
+    fn blocked_negative_cannot_retain_output_token() {
+        let mut engine =
+            Engine::with_rules("(defrule choose (not (blocker)) => (assert (selected)))").unwrap();
+        let bytes = engine.serialize(SerializationFormat::Json).unwrap();
+        let mut unblocked: serde_json::Value =
+            serde_json::from_slice(&bytes[HEADER_LEN..]).unwrap();
+        engine
+            .assert_ordered("blocker", Vec::<Value>::new())
+            .unwrap();
+        let bytes = engine.serialize(SerializationFormat::Json).unwrap();
+        let blocked: serde_json::Value = serde_json::from_slice(&bytes[HEADER_LEN..]).unwrap();
+        // Retain the earlier pass-through token/activation, but supply the real
+        // blocker and its complete alpha/negative reverse memberships.
+        unblocked["fact_base"] = blocked["fact_base"].clone();
+        unblocked["symbol_table"] = blocked["symbol_table"].clone();
+        unblocked["rete"]["alpha"] = blocked["rete"]["alpha"].clone();
+        unblocked["rete"]["beta"]["neg_memories"] = blocked["rete"]["beta"]["neg_memories"].clone();
+        let bytes = envelope(
+            serde_json::to_vec(&unblocked).unwrap(),
+            SerializationFormat::Json,
+        )
+        .unwrap();
+        match Engine::deserialize(&bytes, SerializationFormat::Json) {
+            Err(SerializationError::InvalidState(_)) => {}
+            Ok(mut restored) => panic!(
+                "blocked negative snapshot accepted; incorrect firings: {}",
+                restored.run(RunLimit::Unlimited).unwrap().rules_fired
+            ),
+            Err(error) => panic!("expected invalid state error, got {error}"),
+        }
+    }
+
+    #[test]
+    fn compiler_allocator_must_match_runtime_rule_capacity() {
+        for source in ["", "(defrule ready (ready) =>)"] {
+            let engine = Engine::with_rules(source).unwrap();
+            for next in [1000, u32::MAX - 1] {
+                let result = alter_state(&engine, |state| {
+                    state["compiler"]["next_rule_id"] = serde_json::json!(next);
+                });
+                assert!(matches!(result, Err(SerializationError::InvalidState(_))), "forged allocator {next} must not make the next load allocate a huge sparse index");
+            }
+        }
+    }
+
+    #[test]
     fn versioned_envelope_rejects_unknown_corrupt_and_mismatched_inputs() {
         let engine = Engine::new(EngineConfig::default());
         for &format in SerializationFormat::ALL {

@@ -1047,6 +1047,12 @@ impl ReteNetwork {
                     .get_neg_memory(id)
                     .ok_or("missing negative memory")?;
                 require_eq!(tracked.len(), memory.blocked.len() + memory.unblocked.len());
+                let output = self
+                    .beta
+                    .memory_id_for_node(node_id)
+                    .and_then(|id| self.beta.get_memory(id))
+                    .ok_or("missing negative output memory")?;
+                require_eq!(output.len(), memory.unblocked.len());
             }
             if let Some(id) = exists {
                 let memory = self
@@ -1216,6 +1222,13 @@ impl ReteNetwork {
 }
 
 impl crate::compiler::ReteCompiler {
+    /// Next executable ID, checked against runtime metadata's retained capacity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn snapshot_next_rule_id(&self) -> u32 {
+        self.next_rule_id
+    }
+
     #[doc(hidden)]
     pub fn validate_snapshot(&self, rete: &ReteNetwork) -> Result<(), String> {
         let mut work = Work(10_000_000);
