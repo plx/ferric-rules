@@ -152,13 +152,14 @@ impl FactBase {
     }
 }
 
-use crate::alpha::{AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNode};
+use crate::alpha::{AlphaEntryType, AlphaMemory, AlphaMemoryId, AlphaNode, ConstantTestType};
 use crate::beta::{BetaNode, RuleId};
 use crate::binding::VarMap;
 use crate::rete::ReteNetwork;
 use crate::token::NodeId;
 
-// Source compilation allows 64 total condition nodes and 64 alpha tests.
+// Source compilation allows 64 total condition nodes and 64 alpha value tests,
+// with one additional ordered field-count test per alpha path.
 // Each condition contributes at most one node to a beta parent chain; an NCC
 // partner substitutes for its wrapper on a subnetwork path. Include root and
 // terminal. Partner callbacks need their own nesting/cycle bound below.
@@ -706,6 +707,7 @@ impl ReteNetwork {
         let mut owners = rustc_hash::FxHashSet::default();
         let mut incoming = vec![0_usize; self.alpha.nodes.len()];
         let mut depths = vec![0_usize; self.alpha.nodes.len()];
+        let mut field_count_depths = vec![0_usize; self.alpha.nodes.len()];
         for (index, node) in self.alpha.nodes.iter().enumerate() {
             let id = NodeId(u32::try_from(index).map_err(|_| "oversized alpha graph")?);
             let (children, memory) = match node {
@@ -741,10 +743,21 @@ impl ReteNetwork {
                     "cyclic or dangling alpha child"
                 );
                 incoming[child.0 as usize] += 1;
-                depths[child.0 as usize] = depths[index] + 1;
+                let field_count_test = matches!(
+                    &self.alpha.nodes[child.0 as usize],
+                    AlphaNode::ConstantTest { test, .. }
+                        if matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. })
+                );
+                depths[child.0 as usize] = depths[index] + usize::from(!field_count_test);
+                field_count_depths[child.0 as usize] =
+                    field_count_depths[index] + usize::from(field_count_test);
                 require!(
                     depths[child.0 as usize] <= MAX_ALPHA_DEPTH,
                     "snapshot alpha path exceeds 64 tests"
+                );
+                require!(
+                    field_count_depths[child.0 as usize] <= 1,
+                    "snapshot alpha path exceeds one ordered field-count test"
                 );
             }
             if let Some(memory) = memory {
