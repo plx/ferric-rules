@@ -1365,10 +1365,13 @@ impl ReteNetwork {
             _ => return,
         };
 
-        let parent_tokens: Vec<TokenId> = self
+        // The compiler already indexes equality-bound parent variables for
+        // exists nodes. Reuse positive joins' candidate lookup, preserving
+        // newest-first traversal and the fallback for non-indexable values.
+        let parent_tokens = self
             .find_memory_for_node(parent_id)
             .and_then(|mem_id| self.beta.get_memory(mem_id))
-            .map(|mem| mem.iter().collect())
+            .map(|mem| collect_candidate_parent_tokens(mem, &tests, fact))
             .unwrap_or_default();
 
         for parent_token_id in parent_tokens {
