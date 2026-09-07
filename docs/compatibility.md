@@ -55,6 +55,13 @@ Ordered facts are positional sequences of values:
 (assert (data 10 20 30))
 ```
 
+Ordered patterns consume every field: `?` and `?name` match one field, while
+`$?` and `$?name` match zero or more fields at any position. For example,
+`(row head $?values tail)` captures `(a b)` from `(row head a b tail)` and an
+empty multifield from `(row head tail)`. Multiple multifield fields produce a
+separate match for each valid partition. Named captures are available to later
+patterns, test conditions, and rule actions.
+
 ### Template Facts
 
 Template facts use named slots defined by `deftemplate`:
@@ -186,6 +193,9 @@ also retains two experimental Ferric orderings for existing consumers:
 | **MEA** (experimental) | Ferric's first-pattern recency, then its LEX tiebreak; not CLIPS MEA |
 
 CLIPS LEX/MEA specificity and sorted-recency semantics are deferred (#155).
+Their tie order also differs for multiple partitions of the same ordered fact;
+the multifield regressions characterize this separately from depth/breadth
+conformance.
 Use depth/breadth for portable rules. `Simplicity`, `Complexity`, and `Random`
 are not implemented. CLIPS `set-strategy`/`get-strategy` source commands are
 unsupported and produce missing-function diagnostics; configure a declared

@@ -23,20 +23,31 @@ construct with `Engine::with_rules`, set focus to `WORK`, run exactly one firing
 then call `serialize(SerializationFormat::Cbor)`. At this checkpoint item 3 is
 `done`, global `seen` is 1, item 1 is pending, and item 2 is blocked.
 
-Schema 2 rejects these unchanged schema-1 bytes with `UnsupportedVersion(1)`.
+Schema 3 rejects these unchanged schema-1 bytes with `UnsupportedVersion(1)`.
 The source still exercises resume/reset behavior after a current-format roundtrip.
-Keep this prior fixture: replacing it would conceal an incompatible semantic change.
+Keep this prior fixture: replacing it would conceal an incompatible layout change.
 
-`schema-2.cbor` contains the explicit field-count tests required by ordered
-patterns. Its source is `schema-2.clp`: construct with `Engine::with_rules`, run
-exactly one firing, and serialize with CBOR. Two one-field facts match `(row ?)`;
-a two-field fact does not. One valid activation remains pending at the checkpoint.
-The committed-byte regression resumes it, asserts shorter and longer facts,
-asserts a valid fact, installs another rule against the restored facts, then
-resets and checks the named seeds. The same scenario runs through all codecs.
+`schema-2.cbor` introduced ordered field-count guards. Its source is
+`schema-2.clp`: construct with `Engine::with_rules`, run exactly one firing,
+then serialize with CBOR. One fixed-width match has fired and another remains
+pending. Schema 3 rejects these unchanged bytes with `UnsupportedVersion(2)`.
+The source still exercises cardinality after resume, new assertions, later rule
+loading, and reset through every current codec. Keep these bytes alongside the
+schema-1 fixture; only the current schema fixture should be regenerated.
+
+`schema-3.cbor` stores real ordered multifield match plans and token capture
+lengths. Its source is `schema-3.clp`: construct with `Engine::with_rules`, run
+exactly one firing, and serialize with CBOR. One of three splits of `(row a b)`
+has fired; two activations remain pending. The committed-byte regression resumes
+those activations, checks captured widths and refraction, retracts the source
+fact, asserts a replacement, installs a rule sharing the restored sequence join,
+and verifies reset behavior.
 
 Regenerate only after an intentional schema change with:
 
 ```sh
-cargo test -p ferric-rules-runtime --features serde regenerate_schema_two_cardinality_fixture -- --ignored
+cargo test -p ferric-rules-runtime --features serde regenerate_schema_three_fixture -- --ignored
 ```
+
+Every codec also runs the same split resume/reset scenario. Malformed capture
+identities, projection bindings, logical selectors, and cache plans are rejected.

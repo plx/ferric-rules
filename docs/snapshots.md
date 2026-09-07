@@ -25,17 +25,20 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-Schema 2 requires the corrected ordered-pattern cardinality semantics. Compiled
-fixed-width patterns retain explicit field-count tests, including empty patterns
-and anonymous single-field wildcards. Schema-1 graphs lack those tests and can
-continue matching wrong-width facts after restoration, including facts asserted
-later. Schema 1 is therefore rejected with `UnsupportedVersion(1)` before codec
-decoding; its committed fixture remains an explicit compatibility regression.
+Schema 2 added ordered field-count guards; older compiled graphs could accept
+facts with the wrong number of fields. Schema 3 stores ordered multifield match plans and each token's capture lengths.
+This distinguishes multiple matches of the same fact and retains scalar and
+multifield bindings through snapshot restoration. It also removes the old
+runtime approximation that reconstructed a trailing capture from fact fields.
 
-To upgrade unique application data, export it with the producing Ferric version
-and assert that durable data into a newly compiled engine. There is no automatic
-RETE-state migration. The schema-2 fixture checks pending activations, subsequent
-assertions, later rule compilation, and reset against the corrected semantics.
+Schemas 1 and 2 are rejected with `UnsupportedVersion(1)` and
+`UnsupportedVersion(2)` before payload decoding. Their unchanged committed
+fixtures remain explicit compatibility regressions, and their source programs
+continue to exercise resume/reset behavior in the current schema. To upgrade
+unique application data, export it with the producing Ferric version and assert
+that durable data into a newly compiled engine. There is no automatic RETE-state
+migration. The schema-3 fixture preserves pending split activations, refraction,
+retraction, subsequent rule loading, and reset behavior.
 
 Builds supporting a schema must keep its meaning and pass the stored fixture
 and resume regressions. Changes to the serialized layout or runtime semantics
@@ -66,7 +69,7 @@ Every format uses the same binary envelope, including experimental JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`2`) |
+| 8–9 | Little-endian schema version (`3`) |
 | 10 | Codec: bincode `0`, JSON `1`, CBOR `2`, MessagePack `3`, Postcard `4` |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |
@@ -88,6 +91,8 @@ beta parent paths 66 nodes (including root
 and terminal), and NCC nesting 4. Requested call-depth configuration is
 preserved; all restored engines apply the same effective 32-call ceiling and
 64 active-expression-frame limit as fresh engines. NCC partner branches must share their declared prefix and cannot form callback cycles.
+Graph validation charges each candidate ordered split before testing it, including
+the size of cloned captures, so rejected combinations also consume its budget.
 Graph validation has a 10,000,000-operation work allowance and a separate equal
 allowance for compiler-cache validation. It charges cross-products and test/index
 widths before evaluating them. A valid but unusually large engine can exceed

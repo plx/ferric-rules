@@ -807,7 +807,7 @@ fn fact_matches_entry_type(fact: &Fact, entry_type: &AlphaEntryType) -> bool {
 }
 
 /// Evaluate a constant test against a fact.
-fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
+pub(crate) fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
     match (&test.test_type, get_slot_value(fact, test.slot)) {
         (ConstantTestType::OrderedFieldCount { min, max }, _) => {
             matches!(fact, Fact::Ordered(ordered)

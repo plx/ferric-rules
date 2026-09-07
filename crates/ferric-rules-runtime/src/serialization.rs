@@ -95,7 +95,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 2")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 3")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -133,7 +133,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
-const SCHEMA_VERSION: u16 = 2;
+const SCHEMA_VERSION: u16 = 3;
 
 fn format_id(format: SerializationFormat) -> u8 {
     match format {
@@ -153,7 +153,7 @@ fn envelope(payload: Vec<u8>, format: SerializationFormat) -> Result<Vec<u8>, Se
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
     bytes.push(format_id(format));
-    bytes.push(0); // No optional capabilities in schema 2.
+    bytes.push(0); // No optional capabilities in schema 3.
     bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     let mut checksum = Sha256::new();
     checksum.update(&bytes);
@@ -906,11 +906,23 @@ mod tests {
 
     #[test]
     fn legacy_raw_fixture_has_an_explicit_rejection_path() {
+        #[derive(serde::Deserialize)]
+        struct LegacyData {
+            fact_base: FactBase,
+            symbol_table: SymbolTable,
+        }
         let raw = include_bytes!("../tests/fixtures/snapshots/legacy-raw.cbor");
         // Verify this is a meaningful old payload, not arbitrary garbage.
-        let legacy: EngineSnapshotOwned = decode(raw, SerializationFormat::Cbor).unwrap();
-        let legacy = legacy.into_engine();
-        assert_eq!(legacy.find_facts("durable").unwrap().len(), 1);
+        let legacy: LegacyData = decode(raw, SerializationFormat::Cbor).unwrap();
+        assert_eq!(
+            legacy
+                .fact_base
+                .iter()
+                .filter(|(_, entry)| matches!(&entry.fact, Fact::Ordered(fact)
+                if legacy.symbol_table.resolve_symbol_str(fact.relation) == Some("durable")))
+                .count(),
+            1
+        );
         assert!(matches!(
             Engine::deserialize(raw, SerializationFormat::Cbor),
             Err(SerializationError::LegacySnapshot)
@@ -1483,7 +1495,7 @@ mod tests {
         verify_schema_one_resume(restored);
     }
 
-    fn schema_two_cardinality_fixture_engine() -> Engine {
+    fn cardinality_fixture_engine() -> Engine {
         let mut engine =
             Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-2.clp")).unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
@@ -1492,7 +1504,7 @@ mod tests {
         engine
     }
 
-    fn verify_schema_two_cardinality_resume(mut engine: Engine) {
+    fn verify_cardinality_resume(mut engine: Engine) {
         assert_eq!(engine.get_output("t"), Some("one field\n"));
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
@@ -1517,30 +1529,233 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_two_cardinality_snapshot_preserves_resume_behavior() {
+    fn committed_schema_two_snapshot_is_explicitly_rejected() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-2.cbor");
-        let restored = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
-        verify_schema_two_cardinality_resume(restored);
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(2))
+        ));
     }
 
     #[test]
     fn ordered_cardinality_roundtrips_in_all_snapshot_formats() {
-        let engine = schema_two_cardinality_fixture_engine();
+        let engine = cardinality_fixture_engine();
         for &format in SerializationFormat::ALL {
             let bytes = engine.serialize(format).unwrap();
-            verify_schema_two_cardinality_resume(Engine::deserialize(&bytes, format).unwrap());
+            verify_cardinality_resume(Engine::deserialize(&bytes, format).unwrap());
+        }
+    }
+
+    fn schema_three_fixture_engine() -> Engine {
+        let mut engine =
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-3.clp")).unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("split\n"));
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
+        engine
+    }
+
+    fn verify_schema_three_resume(mut engine: Engine) {
+        assert_eq!(engine.get_output("t"), Some("split\n"));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(3))));
+        assert_eq!(engine.get_output("t"), Some("split\nsplit\nsplit\n"));
+        let mut widths: Vec<_> = engine
+            .find_facts("widths")
+            .unwrap()
+            .into_iter()
+            .map(|(_, fact)| match fact {
+                Fact::Ordered(fact) => match fact.fields.as_slice() {
+                    [Value::Integer(left), Value::Integer(right)] => (*left, *right),
+                    _ => panic!("widths must contain two scalar integers"),
+                },
+                Fact::Template(_) => panic!("widths must be ordered"),
+            })
+            .collect();
+        widths.sort_unstable();
+        assert_eq!(widths, [(0, 2), (1, 1), (2, 0)]);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        let row = engine.find_facts("row").unwrap()[0].0;
+        engine.retract(row).unwrap();
+        engine.load_str("(assert (row c))").unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(5))));
+        // Reuse the restored sequence join, including its capture metadata.
+        engine
+            .load_str("(defrule observe (row $?before $?after) => (printout t shared crlf))")
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+        engine.reset().unwrap();
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(0))));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 6);
+        assert!(matches!(engine.get_global("seen"), Some(Value::Integer(3))));
+        assert!(engine.action_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn committed_schema_three_snapshot_preserves_split_resume_and_reset_behavior() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-3.cbor");
+        let restored = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        verify_schema_three_resume(restored);
+    }
+
+    #[test]
+    fn sequence_matches_roundtrip_in_all_snapshot_formats() {
+        let engine = schema_three_fixture_engine();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            verify_schema_three_resume(Engine::deserialize(&bytes, format).unwrap());
         }
     }
 
     #[test]
-    #[ignore = "regenerates the committed schema-2 fixture; run explicitly after a schema change"]
-    fn regenerate_schema_two_cardinality_fixture() {
+    #[ignore = "regenerates the committed schema-3 fixture; run explicitly after a schema change"]
+    fn regenerate_schema_three_fixture() {
+        let engine = schema_three_fixture_engine();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/snapshots/schema-2.cbor");
-        let bytes = schema_two_cardinality_fixture_engine()
-            .serialize(SerializationFormat::Cbor)
-            .unwrap();
-        std::fs::write(path, bytes).unwrap();
+            .join("tests/fixtures/snapshots/schema-3.cbor");
+        std::fs::write(path, engine.serialize(SerializationFormat::Cbor).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn malformed_sequence_match_metadata_is_rejected() {
+        let engine = schema_three_fixture_engine();
+        for corruption in 0..3 {
+            let result = alter_state(&engine, |state| {
+                let slots = state["rete"]["token_store"]["sequence_matches"]
+                    .as_array_mut()
+                    .unwrap();
+                let occupied: Vec<_> = slots
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, slot)| slot["value"].is_array())
+                    .map(|(index, _)| index)
+                    .collect();
+                assert_eq!(occupied.len(), 3);
+                match corruption {
+                    0 => slots[occupied[0]]["value"] = serde_json::json!([usize::MAX, 0]),
+                    1 => slots[occupied[1]]["value"] = slots[occupied[0]]["value"].clone(),
+                    _ => {
+                        slots[occupied[0]]["value"] = serde_json::Value::Null;
+                        slots[occupied[0]]["version"] = serde_json::json!(0);
+                    }
+                }
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "capture metadata corruption {corruption} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_projection_bindings_are_validated_after_restore() {
+        let engine = schema_three_fixture_engine();
+        let result = alter_state(&engine, |state| {
+            let slots = state["rete"]["token_store"]["tokens"]
+                .as_array_mut()
+                .unwrap();
+            let token = slots
+                .iter_mut()
+                .find(|slot| slot["value"]["fact"].is_object())
+                .unwrap();
+            token["value"]["bindings"]["bindings"][0] =
+                serde_json::json!({"Inline": {"Integer": 42}});
+        });
+        assert!(matches!(result, Err(SerializationError::InvalidState(_))));
+    }
+
+    #[test]
+    fn sequence_metadata_cannot_be_attached_to_a_root_token() {
+        let engine = schema_three_fixture_engine();
+        let result = alter_state(&engine, |state| {
+            let root_slot = state["rete"]["token_store"]["tokens"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .find(|(_, slot)| slot["value"].is_object() && slot["value"]["parent"].is_null())
+                .map(|(index, slot)| (index, slot["version"].clone()))
+                .unwrap();
+            state["rete"]["token_store"]["sequence_matches"][root_slot.0] =
+                serde_json::json!({"value": [], "version": root_slot.1});
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message))
+            if message.contains("sequence match metadata") || message.contains("nonsequence token"))
+        );
+    }
+
+    #[test]
+    fn sequence_conditionals_preserve_fact_support_through_restore() {
+        let mut engine = Engine::with_rules(r"
+            (deffacts rows (row a b) (enabled))
+            (defrule absent (not (row $?left mark $?right)) => (printout t absent crlf))
+            (defrule present (exists (row $?left mark $?right)) => (printout t present crlf))
+            (defrule clear (not (and (row $?left mark $?right) (enabled))) => (printout t clear crlf))
+        ").unwrap();
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+            restored
+                .load_str("(assert (row mark mark) (row mark x mark))")
+                .unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            let bytes = restored.serialize(format).unwrap();
+            let mut restored = Engine::deserialize(&bytes, format).unwrap();
+            let rows: Vec<_> = restored
+                .find_facts("row")
+                .unwrap()
+                .into_iter()
+                .filter_map(|(id, fact)| match fact {
+                    Fact::Ordered(fact)
+                        if matches!(fact.fields.first(), Some(Value::Symbol(symbol))
+                        if restored.symbol_table.resolve_symbol_str(*symbol) == Some("mark")) =>
+                    {
+                        Some(id)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(rows.len(), 2);
+            // The original row never supports the condition. Each marked row
+            // has two cuts, but is still one independently retractable support.
+            restored.retract(rows[0]).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+            restored.retract(rows[1]).unwrap();
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+            assert!(restored.action_diagnostics().is_empty());
+        }
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
+    }
+
+    #[test]
+    fn sequence_plan_and_compilation_cache_are_validated_after_restore() {
+        let engine = Engine::with_rules(
+            "(defrule capture (row $?left pivot $?right) =>) (assert (row pivot))",
+        )
+        .unwrap();
+        let invalid_selector = alter_state(&engine, |state| {
+            let nodes = state["rete"]["beta"]["nodes"].as_array_mut().unwrap();
+            let join = nodes
+                .iter_mut()
+                .find_map(|entry| entry[1].get_mut("Join"))
+                .unwrap();
+            join["sequence"]["tests"][0]["slot"]["Ordered"] = serde_json::json!(999);
+        });
+        assert!(
+            matches!(invalid_selector, Err(SerializationError::InvalidState(message))
+            if message.contains("invalid logical field"))
+        );
+        let invalid_cache = alter_state(&engine, |state| {
+            state["compiler"]["join_node_cache"][0][0]["sequence"]["fields"][0] =
+                serde_json::json!("Single");
+        });
+        assert!(
+            matches!(invalid_cache, Err(SerializationError::InvalidState(message))
+            if message.contains("cached join node mismatch"))
+        );
     }
 
     #[test]

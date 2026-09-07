@@ -17,6 +17,7 @@ use crate::beta::{
 use crate::binding::{BindingSet, ValueRef, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
 use crate::negative::NegativeMemoryId;
+use crate::sequence::SequencePattern;
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::{AtomKey, Value};
@@ -526,12 +527,24 @@ impl ReteNetwork {
     /// the candidate set during this assertion. Uses the same indexed lookup
     /// as ordinary joins, including the fallback for non-indexable keys.
     fn right_parent_candidates(&self, join_node_id: NodeId, fact: &Fact) -> SmallVec<[TokenId; 8]> {
-        let Some(BetaNode::Join { parent, tests, .. }) = self.beta.get_node(join_node_id) else {
+        let Some(BetaNode::Join {
+            parent,
+            tests,
+            sequence,
+            ..
+        }) = self.beta.get_node(join_node_id)
+        else {
             return SmallVec::new();
         };
         self.find_memory_for_node(*parent)
             .and_then(|memory| self.beta.get_memory(memory))
-            .map(|memory| collect_candidate_parent_tokens(memory, tests, fact))
+            .map(|memory| {
+                collect_candidate_parent_tokens(
+                    memory,
+                    indexable_tests(tests, sequence.as_deref()),
+                    fact,
+                )
+            })
             .unwrap_or_default()
     }
 
@@ -551,51 +564,122 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         ferric_span!(trace_span, "rete_right_activate", node = ?join_node_id);
-        let Some(join_node) = self.beta.get_node(join_node_id) else {
+        for parent_token_id in parent_tokens {
+            self.propagate_join_fact(
+                join_node_id,
+                parent_token_id,
+                fact_id,
+                fact,
+                fact_base,
+                new_activations,
+            );
+        }
+    }
+
+    /// Emit one positive token for each positional match of the same fact.
+    #[allow(clippy::too_many_arguments)]
+    fn propagate_join_fact(
+        &mut self,
+        node: NodeId,
+        parent: TokenId,
+        fact_id: FactId,
+        fact: &Fact,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
+    ) {
+        let Some(BetaNode::Join {
+            tests,
+            bindings,
+            sequence,
+            ..
+        }) = self.beta.get_node(node)
+        else {
             return;
         };
-
-        let (tests, bindings, join_memory_id, children) = match join_node {
-            BetaNode::Join {
-                tests,
-                bindings,
-                memory,
-                children,
-                ..
-            } => (tests.clone(), bindings.clone(), *memory, children.clone()),
-            _ => return,
+        let Some(parent_token) = self.token_store.get(parent) else {
+            return;
         };
-
-        for parent_token_id in parent_tokens {
-            let Some(parent_token) = self.token_store.get(parent_token_id) else {
-                continue;
-            };
-
-            if evaluate_join(fact, Some(parent_token), &tests) {
-                let mut new_bindings = parent_token.bindings.clone();
-                for &(slot, var_id) in bindings.iter() {
-                    if let Some(value) = get_slot_value(fact, slot) {
-                        new_bindings.set(var_id, ValueRef::new(value.clone()));
-                    }
-                }
-
-                let new_token = Token {
-                    fact: Some(fact_id),
-                    bindings: new_bindings,
-                    parent: Some(parent_token_id),
-                    owner_node: join_node_id,
-                };
-
-                let token_id = self.token_store.insert(new_token);
-
-                if let Some(memory) = self.beta.get_memory_mut(join_memory_id) {
-                    let bindings = &self.token_store.get(token_id).unwrap().bindings;
-                    memory.insert_indexed(token_id, bindings);
-                }
-
-                self.propagate_token(token_id, &children, fact_base, new_activations);
+        if sequence.is_none() {
+            // Ordinary joins reject before copying bindings and copy exactly
+            // once for a successful match, as in the scalar-only network.
+            if !evaluate_join(fact, Some(parent_token), tests) {
+                return;
             }
+            let mut extracted = parent_token.bindings.clone();
+            for &(slot, variable) in bindings.iter() {
+                if let Some(value) = get_slot_value(fact, slot) {
+                    extracted.set(variable, ValueRef::new(value.clone()));
+                }
+            }
+            self.emit_join_match(
+                node,
+                parent,
+                fact_id,
+                extracted,
+                None,
+                fact_base,
+                new_activations,
+            );
+            return;
         }
+        let (tests, bindings, sequence) = (tests.clone(), bindings.clone(), sequence.clone());
+        let parent_bindings = parent_token.bindings.clone();
+        for (bindings, lengths) in matching_bindings(
+            fact,
+            &parent_bindings,
+            &tests,
+            &bindings,
+            sequence.as_deref(),
+        ) {
+            if self.token_store.get(parent).is_none() {
+                break;
+            }
+            self.emit_join_match(
+                node,
+                parent,
+                fact_id,
+                bindings,
+                lengths,
+                fact_base,
+                new_activations,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_join_match(
+        &mut self,
+        node: NodeId,
+        parent: TokenId,
+        fact_id: FactId,
+        bindings: BindingSet,
+        lengths: Option<SmallVec<[usize; 2]>>,
+        fact_base: &FactBase,
+        new_activations: &mut Vec<ActivationId>,
+    ) {
+        let Some(BetaNode::Join {
+            memory, children, ..
+        }) = self.beta.get_node(node)
+        else {
+            return;
+        };
+        let (memory, children) = (*memory, children.clone());
+        let token = Token {
+            fact: Some(fact_id),
+            bindings,
+            parent: Some(parent),
+            owner_node: node,
+        };
+        let token_id = if let Some(lengths) = lengths {
+            self.token_store.insert_sequence_match(token, lengths)
+        } else {
+            self.token_store.insert(token)
+        };
+        if let Some(memory) = self.beta.get_memory_mut(memory) {
+            let bindings = &self.token_store.get(token_id).unwrap().bindings;
+            memory.insert_indexed(token_id, bindings);
+        }
+        self.propagate_token(token_id, &children, fact_base, new_activations);
     }
 
     /// Perform a left activation on a join node.
@@ -612,83 +696,38 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         ferric_span!(trace_span, "rete_left_activate", node = ?join_node_id);
-        // 1. Get join node info
-        let Some(join_node) = self.beta.get_node(join_node_id) else {
+        let Some(BetaNode::Join {
+            alpha_memory,
+            tests,
+            sequence,
+            ..
+        }) = self.beta.get_node(join_node_id)
+        else {
             return;
         };
-
-        let (alpha_memory_id, tests, bindings, join_memory_id, children) = match join_node {
-            BetaNode::Join {
-                alpha_memory,
-                tests,
-                bindings,
-                memory,
-                children,
-                ..
-            } => (
-                *alpha_memory,
-                tests.clone(),
-                bindings.clone(),
-                *memory,
-                children.clone(),
-            ),
-            _ => return,
-        };
-
-        // 2. Get parent token data (clone bindings before mutation)
         let Some(parent_token) = self.token_store.get(parent_token_id) else {
             return;
         };
-        let parent_bindings = parent_token.bindings.clone();
-
-        // 3. Get candidate fact IDs from alpha memory, using indexed lookup when possible
-        let Some(alpha_memory) = self.alpha.get_memory(alpha_memory_id) else {
+        let Some(alpha_memory) = self.alpha.get_memory(*alpha_memory) else {
             return;
         };
-        let fact_ids = collect_candidate_facts(alpha_memory, &tests, &parent_bindings);
-
-        // 4. For each fact, try to join
+        let fact_ids = collect_candidate_facts(
+            alpha_memory,
+            indexable_tests(tests, sequence.as_deref()),
+            &parent_token.bindings,
+        );
         for fact_id in fact_ids {
-            let Some(fact_entry) = fact_base.get(fact_id) else {
+            let Some(entry) = fact_base.get(fact_id) else {
                 continue;
             };
-            let fact = &fact_entry.fact;
-
-            // Get fresh parent token reference for each iteration
-            let Some(parent_token) = self.token_store.get(parent_token_id) else {
-                break;
-            };
-
-            // Evaluate join tests
-            if !evaluate_join(fact, Some(parent_token), &tests) {
-                continue;
-            }
-
-            // Tests passed: create child token
-            let mut new_bindings = parent_bindings.clone();
-            for &(slot, var_id) in bindings.iter() {
-                if let Some(value) = get_slot_value(fact, slot) {
-                    new_bindings.set(var_id, ValueRef::new(value.clone()));
-                }
-            }
-
-            let new_token = Token {
-                fact: Some(fact_id),
-                bindings: new_bindings,
-                parent: Some(parent_token_id),
-                owner_node: join_node_id,
-            };
-
-            let token_id = self.token_store.insert(new_token);
-
-            // Add to join's beta memory (with index maintenance)
-            if let Some(memory) = self.beta.get_memory_mut(join_memory_id) {
-                let bindings = &self.token_store.get(token_id).unwrap().bindings;
-                memory.insert_indexed(token_id, bindings);
-            }
-
-            // Propagate to children
-            self.propagate_token(token_id, &children, fact_base, new_activations);
+            self.propagate_join_fact(
+                join_node_id,
+                parent_token_id,
+                fact_id,
+                &entry.fact,
+                fact_base,
+                new_activations,
+            );
         }
     }
 
@@ -707,6 +746,11 @@ impl ReteNetwork {
     ) {
         let Some(neg_node) = self.beta.get_node(neg_node_id) else {
             return;
+        };
+
+        let sequence = match neg_node {
+            BetaNode::Negative { sequence, .. } => sequence.clone(),
+            _ => return,
         };
 
         let (alpha_memory_id, tests, beta_memory_id, neg_memory_id, children) = match neg_node {
@@ -737,7 +781,11 @@ impl ReteNetwork {
         let Some(alpha_memory) = self.alpha.get_memory(alpha_memory_id) else {
             return;
         };
-        let fact_ids = collect_candidate_facts(alpha_memory, &tests, &parent_bindings);
+        let fact_ids = collect_candidate_facts(
+            alpha_memory,
+            indexable_tests(&tests, sequence.as_deref()),
+            &parent_bindings,
+        );
 
         let mut blocking_facts = Vec::new();
         for fact_id in fact_ids {
@@ -751,7 +799,7 @@ impl ReteNetwork {
                 return;
             };
 
-            if evaluate_join(fact, Some(parent_token), &tests) {
+            if evaluate_pattern(fact, parent_token, &tests, sequence.as_deref()) {
                 blocking_facts.push(fact_id);
             }
         }
@@ -809,6 +857,11 @@ impl ReteNetwork {
             return;
         };
 
+        let sequence = match neg_node {
+            BetaNode::Negative { sequence, .. } => sequence.clone(),
+            _ => return,
+        };
+
         let (tests, beta_memory_id, neg_memory_id) = match neg_node {
             BetaNode::Negative {
                 tests,
@@ -833,7 +886,7 @@ impl ReteNetwork {
             let Some(parent_token) = self.token_store.get(parent_token_id) else {
                 continue;
             };
-            if evaluate_join(fact, Some(parent_token), &tests) {
+            if evaluate_pattern(fact, parent_token, &tests, sequence.as_deref()) {
                 if let Some(neg_mem) = self.beta.get_neg_memory_mut(neg_memory_id) {
                     neg_mem.add_blocker(parent_token_id, fact_id);
                 }
@@ -848,7 +901,7 @@ impl ReteNetwork {
                 continue;
             };
 
-            if evaluate_join(fact, Some(pt_token), &tests) {
+            if evaluate_pattern(fact, pt_token, &tests, sequence.as_deref()) {
                 to_block.push((parent_token_id, passthrough_id));
             }
         }
@@ -1246,6 +1299,11 @@ impl ReteNetwork {
             return;
         };
 
+        let sequence = match exists_node {
+            BetaNode::Exists { sequence, .. } => sequence.clone(),
+            _ => return,
+        };
+
         let (alpha_memory_id, tests, beta_memory_id, exists_memory_id, children) = match exists_node
         {
             BetaNode::Exists {
@@ -1275,7 +1333,11 @@ impl ReteNetwork {
         let Some(alpha_memory) = self.alpha.get_memory(alpha_memory_id) else {
             return;
         };
-        let fact_ids = collect_candidate_facts(alpha_memory, &tests, &parent_bindings);
+        let fact_ids = collect_candidate_facts(
+            alpha_memory,
+            indexable_tests(&tests, sequence.as_deref()),
+            &parent_bindings,
+        );
 
         let mut supporting_facts = Vec::new();
         for fact_id in fact_ids {
@@ -1289,7 +1351,7 @@ impl ReteNetwork {
                 return;
             };
 
-            if evaluate_join(fact, Some(parent_token), &tests) {
+            if evaluate_pattern(fact, parent_token, &tests, sequence.as_deref()) {
                 supporting_facts.push(fact_id);
             }
         }
@@ -1347,6 +1409,11 @@ impl ReteNetwork {
             return;
         };
 
+        let sequence = match exists_node {
+            BetaNode::Exists { sequence, .. } => sequence.clone(),
+            _ => return,
+        };
+
         let (parent_id, tests, beta_memory_id, exists_memory_id, children) = match exists_node {
             BetaNode::Exists {
                 parent,
@@ -1371,14 +1438,20 @@ impl ReteNetwork {
         let parent_tokens = self
             .find_memory_for_node(parent_id)
             .and_then(|mem_id| self.beta.get_memory(mem_id))
-            .map(|mem| collect_candidate_parent_tokens(mem, &tests, fact))
+            .map(|mem| {
+                collect_candidate_parent_tokens(
+                    mem,
+                    indexable_tests(&tests, sequence.as_deref()),
+                    fact,
+                )
+            })
             .unwrap_or_default();
 
         for parent_token_id in parent_tokens {
             let Some(parent_token) = self.token_store.get(parent_token_id) else {
                 continue;
             };
-            let is_supported = evaluate_join(fact, Some(parent_token), &tests);
+            let is_supported = evaluate_pattern(fact, parent_token, &tests, sequence.as_deref());
 
             if is_supported {
                 // This fact supports this parent token
@@ -1738,12 +1811,16 @@ fn collect_candidate_parent_tokens(
 ///
 /// If `token` is `None`, treats this as a root-level match (no bindings to check).
 pub(crate) fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTest]) -> bool {
+    evaluate_join_bindings(fact, token.map(|token| &token.bindings), tests)
+}
+
+fn evaluate_join_bindings(fact: &Fact, bindings: Option<&BindingSet>, tests: &[JoinTest]) -> bool {
     for test in tests {
         let Some(fact_value) = get_slot_value(fact, test.alpha_slot) else {
             return false;
         };
 
-        let Some(token_value) = token.and_then(|t| t.bindings.get(test.beta_var)) else {
+        let Some(token_value) = bindings.and_then(|bindings| bindings.get(test.beta_var)) else {
             return false;
         };
 
@@ -1823,6 +1900,63 @@ pub(crate) fn evaluate_join(fact: &Fact, token: Option<&Token>, tests: &[JoinTes
     }
 
     true
+}
+
+/// Only raw-position joins can use the physical fact indexes.
+pub(crate) fn indexable_tests<'a>(
+    tests: &'a [JoinTest],
+    sequence: Option<&SequencePattern>,
+) -> &'a [JoinTest] {
+    if sequence.is_some() {
+        &[]
+    } else {
+        tests
+    }
+}
+
+pub(crate) fn evaluate_pattern(
+    fact: &Fact,
+    token: &Token,
+    tests: &[JoinTest],
+    sequence: Option<&SequencePattern>,
+) -> bool {
+    if let Some(sequence) = sequence {
+        sequence
+            .matches(fact)
+            .any(|matched| evaluate_join(&matched.fact, Some(token), tests))
+    } else {
+        evaluate_join(fact, Some(token), tests)
+    }
+}
+
+fn matching_bindings<'a>(
+    fact: &'a Fact,
+    parent_bindings: &'a BindingSet,
+    tests: &'a [JoinTest],
+    bindings: &'a [(SlotIndex, VarId)],
+    sequence: Option<&'a SequencePattern>,
+) -> impl Iterator<Item = (BindingSet, Option<SmallVec<[usize; 2]>>)> + 'a {
+    std::iter::once(None)
+        .take(usize::from(sequence.is_none()))
+        .chain(
+            sequence
+                .into_iter()
+                .flat_map(move |sequence| sequence.matches(fact))
+                .map(Some),
+        )
+        .filter_map(move |matched| {
+            let projected = matched.as_ref().map_or(fact, |matched| &matched.fact);
+            if !evaluate_join_bindings(projected, Some(parent_bindings), tests) {
+                return None;
+            }
+            let mut extracted = parent_bindings.clone();
+            for &(slot, variable) in bindings {
+                if let Some(value) = get_slot_value(projected, slot) {
+                    extracted.set(variable, ValueRef::new(value.clone()));
+                }
+            }
+            Some((extracted, matched.map(|matched| matched.lengths)))
+        })
 }
 
 /// Equality for join values, including complete multifield slot values.
@@ -3800,6 +3934,7 @@ mod tests {
         let var_x = make_symbol(symbol_table, "x");
 
         let positive = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(item_sym),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -3808,6 +3943,7 @@ mod tests {
             exists: false,
         };
         let ncc_sub_1 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(block_sym),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -3816,6 +3952,7 @@ mod tests {
             exists: false,
         };
         let ncc_sub_2 = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(reason_sym),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],
@@ -3943,6 +4080,7 @@ mod tests {
             .expect("var symbol");
 
         let pattern = CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relation),
             constant_tests: vec![],
             variable_slots: vec![(SlotIndex::Ordered(0), var_x)],

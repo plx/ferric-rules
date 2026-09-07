@@ -181,6 +181,7 @@ fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
     for pattern_idx in 0..20 {
         let base = (pattern_idx * 3) % variables.len();
         conditions.push(CompilableCondition::Pattern(CompilablePattern {
+            sequence: None,
             entry_type: AlphaEntryType::OrderedRelation(relations[pattern_idx % relations.len()]),
             constant_tests: Vec::new(),
             variable_slots: vec![
@@ -216,6 +217,7 @@ fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
         10,
         CompilableCondition::Ncc(vec![
             CompilableCondition::Pattern(CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(relations[2]),
                 constant_tests: Vec::new(),
                 variable_slots: vec![
@@ -229,6 +231,7 @@ fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
                 negated_variable_slots: Vec::new(),
             }),
             CompilableCondition::Pattern(CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(relations[3]),
                 constant_tests: Vec::new(),
                 variable_slots: vec![
@@ -242,6 +245,7 @@ fn bench_compiler_bound_var_cycle(c: &mut Criterion) {
                 negated_variable_slots: Vec::new(),
             }),
             CompilableCondition::Pattern(CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(relations[4]),
                 constant_tests: Vec::new(),
                 variable_slots: vec![
@@ -324,6 +328,7 @@ fn bench_compiler_validation_symbol_slot_cycle(c: &mut Criterion) {
         .map(|idx| (SlotIndex::Ordered(idx), variables[idx % variables.len()]))
         .collect::<Vec<_>>();
     let conditions = vec![CompilableCondition::Pattern(CompilablePattern {
+        sequence: None,
         entry_type: AlphaEntryType::OrderedRelation(relation),
         constant_tests: Vec::new(),
         variable_slots,

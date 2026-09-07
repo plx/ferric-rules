@@ -40,7 +40,7 @@ use ferric_rules_parser::{
     Span, TemplateConstruct, TemplateFactBody, TemplatePattern,
 };
 
-use crate::actions::{CompiledRuleInfo, CompiledTestCondition, MultifieldTailBindingHint};
+use crate::actions::{CompiledRuleInfo, CompiledTestCondition};
 use crate::engine::{Engine, EngineError};
 use crate::functions::{get_or_insert_module_entry_with, insert_module_entry, UserFunction};
 use crate::templates::RegisteredTemplate;
@@ -65,8 +65,6 @@ struct TranslatedRule {
     fact_address_vars: HashMap<String, usize>,
     /// Test conditions referenced by match-time predicate nodes.
     test_conditions: Vec<CompiledTestCondition>,
-    /// Action-time hints for trailing ordered multifield captures.
-    multifield_tail_bindings: Vec<MultifieldTailBindingHint>,
 }
 
 struct PreparedRuleInstallation {
@@ -2300,7 +2298,6 @@ impl Engine {
             salience: Salience::new(rule.salience),
             test_conditions: translated.test_conditions,
             runtime_actions,
-            multifield_tail_bindings: translated.multifield_tail_bindings,
         };
         Ok(PreparedRuleInstallation {
             plan,
@@ -3270,7 +3267,6 @@ impl Engine {
         let mut conditions = Vec::new();
         let mut fact_address_vars = HashMap::new();
         let mut test_conditions: Vec<CompiledTestCondition> = Vec::new();
-        let mut multifield_tail_bindings = Vec::new();
         let mut fact_index = 0usize;
         let mut internal_slot_var_seed = 0usize;
         let mut exported_variables = HashSet::new();
@@ -3382,11 +3378,6 @@ impl Engine {
             }
             if Self::condition_has_fact_address(&condition) {
                 Self::collect_pattern_binding_variables(pattern, &mut exported_variables);
-                Self::collect_multifield_tail_bindings(
-                    pattern,
-                    fact_index,
-                    &mut multifield_tail_bindings,
-                );
                 fact_index += 1;
             }
             conditions.push(condition);
@@ -3413,7 +3404,6 @@ impl Engine {
             conditions,
             fact_address_vars,
             test_conditions,
-            multifield_tail_bindings,
         })
     }
 
@@ -3421,32 +3411,6 @@ impl Engine {
         match condition {
             CompilableCondition::Pattern(pattern) => !pattern.negated && !pattern.exists,
             CompilableCondition::Predicate { .. } | CompilableCondition::Ncc(_) => false,
-        }
-    }
-
-    fn collect_multifield_tail_bindings(
-        pattern: &Pattern,
-        fact_index: usize,
-        out: &mut Vec<MultifieldTailBindingHint>,
-    ) {
-        match pattern {
-            Pattern::Assigned { pattern, .. } => {
-                Self::collect_multifield_tail_bindings(pattern, fact_index, out);
-            }
-            Pattern::Ordered(ordered) => {
-                let Some((tail_index, Constraint::MultiVariable(name, _))) =
-                    ordered.constraints.iter().enumerate().next_back()
-                else {
-                    return;
-                };
-
-                out.push(MultifieldTailBindingHint {
-                    name: name.clone(),
-                    fact_index,
-                    start_slot: tail_index,
-                });
-            }
-            _ => {}
         }
     }
 
@@ -3748,9 +3712,41 @@ impl Engine {
                     )?;
                 }
 
+                let sequence = ordered
+                    .constraints
+                    .iter()
+                    .position(Self::constraint_is_multifield)
+                    .map(|first_multifield| {
+                        let (prefix_tests, tests): (Vec<_>, Vec<_>) = constant_tests
+                            .split_off(1)
+                            .into_iter()
+                            .partition(|test| {
+                                Self::test_uses_ordered_prefix(test, first_multifield)
+                            });
+                        // Fixed prefix selectors are also physical positions;
+                        // retain their alpha filtering before enumerating splits.
+                        // The first test is always the raw fact cardinality.
+                        constant_tests.extend(prefix_tests);
+                        ferric_rules_core::SequencePattern {
+                            fields: ordered
+                                .constraints
+                                .iter()
+                                .map(|constraint| {
+                                    if Self::constraint_is_multifield(constraint) {
+                                        ferric_rules_core::SequenceField::Multi
+                                    } else {
+                                        ferric_rules_core::SequenceField::Single
+                                    }
+                                })
+                                .collect(),
+                            tests,
+                        }
+                    });
+
                 Ok(CompilablePattern {
                     entry_type,
                     constant_tests,
+                    sequence,
                     variable_slots,
                     negated_variable_slots,
                     negated: false,
@@ -3859,6 +3855,7 @@ impl Engine {
                 Ok(CompilablePattern {
                     entry_type,
                     constant_tests,
+                    sequence: None,
                     variable_slots,
                     negated_variable_slots,
                     negated: false,
@@ -3885,6 +3882,24 @@ impl Engine {
                 span,
                 "or CE reached translate_pattern unexpectedly (should be expanded via rule duplication)",
             )),
+        }
+    }
+
+    fn test_uses_ordered_prefix(test: &ConstantTest, end: usize) -> bool {
+        let in_prefix = |slot| matches!(slot, SlotIndex::Ordered(index) if index < end);
+        if !in_prefix(test.slot) {
+            return false;
+        }
+        match test.test_type {
+            ConstantTestType::EqualSlot(other)
+            | ConstantTestType::NotEqualSlot(other)
+            | ConstantTestType::EqualSlotOffset(other, _)
+            | ConstantTestType::NotEqualSlotOffset(other, _)
+            | ConstantTestType::GreaterThanSlotOffset(other, _)
+            | ConstantTestType::LessThanSlotOffset(other, _)
+            | ConstantTestType::GreaterOrEqualSlotOffset(other, _)
+            | ConstantTestType::LessOrEqualSlotOffset(other, _) => in_prefix(other),
+            _ => true,
         }
     }
 
@@ -3940,10 +3955,8 @@ impl Engine {
                 // No test needed — matches anything
             }
             Constraint::MultiVariable(name, _span) => {
-                // Treat $?var the same as ?var: bind to the value at this slot position.
-                // For template slots this is semantically correct (binds to full slot value).
-                // For ordered patterns this is an approximation — true CLIPS multi-field
-                // matching (spanning multiple positions) is not yet implemented.
+                // Ordered sequence plans project this logical field to a
+                // multifield value; template selectors already hold a full slot.
                 self.translate_variable_constraint(
                     name,
                     slot,

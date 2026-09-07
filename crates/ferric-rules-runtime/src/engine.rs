@@ -392,26 +392,12 @@ impl Engine {
                 )));
                 continue;
             };
-            let collected_facts = if info.multifield_tail_bindings.is_empty() {
-                smallvec::SmallVec::new()
-            } else {
-                self.rete
-                    .token_store
-                    .collect_all_facts(pending.parent_token)
-            };
-
             let evaluation = {
                 let mut context = actions::ActionExecutionContext {
                     engine: self,
                     current_module,
                 };
-                actions::evaluate_test_condition(
-                    &token,
-                    info.as_ref(),
-                    condition,
-                    &collected_facts,
-                    &mut context,
-                )
+                actions::evaluate_test_condition(&token, info.as_ref(), condition, &mut context)
             };
             let passed = match evaluation {
                 Ok(passed) => passed,
