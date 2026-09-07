@@ -467,7 +467,11 @@ impl Engine {
         Ok(())
     }
 
-    fn host_assertion_result(&self, result: FactAssertionResult<FactId>) -> FactAssertionResult {
+    fn host_assertion_result(
+        &mut self,
+        result: FactAssertionResult<FactId>,
+    ) -> FactAssertionResult {
+        self.host.prune(&self.fact_base);
         match result {
             FactAssertionResult::Asserted(id) => {
                 FactAssertionResult::Asserted(self.host.export(id))
@@ -1202,6 +1206,7 @@ impl Engine {
         // After reset or clear, the engine is in a new state.
         // step() still returns the FiredRule indicating what fired.
 
+        self.host.prune(&self.fact_base);
         Ok(Some(fired))
     }
 
@@ -1218,7 +1223,9 @@ impl Engine {
     ///
     /// The `Result` return type is retained for API compatibility.
     pub fn run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
-        Ok(self.run_inner(limit, true))
+        let result = self.run_inner(limit, true);
+        self.host.prune(&self.fact_base);
+        Ok(result)
     }
 
     /// Continue a count-limited run without clearing its halt flag or action
@@ -1231,7 +1238,9 @@ impl Engine {
     /// The `Result` return type is retained for API compatibility.
     #[doc(hidden)]
     pub fn continue_run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
-        Ok(self.run_inner(limit, false))
+        let result = self.run_inner(limit, false);
+        self.host.prune(&self.fact_base);
+        Ok(result)
     }
 
     fn run_inner(&mut self, limit: RunLimit, clear_execution_state: bool) -> RunResult {

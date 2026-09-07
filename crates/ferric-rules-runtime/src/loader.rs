@@ -763,6 +763,7 @@ impl Engine {
             }
         }
 
+        self.host.prune(&self.fact_base);
         if errors.is_empty() {
             ferric_event!(
                 info,
