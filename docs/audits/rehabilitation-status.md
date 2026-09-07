@@ -197,7 +197,11 @@ module exports/focus, primitive slot validation, incremental globals, and clear
 unsupported-form rejection. Focused regressions and independent review accompany
 each family. Core preflight, release core/runtime tests and all five scaling checks pass.
 Invariant helpers are callable from release-built dependent tests, preserving
-the same checks across profiles.
+the same checks across profiles. Independent integration review also found a
+cross-module public template-name collision; the candidate rejects it before
+metadata changes and supports distinct qualified declarations. Its persistence
+and state-preservation regressions pass; CLIPS accepts the unqualified case, so
+the limitation is explicit rather than counted as an equivalence.
 
 The separate integration candidate contains bounded version-one CBOR snapshots,
 engine-scoped host values/handles, evaluator depth guards, and the reviewed
