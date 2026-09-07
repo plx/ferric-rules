@@ -4,8 +4,9 @@
     "version": "6.30 (3/17/15)",
     "image": "ferric-rules/clips-reference:latest",
     "image_id": "sha256:b4b99ba2f08102f9c18743c6adaecb5ab82789ddfa8628693cabfeced461a929",
-    "ferric_revision": "eb24cc50",
-    "verified_on": "2026-09-07"
+    "ferric_revision": "d428e780894ac87a208475f13354ae68155311ed",
+    "verified_on": "2026-09-07",
+    "discovery_revision": "eb24cc50"
   },
   "cases": [
     {
@@ -131,18 +132,7 @@
       "covers": [
         "facts",
         "template-explicit-defaults"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/299"
-        ],
-        "summary": "Omitted template slots do not receive their declared defaults",
-        "observed": {
-          "diagnostics": [],
-          "output": "",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "facts/005_template_implicit_defaults.clp",
@@ -150,18 +140,7 @@
       "covers": [
         "facts",
         "template-implicit-defaults"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/299"
-        ],
-        "summary": "Omitted template slots do not receive implicit defaults",
-        "observed": {
-          "diagnostics": [],
-          "output": "",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "facts/006_template_partial_pattern.clp",
@@ -185,18 +164,7 @@
       "covers": [
         "facts",
         "duplicate-ordered-suppressed"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/103"
-        ],
-        "summary": "Duplicate ordered facts are retained",
-        "observed": {
-          "diagnostics": [],
-          "output": "same\nsame\n",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "facts/009_duplicate_template_defaults.clp",
@@ -244,18 +212,7 @@
       "covers": [
         "facts",
         "duplicate-existing-suppressed"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/103"
-        ],
-        "summary": "Reasserting an existing ordered fact creates another copy",
-        "observed": {
-          "diagnostics": [],
-          "output": "one copy\none copy\n",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "facts/015_multiple_deffacts_groups.clp",
@@ -549,18 +506,7 @@
       "covers": [
         "modules",
         "focus-rhs-observation"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/192"
-        ],
-        "summary": "Focus changes are not visible immediately within the same RHS",
-        "observed": {
-          "diagnostics": [],
-          "output": "MAIN:(MAIN)\n",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "modules/focus-transfer.clp",
@@ -782,10 +728,10 @@
         "summary": "CLIPS compatibility: template multislot patterns bind scalar values instead of matching sequences",
         "observed": {
           "diagnostics": [
-            "expression evaluation error: unbound variable `?values` at line 9:27"
+            "compile error: compile error: [PRCCODE3] rule `observe` variable ?values at line 9 is an unbound RHS variable"
           ],
           "output": "",
-          "phase": "complete"
+          "phase": "load"
         }
       }
     },
@@ -835,18 +781,7 @@
       "covers": [
         "patterns",
         "not-absent"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/104"
-        ],
-        "summary": "Leading simple not is not seeded",
-        "observed": {
-          "diagnostics": [],
-          "output": "",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "patterns/018_not_correlated.clp",
@@ -988,20 +923,7 @@
       "covers": [
         "patterns",
         "template-multislot-whole-capture"
-      ],
-      "gap": {
-        "issues": [
-          "https://github.com/plx/ferric-rules/issues/322"
-        ],
-        "summary": "CLIPS compatibility: template multislot patterns bind scalar values instead of matching sequences",
-        "observed": {
-          "diagnostics": [
-            "expression evaluation error: type error in `length$`: expected MULTIFIELD, got SYMBOL at line 9:18"
-          ],
-          "output": "",
-          "phase": "complete"
-        }
-      }
+      ]
     },
     {
       "path": "patterns/033_template_multislot_single_field.clp",
@@ -1017,7 +939,7 @@
         "summary": "CLIPS compatibility: template multislot patterns bind scalar values instead of matching sequences",
         "observed": {
           "diagnostics": [],
-          "output": "TRUE a\nTRUE a\n",
+          "output": "FALSE (a b)\nFALSE (a)\n",
           "phase": "complete"
         }
       }
@@ -1369,7 +1291,20 @@
       "covers": [
         "queries",
         "any-factp-empty"
-      ]
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/324"
+        ],
+        "summary": "Expression fact queries are explicitly rejected on the current supported subset",
+        "observed": {
+          "diagnostics": [
+            "compile error: any-factp in an expression is unsupported; use a rule RHS do-for-* action or the host fact API at line 6, column 17"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
     },
     {
       "path": "queries/any-factp-filter.clp",
@@ -1382,11 +1317,13 @@
         "issues": [
           "https://github.com/plx/ferric-rules/issues/324"
         ],
-        "summary": "CLIPS compatibility: fact-query expressions return empty defaults despite matching facts",
+        "summary": "Expression fact queries are explicitly rejected on the current supported subset",
         "observed": {
-          "diagnostics": [],
-          "output": "FALSE:FALSE\n",
-          "phase": "complete"
+          "diagnostics": [
+            "compile error: any-factp in an expression is unsupported; use a rule RHS do-for-* action or the host fact API at line 7, column 17"
+          ],
+          "output": "",
+          "phase": "load"
         }
       }
     },
@@ -1401,11 +1338,13 @@
         "issues": [
           "https://github.com/plx/ferric-rules/issues/324"
         ],
-        "summary": "CLIPS compatibility: fact-query expressions return empty defaults despite matching facts",
+        "summary": "Expression fact queries are explicitly rejected on the current supported subset",
         "observed": {
-          "diagnostics": [],
-          "output": "FALSE\n",
-          "phase": "complete"
+          "diagnostics": [
+            "compile error: any-factp in an expression is unsupported; use a rule RHS do-for-* action or the host fact API at line 7, column 17"
+          ],
+          "output": "",
+          "phase": "load"
         }
       }
     },
@@ -1425,7 +1364,7 @@
           "diagnostics": [
             "unbound variable: ?f"
           ],
-          "output": "0:FALSE\n",
+          "output": "",
           "phase": "complete"
         }
       }
@@ -1454,7 +1393,7 @@
           "diagnostics": [
             "expression evaluation error: unknown function `>` at line 8:35"
           ],
-          "output": "0\n",
+          "output": "",
           "phase": "complete"
         }
       }
@@ -1511,8 +1450,7 @@
         "summary": "CLIPS compatibility: fact-address pattern bindings are unavailable to introspection expressions",
         "observed": {
           "diagnostics": [
-            "expression evaluation error: unbound variable `?f` at line 6:30",
-            "expression evaluation error: unbound variable `?f` at line 8:30"
+            "expression evaluation error: unbound variable `?f` at line 6:30"
           ],
           "output": "",
           "phase": "complete"
@@ -1698,11 +1636,13 @@
         "issues": [
           "https://github.com/plx/ferric-rules/issues/324"
         ],
-        "summary": "CLIPS compatibility: fact-query expressions return empty defaults despite matching facts",
+        "summary": "Expression fact queries are explicitly rejected on the current supported subset",
         "observed": {
-          "diagnostics": [],
-          "output": "0\n",
-          "phase": "complete"
+          "diagnostics": [
+            "compile error: find-all-facts in an expression is unsupported; use a rule RHS do-for-* action or the host fact API at line 7, column 26"
+          ],
+          "output": "",
+          "phase": "load"
         }
       }
     },
@@ -1717,11 +1657,13 @@
         "issues": [
           "https://github.com/plx/ferric-rules/issues/324"
         ],
-        "summary": "CLIPS compatibility: fact-query expressions return empty defaults despite matching facts",
+        "summary": "Expression fact queries are explicitly rejected on the current supported subset",
         "observed": {
-          "diagnostics": [],
-          "output": "0\n",
-          "phase": "complete"
+          "diagnostics": [
+            "compile error: find-all-facts in an expression is unsupported; use a rule RHS do-for-* action or the host fact API at line 7, column 26"
+          ],
+          "output": "",
+          "phase": "load"
         }
       }
     },
@@ -1731,7 +1673,20 @@
       "covers": [
         "queries",
         "find-fact-empty"
-      ]
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/324"
+        ],
+        "summary": "Expression fact queries are explicitly rejected on the current supported subset",
+        "observed": {
+          "diagnostics": [
+            "compile error: find-fact in an expression is unsupported; use a rule RHS do-for-* action or the host fact API at line 6, column 26"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
     },
     {
       "path": "queries/find-fact-first.clp",
@@ -1744,13 +1699,13 @@
         "issues": [
           "https://github.com/plx/ferric-rules/issues/324"
         ],
-        "summary": "CLIPS compatibility: fact-query expressions return empty defaults despite matching facts",
+        "summary": "Expression fact queries are explicitly rejected on the current supported subset",
         "observed": {
           "diagnostics": [
-            "expression evaluation error: type error in `nth$`: expected index 1..0, got index 1 at line 8:55"
+            "compile error: find-fact in an expression is unsupported; use a rule RHS do-for-* action or the host fact API at line 7, column 18"
           ],
           "output": "",
-          "phase": "complete"
+          "phase": "load"
         }
       }
     },
@@ -1770,7 +1725,7 @@
           "diagnostics": [
             "expression evaluation error: unknown function `<` at line 8:45"
           ],
-          "output": "0\n",
+          "output": "",
           "phase": "complete"
         }
       }
@@ -1789,7 +1744,7 @@
         "summary": "CLIPS compatibility: fact-index exposes internal slot-map identity instead of assertion index",
         "observed": {
           "diagnostics": [],
-          "output": "4294967297\n",
+          "output": "4294967298\n",
           "phase": "complete"
         }
       }

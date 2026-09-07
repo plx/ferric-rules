@@ -1,14 +1,22 @@
-# Characterized compatibility gaps
+# Compatibility discovery issue index
 
-These are observations of checkout `eb24cc50`, not claims about the latest
-GitHub default branch. Some existing issues have since been fixed or consolidated.
-The manifest retains exact Ferric output and diagnostics; `.out` always records
-CLIPS 6.30 behavior. A future fix must remove/update its characterization.
+These issues record the original observations of checkout `eb24cc50`.
+Some issues have since been fixed or consolidated; this index preserves their
+discovery history. Consult [manifest.json](manifest.json) for the current active
+gaps and exact Ferric observations; `.out` always records CLIPS 6.30 behavior.
+A future fix must remove/update its manifest characterization.
+
+On engine snapshot `d428e780`, seven formerly divergent cases now conform to
+CLIPS. Expression fact queries are now explicitly rejected, so their two
+previously matching empty-result controls also carry characterizations under
+[#324](https://github.com/plx/ferric-rules/issues/324). The current totals are
+158 conformance cases and 61 active gap cases. Historical issue descriptions
+below are not a substitute for the updated manifest's exact observations.
 
 27 distinct new issues were opened during this discovery pass; existing tracked
 gaps were linked without opening duplicates. No engine repairs are included.
 
-| Issue | Behavior | Cases |
+| Issue | Behavior at discovery | Cases |
 |---|---|---|
 | [#320](https://github.com/plx/ferric-rules/issues/320) | ordered fact patterns do not enforce field cardinality | [facts/003_ordered_exact_arity.clp](facts/003_ordered_exact_arity.clp), [facts/016_ordered_empty_pattern_arity.clp](facts/016_ordered_empty_pattern_arity.clp), [patterns/007_anonymous_single_field.clp](patterns/007_anonymous_single_field.clp) |
 | [#321](https://github.com/plx/ferric-rules/issues/321) | ordered multifield variables before fixed fields fail to match | [patterns/010_multifield_middle_capture.clp](patterns/010_multifield_middle_capture.clp), [patterns/030_multifield_prefix_capture.clp](patterns/030_multifield_prefix_capture.clp), [patterns/031_multifield_middle_empty.clp](patterns/031_multifield_middle_empty.clp), [patterns/035_multifield_split.clp](patterns/035_multifield_split.clp) |

@@ -3,13 +3,15 @@
 This is a systematic discovery and characterization suite for Ferric's targeted
 CLIPS subset. Its 219 small programs progress from individual features to
 boundary cases and controlled interactions. Each program has a nonempty,
-CLIPS-verified output oracle. There are 153 clean conformance cases and 66 active
-characterizations of known differences on checkout `eb24cc50`.
+CLIPS-verified output oracle. There are 158 clean conformance cases and 61 active
+characterizations of differences on engine snapshot `d428e780`.
 
 This is broad coverage, not a proof of complete CLIPS equivalence. The explicit
 [coverage matrix](COVERAGE.md) records what is exercised, excluded, or still needs
 another execution protocol. [GAPS.md](GAPS.md) links the 27 newly filed issues and
-previously tracked defects. No engine behavior is changed by this suite.
+previously tracked defects. Those issues preserve the original discovery on
+`eb24cc50`; the manifest records the refreshed observations. No engine behavior
+is changed by this suite.
 
 ## Run
 
@@ -24,7 +26,8 @@ FERRIC_CORPUS_FILTER=patterns/010 just compat-corpus -- --nocapture
 FERRIC_CORPUS_LEVEL=basic just compat-corpus -- --nocapture
 
 # Recheck the CLIPS goldens with an actual local CLIPS 6.30 Docker image.
-# Build the image first if needed: just clips-build --load
+# Build the image first if needed:
+# docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
 just compat-corpus-reference
 just compat-corpus-reference --filter queries/ --report /tmp/clips-reference.json
 just compat-corpus-reference --level boundary
@@ -33,8 +36,11 @@ just compat-corpus-reference --level boundary
 FERRIC_CORPUS_REPORT=/tmp/ferric-corpus.json just compat-corpus -- --nocapture
 ```
 
-`cargo test --workspace` automatically runs `crates/ferric/tests/compat_corpus.rs`.
-The original `clips_compat` integration suite remains available and unchanged.
+`cargo test --workspace` automatically runs
+[`crates/ferric-rules/tests/compat_corpus.rs`](../../../crates/ferric-rules/tests/compat_corpus.rs).
+The existing [semantic differential lane](../../examples/ferric-semantic/README.md)
+and [Ferric regression suite](../../../crates/ferric-rules/tests/ferric_semantic_regressions.rs)
+provide complementary coverage and retain their own execution protocols.
 The reference command requires Docker and CLIPS 6.30; it fails instead of falling
 back to a Ferric-only run. Goldens are never regenerated automatically.
 
@@ -76,8 +82,13 @@ remove the corresponding `gap` entry once the same `.out` oracle passes.
 Some cases exercise different manifestations of one defect; those cases share
 an issue. Diagnostic source locations intentionally form part of the current
 characterization, so moving fixture code requires reviewing those locations.
-Issue state on GitHub is not consulted at test time: this worktree predates some
-fixes and consolidated issues on the default branch.
+Issue state on GitHub is not consulted at test time; the manifest's recorded
+observation determines whether a case is a conformance check or an active gap.
+The issue index also preserves discoveries that subsequent engine changes fix.
+Retained expression fact-query cases (`any-factp`, `find-fact`, and
+`find-all-facts`) characterize explicit rejection by the current supported
+subset, including empty-result controls; they do not imply these forms are
+currently supported.
 
 ## Oracle provenance and safety
 

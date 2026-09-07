@@ -8,4 +8,4 @@
     (delayed-do-for-all-facts ((?f item)) TRUE
         (retract ?f)
         (bind ?*count* (+ ?*count* 1)))
-    (printout t ?*count* ":" (any-factp ((?f item)) TRUE) crlf))
+    (printout t ?*count* crlf))

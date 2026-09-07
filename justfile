@@ -307,7 +307,6 @@ compat-corpus *args:
 compat-corpus-reference *args:
     just _uv python -m ferric_tools.compat.corpus {{args}}
 
-
 # Enforce the exact pinned-CLIPS result policy for the semantic matrix
 compat-semantic-gate *args:
     just _uv ferric-compat-semantic-gate {{args}}
