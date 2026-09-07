@@ -2469,7 +2469,7 @@ fn execute_assert(
                 let relation = &fact_pattern.name;
                 if let Ok(template_id) = context
                     .engine
-                    .resolve_template_reference(relation, context.current_module)
+                    .resolve_template_id(relation, context.current_module)
                 {
                     let registered = context.engine.template_defs[template_id].clone();
                     let mut slots = registered.defaults.clone();

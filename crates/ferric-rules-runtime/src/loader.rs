@@ -47,6 +47,17 @@ use crate::templates::RegisteredTemplate;
 use crate::tracing_support::{ferric_event, ferric_span};
 // GenericRegistry accessed via self.generics (field on Engine)
 
+/// Derived name index, rebuilt from definitions when restoring a snapshot.
+pub(crate) type TemplateLocalIndex =
+    rustc_hash::FxHashMap<Box<str>, smallvec::SmallVec<[ferric_rules_core::TemplateId; 2]>>;
+
+#[derive(Debug)]
+pub(crate) enum TemplateLookupError {
+    Unknown,
+    NotVisible,
+    Ambiguous(smallvec::SmallVec<[crate::modules::ModuleId; 2]>),
+}
+
 /// Translated rule data including fact-address variable bindings.
 struct TranslatedRule {
     salience: Salience,
@@ -539,9 +550,7 @@ impl Engine {
                             Ok(module) => {
                                 for fact in &facts.facts {
                                     if let FactBody::Ordered(fact) = fact {
-                                        if self
-                                            .resolve_template_reference(&fact.relation, module)
-                                            .is_err()
+                                        if self.resolve_template_id(&fact.relation, module).is_err()
                                         {
                                             pending_ordered_fact_names
                                                 .insert(Self::template_local_name(&fact.relation));
@@ -896,26 +905,34 @@ impl Engine {
         Ok(count)
     }
 
+    pub(crate) fn template_ref_parts(raw: &str) -> (Option<&str>, &str) {
+        match raw.split_once("::") {
+            Some((module, name))
+                if !module.is_empty() && !name.is_empty() && !name.contains("::") =>
+            {
+                (Some(module), name)
+            }
+            // Keep the parser's malformed-name fallback used by ordered probes.
+            _ => (None, raw),
+        }
+    }
+
     fn template_local_name(raw: &str) -> String {
-        match parse_qualified_name(raw) {
-            Ok(parsed) => parsed.local_name().to_string(),
-            Err(_) => raw.to_string(),
-        }
+        Self::template_ref_parts(raw).1.to_owned()
     }
 
-    fn template_ref_parts(raw: &str) -> (Option<String>, String) {
-        match parse_qualified_name(raw) {
-            Ok(QualifiedName::Qualified { module, name }) => (Some(module), name),
-            Ok(QualifiedName::Unqualified(name)) => (None, name),
-            Err(_) => (None, raw.to_string()),
+    #[cfg(any(feature = "serde", debug_assertions, test))]
+    pub(crate) fn build_template_local_index(
+        definitions: &slotmap::SlotMap<ferric_rules_core::TemplateId, Arc<RegisteredTemplate>>,
+    ) -> TemplateLocalIndex {
+        let mut index = TemplateLocalIndex::default();
+        for (id, definition) in definitions {
+            index
+                .entry(Self::template_ref_parts(&definition.name).1.into())
+                .or_default()
+                .push(id);
         }
-    }
-
-    fn module_label_for_error(&self, module_id: crate::modules::ModuleId) -> String {
-        self.module_registry
-            .module_name(module_id)
-            .unwrap_or("?")
-            .to_string()
+        index
     }
 
     pub(crate) fn resolve_template_reference(
@@ -923,105 +940,101 @@ impl Engine {
         raw_name: &str,
         current_module: crate::modules::ModuleId,
     ) -> Result<ferric_rules_core::TemplateId, String> {
+        self.resolve_template_id(raw_name, current_module).map_err(|error| {
+            let current_module_label = self.module_registry.module_name(current_module).unwrap_or("?");
+            match error {
+                TemplateLookupError::Unknown => format!("unknown template `{raw_name}`"),
+                TemplateLookupError::NotVisible => format!(
+                    "template `{raw_name}` is not visible from module `{current_module_label}`"
+                ),
+                TemplateLookupError::Ambiguous(modules) => {
+                    let modules: BTreeSet<_> = modules.iter().map(|module| {
+                        self.module_registry.module_name(*module).unwrap_or("?")
+                    }).collect();
+                    format!(
+                        "template `{raw_name}` is ambiguous from module `{current_module_label}` (matches modules: {})",
+                        modules.into_iter().collect::<Vec<_>>().join(", ")
+                    )
+                }
+            }
+        })
+    }
+
+    /// Resolve without allocating diagnostics that ordered-relation probes discard.
+    /// Only name candidates are indexed; visibility is always checked live.
+    pub(crate) fn resolve_template_id(
+        &self,
+        raw_name: &str,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<ferric_rules_core::TemplateId, TemplateLookupError> {
         let (qualified_module_name, wanted_local_name) = Self::template_ref_parts(raw_name);
-        let current_module_label = self.module_label_for_error(current_module);
-
-        let mut candidates: Vec<(ferric_rules_core::TemplateId, crate::modules::ModuleId)> =
-            Vec::new();
-        for (template_id, registered) in &self.template_defs {
-            let template_module = self
-                .template_modules
-                .get(template_id)
+        let candidates = self
+            .template_local_ids
+            .get(wanted_local_name)
+            .ok_or(TemplateLookupError::Unknown)?;
+        let module_for = |id| {
+            self.template_modules
+                .get(id)
                 .copied()
-                .unwrap_or_else(|| self.module_registry.main_module_id());
-            let local_name = Self::template_local_name(&registered.name);
-
-            if local_name == wanted_local_name {
-                candidates.push((template_id, template_module));
-            }
-        }
-
-        let choose_or_ambiguous = |list: &[(
-            ferric_rules_core::TemplateId,
-            crate::modules::ModuleId,
-        )]| {
-            if list.len() == 1 {
-                return Ok(list[0].0);
-            }
-
-            let mut modules = BTreeSet::new();
-            for (_, module_id) in list {
-                modules.insert(self.module_label_for_error(*module_id));
-            }
-            Err(format!(
-                "template `{raw_name}` is ambiguous from module `{current_module_label}` (matches modules: {})",
-                modules.into_iter().collect::<Vec<_>>().join(", ")
-            ))
+                .unwrap_or_else(|| self.module_registry.main_module_id())
         };
-
-        if let Some(module_name) = qualified_module_name {
-            let Some(target_module) = self.module_registry.get_by_name(&module_name) else {
-                return Err(format!("unknown template `{raw_name}`"));
-            };
-
-            let module_matches: Vec<_> = candidates
-                .into_iter()
-                .filter(|(_, module_id)| *module_id == target_module)
-                .collect();
-
-            if module_matches.is_empty() {
-                return Err(format!("unknown template `{raw_name}`"));
+        let choose = |ids: smallvec::SmallVec<[ferric_rules_core::TemplateId; 2]>| {
+            if ids.len() == 1 {
+                Ok(ids[0])
+            } else {
+                Err(TemplateLookupError::Ambiguous(
+                    ids.into_iter().map(module_for).collect(),
+                ))
             }
-
-            let template_id = choose_or_ambiguous(&module_matches)?;
+        };
+        if let Some(module_name) = qualified_module_name {
+            let target_module = self
+                .module_registry
+                .get_by_name(module_name)
+                .ok_or(TemplateLookupError::Unknown)?;
+            let matches: smallvec::SmallVec<_> = candidates
+                .iter()
+                .copied()
+                .filter(|id| module_for(*id) == target_module)
+                .collect();
+            if matches.is_empty() {
+                return Err(TemplateLookupError::Unknown);
+            }
+            let id = choose(matches)?;
             if !self.module_registry.is_construct_visible(
                 current_module,
                 target_module,
                 "deftemplate",
-                &wanted_local_name,
+                wanted_local_name,
             ) {
-                return Err(format!(
-                    "template `{raw_name}` is not visible from module `{current_module_label}`"
-                ));
+                return Err(TemplateLookupError::NotVisible);
             }
-
-            return Ok(template_id);
+            return Ok(id);
         }
-
-        if candidates.is_empty() {
-            return Err(format!("unknown template `{raw_name}`"));
-        }
-
-        // Prefer local module definitions over imported ones.
-        let same_module: Vec<_> = candidates
+        let local: smallvec::SmallVec<_> = candidates
             .iter()
             .copied()
-            .filter(|(_, module_id)| *module_id == current_module)
+            .filter(|id| module_for(*id) == current_module)
             .collect();
-
-        if !same_module.is_empty() {
-            return choose_or_ambiguous(&same_module);
+        if !local.is_empty() {
+            return choose(local);
         }
-
-        let visible: Vec<_> = candidates
-            .into_iter()
-            .filter(|(_, module_id)| {
+        let visible: smallvec::SmallVec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|id| {
                 self.module_registry.is_construct_visible(
                     current_module,
-                    *module_id,
+                    module_for(*id),
                     "deftemplate",
-                    &wanted_local_name,
+                    wanted_local_name,
                 )
             })
             .collect();
-
         if visible.is_empty() {
-            return Err(format!(
-                "template `{raw_name}` is not visible from module `{current_module_label}`"
-            ));
+            return Err(TemplateLookupError::NotVisible);
         }
-
-        choose_or_ambiguous(&visible)
+        choose(visible)
     }
 
     /// Process an ordered fact body.
@@ -1031,8 +1044,7 @@ impl Engine {
         result: &mut LoadResult,
     ) -> Result<Fact, LoadError> {
         let current_module = self.module_registry.current_module();
-        if let Ok(template_id) = self.resolve_template_reference(&ordered.relation, current_module)
-        {
+        if let Ok(template_id) = self.resolve_template_id(&ordered.relation, current_module) {
             if !ordered.values.is_empty() {
                 return Err(LoadError::Compile(format!(
                     "template `{}` requires named slot values",
@@ -1210,7 +1222,7 @@ impl Engine {
         };
         let existing = self.template_defs.iter().find_map(|(id, definition)| {
             (self.template_modules.get(id) == Some(&module)
-                && Self::template_local_name(&definition.name) == name.local_name())
+                && Self::template_ref_parts(&definition.name).1 == name.local_name())
             .then_some(id)
         });
         Ok((module, existing))
@@ -1339,6 +1351,10 @@ impl Engine {
             let id = self.template_defs.insert(Arc::new(registered));
             self.template_ids
                 .insert(template.name.clone().into_boxed_str(), id);
+            self.template_local_ids
+                .entry(local_name.into_boxed_str())
+                .or_default()
+                .push(id);
             id
         };
         self.template_modules.insert(template_id, owning_module);
@@ -1549,7 +1565,7 @@ impl Engine {
 
         // Check if this is a known template — if so, parse slot syntax.
         let current_module = self.module_registry.current_module();
-        if let Ok(template_id) = self.resolve_template_reference(relation, current_module) {
+        if let Ok(template_id) = self.resolve_template_id(relation, current_module) {
             return self.process_assert_template_fact(
                 template_id,
                 relation,
@@ -1846,7 +1862,7 @@ impl Engine {
                 for arg in &call.args {
                     if let ActionExpr::FunctionCall(fact_pattern) = arg {
                         if let Ok(template_id) =
-                            self.resolve_template_reference(&fact_pattern.name, current_module)
+                            self.resolve_template_id(&fact_pattern.name, current_module)
                         {
                             let registered = &self.template_defs[template_id];
                             let slots = registered.slot_overrides(&fact_pattern.args).map_err(
@@ -3679,7 +3695,7 @@ impl Engine {
                 // empty ordered pattern without the runtime template registry.
                 let current_module = self.module_registry.current_module();
                 let entry_type = if let Ok(template_id) =
-                    self.resolve_template_reference(&ordered.relation, current_module)
+                    self.resolve_template_id(&ordered.relation, current_module)
                 {
                     if !ordered.constraints.is_empty() {
                         return Err(Self::compile_error_at(
@@ -4927,6 +4943,108 @@ mod tests {
     };
     use ferric_rules_core::{Fact, Value};
     use std::collections::HashMap;
+
+    #[test]
+    fn template_resolution_preserves_visibility_diagnostics_and_local_preference() {
+        let mut engine = Engine::with_rules(
+            "(defmodule Z (export ?ALL)) (deftemplate Z::item (slot z))
+             (defmodule A (export ?ALL)) (deftemplate A::item (slot a))
+             (defmodule BOTH (import Z ?ALL) (import A ?ALL))
+             (defmodule ONE (import A ?ALL))
+             (defmodule NONE)",
+        )
+        .unwrap();
+        let a = engine.module_registry.get_by_name("A").unwrap();
+        let both = engine.module_registry.get_by_name("BOTH").unwrap();
+        let one = engine.module_registry.get_by_name("ONE").unwrap();
+        let none = engine.module_registry.get_by_name("NONE").unwrap();
+        let a_item = engine.resolve_template_reference("item", a).unwrap();
+        assert_eq!(engine.resolve_template_reference("item", one), Ok(a_item));
+        assert_eq!(
+            engine.resolve_template_reference("A::item", both),
+            Ok(a_item)
+        );
+        assert_eq!(
+            engine.resolve_template_reference("item", both).unwrap_err(),
+            "template `item` is ambiguous from module `BOTH` (matches modules: A, Z)"
+        );
+        assert_eq!(
+            engine.resolve_template_reference("item", none).unwrap_err(),
+            "template `item` is not visible from module `NONE`"
+        );
+        assert_eq!(
+            engine
+                .resolve_template_reference("A::item", none)
+                .unwrap_err(),
+            "template `A::item` is not visible from module `NONE`"
+        );
+        for name in [
+            "missing",
+            "MISSING::item",
+            "A::missing",
+            "A::",
+            "::item",
+            "A::B::item",
+        ] {
+            assert_eq!(
+                engine.resolve_template_reference(name, both).unwrap_err(),
+                format!("unknown template `{name}`")
+            );
+        }
+        engine.load_str("(defmodule NONE (import A ?ALL))").unwrap();
+        assert_eq!(engine.resolve_template_reference("item", none), Ok(a_item));
+        engine.load_str("(defmodule NONE)").unwrap();
+        assert_eq!(
+            engine.resolve_template_reference("item", none).unwrap_err(),
+            "template `item` is not visible from module `NONE`"
+        );
+        engine
+            .load_str("(deftemplate BOTH::item (slot local))")
+            .unwrap();
+        let local = engine.resolve_template_reference("item", both).unwrap();
+        assert_ne!(local, a_item);
+        engine
+            .load_str("(deftemplate BOTH::item (slot replacement))")
+            .unwrap();
+        assert_eq!(engine.resolve_template_reference("item", both), Ok(local));
+        engine.reset().unwrap();
+        assert_eq!(engine.resolve_template_reference("item", both), Ok(local));
+        engine.clear();
+        let main = engine.module_registry.main_module_id();
+        assert!(engine.resolve_template_reference("item", main).is_err());
+        engine.load_str("(deftemplate item (slot fresh))").unwrap();
+        assert!(engine.resolve_template_reference("item", main).is_ok());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn restored_template_resolution_rebuilds_candidates_in_every_format() {
+        use crate::serialization::SerializationFormat;
+        let engine = Engine::with_rules(
+            "(defmodule A (export ?ALL)) (deftemplate A::item (slot a))
+             (defmodule B (export ?ALL)) (deftemplate B::item (slot b))
+             (defmodule APP (import A ?ALL) (import B ?ALL))",
+        )
+        .unwrap();
+        for &format in SerializationFormat::ALL {
+            let mut restored =
+                Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
+            for module in ["A", "B", "APP", "MAIN"] {
+                let module = restored.module_registry.get_by_name(module).unwrap();
+                for name in ["item", "A::item", "B::item", "missing"] {
+                    assert_eq!(
+                        restored.resolve_template_reference(name, module),
+                        engine.resolve_template_reference(name, module)
+                    );
+                }
+            }
+            restored
+                .load_str("(deftemplate APP::item (slot c))")
+                .unwrap();
+            let app = restored.module_registry.get_by_name("APP").unwrap();
+            assert!(restored.resolve_template_reference("item", app).is_ok());
+        }
+    }
 
     fn test_span(line: u32, column: u32) -> ferric_rules_parser::Span {
         let pos = ferric_rules_parser::Position {
@@ -6693,10 +6811,31 @@ mod tests {
 
 #[cfg(test)]
 mod proptests {
+    use super::{parse_qualified_name, Engine};
     use crate::test_helpers::new_utf8_engine;
     use proptest::prelude::*;
 
     proptest! {
+        #[test]
+        fn borrowed_template_names_match_owned_parser(raw in any::<String>()) {
+            let parsed = parse_qualified_name(&raw);
+            let expected = match &parsed {
+                Ok(name) => (name.module_name(), name.local_name()),
+                Err(_) => (None, raw.as_str()),
+            };
+            prop_assert_eq!(Engine::template_ref_parts(&raw), expected);
+        }
+
+        #[test]
+        fn borrowed_template_names_match_parser_at_colon_boundaries(raw in "[a-z:]{0,30}") {
+            let parsed = parse_qualified_name(&raw);
+            let expected = match &parsed {
+                Ok(name) => (name.module_name(), name.local_name()),
+                Err(_) => (None, raw.as_str()),
+            };
+            prop_assert_eq!(Engine::template_ref_parts(&raw), expected);
+        }
+
         /// Any valid assert form should produce at least one fact.
         #[test]
         fn valid_assert_produces_facts(

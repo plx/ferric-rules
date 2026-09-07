@@ -50,7 +50,7 @@ impl Engine {
     }
 
     pub(crate) fn template_name_is(&self, name: &str, module: ModuleId, id: TemplateId) -> bool {
-        self.resolve_template_reference(name, module) == Ok(id)
+        self.resolve_template_id(name, module).ok() == Some(id)
     }
 
     pub(crate) fn rule_uses_template(

@@ -58,8 +58,7 @@ impl Engine {
     }
 
     pub(crate) fn ordered_name_is(&self, raw: &str, module: ModuleId, name: &str) -> bool {
-        Self::ordered_relation_name_is(raw, name)
-            && self.resolve_template_reference(raw, module).is_err()
+        Self::ordered_relation_name_is(raw, name) && self.resolve_template_id(raw, module).is_err()
     }
 
     pub(crate) fn rule_uses_ordered_name(
