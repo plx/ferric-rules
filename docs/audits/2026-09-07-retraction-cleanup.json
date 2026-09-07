@@ -1,0 +1,734 @@
+{
+  "baseline_revision": "23e2650f",
+  "candidate_revision": "86850c822b175119bfe317c7edef0a678a2c0ee5",
+  "benchmark_source_revision": "86850c822b175119bfe317c7edef0a678a2c0ee5",
+  "benchmark_source_note": "Copy crates/ferric-rules/benches/cascade_bench.rs and crates/ferric-rules/benches/support/retraction_workloads.rs from the candidate into the isolated parent; production sources remain at the baseline revision.",
+  "environment": {
+    "machine": "Apple M4 Max",
+    "host": "aarch64-apple-darwin",
+    "os": "Darwin 27.0.0",
+    "rustc": "1.93.0 (254b59607 2026-01-19)",
+    "profile": "cargo bench, release opt-level=3, lto=true, codegen-units=1",
+    "features": [
+      "serde"
+    ],
+    "sampling": {
+      "sample_size": 20,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 1,
+      "note": "Existing benchmark groups retain their explicit sample-size overrides; Criterion may extend measurement for slow workloads."
+    }
+  },
+  "command": "cargo bench -p ferric-rules --features serde --bench cascade_bench --bench churn_bench --bench negation_bench --bench forall_bench --bench query_bench --bench engine_bench -- --noplot --sample-size 20 --warm-up-time 1 --measurement-time 1 --save-baseline LABEL",
+  "first_pass": {
+    "before": "audit-retract-before",
+    "after": "audit-retract-after",
+    "unit": "ns",
+    "workloads": {
+      "api_query_scan_1000i_50c": {
+        "before": 1108959.462105263,
+        "after": 1107052.0208333333,
+        "delta_percent": -0.17200279515254824
+      },
+      "forall_20_tasks": {
+        "before": 74137.73642578124,
+        "after": 71986.80606060606,
+        "delta_percent": -2.90126252684888
+      },
+      "forall_20_tasks_run_only": {
+        "before": 47542.970875659,
+        "after": 43611.40596330275,
+        "delta_percent": -8.269497761590506
+      },
+      "churn_5000_facts": {
+        "before": 15240182.375,
+        "after": 14733317.625,
+        "delta_percent": -3.325844386425858
+      },
+      "negation_500_blockers": {
+        "before": 816745.5018315018,
+        "after": 783242.5714285714,
+        "delta_percent": -4.102003663050757
+      },
+      "api_query_scan_500i_20c": {
+        "before": 226408.866713352,
+        "after": 221061.9137806638,
+        "delta_percent": -2.3616358362226975
+      },
+      "reset_run_negation": {
+        "before": 2538.557234383342,
+        "after": 2576.0566009557947,
+        "delta_percent": 1.4771920862978627
+      },
+      "compile_template_rule": {
+        "before": 8281.392967802774,
+        "after": 8198.78854679803,
+        "delta_percent": -0.9974701276210585
+      },
+      "lifecycle_reset_run_1000": {
+        "before": 869494.3495276653,
+        "after": 859500.5,
+        "delta_percent": -1.1493863684214012
+      },
+      "api_query_scan_100i_10c": {
+        "before": 23075.389179867147,
+        "after": 23114.37215093519,
+        "delta_percent": 0.16893743704247122
+      },
+      "api_query_scan_5000i_100c": {
+        "before": 12671104.25,
+        "after": 12828765.625,
+        "delta_percent": 1.244259157602623
+      },
+      "churn_500_facts": {
+        "before": 1410288.775,
+        "after": 1314877.8950892857,
+        "delta_percent": -6.765343495747123
+      },
+      "negation_50_blockers_run_only": {
+        "before": 46879.8099877451,
+        "after": 45051.42348008386,
+        "delta_percent": -3.9001576758506573
+      },
+      "forall_100_tasks": {
+        "before": 338029.1354166666,
+        "after": 315379.9635416666,
+        "delta_percent": -6.700360857084653
+      },
+      "api_query_load_1000i_50c": {
+        "before": 1837644.224074074,
+        "after": 1811980.5386904762,
+        "delta_percent": -1.3965535356295078
+      },
+      "churn_250_facts": {
+        "before": 702710.3378088078,
+        "after": 672319.6763888889,
+        "delta_percent": -4.324777904176447
+      },
+      "cascade_d3_100k": {
+        "before": 393949.8923076923,
+        "after": 383028.0832579186,
+        "delta_percent": -2.772385337078176
+      },
+      "churn_2000_facts": {
+        "before": 5741125.792105263,
+        "after": 5497861.734090909,
+        "delta_percent": -4.23721874111992
+      },
+      "api_query_load_5000i_100c": {
+        "before": 16576005.25,
+        "after": 16620557.25,
+        "delta_percent": 0.26877404614722433
+      },
+      "negation_200_blockers": {
+        "before": 324847.8171717172,
+        "after": 316351.7760416666,
+        "delta_percent": -2.615391171170922
+      },
+      "lifecycle_reset_run_100": {
+        "before": 82837.748204023,
+        "after": 82501.34698275862,
+        "delta_percent": -0.4060965303352315
+      },
+      "reset_run_20_facts": {
+        "before": 12761.753527926321,
+        "after": 12715.63251022334,
+        "delta_percent": -0.36140031698664865
+      },
+      "api_query_load_100i_10c": {
+        "before": 97995.45757250268,
+        "after": 98976.35259818213,
+        "delta_percent": 1.0009596872933901
+      },
+      "reset_run_join_3": {
+        "before": 3665.853984287318,
+        "after": 3654.6698518872436,
+        "delta_percent": -0.305089412944759
+      },
+      "load_and_run_simple": {
+        "before": 7690.343970189702,
+        "after": 7573.696418955304,
+        "delta_percent": -1.516805382003239
+      },
+      "negation_100_blockers": {
+        "before": 172658.94754464284,
+        "after": 178776.22962962964,
+        "delta_percent": 3.542985852734404
+      },
+      "negation_50_blockers": {
+        "before": 98792.06092239528,
+        "after": 96706.60475,
+        "delta_percent": -2.11095522547452
+      },
+      "api_query_load_500i_20c": {
+        "before": 592534.1052188552,
+        "after": 590565.1041666667,
+        "delta_percent": -0.33230172488741827
+      },
+      "lifecycle_load_reset_run_100": {
+        "before": 116965.94765478425,
+        "after": 115459.41184807256,
+        "delta_percent": -1.2880123120603493
+      },
+      "negation_2500_blockers": {
+        "before": 4195921.305555556,
+        "after": 4019891.916666667,
+        "delta_percent": -4.1952500075685295
+      },
+      "cascade_d3_100k_run_only": {
+        "before": 242634.68376623376,
+        "after": 241892.63190789474,
+        "delta_percent": -0.3058309087640376
+      },
+      "forall_50_tasks": {
+        "before": 162814.16611111112,
+        "after": 154326.32741935484,
+        "delta_percent": -5.213206500694678
+      },
+      "reset_run_simple": {
+        "before": 2199.4924864292334,
+        "after": 2139.910462241833,
+        "delta_percent": -2.7088987370958773
+      },
+      "lifecycle_load_reset_run_1000": {
+        "before": 1134421.6549707602,
+        "after": 1125222.925,
+        "delta_percent": -0.8108739753383221
+      },
+      "engine_create": {
+        "before": 363.75077504483727,
+        "after": 370.81307638835256,
+        "delta_percent": 1.941522005731744
+      },
+      "churn_1000_facts": {
+        "before": 2822792.1875,
+        "after": 2683246.273809524,
+        "delta_percent": -4.94354186994066
+      },
+      "negation_1000_blockers": {
+        "before": 1623077.7916666667,
+        "after": 1572158.94375,
+        "delta_percent": -3.137178524535189
+      },
+      "churn_100_facts_run_only": {
+        "before": 199059.82346491228,
+        "after": 187892.7326585695,
+        "delta_percent": -5.6099169646411156
+      },
+      "reset_run_retract_3": {
+        "before": 3049.2348698250107,
+        "after": 3005.530036133695,
+        "delta_percent": -1.4333049291747058
+      },
+      "load_and_run_chain_4": {
+        "before": 19147.300832288427,
+        "after": 18947.282738095237,
+        "delta_percent": -1.0446281486103604
+      },
+      "churn_100_facts": {
+        "before": 298185.2889476103,
+        "after": 283815.75432525954,
+        "delta_percent": -4.818995153337502
+      },
+      "forall_2000/forall_2000_tasks": {
+        "before": 29005786.83035714,
+        "after": 24870916.666666664,
+        "delta_percent": -14.255328386275556
+      },
+      "churn_10000/churn_10000_facts": {
+        "before": 31703262.1875,
+        "after": 30556436.631944444,
+        "delta_percent": -3.617373974870408
+      },
+      "churn_25000/churn_25000_facts": {
+        "before": 90624468.75,
+        "after": 87848531.25,
+        "delta_percent": -3.063121404504787
+      },
+      "forall_500/forall_500_tasks": {
+        "before": 2866238.0999999996,
+        "after": 2532806.200520833,
+        "delta_percent": -11.633084476797883
+      },
+      "churn_50000/churn_50000_facts": {
+        "before": 204986333.5,
+        "after": 198134000.0,
+        "delta_percent": -3.342824559569968
+      },
+      "churn_100000/churn_100000_facts": {
+        "before": 457640187.5,
+        "after": 444835916.5,
+        "delta_percent": -2.7978904278374794
+      },
+      "cascade_d15_20k/cascade_d15_20k": {
+        "before": 401414.4650621118,
+        "after": 399129.0275621118,
+        "delta_percent": -0.5693460746728163
+      },
+      "retract_independent_memories/negative/32": {
+        "before": 48749.53475765306,
+        "after": 37771.40340434419,
+        "delta_percent": -22.519458714599207
+      },
+      "retract_independent_memories/negative/1": {
+        "before": 1288.0012161302056,
+        "after": 1345.7398117880552,
+        "delta_percent": 4.4828059892151995
+      },
+      "retract_independent_memories/negative/128": {
+        "before": 392929.7283653846,
+        "after": 225403.43640734267,
+        "delta_percent": -42.63517872647691
+      },
+      "retract_independent_memories/negative/512": {
+        "before": 4796712.385416666,
+        "after": 2021629.1888888888,
+        "delta_percent": -57.853858508690216
+      },
+      "retract_independent_memories/exists/32": {
+        "before": 67753.22711267606,
+        "after": 57502.35074915045,
+        "delta_percent": -15.129724148014434
+      },
+      "retract_independent_memories/exists/1": {
+        "before": 1705.694430920983,
+        "after": 1751.0445586975152,
+        "delta_percent": 2.6587486571111985
+      },
+      "retract_independent_memories/exists/128": {
+        "before": 548138.4005847953,
+        "after": 377749.16529304034,
+        "delta_percent": -31.085075431673992
+      },
+      "retract_independent_memories/exists/512": {
+        "before": 6707581.326388889,
+        "after": 3802267.703125,
+        "delta_percent": -43.31387845919718
+      },
+      "retract_independent_memories/ncc/32": {
+        "before": 53316.191049382716,
+        "after": 38383.278,
+        "delta_percent": -28.008214306891322
+      },
+      "retract_independent_memories/ncc/1": {
+        "before": 1371.8604176964905,
+        "after": 1357.009262544227,
+        "delta_percent": -1.0825558461115214
+      },
+      "retract_independent_memories/ncc/128": {
+        "before": 446105.11363636365,
+        "after": 221731.10795454547,
+        "delta_percent": -50.2962191697075
+      },
+      "retract_independent_memories/ncc/512": {
+        "before": 5652270.145604396,
+        "after": 1976888.875,
+        "delta_percent": -65.0248692282097
+      },
+      "forall_200/forall_200_tasks": {
+        "before": 781409.0960648148,
+        "after": 710810.672008547,
+        "delta_percent": -9.034758414229149
+      },
+      "cascade_d10_30k/cascade_d10_30k": {
+        "before": 385067.67604166665,
+        "after": 379084.2108843537,
+        "delta_percent": -1.5538736512034523
+      },
+      "negation_5000/negation_5000_blockers": {
+        "before": 8753336.819444444,
+        "after": 8418714.25,
+        "delta_percent": -3.8228001086525243
+      },
+      "negation_25000/negation_25000_blockers": {
+        "before": 49360861.16666667,
+        "after": 47853562.75,
+        "delta_percent": -3.053630712756994
+      },
+      "negation_50000/negation_50000_blockers": {
+        "before": 108845687.5,
+        "after": 105196458.5,
+        "delta_percent": -3.3526629155610777
+      },
+      "negation_10000/negation_10000_blockers": {
+        "before": 18605307.25,
+        "after": 17720960.083333336,
+        "delta_percent": -4.753198400777093
+      },
+      "forall_1000/forall_1000_tasks": {
+        "before": 8730474.195238095,
+        "after": 7609282.002314815,
+        "delta_percent": -12.84228288006185
+      },
+      "cascade_d7_50k/cascade_d7_50k": {
+        "before": 429323.6511627907,
+        "after": 412919.0016233766,
+        "delta_percent": -3.821044914479632
+      },
+      "cascade_d5_100k/cascade_d5_100k": {
+        "before": 601440.7209677419,
+        "after": 586574.5806451612,
+        "delta_percent": -2.47175487197816
+      }
+    }
+  },
+  "alternating_repeat": {
+    "before": "audit-retract-before-repeat",
+    "after": "audit-retract-after-repeat",
+    "unit": "ns",
+    "workloads": {
+      "api_query_scan_1000i_50c": {
+        "before": 1116474.665151515,
+        "after": 1078950.531512605,
+        "delta_percent": -3.3609480635924394
+      },
+      "forall_20_tasks": {
+        "before": 74249.52456825657,
+        "after": 75243.81510416666,
+        "delta_percent": 1.339120407425698
+      },
+      "forall_20_tasks_run_only": {
+        "before": 47586.21126965638,
+        "after": 44066.64012345679,
+        "delta_percent": -7.3961995550670405
+      },
+      "churn_5000_facts": {
+        "before": 15211239.5,
+        "after": 14531880.25,
+        "delta_percent": -4.46616628447668
+      },
+      "negation_500_blockers": {
+        "before": 798795.1319444445,
+        "after": 775879.6734693877,
+        "delta_percent": -2.86875289528562
+      },
+      "api_query_scan_500i_20c": {
+        "before": 222598.23285984847,
+        "after": 221065.4188762626,
+        "delta_percent": -0.6886011465108699
+      },
+      "reset_run_negation": {
+        "before": 2472.438395501481,
+        "after": 2507.3445049164407,
+        "delta_percent": 1.4118090658384208
+      },
+      "compile_template_rule": {
+        "before": 8313.398492753624,
+        "after": 8279.627729459658,
+        "delta_percent": -0.4062209134255035
+      },
+      "lifecycle_reset_run_1000": {
+        "before": 906201.4583333333,
+        "after": 867415.422275641,
+        "delta_percent": -4.280067715740243
+      },
+      "api_query_scan_100i_10c": {
+        "before": 22659.84843137255,
+        "after": 22730.856114718612,
+        "delta_percent": 0.3133634523686979
+      },
+      "api_query_scan_5000i_100c": {
+        "before": 12520328.25,
+        "after": 12567925.100000001,
+        "delta_percent": 0.380156566582035
+      },
+      "churn_500_facts": {
+        "before": 1384543.0575284092,
+        "after": 1316800.822222222,
+        "delta_percent": -4.892750350943642
+      },
+      "negation_50_blockers_run_only": {
+        "before": 47141.9167079208,
+        "after": 44932.36600936303,
+        "delta_percent": -4.687019223778222
+      },
+      "forall_100_tasks": {
+        "before": 339179.4361764706,
+        "after": 316741.5721568627,
+        "delta_percent": -6.615337377922215
+      },
+      "api_query_load_1000i_50c": {
+        "before": 1830718.777777778,
+        "after": 1809377.2896825396,
+        "delta_percent": -1.1657436605934546
+      },
+      "churn_250_facts": {
+        "before": 703842.8571428572,
+        "after": 707122.5993055556,
+        "delta_percent": 0.46597647889927707
+      },
+      "cascade_d3_100k": {
+        "before": 379472.5870445344,
+        "after": 389584.71400394477,
+        "delta_percent": 2.6647845732855613
+      },
+      "churn_2000_facts": {
+        "before": 5743352.416666667,
+        "after": 5456278.125,
+        "delta_percent": -4.9983750053993585
+      },
+      "api_query_load_5000i_100c": {
+        "before": 16352890.625,
+        "after": 16561432.375,
+        "delta_percent": 1.2752592479349456
+      },
+      "negation_200_blockers": {
+        "before": 326427.6620370371,
+        "after": 312992.21736111114,
+        "delta_percent": -4.1159026144057425
+      },
+      "lifecycle_reset_run_100": {
+        "before": 84444.91744066047,
+        "after": 80627.1810363248,
+        "delta_percent": -4.520978313488677
+      },
+      "reset_run_20_facts": {
+        "before": 12578.202482269502,
+        "after": 12384.242502951594,
+        "delta_percent": -1.542032572550156
+      },
+      "api_query_load_100i_10c": {
+        "before": 98268.34535744123,
+        "after": 98305.71836734694,
+        "delta_percent": 0.03803158562381004
+      },
+      "reset_run_join_3": {
+        "before": 3628.961070537287,
+        "after": 3589.9970799640614,
+        "delta_percent": -1.0736954686443312
+      },
+      "load_and_run_simple": {
+        "before": 7712.5331015547,
+        "after": 7679.264616935484,
+        "delta_percent": -0.4313561339854721
+      },
+      "negation_100_blockers": {
+        "before": 170741.07015306124,
+        "after": 166089.86124794744,
+        "delta_percent": -2.7241301117207573
+      },
+      "negation_50_blockers": {
+        "before": 98654.83884160951,
+        "after": 95781.00823529411,
+        "delta_percent": -2.9130153574416617
+      },
+      "api_query_load_500i_20c": {
+        "before": 591267.437037037,
+        "after": 589433.4150326797,
+        "delta_percent": -0.31018484859371975
+      },
+      "lifecycle_load_reset_run_100": {
+        "before": 117163.05020325203,
+        "after": 114075.68885679272,
+        "delta_percent": -2.635098131282365
+      },
+      "negation_2500_blockers": {
+        "before": 4113361.562030075,
+        "after": 4014928.385416667,
+        "delta_percent": -2.393010561532749
+      },
+      "cascade_d3_100k_run_only": {
+        "before": 237828.89285714284,
+        "after": 240184.65633223683,
+        "delta_percent": 0.9905287144859276
+      },
+      "forall_50_tasks": {
+        "before": 162759.51479166668,
+        "after": 155708.053088677,
+        "delta_percent": -4.332442076898301
+      },
+      "reset_run_simple": {
+        "before": 2172.2618071374336,
+        "after": 2140.389027741141,
+        "delta_percent": -1.4672623388013228
+      },
+      "lifecycle_load_reset_run_1000": {
+        "before": 1142055.1859728508,
+        "after": 1116588.6857142858,
+        "delta_percent": -2.2298835092519176
+      },
+      "engine_create": {
+        "before": 367.97498926321816,
+        "after": 365.9977863498882,
+        "delta_percent": -0.5373199187501454
+      },
+      "churn_1000_facts": {
+        "before": 2801100.7442307696,
+        "after": 2699818.375,
+        "delta_percent": -3.6158060162374994
+      },
+      "negation_1000_blockers": {
+        "before": 1624787.313034188,
+        "after": 1570294.1428571427,
+        "delta_percent": -3.353864825254127
+      },
+      "churn_100_facts_run_only": {
+        "before": 200819.7159188034,
+        "after": 183267.1891025641,
+        "delta_percent": -8.740440019014994
+      },
+      "reset_run_retract_3": {
+        "before": 2968.5999844816884,
+        "after": 2905.6068087393587,
+        "delta_percent": -2.1219826204818992
+      },
+      "load_and_run_chain_4": {
+        "before": 19305.41620990346,
+        "after": 18908.389095568782,
+        "delta_percent": -2.056558170090139
+      },
+      "churn_100_facts": {
+        "before": 290851.7448529412,
+        "after": 281520.08613445377,
+        "delta_percent": -3.2083901450223884
+      },
+      "forall_2000/forall_2000_tasks": {
+        "before": 29707642.914285712,
+        "after": 25682862.25,
+        "delta_percent": -13.547963653320638
+      },
+      "churn_10000/churn_10000_facts": {
+        "before": 31647249.51190476,
+        "after": 30431692.333333336,
+        "delta_percent": -3.840956788722405
+      },
+      "churn_25000/churn_25000_facts": {
+        "before": 91639593.75,
+        "after": 86749218.5,
+        "delta_percent": -5.336530914073368
+      },
+      "forall_500/forall_500_tasks": {
+        "before": 2871424.7510204082,
+        "after": 2546732.690625,
+        "delta_percent": -11.307698740147165
+      },
+      "churn_50000/churn_50000_facts": {
+        "before": 206741166.5,
+        "after": 197339687.5,
+        "delta_percent": -4.547463458372237
+      },
+      "churn_100000/churn_100000_facts": {
+        "before": 459998833.0,
+        "after": 441717312.5,
+        "delta_percent": -3.9742536694652886
+      },
+      "cascade_d15_20k/cascade_d15_20k": {
+        "before": 394359.80434782605,
+        "after": 393565.96403242147,
+        "delta_percent": -0.20129848596446287
+      },
+      "retract_independent_memories/negative/32": {
+        "before": 47612.71926567657,
+        "after": 36753.20833333333,
+        "delta_percent": -22.808004037214758
+      },
+      "retract_independent_memories/negative/1": {
+        "before": 1307.0918676476374,
+        "after": 1314.786814652094,
+        "delta_percent": 0.5887074347960874
+      },
+      "retract_independent_memories/negative/128": {
+        "before": 384302.2098901099,
+        "after": 216391.5331439394,
+        "delta_percent": -43.692352639393896
+      },
+      "retract_independent_memories/negative/512": {
+        "before": 4636522.75,
+        "after": 1956896.4666666668,
+        "delta_percent": -57.79387760651738
+      },
+      "retract_independent_memories/exists/32": {
+        "before": 66835.5834201389,
+        "after": 56380.47969187675,
+        "delta_percent": -15.643020069922532
+      },
+      "retract_independent_memories/exists/1": {
+        "before": 1728.6933361442398,
+        "after": 1695.0142041530096,
+        "delta_percent": -1.9482421368239744
+      },
+      "retract_independent_memories/exists/128": {
+        "before": 549364.4788011695,
+        "after": 373159.30000000005,
+        "delta_percent": -32.07436694590935
+      },
+      "retract_independent_memories/exists/512": {
+        "before": 6502849.447368421,
+        "after": 3655047.0015479876,
+        "delta_percent": -43.79314743282092
+      },
+      "retract_independent_memories/ncc/32": {
+        "before": 52028.92240338164,
+        "after": 38217.33975,
+        "delta_percent": -26.545971001090642
+      },
+      "retract_independent_memories/ncc/1": {
+        "before": 1317.2910512870899,
+        "after": 1317.4609879508585,
+        "delta_percent": 0.012900464449572269
+      },
+      "retract_independent_memories/ncc/128": {
+        "before": 438723.1950534759,
+        "after": 234962.95677361853,
+        "delta_percent": -46.44391738964726
+      },
+      "retract_independent_memories/ncc/512": {
+        "before": 5481139.363636363,
+        "after": 2022434.2770833333,
+        "delta_percent": -63.101936606450636
+      },
+      "forall_200/forall_200_tasks": {
+        "before": 779733.8958333333,
+        "after": 713309.8557692308,
+        "delta_percent": -8.518808842228465
+      },
+      "cascade_d10_30k/cascade_d10_30k": {
+        "before": 375278.9972789115,
+        "after": 375859.787414966,
+        "delta_percent": 0.15476222764014835
+      },
+      "negation_5000/negation_5000_blockers": {
+        "before": 8672488.345833333,
+        "after": 8572475.214285715,
+        "delta_percent": -1.1532230146572564
+      },
+      "negation_25000/negation_25000_blockers": {
+        "before": 49394697.75,
+        "after": 48186868.16666667,
+        "delta_percent": -2.445261613800098
+      },
+      "negation_50000/negation_50000_blockers": {
+        "before": 109297146.0,
+        "after": 107661729.5,
+        "delta_percent": -1.4963030233195673
+      },
+      "negation_10000/negation_10000_blockers": {
+        "before": 18083020.875,
+        "after": 17779914.520833336,
+        "delta_percent": -1.6761931331158997
+      },
+      "forall_1000/forall_1000_tasks": {
+        "before": 8843699.138888888,
+        "after": 7621849.833333334,
+        "delta_percent": -13.816043336239792
+      },
+      "cascade_d7_50k/cascade_d7_50k": {
+        "before": 414506.43181818177,
+        "after": 416093.90909090906,
+        "delta_percent": 0.3829801303116165
+      },
+      "cascade_d5_100k/cascade_d5_100k": {
+        "before": 590036.0107526882,
+        "after": 593596.3548387097,
+        "delta_percent": 0.6034113208581493
+      }
+    }
+  },
+  "regression_checks": {
+    "independent_negative_cleanup_gate": "rejects parent; passes candidate",
+    "all_seven_scaling_gates": "pass candidate",
+    "functional_shared_parent_cleanup": "passes both",
+    "last_indexed_parent_snapshot_resume": "fails parent; passes candidate in all five formats",
+    "snapshot_validator": "unchanged"
+  }
+}
