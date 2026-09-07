@@ -42,13 +42,13 @@ The blocking pinned-CLIPS policy retains these differences as exact known deviat
 | ----------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | LEX and MEA | Selected recency vectors and the MEA tiebreak differ. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
 
-The reviewed gate covers 22 scenarios for 20 production-audit IDs plus one generated-harness control. Other corpus fixtures are not compatibility claims until they have a structured oracle and reviewed policy entry.
+The reviewed gate covers 57 scenarios: 55 equivalences and the two known LEX/MEA differences. All 35 scenarios added beyond the 22-case baseline match pinned CLIPS 6.30. Other corpus fixtures are not compatibility claims until they have a structured oracle and reviewed policy entry.
 
 ## Known Exclusions
 
 - COOL object system is intentionally out of scope.
 - Truth maintenance through the `logical` conditional element is intentionally out of scope.
-- Some exotic pattern connectives remain outside the current subset.
+- CLIPS-valid complex negated constraints are explicitly rejected pending [#300](https://github.com/plx/ferric-rules/issues/300).
 - Some I/O utilities are limited while rule execution remains the core focus.
 
 ## Validation Posture
