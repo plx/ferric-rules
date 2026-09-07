@@ -252,6 +252,18 @@ results are retained with unchanged-source evidence, not claimed as rerun.
 Native/wheel builds use Rust 1.93; the independent Python sdist consumer built
 outside the checkout with installed stable Rust 1.97.1. The previous bundle is
 preserved, and component receipts distinguish exact build and validation inputs.
+All 67 hashes were rechecked against candidate `ff4f30c2`; native and packaged
+inputs match the delivered revision. Later checkout normalization, guide prose
+and the Swift consumer filename correction do not change those payloads. The
+changed Swift validation script is separately verified, not claimed identical.
+
+The ordinary #313 performance report successfully collects all nine CBOR metrics
+as additions, without a false before/after comparison. It also retains eight
+churn/negation timing warnings (largest +20.5%) on byte-identical engine, workload
+and helper inputs. Those observations do not establish a code-change regression;
+the quiet paired measurements above remain the decision evidence. Exact input
+objects and the raw report are retained in
+`.context/rehabilitation/pr313-perf-report-proof.md`.
 
 Every merge requires Check, Format, Clippy, Test, MSRV, Dependency Policy,
 License Notices, the pinned CLIPS comparison/gate and protected
