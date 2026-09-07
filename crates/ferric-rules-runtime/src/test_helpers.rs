@@ -242,7 +242,6 @@ pub fn retract_one_fact(
         .fact_base
         .retract(fact_id)
         .expect("retract should succeed in test helper");
-    engine.host.remove(fact_id);
     rete.retract_fact(fact_id, &fact, &engine.fact_base)
 }
 
