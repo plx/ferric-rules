@@ -105,7 +105,7 @@ def test_snapshots_are_versioned_cbor_by_default_with_owned_typed_errors(tmp_pat
             assert restored.run().rules_fired == 1
     for data, message in [
         (b"legacy", "legacy"),
-        (snapshot[:8] + b"\x02\x00" + snapshot[10:], "version 2"),
+        (snapshot[:8] + b"\xff\xff" + snapshot[10:], "version 65535"),
         (snapshot[:-1], "length"),
         (b"\0" * (16 * 1024 * 1024 + 1), "16 MiB"),
     ]:
