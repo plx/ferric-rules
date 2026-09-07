@@ -233,19 +233,6 @@ pub(crate) enum CompiledTestCondition {
     Expr(crate::evaluator::RuntimeExpr),
 }
 
-/// Runtime hint for trailing ordered multi-variable captures (`$?var`).
-///
-/// The rete compiler currently approximates ordered multi-variable constraints
-/// as single-slot bindings. This hint allows action-time evaluation to restore
-/// CLIPS-style trailing multifield capture semantics for RHS expressions.
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct MultifieldTailBindingHint {
-    pub name: String,
-    pub fact_index: usize,
-    pub start_slot: usize,
-}
-
 /// Compiled rule metadata stored for action execution.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -269,8 +256,6 @@ pub(crate) struct CompiledRuleInfo {
     pub test_conditions: Vec<CompiledTestCondition>,
     /// Pre-translated RHS action call expressions.
     pub runtime_actions: Vec<Option<crate::evaluator::RuntimeExpr>>,
-    /// Trailing ordered multifield capture hints for action-time evaluation.
-    pub multifield_tail_bindings: Vec<MultifieldTailBindingHint>,
 }
 
 /// Errors that can occur during action execution.
@@ -339,12 +324,6 @@ pub(crate) fn execute_actions(
         context.engine.config.end_action_loop_budget();
         return (true, false, false, vec![error]);
     }
-    seed_multifield_tail_bindings(
-        &context.engine.fact_base,
-        collected_facts,
-        &rule_info.multifield_tail_bindings,
-        &mut eval_env.runtime_bindings,
-    );
 
     for (index, action) in rule_info.actions.iter().enumerate() {
         let runtime_call = rule_info
@@ -420,16 +399,9 @@ pub(crate) fn evaluate_test_condition(
     token: &Token,
     rule_info: &CompiledRuleInfo,
     test_condition: &CompiledTestCondition,
-    collected_facts: &[FactId],
     context: &mut ActionExecutionContext<'_>,
 ) -> Result<bool, ActionError> {
     let mut eval_env = ActionEvalEnv::default();
-    seed_multifield_tail_bindings(
-        &context.engine.fact_base,
-        collected_facts,
-        &rule_info.multifield_tail_bindings,
-        &mut eval_env.runtime_bindings,
-    );
 
     let CompiledTestCondition::Expr(test_expr) = test_condition;
     let result = eval_env
@@ -469,29 +441,6 @@ fn seed_fact_address_bindings(
 fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value) {
     // Both spellings share one current value, including after an RHS bind.
     env.insert(name.strip_prefix("$?").unwrap_or(name).to_string(), value);
-}
-
-fn seed_multifield_tail_bindings(
-    fact_base: &FactBase,
-    collected_facts: &[FactId],
-    hints: &[MultifieldTailBindingHint],
-    env: &mut RuntimeBindingEnv,
-) {
-    for hint in hints {
-        let Some(&fact_id) = collected_facts.get(hint.fact_index) else {
-            continue;
-        };
-        let Some(entry) = fact_base.get(fact_id) else {
-            continue;
-        };
-        let Fact::Ordered(ordered) = &entry.fact else {
-            continue;
-        };
-
-        let mut captured = ferric_rules_core::Multifield::new();
-        captured.extend(ordered.fields.iter().skip(hint.start_slot).cloned());
-        insert_runtime_binding(env, &hint.name, Value::Multifield(Box::new(captured)));
-    }
 }
 
 fn build_runtime_eval_bindings(
@@ -1203,7 +1152,6 @@ fn rule_info_clone_light(rule_info: &CompiledRuleInfo) -> CompiledRuleInfo {
         salience: rule_info.salience,
         test_conditions: Vec::new(),
         runtime_actions: Vec::new(),
-        multifield_tail_bindings: rule_info.multifield_tail_bindings.clone(),
     }
 }
 
@@ -3081,7 +3029,6 @@ mod tests {
             salience: Salience::new(0),
             test_conditions: Vec::new(),
             runtime_actions: Vec::new(),
-            multifield_tail_bindings: Vec::new(),
         };
         let mut multifield = ferric_rules_core::Multifield::new();
         multifield.push(Value::Integer(7));
@@ -3235,7 +3182,6 @@ mod action_query_validation_tests {
             salience: Salience::new(0),
             test_conditions: Vec::new(),
             runtime_actions: Vec::new(),
-            multifield_tail_bindings: Vec::new(),
         };
         let mut env = ActionEvalEnv::default();
         insert_runtime_binding(&mut env.runtime_bindings, "outside", Value::Integer(7));

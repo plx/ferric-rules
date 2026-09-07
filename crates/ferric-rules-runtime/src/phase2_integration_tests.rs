@@ -211,6 +211,7 @@ mod tests {
             rule_id: compiler.allocate_rule_id(),
             salience: Salience::DEFAULT,
             patterns: vec![CompilablePattern {
+                sequence: None,
                 entry_type: AlphaEntryType::OrderedRelation(color_sym.symbol),
                 constant_tests: vec![ConstantTest {
                     slot: SlotIndex::Ordered(0),

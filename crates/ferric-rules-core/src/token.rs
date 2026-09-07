@@ -46,6 +46,7 @@ pub struct Token {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TokenStore {
     pub(crate) tokens: SlotMap<TokenId, Token>,
+    pub(crate) sequence_matches: slotmap::SparseSecondaryMap<TokenId, SmallVec<[usize; 2]>>,
     #[cfg_attr(
         feature = "serde",
         serde(with = "crate::serde_helpers::fx_hash_map_of_fx_hash_set")
@@ -64,6 +65,7 @@ impl TokenStore {
     pub fn new() -> Self {
         Self {
             tokens: SlotMap::with_key(),
+            sequence_matches: slotmap::SparseSecondaryMap::new(),
             fact_to_tokens: HashMap::default(),
             parent_to_children: HashMap::default(),
         }
@@ -99,6 +101,23 @@ impl TokenStore {
         id
     }
 
+    /// Insert a positive sequence match while preserving its positional identity.
+    pub fn insert_sequence_match(
+        &mut self,
+        token: Token,
+        lengths: SmallVec<[usize; 2]>,
+    ) -> TokenId {
+        let id = self.insert(token);
+        self.sequence_matches.insert(id, lengths);
+        id
+    }
+
+    /// Capture lengths associated with this token's original fact match.
+    #[must_use]
+    pub fn match_lengths(&self, id: TokenId) -> Option<&[usize]> {
+        self.sequence_matches.get(id).map(SmallVec::as_slice)
+    }
+
     /// Remove a single token from the store.
     ///
     /// Updates both reverse indices and prunes empty entries.
@@ -107,6 +126,7 @@ impl TokenStore {
     /// Returns the removed token if it existed, or `None` if not found.
     pub fn remove(&mut self, id: TokenId) -> Option<Token> {
         let token = self.tokens.remove(id)?;
+        self.sequence_matches.remove(id);
 
         // Clean up fact_to_tokens index (single fact per token)
         if let Some(fact_id) = token.fact {
@@ -165,6 +185,7 @@ impl TokenStore {
     /// Remove all tokens and clear all indices.
     pub fn clear(&mut self) {
         self.tokens.clear();
+        self.sequence_matches.clear();
         self.fact_to_tokens.clear();
         self.parent_to_children.clear();
     }
@@ -275,6 +296,14 @@ impl TokenStore {
     #[doc(hidden)]
     #[allow(clippy::too_many_lines)]
     pub fn validate_consistency(&self) -> Result<(), String> {
+        for (id, _) in &self.sequence_matches {
+            crate::snapshot::require!(
+                self.tokens
+                    .get(id)
+                    .is_some_and(|token| token.fact.is_some()),
+                "sequence match metadata references a missing or factless token"
+            );
+        }
         // 1. Every TokenId in fact_to_tokens exists in the tokens SlotMap
         for (fact_id, token_ids) in &self.fact_to_tokens {
             for &token_id in token_ids {
@@ -381,6 +410,35 @@ mod tests {
         let store = TokenStore::new();
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn sequence_match_metadata_follows_token_lifecycle() {
+        let mut store = TokenStore::new();
+        let facts = make_fact_ids(1);
+        let parent = store.insert(make_token(None, None, NodeId(0)));
+        let first = store.insert_sequence_match(
+            make_token(Some(facts[0]), Some(parent), NodeId(1)),
+            smallvec::smallvec![1, 3],
+        );
+        let second = store.insert_sequence_match(
+            make_token(Some(facts[0]), Some(parent), NodeId(1)),
+            smallvec::smallvec![3, 1],
+        );
+        assert_eq!(store.match_lengths(first), Some([1, 3].as_slice()));
+        assert_eq!(store.match_lengths(second), Some([3, 1].as_slice()));
+        store.remove(first);
+        assert!(store.match_lengths(first).is_none());
+        assert!(store.match_lengths(second).is_some());
+        store.remove_cascade(parent);
+        assert!(store.sequence_matches.is_empty());
+        store.debug_assert_consistency();
+        let final_token = store.insert_sequence_match(
+            make_token(Some(facts[0]), None, NodeId(1)),
+            smallvec::smallvec![0],
+        );
+        store.clear();
+        assert!(store.match_lengths(final_token).is_none());
     }
 
     #[test]
