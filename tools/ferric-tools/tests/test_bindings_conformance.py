@@ -55,7 +55,7 @@ def test_configuration_isolation_uses_behavioral_observations() -> None:
 
     assert case.semantic == "configuration.isolation"
     assert case.required_bindings == frozenset(REQUIRED_BINDINGS)
-    assert set(case.deviations) == {"python"}
+    assert not case.deviations
     assert case.canonical["encoding_ascii_only"] == {
         "halt_reason": "action_error",
         "unicode": "rejected",
