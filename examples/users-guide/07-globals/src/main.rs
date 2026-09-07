@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     // Each identical fact represents a distinct session event in this example.
     engine.set_fact_duplication(true);
     for _ in 0..3 {
-        engine.assert_ordered("session-start", vec![])?;
+        engine.assert_ordered("session-start", ())?;
         engine.run(RunLimit::Unlimited)?;
     }
 

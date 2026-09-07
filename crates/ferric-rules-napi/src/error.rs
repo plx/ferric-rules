@@ -14,6 +14,8 @@ fn engine_error_class(err: &EngineError) -> &'static str {
         EngineError::ModuleNotFound(_) => "FerricModuleNotFoundError",
         EngineError::Encoding(_) => "FerricEncodingError",
         EngineError::FactTimestampExhausted(_)
+        | EngineError::ForeignHandle
+        | EngineError::InvalidHostValue(_)
         | EngineError::WrongThread { .. }
         | EngineError::NotATemplateFact(_)
         | EngineError::SlotCountMismatch { .. }

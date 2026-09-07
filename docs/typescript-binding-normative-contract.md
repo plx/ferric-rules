@@ -75,7 +75,10 @@ and is removed from the `Engine` prototype before addon initialization completes
 4. `bigint` -> CLIPS Integer.
 5. `boolean` -> CLIPS Symbols `TRUE` / `FALSE`.
 6. `Array` -> CLIPS Multifield recursively.
-7. `null` and `undefined` -> CLIPS Void.
+7. `null` and `undefined` are rejected as fact inputs, including inside nested
+   multifields. Use an explicit application sentinel when absence must be stored.
+8. Fact inputs allow at most 32 multifield levels and one million total values
+   per assertion.
 
 ### 3.2 CLIPS -> JS
 1. CLIPS Symbol -> `FerricSymbol`.
@@ -100,6 +103,10 @@ and is removed from the `Engine` prototype before addon initialization completes
    error and `MUST NOT` be rounded or truncated.
 6. Fact-ID representation is distinct from the adaptive `number`/`bigint`
    representation for CLIPS integer values and from run counts and limits.
+7. Fact IDs belong to the engine that returned them and remain stable while
+   their fact lives. Foreign IDs and IDs retained across reset, clear or restore
+   do not select live facts. Persist application keys in fields and query fresh
+   handles after restoration.
 
 ### 3.4 Worker Boundary
 1. Worker transport `MUST` preserve the semantics in 3.1, 3.2, and 3.3.

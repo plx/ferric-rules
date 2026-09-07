@@ -211,10 +211,10 @@ mod tests {
             rule_id: compiler.allocate_rule_id(),
             salience: Salience::DEFAULT,
             patterns: vec![CompilablePattern {
-                entry_type: AlphaEntryType::OrderedRelation(color_sym),
+                entry_type: AlphaEntryType::OrderedRelation(color_sym.symbol),
                 constant_tests: vec![ConstantTest {
                     slot: SlotIndex::Ordered(0),
-                    test_type: ConstantTestType::NotEqual(AtomKey::Symbol(red_sym)),
+                    test_type: ConstantTestType::NotEqual(AtomKey::Symbol(red_sym.symbol)),
                 }],
                 variable_slots: vec![],
                 negated_variable_slots: Vec::new(),
@@ -237,7 +237,8 @@ mod tests {
         ",
         );
 
-        for &fid in &facts.asserted_facts {
+        for &handle in &facts.asserted_facts {
+            let fid = engine.host.resolve(handle).unwrap();
             let fact = engine.fact_base.get(fid).unwrap().fact.clone();
             rete.assert_fact(fid, &fact, &engine.fact_base);
         }
@@ -251,17 +252,14 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Helper: assert facts into both the `fact_base` (via `load_ok`) and the rete network.
-    fn assert_facts_into_rete(
-        engine: &mut crate::Engine,
-        source: &str,
-    ) -> Vec<ferric_rules_core::FactId> {
+    fn assert_facts_into_rete(engine: &mut crate::Engine, source: &str) -> Vec<crate::FactHandle> {
         // Facts now automatically propagate through rete via load_ok
         let result = load_ok(engine, source);
         result.asserted_facts
     }
 
     /// Helper: retract a fact (automatically retracts from rete).
-    fn retract_from_rete(engine: &mut crate::Engine, fid: ferric_rules_core::FactId) {
+    fn retract_from_rete(engine: &mut crate::Engine, fid: crate::FactHandle) {
         engine.retract(fid).expect("retract should succeed");
     }
 
@@ -1152,7 +1150,7 @@ mod tests {
             .facts()
             .unwrap()
             .find(
-                |(_, f)| matches!(f, ferric_rules_core::Fact::Ordered(of) if of.relation == b_sym),
+                |(_, f)| matches!(f, ferric_rules_core::Fact::Ordered(of) if of.relation == b_sym.symbol),
             )
             .map(|(fid, _)| fid)
             .unwrap();
@@ -1187,7 +1185,7 @@ mod tests {
         let block_fid = engine
             .facts()
             .unwrap()
-            .find(|(_, f)| matches!(f, ferric_rules_core::Fact::Ordered(of) if of.relation == block_sym))
+            .find(|(_, f)| matches!(f, ferric_rules_core::Fact::Ordered(of) if of.relation == block_sym.symbol))
             .map(|(fid, _)| fid)
             .unwrap();
         engine.retract(block_fid).unwrap();
@@ -1201,7 +1199,7 @@ mod tests {
         let item_fids: Vec<_> = engine
             .facts()
             .unwrap()
-            .filter(|(_, f)| matches!(f, ferric_rules_core::Fact::Ordered(of) if of.relation == item_sym))
+            .filter(|(_, f)| matches!(f, ferric_rules_core::Fact::Ordered(of) if of.relation == item_sym.symbol))
             .map(|(fid, _)| fid)
             .collect();
         for fid in item_fids {
@@ -1277,7 +1275,7 @@ mod tests {
             .facts()
             .unwrap()
             .find(
-                |(_, f)| matches!(f, ferric_rules_core::Fact::Ordered(of) if of.relation == z_sym),
+                |(_, f)| matches!(f, ferric_rules_core::Fact::Ordered(of) if of.relation == z_sym.symbol),
             )
             .map(|(fid, _)| fid)
             .unwrap();

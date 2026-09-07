@@ -1,5 +1,5 @@
 //! Activation creation chronology, including negative reactivation and restore.
-use ferric_rules_core::{ConflictResolutionStrategy, Value};
+use ferric_rules_core::ConflictResolutionStrategy;
 use ferric_rules_runtime::{Engine, EngineConfig, HaltReason, RunLimit};
 
 const RULES: &str = r#"
@@ -10,9 +10,9 @@ const RULES: &str = r#"
 fn reactivated(strategy: ConflictResolutionStrategy) -> Engine {
     let mut engine =
         Engine::with_rules_config(RULES, EngineConfig::default().with_strategy(strategy)).unwrap();
-    engine.assert_ordered("seed", [] as [Value; 0]).unwrap();
-    engine.assert_ordered("other", [] as [Value; 0]).unwrap();
-    let blocker = engine.assert_ordered("block", [] as [Value; 0]).unwrap();
+    engine.assert_ordered("seed", ()).unwrap();
+    engine.assert_ordered("other", ()).unwrap();
+    let blocker = engine.assert_ordered("block", ()).unwrap();
     assert_eq!(engine.agenda_len(), 1);
     engine.retract(blocker).unwrap();
     assert_eq!(engine.agenda_len(), 2);
@@ -45,7 +45,7 @@ fn snapshots_preserve_creation_order_and_new_reactivation() {
             let engine = reactivated(strategy);
             let bytes = engine.serialize(format).unwrap();
             let mut restored = Engine::deserialize(&bytes, format).unwrap();
-            let block = restored.assert_ordered("block", [] as [Value; 0]).unwrap();
+            let block = restored.assert_ordered("block", ()).unwrap();
             restored.retract(block).unwrap();
             verify(restored, expected);
         }

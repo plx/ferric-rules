@@ -295,3 +295,17 @@ Arbitrary computed defaults are also unsupported; use literal defaults or
 instance type declarations are rejected because the supported value model has
 no corresponding tagged value. These restrictions do not add CLIPS class
 constraints, general static type inference, or dynamic constraint toggles.
+
+## September 2026 host value and fact-handle changes
+
+Rust assertions accept engine-scoped host values and opaque `FactHandle`s.
+Use `engine.symbol_value`, `HostValue::multifield`, named template slots, and
+`()` for empty fields. Raw core symbols cannot be used as portable input.
+Re-query fact handles after reset or restore; persist application IDs in facts.
+See [host-api.md](host-api.md).
+
+Python `None` and Node `null` cannot be stored in facts, including nested
+multifields. Use an explicit application sentinel instead. Unsupported external
+values produce errors rather than null conversions. Owned Python fact values
+remain readable after closing their source engine and can be asserted into
+another engine, which interns symbol text into its own symbol table.

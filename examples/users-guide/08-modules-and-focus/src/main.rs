@@ -18,7 +18,7 @@ fn main() -> anyhow::Result<()> {
     engine.assert_template(
         "reading",
         &["kind", "value"],
-        vec![kind, Value::Float(120.0)],
+        vec![kind, Value::Float(120.0).into()],
     )?;
 
     engine.push_focus("ALERTS")?;

@@ -10,7 +10,7 @@ fn assert_person(engine: &mut Engine, name: &str, age: i64) -> anyhow::Result<()
     engine.assert_template(
         "person",
         &["name", "age"],
-        vec![name_sym, Value::Integer(age)],
+        vec![name_sym, Value::Integer(age).into()],
     )?;
     Ok(())
 }

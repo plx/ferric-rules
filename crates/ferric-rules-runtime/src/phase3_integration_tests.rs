@@ -268,8 +268,8 @@ mod tests {
         ",
         );
 
-        engine.assert_ordered("candidate", []).unwrap();
-        engine.assert_ordered("open", []).unwrap();
+        engine.assert_ordered("candidate", ()).unwrap();
+        engine.assert_ordered("open", ()).unwrap();
 
         assert_eq!(
             engine.agenda_len(),

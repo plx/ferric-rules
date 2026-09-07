@@ -75,6 +75,8 @@ create_exception!(
 pub fn engine_error_to_pyerr(err: EngineError) -> PyErr {
     match err {
         EngineError::FactTimestampExhausted(_)
+        | EngineError::ForeignHandle
+        | EngineError::InvalidHostValue(_)
         | EngineError::WrongThread { .. }
         | EngineError::NotATemplateFact(_)
         | EngineError::SlotCountMismatch { .. }
@@ -129,7 +131,6 @@ pub fn load_errors_to_pyerr(errors: Vec<LoadError>) -> PyErr {
             }
             _ => FerricError::new_err(msg),
         },
-
     }
 }
 

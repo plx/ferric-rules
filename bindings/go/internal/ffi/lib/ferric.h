@@ -646,7 +646,10 @@ enum FerricError ferric_engine_assert_string(struct FerricEngine *engine,
                                              const char * FERRIC_NULL_TERMINATED source,
                                              uint64_t *out_fact_id);
 
-// Retract a fact by its opaque fact ID obtained from a previous assert.
+// Retract a fact by its opaque fact ID obtained from this engine.
+// IDs are unsigned 64-bit host handles, stable while the fact lives. Foreign,
+// reset, cleared, and pre-restoration IDs return `NotFound`; they are not
+// durable application identities or raw RETE keys.
 //
 // # Safety
 //

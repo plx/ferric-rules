@@ -1,6 +1,6 @@
 //! Negative matches must retain every supporting blocker across transitions.
 
-use ferric_rules_core::FactId;
+use ferric_rules_runtime::FactHandle as FactId;
 use ferric_rules_runtime::{Engine, EngineConfig, HaltReason, Multifield, RunLimit, Value};
 
 const RULE: &str =
@@ -40,7 +40,7 @@ fn clips_correlated_not_waits_for_the_last_blocker() {
     let Value::Symbol(key) = fact.fields[0] else {
         panic!("result key must be a symbol");
     };
-    assert_eq!(engine.resolve_symbol(key), Some("a"));
+    assert_eq!(engine.resolve_core_symbol(key), Some("a"));
 }
 
 #[test]
@@ -179,6 +179,31 @@ fn snapshots_keep_late_blockers_until_the_last_retraction() {
     for &format in SerializationFormat::ALL {
         let bytes = engine.serialize(format).unwrap();
         let mut restored = Engine::deserialize(&bytes, format).unwrap();
+        assert!(restored.get_fact(first).unwrap().is_none());
+        assert!(restored.get_fact(second).unwrap().is_none());
+        let blockers = restored.find_facts("block").unwrap();
+        let first = blockers
+            .iter()
+            .find_map(|(id, fact)| match fact {
+                ferric_rules_core::Fact::Ordered(fact)
+                    if matches!(fact.fields[1], Value::Integer(1)) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let second = blockers
+            .iter()
+            .find_map(|(id, fact)| match fact {
+                ferric_rules_core::Fact::Ordered(fact)
+                    if matches!(fact.fields[1], Value::Integer(2)) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .unwrap();
         restored.retract(first).unwrap();
         fire(&mut restored, 0);
         restored.retract(second).unwrap();

@@ -3,7 +3,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyFloat, PyInt, PyList, PyString, PyTuple};
 
-use ferric_rules_runtime::{Engine, Multifield, Value};
+use ferric_rules_runtime::{Engine, HostValue, Value, HOST_VALUE_MAX_DEPTH, HOST_VALUE_MAX_ITEMS};
 
 /// A CLIPS symbol value.
 ///
@@ -91,7 +91,7 @@ pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult
         Value::Integer(i) => Ok(i.into_pyobject(py)?.into_any().unbind()),
         Value::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
         Value::Symbol(sym) => {
-            let s = engine.resolve_symbol(*sym).unwrap_or("<unknown>");
+            let s = engine.resolve_core_symbol(*sym).unwrap_or("<unknown>");
             Ok(Symbol {
                 value: s.to_owned(),
             }
@@ -120,7 +120,7 @@ pub fn value_to_python(py: Python<'_>, val: &Value, engine: &Engine) -> PyResult
     }
 }
 
-/// Convert a Python object to a Rust `Value`.
+/// Convert a Python object to an engine-validated host value.
 ///
 /// # Errors
 ///
@@ -131,7 +131,7 @@ pub struct PythonValueBudget {
 }
 
 impl PythonValueBudget {
-    pub fn convert(&mut self, obj: &Bound<'_, PyAny>, engine: &mut Engine) -> PyResult<Value> {
+    pub fn convert(&mut self, obj: &Bound<'_, PyAny>, engine: &mut Engine) -> PyResult<HostValue> {
         self.convert_at_depth(obj, engine, 0)
     }
 
@@ -140,14 +140,16 @@ impl PythonValueBudget {
         obj: &Bound<'_, PyAny>,
         engine: &mut Engine,
         depth: usize,
-    ) -> PyResult<Value> {
+    ) -> PyResult<HostValue> {
         self.items += 1;
-        if self.items > 1_000_000 {
+        if self.items > HOST_VALUE_MAX_ITEMS {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "host input exceeds 1000000 values",
             ));
         }
-        if depth >= 32 && (obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyTuple>()) {
+        if depth >= HOST_VALUE_MAX_DEPTH
+            && (obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyTuple>())
+        {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "host multifield nesting exceeds 32 levels",
             ));
@@ -158,34 +160,32 @@ impl PythonValueBudget {
             let fs = engine
                 .create_string(&val)
                 .map_err(crate::error::engine_error_to_pyerr)?;
-            return Ok(Value::String(fs));
+            return Ok(Value::String(fs).into());
         }
 
         if let Ok(sym) = obj.downcast::<Symbol>() {
             let val = sym.borrow().value.clone();
-            let sid = engine
-                .intern_symbol(&val)
-                .map_err(crate::error::engine_error_to_pyerr)?;
-            return Ok(Value::Symbol(sid));
+            return engine
+                .symbol_value(&val)
+                .map_err(crate::error::engine_error_to_pyerr);
         }
 
         // Check bool before int (bool is a subclass of int in Python)
         if let Ok(b) = obj.downcast::<PyBool>() {
             let sym_name = if b.is_true() { "TRUE" } else { "FALSE" };
-            let sym = engine
-                .intern_symbol(sym_name)
-                .map_err(crate::error::engine_error_to_pyerr)?;
-            return Ok(Value::Symbol(sym));
+            return engine
+                .symbol_value(sym_name)
+                .map_err(crate::error::engine_error_to_pyerr);
         }
 
         if let Ok(i) = obj.downcast::<PyInt>() {
             let val: i64 = i.extract()?;
-            return Ok(Value::Integer(val));
+            return Ok(Value::Integer(val).into());
         }
 
         if let Ok(f) = obj.downcast::<PyFloat>() {
             let val: f64 = f.extract()?;
-            return Ok(Value::Float(val));
+            return Ok(Value::Float(val).into());
         }
 
         // Match the other embedding surfaces: host strings are CLIPS strings.
@@ -194,29 +194,29 @@ impl PythonValueBudget {
             let string = engine
                 .create_string(&val)
                 .map_err(crate::error::engine_error_to_pyerr)?;
-            return Ok(Value::String(string));
+            return Ok(Value::String(string).into());
         }
 
         if obj.is_none() {
-            return Ok(Value::Void);
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "None (void) cannot be stored in a fact, including inside a multifield",
+            ));
         }
 
         if let Ok(list) = obj.downcast::<PyList>() {
-            let items: PyResult<Vec<Value>> = list
+            let items: PyResult<Vec<HostValue>> = list
                 .iter()
                 .map(|item| self.convert_at_depth(&item, engine, depth + 1))
                 .collect();
-            let mf: Multifield = items?.into_iter().collect();
-            return Ok(Value::Multifield(Box::new(mf)));
+            return HostValue::multifield(items?).map_err(crate::error::engine_error_to_pyerr);
         }
 
         if let Ok(tuple) = obj.downcast::<PyTuple>() {
-            let items: PyResult<Vec<Value>> = tuple
+            let items: PyResult<Vec<HostValue>> = tuple
                 .iter()
                 .map(|item| self.convert_at_depth(&item, engine, depth + 1))
                 .collect();
-            let mf: Multifield = items?.into_iter().collect();
-            return Ok(Value::Multifield(Box::new(mf)));
+            return HostValue::multifield(items?).map_err(crate::error::engine_error_to_pyerr);
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(format!(

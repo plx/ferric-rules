@@ -8,7 +8,7 @@ import {
   EngineHandle,
 } from "../../../helpers/ferric";
 
-const HIGH_GENERATION_FIRINGS = 1_048_577;
+const HIGH_GENERATION_FIRINGS = 2;
 const CHURN_SOURCE = `
 (defrule churn
   ?fact <- (generation ?value)
@@ -18,18 +18,17 @@ const CHURN_SOURCE = `
   (assert (generation (+ ?value 1))))
 `;
 
-test("D-008 EngineHandle structured-clones high-generation bigint IDs losslessly", async () => {
+test("D-008 EngineHandle structured-clones wide opaque bigint IDs losslessly", async () => {
   const handle = await EngineHandle.create({ source: CHURN_SOURCE });
   let restored: EngineHandle | undefined;
   try {
     const initialId = await handle.assertFact("generation", 0);
     assert.strictEqual(typeof initialId, "bigint");
 
-    // Safe legacy numbers still cross the worker boundary on input, while the
-    // returned Fact snapshot remains canonical bigint.
-    const legacyNumberId = Number(initialId);
-    assert.ok(Number.isSafeInteger(legacyNumberId));
-    assert.strictEqual((await handle.getFact(legacyNumberId))?.id, initialId);
+    assert.ok(initialId > BigInt(Number.MAX_SAFE_INTEGER));
+    assert.strictEqual(await handle.getFact(0), null);
+    await assert.rejects(handle.getFact(Number(initialId)), /safe integer/);
+    assert.strictEqual((await handle.getFact(initialId))?.id, initialId);
 
     const run = await handle.run({ limit: HIGH_GENERATION_FIRINGS });
     assert.strictEqual(run.rulesFired, HIGH_GENERATION_FIRINGS);
@@ -44,8 +43,11 @@ test("D-008 EngineHandle structured-clones high-generation bigint IDs losslessly
 
     const snapshot = await handle.serialize();
     restored = await EngineHandle.create({ snapshot: { data: snapshot } });
-    assert.strictEqual((await restored.getFact(fact.id))?.id, fact.id);
-    await restored.retract(fact.id);
+    assert.strictEqual(await restored.getFact(fact.id), null);
+    const [fresh] = await restored.findFacts("generation");
+    assert.notStrictEqual(fresh.id, fact.id);
+    assert.deepStrictEqual(fresh.fields, fact.fields);
+    await restored.retract(fresh.id);
     assert.strictEqual(await restored.getFact(fact.id), null);
 
     await handle.retract(fact.id);

@@ -19,7 +19,7 @@ fn logical_is_rejected_in_every_original_tree_position_before_installation() {
         assert!(errors.iter().any(|error| matches!(error, LoadError::Compile(message)
             if message.contains("logical") && message.contains("truth maintenance") && message.contains("line 2"))), "{errors:?}");
         assert!(engine.rules().is_empty());
-        engine.assert_ordered("seed", Vec::new()).unwrap();
+        engine.assert_ordered("seed", ()).unwrap();
         let result = engine.run(RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 0);
         assert!(engine.find_facts("dependent").unwrap().is_empty());

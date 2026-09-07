@@ -129,3 +129,55 @@ class TestFindFacts:
         engine.assert_fact("color", "red")
         found = engine.find_facts("nonexistent")
         assert found == []
+
+
+class TestHostProvenance:
+    def test_foreign_fact_id_cannot_alias_a_local_fact(self):
+        with ferric.Engine() as first, ferric.Engine() as second:
+            first_id = first.assert_fact("item", 1)
+            second_id = second.assert_fact("item", 2)
+            assert first_id != second_id
+            assert first_id >= 1 << 63
+            assert second_id >= 1 << 63
+            assert second.get_fact(first_id) is None
+            assert first_id not in second
+            with pytest.raises(ferric.FerricFactNotFoundError):
+                second.retract(first_id)
+            assert second.get_fact(second_id).fields == [2]
+            second.retract(second_id)
+            assert second.get_fact(second_id) is None
+
+    def test_reset_and_restore_invalidate_transient_ids(self):
+        with ferric.Engine.from_source("(deffacts seed (item 7))") as engine:
+            engine.reset()
+            old_fact = engine.find_facts("item")[0]
+            snapshot = engine.serialize()
+            engine.reset()
+            new_fact = engine.find_facts("item")[0]
+            assert new_fact.id != old_fact.id
+            assert engine.get_fact(old_fact.id) is None
+            with pytest.raises(ferric.FerricFactNotFoundError):
+                engine.retract(old_fact.id)
+            with ferric.Engine.from_snapshot(snapshot) as restored:
+                restored_fact = restored.find_facts("item")[0]
+                assert restored_fact.id not in {old_fact.id, new_fact.id}
+                assert restored.get_fact(old_fact.id) is None
+                assert restored_fact.fields == [7]
+        assert old_fact.fields == [7]
+
+    def test_owned_values_reintern_after_source_engine_closes(self):
+        with ferric.Engine() as source:
+            source.assert_fact("unrelated", ferric.Symbol("first"))
+            fact_id = source.assert_fact(
+                "item", ferric.Symbol("ready"),
+                [ferric.Symbol("nested"), ferric.String("text")],
+            )
+            owned_fact = source.get_fact(fact_id)
+        with ferric.Engine.from_source(
+            '(defrule selected (item ready ?payload) => (printout t "selected" crlf))'
+        ) as target:
+            target.assert_fact("different", ferric.Symbol("intern-order"))
+            copy_id = target.assert_fact(owned_fact.relation, *owned_fact.fields)
+            assert target.get_fact(copy_id).fields == owned_fact.fields
+            assert target.run().rules_fired == 1
+            assert target.get_output("t") == "selected\n"

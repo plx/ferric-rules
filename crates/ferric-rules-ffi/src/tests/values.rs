@@ -3,8 +3,6 @@
 use std::ffi::{CStr, CString};
 use std::ptr;
 
-use slotmap::Key as _;
-
 use crate::engine::{
     ferric_engine_fact_count, ferric_engine_free, ferric_engine_get_fact_field,
     ferric_engine_get_fact_field_count, ferric_engine_get_global, ferric_engine_load_string,
@@ -29,7 +27,7 @@ unsafe fn first_fact_id(handle: &FerricEngine) -> u64 {
         .expect("facts() must not fail in test context")
         .next()
         .expect("expected at least one user-visible fact");
-    fact_id.data().as_ffi()
+    fact_id.as_raw()
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +69,9 @@ fn external_identities_are_rejected_by_engine_value_boundaries() {
     };
     // SAFETY: `external` has a valid tag and initialized active fields; the
     // conversion must reject this legacy type without dereferencing a pointer.
-    let error = unsafe { crate::types::ferric_to_value(&external, &mut engine) }.unwrap_err();
+    let mut remaining = ferric_rules_runtime::HOST_VALUE_MAX_ITEMS;
+    let error = unsafe { crate::types::ferric_to_value(&external, &mut engine, 0, &mut remaining) }
+        .unwrap_err();
     assert!(error.contains("ExternalAddress cannot be converted from FFI"));
 }
 

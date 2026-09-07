@@ -12,14 +12,17 @@ use thiserror::Error;
 
 use ferric_rules_core::beta::RuleId;
 use ferric_rules_core::{
-    EncodingError, Fact, FactBase, FactId, FactInsertionResult, FerricString, IntoFieldValues,
-    ReteCompiler, ReteNetwork, Symbol, SymbolTable, TemplateFact, TemplateId, Value,
+    EncodingError, Fact, FactBase, FactId, FactInsertionResult, FerricString, ReteCompiler,
+    ReteNetwork, Symbol, SymbolTable, TemplateFact, TemplateId, Value,
 };
 
 use crate::actions::{self, ActionError, CompiledRuleInfo};
 use crate::config::EngineConfig;
 use crate::execution::{FiredRule, HaltReason, RunLimit, RunResult};
 use crate::functions::{FunctionEnv, GenericRegistry, GlobalStore, ModuleNameMap};
+use crate::host::{
+    FactHandle, HostFact, HostState, HostValue, IntoHostFields, SymbolHandle, HOST_VALUE_MAX_ITEMS,
+};
 use crate::modules::{ModuleId, ModuleRegistry};
 use crate::router::OutputRouter;
 use crate::templates::RegisteredTemplate;
@@ -81,17 +84,17 @@ fn propagate_fact_assertion(rete: &mut ReteNetwork, fact_base: &FactBase, fact_i
 
 /// Result of attempting to assert a fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FactAssertionResult {
+pub enum FactAssertionResult<Id = FactHandle> {
     /// A new fact was inserted and propagated through the RETE network.
-    Asserted(FactId),
+    Asserted(Id),
     /// Duplication was disabled and an equivalent active fact already existed.
-    Duplicate(FactId),
+    Duplicate(Id),
 }
 
-impl FactAssertionResult {
+impl<Id: Copy> FactAssertionResult<Id> {
     /// Return the newly asserted or existing equivalent fact ID.
     #[must_use]
-    pub fn fact_id(self) -> FactId {
+    pub fn fact_id(self) -> Id {
         match self {
             Self::Asserted(fact_id) | Self::Duplicate(fact_id) => fact_id,
         }
@@ -168,6 +171,7 @@ impl FactAssertionResult {
 ///   `list-focus-stack`, `agenda`).
 pub struct Engine {
     pub(crate) fact_base: FactBase,
+    pub(crate) host: HostState,
     pub(crate) symbol_table: SymbolTable,
     pub(crate) config: EngineConfig,
     pub(crate) rete: ReteNetwork,
@@ -253,6 +257,7 @@ impl Engine {
         let strategy = config.strategy;
         Self {
             fact_base: FactBase::new(),
+            host: HostState::new(),
             symbol_table: SymbolTable::new(),
             config,
             rete: ReteNetwork::with_strategy(strategy),
@@ -334,7 +339,7 @@ impl Engine {
     pub(crate) fn assert_fact_internal(
         &mut self,
         fact: Fact,
-    ) -> Result<FactAssertionResult, EngineError> {
+    ) -> Result<FactAssertionResult<FactId>, EngineError> {
         Ok(
             match self
                 .fact_base
@@ -424,30 +429,75 @@ impl Engine {
         self.processing_predicates = false;
     }
 
+    fn host_fields(
+        &self,
+        fields: impl IntoHostFields,
+    ) -> Result<smallvec::SmallVec<[Value; 8]>, EngineError> {
+        let fields = fields.into_host_fields().0;
+        let mut remaining = HOST_VALUE_MAX_ITEMS;
+        for value in &fields {
+            value.validate(
+                Some(self.host.owner),
+                self.config.string_encoding,
+                &mut remaining,
+            )?;
+        }
+        Ok(fields.into_iter().map(|value| value.value).collect())
+    }
+
+    fn validate_ordered_host_relation(&self, relation: &str) -> Result<(), EngineError> {
+        // Ordered identities are global in the current RETE representation.
+        // Match the loader's inverse guard by local name, including private
+        // and module-qualified template definitions.
+        let local = relation.rsplit("::").next().unwrap_or(relation);
+        if self
+            .template_defs
+            .values()
+            .any(|definition| definition.name.rsplit("::").next() == Some(local))
+        {
+            return Err(EngineError::InvalidHostValue(format!(
+                "ordered relation `{relation}` conflicts with an explicit template; use assert_template_slots"
+            )));
+        }
+        Ok(())
+    }
+
+    fn host_assertion_result(&self, result: FactAssertionResult<FactId>) -> FactAssertionResult {
+        self.host.prune(&self.fact_base);
+        match result {
+            FactAssertionResult::Asserted(id) => {
+                FactAssertionResult::Asserted(self.host.export(id))
+            }
+            FactAssertionResult::Duplicate(id) => {
+                FactAssertionResult::Duplicate(self.host.export(id))
+            }
+        }
+    }
+
     /// Assert an ordered fact into working memory.
     ///
     /// The relation name is interned as a symbol. Fields can be passed as a
     /// `Vec<Value>`, a single `Value`, a primitive (`i64`, `i32`, `f64`),
-    /// a `Symbol`, a `FerricString`, or a fixed-size array of `Value`s.
+    /// a `SymbolHandle`, a `FerricString`, or a fixed-size array of host values.
     ///
     /// # Examples
     ///
     /// ```ignore
     /// engine.assert_ordered("count", 42_i64)?;           // single integer
-    /// engine.assert_ordered("tier", free_symbol)?;        // single Symbol
+    /// engine.assert_ordered("tier", free_symbol)?;        // single SymbolHandle
     /// engine.assert_ordered("pair", vec![v1, v2])?;       // multiple values
-    /// engine.assert_ordered("empty", vec![])?;            // no fields
+    /// engine.assert_ordered("empty", ())?;            // no fields
     /// ```
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The relation name violates encoding constraints (e.g., non-ASCII in ASCII mode)
-    pub fn assert_ordered<F: IntoFieldValues>(
+    pub fn assert_ordered<F: IntoHostFields>(
         &mut self,
         relation: &str,
         fields: F,
-    ) -> Result<FactId, EngineError> {
+    ) -> Result<FactHandle, EngineError> {
         Ok(self.assert_ordered_with_result(relation, fields)?.fact_id())
     }
 
@@ -461,38 +511,65 @@ impl Engine {
     /// # Errors
     ///
     /// Returns an error if the relation violates encoding constraints.
-    pub fn assert_ordered_with_result<F: IntoFieldValues>(
+    pub fn assert_ordered_with_result<F: IntoHostFields>(
         &mut self,
         relation: &str,
         fields: F,
     ) -> Result<FactAssertionResult, EngineError> {
         ferric_span!(info_span, "engine_assert_ordered", relation);
 
+        self.validate_ordered_host_relation(relation)?;
+        let fields_small = self.host_fields(fields)?;
         let relation_sym = self
             .symbol_table
             .intern_symbol(relation, self.config.string_encoding)?;
 
-        let fields_small = fields.into_field_values();
-        self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+        let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
             relation: relation_sym,
             fields: fields_small,
-        }))
+        }))?;
+        Ok(self.host_assertion_result(result))
     }
 
-    /// Assert a fully constructed fact into working memory.
-    ///
-    /// Returns an error if insertion requires an exhausted fact timestamp.
-    pub fn assert(&mut self, fact: Fact) -> Result<FactId, EngineError> {
+    /// Reassert a captured owned fact after checking engine ownership and template shape.
+    pub fn assert(&mut self, fact: HostFact) -> Result<FactHandle, EngineError> {
         Ok(self.assert_with_result(fact)?.fact_id())
     }
 
-    /// Assert a fully constructed fact and report whether it was newly inserted.
-    ///
-    /// Returns an error if insertion requires an exhausted fact timestamp.
-    pub fn assert_with_result(&mut self, fact: Fact) -> Result<FactAssertionResult, EngineError> {
+    /// Reassert a captured owned fact and report whether it was newly inserted.
+    pub fn assert_with_result(
+        &mut self,
+        fact: HostFact,
+    ) -> Result<FactAssertionResult, EngineError> {
         ferric_span!(info_span, "engine_assert");
 
-        self.assert_fact_internal(fact)
+        if fact.owner != self.host.owner {
+            return Err(EngineError::ForeignHandle);
+        }
+        if let Fact::Ordered(ordered) = &fact.fact {
+            let relation = self
+                .resolve_core_symbol(ordered.relation)
+                .ok_or(EngineError::ForeignHandle)?;
+            self.validate_ordered_host_relation(relation)?;
+        }
+        if let Fact::Template(template) = &fact.fact {
+            let definition = self
+                .template_defs
+                .get(template.template_id)
+                .ok_or(EngineError::ForeignHandle)?;
+            if fact
+                .template
+                .as_ref()
+                .map_or(true, |captured| !captured.same_shape(definition))
+            {
+                return Err(EngineError::ForeignHandle);
+            }
+            definition
+                .validate_slots(&template.slots)
+                .map_err(EngineError::InvalidHostValue)?;
+        }
+        let result = self.assert_fact_internal(fact.fact)?;
+        Ok(self.host_assertion_result(result))
     }
 
     /// Assert a template fact by template name and named slot values.
@@ -516,8 +593,8 @@ impl Engine {
         &mut self,
         template_name: &str,
         slot_names: &[&str],
-        slot_values: Vec<Value>,
-    ) -> Result<FactId, EngineError> {
+        slot_values: impl IntoHostFields,
+    ) -> Result<FactHandle, EngineError> {
         Ok(self
             .assert_template_with_result(template_name, slot_names, slot_values)?
             .fact_id())
@@ -536,8 +613,9 @@ impl Engine {
         &mut self,
         template_name: &str,
         slot_names: &[&str],
-        slot_values: Vec<Value>,
+        slot_values: impl IntoHostFields,
     ) -> Result<FactAssertionResult, EngineError> {
+        let slot_values = self.host_fields(slot_values)?;
         if slot_names.len() != slot_values.len() {
             return Err(EngineError::SlotCountMismatch {
                 names: slot_names.len(),
@@ -606,7 +684,8 @@ impl Engine {
             slots,
         });
 
-        self.assert_fact_internal(fact)
+        let result = self.assert_fact_internal(fact)?;
+        Ok(self.host_assertion_result(result))
     }
 
     /// Assert named template slot/value pairs, applying defaults to omitted slots.
@@ -617,11 +696,11 @@ impl Engine {
     ///
     /// # Errors
     /// Returns the same slot, template and encoding errors as [`Self::assert_template`].
-    pub fn assert_template_slots<'a>(
+    pub fn assert_template_slots<'a, V: Into<HostValue>>(
         &mut self,
         template_name: &str,
-        slots: impl IntoIterator<Item = (&'a str, Value)>,
-    ) -> Result<FactId, EngineError> {
+        slots: impl IntoIterator<Item = (&'a str, V)>,
+    ) -> Result<FactHandle, EngineError> {
         let (names, values): (Vec<_>, Vec<_>) = slots.into_iter().unzip();
         self.assert_template(template_name, &names, values)
     }
@@ -640,24 +719,29 @@ impl Engine {
     /// - The slot name does not exist in the template
     pub fn get_fact_slot_by_name(
         &self,
-        fact_id: FactId,
+        fact_id: FactHandle,
         slot_name: &str,
     ) -> Result<&Value, EngineError> {
+        let handle = fact_id;
+        let fact_id = self
+            .host
+            .resolve(handle)
+            .ok_or(EngineError::FactNotFound(handle))?;
         if Some(fact_id) == self.initial_fact_id {
-            return Err(EngineError::FactNotFound(fact_id));
+            return Err(EngineError::FactNotFound(handle));
         }
 
         let fact = self
             .fact_base
             .get(fact_id)
-            .ok_or(EngineError::FactNotFound(fact_id))?;
+            .ok_or(EngineError::FactNotFound(handle))?;
 
         match &fact.fact {
             Fact::Template(t) => {
                 let def = self
                     .template_defs
                     .get(t.template_id)
-                    .ok_or(EngineError::FactNotFound(fact_id))?;
+                    .ok_or(EngineError::FactNotFound(handle))?;
 
                 let idx = def
                     .slot_index(slot_name)
@@ -666,9 +750,9 @@ impl Engine {
                         slot: slot_name.to_string(),
                     })?;
 
-                t.slots.get(idx).ok_or(EngineError::FactNotFound(fact_id))
+                t.slots.get(idx).ok_or(EngineError::FactNotFound(handle))
             }
-            Fact::Ordered(_) => Err(EngineError::NotATemplateFact(fact_id)),
+            Fact::Ordered(_) => Err(EngineError::NotATemplateFact(handle)),
         }
     }
 
@@ -678,7 +762,12 @@ impl Engine {
     ///
     /// Returns an error if:
     /// - The fact ID does not exist
-    pub fn retract(&mut self, fact_id: FactId) -> Result<(), EngineError> {
+    pub fn retract(&mut self, fact_id: FactHandle) -> Result<(), EngineError> {
+        let handle = fact_id;
+        let fact_id = self
+            .host
+            .resolve(handle)
+            .ok_or(EngineError::FactNotFound(handle))?;
         ferric_span!(info_span, "engine_retract", fact_id = ?fact_id);
 
         if Some(fact_id) == self.initial_fact_id {
@@ -687,7 +776,7 @@ impl Engine {
         let entry = self
             .fact_base
             .get(fact_id)
-            .ok_or(EngineError::FactNotFound(fact_id))?;
+            .ok_or(EngineError::FactNotFound(handle))?;
         let fact = entry.fact.clone();
 
         // Retract from rete first (needs fact_base for negative node handling)
@@ -696,8 +785,9 @@ impl Engine {
         // Then retract from fact base
         self.fact_base
             .retract(fact_id)
-            .ok_or(EngineError::FactNotFound(fact_id))?;
+            .ok_or(EngineError::FactNotFound(handle))?;
         self.drain_pending_predicate_matches();
+        self.host.remove(fact_id);
 
         Ok(())
     }
@@ -708,37 +798,47 @@ impl Engine {
     /// with `facts()` and `find_facts()`.
     ///
     /// The `Result` return type is retained for API compatibility.
-    pub fn get_fact(&self, fact_id: FactId) -> Result<Option<&Fact>, EngineError> {
+    pub fn get_fact(&self, fact_id: FactHandle) -> Result<Option<&Fact>, EngineError> {
+        let handle = fact_id;
+        let Some(fact_id) = self.host.resolve(handle) else {
+            return Ok(None);
+        };
         if Some(fact_id) == self.initial_fact_id {
             return Ok(None);
         }
         Ok(self.fact_base.get(fact_id).map(|entry| &entry.fact))
     }
 
+    /// Count user-visible facts without allocating or exporting host handles.
+    #[must_use]
+    pub fn fact_count(&self) -> usize {
+        self.fact_base.len() - usize::from(self.initial_fact_id.is_some())
+    }
+
     /// Iterate over all user-visible facts in working memory.
     ///
-    /// Returns an iterator of `(FactId, &Fact)` pairs. The synthetic
+    /// Returns an iterator of `(FactHandle, &Fact)` pairs. The synthetic
     /// protected `(initial-fact)` used by explicit initial-fact patterns is excluded
     /// from the results.
     ///
     /// The `Result` return type is retained for API compatibility.
-    pub fn facts(&self) -> Result<impl Iterator<Item = (FactId, &Fact)>, EngineError> {
+    pub fn facts(&self) -> Result<impl Iterator<Item = (FactHandle, &Fact)>, EngineError> {
         let exclude_id = self.initial_fact_id;
         Ok(self
             .fact_base
             .iter()
             .filter(move |(id, _)| Some(*id) != exclude_id)
-            .map(|(id, entry)| (id, &entry.fact)))
+            .map(|(id, entry)| (self.host.export(id), &entry.fact)))
     }
 
     /// Find ordered facts by relation name.
     ///
-    /// Returns a vector of `(FactId, &Fact)` pairs for all ordered facts
+    /// Returns a vector of `(FactHandle, &Fact)` pairs for all ordered facts
     /// whose relation matches the given name. Returns an empty vector if the
     /// relation name has not been interned or no matching facts exist.
     ///
     /// The `Result` return type is retained for API compatibility.
-    pub fn find_facts(&self, relation: &str) -> Result<Vec<(FactId, &Fact)>, EngineError> {
+    pub fn find_facts(&self, relation: &str) -> Result<Vec<(FactHandle, &Fact)>, EngineError> {
         // Look up the relation symbol without interning it (read-only query).
         let Some(relation_sym) = self
             .symbol_table
@@ -755,7 +855,7 @@ impl Engine {
                     return None;
                 }
                 let entry = self.fact_base.get(fid)?;
-                Some((fid, &entry.fact))
+                Some((self.host.export(fid), &entry.fact))
             })
             .collect())
     }
@@ -770,10 +870,13 @@ impl Engine {
     ///
     /// Returns an error if:
     /// - The string violates encoding constraints
-    pub fn intern_symbol(&mut self, s: &str) -> Result<Symbol, EngineError> {
-        Ok(self
-            .symbol_table
-            .intern_symbol(s, self.config.string_encoding)?)
+    pub fn intern_symbol(&mut self, s: &str) -> Result<SymbolHandle, EngineError> {
+        Ok(SymbolHandle {
+            owner: self.host.owner,
+            symbol: self
+                .symbol_table
+                .intern_symbol(s, self.config.string_encoding)?,
+        })
     }
 
     /// Create a `FerricString` from a string slice.
@@ -786,17 +889,14 @@ impl Engine {
         Ok(FerricString::new(s, self.config.string_encoding)?)
     }
 
-    /// Intern a symbol and wrap it as a [`Value::Symbol`].
-    ///
-    /// This is a convenience for the common pattern of
-    /// `Value::Symbol(engine.intern_symbol(s)?)`.
+    /// Intern a symbol as a host value retaining this engine's ownership.
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The string violates encoding constraints
-    pub fn symbol_value(&mut self, s: &str) -> Result<Value, EngineError> {
-        Ok(Value::Symbol(self.intern_symbol(s)?))
+    pub fn symbol_value(&mut self, s: &str) -> Result<HostValue, EngineError> {
+        Ok(self.intern_symbol(s)?.into())
     }
 
     /// Assert a single-field ordered fact whose value is a symbol.
@@ -804,7 +904,7 @@ impl Engine {
     /// Combines symbol interning and fact assertion into one call. Equivalent to:
     /// ```ignore
     /// let sym = engine.intern_symbol(symbol_name)?;
-    /// engine.assert_ordered(relation, Value::Symbol(sym))?;
+    /// engine.assert_ordered(relation, sym)?;
     /// ```
     ///
     /// # Errors
@@ -815,43 +915,23 @@ impl Engine {
         &mut self,
         relation: &str,
         symbol_name: &str,
-    ) -> Result<FactId, EngineError> {
-        let relation_sym = self
-            .symbol_table
-            .intern_symbol(relation, self.config.string_encoding)?;
-        let value_sym = self
-            .symbol_table
-            .intern_symbol(symbol_name, self.config.string_encoding)?;
-
-        let fields = smallvec::smallvec![Value::Symbol(value_sym)];
-        Ok(self
-            .assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
-                relation: relation_sym,
-                fields,
-            }))?
-            .fact_id())
+    ) -> Result<FactHandle, EngineError> {
+        let value = self.symbol_value(symbol_name)?;
+        self.assert_ordered(relation, value)
     }
 
-    /// Return the CLIPS `TRUE` symbol as a [`Value`].
+    /// Return the CLIPS `TRUE` symbol as an owned host value.
     ///
     /// The symbol is interned on first use and cached thereafter.
-    pub fn clips_true(&mut self) -> Result<Value, EngineError> {
-        let sym = self
-            .symbol_table
-            .intern_symbol("TRUE", self.config.string_encoding)
-            .expect("TRUE is valid in all encodings");
-        Ok(Value::Symbol(sym))
+    pub fn clips_true(&mut self) -> Result<HostValue, EngineError> {
+        self.symbol_value("TRUE")
     }
 
-    /// Return the CLIPS `FALSE` symbol as a [`Value`].
+    /// Return the CLIPS `FALSE` symbol as an owned host value.
     ///
     /// The symbol is interned on first use and cached thereafter.
-    pub fn clips_false(&mut self) -> Result<Value, EngineError> {
-        let sym = self
-            .symbol_table
-            .intern_symbol("FALSE", self.config.string_encoding)
-            .expect("FALSE is valid in all encodings");
-        Ok(Value::Symbol(sym))
+    pub fn clips_false(&mut self) -> Result<HostValue, EngineError> {
+        self.symbol_value("FALSE")
     }
 
     /// Resolve a [`Symbol`] to its string representation.
@@ -859,8 +939,42 @@ impl Engine {
     /// Returns `None` if the symbol is not in this engine's symbol table.
     /// Symbol table contents are immutable once interned.
     #[must_use]
-    pub fn resolve_symbol(&self, sym: Symbol) -> Option<&str> {
-        self.symbol_table.resolve_symbol_str(sym)
+    pub fn resolve_symbol(&self, sym: SymbolHandle) -> Option<&str> {
+        (sym.owner == self.host.owner)
+            .then(|| self.symbol_table.resolve_symbol_str(sym.symbol))
+            .flatten()
+    }
+
+    /// Inspect a core symbol taken from this engine's borrowed RETE/fact state.
+    /// Core keys have no provenance; use `resolve_symbol` with a `SymbolHandle`
+    /// in ordinary host code. Do not pass a key extracted from another engine.
+    #[must_use]
+    pub fn resolve_core_symbol(&self, symbol: Symbol) -> Option<&str> {
+        self.symbol_table.resolve_symbol_str(symbol)
+    }
+
+    /// Clone an engine-owned fact for checked reassertion or owned value access.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown, stale or foreign fact handle.
+    pub fn get_fact_owned(&self, handle: FactHandle) -> Result<Option<HostFact>, EngineError> {
+        let Some(fact) = self.get_fact(handle)? else {
+            return Ok(None);
+        };
+        let template = if let Fact::Template(fact) = fact {
+            let definition = self
+                .template_defs
+                .get(fact.template_id)
+                .ok_or(EngineError::FactNotFound(handle))?;
+            Some(definition.clone())
+        } else {
+            None
+        };
+        Ok(Some(HostFact {
+            owner: self.host.owner,
+            fact: fact.clone(),
+            template,
+        }))
     }
 
     /// Access the engine's Rete network for inspection.
@@ -1084,6 +1198,7 @@ impl Engine {
         // After reset or clear, the engine is in a new state.
         // step() still returns the FiredRule indicating what fired.
 
+        self.host.prune(&self.fact_base);
         Ok(Some(fired))
     }
 
@@ -1100,7 +1215,9 @@ impl Engine {
     ///
     /// The `Result` return type is retained for API compatibility.
     pub fn run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
-        Ok(self.run_inner(limit, true))
+        let result = self.run_inner(limit, true);
+        self.host.prune(&self.fact_base);
+        Ok(result)
     }
 
     /// Continue a count-limited run without clearing its halt flag or action
@@ -1113,7 +1230,9 @@ impl Engine {
     /// The `Result` return type is retained for API compatibility.
     #[doc(hidden)]
     pub fn continue_run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
-        Ok(self.run_inner(limit, false))
+        let result = self.run_inner(limit, false);
+        self.host.prune(&self.fact_base);
+        Ok(result)
     }
 
     fn run_inner(&mut self, limit: RunLimit, clear_execution_state: bool) -> RunResult {
@@ -1239,6 +1358,7 @@ impl Engine {
     ///
     /// The `Result` return type is retained for API compatibility.
     pub fn reset(&mut self) -> Result<(), EngineError> {
+        self.host.clear_facts();
         ferric_span!(info_span, "engine_reset");
 
         // Clear all runtime state
@@ -1299,6 +1419,7 @@ impl Engine {
     /// Unlike `reset()`, which preserves compiled rules and templates,
     /// `clear()` removes everything.
     pub fn clear(&mut self) {
+        self.host = HostState::new();
         ferric_span!(info_span, "engine_clear");
         self.fact_base = FactBase::new();
         self.rete = ReteNetwork::with_strategy(self.config.strategy);
@@ -1470,7 +1591,7 @@ impl Engine {
                 .fact;
             assert!(
                 matches!(fact, Fact::Ordered(fact) if fact.fields.is_empty()
-                && self.resolve_symbol(fact.relation) == Some("initial-fact")),
+                && self.resolve_core_symbol(fact.relation) == Some("initial-fact")),
                 "initial-fact must be its reserved zero-field fact"
             );
         }
@@ -1655,6 +1776,12 @@ impl Engine {
 /// Errors that can occur during engine operations.
 #[derive(Debug, Error)]
 pub enum EngineError {
+    #[error("handle belongs to a different or cleared engine, or its template has changed")]
+    ForeignHandle,
+
+    #[error("invalid host value: {0}")]
+    InvalidHostValue(String),
+
     #[error("encoding error: {0}")]
     Encoding(#[from] EncodingError),
 
@@ -1662,7 +1789,7 @@ pub enum EngineError {
     FactTimestampExhausted(#[from] ferric_rules_core::FactTimestampExhausted),
 
     #[error("fact not found: {0:?}")]
-    FactNotFound(FactId),
+    FactNotFound(FactHandle),
 
     #[error("the internal initial-fact is protected and cannot be retracted")]
     ProtectedInitialFact,
@@ -1682,7 +1809,7 @@ pub enum EngineError {
     TemplateNotFound(String),
 
     #[error("fact {0:?} is not a template fact")]
-    NotATemplateFact(FactId),
+    NotATemplateFact(FactHandle),
 
     #[error("slot not found: template \"{template}\" has no slot \"{slot}\"")]
     SlotNotFound { template: String, slot: String },
@@ -1779,8 +1906,8 @@ mod tests {
             .unwrap();
         engine.reset().unwrap();
 
-        let first = engine.assert_ordered_with_result("x", vec![]).unwrap();
-        let duplicate = engine.assert_ordered_with_result("x", vec![]).unwrap();
+        let first = engine.assert_ordered_with_result("x", ()).unwrap();
+        let duplicate = engine.assert_ordered_with_result("x", ()).unwrap();
 
         assert!(matches!(first, FactAssertionResult::Asserted(_)));
         assert_eq!(duplicate, FactAssertionResult::Duplicate(first.fact_id()));
@@ -1807,13 +1934,13 @@ mod tests {
         let alice = engine.intern_symbol("Alice").unwrap();
 
         let first = engine
-            .assert_template_with_result("person", &["name"], vec![Value::Symbol(alice)])
+            .assert_template_with_result("person", &["name"], vec![HostValue::from(alice)])
             .unwrap();
         let duplicate = engine
             .assert_template_with_result(
                 "person",
                 &["age", "name"],
-                vec![Value::Integer(0), Value::Symbol(alice)],
+                vec![HostValue::from(0_i64), HostValue::from(alice)],
             )
             .unwrap();
 
@@ -1841,7 +1968,7 @@ mod tests {
         assert_eq!(
             engine
                 .fact_base
-                .get(second.fact_id())
+                .get(engine.host.resolve(second.fact_id()).unwrap())
                 .expect("second fact exists")
                 .timestamp,
             ferric_rules_core::Timestamp::new(1),
@@ -1884,7 +2011,7 @@ mod tests {
             )
             .unwrap();
         engine.reset().unwrap();
-        engine.assert_ordered("go", vec![]).unwrap();
+        engine.assert_ordered("go", ()).unwrap();
 
         let result = engine.run(RunLimit::Unlimited).unwrap();
         assert_eq!(result.rules_fired, 1);
@@ -1987,7 +2114,7 @@ mod tests {
         engine.reset().unwrap();
         assert_eq!(engine.agenda_len(), 1);
 
-        engine.assert_ordered("blocked", vec![]).unwrap();
+        engine.assert_ordered("blocked", ()).unwrap();
 
         assert_eq!(engine.agenda_len(), 0);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
@@ -2010,7 +2137,7 @@ mod tests {
             .unwrap();
         engine.reset().unwrap();
 
-        let blocker = engine.assert_ordered("blocked", vec![]).unwrap();
+        let blocker = engine.assert_ordered("blocked", ()).unwrap();
         assert_eq!(engine.agenda_len(), 0);
         engine.retract(blocker).unwrap();
 
@@ -2045,7 +2172,7 @@ mod tests {
             assert_single_root_prefix_token(&engine);
         }
 
-        let blocker_a = engine.assert_ordered("blocked-a", vec![]).unwrap();
+        let blocker_a = engine.assert_ordered("blocked-a", ()).unwrap();
         assert_eq!(engine.agenda_len(), 1, "rule B remains independent");
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
         assert_eq!(engine.get_output("t"), Some("B\n"));
@@ -2069,7 +2196,7 @@ mod tests {
     #[test]
     fn fr_rete_003_late_single_pattern_rule_backfills() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        engine.assert_ordered("foo", vec![]).unwrap();
+        engine.assert_ordered("foo", ()).unwrap();
 
         engine
             .load_str(
@@ -2129,9 +2256,9 @@ mod tests {
     #[test]
     fn fr_rete_003_late_negative_and_exists_backfill() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let blocker = engine.assert_ordered("blocked", vec![]).unwrap();
-        engine.assert_ordered("seed", vec![]).unwrap();
-        engine.assert_ordered("ready", vec![]).unwrap();
+        let blocker = engine.assert_ordered("blocked", ()).unwrap();
+        engine.assert_ordered("seed", ()).unwrap();
+        engine.assert_ordered("ready", ()).unwrap();
 
         engine
             .load_str(
@@ -2385,7 +2512,7 @@ mod tests {
             .facts()
             .unwrap()
             .any(|(_, fact)| matches!(fact, Fact::Ordered(ordered) if engine
-                .resolve_symbol(ordered.relation) == Some("preserved"))));
+                .resolve_core_symbol(ordered.relation) == Some("preserved"))));
         engine.debug_assert_consistency();
     }
 
@@ -2490,7 +2617,7 @@ mod tests {
     #[test]
     fn retract_fact() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let id = engine.assert_ordered("test", vec![]).unwrap();
+        let id = engine.assert_ordered("test", ()).unwrap();
 
         let result = engine.retract(id);
         assert!(result.is_ok());
@@ -2501,7 +2628,7 @@ mod tests {
     #[test]
     fn retract_nonexistent_fact_returns_error() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let id = engine.assert_ordered("test", vec![]).unwrap();
+        let id = engine.assert_ordered("test", ()).unwrap();
 
         engine.retract(id).unwrap();
         let result = engine.retract(id);
@@ -2512,12 +2639,9 @@ mod tests {
     #[test]
     fn assert_structured_ordered_fact() {
         let mut engine = Engine::new(EngineConfig::utf8());
-        let relation = engine.intern_symbol("person").unwrap();
-        let fact = Fact::Ordered(ferric_rules_core::OrderedFact {
-            relation,
-            fields: smallvec::smallvec![Value::Integer(42)],
-        });
-
+        let original = engine.assert_ordered("person", 42_i64).unwrap();
+        let fact = engine.get_fact_owned(original).unwrap().unwrap();
+        engine.retract(original).unwrap();
         let id = engine.assert(fact).unwrap();
         let stored = engine.get_fact(id).unwrap().unwrap();
 
@@ -2564,8 +2688,8 @@ mod tests {
         let mut engine = Engine::new(EngineConfig::utf8());
         engine.set_fact_duplication(true);
 
-        let id1 = engine.assert_ordered("test", vec![]).unwrap();
-        let id2 = engine.assert_ordered("test", vec![]).unwrap();
+        let id1 = engine.assert_ordered("test", ()).unwrap();
+        let id2 = engine.assert_ordered("test", ()).unwrap();
 
         let all: Vec<_> = engine.facts().unwrap().map(|(id, _)| id).collect();
         assert_eq!(all.len(), 2);
@@ -2837,7 +2961,7 @@ mod tests {
         // assert_ordered should automatically propagate through rete
         let alice_sym = engine.intern_symbol("Alice").unwrap();
         engine
-            .assert_ordered("person", vec![Value::Symbol(alice_sym)])
+            .assert_ordered("person", vec![HostValue::from(alice_sym)])
             .unwrap();
         assert_eq!(engine.rete.agenda.len(), 1);
     }
@@ -2849,7 +2973,7 @@ mod tests {
 
         let alice_sym = engine.intern_symbol("Alice").unwrap();
         let fid = engine
-            .assert_ordered("person", vec![Value::Symbol(alice_sym)])
+            .assert_ordered("person", vec![HostValue::from(alice_sym)])
             .unwrap();
         assert_eq!(engine.rete.agenda.len(), 1);
 
@@ -2900,15 +3024,15 @@ mod tests {
             let relation_pool: Vec<&str> = vec!["rel0", "rel1", "rel2"];
 
             // Shadow model: track which FactIds are currently live.
-            let mut live: Vec<FactId> = Vec::new();
+            let mut live: Vec<FactHandle> = Vec::new();
             // All FactIds ever successfully asserted (live or retracted).
-            let mut all_asserted: Vec<FactId> = Vec::new();
+            let mut all_asserted: Vec<FactHandle> = Vec::new();
 
             for op in &ops {
                 match op {
                     FactOp::AssertOrdered(name_idx) => {
                         let relation = relation_pool[name_idx % relation_pool.len()];
-                        let fid = engine.assert_ordered(relation, vec![]).unwrap();
+                        let fid = engine.assert_ordered(relation, ()).unwrap();
                         // Postcondition: newly asserted fact must be immediately retrievable.
                         let retrieved = engine.get_fact(fid).unwrap();
                         prop_assert!(
@@ -2993,10 +3117,10 @@ mod tests {
             engine.set_fact_duplication(true);
 
             // Assert N ordered facts and collect their IDs.
-            let mut live: Vec<FactId> = (0..n)
+            let mut live: Vec<FactHandle> = (0..n)
                 .map(|i| {
                     let relation = if i % 2 == 0 { "even" } else { "odd" };
-                    engine.assert_ordered(relation, vec![]).unwrap()
+                    engine.assert_ordered(relation, ()).unwrap()
                 })
                 .collect();
 
@@ -3182,7 +3306,7 @@ mod tests {
             // Assert some facts.
             for i in 0..n_facts {
                 let relation = if i % 2 == 0 { "alpha" } else { "beta" };
-                engine.assert_ordered(relation, vec![]).unwrap();
+                engine.assert_ordered(relation, ()).unwrap();
             }
             // Push some input lines.
             for i in 0..n_inputs {
@@ -3230,7 +3354,7 @@ mod initial_fact_contract_tests {
     fn initial_fact_host_visibility_and_retraction_are_consistent() {
         let mut engine =
             Engine::with_rules("(defrule explicit (initial-fact) =>) (defrule empty =>)").unwrap();
-        let id = engine.initial_fact_id.unwrap();
+        let id = engine.host.export(engine.initial_fact_id.unwrap());
         assert!(engine.get_fact(id).unwrap().is_none());
         assert!(engine.find_facts("initial-fact").unwrap().is_empty());
         assert_eq!(engine.facts().unwrap().count(), 0);
@@ -3286,7 +3410,7 @@ mod initial_fact_contract_tests {
         for &format in crate::serialization::SerializationFormat::ALL {
             let mut restored =
                 Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
-            let id = restored.initial_fact_id.unwrap();
+            let id = restored.host.export(restored.initial_fact_id.unwrap());
             assert!(restored.get_fact(id).unwrap().is_none());
             assert!(matches!(
                 restored.retract(id),

@@ -270,6 +270,7 @@ impl EngineSnapshotOwned {
     fn into_engine(self) -> Engine {
         Engine {
             fact_base: self.fact_base,
+            host: crate::host::HostState::new(),
             symbol_table: self.symbol_table,
             config: self.config,
             rete: self.rete,
@@ -1133,7 +1134,12 @@ mod tests {
         ] {
             let bytes = engine.serialize(format).unwrap();
             let restored = Engine::deserialize(&bytes, format).unwrap();
-            let Fact::Ordered(fact) = &restored.fact_base.get(id).unwrap().fact else {
+            assert!(
+                restored.get_fact(id).unwrap().is_none(),
+                "host handles do not survive restore"
+            );
+            let facts = restored.find_facts("measurement").unwrap();
+            let Fact::Ordered(fact) = facts[0].1 else {
                 panic!("ordered measurement");
             };
             assert!(
@@ -1270,13 +1276,19 @@ mod tests {
     #[test]
     fn writes_reject_unsupported_values_and_limits_before_returning_bytes() {
         let mut engine = Engine::new(EngineConfig::default());
+        // Deliberately corrupt internal state: the public host boundary now
+        // rejects this value before assertion, independently of persistence.
+        let relation = engine
+            .symbol_table
+            .intern_symbol("broken", engine.config.string_encoding)
+            .unwrap();
         engine
-            .assert_ordered(
-                "broken",
-                vec![Value::String(ferric_rules_core::FerricString::Ascii(
-                    vec![0xff].into_boxed_slice(),
+            .assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+                relation,
+                fields: smallvec::smallvec![Value::String(ferric_rules_core::FerricString::Ascii(
+                    vec![0xff].into_boxed_slice()
                 ))],
-            )
+            }))
             .unwrap();
         assert!(
             matches!(engine.serialize(SerializationFormat::Cbor), Err(SerializationError::InvalidState(message)) if message.contains("ASCII"))
@@ -1286,7 +1298,16 @@ mod tests {
         for _ in 0..33 {
             value = Value::Multifield(Box::new(vec![value].into_iter().collect()));
         }
-        engine.assert_ordered("deep", vec![value]).unwrap();
+        let relation = engine
+            .symbol_table
+            .intern_symbol("deep", engine.config.string_encoding)
+            .unwrap();
+        engine
+            .assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+                relation,
+                fields: smallvec::smallvec![value],
+            }))
+            .unwrap();
         assert!(
             matches!(engine.serialize(SerializationFormat::Cbor), Err(SerializationError::InvalidState(message)) if message.contains("value limit"))
         );

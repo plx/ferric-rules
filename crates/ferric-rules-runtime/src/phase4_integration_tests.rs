@@ -228,7 +228,7 @@ fn action_error_stops_current_rhs_and_run_without_discarding_later_activations()
     let crate::Value::Symbol(state) = state else {
         panic!("expected item state to be a symbol, got {state:?}");
     };
-    assert_eq!(engine.resolve_symbol(*state), Some("original"));
+    assert_eq!(engine.resolve_core_symbol(*state), Some("original"));
     assert_eq!(
         std::fs::metadata(temp.path())
             .expect("tempfile metadata")
@@ -3633,7 +3633,7 @@ fn load_facts_asserts_facts_from_fct_file() {
         .unwrap()
         .filter(|(_, f)| {
             matches!(f, ferric_rules_core::Fact::Ordered(o) if
-                engine.resolve_symbol(o.relation) != Some("initial-fact"))
+                engine.resolve_core_symbol(o.relation) != Some("initial-fact"))
         })
         .count();
     assert_eq!(
@@ -3683,7 +3683,7 @@ fn load_facts_does_not_register_for_reset() {
     let has_ephemeral = |e: &Engine| {
         e.facts().unwrap().any(|(_, f)| {
             matches!(f, ferric_rules_core::Fact::Ordered(o) if
-                e.resolve_symbol(o.relation) == Some("ephemeral"))
+                e.resolve_core_symbol(o.relation) == Some("ephemeral"))
         })
     };
     assert!(
@@ -3748,7 +3748,7 @@ fn save_and_load_facts_roundtrip() {
         .unwrap()
         .filter(|(_, f)| {
             matches!(f, ferric_rules_core::Fact::Ordered(o) if
-                engine2.resolve_symbol(o.relation) != Some("initial-fact"))
+                engine2.resolve_core_symbol(o.relation) != Some("initial-fact"))
         })
         .count();
     // color red, color green, data 1 2 3 = 3 facts (initial-fact excluded)
