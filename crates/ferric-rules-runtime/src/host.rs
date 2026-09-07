@@ -213,6 +213,7 @@ impl HostFact {
         &self.fact
     }
     /// Clone an owned field/slot while preserving symbol provenance.
+    /// Values without symbols remain portable, including nested multifields.
     #[must_use]
     pub fn value(&self, index: usize) -> Option<HostValue> {
         let values: &[Value] = match &self.fact {
@@ -220,9 +221,33 @@ impl HostFact {
             Fact::Template(fact) => &fact.slots,
         };
         values.get(index).map(|value| HostValue {
-            owner: Some(self.owner),
+            owner: contains_symbol(value).then_some(self.owner),
             value: value.clone(),
         })
+    }
+}
+
+fn contains_symbol(value: &Value) -> bool {
+    let Value::Multifield(values) = value else {
+        return matches!(value, Value::Symbol(_));
+    };
+    // Stored values already satisfy the engine's depth/item limits. Keep one
+    // iterator per nesting level, rather than collecting every pending sibling.
+    let mut parents = SmallVec::<[std::slice::Iter<'_, Value>; 4]>::new();
+    let mut current = values.iter();
+    loop {
+        match current.next() {
+            Some(Value::Symbol(_)) => return true,
+            Some(Value::Multifield(values)) => {
+                parents.push(current);
+                current = values.iter();
+            }
+            Some(_) => {}
+            None => match parents.pop() {
+                Some(parent) => current = parent,
+                None => return false,
+            },
+        }
     }
 }
 

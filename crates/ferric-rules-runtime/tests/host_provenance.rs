@@ -1,6 +1,6 @@
 //! Host identities must never alias another engine's interners or arenas.
 
-use ferric_rules_core::{Fact, FerricString};
+use ferric_rules_core::{ExternalAddress, ExternalTypeId, Fact, FerricString};
 use ferric_rules_runtime::{
     Engine, EngineConfig, EngineError, FactHandle, HostValue, RunLimit, Value,
 };
@@ -99,6 +99,131 @@ fn owned_facts_and_values_retain_origin_and_template_shape() {
     a.load_str("(deftemplate item (slot renamed))").unwrap();
     assert!(matches!(a.assert(fact), Err(EngineError::ForeignHandle)));
     assert_eq!(a.facts().unwrap().count(), 0);
+}
+
+#[test]
+fn captured_symbol_free_values_are_portable_even_after_source_clear() {
+    let text = Value::String(FerricString::Utf8("portable λ".into()));
+    let nested = Value::Multifield(Box::new(
+        [
+            Value::Integer(7),
+            Value::Multifield(Box::new(
+                [text.clone(), Value::Float(1.5)].into_iter().collect(),
+            )),
+        ]
+        .into_iter()
+        .collect(),
+    ));
+    for value in [
+        Value::Integer(7),
+        Value::Float(1.5),
+        text,
+        nested,
+        Value::ExternalAddress(ExternalAddress {
+            type_id: ExternalTypeId(1),
+            token: 42,
+        }),
+    ] {
+        for template in [false, true] {
+            let mut source = Engine::with_rules(
+                "(deftemplate scalar (slot value)) (deftemplate multiple (multislot value))",
+            )
+            .unwrap();
+            let id = if template {
+                let name = if matches!(&value, Value::Multifield(_)) {
+                    "multiple"
+                } else {
+                    "scalar"
+                };
+                source
+                    .assert_template_slots(name, [("value", value.clone())])
+                    .unwrap()
+            } else {
+                source.assert_ordered("item", value.clone()).unwrap()
+            };
+            let fact = source.get_fact_owned(id).unwrap().unwrap();
+            let before_clear = fact.value(0).unwrap();
+            let mut destination = Engine::new(EngineConfig::default());
+            assert!(matches!(
+                destination.assert(fact.clone()),
+                Err(EngineError::ForeignHandle)
+            ));
+            let copied = destination
+                .assert_ordered("copy", before_clear.clone())
+                .unwrap();
+            assert!(destination
+                .get_fact_owned(copied)
+                .unwrap()
+                .unwrap()
+                .value(0)
+                .unwrap()
+                .as_value()
+                .structural_eq(&value));
+            source.clear();
+            assert!(matches!(
+                source.assert(fact.clone()),
+                Err(EngineError::ForeignHandle)
+            ));
+            for captured in [before_clear, fact.value(0).unwrap()] {
+                source.assert_ordered("copy", captured.clone()).unwrap();
+                destination.assert_ordered("copy", captured).unwrap();
+            }
+            assert!(fact.value(1).is_none());
+        }
+    }
+}
+
+#[test]
+fn captured_direct_and_nested_symbols_reject_foreign_and_stale_owners() {
+    for template in [false, true] {
+        for nested in [false, true] {
+            let mut source = Engine::with_rules(
+                "(deftemplate scalar (slot value)) (deftemplate multiple (multislot value))",
+            )
+            .unwrap();
+            let symbol = source.symbol_value("owned").unwrap();
+            let value = if nested {
+                HostValue::multifield(vec![
+                    7_i64.into(),
+                    HostValue::multifield(vec![symbol]).unwrap(),
+                ])
+                .unwrap()
+            } else {
+                symbol
+            };
+            let id = if template {
+                source
+                    .assert_template_slots(
+                        if nested { "multiple" } else { "scalar" },
+                        [("value", value)],
+                    )
+                    .unwrap()
+            } else {
+                source.assert_ordered("item", value).unwrap()
+            };
+            let fact = source.get_fact_owned(id).unwrap().unwrap();
+            let before_clear = fact.value(0).unwrap();
+            source.assert_ordered("copy", before_clear.clone()).unwrap();
+            let mut destination = Engine::new(EngineConfig::default());
+            assert!(matches!(
+                destination.assert_ordered("copy", before_clear.clone()),
+                Err(EngineError::ForeignHandle)
+            ));
+            source.clear();
+            for captured in [before_clear, fact.value(0).unwrap()] {
+                assert!(matches!(
+                    source.assert_ordered("copy", captured.clone()),
+                    Err(EngineError::ForeignHandle)
+                ));
+                assert!(matches!(
+                    destination.assert_ordered("copy", captured),
+                    Err(EngineError::ForeignHandle)
+                ));
+            }
+            assert_eq!(source.fact_count(), 0);
+            assert_eq!(destination.fact_count(), 0);
+        }
+    }
 }
 
 #[test]
