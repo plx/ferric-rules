@@ -48,11 +48,18 @@ no selector is run during migration.
 | #194 | Versioned, bounded and validated snapshots | [#307](https://github.com/plx/ferric-rules/pull/307), merged `502a0360` |
 | #171 | Node values, lifetimes and package imports | [#308](https://github.com/plx/ferric-rules/pull/308), merged `8d538d63` |
 | #190 | Python values, configuration and packages | [#309](https://github.com/plx/ferric-rules/pull/309), merged `21fc8586` |
-| #174 | Go module path and cheap lifecycle repairs | [#310](https://github.com/plx/ferric-rules/pull/310), prepared and validated |
+| #174 | Go module path and cheap lifecycle repairs | [#310](https://github.com/plx/ferric-rules/pull/310), merged `c6ed7774` |
 | #203 | Host value/fact provenance across adapters | [#311](https://github.com/plx/ferric-rules/pull/311), prepared and validated |
 | #305 | Swift package and explicit header generation | [#312](https://github.com/plx/ferric-rules/pull/312), prepared and validated |
-| #153 | Exact Rust/CLI consumers and shared example | Prepared and validated; merge pending |
+| #153 | Exact Rust/CLI consumers and shared example | [#313](https://github.com/plx/ferric-rules/pull/313), prepared and validated; merge pending |
 | #143 | Integrated evidence, CI and backlog migration | Final measurements complete; preceding merges/migration pending |
+
+Go #310 merged at `2026-09-07T12:45:33Z` after its essential checks and review
+passed. The `13:02:31Z` follow-up records all 46 checks terminal: 45 successful
+and one intentional skip, with no failures or pending checks. Unaffected jobs
+that were still running at merge continued normally and were not counted as
+passing before completion. Raw state and review evidence are in
+`.context/rehabilitation/pr310-merge-proof.md`.
 
 ## Decisions and evidence
 
@@ -237,7 +244,7 @@ Qualified distinct template declarations work; unsupported unqualified cross-mod
 name collisions fail before state changes. Migration notes describe Python string,
 Node version/precision, Go cancellation/path, host handles and legacy snapshot breaks.
 
-Next: merge Go, host, Swift and external-consumer changes in
+Next: merge host, Swift and external-consumer changes in
 dependency order after their checks. Apply and verify the prepared issue/label/native-dependency batch, complete final
 validation and merge #143's closing record. Reconcile the starting checkout while
 preserving user changes. Completion requires all accepted implementation PRs merged.
