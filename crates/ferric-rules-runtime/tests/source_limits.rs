@@ -244,6 +244,38 @@ fn empty_lhs_rules_still_obey_the_per_rule_byte_limit() {
 }
 
 #[test]
+fn load_facts_bounds_file_reads_and_reports_resource_limits() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("large.fct");
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(1024 * 1024 * 1024)
+        .unwrap();
+    let escaped = path.to_string_lossy().replace('\\', "\\\\");
+    let mut engine = Engine::with_rules(&format!(
+        "(deffacts seeds (retained 7)) (defrule read => (load-facts \"{escaped}\"))"
+    ))
+    .unwrap();
+    engine.reset().unwrap();
+    assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+    let diagnostics = engine.action_diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let diagnostic = diagnostics[0].to_string();
+    assert!(diagnostic.contains("load-facts"), "{diagnostic}");
+    assert!(diagnostic.contains("source bytes"), "{diagnostic}");
+    assert!(diagnostic.contains("16777217"), "{diagnostic}");
+    assert_eq!(engine.facts().unwrap().count(), 1);
+    assert_eq!(engine.find_facts("retained").unwrap().len(), 1);
+
+    std::fs::write(&path, "(loaded 42)").unwrap();
+    engine.reset().unwrap();
+    assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+    assert!(engine.action_diagnostics().is_empty());
+    assert_eq!(engine.find_facts("loaded").unwrap().len(), 1);
+    assert_eq!(engine.find_facts("retained").unwrap().len(), 1);
+}
+
+#[test]
 fn per_load_expansion_budget_preserves_already_installed_constructs() {
     let payload = "a".repeat(3 * 1024 * 1024);
     let source = (0..3).fold(String::new(), |mut source, n| {

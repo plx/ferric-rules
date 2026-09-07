@@ -19,7 +19,6 @@
 
 use ferric_rules_core::RuleId;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
@@ -798,7 +797,7 @@ impl Engine {
         let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
             relation: initial_sym,
             fields: smallvec::SmallVec::new(),
-        }));
+        }))?;
         self.initial_fact_id = Some(result.fact_id());
 
         Ok(())
@@ -816,18 +815,7 @@ impl Engine {
     /// - Source parsing or processing fails
     pub fn load_file(&mut self, path: &Path) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_file", path = %path.display());
-        let file = std::fs::File::open(path).map_err(|e| vec![LoadError::Io(e)])?;
-        let mut bytes = Vec::new();
-        file.take((crate::source_limits::MAX_SOURCE_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|e| vec![LoadError::Io(e)])?;
-        crate::source_limits::check_source_size(bytes.len()).map_err(|e| vec![e])?;
-        let source = String::from_utf8(bytes).map_err(|e| {
-            vec![LoadError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e,
-            ))]
-        })?;
+        let source = crate::source_limits::read_source_file(path).map_err(|e| vec![e])?;
         self.load_str(&source)
     }
 
@@ -883,6 +871,7 @@ impl Engine {
 
     /// Reuse source fact validation without publishing a temporary definition.
     pub(crate) fn load_facts_str(&mut self, contents: &str) -> Result<usize, LoadError> {
+        crate::source_limits::check_source_size(contents.len())?;
         let wrapped = format!("(deffacts __loaded_facts__ {contents})");
         let parsed = parse_sexprs(&wrapped, FileId(0));
         if let Some(error) = parsed.errors.into_iter().next() {
@@ -898,7 +887,7 @@ impl Engine {
             if let Construct::Facts(definition) = construct {
                 for body in definition.facts {
                     let fact = self.build_fact_body(&body, &mut result)?;
-                    self.assert_fact_internal(fact);
+                    self.assert_fact_internal(fact)?;
                     count += 1;
                 }
             }
@@ -1642,7 +1631,7 @@ impl Engine {
             .assert_fact_internal(Fact::Template(TemplateFact {
                 template_id,
                 slots: slots.into_boxed_slice(),
-            }))
+            }))?
             .fact_id())
     }
 
@@ -1744,6 +1733,15 @@ impl Engine {
                     return Err(error);
                 }
             }
+        }
+
+        let maximum_new_nodes = prepared_rules
+            .iter()
+            .map(|prepared| prepared.plan.maximum_new_beta_nodes())
+            .sum();
+        if let Err(error) = self.rete.beta.ensure_node_capacity(maximum_new_nodes) {
+            self.symbol_table.restore(symbol_table_checkpoint);
+            return Err(LoadError::Compile(error.to_string()));
         }
 
         // Rule identity is its owning module plus local name. Retire all
