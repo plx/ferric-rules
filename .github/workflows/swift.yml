@@ -1,0 +1,43 @@
+name: Swift
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  swift:
+    name: Swift Package
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93.0"
+      - name: Show toolchains and SDKs
+        run: |
+          rustc --version
+          swift --version
+          xcodebuild -showsdks
+      - name: Build macOS and iOS native libraries
+        run: scripts/build-swift.sh
+      - name: Test Swift 6 concurrency and lifetime contracts
+        run: swift test --package-path bindings/swift -Xswiftc -strict-concurrency=complete
+      - name: Build iOS device wrapper
+        run: |
+          swift build --package-path bindings/swift --triple arm64-apple-ios18.0 \
+            --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -Xswiftc -strict-concurrency=complete
+      - name: Build iOS simulator wrapper
+        run: |
+          swift build --package-path bindings/swift --triple arm64-apple-ios18.0-simulator \
+            --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+            -Xswiftc -strict-concurrency=complete
+      - name: Run external macOS consumer
+        run: scripts/swift-consumer-smoke.sh

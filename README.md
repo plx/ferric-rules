@@ -222,6 +222,14 @@ CLIPS reference. It rejects missing, unexplained, changed, or stale
 divergences. See
 [the compatibility assessment contract](docs/compatibility-assessment.md).
 
+## C header development
+
+Ordinary Cargo builds generate `ferric.h` in Cargo's `OUT_DIR` and leave source
+files untouched. Run `just check-ffi-header` to compare that output with the
+committed header. After a deliberate C ABI edit, run `just generate-ffi-header`
+to update the canonical header and its Go binding copy, then review the diff.
+The Swift build and CI check the header before consuming it.
+
 ## Rust version support
 
 Ferric's minimum supported Rust version (MSRV) is **1.75**. Every publishable
