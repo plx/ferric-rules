@@ -83,6 +83,13 @@ retraction cycles.
 | `manners_64_guests` | Full pipeline with 64 guests (reduced sample size) |
 | `manners_8_guests_run_only` | Reset + run only (no compilation) |
 
+### Evaluator control frames
+
+`evaluator_bench` includes named counted loops at 1,000–100,000 iterations and
+`eval_control_frames/{unnamed_10000,nested_100x100,conditional_10000,progn_1000}`.
+These cases time reset plus execution and verify the final accumulated value
+before measurement, including nested counter scopes and progn element indexes.
+
 ### Shared-value and query workloads
 
 `join_strings_{100,1000}` and `join_nested_multifields_{100,1000}` load three

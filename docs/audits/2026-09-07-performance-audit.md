@@ -221,3 +221,30 @@ churn gains, so the change is a net win on the measured suite.
 
 Final validation includes `just preflight-pr`, 1,491 core/runtime tests with all
 features, and all seven scaling gates on the measured revision.
+
+## Temporary action frames
+
+Counted loops now create one binding frame lazily after the first iteration-budget
+check and update its counter for subsequent iterations. Unnamed counted loops
+borrow the existing frame. `progn$`/`foreach` retain the evaluated list and reuse
+one element/index frame; changing the source global cannot change traversal.
+Dispatch borrows existing function-call syntax trees, and temporary rule metadata
+omits the source text that introspection obtains from the registered rule.
+
+When runtime locals are present, evaluation builds its binding set directly from
+shared outer values and a single copy of each local. It avoids the intermediate
+owned name/value map. Canonical multifield aliases retain last-outer-binding
+precedence, locals override outer bindings, and symbols are normalized to the
+current string encoding. Evaluation entry points, budgets, tracing and action
+error handling remain in place.
+
+Five regressions pass on both parent and candidate: nested counter shadowing,
+RHS locals overriding later counter updates, retained progn traversal after a
+global changes, local multifield aliases, and rule-source introspection inside a
+loop. A randomized binding test covers alias order, local overlays, scalar and
+multifield values, unbound slots, and mixed encodings. Validation includes full
+`just preflight-pr` and runtime tests with all features.
+
+Four new oracle-equipped reset/run benchmarks cover unnamed counters, nested
+loops, conditional bodies, and progn element/index bindings. Existing evaluator,
+engine, Waltz, and Manners cases remain controls.
