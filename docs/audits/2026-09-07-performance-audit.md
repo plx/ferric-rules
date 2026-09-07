@@ -248,3 +248,25 @@ multifield values, unbound slots, and mixed encodings. Validation includes full
 Four new oracle-equipped reset/run benchmarks cover unnamed counters, nested
 loops, conditional bodies, and progn element/index bindings. Existing evaluator,
 engine, Waltz, and Manners cases remain controls.
+
+Measured implementation: `129b0fd7`, against `4733dc05` (repeat `1c082432`,
+which adds only the package manifest correction). Both paired passes cover the
+same 54 evaluator, engine, Waltz, and Manners workloads. The candidate repeat
+also runs the remaining facade suite as a cumulative checkpoint. Complete paired
+medians are in [the measurement record](2026-09-07-action-frames.json).
+
+| Workload | Before median | After median | Change |
+| --- | ---: | ---: | ---: |
+| Named loop, 100,000 iterations | 52,515.91 µs | 26,144.06 µs | -50.22% |
+| Unnamed loop, 10,000 iterations | 3,938.19 µs | 2,217.06 µs | -43.70% |
+| Nested loops, 100 × 100 | 5,545.84 µs | 2,682.19 µs | -51.64% |
+| Conditional loop, 10,000 iterations | 4,586.67 µs | 2,591.44 µs | -43.50% |
+| Progn, 1,000 elements | 952.12 µs | 385.39 µs | -59.52% |
+| Simple ordered facts, reset/run | 2.05 µs | 2.17 µs | +5.88% |
+
+The seven targeted loop cases improve 43.50–59.52% in the repeat,
+after improving 42.87–59.52% in the first pass. Controls remain in the record:
+the first pass's largest regression is +2.25% for `load_and_run_simple`;
+the repeat's largest is +5.88% for `reset_run_simple`
+(first pass -2.35%). These small controls are retained in the
+cumulative audit. The substantial, repeated loop gains justify the change.
