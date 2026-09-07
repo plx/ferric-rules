@@ -26,7 +26,7 @@ let package = Package(
     swiftLanguageModes: [.v6]
 )
 PACKAGE
-cat > "$smoke_dir/Consumer/Sources/Consumer/main.swift" <<'SWIFT'
+cat > "$smoke_dir/Consumer/Sources/Consumer/Consumer.swift" <<'SWIFT'
 import Ferric
 import Foundation
 
