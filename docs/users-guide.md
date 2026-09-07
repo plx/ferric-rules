@@ -30,8 +30,11 @@ system. You load CLIPS source into it once, and at runtime:
 3. **Read** the results — either by pulling facts back out of working memory
    or by reading captured `printout` channels.
 
-Each `Engine` is `!Send + !Sync`: it lives on a single thread. Create one per
-decision context (per session, per request, per worker) or reset and reuse.
+Each Rust `Engine` is `Send + Sync`: ownership can move between threads, and
+shared reads are supported. Mutation requires exclusive access; serialize host
+operations when sharing an engine. Create one per decision context (per session,
+per request, per worker) or reset and reuse. See the [host contract](host-api.md)
+for the ownership of values and fact handles.
 
 The facade crate re-exports everything you need:
 
@@ -166,10 +169,9 @@ You can opt into duplicates with `engine.set_fact_duplication(true)` or
 `(set-fact-duplication TRUE)`. The setter returns the previous setting, and
 the policy survives reset and serialization.
 
-> **Heads up:** the CLIPS literal form `(assert (person (name Alice) (age 30)))`
-> is currently rejected by ferric's RHS evaluator (it parses the slot specs as
-> function calls). Build template facts from Rust via `assert_template`, or use
-> ordered facts in `(assert ...)` actions.
+Rules can also assert template facts with named slots:
+`(assert (person (name Alice) (age 30)))`. Omitted slots use their declared
+defaults, and slot names, types and cardinality are validated.
 
 Partial patterns let rules match on just the slots they care about, which
 is usually what you want:
@@ -688,8 +690,8 @@ Two categories of things can go wrong:
 **Fatal errors** return `Err` from the fallible engine methods.
 `Engine::with_rules` returns `InitError` on parse or compilation failure;
 `assert_*`, `retract`, `run`, and friends return `EngineError` for
-runtime problems (template not found, encoding violations, thread-affinity
-violations, recursion-limit exceeded).
+runtime problems (template not found, encoding violations, stale or foreign
+handles, recursion-limit exceeded).
 
 **Non-fatal action diagnostics** are warnings from the most recent `run` or
 `step` — for example, an unresolved module reference in a `focus` action.
@@ -811,7 +813,11 @@ fn run(engine: &mut Engine, inputs: &[(i64, &str, f64)]) -> anyhow::Result<()> {
         engine.assert_template(
             "reading",
             &["id", "kind", "value"],
-            vec![Value::Integer(*id).into(), kind_sym, Value::Float(*value).into()],
+            vec![
+                Value::Integer(*id).into(),
+                kind_sym,
+                Value::Float(*value).into(),
+            ],
         )?;
     }
 
@@ -830,13 +836,11 @@ What's on display here:
   `engine.get_global("scale")`.
 - Diagnoses come out as **ordered** facts (`(diagnosis 1 alert "overheat")`)
   so they can be inspected with `find_facts("diagnosis")` from Rust.
-  Asserting template facts with named slots from a rule's RHS isn't
-  currently supported by ferric's evaluator — see §3 for the limitation.
+  Named template facts are another supported result shape; see §3.
 
-An earlier version of this example split normalization and diagnosis across
-modules. That shape currently misses the second phase because `NORMALIZE`
-modifies the facts that `DIAGNOSE` should consume. Keeping the chain in one
-module and using salience for phase order is the reliable pattern today.
+This example keeps normalization and diagnosis in one module and uses salience
+for phase order. Multi-module applications must also arrange the focus stack
+for each phase; see §9.
 
 ---
 
