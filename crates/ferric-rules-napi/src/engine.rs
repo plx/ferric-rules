@@ -657,8 +657,12 @@ impl Engine {
         let fmt = crate::config::snapshot_format(format)?;
         let engine = FerricEngine::deserialize_from_file(std::path::Path::new(&path), fmt)
             .map_err(|error| match error {
-                ferric_rules_runtime::SnapshotFileError::Io(error) => crate::error::io_error_to_napi(error),
-                ferric_rules_runtime::SnapshotFileError::Serialization(error) => crate::error::serde_error_to_napi(error),
+                ferric_rules_runtime::SnapshotFileError::Io(error) => {
+                    crate::error::io_error_to_napi(error)
+                }
+                ferric_rules_runtime::SnapshotFileError::Serialization(error) => {
+                    crate::error::serde_error_to_napi(error)
+                }
             })?;
         Self {
             inner: RefCell::new(Some(engine)),

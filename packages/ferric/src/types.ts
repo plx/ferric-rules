@@ -170,7 +170,7 @@ export interface EngineOptions {
   strategy?: Strategy;
   /** String encoding mode. Default: Utf8. */
   encoding?: Encoding;
-  /** Maximum function call depth, integer 0..=4294967295. Default: 64; zero disallows user-function calls. */
+  /** Requested function call depth, integer 0..=4294967295. Default: 64; effective maximum is 32. Zero disallows user-function calls. */
   maxCallDepth?: number;
 }
 

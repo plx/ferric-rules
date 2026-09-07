@@ -26,13 +26,14 @@ Node16/NodeNext type resolution. Only the root and `package.json` are exported.
 
 Implicit snapshots now use recommended CBOR. Explicit Bincode and the other
 formats remain experimental. Native envelope compatibility applies to every
-format; old implicit Bincode bytes require an explicit format only when their
-versioned envelope is compatible. Legacy raw snapshots are not silently migrated.
+format. Compatible versioned Bincode snapshots require an explicit format when
+restored. Legacy raw snapshots are rejected rather than silently migrated.
 
 Integral JavaScript numbers must be safe integers; use bigint for the signed
 64-bit range. Integral numbers outside that range are rejected instead of
 being guessed as floats. `maxCallDepth` accepts integers in `0..=4294967295`;
-zero keeps the runtime meaning of disallowing user-function calls. Strategy,
+zero disallows user-function calls. The requested default is 64, with an effective
+runtime ceiling of 32 user calls even when a higher limit is requested. Strategy,
 encoding and snapshot format selectors must be exact declared enum members;
 fractional, wrapped or nonfinite numbers are rejected before native conversion.
 Run limits and counts use exact numbers through
