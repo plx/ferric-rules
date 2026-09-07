@@ -30,13 +30,19 @@ publication requirement, expanded platform matrix or recurring owner renewal.
 
 ## Finite integration checklist
 
-All 81 formerly open issues were triaged once. The prepared replacement has
-13 work/gate members, consolidating overlapping defects rather than making
-one PR per obsolete ticket. The live label/dependency batch is **not applied**.
-It preserves issue history, retires 72 items as not planned, removes 180 obsolete
-edges, adds 18 finite-cohort edges and preserves 41 unrelated edges. The existing
-selector defaults to the new cohort and fails closed while that cohort is empty;
-no selector is run during migration.
+All 81 formerly open issues were triaged once. The replacement has 13 work/gate
+members, consolidating overlapping defects rather than making one PR per obsolete
+ticket. The label/dependency batch is **applied and separately verified against live state**.
+The full comparison covers 175 issues: 85 targeted updates, 72 retirements as
+not planned, and 90 untargeted issues unchanged. Eleven cohort members are
+completed; only #143 and #153 remain open. Issue #300 remains unchanged and open.
+Native edges changed from 221 to 59: 180 obsolete edges removed, 18 cohort edges
+added and 41 other edges preserved. Issue history and scope reasons remain.
+The existing selector defaults to this populated finite cohort; none was run
+during migration. Before/after state, ordered actions and separate live proof
+are retained under `.context/rehabilitation/backlog-final/`, run
+`20260907T141847771375Z`; see its `migration-result.md` and
+`whole-repository-verification.json`.
 
 | Item | Concrete outcome | Integration state |
 | --- | --- | --- |
@@ -52,7 +58,7 @@ no selector is run during migration.
 | #203 | Host value/fact provenance across adapters | [#311](https://github.com/plx/ferric-rules/pull/311), merged `6bae570e` |
 | #305 | Swift package and explicit header generation | [#312](https://github.com/plx/ferric-rules/pull/312), merged `46a88e16` |
 | #153 | Exact Rust/CLI consumers and shared example | [#313](https://github.com/plx/ferric-rules/pull/313), prepared and validated; merge pending |
-| #143 | Integrated evidence, CI and backlog migration | Final measurements complete; preceding merges/migration pending |
+| #143 | Integrated evidence, CI and backlog migration | Measurements and live migration verified; #313 and final closing PR pending |
 
 Go #310 merged at `2026-09-07T12:45:33Z` after its essential checks and review
 passed. The `13:02:31Z` follow-up records all 46 checks terminal: 45 successful
@@ -270,7 +276,7 @@ Qualified distinct template declarations work; unsupported unqualified cross-mod
 name collisions fail before state changes. Migration notes describe Python string,
 Node version/precision, Go cancellation/path, host handles and legacy snapshot breaks.
 
-Next: merge the external-consumer change after its checks. Apply and verify the
-prepared issue/label/native-dependency batch, complete final validation and merge
-#143's closing record. Reconcile the starting checkout while preserving user
-changes. Completion requires all accepted implementation PRs merged.
+Next: merge external-consumer PR #313 after its checks, complete final validation
+and merge #143's closing record. The backlog migration is applied and verified.
+Reconcile the starting checkout while preserving user changes. Completion
+requires all accepted implementation PRs merged.
