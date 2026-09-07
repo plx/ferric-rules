@@ -66,7 +66,7 @@ def test_configuration_isolation_uses_behavioral_observations() -> None:
         "unicode": "accepted",
     }
     assert case.canonical["depth_256_only"] == {
-        "halt_reason": "agenda_empty",
+        "halt_reason": "action_error",
         "unicode": "accepted",
     }
 
