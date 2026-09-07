@@ -8,7 +8,9 @@
 use rustc_hash::FxHashMap as HashMap;
 use smallvec::SmallVec;
 
-use crate::alpha::{AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, SlotIndex};
+use crate::alpha::{
+    AlphaEntryType, AlphaMemoryId, AlphaNetwork, ConstantTest, ConstantTestType, SlotIndex,
+};
 use crate::beta::{BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
 use crate::fact::FactBase;
@@ -20,7 +22,7 @@ use crate::validation::{PatternValidationError, PatternViolation, ValidationStag
 /// Maximum condition nodes in one compiled rule, including nested NCC nodes.
 /// This bounds recursive propagation depth without a second execution engine.
 pub const MAX_RULE_CONDITIONS: usize = 64;
-/// Maximum constant tests in one alpha path.
+/// Maximum value tests in one alpha path, plus at most one ordered field-count test.
 pub const MAX_ALPHA_TESTS: usize = 64;
 
 /// A rule ready for compilation into rete structures.
@@ -279,7 +281,7 @@ impl ReteCompiler {
         Self::ensure_non_empty(&rule.patterns)?;
         Self::check_limit("rule conditions", rule.patterns.len(), MAX_RULE_CONDITIONS)?;
         for pattern in &rule.patterns {
-            Self::check_limit("alpha tests", pattern.constant_tests.len(), MAX_ALPHA_TESTS)?;
+            Self::validate_alpha_test_count(&pattern.constant_tests)?;
         }
         Self::validate_rule_patterns(&rule.patterns)?;
         let conditions = Self::patterns_as_conditions(&rule.patterns);
@@ -516,11 +518,7 @@ impl ReteCompiler {
             Self::check_limit("rule conditions", count, MAX_RULE_CONDITIONS)?;
             match condition {
                 CompilableCondition::Pattern(pattern) => {
-                    Self::check_limit(
-                        "alpha tests",
-                        pattern.constant_tests.len(),
-                        MAX_ALPHA_TESTS,
-                    )?;
+                    Self::validate_alpha_test_count(&pattern.constant_tests)?;
                 }
                 CompilableCondition::Ncc(children) => pending.extend(children),
                 CompilableCondition::Predicate { .. } => {}
@@ -554,6 +552,19 @@ impl ReteCompiler {
             }
         }
         Self::finish_validation(errors)
+    }
+
+    fn validate_alpha_test_count(tests: &[ConstantTest]) -> Result<(), CompileError> {
+        let field_count_tests = tests
+            .iter()
+            .filter(|test| matches!(test.test_type, ConstantTestType::OrderedFieldCount { .. }))
+            .count();
+        Self::check_limit("ordered field-count tests", field_count_tests, 1)?;
+        Self::check_limit(
+            "alpha tests",
+            tests.len() - field_count_tests,
+            MAX_ALPHA_TESTS,
+        )
     }
 
     fn check_limit(

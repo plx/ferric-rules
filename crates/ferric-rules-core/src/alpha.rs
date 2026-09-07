@@ -38,10 +38,11 @@ pub enum AlphaEntryType {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlphaMemoryId(pub u32);
 
-/// A constant test applied to a single slot of a fact.
+/// A constant test applied to a fact or one of its slots.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConstantTest {
+    /// Slot inspected by value tests; ignored by ordered field-count tests.
     pub slot: SlotIndex,
     pub test_type: ConstantTestType,
 }
@@ -78,6 +79,12 @@ pub enum ConstantTestType {
     GreaterOrEqualSlotOffset(SlotIndex, i64),
     /// Numeric slot less-or-equal against another slot plus integer offset.
     LessOrEqualSlotOffset(SlotIndex, i64),
+    /// Ordered fact cardinality, independent of any individual slot.
+    /// An absent maximum permits a variable-length multifield match.
+    OrderedFieldCount {
+        min: usize,
+        max: Option<usize>,
+    },
 }
 
 /// An alpha network node.
@@ -801,80 +808,84 @@ fn fact_matches_entry_type(fact: &Fact, entry_type: &AlphaEntryType) -> bool {
 
 /// Evaluate a constant test against a fact.
 fn evaluate_test(fact: &Fact, test: &ConstantTest) -> bool {
-    let Some(slot_value) = get_slot_value(fact, test.slot) else {
-        return false;
-    };
-
-    match &test.test_type {
-        ConstantTestType::Equal(test_key) => {
+    match (&test.test_type, get_slot_value(fact, test.slot)) {
+        (ConstantTestType::OrderedFieldCount { min, max }, _) => {
+            matches!(fact, Fact::Ordered(ordered)
+                if ordered.fields.len() >= *min
+                    && max.map_or(true, |max| ordered.fields.len() <= max))
+        }
+        (_, None) => false,
+        (ConstantTestType::Equal(test_key), Some(slot_value)) => {
             atom_key_matches(slot_value, |slot_key| slot_key == test_key)
         }
-        ConstantTestType::NotEqual(test_key) => {
+        (ConstantTestType::NotEqual(test_key), Some(slot_value)) => {
             atom_key_matches(slot_value, |slot_key| slot_key != test_key)
         }
-        ConstantTestType::EqualAny(keys) => {
+        (ConstantTestType::EqualAny(keys), Some(slot_value)) => {
             atom_key_matches(slot_value, |slot_key| keys.contains(slot_key))
         }
-        ConstantTestType::GreaterThan(test_key) => {
+        (ConstantTestType::GreaterThan(test_key), Some(slot_value)) => {
             compare_test_key(slot_value, test_key, |ord| matches!(ord, Ordering::Greater))
         }
-        ConstantTestType::LessThan(test_key) => {
+        (ConstantTestType::LessThan(test_key), Some(slot_value)) => {
             compare_test_key(slot_value, test_key, |ord| matches!(ord, Ordering::Less))
         }
-        ConstantTestType::GreaterOrEqual(test_key) => {
+        (ConstantTestType::GreaterOrEqual(test_key), Some(slot_value)) => {
             compare_test_key(slot_value, test_key, |ord| {
                 matches!(ord, Ordering::Greater | Ordering::Equal)
             })
         }
-        ConstantTestType::LessOrEqual(test_key) => compare_test_key(slot_value, test_key, |ord| {
-            matches!(ord, Ordering::Less | Ordering::Equal)
-        }),
-        ConstantTestType::EqualSlot(other_slot) => {
+        (ConstantTestType::LessOrEqual(test_key), Some(slot_value)) => {
+            compare_test_key(slot_value, test_key, |ord| {
+                matches!(ord, Ordering::Less | Ordering::Equal)
+            })
+        }
+        (ConstantTestType::EqualSlot(other_slot), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 slot_value.structural_eq(other_value)
             })
         }
-        ConstantTestType::NotEqualSlot(other_slot) => {
+        (ConstantTestType::NotEqualSlot(other_slot), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 !slot_value.structural_eq(other_value)
             })
         }
-        ConstantTestType::EqualSlotOffset(other_slot, offset) => {
+        (ConstantTestType::EqualSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Equal)
                 })
             })
         }
-        ConstantTestType::NotEqualSlotOffset(other_slot, offset) => {
+        (ConstantTestType::NotEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 !compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Equal)
                 })
             })
         }
-        ConstantTestType::GreaterThanSlotOffset(other_slot, offset) => {
+        (ConstantTestType::GreaterThanSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Greater)
                 })
             })
         }
-        ConstantTestType::LessThanSlotOffset(other_slot, offset) => {
+        (ConstantTestType::LessThanSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Less)
                 })
             })
         }
-        ConstantTestType::GreaterOrEqualSlotOffset(other_slot, offset) => {
+        (ConstantTestType::GreaterOrEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Greater | Ordering::Equal)
                 })
             })
         }
-        ConstantTestType::LessOrEqualSlotOffset(other_slot, offset) => {
+        (ConstantTestType::LessOrEqualSlotOffset(other_slot, offset), Some(slot_value)) => {
             compare_other_slot(fact, *other_slot, |other_value| {
                 compare_offset(slot_value, other_value, *offset, |ord| {
                     matches!(ord, Ordering::Less | Ordering::Equal)
@@ -1369,6 +1380,50 @@ mod tests {
     }
 
     // --- Test constant test evaluation ---
+
+    #[test]
+    fn ordered_field_count_tests_enforce_exact_and_minimum_cardinality() {
+        let mut table = SymbolTable::new();
+        let relation = table.intern_symbol("test", StringEncoding::Ascii).unwrap();
+        for field_count in 0..=3 {
+            let fact = Fact::Ordered(OrderedFact {
+                relation,
+                fields: (0..field_count).map(|_| Value::Integer(42)).collect(),
+            });
+            for min in 0..=3 {
+                for max in [Some(min), None] {
+                    let test = ConstantTest {
+                        slot: SlotIndex::Ordered(0),
+                        test_type: ConstantTestType::OrderedFieldCount { min, max },
+                    };
+                    let expected = if max.is_some() {
+                        field_count == min
+                    } else {
+                        field_count >= min
+                    };
+                    assert_eq!(
+                        evaluate_test(&fact, &test),
+                        expected,
+                        "field count {field_count}, bounds {min}..={max:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ordered_field_count_tests_reject_template_facts() {
+        let mut templates: SlotMap<TemplateId, ()> = SlotMap::with_key();
+        let fact = Fact::Template(crate::fact::TemplateFact {
+            template_id: templates.insert(()),
+            slots: Box::new([Value::Integer(42)]),
+        });
+        let test = ConstantTest {
+            slot: SlotIndex::Template(0),
+            test_type: ConstantTestType::OrderedFieldCount { min: 1, max: None },
+        };
+        assert!(!evaluate_test(&fact, &test));
+    }
 
     #[test]
     fn constant_test_equal_passes() {

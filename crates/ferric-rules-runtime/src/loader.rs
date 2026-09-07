@@ -3712,6 +3712,21 @@ impl Engine {
                     AlphaEntryType::OrderedRelation(sym)
                 };
                 let mut constant_tests = Vec::new();
+                if matches!(entry_type, AlphaEntryType::OrderedRelation(_)) {
+                    // Single-field constraints consume exactly one field, even
+                    // when anonymous. Multifield constraints may consume none
+                    // or more, so only their fixed neighbors set a lower bound.
+                    let min = ordered
+                        .constraints
+                        .iter()
+                        .filter(|constraint| !Self::constraint_is_multifield(constraint))
+                        .count();
+                    let max = (min == ordered.constraints.len()).then_some(min);
+                    constant_tests.push(ConstantTest {
+                        slot: SlotIndex::Ordered(0),
+                        test_type: ConstantTestType::OrderedFieldCount { min, max },
+                    });
+                }
                 let mut variable_slots = Vec::new();
                 let mut negated_variable_slots = Vec::new();
                 let mut seen_variable_slots = HashMap::new();
@@ -3870,6 +3885,21 @@ impl Engine {
                 span,
                 "or CE reached translate_pattern unexpectedly (should be expanded via rule duplication)",
             )),
+        }
+    }
+
+    fn constraint_is_multifield(constraint: &Constraint) -> bool {
+        match constraint {
+            Constraint::MultiVariable(_, _) | Constraint::MultiWildcard(_) => true,
+            Constraint::And(parts, _) | Constraint::Or(parts, _) => {
+                parts.iter().any(Self::constraint_is_multifield)
+            }
+            Constraint::Not(inner, _) => Self::constraint_is_multifield(inner),
+            Constraint::Literal(_)
+            | Constraint::Variable(_, _)
+            | Constraint::Wildcard(_)
+            | Constraint::Predicate(_, _)
+            | Constraint::ReturnValue(_, _) => false,
         }
     }
 
