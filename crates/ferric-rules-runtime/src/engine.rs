@@ -331,15 +331,23 @@ impl Engine {
         self.config.set_fact_duplication(enabled)
     }
 
-    pub(crate) fn assert_fact_internal(&mut self, fact: Fact) -> FactAssertionResult {
-        match self.fact_base.assert_fact(fact, self.fact_duplication()) {
-            FactInsertionResult::Inserted(fact_id) => {
-                propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
-                self.drain_pending_predicate_matches();
-                FactAssertionResult::Asserted(fact_id)
-            }
-            FactInsertionResult::Duplicate(fact_id) => FactAssertionResult::Duplicate(fact_id),
-        }
+    pub(crate) fn assert_fact_internal(
+        &mut self,
+        fact: Fact,
+    ) -> Result<FactAssertionResult, EngineError> {
+        Ok(
+            match self
+                .fact_base
+                .try_assert_fact(fact, self.fact_duplication())?
+            {
+                FactInsertionResult::Inserted(fact_id) => {
+                    propagate_fact_assertion(&mut self.rete, &self.fact_base, fact_id);
+                    self.drain_pending_predicate_matches();
+                    FactAssertionResult::Asserted(fact_id)
+                }
+                FactInsertionResult::Duplicate(fact_id) => FactAssertionResult::Duplicate(fact_id),
+            },
+        )
     }
 
     pub(crate) fn drain_pending_predicate_matches(&mut self) {
@@ -465,28 +473,26 @@ impl Engine {
             .intern_symbol(relation, self.config.string_encoding)?;
 
         let fields_small = fields.into_field_values();
-        Ok(
-            self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
-                relation: relation_sym,
-                fields: fields_small,
-            })),
-        )
+        self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+            relation: relation_sym,
+            fields: fields_small,
+        }))
     }
 
     /// Assert a fully constructed fact into working memory.
     ///
-    /// The `Result` return type is retained for API compatibility.
+    /// Returns an error if insertion requires an exhausted fact timestamp.
     pub fn assert(&mut self, fact: Fact) -> Result<FactId, EngineError> {
         Ok(self.assert_with_result(fact)?.fact_id())
     }
 
     /// Assert a fully constructed fact and report whether it was newly inserted.
     ///
-    /// The `Result` return type is retained for API compatibility.
+    /// Returns an error if insertion requires an exhausted fact timestamp.
     pub fn assert_with_result(&mut self, fact: Fact) -> Result<FactAssertionResult, EngineError> {
         ferric_span!(info_span, "engine_assert");
 
-        Ok(self.assert_fact_internal(fact))
+        self.assert_fact_internal(fact)
     }
 
     /// Assert a template fact by template name and named slot values.
@@ -600,7 +606,7 @@ impl Engine {
             slots,
         });
 
-        Ok(self.assert_fact_internal(fact))
+        self.assert_fact_internal(fact)
     }
 
     /// Assert named template slot/value pairs, applying defaults to omitted slots.
@@ -822,7 +828,7 @@ impl Engine {
             .assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
                 relation: relation_sym,
                 fields,
-            }))
+            }))?
             .fact_id())
     }
 
@@ -1263,7 +1269,7 @@ impl Engine {
         let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
             relation: initial_sym,
             fields: smallvec::SmallVec::new(),
-        }));
+        }))?;
         self.initial_fact_id = Some(result.fact_id());
 
         // CLIPS traverses modules in creation order, then each module's current
@@ -1272,7 +1278,7 @@ impl Engine {
         definitions.sort_by_key(|definition| definition.module.0);
         for definition in definitions {
             for fact in definition.facts {
-                self.assert_fact_internal(fact);
+                self.assert_fact_internal(fact)?;
             }
         }
 
@@ -1651,6 +1657,9 @@ impl Engine {
 pub enum EngineError {
     #[error("encoding error: {0}")]
     Encoding(#[from] EncodingError),
+
+    #[error(transparent)]
+    FactTimestampExhausted(#[from] ferric_rules_core::FactTimestampExhausted),
 
     #[error("fact not found: {0:?}")]
     FactNotFound(FactId),

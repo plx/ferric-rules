@@ -71,8 +71,8 @@ pub use compiler::{
 pub use encoding::{EncodingError, StringEncoding};
 pub use exists::{ExistsMemory, ExistsMemoryId};
 pub use fact::{
-    Fact, FactBase, FactEntry, FactId, FactInsertionResult, OrderedFact, TemplateFact, TemplateId,
-    Timestamp,
+    Fact, FactBase, FactEntry, FactId, FactInsertionResult, FactTimestampExhausted, OrderedFact,
+    TemplateFact, TemplateId, Timestamp,
 };
 pub use ncc::{NccMemory, NccMemoryId};
 pub use negative::{NegativeMemory, NegativeMemoryId};

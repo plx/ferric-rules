@@ -629,8 +629,7 @@ impl BetaNetwork {
         tests: Vec<JoinTest>,
         bindings: Vec<(SlotIndex, VarId)>,
     ) -> (NodeId, BetaMemoryId) {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
         self.next_memory_id += 1;
@@ -669,8 +668,7 @@ impl BetaNetwork {
         rule: RuleId,
         condition_index: u32,
     ) -> (NodeId, BetaMemoryId) {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
         self.next_memory_id += 1;
@@ -701,8 +699,7 @@ impl BetaNetwork {
         rule: RuleId,
         salience: Salience,
     ) -> NodeId {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let node = BetaNode::Terminal {
             parent,
@@ -729,8 +726,7 @@ impl BetaNetwork {
         alpha_memory: AlphaMemoryId,
         tests: Vec<JoinTest>,
     ) -> (NodeId, BetaMemoryId, NegativeMemoryId) {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
         self.next_memory_id += 1;
@@ -790,8 +786,7 @@ impl BetaNetwork {
         partner: NodeId,
         ncc_memory_id: NccMemoryId,
     ) -> (NodeId, BetaMemoryId) {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
         self.next_memory_id += 1;
@@ -827,8 +822,7 @@ impl BetaNetwork {
         ncc_node_id: NodeId,
         ncc_memory_id: NccMemoryId,
     ) -> NodeId {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let node = BetaNode::NccPartner {
             parent,
@@ -865,8 +859,7 @@ impl BetaNetwork {
         alpha_memory: AlphaMemoryId,
         tests: Vec<JoinTest>,
     ) -> (NodeId, BetaMemoryId, ExistsMemoryId) {
-        let node_id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let node_id = self.allocate_node_id();
 
         let memory_id = BetaMemoryId(self.next_memory_id);
         self.next_memory_id += 1;
@@ -1051,13 +1044,35 @@ impl BetaNetwork {
         }
     }
 
+    /// Check a rule installation's conservative node demand before any graph mutation.
+    pub fn ensure_node_capacity(
+        &self,
+        required: usize,
+    ) -> Result<(), crate::compiler::CompileError> {
+        let available = (u32::MAX - self.next_node_id) as usize;
+        if required > available {
+            return Err(crate::compiler::CompileError::ResourceLimit {
+                resource: "remaining beta node IDs",
+                required,
+                limit: available,
+            });
+        }
+        Ok(())
+    }
+
     /// Allocate a new node ID without creating a node.
     ///
     /// This is exposed for coordination with other ID allocation (e.g., `ReteNetwork`).
-    #[allow(clippy::cast_possible_truncation)] // Node count will never reach u32::MAX in practice.
+    ///
+    /// # Panics
+    /// Panics if node IDs are exhausted. Rule loaders must first call
+    /// [`Self::ensure_node_capacity`] with the complete installation demand.
     pub fn allocate_node_id(&mut self) -> NodeId {
         let id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        self.next_node_id = self
+            .next_node_id
+            .checked_add(1)
+            .expect("beta node ID capacity exhausted");
         id
     }
 
