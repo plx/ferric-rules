@@ -34,7 +34,7 @@ These are local measurements; CI machines can produce different absolute times.
 | --- | --- | --- |
 | Template actions and host reads | Assertions, modifications, and owned reads deep-copy immutable template metadata. | Share immutable definitions; measure engine workloads and owned capture separately. |
 | Existential joins | The compiler builds equality indexes, but right-side `exists` activation scans every parent. | Reuse the indexed candidate lookup; verify order, backfill, non-indexable values, and a new scaling gate. |
-| Template resolution | Every lookup scans all templates and allocates parsed names for each definition. | Investigate a derived local-name index without caching visibility decisions. |
+| Template resolution | Every lookup scans all templates and allocates parsed names for each definition. | Index local-name candidates and defer discarded diagnostics; retain live visibility checks. |
 | Action loops | Counted loops copy token bindings and rule metadata for every iteration; runtime local bindings are rebuilt for expression evaluation. | Investigate frame reuse and removal of intermediate copies. |
 | Retraction | Every removed token scans all negative, NCC, and exists memories for parent cleanup. | Investigate cleanup through the token owner's child nodes. |
 | Ordered membership | Linked hash membership preserves the repaired CLIPS traversal order but hashes each iterator step. | Evaluate only alternatives that preserve insertion order and bounded churn storage. |
@@ -128,3 +128,41 @@ movements, including a +5.70% repeated result for `reset_run_retract_3` (first
 pass +1.12%). They remain in the cumulative audit rather than being omitted
 from the record. The substantial, repeatable indexed-workload gains justify
 retaining the change.
+
+## Indexed template resolution
+
+Template references now inspect a derived local-name candidate index instead of
+scanning and reparsing every definition. The index contains IDs only; module
+visibility is checked on each lookup, so changed imports/exports take effect
+immediately. Local definitions retain preference over imported definitions and
+ambiguity diagnostics retain sorted module names. Ordered-relation probes use
+a typed lookup result and avoid formatting errors they discard.
+
+The index is maintained on installation, retained across same-ID replacement and
+reset, cleared by `clear`, and rebuilt from template definitions on snapshot
+restore. It adds no persisted fields. The cold definition-identity lookup retains
+SlotMap traversal order and now borrows name parts instead of allocating them.
+
+Validation includes full `just preflight-pr`, runtime tests with all features,
+property comparisons against the existing qualified-name parser (arbitrary
+Unicode strings and colon-heavy names), exact visibility/ambiguity diagnostics,
+live import updates, local shadowing, redefinition, clear/reset, and candidate
+reconstruction in all five snapshot formats.
+
+Measured implementation: `ffa4ff46`, against `2711ff5e`. Both passes cover all
+39 compilation, engine, module, and Waltz workloads. Complete medians are in
+[the measurement record](2026-09-07-template-resolution.json).
+
+| Workload | Before median | After median | Change |
+| --- | ---: | ---: | ---: |
+| Compile 100 rules / 20 templates | 909.27 µs | 713.47 µs | -21.53% |
+| Compile 500 rules / 50 templates | 8,146.51 µs | 5,805.18 µs | -28.74% |
+| Load/reset/run 1,000 facts | 1,274.20 µs | 1,123.33 µs | -11.84% |
+| Waltz, 100 junctions | 437.79 µs | 404.37 µs | -7.63% |
+| Engine creation | 360.17 ns | 371.08 ns | +3.03% |
+
+The first pass improves the five compilation sizes by 6.37–29.40%; the repeat
+improves them by 8.53–28.74%. Other controls are mixed, with engine creation
++0.63% initially and +3.03% in the repeat. The repeat's largest regression is
+that engine-creation case. The large, repeatable compilation and runtime gains
+justify retaining the index.

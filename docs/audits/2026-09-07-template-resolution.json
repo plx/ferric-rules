@@ -1,0 +1,425 @@
+{
+  "baseline_revision": "2711ff5ee17612538a83a22a4cb7803a965aa0a5",
+  "candidate_revision": "ffa4ff46e42bfd5f28c28e7758d6287dec180350",
+  "environment": {
+    "machine": "Apple M4 Max",
+    "host": "aarch64-apple-darwin",
+    "os": "Darwin 27.0.0",
+    "rustc": "1.93.0 (254b59607 2026-01-19)",
+    "profile": "cargo bench, release opt-level=3, lto=true, codegen-units=1",
+    "features": [
+      "serde"
+    ],
+    "sampling": {
+      "sample_size": 20,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 1,
+      "note": "Existing benchmark groups retain their explicit sample-size overrides; Criterion may extend measurement for slow workloads."
+    }
+  },
+  "command": "cargo bench -p ferric-rules --features serde --bench compile_bench --bench engine_bench --bench waltz_bench --bench module_bench -- --noplot --sample-size 20 --warm-up-time 1 --measurement-time 1 --save-baseline LABEL",
+  "first_pass": {
+    "before": "audit-lookup-before",
+    "after": "audit-lookup-after",
+    "unit": "ns",
+    "workloads": {
+      "waltz_20_junctions": {
+        "before": 115297.82579365079,
+        "after": 110900.31104651163,
+        "delta_percent": -3.814048284838789
+      },
+      "reset_run_negation": {
+        "before": 2597.8995555555557,
+        "after": 2578.3698686814178,
+        "delta_percent": -0.7517491133317344
+      },
+      "compile_template_rule": {
+        "before": 8438.858622127502,
+        "after": 8298.522832491582,
+        "delta_percent": -1.6629712135234231
+      },
+      "waltz_100_junctions": {
+        "before": 432564.1186868687,
+        "after": 406618.9593253968,
+        "delta_percent": -5.997991567176997
+      },
+      "waltz_5_junctions": {
+        "before": 56998.838359788366,
+        "after": 54710.83019853709,
+        "delta_percent": -4.0141312123045285
+      },
+      "waltz_150_junctions": {
+        "before": 625073.73046875,
+        "after": 586746.7966861599,
+        "delta_percent": -6.131586069670258
+      },
+      "lifecycle_reset_run_1000": {
+        "before": 931100.4523809524,
+        "after": 891872.5666666667,
+        "delta_percent": -4.213066980471836
+      },
+      "waltz_50_junctions": {
+        "before": 233044.78820861678,
+        "after": 218413.02007575758,
+        "delta_percent": -6.27852192933881
+      },
+      "lifecycle_reset_run_100": {
+        "before": 87134.9321067821,
+        "after": 82973.6335522715,
+        "delta_percent": -4.775694952526067
+      },
+      "reset_run_20_facts": {
+        "before": 13474.590335475055,
+        "after": 13012.6297095197,
+        "delta_percent": -3.428383456965911
+      },
+      "reset_run_join_3": {
+        "before": 3661.124764871413,
+        "after": 3698.6158767360166,
+        "delta_percent": 1.0240326203666106
+      },
+      "load_and_run_simple": {
+        "before": 8186.873846597463,
+        "after": 7670.8245791092495,
+        "delta_percent": -6.303373878207341
+      },
+      "module_3m_100i": {
+        "before": 483189.50333333336,
+        "after": 473248.1060606061,
+        "delta_percent": -2.057453070512816
+      },
+      "lifecycle_load_reset_run_100": {
+        "before": 130269.45261098203,
+        "after": 118821.6849593496,
+        "delta_percent": -8.78776061631148
+      },
+      "module_3m_100i_run_only": {
+        "before": 385362.0769230769,
+        "after": 366648.86584249086,
+        "delta_percent": -4.8560074281313925
+      },
+      "reset_run_simple": {
+        "before": 2282.287126969416,
+        "after": 2267.1767589068613,
+        "delta_percent": -0.6620713004949264
+      },
+      "lifecycle_load_reset_run_1000": {
+        "before": 1266823.869047619,
+        "after": 1129650.923888889,
+        "delta_percent": -10.828099194393515
+      },
+      "engine_create": {
+        "before": 363.927822888804,
+        "after": 366.2140529591552,
+        "delta_percent": 0.6282097510994067
+      },
+      "compile_10r_5t": {
+        "before": 71480.7615629984,
+        "after": 66925.1422646605,
+        "delta_percent": -6.373210355800252
+      },
+      "waltz_5_junctions_run_only": {
+        "before": 10929.788238712725,
+        "after": 10807.528767942584,
+        "delta_percent": -1.1185895655059896
+      },
+      "waltz_10_junctions": {
+        "before": 79014.56157407406,
+        "after": 75853.77907732294,
+        "delta_percent": -4.00025316066327
+      },
+      "compile_50r_10t": {
+        "before": 380313.7573964497,
+        "after": 319164.30833333335,
+        "delta_percent": -16.078684474033487
+      },
+      "reset_run_retract_3": {
+        "before": 3163.3920634920632,
+        "after": 3086.5782645089284,
+        "delta_percent": -2.4282098911995176
+      },
+      "load_and_run_chain_4": {
+        "before": 19748.798568911036,
+        "after": 19389.878668422993,
+        "delta_percent": -1.8174265094437758
+      },
+      "waltz_200/waltz_200_junctions": {
+        "before": 826943.0282608696,
+        "after": 779135.2936507936,
+        "delta_percent": -5.781260978839087
+      },
+      "waltz_500/waltz_500_junctions": {
+        "before": 2007651.6600000001,
+        "after": 1891912.705,
+        "delta_percent": -5.764892252274489
+      },
+      "waltz_750/waltz_750_junctions": {
+        "before": 3049600.8214285714,
+        "after": 2841121.619047619,
+        "delta_percent": -6.836278404571361
+      },
+      "module_5m_100i/module_5m_100i": {
+        "before": 750735.3905714286,
+        "after": 728732.0866666667,
+        "delta_percent": -2.930900045622453
+      },
+      "module_10m_50i/module_10m_50i": {
+        "before": 759585.4166666666,
+        "after": 751641.4285714286,
+        "delta_percent": -1.0458320974748414
+      },
+      "waltz_1000/waltz_1000_junctions": {
+        "before": 4030023.05,
+        "after": 3820681.5657142857,
+        "delta_percent": -5.19454806308649
+      },
+      "module_20m_20i/module_20m_20i": {
+        "before": 676241.2,
+        "after": 669867.0277777778,
+        "delta_percent": -0.9425885648822074
+      },
+      "compile_200r_30t/compile_200r_30t": {
+        "before": 2185728.7962962966,
+        "after": 1650579.0052083333,
+        "delta_percent": -24.48381482619304
+      },
+      "waltz_300/waltz_300_junctions": {
+        "before": 1231401.325,
+        "after": 1154460.9767857143,
+        "delta_percent": -6.248194366226278
+      },
+      "online_rule_install/1000_wmes/10_rules": {
+        "before": 308267.4866666667,
+        "after": 310868.5865384615,
+        "delta_percent": 0.8437801533728972
+      },
+      "online_rule_install/1000_wmes/1_rules": {
+        "before": 34197.74230769231,
+        "after": 34790.5,
+        "delta_percent": 1.733324050969176
+      },
+      "online_rule_install/100_wmes/10_rules": {
+        "before": 56775.24053030303,
+        "after": 56933.741120218576,
+        "delta_percent": 0.27917202716374323
+      },
+      "online_rule_install/100_wmes/1_rules": {
+        "before": 7140.637500000001,
+        "after": 7243.053235694822,
+        "delta_percent": 1.4342659978863415
+      },
+      "compile_100r_20t/compile_100r_20t": {
+        "before": 920295.8325,
+        "after": 718082.1538461539,
+        "delta_percent": -21.972682208559945
+      },
+      "compile_500r_50t/compile_500r_50t": {
+        "before": 8123548.604166667,
+        "after": 5734831.013888889,
+        "delta_percent": -29.404853798161255
+      }
+    }
+  },
+  "alternating_repeat": {
+    "before": "audit-lookup-before-repeat",
+    "after": "audit-lookup-after-repeat",
+    "unit": "ns",
+    "workloads": {
+      "waltz_20_junctions": {
+        "before": 116983.97073170732,
+        "after": 109900.97504058442,
+        "delta_percent": -6.054671974989745
+      },
+      "reset_run_negation": {
+        "before": 2708.8933055713296,
+        "after": 2617.840500951338,
+        "delta_percent": -3.3612547394437753
+      },
+      "compile_template_rule": {
+        "before": 8467.162022102748,
+        "after": 8166.503394446659,
+        "delta_percent": -3.5508784037821317
+      },
+      "waltz_100_junctions": {
+        "before": 437793.1936639119,
+        "after": 404368.3323412698,
+        "delta_percent": -7.634851753383332
+      },
+      "waltz_5_junctions": {
+        "before": 57102.82698412698,
+        "after": 54261.26875,
+        "delta_percent": -4.976212885076336
+      },
+      "waltz_150_junctions": {
+        "before": 632226.9318181819,
+        "after": 587192.1305555555,
+        "delta_percent": -7.123201970076421
+      },
+      "lifecycle_reset_run_1000": {
+        "before": 915553.7916666667,
+        "after": 869851.2247596154,
+        "delta_percent": -4.991794837510833
+      },
+      "waltz_50_junctions": {
+        "before": 236377.23038548755,
+        "after": 218173.95227272727,
+        "delta_percent": -7.7009439881642106
+      },
+      "lifecycle_reset_run_100": {
+        "before": 87705.25281100479,
+        "after": 83876.10684697857,
+        "delta_percent": -4.365925462044573
+      },
+      "reset_run_20_facts": {
+        "before": 13467.321377840908,
+        "after": 12880.61299081036,
+        "delta_percent": -4.356533645925442
+      },
+      "reset_run_join_3": {
+        "before": 3892.4492180396437,
+        "after": 3766.882955449483,
+        "delta_percent": -3.225893404292113
+      },
+      "load_and_run_simple": {
+        "before": 8281.939948830408,
+        "after": 7650.09098912877,
+        "delta_percent": -7.629238603581867
+      },
+      "module_3m_100i": {
+        "before": 486406.10357142857,
+        "after": 466182.3195187166,
+        "delta_percent": -4.157798165816418
+      },
+      "lifecycle_load_reset_run_100": {
+        "before": 132128.8169178794,
+        "after": 116656.91035515617,
+        "delta_percent": -11.709713992473958
+      },
+      "module_3m_100i_run_only": {
+        "before": 376630.4509615385,
+        "after": 365261.2013888889,
+        "delta_percent": -3.0186750815351937
+      },
+      "reset_run_simple": {
+        "before": 2354.8315533848863,
+        "after": 2295.9582637563617,
+        "delta_percent": -2.50010619841996
+      },
+      "lifecycle_load_reset_run_1000": {
+        "before": 1274199.1352339182,
+        "after": 1123329.15,
+        "delta_percent": -11.840377305406147
+      },
+      "engine_create": {
+        "before": 360.1734148904567,
+        "after": 371.07682281709594,
+        "delta_percent": 3.0272661656484123
+      },
+      "compile_10r_5t": {
+        "before": 72105.79565807327,
+        "after": 65957.11683201058,
+        "delta_percent": -8.527301820813149
+      },
+      "waltz_5_junctions_run_only": {
+        "before": 10909.915352239295,
+        "after": 10975.963511208578,
+        "delta_percent": 0.6053957050704994
+      },
+      "waltz_10_junctions": {
+        "before": 79753.38979166668,
+        "after": 75552.99553571429,
+        "delta_percent": -5.2667281816167755
+      },
+      "compile_50r_10t": {
+        "before": 370204.4846153846,
+        "after": 321161.7401069519,
+        "delta_percent": -13.247474448988516
+      },
+      "reset_run_retract_3": {
+        "before": 3245.1913796984018,
+        "after": 3095.7118007020163,
+        "delta_percent": -4.606186862553474
+      },
+      "load_and_run_chain_4": {
+        "before": 19939.600659722222,
+        "after": 19327.647434376977,
+        "delta_percent": -3.0690345097100336
+      },
+      "waltz_200/waltz_200_junctions": {
+        "before": 833221.6363636365,
+        "after": 781519.7916666666,
+        "delta_percent": -6.2050530663855685
+      },
+      "waltz_500/waltz_500_junctions": {
+        "before": 2021673.755,
+        "after": 1878406.52,
+        "delta_percent": -7.086565507697351
+      },
+      "waltz_750/waltz_750_junctions": {
+        "before": 3020582.576530612,
+        "after": 2814325.0459183673,
+        "delta_percent": -6.828402315991255
+      },
+      "module_5m_100i/module_5m_100i": {
+        "before": 731438.5528888889,
+        "after": 728050.085,
+        "delta_percent": -0.4632607722830362
+      },
+      "module_10m_50i/module_10m_50i": {
+        "before": 754930.5761904762,
+        "after": 758537.3883928572,
+        "delta_percent": 0.47776740221354697
+      },
+      "waltz_1000/waltz_1000_junctions": {
+        "before": 4038624.9925,
+        "after": 3797588.3714285716,
+        "delta_percent": -5.96828429277415
+      },
+      "module_20m_20i/module_20m_20i": {
+        "before": 664135.0071428572,
+        "after": 673235.343452381,
+        "delta_percent": 1.3702539712029171
+      },
+      "compile_200r_30t/compile_200r_30t": {
+        "before": 2202489.6592592592,
+        "after": 1638453.3447916666,
+        "delta_percent": -25.609033490640275
+      },
+      "waltz_300/waltz_300_junctions": {
+        "before": 1232208.0333333332,
+        "after": 1149980.0208333335,
+        "delta_percent": -6.673224835059621
+      },
+      "online_rule_install/1000_wmes/10_rules": {
+        "before": 308725.1271428572,
+        "after": 310044.8370192308,
+        "delta_percent": 0.42747083419709675
+      },
+      "online_rule_install/1000_wmes/1_rules": {
+        "before": 34208.77472527472,
+        "after": 34586.00102040816,
+        "delta_percent": 1.1027179376136287
+      },
+      "online_rule_install/100_wmes/10_rules": {
+        "before": 57229.07607142857,
+        "after": 56510.52800546448,
+        "delta_percent": -1.255564680211252
+      },
+      "online_rule_install/100_wmes/1_rules": {
+        "before": 7069.3404850746265,
+        "after": 7046.43837822014,
+        "delta_percent": -0.3239638393827349
+      },
+      "compile_100r_20t/compile_100r_20t": {
+        "before": 909266.4620535714,
+        "after": 713469.280448718,
+        "delta_percent": -21.533531673723772
+      },
+      "compile_500r_50t/compile_500r_50t": {
+        "before": 8146508.097222222,
+        "after": 5805184.760416666,
+        "delta_percent": -28.740207569472553
+      }
+    }
+  }
+}
