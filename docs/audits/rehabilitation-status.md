@@ -49,7 +49,7 @@ no selector is run during migration.
 | #171 | Node values, lifetimes and package imports | [#308](https://github.com/plx/ferric-rules/pull/308), merged `8d538d63` |
 | #190 | Python values, configuration and packages | [#309](https://github.com/plx/ferric-rules/pull/309), merged `21fc8586` |
 | #174 | Go module path and cheap lifecycle repairs | [#310](https://github.com/plx/ferric-rules/pull/310), merged `c6ed7774` |
-| #203 | Host value/fact provenance across adapters | [#311](https://github.com/plx/ferric-rules/pull/311), prepared and validated |
+| #203 | Host value/fact provenance across adapters | [#311](https://github.com/plx/ferric-rules/pull/311), merged `6bae570e` |
 | #305 | Swift package and explicit header generation | [#312](https://github.com/plx/ferric-rules/pull/312), prepared and validated |
 | #153 | Exact Rust/CLI consumers and shared example | [#313](https://github.com/plx/ferric-rules/pull/313), prepared and validated; merge pending |
 | #143 | Integrated evidence, CI and backlog migration | Final measurements complete; preceding merges/migration pending |
@@ -60,6 +60,13 @@ and one intentional skip, with no failures or pending checks. Unaffected jobs
 that were still running at merge continued normally and were not counted as
 passing before completion. Raw state and review evidence are in
 `.context/rehabilitation/pr310-merge-proof.md`.
+
+Host #311 merged at `2026-09-07T13:29:45Z` after all essential checks, all three
+native/package aggregates and review passed. Its exact-head merge observation
+records 100 checks: 98 successful, one intentional skip and the ordinary
+performance report still running, with no failures. The pending report continued
+normally and was not counted as passed. The final guide correction received fresh
+review and mandatory preflight; see `.context/rehabilitation/pr311-merge-proof.md`.
 
 ## Decisions and evidence
 
@@ -219,6 +226,16 @@ macOS package consumer pass. Swift-ASan instruments Swift, not all native Rust.
 Current local Apple Silicon SDK27 builds target Swift6/macOS15/iOS18; existing CI
 covers declared environments unavailable locally. No iOS device execution is claimed.
 
+The current local bundle in `.context/rehabilitation/deliverables/` contains 67
+verified files plus its hash manifest, prepared from consumer revision `31835451`
+after the captured-value portability correction. Swift was rebuilt at `f5c113e2`
+with matching native/wrapper/build inputs. Refreshed CLI, Node/Python packages and
+copied Swift consumer checks pass; earlier Swift strict/ASan and iOS wrapper
+results are retained with unchanged-source evidence, not claimed as rerun.
+Native/wheel builds use Rust 1.93; the independent Python sdist consumer built
+outside the checkout with installed stable Rust 1.97.1. The previous bundle is
+preserved, and component receipts distinguish exact build and validation inputs.
+
 Every merge requires Check, Format, Clippy, Test, MSRV, Dependency Policy,
 License Notices, the pinned CLIPS comparison/gate and protected
 `PR Compatibility Gate`, plus fresh review of consequential changes. Additional
@@ -244,7 +261,7 @@ Qualified distinct template declarations work; unsupported unqualified cross-mod
 name collisions fail before state changes. Migration notes describe Python string,
 Node version/precision, Go cancellation/path, host handles and legacy snapshot breaks.
 
-Next: merge host, Swift and external-consumer changes in
-dependency order after their checks. Apply and verify the prepared issue/label/native-dependency batch, complete final
-validation and merge #143's closing record. Reconcile the starting checkout while
-preserving user changes. Completion requires all accepted implementation PRs merged.
+Next: merge Swift and external-consumer changes in dependency order after their
+checks. Apply and verify the prepared issue/label/native-dependency batch,
+complete final validation and merge #143's closing record. Reconcile the starting
+checkout while preserving user changes. Completion requires all accepted implementation PRs merged.
