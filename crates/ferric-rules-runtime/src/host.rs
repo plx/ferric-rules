@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use ferric_rules_core::{Fact, FactId, FerricString, Symbol, Value};
+use ferric_rules_core::{Fact, FactBase, FactId, FerricString, Symbol, Value};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
@@ -252,9 +252,9 @@ fn contains_symbol(value: &Value) -> bool {
     }
 }
 
-// Every fact removal synchronously removes its exported identity before the
-// FactBase slot can be reused. Both sparse indexes contain only live exports;
-// reading one high-index fact does not allocate for unexported arena slots.
+// Sparse indexes scale with exported identities; reading a high-index fact
+// does not allocate for unexported arena slots. RHS removals are reclaimed
+// by the existing bounded, amortized pruning policy.
 #[derive(Default)]
 struct FactHandles {
     by_handle: FxHashMap<FactHandle, FactId>,
@@ -292,16 +292,23 @@ impl HostState {
     }
     pub fn remove(&mut self, fact: FactId) {
         let handles = self.facts.get_mut().expect("host handle lock poisoned");
-        // Most RHS-only work never exports a handle.
-        if handles.by_fact.is_empty() {
-            return;
-        }
         if let Some(handle) = handles.by_fact.remove(&fact) {
             handles.by_handle.remove(&handle);
         }
     }
     pub fn clear_facts(&mut self) {
         *self.facts.get_mut().expect("host handle lock poisoned") = FactHandles::default();
+    }
+    /// Amortize cleanup of RHS retractions without walking live facts after
+    /// every operation. Stale entries remain bounded by live facts plus 256.
+    pub fn prune(&mut self, facts: &FactBase) {
+        let handles = self.facts.get_mut().expect("host handle lock poisoned");
+        if handles.by_fact.len() > facts.len().saturating_mul(2).saturating_add(256) {
+            handles.by_fact.retain(|fact, _| facts.get(*fact).is_some());
+            handles
+                .by_handle
+                .retain(|_, fact| facts.get(*fact).is_some());
+        }
     }
 }
 
@@ -334,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn rhs_removal_reclaims_each_identity_before_fact_slot_reuse() {
+    fn rhs_removal_bounds_storage_and_rejects_retired_identities() {
         let mut engine = Engine::with_rules(
             "(deftemplate changed (slot value))
              (defrule consume ?f <- (item ?id) => (retract ?f))
@@ -349,8 +356,9 @@ mod tests {
             assert!(engine.get_fact(retired).unwrap().is_none());
             assert_eq!(engine.find_facts("keep").unwrap()[0].0, stable);
             let handles = engine.host.facts.lock().unwrap();
-            assert_eq!(handles.by_fact.len(), 1);
-            assert_eq!(handles.by_handle.len(), 1);
+            // Pruning observes at most two live facts in this scenario.
+            assert!(handles.by_fact.len() <= 260);
+            assert_eq!(handles.by_handle.len(), handles.by_fact.len());
         }
         for _ in 0..256 {
             let retired = engine
@@ -378,10 +386,12 @@ mod tests {
             );
             engine.retract(fresh).unwrap();
             let handles = engine.host.facts.lock().unwrap();
-            assert_eq!(handles.by_fact.len(), 1);
-            assert_eq!(handles.by_handle.len(), 1);
+            // The last pruning pass includes keep, changed, and the internal initial fact.
+            assert!(handles.by_fact.len() <= 262);
+            assert_eq!(handles.by_handle.len(), handles.by_fact.len());
         }
         engine.retract(stable).unwrap();
+        engine.reset().unwrap();
         assert!(engine.host.facts.lock().unwrap().by_handle.is_empty());
         assert!(engine.host.facts.lock().unwrap().by_fact.is_empty());
     }

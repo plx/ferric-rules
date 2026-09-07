@@ -273,13 +273,11 @@ cumulative audit. The substantial, repeated loop gains justify the change.
 
 ## Host boundary bookkeeping
 
-Host identity cleanup now runs synchronously for public and RHS retraction,
-ordered/template modify, reset, and clear. Both handle maps retain only live
-exports, and run/step/load/assert no longer need an amortized pruning lock.
-Mutation under exclusive engine access uses `Mutex::get_mut`; concurrent shared
-exports and lookups retain their mutex, global identities, and provenance checks.
-RHS-only work avoids a hash lookup when no handles have been exported.
-
+Host identity removal, clearing, and amortized pruning now use `Mutex::get_mut`
+under exclusive engine access. Shared exports and lookups retain their mutex,
+global identities, and provenance checks. The existing bounded pruning policy
+remains in place; synchronous cleanup on every RHS removal was measured and
+rejected after repeatable small-churn regressions.
 Host-value validation retains its depth/item limits, ownership checks, and
 traversal/error order, but stores its first eight pending values inline instead
 of allocating a vector for each scalar input.
@@ -290,9 +288,9 @@ first read of a high-index fact allocate for many unexported slots. The new
 an exact target-value and stable-handle oracle. The retained implementation uses
 sparse hash maps, so storage scales with exported identities rather than the
 fact arena's highest occupied slot. Rejected prototype measurements remain in
-the evidence record.
+[the experiment record](2026-09-07-host-bookkeeping-experiments.json).
 
-Regression tests check exact storage reclamation through repeated RHS retract
+Regression tests check bounded storage reclamation through repeated RHS retract
 and template modify cycles, stable live handles, rejection of retired handles,
 reset/clear, and eight concurrent readers exporting the same initially
 unexported fact. Direct assertion/retraction benchmarks verify one and eight
