@@ -1193,6 +1193,7 @@ mod tests {
             ("/global_modules", serde_json::json!([])),
             ("/template_defs/1/value/defaults", serde_json::json!([])),
             ("/rete/agenda/strategy", serde_json::json!("Breadth")),
+            ("/config/strategy", serde_json::json!("Breadth")),
         ] {
             let result = alter_state(&engine, |state| {
                 *state.pointer_mut(pointer).expect(pointer) = value;
@@ -1499,6 +1500,40 @@ mod tests {
         });
         assert!(
             matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("duplicate named deffacts"))
+        );
+    }
+
+    #[test]
+    fn restored_global_initializers_keep_their_registered_identities() {
+        let mut engine =
+            Engine::with_rules("(defglobal ?*count* = 7) (defrule update => (bind ?*count* 9))")
+                .unwrap();
+        engine.run(RunLimit::Unlimited).unwrap();
+        assert!(matches!(
+            engine.get_global("count"),
+            Some(Value::Integer(9))
+        ));
+        assert!(engine.load_str("(defglobal ?*count* = 100)").is_err());
+        let snapshot = engine.serialize(SerializationFormat::Cbor).unwrap();
+        let mut restored = Engine::deserialize(&snapshot, SerializationFormat::Cbor).unwrap();
+        restored.reset().unwrap();
+        assert!(matches!(
+            restored.get_global("count"),
+            Some(Value::Integer(7))
+        ));
+
+        let duplicate = alter_state(&engine, |state| {
+            let globals = state["registered_globals"].as_array_mut().unwrap();
+            globals.push(globals[0].clone());
+        });
+        assert!(
+            matches!(duplicate, Err(SerializationError::InvalidState(message)) if message.contains("duplicate registered global"))
+        );
+        let missing = alter_state(&engine, |state| {
+            state["registered_globals"][0][1] = serde_json::json!("missing");
+        });
+        assert!(
+            matches!(missing, Err(SerializationError::InvalidState(message)) if message.contains("registered global missing"))
         );
     }
 
