@@ -116,5 +116,40 @@ fn bench_template_registry(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_template_registry);
+/// Capture an owned fact while retaining its original template contract.
+fn bench_owned_template_fact(c: &mut Criterion) {
+    for slots in [8, 64] {
+        let source = many_templates_source(1, slots);
+        c.bench_function(&format!("owned_template_fact_{slots}_slots"), |b| {
+            let mut engine = Engine::with_rules(&source).unwrap();
+            let id = engine
+                .assert_template_slots("t0", [("s0", 42_i64)])
+                .unwrap();
+            let captured = engine.get_fact_owned(id).unwrap().unwrap();
+            for index in 0..slots {
+                let value = captured.value(index).unwrap();
+                let ferric_rules_runtime::Value::Integer(value) = value.as_value() else {
+                    panic!("captured slot must be an integer");
+                };
+                assert_eq!(*value, if index == 0 { 42 } else { 0 });
+            }
+            engine.retract(id).unwrap();
+            let id = engine.assert(captured.clone()).unwrap();
+            // A retained fact survives source removal and reasserts against
+            // the same definition; its values remain owned by the capture.
+            let recaptured = engine.get_fact_owned(id).unwrap().unwrap();
+            for index in 0..slots {
+                let value = recaptured.value(index).unwrap();
+                let ferric_rules_runtime::Value::Integer(value) = value.as_value() else {
+                    panic!("reasserted slot must be an integer");
+                };
+                assert_eq!(*value, if index == 0 { 42 } else { 0 });
+            }
+            assert_eq!(engine.fact_count(), 1);
+            b.iter(|| black_box(engine.get_fact_owned(black_box(id)).unwrap().unwrap()));
+        });
+    }
+}
+
+criterion_group!(benches, bench_template_registry, bench_owned_template_fact);
 criterion_main!(benches);

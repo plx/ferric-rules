@@ -1,0 +1,292 @@
+{
+  "baseline_revision": "201665e77708b94edebcf87a4fb6fbcb3fd187fb",
+  "candidate_revision": "4c51f5f64985d15a094dcb75394505abc761707f",
+  "environment": {
+    "baseline_revision": "201665e7",
+    "machine": "Apple M4 Max",
+    "host": "aarch64-apple-darwin",
+    "os": "Darwin 27.0.0",
+    "rustc": "1.93.0 (254b59607 2026-01-19)",
+    "profile": "cargo bench, release opt-level=3, lto=true, codegen-units=1",
+    "features": [
+      "serde"
+    ],
+    "sampling": {
+      "sample_size": 20,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 1,
+      "note": "Existing benchmark groups retain their explicit sample-size overrides; Criterion may extend measurement for slow workloads."
+    },
+    "baseline_command": "cargo bench -p ferric-rules --features serde --bench '*' -- --noplot --sample-size 20 --warm-up-time 1 --measurement-time 1 --save-baseline audit-base"
+  },
+  "benchmark_source_note": "The two new owned_template_fact workloads from the candidate were also applied to the isolated baseline without implementation changes.",
+  "first_pass": {
+    "before": "audit-base",
+    "after": "audit-template",
+    "unit": "ns",
+    "workloads": {
+      "waltz_20_junctions": {
+        "before": 126364.95633971292,
+        "after": 116164.19977535302,
+        "delta_percent": -8.072456842335885
+      },
+      "reset_run_negation": {
+        "before": 2600.267838212843,
+        "after": 2656.056819482601,
+        "delta_percent": 2.1455090298736934
+      },
+      "compile_template_rule": {
+        "before": 8744.79627785059,
+        "after": 8421.456514084508,
+        "delta_percent": -3.697510536466797
+      },
+      "waltz_100_junctions": {
+        "before": 479231.5105263158,
+        "after": 433402.3199035813,
+        "delta_percent": -9.563058692113668
+      },
+      "waltz_5_junctions": {
+        "before": 59766.28885416667,
+        "after": 56463.28125,
+        "delta_percent": -5.526539571875055
+      },
+      "waltz_150_junctions": {
+        "before": 701939.8482142857,
+        "after": 623984.8888888889,
+        "delta_percent": -11.10564666241871
+      },
+      "lifecycle_reset_run_1000": {
+        "before": 916212.4817460317,
+        "after": 904180.9444444445,
+        "delta_percent": -1.3131819901272879
+      },
+      "manners_32_guests": {
+        "before": 847185.610745614,
+        "after": 826535.3732638889,
+        "delta_percent": -2.4375104132789427
+      },
+      "manners_16_guests": {
+        "before": 287319.16737967916,
+        "after": 278370.44978632475,
+        "delta_percent": -3.114556426905235
+      },
+      "waltz_50_junctions": {
+        "before": 257671.6451696676,
+        "after": 230066.5469141604,
+        "delta_percent": -10.713285211234725
+      },
+      "owned_template_fact_8_slots": {
+        "before": 288.3590510965044,
+        "after": 50.28344706050678,
+        "delta_percent": -82.5622095546158
+      },
+      "manners_8_guests_run_only": {
+        "before": 70404.495123839,
+        "after": 67656.95126984127,
+        "delta_percent": -3.9025119762096216
+      },
+      "lifecycle_reset_run_100": {
+        "before": 87615.66969696971,
+        "after": 85222.93201754386,
+        "delta_percent": -2.730947201227185
+      },
+      "reset_run_20_facts": {
+        "before": 13413.213490945673,
+        "after": 13212.141477920808,
+        "delta_percent": -1.4990592162019478
+      },
+      "manners_8_guests": {
+        "before": 119622.03076923077,
+        "after": 115573.18401360544,
+        "delta_percent": -3.3846998998338207
+      },
+      "reset_run_join_3": {
+        "before": 3716.133498883929,
+        "after": 3791.3015626280003,
+        "delta_percent": 2.0227492840783734
+      },
+      "load_and_run_simple": {
+        "before": 8228.731070234113,
+        "after": 8165.085511854294,
+        "delta_percent": -0.7734553218058715
+      },
+      "module_3m_100i": {
+        "before": 523705.67500000005,
+        "after": 479162.84047619044,
+        "delta_percent": -8.505318282794928
+      },
+      "manners_48_guests": {
+        "before": 1737393.5,
+        "after": 1715763.1888888888,
+        "delta_percent": -1.2449863033970776
+      },
+      "lifecycle_load_reset_run_100": {
+        "before": 130365.96939586646,
+        "after": 128819.17664092663,
+        "delta_percent": -1.1865004050580663
+      },
+      "owned_template_fact_64_slots": {
+        "before": 1602.9342293735676,
+        "after": 153.83252990321157,
+        "delta_percent": -90.40306663341204
+      },
+      "module_3m_100i_run_only": {
+        "before": 406572.3972222222,
+        "after": 370784.7953296703,
+        "delta_percent": -8.802270428848436
+      },
+      "reset_run_simple": {
+        "before": 2283.76140610707,
+        "after": 2348.102329038652,
+        "delta_percent": 2.8173224558190046
+      },
+      "lifecycle_load_reset_run_1000": {
+        "before": 1261385.8271103897,
+        "after": 1249126.074718045,
+        "delta_percent": -0.9719272350181329
+      },
+      "engine_create": {
+        "before": 363.75651805385735,
+        "after": 363.68280019848834,
+        "delta_percent": -0.020265713935085916
+      },
+      "waltz_5_junctions_run_only": {
+        "before": 11755.272496570644,
+        "after": 11048.66121495327,
+        "delta_percent": -6.011015753343985
+      },
+      "waltz_10_junctions": {
+        "before": 83882.82772904483,
+        "after": 78185.85560109289,
+        "delta_percent": -6.7915833099404965
+      },
+      "reset_run_retract_3": {
+        "before": 3148.088034025155,
+        "after": 3176.709088986242,
+        "delta_percent": 0.909156753297391
+      },
+      "load_and_run_chain_4": {
+        "before": 19868.553054555156,
+        "after": 19887.075159524393,
+        "delta_percent": 0.0932232202233374
+      },
+      "waltz_200/waltz_200_junctions": {
+        "before": 923462.4135714285,
+        "after": 826172.4920454544,
+        "delta_percent": -10.535341785023157
+      },
+      "waltz_500/waltz_500_junctions": {
+        "before": 2241484.186728395,
+        "after": 1988941.675,
+        "delta_percent": -11.26675410978467
+      },
+      "waltz_750/waltz_750_junctions": {
+        "before": 3384828.989583333,
+        "after": 2989349.023809524,
+        "delta_percent": -11.68389797507886
+      },
+      "manners_512/manners_512_guests": {
+        "before": 182341354.5,
+        "after": 181790937.5,
+        "delta_percent": -0.3018607608292201
+      },
+      "manners_64/manners_64_guests": {
+        "before": 3001871.648809524,
+        "after": 2972880.85260771,
+        "delta_percent": -0.9657573538599196
+      },
+      "module_5m_100i/module_5m_100i": {
+        "before": 814283.0724637681,
+        "after": 745247.2250000001,
+        "delta_percent": -8.478114036545904
+      },
+      "manners_96/manners_96_guests": {
+        "before": 6592290.983333333,
+        "after": 6532861.958333333,
+        "delta_percent": -0.9014927458488864
+      },
+      "module_10m_50i/module_10m_50i": {
+        "before": 847209.3727272728,
+        "after": 752922.3130000001,
+        "delta_percent": -11.129133218126574
+      },
+      "waltz_1000/waltz_1000_junctions": {
+        "before": 4520404.2,
+        "after": 4025209.716666667,
+        "delta_percent": -10.95465054504049
+      },
+      "module_20m_20i/module_20m_20i": {
+        "before": 746542.5133333333,
+        "after": 670492.7119341565,
+        "delta_percent": -10.186935109644635
+      },
+      "waltz_300/waltz_300_junctions": {
+        "before": 1364825.386904762,
+        "after": 1217411.2222222222,
+        "delta_percent": -10.800954180435852
+      },
+      "manners_128/manners_128_guests": {
+        "before": 11779302.083333332,
+        "after": 11680220.005555555,
+        "delta_percent": -0.8411540605446355
+      },
+      "manners_256/manners_256_guests": {
+        "before": 46061166.5,
+        "after": 46127916.5,
+        "delta_percent": 0.14491599990200665
+      }
+    }
+  },
+  "alternating_repeat": {
+    "before": "audit-template-before-repeat",
+    "after": "audit-template-repeat",
+    "unit": "ns",
+    "workloads": {
+      "reset_run_negation": {
+        "before": 2605.768641549228,
+        "after": 2616.49841797184,
+        "delta_percent": 0.41177011080433257
+      },
+      "waltz_100_junctions": {
+        "before": 477990.88125,
+        "after": 436655.76980329613,
+        "delta_percent": -8.647677825695732
+      },
+      "owned_template_fact_8_slots": {
+        "before": 287.0845441302093,
+        "after": 50.379576467633264,
+        "delta_percent": -82.45131007652462
+      },
+      "reset_run_join_3": {
+        "before": 3572.8131730528426,
+        "after": 3780.3861548556433,
+        "delta_percent": 5.809791101543582
+      },
+      "owned_template_fact_64_slots": {
+        "before": 1589.8287596307925,
+        "after": 152.50235161290323,
+        "delta_percent": -90.40762404824537
+      },
+      "module_3m_100i_run_only": {
+        "before": 406891.87254901964,
+        "after": 371286.9508547009,
+        "delta_percent": -8.750462738729025
+      },
+      "reset_run_simple": {
+        "before": 2214.8870959699834,
+        "after": 2325.544774288518,
+        "delta_percent": 4.996086641160069
+      },
+      "engine_create": {
+        "before": 359.9692736494136,
+        "after": 361.2938836481429,
+        "delta_percent": 0.36797862920361357
+      },
+      "waltz_5_junctions_run_only": {
+        "before": 11712.778117359412,
+        "after": 10818.006443840897,
+        "delta_percent": -7.639277928371079
+      }
+    }
+  }
+}

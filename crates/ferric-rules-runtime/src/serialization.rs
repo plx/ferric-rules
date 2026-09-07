@@ -211,7 +211,7 @@ struct EngineSnapshotRef<'a> {
     rule_info: &'a RuleIndex<Arc<CompiledRuleInfo>>,
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map")]
     template_ids: &'a rustc_hash::FxHashMap<Box<str>, TemplateId>,
-    template_defs: &'a slotmap::SlotMap<TemplateId, RegisteredTemplate>,
+    template_defs: &'a slotmap::SlotMap<TemplateId, Arc<RegisteredTemplate>>,
     router: &'a OutputRouter,
     functions: &'a FunctionEnv,
     globals: &'a GlobalStore,
@@ -245,7 +245,7 @@ struct EngineSnapshotOwned {
     rule_info: RuleIndex<Arc<CompiledRuleInfo>>,
     #[serde(with = "ferric_rules_core::serde_helpers::fx_hash_map")]
     template_ids: rustc_hash::FxHashMap<Box<str>, TemplateId>,
-    template_defs: slotmap::SlotMap<TemplateId, RegisteredTemplate>,
+    template_defs: slotmap::SlotMap<TemplateId, Arc<RegisteredTemplate>>,
     router: OutputRouter,
     functions: FunctionEnv,
     globals: GlobalStore,
