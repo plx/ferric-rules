@@ -38,9 +38,9 @@ Not implemented: Simplicity, Complexity, Random.
 
 The blocking pinned-CLIPS policy retains these differences as exact known deviations rather than reporting them as equivalent. Any unexplained or changed divergence fails the gate.
 
-| Area                      | Known gap                                                                     | Policy cases                                                                                   | Tracking                                               |
-| ------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| LEX and MEA               | Selected recency vectors and the MEA tiebreak differ.                         | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering       | [#155](https://github.com/plx/ferric-rules/issues/155) |
+| Area        | Known gap                                             | Policy cases                                                                             | Tracking                                               |
+| ----------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| LEX and MEA | Selected recency vectors and the MEA tiebreak differ. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
 
 The reviewed gate covers 22 scenarios for 20 production-audit IDs plus one generated-harness control. Other corpus fixtures are not compatibility claims until they have a structured oracle and reviewed policy entry.
 

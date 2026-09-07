@@ -3642,6 +3642,21 @@ fn load_facts_asserts_facts_from_fct_file() {
     );
 }
 
+/// Reject oversized fact source before allocating the deffacts wrapper.
+#[test]
+fn load_facts_checks_source_size_before_wrapping_or_parsing() {
+    let mut engine = new_utf8_engine();
+    let source = " ".repeat(crate::source_limits::MAX_SOURCE_BYTES + 1);
+    assert!(matches!(
+        engine.load_facts_str(&source),
+        Err(crate::LoadError::ResourceLimit {
+            resource: "source bytes",
+            ..
+        })
+    ));
+    assert_eq!(engine.facts().unwrap().count(), 0);
+}
+
 /// `load-facts` loaded facts are NOT re-asserted on reset.
 #[test]
 fn load_facts_does_not_register_for_reset() {

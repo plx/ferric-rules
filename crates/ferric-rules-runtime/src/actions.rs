@@ -2188,9 +2188,11 @@ fn execute_load_facts(
         collected_facts,
     )?;
 
-    // Read file contents.
-    let Ok(contents) = std::fs::read_to_string(&filename) else {
-        return Ok(()); // I/O failure — return void (FALSE in expression context)
+    let contents = match crate::source_limits::read_source_file(std::path::Path::new(&filename)) {
+        Ok(contents) => contents,
+        // Preserve the existing I/O-failure behavior, but report resource limits.
+        Err(crate::loader::LoadError::Io(_)) => return Ok(()),
+        Err(error) => return Err(ActionError::EvalError(format!("load-facts: {error}"))),
     };
 
     // Loading facts must not mutate named reset seeds or collide with a source

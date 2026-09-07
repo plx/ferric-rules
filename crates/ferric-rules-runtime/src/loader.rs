@@ -19,7 +19,6 @@
 
 use ferric_rules_core::RuleId;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
@@ -800,18 +799,7 @@ impl Engine {
     /// - Source parsing or processing fails
     pub fn load_file(&mut self, path: &Path) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_file", path = %path.display());
-        let file = std::fs::File::open(path).map_err(|e| vec![LoadError::Io(e)])?;
-        let mut bytes = Vec::new();
-        file.take((crate::source_limits::MAX_SOURCE_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|e| vec![LoadError::Io(e)])?;
-        crate::source_limits::check_source_size(bytes.len()).map_err(|e| vec![e])?;
-        let source = String::from_utf8(bytes).map_err(|e| {
-            vec![LoadError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                e,
-            ))]
-        })?;
+        let source = crate::source_limits::read_source_file(path).map_err(|e| vec![e])?;
         self.load_str(&source)
     }
 
@@ -867,6 +855,7 @@ impl Engine {
 
     /// Reuse source fact validation without publishing a temporary definition.
     pub(crate) fn load_facts_str(&mut self, contents: &str) -> Result<usize, LoadError> {
+        crate::source_limits::check_source_size(contents.len())?;
         let wrapped = format!("(deffacts __loaded_facts__ {contents})");
         let parsed = parse_sexprs(&wrapped, FileId(0));
         if let Some(error) = parsed.errors.into_iter().next() {
