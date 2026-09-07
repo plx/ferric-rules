@@ -151,5 +151,78 @@ fn bench_owned_template_fact(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_template_registry, bench_owned_template_fact);
+/// A first public read near the end of a mostly unexported fact arena must
+/// retain cheap sparse access; setup and engine destruction are excluded.
+fn bench_first_sparse_host_export(c: &mut Criterion) {
+    let mut group = c.benchmark_group("host_first_sparse_export");
+    for count in [1_000, 100_000] {
+        let mut source = String::from("(deffacts seed\n");
+        for id in 0..count {
+            writeln!(source, "(background {id})").unwrap();
+        }
+        source.push_str("(target 42))");
+        let prepare = || {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            engine
+        };
+        group.bench_function(count.to_string(), |b| {
+            let engine = prepare();
+            assert_eq!(engine.fact_count(), count + 1);
+            let found = engine.find_facts("target").unwrap();
+            assert_eq!(found.len(), 1);
+            let ferric_rules_core::Fact::Ordered(fact) = found[0].1 else {
+                panic!("target must be ordered");
+            };
+            assert!(matches!(
+                fact.fields.as_slice(),
+                [ferric_rules_runtime::Value::Integer(42)]
+            ));
+            assert_eq!(engine.find_facts("target").unwrap()[0].0, found[0].0);
+            drop(found);
+            drop(engine);
+            b.iter_batched_ref(
+                prepare,
+                |engine| black_box(engine.find_facts("target").unwrap()[0].0),
+                criterion::BatchSize::PerIteration,
+            );
+        });
+    }
+    group.finish();
+}
+
+fn bench_host_assert_retract(c: &mut Criterion) {
+    fn case<const N: usize>(c: &mut Criterion) {
+        let values: [i64; N] = std::array::from_fn(|index| i64::try_from(index).unwrap());
+        let mut engine = Engine::new(EngineConfig::utf8());
+        c.bench_function(&format!("host_assert_retract_{N}_fields"), |b| {
+            let id = engine.assert_ordered("item", values).unwrap();
+            let ferric_rules_core::Fact::Ordered(fact) = engine.get_fact(id).unwrap().unwrap() else {
+                panic!("round-trip input must remain ordered");
+            };
+            assert_eq!(fact.fields.len(), N);
+            for (value, expected) in fact.fields.iter().zip(values) {
+                assert!(matches!(value, ferric_rules_runtime::Value::Integer(actual) if *actual == expected));
+            }
+            engine.retract(id).unwrap();
+            assert_eq!(engine.fact_count(), 0);
+            b.iter(|| {
+                let id = engine.assert_ordered("item", black_box(values)).unwrap();
+                engine.retract(id).unwrap();
+                black_box(id)
+            });
+        });
+    }
+    case::<1>(c);
+    case::<8>(c);
+}
+
+criterion_group!(
+    benches,
+    bench_template_registry,
+    bench_owned_template_fact,
+    bench_first_sparse_host_export,
+    bench_host_assert_retract
+);
 criterion_main!(benches);

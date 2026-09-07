@@ -2582,6 +2582,7 @@ fn execute_retract(
                     .rete
                     .retract_fact(fact_id, fact, &context.engine.fact_base);
                 context.engine.fact_base.retract(fact_id);
+                context.engine.host.remove(fact_id);
             }
             _ => return Err(ActionError::InvalidRetract),
         }
@@ -2682,12 +2683,7 @@ fn execute_fact_mutation(
                     .fact_base
                     .ensure_assertion_capacity()
                     .map_err(|error| ActionError::EvalError(error.to_string()))?;
-                retract_original_fact(
-                    &mut context.engine.fact_base,
-                    &mut context.engine.rete,
-                    fact_id,
-                    &original_fact,
-                );
+                retract_original_fact(context.engine, fact_id, &original_fact);
             }
             assert_ordered_and_propagate(context.engine, relation, fields)?;
         }
@@ -2723,12 +2719,7 @@ fn execute_fact_mutation(
                     .fact_base
                     .ensure_assertion_capacity()
                     .map_err(|error| ActionError::EvalError(error.to_string()))?;
-                retract_original_fact(
-                    &mut context.engine.fact_base,
-                    &mut context.engine.rete,
-                    fact_id,
-                    &original_fact,
-                );
+                retract_original_fact(context.engine, fact_id, &original_fact);
             }
             assert_template_and_propagate(
                 context.engine,
@@ -2764,14 +2755,10 @@ fn assert_template_and_propagate(
         .map_err(|error| ActionError::EvalError(error.to_string()))
 }
 
-fn retract_original_fact(
-    fact_base: &mut FactBase,
-    rete: &mut ReteNetwork,
-    fact_id: FactId,
-    fact: &Fact,
-) {
-    rete.retract_fact(fact_id, fact, fact_base);
-    fact_base.retract(fact_id);
+fn retract_original_fact(engine: &mut Engine, fact_id: FactId, fact: &Fact) {
+    engine.rete.retract_fact(fact_id, fact, &engine.fact_base);
+    engine.fact_base.retract(fact_id);
+    engine.host.remove(fact_id);
 }
 
 fn get_fact_or_error(fact_base: &FactBase, fact_id: FactId) -> Result<&Fact, ActionError> {
