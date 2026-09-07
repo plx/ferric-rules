@@ -295,6 +295,7 @@ export class EnginePool {
   private readonly callbackContext = new AsyncLocalStorage<PoolCallbackContext>();
   private roundRobin = 0;
   private closed = false;
+  private closePromise?: Promise<void>;
   /** The first terminal Worker failure poisons every later root admission. */
   private terminalError?: Error;
 
@@ -1461,7 +1462,7 @@ export class EnginePool {
         signal.addEventListener("abort", onAbort, { once: true });
       }
       const stopListening = () => {
-        signal.removeEventListener("abort", onAbort);
+        EnginePool.detachAbortListener(signal, onAbort);
       };
       // The cancellation contract is phrased against pool-observed callback
       // completion, not the later accepted-work drain barrier. Once the pool's
@@ -1487,16 +1488,25 @@ export class EnginePool {
    * - Already-admitted callbacks retain owner dispatch access and may settle.
    * - Already-dispatched ordinary requests are allowed to settle.
    * - Workers are terminated after all in-flight requests complete.
-   * - Idempotent — safe to call multiple times.
+   * - Idempotent — all calls share the same cleanup completion barrier.
    */
-  async close(): Promise<void> {
-    this.assertNotInActiveCallback();
-    if (this.closed) return;
+  close(): Promise<void> {
+    try { this.assertNotInActiveCallback(); }
+    catch (error) { return Promise.reject(error); }
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
+    // Publish the barrier before cleanup can invoke user-provided signal hooks.
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    this.closePromise = new Promise<void>((accept, fail) => { resolve = accept; reject = fail; });
+    void this.finishClose().then(resolve, reject);
+    return this.closePromise;
+  }
 
+  private async finishClose(): Promise<void> {
     const closeErr = new Error("EnginePool closed");
 
-    await Promise.all(
+    const results = await Promise.allSettled(
       this.slots.map(async (slot) => {
         // Reject all queued (not yet dispatched) requests.
         const rootQueue = slot.queue.splice(0);
@@ -1521,6 +1531,8 @@ export class EnginePool {
         await EnginePool.terminateSlot(slot);
       }),
     );
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
   }
 
   /**

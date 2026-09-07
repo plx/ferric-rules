@@ -40,7 +40,7 @@ export interface FerricSymbolInstance {
  * Conversion rules (JS → CLIPS):
  *   FerricSymbol / WireSymbolObject  → CLIPS symbol
  *   string                           → CLIPS string (quoted)
- *   number (integer)                 → CLIPS integer (`Number.isInteger` check)
+ *   number (safe integer)            → CLIPS integer; unsafe integers rejected
  *   number (float)                   → CLIPS float
  *   bigint                           → CLIPS integer (for values outside safe-integer range)
  *   boolean                          → CLIPS symbol TRUE / FALSE
@@ -170,7 +170,7 @@ export interface EngineOptions {
   strategy?: Strategy;
   /** String encoding mode. Default: Utf8. */
   encoding?: Encoding;
-  /** Maximum function call depth. Default: 64. */
+  /** Requested function call depth, integer 0..=4294967295. Default: 64; effective maximum is 32. Zero disallows user-function calls. */
   maxCallDepth?: number;
 }
 
@@ -306,6 +306,15 @@ export class FerricEncodingError extends FerricError {
   }
 }
 
+/** A native file read or write failed. */
+export class FerricIOError extends FerricError {
+  constructor(message: string) {
+    super(message, "FERRIC_IO_ERROR");
+    this.name = "FerricIOError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 /** Serialization or deserialization of an engine snapshot failed. */
 export class FerricSerializationError extends FerricError {
   constructor(message: string) {
@@ -341,6 +350,7 @@ export const ERROR_REGISTRY: Readonly<Record<string, FerricErrorFactory>> = {
   FerricSlotNotFoundError: (msg) => new FerricSlotNotFoundError(msg),
   FerricModuleNotFoundError: (msg) => new FerricModuleNotFoundError(msg),
   FerricEncodingError: (msg) => new FerricEncodingError(msg),
+  FerricIOError: (msg) => new FerricIOError(msg),
   FerricSerializationError: (msg) => new FerricSerializationError(msg),
 };
 
@@ -352,15 +362,18 @@ export const ERROR_REGISTRY: Readonly<Record<string, FerricErrorFactory>> = {
  * class name, constructs the correct subclass, and returns it.
  */
 export function convertNativeError(err: unknown): Error {
-  if (!(err instanceof Error)) return new Error(String(err));
+  if (err instanceof FerricError) return err;
+  if (!(err instanceof Error)) return new Error(String(err), { cause: err });
 
-  const match = err.message.match(/^(Ferric\w+Error):\s*/);
+  const match = err.message.match(/^(Ferric\w*Error):\s*/);
   if (match) {
     const name = match[1];
     const cleanMessage = err.message.slice(match[0].length);
     const make = ERROR_REGISTRY[name];
     if (make) {
-      return make(cleanMessage);
+      const converted = make(cleanMessage);
+      Object.defineProperty(converted, "cause", { value: err, configurable: true });
+      return converted;
     }
   }
 

@@ -125,6 +125,7 @@ export const FERRIC_ERROR_CODES: Readonly<Record<string, string>> = {
   FerricModuleNotFoundError: "FERRIC_MODULE_NOT_FOUND",
   FerricEncodingError: "FERRIC_ENCODING_ERROR",
   FerricSerializationError: "FERRIC_SERIALIZATION_ERROR",
+  FerricIOError: "FERRIC_IO_ERROR",
 };
 
 /**
@@ -138,7 +139,7 @@ export function extractFerricError(
   errorCode?: string,
 ): { name: string; message: string; code: string } {
   // Try to extract the class name from the message prefix.
-  const match = errorMessage.match(/^(Ferric\w+Error):\s*/);
+  const match = errorMessage.match(/^(Ferric\w*Error):\s*/);
   if (match) {
     const name = match[1];
     const cleanMessage = errorMessage.slice(match[0].length);
@@ -183,12 +184,10 @@ export interface WireSymbol {
  * Type guard: returns true if `val` is a wire-format FerricSymbol.
  */
 export function isWireSymbol(val: unknown): val is WireSymbol {
-  return (
-    typeof val === "object" &&
-    val !== null &&
-    (val as WireSymbol).__type === "FerricSymbol" &&
-    typeof (val as WireSymbol).value === "string"
-  );
+  if (typeof val !== "object" || val === null) return false;
+  const tag = Object.getOwnPropertyDescriptor(val, "__type");
+  const value = Object.getOwnPropertyDescriptor(val, "value");
+  return tag?.value === "FerricSymbol" && typeof value?.value === "string";
 }
 
 // ---------------------------------------------------------------------------

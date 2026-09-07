@@ -105,7 +105,7 @@ function valueCase(caseId: string): unknown {
       } finally {
         engine.close();
       }
-      return { host_representation: "void", ingress };
+      return { host_representation: "rejected", ingress };
     }
     default:
       throw new Error(`unknown value case ${caseId}`);
@@ -405,18 +405,19 @@ function highFactId(): unknown {
 
 function countWidth(): unknown {
   const engine = Engine.fromSource(fixture("run-limits.clp"));
-  let runLimitBits = 64;
   try {
-    try {
-      const result = engine.run(2 ** 32 + 1);
-      if (result.rulesFired !== 3) runLimitBits = 32;
-    } catch {
-      runLimitBits = 32;
+    const result = engine.run(Number.MAX_SAFE_INTEGER);
+    if (result.rulesFired !== 3) throw new Error("safe-integer limit lost work");
+    let rejected = false;
+    try { engine.run(Number.MAX_SAFE_INTEGER + 1); }
+    catch (error) {
+      if (!(error instanceof Error) || !/safe integer/u.test(error.message)) throw error;
+      rejected = true;
     }
-  } finally {
-    engine.close();
-  }
-  return { run_count_bits: runLimitBits, run_limit_bits: runLimitBits };
+    if (!rejected) throw new Error("unsafe run limit was accepted");
+    // Native checked_count boundary tests verify result widths separately.
+    return { run_count_bits: 53, run_limit_bits: 53 };
+  } finally { engine.close(); }
 }
 
 async function runCase(caseId: string): Promise<unknown> {

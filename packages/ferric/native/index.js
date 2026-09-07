@@ -92,6 +92,11 @@ function loadNativeBinding() {
 }
 
 const nativeBinding = loadNativeBinding();
+// Capture the native class method moved off the prototype during addon init.
+// Calling with an Engine receiver keeps V8's native receiver validation before
+// napi-rs creates a shared Rust reference. Foreign wrapped objects cannot pass.
+const nativeContinueRun = nativeBinding.__continueRun;
+const continueRun = (engine, limit) => nativeContinueRun.call(engine, limit);
 
 // napi-rs class instances (FerricSymbol) lose their native pointer when passed
 // through Vec<JsUnknown> extraction. Convert them to tagged plain objects that
@@ -99,13 +104,21 @@ const nativeBinding = loadNativeBinding();
 // representation in packages/ferric/src/wire.ts.
 const FerricSymbolClass = nativeBinding.FerricSymbol;
 
-function marshalValue(value) {
+function marshalValue(value, depth = 0) {
   if (value === null || value === undefined) return value;
   if (value instanceof FerricSymbolClass) {
     return { __ferric_symbol: true, value: value.value };
   }
   if (Array.isArray(value)) {
-    return value.map(marshalValue);
+    if (depth >= 128) throw new TypeError("multifield nesting exceeds 128 levels (cyclic values are unsupported)");
+    return value.map((item) => marshalValue(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const tag = Object.getOwnPropertyDescriptor(value, "__type");
+    const payload = Object.getOwnPropertyDescriptor(value, "value");
+    if (tag?.value === "FerricSymbol" && typeof payload?.value === "string") {
+      return { __ferric_symbol: true, value: payload.value };
+    }
   }
   return value;
 }
@@ -121,7 +134,7 @@ function marshalSlots(slots) {
 
 const originalAssertFact = nativeBinding.Engine.prototype.assertFact;
 nativeBinding.Engine.prototype.assertFact = function (relation, ...fields) {
-  return originalAssertFact.call(this, relation, fields.map(marshalValue));
+  return originalAssertFact.call(this, relation, fields.map((value) => marshalValue(value)));
 };
 
 const originalAssertTemplate = nativeBinding.Engine.prototype.assertTemplate;
@@ -129,4 +142,4 @@ nativeBinding.Engine.prototype.assertTemplate = function (templateName, slots) {
   return originalAssertTemplate.call(this, templateName, marshalSlots(slots));
 };
 
-module.exports = nativeBinding;
+module.exports = { ...nativeBinding, __continueRun: continueRun };

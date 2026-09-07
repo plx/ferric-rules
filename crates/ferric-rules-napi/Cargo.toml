@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 ferric-rules-core = { workspace = true }
 ferric-rules-runtime = { workspace = true }
-napi = { version = "2", default-features = false, features = ["napi8"] }
+napi = { version = "2", default-features = false, features = ["napi8", "compat-mode"] }
 napi-derive = "2"
 slotmap = { workspace = true }
 

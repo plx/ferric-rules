@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "suite_version": "1.1.0",
+  "suite_version": "1.1.1",
   "bindings": ["rust", "c", "go", "node", "python"],
   "cases": [
     {
@@ -90,11 +90,11 @@
         },
         "node": {
           "expected": {
-            "host_representation": "void",
+            "host_representation": "rejected",
             "ingress": "unsupported"
           },
-          "rationale": "Node currently collapses ExternalAddress egress to null and exposes no ingress wrapper.",
-          "since": "1.0.0",
+          "rationale": "Node has no external-address wrapper; native external identities are explicitly rejected on conversion, never erased to null.",
+          "since": "1.1.1",
           "tracking_issue": "https://github.com/plx/ferric-rules/issues/167"
         },
         "python": {
@@ -202,12 +202,6 @@
       "semantic": "error.compile",
       "canonical": {"family": "compile"},
       "deviations": {
-        "node": {
-          "expected": {"family": "generic"},
-          "rationale": "Node does not yet classify every non-Parse/non-Compile LoadError variant.",
-          "since": "1.0.0",
-          "tracking_issue": "https://github.com/plx/ferric-rules/issues/184"
-        },
         "python": {
           "expected": {"family": "generic"},
           "rationale": "Python does not yet classify every non-Parse/non-Compile LoadError variant.",
@@ -359,9 +353,9 @@
       "canonical": {"run_count_bits": 64, "run_limit_bits": 64},
       "deviations": {
         "node": {
-          "expected": {"run_count_bits": 32, "run_limit_bits": 32},
-          "rationale": "The native Node run limit and fired-count fields are currently u32.",
-          "since": "1.0.0",
+          "expected": {"run_count_bits": 53, "run_limit_bits": 53},
+          "rationale": "Node exposes checked safe-integer Number counts and limits; unsafe values above 2^53-1 reject explicitly.",
+          "since": "1.1.1",
           "tracking_issue": "https://github.com/plx/ferric-rules/issues/183"
         }
       }
