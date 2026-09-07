@@ -1,0 +1,4 @@
+module CFerric {
+    header "CFerric.h"
+    export *
+}
