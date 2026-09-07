@@ -60,28 +60,23 @@ are retained under `.context/rehabilitation/backlog-final/`, run
 | #153 | Exact Rust/CLI consumers and shared example | [#313](https://github.com/plx/ferric-rules/pull/313), prepared and validated; merge pending |
 | #143 | Integrated evidence, CI and backlog migration | Measurements and live migration verified; #313 and final closing PR pending |
 
-Go #310 merged at `2026-09-07T12:45:33Z` after its essential checks and review
-passed. The `13:02:31Z` follow-up records all 46 checks terminal: 45 successful
-and one intentional skip, with no failures or pending checks. Unaffected jobs
-that were still running at merge continued normally and were not counted as
-passing before completion. Raw state and review evidence are in
-`.context/rehabilitation/pr310-merge-proof.md`.
-
-Host #311 merged at `2026-09-07T13:29:45Z` after all essential checks, all three
-native/package aggregates and review passed. Its exact-head merge observation
-records 100 checks: 98 successful, one intentional skip and the ordinary
-performance report still running, with no failures. The pending report continued
-normally and was not counted as passed. The final guide correction received fresh
-review and mandatory preflight; see `.context/rehabilitation/pr311-merge-proof.md`.
+Go #310's final observation records 45 successful checks and one intentional
+skip. Host #311 merged with all essential checks and three native/package
+aggregates green; its ordinary performance report was still running and was not
+counted as passed. Review and preflight evidence, including the guide correction,
+remain in `.context/rehabilitation/pr310-merge-proof.md` and `pr311-merge-proof.md`.
 
 Swift #312 merged at `2026-09-07T14:17:47Z` with all 18 essential check names
-passing and no unresolved review threads. Unaffected distribution/performance
-jobs still pending were not counted as passed. Its fresh
+passing and no unresolved review threads. The `14:43:29Z` follow-up records all
+102 checks terminal: **101 SUCCESS and one expected SKIPPED**, with no failures
+or pending checks (`pr309-watch-20260907T144329Z/pr312-status.json`). Its
 [Swift 6.1.2 CI job](https://github.com/plx/ferric-rules/actions/runs/34130186636/job/101768166731)
 built all three native slices, passed 14 strict-concurrency tests, built both iOS
 wrappers and ran the copied macOS consumer. The generated async entry point now
 uses `Consumer.swift`, fixing Swift 6.1.2's special handling of `main.swift`.
-Exact checks and captured log: `.context/rehabilitation/pr312-merge-proof.md`.
+Exact merge-time observations and captured log remain in
+`.context/rehabilitation/pr312-merge-proof.md`; jobs pending then continued normally
+and were not counted as successful before completion.
 
 ## Decisions and evidence
 
@@ -235,11 +230,18 @@ input diagnostics. Node real packages pass CJS/ESM/type resolution and Node22/26
 consumer smokes; Python exact wheels and normalized source packages pass their
 external consumers. The host migration passes 27 shared cases across five
 adapters (12 documented deviations), 14 provenance tests and all five existing
-release scaling checks. Swift's three native slices, 14 Swift6 strict tests,
-14 Swift-ASan tests, iOS device/simulator wrapper builds and copied external
-macOS package consumer pass. Swift-ASan instruments Swift, not all native Rust.
-Current local Apple Silicon SDK27 builds target Swift6/macOS15/iOS18; existing CI
-covers declared environments unavailable locally. No iOS device execution is claimed.
+release scaling checks. Swift's 14 local ASan tests pass; they instrument Swift,
+not all native Rust. Fresh strict-concurrency, iOS wrapper and copied macOS
+consumer CI evidence is recorded above. Local Apple Silicon SDK27 builds target
+Swift6/macOS15/iOS18; no iOS device execution is claimed.
+
+PR #313 at `ff4f30c2a301e096ac8e0e4000b6bb7cb5b8847c` has a successful
+[Python 3.12 testing-hook job](https://github.com/plx/ferric-rules/actions/runs/34132468690/job/101775616150):
+**64 passed, zero skipped** across the existing GIL-release (24), threading/lifecycle
+(35) and public-surface (5) cases. All 19 cases skipped by the normal extension
+build actually ran and passed after enabling the testing feature. This includes
+admission/close observations and exactly-once cleanup across host threads.
+Exact logs and counts: `.context/rehabilitation/pr313-python312-hooks-proof.md`.
 
 The current local bundle in `.context/rehabilitation/deliverables/` contains 67
 verified files plus its hash manifest, prepared from consumer revision `31835451`
