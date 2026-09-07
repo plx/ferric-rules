@@ -1178,7 +1178,9 @@ Structured values passed to assertion APIs and
 or frees their strings or arrays. The copy constructor returns an independent
 Ferric-owned tree that must be released with `ferric_value_free`; only
 Ferric-owned trees may be passed to Ferric value cleanup APIs. External-address
-payload pointers are always shallow and caller-owned. Multifield-copy inputs
+payload pointers are shallow and caller-owned in this legacy copy helper.
+Engine assertion and value-conversion APIs reject `ExternalAddress`; copying
+this field does not create a transferable Rust host token. Multifield-copy inputs
 must be acyclic and no deeper than 128 nested multifield levels.
 
 Other borrowed pointers must **not** be freed by the caller.

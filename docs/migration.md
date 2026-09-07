@@ -44,7 +44,6 @@ Review your CLIPS codebase for features that Ferric does not support:
 - COOL object system (`defclass`, `definstances`, `defmessage-handler`,
   `send`, `make-instance`)
 - Certainty factors
-- `if`/`then`/`else` expression form (use conditional patterns instead)
 - Conflict strategies: `simplicity`, `complexity`, `random`
 
 **Partially supported:**
@@ -72,7 +71,7 @@ ferric check --json rules.clp 2> errors.json
 
 Fix any reported parse or compilation errors before proceeding.
 
-## Step 3: Adjust Unsupported Patterns
+## Step 3: Review Rule Patterns and Actions
 
 ### Replace nested negation
 
@@ -87,16 +86,21 @@ Fix any reported parse or compilation errors before proceeding.
     (not (condition-present)) => ...)
 ```
 
-### Replace if/then/else
+### Use if/then/else for RHS actions
+
+Conditional rule actions use the ordinary CLIPS `if`/`then`/`else` form:
 
 ```clp
-;; CLIPS
+;; Supported in Ferric
 (defrule classify
     (value ?x)
     =>
     (if (> ?x 10) then (printout t "big") else (printout t "small")))
+```
 
-;; Ferric: use separate rules with test CE
+To select matching rules with the condition instead, use a `test` CE:
+
+```clp
 (defrule classify-big
     (value ?x) (test (> ?x 10)) => (printout t "big" crlf))
 (defrule classify-small
@@ -261,9 +265,10 @@ engine borrowed inside a manager callback.
 | `not` / `exists` / `forall` / `test` | Supported (single-level nesting) |
 | Salience | Supported |
 | Focus stack | Supported |
-| Depth / Breadth / LEX / MEA | Supported |
+| Depth / Breadth | Supported |
+| LEX / MEA | Experimental; documented CLIPS ordering differences |
 | `defclass` / COOL | Not supported |
-| `if` / `then` / `else` | Not yet implemented |
+| `if` / `then` / `else` | Supported for conditional RHS actions |
 | Certainty factors | Not supported |
 
 ## Primitive template slot types
