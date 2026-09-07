@@ -11,13 +11,13 @@ struct Links<K> {
     next: Option<K>,
 }
 
-pub(crate) struct OrderedSet<K> {
+pub(crate) struct LinkedSet<K> {
     entries: HashMap<K, Links<K>>,
     first: Option<K>,
     last: Option<K>,
 }
 
-impl<K> Default for OrderedSet<K> {
+impl<K> Default for LinkedSet<K> {
     fn default() -> Self {
         Self {
             entries: HashMap::default(),
@@ -27,7 +27,7 @@ impl<K> Default for OrderedSet<K> {
     }
 }
 
-impl<K: Copy + Eq + Hash> OrderedSet<K> {
+impl<K: Copy + Eq + Hash> LinkedSet<K> {
     pub(crate) fn insert(&mut self, key: K) -> bool {
         let std::collections::hash_map::Entry::Vacant(entry) = self.entries.entry(key) else {
             return false;
@@ -68,16 +68,13 @@ impl<K: Copy + Eq + Hash> OrderedSet<K> {
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
-    pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.first = None;
         self.last = None;
     }
-    pub(crate) fn iter(&self) -> Iter<'_, K> {
-        Iter {
+    pub(crate) fn iter(&self) -> LinkedIter<'_, K> {
+        LinkedIter {
             set: self,
             front: self.first,
             back: self.last,
@@ -86,14 +83,14 @@ impl<K: Copy + Eq + Hash> OrderedSet<K> {
     }
 }
 
-pub(crate) struct Iter<'a, K> {
-    set: &'a OrderedSet<K>,
+pub(crate) struct LinkedIter<'a, K> {
+    set: &'a LinkedSet<K>,
     front: Option<K>,
     back: Option<K>,
     remaining: usize,
 }
 
-impl<'a, K: Copy + Eq + Hash> Iterator for Iter<'a, K> {
+impl<'a, K: Copy + Eq + Hash> Iterator for LinkedIter<'a, K> {
     type Item = &'a K;
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -109,7 +106,7 @@ impl<'a, K: Copy + Eq + Hash> Iterator for Iter<'a, K> {
     }
 }
 
-impl<K: Copy + Eq + Hash> DoubleEndedIterator for Iter<'_, K> {
+impl<K: Copy + Eq + Hash> DoubleEndedIterator for LinkedIter<'_, K> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             return None;
@@ -118,6 +115,120 @@ impl<K: Copy + Eq + Hash> DoubleEndedIterator for Iter<'_, K> {
         self.back = links.previous;
         self.remaining -= 1;
         Some(key)
+    }
+}
+impl<K: Copy + Eq + Hash> ExactSizeIterator for LinkedIter<'_, K> {}
+
+/// Keep sets of up to two keys inline; larger sets retain the hash-linked
+/// representation and its insertion order.
+pub(crate) enum OrderedSet<K> {
+    Inline(smallvec::SmallVec<[K; 2]>),
+    Linked(LinkedSet<K>),
+}
+
+impl<K> Default for OrderedSet<K> {
+    fn default() -> Self {
+        Self::Inline(smallvec::SmallVec::new())
+    }
+}
+
+impl<K: Copy + Eq + Hash> OrderedSet<K> {
+    pub(crate) fn insert(&mut self, key: K) -> bool {
+        match self {
+            Self::Inline(values) => {
+                if values.contains(&key) {
+                    return false;
+                }
+                if values.len() < 2 {
+                    values.push(key);
+                } else {
+                    let mut linked = LinkedSet::default();
+                    for &value in values.iter() {
+                        linked.insert(value);
+                    }
+                    linked.insert(key);
+                    *self = Self::Linked(linked);
+                }
+                true
+            }
+            Self::Linked(linked) => linked.insert(key),
+        }
+    }
+
+    pub(crate) fn remove(&mut self, key: &K) -> bool {
+        match self {
+            Self::Inline(values) => {
+                let Some(index) = values.iter().position(|value| value == key) else {
+                    return false;
+                };
+                values.remove(index);
+                true
+            }
+            Self::Linked(linked) => linked.remove(key),
+        }
+    }
+
+    pub(crate) fn contains(&self, key: &K) -> bool {
+        match self {
+            Self::Inline(values) => values.contains(key),
+            Self::Linked(linked) => linked.contains(key),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Inline(values) => values.len(),
+            Self::Linked(linked) => linked.len(),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub(crate) fn clear(&mut self) {
+        match self {
+            Self::Inline(values) => values.clear(),
+            // Retain the existing allocation for large-set reset/reuse.
+            Self::Linked(linked) => linked.clear(),
+        }
+    }
+
+    pub(crate) fn iter(&self) -> Iter<'_, K> {
+        match self {
+            Self::Inline(values) => Iter::Inline(values.iter()),
+            Self::Linked(linked) => Iter::Linked(linked.iter()),
+        }
+    }
+}
+
+pub(crate) enum Iter<'a, K> {
+    Inline(std::slice::Iter<'a, K>),
+    Linked(LinkedIter<'a, K>),
+}
+
+impl<'a, K: Copy + Eq + Hash> Iterator for Iter<'a, K> {
+    type Item = &'a K;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Inline(values) => values.next(),
+            Self::Linked(linked) => linked.next(),
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Inline(values) => values.size_hint(),
+            Self::Linked(linked) => linked.size_hint(),
+        }
+    }
+}
+
+impl<K: Copy + Eq + Hash> DoubleEndedIterator for Iter<'_, K> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Inline(values) => values.next_back(),
+            Self::Linked(linked) => linked.next_back(),
+        }
     }
 }
 impl<K: Copy + Eq + Hash> ExactSizeIterator for Iter<'_, K> {}
@@ -155,6 +266,65 @@ impl<'de, K: Copy + Eq + Hash + serde::Deserialize<'de>> serde::Deserialize<'de>
 mod tests {
     use super::OrderedSet;
     use proptest::prelude::*;
+
+    #[test]
+    fn promotion_preserves_duplicates_order_and_reuse() {
+        let mut set = OrderedSet::default();
+        assert!(set.insert(9));
+        assert!(set.insert(2));
+        assert!(!set.insert(9));
+        assert!(matches!(set, OrderedSet::Inline(_)));
+        assert!(set.remove(&9));
+        assert!(set.insert(9));
+        assert_eq!(set.iter().copied().collect::<Vec<_>>(), [2, 9]);
+        assert!(set.insert(7));
+        assert!(matches!(set, OrderedSet::Linked(_)));
+        assert_eq!(set.iter().copied().collect::<Vec<_>>(), [2, 9, 7]);
+        assert!(!set.insert(9));
+        assert!(set.remove(&9));
+        assert!(set.insert(9));
+        assert_eq!(set.iter().copied().collect::<Vec<_>>(), [2, 7, 9]);
+        let capacity = match &set {
+            OrderedSet::Linked(linked) => linked.entries.capacity(),
+            OrderedSet::Inline(_) => unreachable!(),
+        };
+        set.clear();
+        assert!(set.is_empty());
+        for key in 0..1024 {
+            assert!(set.insert(key));
+            assert!(set.remove(&key));
+        }
+        match &set {
+            OrderedSet::Linked(linked) => assert_eq!(linked.entries.capacity(), capacity),
+            OrderedSet::Inline(_) => panic!("large-set allocation should be retained"),
+        }
+    }
+
+    #[test]
+    fn iterators_keep_exact_lengths_across_promotion() {
+        for size in 0..8 {
+            let mut set = OrderedSet::default();
+            for key in 0..size {
+                assert!(set.insert(key));
+            }
+            let mut iter = set.iter();
+            let mut remaining: std::collections::VecDeque<_> = (0..size).collect();
+            let mut front = true;
+            while !remaining.is_empty() {
+                assert_eq!(iter.len(), remaining.len());
+                assert_eq!(iter.size_hint(), (remaining.len(), Some(remaining.len())));
+                if front {
+                    assert_eq!(iter.next().copied(), remaining.pop_front());
+                } else {
+                    assert_eq!(iter.next_back().copied(), remaining.pop_back());
+                }
+                front = !front;
+            }
+            assert_eq!(iter.len(), 0);
+            assert_eq!(iter.next(), None);
+            assert_eq!(iter.next_back(), None);
+        }
+    }
 
     proptest! {
         #[test]

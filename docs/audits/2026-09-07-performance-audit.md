@@ -318,3 +318,21 @@ output order, and resume through all five snapshot formats. The new
 all four strategies, with result oracles. A separate scaling gate excludes setup
 and detects repeated dormant-activation scanning. The gate rejects the parent
 and passes the candidate; all eight scaling gates pass on the candidate.
+
+## Small ordered memberships
+
+Alpha and beta memory membership sets now keep their first two keys inline.
+The third distinct insertion promotes to the existing hash-linked storage in
+insertion order. Duplicate insertion does not promote or reorder a member;
+removal followed by reinsertion still appends. Promoted sets retain their
+allocation when cleared or reduced, avoiding churn between representations.
+Large-set insertion/removal remains hash based. Iterators preserve forward,
+reverse, and mixed-direction traversal and exact remaining lengths.
+
+Snapshots still encode only the ordered key sequence, reconstruct the storage
+on decode, and reject duplicate members. Existing randomized membership tests
+cover arbitrary mutation; focused tests cover the promotion threshold and
+allocation reuse. New `beta_membership_sizes` controls measure cold construction,
+traversal, and removal at 1, 2, 3, 32, and 1,024 members, with duplicate/order and
+empty-result oracles. Core storage, join, cascade, churn, alpha fanout, engine,
+and Manners workloads remain paired controls.

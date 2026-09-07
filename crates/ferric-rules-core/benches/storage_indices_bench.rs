@@ -10,7 +10,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use ferric_rules_core::{
     Activation, ActivationId, ActivationSeq, Agenda, AlphaEntryType, AlphaMemory, AlphaMemoryId,
-    AlphaNetwork, AtomKey, BetaMemoryId, BetaNetwork, BindingSet, CompilableCondition,
+    AlphaNetwork, AtomKey, BetaMemory, BetaMemoryId, BetaNetwork, BindingSet, CompilableCondition,
     CompilablePattern, ConstantTest, ConstantTestType, ExistsMemory, ExistsMemoryId, Fact,
     FactBase, FactId, NccMemory, NccMemoryId, NegativeMemory, NegativeMemoryId, NodeId,
     ReteCompiler, ReteNetwork, RuleId, Salience, SlotIndex, StringEncoding, Symbol, SymbolTable,
@@ -1077,6 +1077,47 @@ fn bench_agenda_token_index_cycle(c: &mut Criterion) {
     });
 }
 
+/// Exercise cold membership allocations and the two/three-member boundary.
+fn bench_beta_membership_sizes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("beta_membership_sizes");
+    for size in [1, 2, 3, 32, 1024] {
+        group.bench_function(size.to_string(), |b| {
+            let ids = token_ids(size);
+            let mut oracle = BetaMemory::new(BetaMemoryId(0));
+            for &id in &ids {
+                oracle.insert(id);
+            }
+            oracle.insert(ids[0]);
+            assert_eq!(
+                oracle.iter().collect::<Vec<_>>(),
+                ids.iter().rev().copied().collect::<Vec<_>>()
+            );
+            oracle.remove(ids[0]);
+            oracle.insert(ids[0]);
+            let mut expected = ids[1..].to_vec();
+            expected.push(ids[0]);
+            expected.reverse();
+            assert_eq!(oracle.iter().collect::<Vec<_>>(), expected);
+            for &id in &ids {
+                oracle.remove(id);
+            }
+            assert!(oracle.is_empty());
+            b.iter(|| {
+                let mut memory = BetaMemory::new(BetaMemoryId(0));
+                for &id in &ids {
+                    memory.insert(id);
+                }
+                black_box(memory.iter().count());
+                for &id in &ids {
+                    memory.remove(id);
+                }
+                black_box(memory);
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_symbol_table_ascii_intern,
@@ -1092,6 +1133,7 @@ criterion_group!(
     bench_alpha_memory_indexed_slots_cycle,
     bench_beta_fanout_index_cycle,
     bench_beta_memory_store_cycle,
+    bench_beta_membership_sizes,
     bench_beta_negative_memory_store_cycle,
     bench_beta_ncc_memory_store_cycle,
     bench_beta_exists_memory_store_cycle,

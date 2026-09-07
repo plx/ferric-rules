@@ -196,3 +196,10 @@ Each case resets and runs a focused module while a higher-salience dormant modul
 retains one activation per input fact. Untimed oracles check firing counts, exact
 output order, retained dormant matches, and quiescence. The scaling gate measures
 execution after setup to catch repeated scans of the dormant agenda.
+
+### Small ordered memberships
+
+`storage_indices_bench` includes `beta_membership_sizes/{1,2,3,32,1024}`. It times
+cold beta membership construction, traversal, and removal, covering both sides
+of the inline promotion threshold and larger-set controls. Untimed oracles check
+duplicates, remove/reinsert order, and complete reclamation.
