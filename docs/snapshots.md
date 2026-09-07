@@ -25,12 +25,24 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-Schema 1 is the first versioned snapshot format. Builds supporting schema 1 must
-keep its meaning and pass the stored schema fixture and resume regressions.
-Changes to the serialized layout or runtime semantics that make an old state
-invalid require a schema-version change, a documented compatibility decision,
-and a fixture regression. Crate version and snapshot schema version are separate.
-Snapshots are not a promise to migrate arbitrary RETE internals forever.
+Schema 2 requires the corrected ordered-pattern cardinality semantics. Compiled
+fixed-width patterns retain explicit field-count tests, including empty patterns
+and anonymous single-field wildcards. Schema-1 graphs lack those tests and can
+continue matching wrong-width facts after restoration, including facts asserted
+later. Schema 1 is therefore rejected with `UnsupportedVersion(1)` before codec
+decoding; its committed fixture remains an explicit compatibility regression.
+
+To upgrade unique application data, export it with the producing Ferric version
+and assert that durable data into a newly compiled engine. There is no automatic
+RETE-state migration. The schema-2 fixture checks pending activations, subsequent
+assertions, later rule compilation, and reset against the corrected semantics.
+
+Builds supporting a schema must keep its meaning and pass the stored fixture
+and resume regressions. Changes to the serialized layout or runtime semantics
+that make an old state invalid require a schema-version change, a documented
+compatibility decision, and a fixture regression. Crate version and snapshot
+schema version are separate. Snapshots are not a promise to migrate arbitrary
+RETE internals forever.
 
 This is an explicit pre-1.0 break from legacy raw snapshots. Unversioned bytes
 return `LegacySnapshot`; Ferric never guesses a codec, rebuilds an empty engine,
@@ -54,7 +66,7 @@ Every format uses the same binary envelope, including experimental JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`1`) |
+| 8–9 | Little-endian schema version (`2`) |
 | 10 | Codec: bincode `0`, JSON `1`, CBOR `2`, MessagePack `3`, Postcard `4` |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |
@@ -71,7 +83,8 @@ Supported persistence bounds are 16 MiB including the envelope, 128 Serde nestin
 levels, and 1,000,000 decoded items across the whole payload. Collection length
 hints are checked before allocation and do not control allocation capacity.
 Runtime values allow 32 nested multifields; stored action/expression trees allow
-16 levels, alpha paths 64 tests, beta parent paths 66 nodes (including root
+16 levels, alpha paths 64 value tests plus one ordered field-count test,
+beta parent paths 66 nodes (including root
 and terminal), and NCC nesting 4. Requested call-depth configuration is
 preserved; all restored engines apply the same effective 32-call ceiling and
 64 active-expression-frame limit as fresh engines. NCC partner branches must share their declared prefix and cannot form callback cycles.
