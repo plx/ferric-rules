@@ -278,6 +278,7 @@ under exclusive engine access. Shared exports and lookups retain their mutex,
 global identities, and provenance checks. The existing bounded pruning policy
 remains in place; synchronous cleanup on every RHS removal was measured and
 rejected after repeatable small-churn regressions.
+
 Host-value validation retains its depth/item limits, ownership checks, and
 traversal/error order, but stores its first eight pending values inline instead
 of allocating a vector for each scalar input.
@@ -349,3 +350,12 @@ traversal across zero, one, seven, eight, nine, and 32 branches, each 12 tokens
 deep, and verifies unrelated tokens and reverse-index membership survive.
 `token_cascade_stack` controls separately cover a 32-token chain and fanouts of
 four and 32, with exact traversal and empty-result oracles before measurement.
+
+## Runtime snapshot benchmark repair
+
+The broader runtime audit exposed a pre-existing invalid workload: the large
+snapshot generator printed integral floating-point values as integer literals,
+which violate its `FLOAT` slot constraint. Formatting those generated values
+with one decimal place preserves the intended data and lets the existing fact,
+firing, output, and quiescence oracles run. Comparisons use the repaired source
+on both revisions; failed runs contribute no performance claims.
