@@ -601,18 +601,16 @@ impl AlphaNetwork {
     /// Removes the fact from all alpha memories.
     pub fn retract_fact(&mut self, fact_id: FactId, fact: &Fact) {
         ferric_span!(trace_span, "alpha_retract", fact_id = ?fact_id);
-        let entry_type = match fact {
-            Fact::Ordered(ordered) => AlphaEntryType::OrderedRelation(ordered.relation),
-            Fact::Template(template) => AlphaEntryType::Template(template.template_id),
-        };
-
-        let Some(&entry_node) = self.entry_nodes.get(&entry_type) else {
-            // No rules match this fact type
+        // Assertion and online backfill record every accepting memory. Removing
+        // only those memberships avoids walking unrelated constant-test branches.
+        let Some(memories) = self.fact_to_memories.remove(fact_id) else {
             return;
         };
-
-        self.retract_propagate(entry_node, fact_id, fact);
-        self.fact_to_memories.remove(fact_id);
+        for memory_id in memories {
+            if let Some(memory) = self.memory_mut(memory_id) {
+                memory.remove(fact_id, fact);
+            }
+        }
     }
 
     /// Get a reference to a node.
@@ -729,24 +727,6 @@ impl AlphaNetwork {
         }
     }
 
-    /// Recursively retract a fact from the network starting at a node.
-    fn retract_propagate(&mut self, node_id: NodeId, fact_id: FactId, fact: &Fact) {
-        let Some((memory_id, children)) = self.retraction_plan(node_id) else {
-            return;
-        };
-
-        // If this node has a memory, remove the fact
-        if let Some(mem_id) = memory_id {
-            if let Some(memory) = self.memory_mut(mem_id) {
-                memory.remove(fact_id, fact);
-            }
-        }
-
-        for child_id in children {
-            self.retract_propagate(child_id, fact_id, fact);
-        }
-    }
-
     pub(crate) fn propagation_plan(
         &self,
         node_id: NodeId,
@@ -756,11 +736,6 @@ impl AlphaNetwork {
         if let AlphaNode::ConstantTest { test, .. } = node {
             evaluate_test(fact, test).then_some(())?;
         }
-        Some((node.memory(), node.children().to_vec()))
-    }
-
-    fn retraction_plan(&self, node_id: NodeId) -> Option<(Option<AlphaMemoryId>, Vec<NodeId>)> {
-        let node = self.node(node_id)?;
         Some((node.memory(), node.children().to_vec()))
     }
 

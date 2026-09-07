@@ -405,3 +405,55 @@ fn test_scaling_exists_support_assertion() {
         8.0,
     );
 }
+
+/// Retracting N independent parents must not scan N unrelated negative memories.
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_independent_negative_cleanup() {
+    fn measure(n: usize) -> Duration {
+        let mut source = String::new();
+        for group in 0..n {
+            writeln!(
+                source,
+                "(defrule r-{group} (item {group}) (not (block {group})) =>)"
+            )
+            .unwrap();
+        }
+        measure_op_median(
+            || {
+                let mut engine = Engine::with_rules(&source).unwrap();
+                let handles: Vec<_> = (0..n)
+                    .map(|group| {
+                        engine
+                            .assert_ordered("item", i64::try_from(group).unwrap())
+                            .unwrap()
+                    })
+                    .collect();
+                (engine, handles)
+            },
+            |(mut engine, handles)| {
+                for handle in handles {
+                    engine.retract(handle).unwrap();
+                }
+                let result = engine.run(RunLimit::Unlimited).unwrap();
+                assert_eq!(result.rules_fired, 0);
+                assert_eq!(
+                    result.halt_reason,
+                    ferric_rules::runtime::HaltReason::AgendaEmpty
+                );
+                assert!(engine.action_diagnostics().is_empty());
+                assert_eq!(engine.fact_count(), 0);
+                black_box(engine);
+            },
+        )
+    }
+    let (small, large) = (256, 1024);
+    assert_scaling(
+        "independent_negative_cleanup",
+        small,
+        large,
+        measure(small),
+        measure(large),
+        8.0,
+    );
+}
