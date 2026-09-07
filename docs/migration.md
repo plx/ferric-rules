@@ -71,7 +71,7 @@ ferric check --json rules.clp 2> errors.json
 
 Fix any reported parse or compilation errors before proceeding.
 
-## Step 3: Adjust Unsupported Patterns
+## Step 3: Review Rule Patterns and Actions
 
 ### Replace nested negation
 
