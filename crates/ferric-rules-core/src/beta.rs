@@ -5,7 +5,7 @@
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use smallvec::SmallVec;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::alpha::{AlphaMemoryId, SlotIndex};
 use crate::binding::{BindingSet, VarId};
@@ -291,16 +291,16 @@ pub enum BetaNode {
     /// parent beta memories.
     Root {
         memory: BetaMemoryId,
-        children: Rc<[NodeId]>,
+        children: Arc<[NodeId]>,
     },
     /// Join node: combines left (parent beta memory) with right (alpha memory).
     Join {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
-        tests: Rc<[JoinTest]>,
-        bindings: Rc<[(SlotIndex, VarId)]>,
+        tests: Arc<[JoinTest]>,
+        bindings: Arc<[(SlotIndex, VarId)]>,
         memory: BetaMemoryId,
-        children: Rc<[NodeId]>,
+        children: Arc<[NodeId]>,
     },
     /// Predicate node: filters a partial match using a runtime-owned condition.
     ///
@@ -312,7 +312,7 @@ pub enum BetaNode {
         rule: RuleId,
         condition_index: u32,
         memory: BetaMemoryId,
-        children: Rc<[NodeId]>,
+        children: Arc<[NodeId]>,
     },
     /// Terminal node: produces activations for a rule.
     Terminal {
@@ -324,10 +324,10 @@ pub enum BetaNode {
     Negative {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
-        tests: Rc<[JoinTest]>,
+        tests: Arc<[JoinTest]>,
         memory: BetaMemoryId,
         neg_memory: NegativeMemoryId,
-        children: Rc<[NodeId]>,
+        children: Arc<[NodeId]>,
     },
     /// NCC node: blocks parent tokens when a subnetwork conjunction has results.
     Ncc {
@@ -336,7 +336,7 @@ pub enum BetaNode {
         partner: NodeId,
         memory: BetaMemoryId,
         ncc_memory: NccMemoryId,
-        children: Rc<[NodeId]>,
+        children: Arc<[NodeId]>,
     },
     /// NCC partner node: sits at bottom of subnetwork, reports results to NCC node.
     NccPartner {
@@ -349,10 +349,10 @@ pub enum BetaNode {
     Exists {
         parent: NodeId,
         alpha_memory: AlphaMemoryId,
-        tests: Rc<[JoinTest]>,
+        tests: Arc<[JoinTest]>,
         memory: BetaMemoryId,
         exists_memory: ExistsMemoryId,
-        children: Rc<[NodeId]>,
+        children: Arc<[NodeId]>,
     },
 }
 
@@ -398,7 +398,7 @@ impl BetaNetwork {
             root_node_id,
             BetaNode::Root {
                 memory: root_memory_id,
-                children: Rc::from([]),
+                children: Arc::from([]),
             },
         );
 
@@ -462,7 +462,7 @@ impl BetaNetwork {
             tests: tests.into(),
             bindings: bindings.into(),
             memory: memory_id,
-            children: Rc::from([]),
+            children: Arc::from([]),
         };
 
         self.nodes.insert(node_id, node);
@@ -501,7 +501,7 @@ impl BetaNetwork {
             rule,
             condition_index,
             memory: memory_id,
-            children: Rc::from([]),
+            children: Arc::from([]),
         };
 
         self.nodes.insert(node_id, node);
@@ -565,7 +565,7 @@ impl BetaNetwork {
             tests: tests.into(),
             memory: memory_id,
             neg_memory: neg_memory_id,
-            children: Rc::from([]),
+            children: Arc::from([]),
         };
 
         self.nodes.insert(node_id, node);
@@ -622,7 +622,7 @@ impl BetaNetwork {
             partner,
             memory: memory_id,
             ncc_memory: ncc_memory_id,
-            children: Rc::from([]),
+            children: Arc::from([]),
         };
 
         self.nodes.insert(node_id, node);
@@ -701,7 +701,7 @@ impl BetaNetwork {
             tests: tests.into(),
             memory: memory_id,
             exists_memory: exists_memory_id,
-            children: Rc::from([]),
+            children: Arc::from([]),
         };
 
         self.nodes.insert(node_id, node);
@@ -2050,7 +2050,7 @@ mod proptests {
                 //  those node types. We only assert for non-terminal parents.)
                 if let Some(node_id) = node_id_opt {
                     if let Some(parent_node) = net.get_node(parent_id) {
-                        let children: Option<&Rc<[NodeId]>> = match parent_node {
+                        let children: Option<&Arc<[NodeId]>> = match parent_node {
                             BetaNode::Root { children, .. }
                             | BetaNode::Join { children, .. }
                             | BetaNode::Negative { children, .. }

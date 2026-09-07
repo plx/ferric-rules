@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 use thiserror::Error;
 
 // Qualified name utilities: wired into construct loading in passes 003/004.
@@ -59,7 +59,7 @@ struct TranslatedRule {
 
 struct PreparedRuleInstallation {
     plan: ConditionCompilationPlan,
-    info: Rc<CompiledRuleInfo>,
+    info: Arc<CompiledRuleInfo>,
     module: crate::modules::ModuleId,
 }
 
@@ -320,8 +320,6 @@ impl Engine {
     /// ```
     #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
-        self.check_thread_affinity()
-            .map_err(|e| vec![LoadError::Engine(e)])?;
         ferric_span!(info_span, "engine_load_str", len = source.len());
 
         // Parse the source into S-expressions (Stage 1)
@@ -1971,7 +1969,7 @@ impl Engine {
         };
         Ok(PreparedRuleInstallation {
             plan,
-            info: Rc::new(info),
+            info: Arc::new(info),
             module: self.module_registry.current_module(),
         })
     }

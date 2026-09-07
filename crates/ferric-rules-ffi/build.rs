@@ -8,28 +8,24 @@ pub const HEADER_PREAMBLE: &str = r"/*
  * THREAD SAFETY
  * ============================================================
  *
- * Raw engine handles (FerricEngine*) are bound to the thread that
- * created them. Ordinary ferric_engine_* runtime accessors validate
- * thread affinity before accessing runtime state.
+ * Raw engine handles (FerricEngine*) may transfer between OS threads.
+ * The host must serialize runtime access and keep the allocation live
+ * throughout every call and borrowed-pointer use. An atomic admission
+ * guard rejects overlapping runtime calls with FERRIC_ERROR_INTERNAL_ERROR;
+ * this is not a lifetime owner and does not make successful free races safe.
  *
- * - Creating thread: all operations succeed normally.
- * - Other threads: ordinary runtime operations return
- *   FERRIC_ERROR_THREAD_VIOLATION with a descriptive message in the
- *   engine snapshot and that thread's global fallback.
- * - ferric_engine_last_error_copy() is synchronized and may run
- *   concurrently from any thread. Each call copies one coherent
- *   error snapshot.
- * - ferric_engine_last_error() may be called from any thread, but
- *   the returned borrowed pointer must not be used while another
- *   borrowed read or engine destruction may occur. Use the copy API
- *   when pointer-use windows could overlap.
- * - ferric_engine_free_unchecked() is a destruction-only escape
- *   hatch that deliberately skips affinity. Like all destruction,
- *   it must not overlap any access to that engine.
- * - Neither diagnostic reader may race with engine destruction.
- * - Same-engine runtime reentry from a host callback fails with
- *   FERRIC_ERROR_INTERNAL_ERROR. The last-error readers remain safe
- *   to call from such callbacks.
+ * - Runtime reads and writes, including logical-run continuations, may
+ *   execute on different threads when externally serialized.
+ * - ferric_engine_last_error_copy() uses a separate mutex and may run
+ *   concurrently from any thread, copying one coherent error snapshot.
+ * - Borrowed output/error pointers require a host-protected use window;
+ *   copy them before ending that window or use the copy accessors.
+ * - Successful free must exclude all calls and borrowed-pointer use.
+ *   ferric_engine_free_unchecked() is retained as a compatibility alias
+ *   with the same requirements; ordinary free also supports any thread.
+ * - Same-engine runtime reentry from a host callback is rejected, including
+ *   free. Per-engine error access remains available during such callbacks.
+ * - The host must not call any API with a pointer after successful free.
  *
  * The global error functions (ferric_last_error_global, etc.)
  * use thread-local storage and are safe to call from any thread.
@@ -154,9 +150,8 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *   leaves output parameters unchanged.
  * - A call rejected before it reaches engine state changes no runtime
  *   or continuation state, though it still publishes its documented
- *   error. A null handle, a thread affinity violation, and a reentrant
- *   call from a host callback all leave the logical run intact for the
- *   owner thread.
+ *   error. A null handle or an overlapping/reentrant call leaves the
+ *   logical run intact for a later serialized continuation.
  * - Host cancellation is not HALT_REQUESTED. A cancelable binding
  *   stops submitting chunks, reports its own canceled outcome, and
  *   starts any later logical run with ferric_engine_run_ex(). The

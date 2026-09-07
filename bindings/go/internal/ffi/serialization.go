@@ -35,7 +35,7 @@ func copyAndFreeBytes(data unsafe.Pointer, length uintptr, free func()) []byte {
 
 // EngineDeserializeAs creates an engine from previously serialized bytes
 // in the given format.
-// The returned handle is ready for use; its thread affinity is set to the calling thread.
+// The returned handle is ready for serialized use on any OS thread.
 func EngineDeserializeAs(data []byte, format SerializationFormat) (EngineHandle, ErrorCode) {
 	if len(data) == 0 {
 		return nil, ErrInvalidArgument

@@ -2,8 +2,8 @@
 
 ## Repeat-Run Stress Testing
 
-Go bindings use `runtime.LockOSThread()` and CGo, making them sensitive to
-goroutine-to-thread affinity issues that single-run tests may not catch. The
+Go bindings use CGo, serialized native ownership, and worker queues whose
+lifecycle races may not appear in a single run. The
 CI pipeline includes a **Go Stress Test** job that runs all Go binding tests
 repeatedly with the race detector enabled (`go test -race -count=10 ./...`).
 
@@ -29,9 +29,9 @@ review used `-count=30` and surfaced intermittent failures at that level.
 
 Stress-test failures typically indicate:
 
-- **Thread-affinity violations**: operations escaping a locked OS thread due
-  to goroutine migration. Fix by ensuring all FFI calls happen within a
-  `runtime.LockOSThread()` scope.
+- **Native overlap or stale handles**: every raw handle operation must remain
+  inside its serialized lifetime lease through output/error copying. Goroutine
+  migration is supported; constructors pin only while copying TLS diagnostics.
 - **Race conditions**: concurrent access to shared state without proper
   synchronization. The `-race` flag will report the exact goroutines and
   memory locations involved.

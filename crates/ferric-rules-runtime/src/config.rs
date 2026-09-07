@@ -1,6 +1,6 @@
 //! Engine configuration types.
 
-use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ferric_rules_core::{ConflictResolutionStrategy, StringEncoding};
 
@@ -11,7 +11,7 @@ pub const DEFAULT_MAX_ACTION_LOOP_ITERATIONS: usize = 1_000_000;
 /// Engine configuration.
 ///
 /// Includes encoding mode, conflict resolution strategy, and execution limits.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EngineConfig {
     pub string_encoding: StringEncoding,
@@ -35,13 +35,15 @@ pub struct EngineConfig {
     /// Whether structurally equivalent facts may coexist in working memory.
     ///
     /// This is interior-mutable because evaluator contexts already borrow the
-    /// engine configuration immutably. `Engine` is thread-affine, so mutation
-    /// through `Cell` does not weaken its concurrency contract.
-    fact_duplication: Cell<bool>,
-    /// Remaining iterations in the current action execution, or `None` when
-    /// no action/evaluator root owns a budget.
+    /// engine configuration immutably. The engine changes it under exclusive
+    /// access; an atomic permits concurrent shared engine reads.
+    fact_duplication: AtomicBool,
+    /// Remaining iterations in the current action execution.
+    /// Only meaningful while `action_loop_budget_active` is true.
     #[cfg_attr(feature = "serde", serde(skip, default))]
-    action_loop_iterations_remaining: Cell<Option<usize>>,
+    action_loop_iterations_remaining: AtomicUsize,
+    #[cfg_attr(feature = "serde", serde(skip, default))]
+    action_loop_budget_active: AtomicBool,
 }
 
 #[cfg(feature = "serde")]
@@ -58,8 +60,9 @@ impl EngineConfig {
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
             max_action_loop_iterations: DEFAULT_MAX_ACTION_LOOP_ITERATIONS,
-            fact_duplication: Cell::new(false),
-            action_loop_iterations_remaining: Cell::new(None),
+            fact_duplication: AtomicBool::new(false),
+            action_loop_iterations_remaining: AtomicUsize::new(0),
+            action_loop_budget_active: AtomicBool::new(false),
         }
     }
 
@@ -71,8 +74,9 @@ impl EngineConfig {
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
             max_action_loop_iterations: DEFAULT_MAX_ACTION_LOOP_ITERATIONS,
-            fact_duplication: Cell::new(false),
-            action_loop_iterations_remaining: Cell::new(None),
+            fact_duplication: AtomicBool::new(false),
+            action_loop_iterations_remaining: AtomicUsize::new(0),
+            action_loop_budget_active: AtomicBool::new(false),
         }
     }
 
@@ -84,8 +88,9 @@ impl EngineConfig {
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
             max_action_loop_iterations: DEFAULT_MAX_ACTION_LOOP_ITERATIONS,
-            fact_duplication: Cell::new(false),
-            action_loop_iterations_remaining: Cell::new(None),
+            fact_duplication: AtomicBool::new(false),
+            action_loop_iterations_remaining: AtomicUsize::new(0),
+            action_loop_budget_active: AtomicBool::new(false),
         }
     }
 
@@ -101,32 +106,38 @@ impl EngineConfig {
     /// CLIPS defaults this policy to disabled.
     #[must_use]
     pub fn with_fact_duplication(self, enabled: bool) -> Self {
-        self.fact_duplication.set(enabled);
+        self.fact_duplication.store(enabled, Ordering::Relaxed);
         self
     }
 
     /// Return whether structurally equivalent facts may coexist.
     #[must_use]
     pub(crate) fn fact_duplication(&self) -> bool {
-        self.fact_duplication.get()
+        self.fact_duplication.load(Ordering::Relaxed)
     }
 
     /// Change the fact-duplication policy and return its previous value.
     pub(crate) fn set_fact_duplication(&self, enabled: bool) -> bool {
-        self.fact_duplication.replace(enabled)
+        self.fact_duplication.swap(enabled, Ordering::Relaxed)
     }
 
     /// Start a fresh per-action loop budget.
+    ///
+    /// All budget methods are internal and run under exclusive engine access.
+    /// The atomics permit shared engine reads; they do not coordinate parallel
+    /// evaluations. Keep this invariant when adding evaluator entry points.
     pub(crate) fn begin_action_loop_budget(&self) {
         self.action_loop_iterations_remaining
-            .set(Some(self.max_action_loop_iterations));
+            .store(self.max_action_loop_iterations, Ordering::Relaxed);
+        self.action_loop_budget_active
+            .store(true, Ordering::Relaxed);
     }
 
     /// Start a loop budget only when no enclosing action/evaluation owns one.
     ///
     /// Returns whether this call started the budget.
     pub(crate) fn begin_action_loop_budget_if_inactive(&self) -> bool {
-        if self.action_loop_iterations_remaining.get().is_some() {
+        if self.action_loop_budget_active.load(Ordering::Relaxed) {
             false
         } else {
             self.begin_action_loop_budget();
@@ -136,21 +147,49 @@ impl EngineConfig {
 
     /// Finish the active per-action loop budget.
     pub(crate) fn end_action_loop_budget(&self) {
-        self.action_loop_iterations_remaining.set(None);
+        self.action_loop_budget_active
+            .store(false, Ordering::Relaxed);
     }
 
     /// Consume one iteration, returning `false` when the active budget is
     /// exhausted.
     pub(crate) fn take_action_loop_iteration(&self) -> bool {
-        let Some(remaining) = self.action_loop_iterations_remaining.get() else {
+        if !self.action_loop_budget_active.load(Ordering::Relaxed) {
             debug_assert!(false, "loop iteration consumed without an active budget");
             return false;
-        };
+        }
+        let remaining = self
+            .action_loop_iterations_remaining
+            .load(Ordering::Relaxed);
         let Some(next) = remaining.checked_sub(1) else {
             return false;
         };
-        self.action_loop_iterations_remaining.set(Some(next));
+        self.action_loop_iterations_remaining
+            .store(next, Ordering::Relaxed);
         true
+    }
+}
+
+// Configuration clones own independent evaluator state. Relaxed atomics are
+// sufficient: no field publishes other memory, and Engine mutation still needs
+// &mut Engine. EvalContexts cannot currently be constructed outside the crate;
+// internal concurrent evaluations must use independent configuration values.
+impl Clone for EngineConfig {
+    fn clone(&self) -> Self {
+        Self {
+            string_encoding: self.string_encoding,
+            strategy: self.strategy,
+            max_call_depth: self.max_call_depth,
+            max_action_loop_iterations: self.max_action_loop_iterations,
+            fact_duplication: AtomicBool::new(self.fact_duplication()),
+            action_loop_iterations_remaining: AtomicUsize::new(
+                self.action_loop_iterations_remaining
+                    .load(Ordering::Relaxed),
+            ),
+            action_loop_budget_active: AtomicBool::new(
+                self.action_loop_budget_active.load(Ordering::Relaxed),
+            ),
+        }
     }
 }
 
@@ -167,8 +206,9 @@ impl From<StringEncoding> for EngineConfig {
             strategy: ConflictResolutionStrategy::default(),
             max_call_depth: 64,
             max_action_loop_iterations: DEFAULT_MAX_ACTION_LOOP_ITERATIONS,
-            fact_duplication: Cell::new(false),
-            action_loop_iterations_remaining: Cell::new(None),
+            fact_duplication: AtomicBool::new(false),
+            action_loop_iterations_remaining: AtomicUsize::new(0),
+            action_loop_budget_active: AtomicBool::new(false),
         }
     }
 }

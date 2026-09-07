@@ -115,10 +115,9 @@ profiles retain unwind support for generated panic-containing export wrappers.
   error-model, execution, template-assertion, copy-error, build-matrix,
   ffi-expansion, values, multifield-copy, and header tests.
 - `tests/c/` — real-C ABI regressions run under the sanitizer harness.
-- Thread-affinity invariant: runtime state is owner-thread-only. Per-engine
-  last-error copies are synchronized across threads; borrowed last-error
-  pointer use must not overlap other borrowed reads or destruction. The
-  destruction-only unchecked free skips affinity but must not overlap access.
+- Raw handles support serialized transfer between threads. Atomic admission
+  rejects overlapping runtime calls; per-engine error copies are separately
+  synchronized. The host protects borrowed-pointer use and destruction.
 
 ### `ferric-rules-ffi-macros`
 
@@ -143,11 +142,11 @@ contract covers GIL-enabled CPython 3.9 through 3.13 across seven native wheel
 targets; see [`python-package-release.md`](python-package-release.md). Located
 in `crates/ferric-rules-python/`; tests are in `tests/*.py`.
 
-- `engine.rs` — `PyEngine`; ordinary access remains creator-thread-affine. An
-  exclusive same-thread operation lease releases the GIL for the documented
-  load, run, snapshot, and file cohort, while active-run control makes
-  `halt()` and synchronous `close()` safe from any supported Python thread.
-  Final-reference cleanup remains exact without transferring runtime access.
+- `engine.rs` — `PyEngine`; structurally transferable native state is protected
+  by a mutex. Waiting for it releases the GIL; the documented load, run,
+  snapshot, and file cohort acquires and drops it entirely while detached.
+  Active-run `halt()`, synchronous `close()`, and final-reference cleanup work
+  from any supported Python thread.
 - `fact.rs` — `Fact`, `FactType`.
 - `value.rs` — `Symbol`, `ClipsString` (preserves symbol/string distinction).
 - `config.rs` — `Strategy`, `Encoding`, `Format` (serde feature).
@@ -167,7 +166,7 @@ tests). Single `main.rs`.
 ### `bindings/go` — Go binding on top of `ferric-rules-ffi`
 
 - `engine.go`, `engine_options.go`, `pinned_engine.go` — engine façade;
-  pinned-goroutine variant for Go's movable goroutines vs. FFI thread affinity.
+  dedicated-worker variant for FIFO dispatch and active-run cancellation.
 - `coordinator.go`, `coordinator_options.go`, `manager.go` — multi-engine-type
   orchestration (`Coordinator` + per-type `Manager`).
 - `fact.go`, `values.go`, `result.go`, `iterators.go` — Go-side value/fact

@@ -1,13 +1,12 @@
 //! The Ferric rules engine.
 //!
 //! This module provides the main `Engine` type, which is the primary interface
-//! for embedding applications. Phase 1 includes basic fact assertion/retraction
-//! and thread affinity checking.
+//! for embedding applications, including fact assertion/retraction and
+//! transferable ownership for serialized host work.
 
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::VecDeque;
-use std::marker::PhantomData;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::thread::ThreadId;
 use thiserror::Error;
 
@@ -98,7 +97,26 @@ impl FactAssertionResult {
 /// The Ferric rules engine.
 ///
 /// This is the main entry point for embedding applications. The engine is
-/// not `Send` or `Sync` — it must remain on the thread that created it.
+/// `Send`: ownership can move to another thread for use and destruction.
+/// Mutation requires exclusive access. Use a host mutex when multiple threads
+/// need to operate on one engine.
+///
+/// The engine is also `Sync`: shared references may be read concurrently.
+/// Mutating operations still require exclusive access. Owned values and shared
+/// match metadata can be cloned and used independently of an engine on other
+/// threads. The C handle has its own serialized-call contract.
+///
+/// ```
+/// use ferric_rules_runtime::Engine;
+/// fn assert_send<T: Send>() {}
+/// assert_send::<Engine>();
+/// ```
+///
+/// ```
+/// use ferric_rules_runtime::Engine;
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<Engine>();
+/// ```
 ///
 /// ## Phase 2 complete
 ///
@@ -110,7 +128,7 @@ impl FactAssertionResult {
 /// - Execution loop (`run`, `step`, `halt`, `reset`)
 /// - RHS action execution (`assert`, `retract`, `modify`, `duplicate`, `halt`)
 /// - Agenda conflict strategy selection (Depth, Breadth, LEX, MEA)
-/// - Thread affinity enforcement with `unsafe move_to_current_thread`
+/// - Ownership transfer between threads with exclusive mutation
 ///
 /// ## Phase 3 complete
 ///
@@ -147,7 +165,7 @@ pub struct Engine {
     /// Registered deffacts for re-assertion on reset.
     pub(crate) registered_deffacts: Vec<Vec<Fact>>,
     /// Compiled rule info for action execution.
-    pub(crate) rule_info: RuleIndex<Rc<CompiledRuleInfo>>,
+    pub(crate) rule_info: RuleIndex<Arc<CompiledRuleInfo>>,
     /// Registered template definitions: name → `TemplateId`.
     pub(crate) template_ids: HashMap<Box<str>, TemplateId>,
     /// Template slot metadata indexed by `TemplateId`.
@@ -188,9 +206,6 @@ pub struct Engine {
     pub(crate) halted: bool,
     /// Input buffer for `read`/`readline` calls from rules.
     pub(crate) input_buffer: VecDeque<String>,
-    pub(crate) creator_thread: ThreadId,
-    // Marker to ensure Engine is !Send + !Sync
-    pub(crate) _not_send_sync: PhantomData<*mut ()>,
 }
 
 impl Engine {
@@ -224,8 +239,6 @@ impl Engine {
             processing_predicates: false,
             halted: false,
             input_buffer: VecDeque::new(),
-            creator_thread: std::thread::current().id(),
-            _not_send_sync: PhantomData,
         }
     }
 
@@ -392,7 +405,6 @@ impl Engine {
     ///
     /// Returns an error if:
     /// - The relation name violates encoding constraints (e.g., non-ASCII in ASCII mode)
-    /// - The engine is called from the wrong thread
     pub fn assert_ordered<F: IntoFieldValues>(
         &mut self,
         relation: &str,
@@ -410,14 +422,12 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns an error if the relation violates encoding constraints or the
-    /// engine is called from the wrong thread.
+    /// Returns an error if the relation violates encoding constraints.
     pub fn assert_ordered_with_result<F: IntoFieldValues>(
         &mut self,
         relation: &str,
         fields: F,
     ) -> Result<FactAssertionResult, EngineError> {
-        self.check_thread_affinity()?;
         ferric_span!(info_span, "engine_assert_ordered", relation);
 
         let relation_sym = self
@@ -435,20 +445,15 @@ impl Engine {
 
     /// Assert a fully constructed fact into working memory.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the engine is called from the wrong thread.
+    /// The `Result` return type is retained for API compatibility.
     pub fn assert(&mut self, fact: Fact) -> Result<FactId, EngineError> {
         Ok(self.assert_with_result(fact)?.fact_id())
     }
 
     /// Assert a fully constructed fact and report whether it was newly inserted.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the engine is called from the wrong thread.
+    /// The `Result` return type is retained for API compatibility.
     pub fn assert_with_result(&mut self, fact: Fact) -> Result<FactAssertionResult, EngineError> {
-        self.check_thread_affinity()?;
         ferric_span!(info_span, "engine_assert");
 
         Ok(self.assert_fact_internal(fact))
@@ -468,7 +473,6 @@ impl Engine {
     /// Returns an error if:
     /// - The template name is not registered
     /// - A slot name does not exist in the template
-    /// - The engine is called from the wrong thread
     pub fn assert_template(
         &mut self,
         template_name: &str,
@@ -488,15 +492,13 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns an error for an unknown template/slot or wrong-thread access.
+    /// Returns an error for an unknown template or slot.
     pub fn assert_template_with_result(
         &mut self,
         template_name: &str,
         slot_names: &[&str],
         slot_values: Vec<Value>,
     ) -> Result<FactAssertionResult, EngineError> {
-        self.check_thread_affinity()?;
-
         let tid = *self
             .template_ids
             .get(template_name)
@@ -540,14 +542,11 @@ impl Engine {
     /// - The fact ID does not exist
     /// - The fact is not a template fact
     /// - The slot name does not exist in the template
-    /// - The engine is called from the wrong thread
     pub fn get_fact_slot_by_name(
         &self,
         fact_id: FactId,
         slot_name: &str,
     ) -> Result<&Value, EngineError> {
-        self.check_thread_affinity()?;
-
         let fact = self
             .fact_base
             .get(fact_id)
@@ -579,9 +578,7 @@ impl Engine {
     ///
     /// Returns an error if:
     /// - The fact ID does not exist
-    /// - The engine is called from the wrong thread
     pub fn retract(&mut self, fact_id: FactId) -> Result<(), EngineError> {
-        self.check_thread_affinity()?;
         ferric_span!(info_span, "engine_retract", fact_id = ?fact_id);
 
         let entry = self
@@ -604,12 +601,8 @@ impl Engine {
 
     /// Get a fact by ID.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the engine is called from the wrong thread.
+    /// The `Result` return type is retained for API compatibility.
     pub fn get_fact(&self, fact_id: FactId) -> Result<Option<&Fact>, EngineError> {
-        self.check_thread_affinity()?;
-
         Ok(self.fact_base.get(fact_id).map(|entry| &entry.fact))
     }
 
@@ -619,12 +612,8 @@ impl Engine {
     /// `(initial-fact)` inserted for CLIPS empty-LHS compatibility is excluded
     /// from the results.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the engine is called from the wrong thread.
+    /// The `Result` return type is retained for API compatibility.
     pub fn facts(&self) -> Result<impl Iterator<Item = (FactId, &Fact)>, EngineError> {
-        self.check_thread_affinity()?;
-
         let exclude_id = self.initial_fact_id;
         Ok(self
             .fact_base
@@ -639,12 +628,8 @@ impl Engine {
     /// whose relation matches the given name. Returns an empty vector if the
     /// relation name has not been interned or no matching facts exist.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the engine is called from the wrong thread.
+    /// The `Result` return type is retained for API compatibility.
     pub fn find_facts(&self, relation: &str) -> Result<Vec<(FactId, &Fact)>, EngineError> {
-        self.check_thread_affinity()?;
-
         // Look up the relation symbol without interning it (read-only query).
         let Some(relation_sym) = self
             .symbol_table
@@ -673,10 +658,7 @@ impl Engine {
     ///
     /// Returns an error if:
     /// - The string violates encoding constraints
-    /// - The engine is called from the wrong thread
     pub fn intern_symbol(&mut self, s: &str) -> Result<Symbol, EngineError> {
-        self.check_thread_affinity()?;
-
         Ok(self
             .symbol_table
             .intern_symbol(s, self.config.string_encoding)?)
@@ -688,10 +670,7 @@ impl Engine {
     ///
     /// Returns an error if:
     /// - The string violates encoding constraints
-    /// - The engine is called from the wrong thread
     pub fn create_string(&self, s: &str) -> Result<FerricString, EngineError> {
-        self.check_thread_affinity()?;
-
         Ok(FerricString::new(s, self.config.string_encoding)?)
     }
 
@@ -704,7 +683,6 @@ impl Engine {
     ///
     /// Returns an error if:
     /// - The string violates encoding constraints
-    /// - The engine is called from the wrong thread
     pub fn symbol_value(&mut self, s: &str) -> Result<Value, EngineError> {
         Ok(Value::Symbol(self.intern_symbol(s)?))
     }
@@ -721,14 +699,11 @@ impl Engine {
     ///
     /// Returns an error if:
     /// - Either name violates encoding constraints
-    /// - The engine is called from the wrong thread
     pub fn assert_ordered_symbol(
         &mut self,
         relation: &str,
         symbol_name: &str,
     ) -> Result<FactId, EngineError> {
-        self.check_thread_affinity()?;
-
         let relation_sym = self
             .symbol_table
             .intern_symbol(relation, self.config.string_encoding)?;
@@ -749,7 +724,6 @@ impl Engine {
     ///
     /// The symbol is interned on first use and cached thereafter.
     pub fn clips_true(&mut self) -> Result<Value, EngineError> {
-        self.check_thread_affinity()?;
         let sym = self
             .symbol_table
             .intern_symbol("TRUE", self.config.string_encoding)
@@ -761,7 +735,6 @@ impl Engine {
     ///
     /// The symbol is interned on first use and cached thereafter.
     pub fn clips_false(&mut self) -> Result<Value, EngineError> {
-        self.check_thread_affinity()?;
         let sym = self
             .symbol_table
             .intern_symbol("FALSE", self.config.string_encoding)
@@ -772,7 +745,7 @@ impl Engine {
     /// Resolve a [`Symbol`] to its string representation.
     ///
     /// Returns `None` if the symbol is not in this engine's symbol table.
-    /// No thread-affinity check — symbol table contents are immutable once interned.
+    /// Symbol table contents are immutable once interned.
     #[must_use]
     pub fn resolve_symbol(&self, sym: Symbol) -> Option<&str> {
         self.symbol_table.resolve_symbol_str(sym)
@@ -841,15 +814,11 @@ impl Engine {
         rule_index_get(&self.rule_info, rule_id).map(|info| info.name.as_str())
     }
 
-    /// Check that the current thread is the same as the creator thread.
+    /// Compatibility shim for the former thread-affinity contract.
+    ///
+    /// Always succeeds: an exclusively owned engine may be used on any thread.
+    #[deprecated(note = "Engine is Send; thread-affinity checks are no longer necessary")]
     pub fn check_thread_affinity(&self) -> Result<(), EngineError> {
-        let current = std::thread::current().id();
-        if current != self.creator_thread {
-            return Err(EngineError::WrongThread {
-                creator: self.creator_thread,
-                current,
-            });
-        }
         Ok(())
     }
 
@@ -931,16 +900,11 @@ impl Engine {
         (fired, reset_requested, clear_requested, action_error)
     }
 
-    /// Transfer ownership of this engine to the current thread.
+    /// Compatibility shim for the former explicit ownership-transfer operation.
     ///
-    /// # Safety
-    ///
-    /// The caller must guarantee there are no outstanding references into engine
-    /// internals that continue to be used from the previous owning thread.
-    #[allow(unsafe_code)]
-    pub unsafe fn move_to_current_thread(&mut self) {
-        self.creator_thread = std::thread::current().id();
-    }
+    /// This is a no-op; ordinary Rust ownership transfer is sufficient.
+    #[deprecated(note = "Engine is Send; move it directly to the receiving thread")]
+    pub fn move_to_current_thread(&mut self) {}
 
     /// Pop the next activation eligible under current focus semantics.
     ///
@@ -981,11 +945,8 @@ impl Engine {
     /// semantics. Otherwise pops the highest-priority eligible activation and
     /// fires its already-matched RHS actions.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the engine is called from the wrong thread.
+    /// The `Result` return type is retained for API compatibility.
     pub fn step(&mut self) -> Result<Option<FiredRule>, EngineError> {
-        self.check_thread_affinity()?;
         ferric_span!(info_span, "engine_step");
         self.action_diagnostics.clear();
 
@@ -1040,11 +1001,9 @@ impl Engine {
     /// preserved across runs; if it has no matching activations, execution
     /// halts with `AgendaEmpty`.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the engine is called from the wrong thread.
+    /// The `Result` return type is retained for API compatibility.
     pub fn run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
-        self.run_inner(limit, true)
+        Ok(self.run_inner(limit, true))
     }
 
     /// Continue a count-limited run without clearing its halt flag or action
@@ -1054,20 +1013,13 @@ impl Engine {
     /// run into bounded chunks. Call it only after [`Self::run`] or another
     /// continuation returned [`HaltReason::LimitReached`].
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the engine is called from the wrong thread.
+    /// The `Result` return type is retained for API compatibility.
     #[doc(hidden)]
     pub fn continue_run(&mut self, limit: RunLimit) -> Result<RunResult, EngineError> {
-        self.run_inner(limit, false)
+        Ok(self.run_inner(limit, false))
     }
 
-    fn run_inner(
-        &mut self,
-        limit: RunLimit,
-        clear_execution_state: bool,
-    ) -> Result<RunResult, EngineError> {
-        self.check_thread_affinity()?;
+    fn run_inner(&mut self, limit: RunLimit, clear_execution_state: bool) -> RunResult {
         ferric_span!(info_span, "engine_run", limit = ?limit);
         if clear_execution_state {
             self.halted = false;
@@ -1089,7 +1041,7 @@ impl Engine {
                     halt_reason = "halt_requested",
                     "engine_run_complete"
                 );
-                return Ok(run_result(rules_fired, HaltReason::HaltRequested));
+                return run_result(rules_fired, HaltReason::HaltRequested);
             }
 
             // Focus-aware activation selection preserves the final baseline
@@ -1101,7 +1053,7 @@ impl Engine {
                     halt_reason = "agenda_empty",
                     "engine_run_complete"
                 );
-                return Ok(run_result(rules_fired, HaltReason::AgendaEmpty));
+                return run_result(rules_fired, HaltReason::AgendaEmpty);
             };
 
             let (logically_fired, reset_requested, clear_requested, action_error) =
@@ -1129,7 +1081,7 @@ impl Engine {
                     halt_reason = "action_error",
                     "engine_run_complete"
                 );
-                return Ok(run_result(rules_fired, HaltReason::ActionError));
+                return run_result(rules_fired, HaltReason::ActionError);
             }
 
             if clear_requested {
@@ -1140,7 +1092,7 @@ impl Engine {
                     halt_reason = "clear_requested",
                     "engine_run_complete"
                 );
-                return Ok(run_result(rules_fired, HaltReason::HaltRequested));
+                return run_result(rules_fired, HaltReason::HaltRequested);
             }
 
             if reset_requested {
@@ -1153,7 +1105,7 @@ impl Engine {
                     halt_reason = "reset_requested",
                     "engine_run_complete"
                 );
-                return Ok(run_result(rules_fired, HaltReason::HaltRequested));
+                return run_result(rules_fired, HaltReason::HaltRequested);
             }
         }
 
@@ -1163,7 +1115,7 @@ impl Engine {
             halt_reason = "limit_reached",
             "engine_run_complete"
         );
-        Ok(run_result(rules_fired, HaltReason::LimitReached))
+        run_result(rules_fired, HaltReason::LimitReached)
     }
 
     /// Request that the engine stop execution after the current rule completes.
@@ -1180,11 +1132,8 @@ impl Engine {
     ///
     /// The compiled rule network is preserved — only runtime state is cleared.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the engine is called from the wrong thread.
+    /// The `Result` return type is retained for API compatibility.
     pub fn reset(&mut self) -> Result<(), EngineError> {
-        self.check_thread_affinity()?;
         ferric_span!(info_span, "engine_reset");
 
         // Clear all runtime state
@@ -1585,6 +1534,8 @@ pub enum EngineError {
     #[error("fact not found: {0:?}")]
     FactNotFound(FactId),
 
+    /// Retained for wrappers that impose their own thread-affinity contract.
+    /// The Rust engine does not produce this error.
     #[error("engine called from wrong thread (created on {creator:?}, called from {current:?})")]
     WrongThread {
         creator: ThreadId,
@@ -2474,47 +2425,6 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert!(all.contains(&id1));
         assert!(all.contains(&id2));
-    }
-
-    #[test]
-    fn thread_affinity_marker_exists() {
-        // Verify that Engine has the !Send + !Sync marker by checking its size.
-        // The PhantomData<*mut ()> field ensures Engine is !Send + !Sync.
-        let engine = Engine::new(EngineConfig::utf8());
-        // The key point is that Engine contains PhantomData<*mut ()>,
-        // which makes it !Send and !Sync. This test just verifies the marker exists.
-        assert!(std::mem::size_of_val(&engine._not_send_sync) == 0);
-    }
-
-    #[test]
-    fn move_to_current_thread_enables_safe_handoff() {
-        #[allow(unsafe_code)]
-        struct SendEngine(Engine);
-
-        #[allow(unsafe_code)]
-        unsafe impl Send for SendEngine {}
-
-        let send_engine = SendEngine(Engine::new(EngineConfig::utf8()));
-        let handle = std::thread::spawn(move || {
-            let mut send_engine = send_engine;
-
-            // Before transfer, calls from this thread should fail.
-            assert!(matches!(
-                send_engine.0.intern_symbol("before-transfer"),
-                Err(EngineError::WrongThread { .. })
-            ));
-
-            #[allow(unsafe_code)]
-            unsafe {
-                send_engine.0.move_to_current_thread();
-            }
-
-            // After transfer, calls should succeed on this thread.
-            let sym = send_engine.0.intern_symbol("after-transfer");
-            assert!(sym.is_ok());
-        });
-
-        handle.join().expect("thread should complete");
     }
 
     // --- Execution loop tests ---

@@ -368,6 +368,8 @@ use ferric_rules_core::Value;
 /// Legacy `FerricValue` string payloads are NUL-terminated and therefore
 /// cannot represent embedded NUL. Such values return an error instead of
 /// silently becoming an empty or truncated C string.
+/// Host external identities are also rejected: they are not memory addresses
+/// and cannot be represented by the legacy `external_pointer` field.
 pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricValue, String> {
     match value {
         Value::Integer(i) => Ok(FerricValue {
@@ -416,12 +418,9 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricVa
             }
             Ok(values.into_multifield())
         }
-        Value::ExternalAddress(ea) => Ok(FerricValue {
-            value_type: FerricValueType::ExternalAddress.as_raw(),
-            external_type_id: ea.type_id.0,
-            external_pointer: ea.pointer,
-            ..FerricValue::void()
-        }),
+        Value::ExternalAddress(_) => Err(
+            "host external identities cannot be converted to legacy FFI pointer values".to_string(),
+        ),
         Value::Void => Ok(FerricValue::void()),
     }
 }

@@ -1,9 +1,8 @@
 //! Concurrency and snapshot-ordering regressions for raw-engine diagnostics.
 
 use crate::engine::{
-    ferric_engine_action_diagnostic_count, ferric_engine_clear_error, ferric_engine_free,
-    ferric_engine_last_error, ferric_engine_last_error_copy, ferric_engine_new,
-    ferric_engine_retract, FerricEngine,
+    ferric_engine_clear_error, ferric_engine_free, ferric_engine_last_error,
+    ferric_engine_last_error_copy, ferric_engine_new, ferric_engine_retract, FerricEngine,
 };
 #[cfg(feature = "serde")]
 use crate::engine::{ferric_engine_reset, ferric_engine_serialize_bincode};
@@ -65,9 +64,7 @@ unsafe fn validate_stress_snapshot(
         ));
     }
     let message = &buffer[..written - 1];
-    let is_thread_violation = std::str::from_utf8(message)
-        .is_ok_and(|text| text.starts_with("engine called from wrong thread"));
-    if message != first.as_bytes() && message != second.as_bytes() && !is_thread_violation {
+    if message != first.as_bytes() && message != second.as_bytes() {
         return Err(format!(
             "reader observed a torn or stale snapshot: {:?}",
             String::from_utf8_lossy(message)
@@ -153,21 +150,12 @@ fn copy_is_coherent_during_10_000_owner_mutations() {
         let reader = std::thread::spawn(move || {
             let engine = engine_addr as *const FerricEngine;
             let mut failure = None;
-            for round in 0..STRESS_ROUNDS {
+            for _ in 0..STRESS_ROUNDS {
                 reader_barrier.wait();
 
                 if failure.is_none() {
                     failure =
                         validate_stress_snapshot(engine, &expected_first, &expected_second).err();
-                }
-                if failure.is_none() && round % 257 == 0 {
-                    let mut count = usize::MAX;
-                    let result = ferric_engine_action_diagnostic_count(engine, &mut count);
-                    if result != FerricError::ThreadViolation || count != usize::MAX {
-                        failure = Some(format!(
-                            "action diagnostics lost affinity: result={result:?}, count={count}"
-                        ));
-                    }
                 }
                 reader_barrier.wait();
             }

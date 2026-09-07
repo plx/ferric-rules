@@ -3,6 +3,7 @@ package ferric
 import (
 	"errors"
 	"fmt"
+	"runtime"
 
 	"github.com/prb/ferric-rules/bindings/go/internal/ffi"
 )
@@ -71,17 +72,28 @@ func goToFFIValueAtPath(v any, path string, depth int) (ffi.Value, error) {
 			}
 			elements[i] = ev
 		}
-		result, rc := ffiValueMultifieldCopy(elements)
+		result, copyErr := copyFFIMultifield(elements)
 		for i := range elements {
 			ffiValueFree(&elements[i])
 		}
-		if rc != ffi.ErrOK {
-			return ffi.Value{}, errorFromFFI(rc, nil)
+		if copyErr != nil {
+			return ffi.Value{}, copyErr
 		}
 		return result, nil
 	default:
 		return ffi.Value{}, fmt.Errorf("%w at %s: %T", errUnsupportedGoTypeForFFI, path, v)
 	}
+}
+
+// Copy a constructor error while its calling-thread TLS is still current.
+func copyFFIMultifield(elements []ffi.Value) (ffi.Value, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	result, rc := ffiValueMultifieldCopy(elements)
+	if rc != ffi.ErrOK {
+		return ffi.Value{}, errorFromFFI(rc, nil)
+	}
+	return result, nil
 }
 
 func goStringToFFIValue(
@@ -92,6 +104,8 @@ func goStringToFFIValue(
 	if err := validateCStringArgument(path, value); err != nil {
 		return ffi.Value{}, err
 	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	result, rc := constructor(value)
 	if rc != ffi.ErrOK {
 		return ffi.Value{}, fmt.Errorf("%s: %w", path, errorFromFFI(rc, nil))

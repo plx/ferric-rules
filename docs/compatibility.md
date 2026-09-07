@@ -914,10 +914,9 @@ Contract:
   whether or not it then succeeds — a rejected `ferric_engine_retract` counts.
 - A call rejected *before* it reaches engine state changes no runtime or
   continuation state, though it still publishes its documented error on the
-  channels described under Error Handling. Consistent with the thread-affinity
-  contract below, a null handle, a wrong-thread call, and a reentrant call from
-  a host callback all leave the logical run intact for the owner thread to
-  continue.
+  channels described under Error Handling. A null handle or an overlapping or
+  reentrant call leaves the logical run intact for a later serialized
+  continuation.
 - Absent host cancellation, a chunked run and an equivalent one-shot run report
   the same total fired count, halt reason, agenda state, and action
   diagnostics.
@@ -936,27 +935,35 @@ Contract:
 - Continuation eligibility is per-handle and is not serialized. A handle
   produced by `ferric_engine_deserialize_*` always begins a fresh logical run.
 
-### Thread Affinity
+### Thread transfer and serialization
 
-Engine instances are bound to their creating thread (`!Send + !Sync`):
+Rust `Engine` is structurally `Send + Sync`: ownership can transfer, shared
+reads may run concurrently, and mutation requires exclusive access. A raw C
+handle may move between OS threads for use and destruction, but the C host
+must serialize all
+runtime calls, including reads, and protect the allocation's lifetime:
 
-- Ordinary runtime-facing `ferric_engine_*` functions validate thread affinity
-  before accessing engine state.
-- Wrong-thread ordinary runtime calls return
-  `FERRIC_ERROR_THREAD_VIOLATION` with no state modified.
-- `ferric_engine_last_error_copy` is synchronized, may be called concurrently
-  from any thread, and copies one coherent snapshot per invocation.
-- `ferric_engine_last_error` may also be called from any thread. Its returned
-  pointer must not be used while another borrowed read or engine destruction
-  may occur; use the copy API when pointer-use windows could overlap.
-- `ferric_engine_free_unchecked` is a destruction-only escape hatch that skips
-  affinity. It must not overlap any access to the engine.
-- Same-engine runtime reentry from a host callback returns
-  `FERRIC_ERROR_INTERNAL_ERROR`. Last-error access remains safe in callbacks.
-- No engine accessor may race with engine destruction.
+- An atomic admission guard rejects overlapping runtime calls and same-engine
+  reentry from a host callback with `FERRIC_ERROR_INTERNAL_ERROR`.
+- `ferric_engine_last_error_copy` is separately synchronized and copies one
+  coherent snapshot per call, including during callbacks or other calls.
+- `ferric_engine_last_error` may be called from any thread. The host must
+  protect use of its borrowed pointer against another borrowed error read or
+  destruction. Prefer the copy API when those windows could overlap.
+- Borrowed output strings must also be copied or consumed before another call
+  can invalidate them; transfer does not extend their documented lifetime.
+- Successful destruction must not overlap any access, including diagnostics
+  and use of borrowed pointers. Admission is not a handle registry and cannot
+  make a stale pointer safe. `ferric_engine_free_unchecked` remains an ABI
+  compatibility alias with the same lifetime obligations as ordinary free.
+- `FERRIC_ERROR_THREAD_VIOLATION` retains its numeric ABI value for compatibility;
+  ordinary raw-handle calls no longer emit it based on the creating thread.
 
-Global error functions (`ferric_last_error_global`, etc.) use thread-local
-storage and are safe from any thread.
+Global error functions use thread-local storage. Retrieve or copy a global
+error on the same OS thread as the failing call, before another call can
+replace it. A transferred handle carries its per-engine error snapshot, not
+the previous thread's global error. Bindings should copy output and errors
+before releasing the host-side protection that makes them valid.
 
 ### Error Handling
 

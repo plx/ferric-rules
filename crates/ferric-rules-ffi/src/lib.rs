@@ -16,15 +16,14 @@
 //!   snapshot and the calling thread's global fallback. Failures before handle
 //!   validation can update only the global channel.
 //!
-//! - **Thread affinity**: A raw engine handle is bound to its creating thread.
-//!   Runtime operations validate affinity before accessing the engine. The
-//!   synchronized `ferric_engine_last_error_copy` accessor may run concurrently
-//!   from any thread; the borrowed `ferric_engine_last_error` accessor also
-//!   skips affinity but requires external serialization for pointer use. The
-//!   destruction-only `ferric_engine_free_unchecked` escape hatch also skips
-//!   affinity and must not overlap any access to the engine. The
-//!   internal `unsafe fn move_to_current_thread` is deliberately NOT exposed in
-//!   the C API.
+//! - **Serialized thread transfer**: Raw handles may move between OS threads.
+//!   The host serializes runtime calls and protects the allocation against
+//!   destruction while any access or borrowed-pointer use remains possible.
+//!   Atomic admission rejects overlapping or reentrant runtime calls; the
+//!   synchronized last-error copy accessor may run concurrently. Borrowed
+//!   errors require external protection against another borrowed read or free.
+//!   Ordinary and unchecked free have the same lifetime contract. Global errors
+//!   must be retrieved on the OS thread where the failing call occurred.
 //!
 //! - **Ownership conventions**: Callers own handles returned by `_new` functions and
 //!   must free them with corresponding `_free` functions. The borrowed raw-engine

@@ -48,8 +48,9 @@ selection example, including persistence/resume, across all four host languages.
   scoped exceptions, and retained license notices; validate positive/negative cases.
 - [ ] Establish benchmark correctness oracles (#100), measure the threading
   choice, implement all affected ownership/lifetime contracts and regression tests.
-- [ ] Correct template RHS assertions/cardinality, correlated last-blocker `not`,
-  and multifield equality joins discovered by the required evidence workloads.
+- [ ] Correct template RHS assertions/cardinality and declared slot types,
+  correlated last-blocker `not`, multifield equality, and repeated ordinary joins
+  discovered by the required evidence workloads.
 - [ ] Correct rule replacement/removal and template load safety (#157, #158,
   #191); depth/breadth (#154); reset/named deffacts/initial-fact (#156, #161, #204).
 - [ ] Correct basic module export/focus (#160, #192, #193); document incremental
@@ -107,6 +108,12 @@ merged at `142c8d6b03a785b829d65e04efd9273dcf2609e1`; all 99 CI checks and
 independent review passed. Standard scanners, scoped applicability records,
 negative/malformed-input tests and license notices replace the retired policy.
 Portable scanner tests and exact-set npm validation fix initial CI findings.
+
+Template repair [PR #301](https://github.com/plx/ferric-rules/pull/301) merged at
+`21e007a1295cb380b49d515847e8ae26b8112df8`: all 100 checks completed successfully
+or intentionally skipped, with the ordered/template identity review finding
+fixed before merge. Benchmark oracles are the next integration; the measured
+threading implementation follows, with Swift and persistence consumers prepared.
 
 All 17 retained facade benchmark suites now pass correctness oracles, as do
 runtime snapshot/fact-duplication suites. Repairs include invalid template RHS
@@ -184,3 +191,19 @@ progress. After landing threading across consumers, apply the prepared
 backlog migration and continue the finite checklist. Dependency simplification is merged; required product outcomes remain in progress.
 
 PR #301 review follow-up: a later explicit template could reinterpret an installed ordered RHS assertion. The candidate now rejects identity replacement while facts, seeds, or constructs use the ordered relation, including earlier same-load and qualified references. Seven baseline-failing regressions pass with the guard; real CLIPS rejects the ordinary RHS/LHS examples before the original rule runs. Qualified ordered syntax is a Ferric safety regression, not a new parity claim. The guard changes no snapshot layout.
+
+Local follow-through (not yet merged): TS 429 tests and external Node 22/24/26
+consumers pass; Swift 6 strict concurrency and macOS/iOS local libraries pass;
+Go lifecycle fixes pass independent review/race checks. Source expansion/depth
+and file inputs are bounded, with ten focused regressions and independent
+review. Repeated-join propagation formerly produced eight firings for one valid
+match; its small fix has baseline failures and CLIPS tuple-order evidence.
+The staged differential set is now 35/35 equivalent after the local declared
+slot-type repair; authenticated integration is still pending. Versioned snapshot validation and host-value provenance integration
+are in progress. Required outcomes remain open until integrated checks and merges.
+
+Threading [PR #304](https://github.com/plx/ferric-rules/pull/304) follows benchmark
+[PR #302](https://github.com/plx/ferric-rules/pull/302); merge order is sequential.
+Both target main so the existing core, artifact and sanitizer workflows run.
+The benchmark artifact file list was updated and its external offline package
+check passed before the update was pushed.

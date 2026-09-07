@@ -37,6 +37,45 @@ unsafe fn first_fact_id(handle: &FerricEngine) -> u64 {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn external_identities_are_rejected_by_engine_value_boundaries() {
+    use ferric_rules_core::{ExternalAddress, ExternalTypeId, Multifield, Value};
+    use ferric_rules_runtime::{Engine, EngineConfig};
+
+    let mut engine = Engine::new(EngineConfig::default());
+    let identity = Value::ExternalAddress(ExternalAddress {
+        type_id: ExternalTypeId(9),
+        token: u64::MAX,
+    });
+    let error = crate::types::value_to_ferric(&identity, &engine)
+        .err()
+        .expect("a host token must never become a C pointer");
+    assert!(error.contains("host external identities"));
+
+    // The string allocation preceding the rejected child must be reclaimed
+    // by the existing recursive conversion ownership guard.
+    let fields: Multifield = [
+        Value::String(engine.create_string("allocated before rejection").unwrap()),
+        identity,
+    ]
+    .into_iter()
+    .collect();
+    let error = crate::types::value_to_ferric(&Value::Multifield(Box::new(fields)), &engine)
+        .err()
+        .expect("nested host tokens must also be rejected");
+    assert!(error.contains("host external identities"));
+
+    let external = FerricValue {
+        value_type: FerricValueType::ExternalAddress.as_raw(),
+        external_type_id: 9,
+        ..FerricValue::void()
+    };
+    // SAFETY: `external` has a valid tag and initialized active fields; the
+    // conversion must reject this legacy type without dereferencing a pointer.
+    let error = unsafe { crate::types::ferric_to_value(&external, &mut engine) }.unwrap_err();
+    assert!(error.contains("ExternalAddress cannot be converted from FFI"));
+}
+
+#[test]
 fn value_void_is_zeroed() {
     let v = FerricValue::void();
     assert_eq!(v.value_type, FerricValueType::Void.as_raw());

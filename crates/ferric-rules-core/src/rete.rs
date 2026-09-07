@@ -1783,9 +1783,7 @@ fn values_atom_eq(a: &Value, b: &Value) -> Option<bool> {
         (Value::Integer(a), Value::Integer(b)) => Some(a == b),
         (Value::Float(a), Value::Float(b)) => Some(a.to_bits() == b.to_bits()),
         (Value::String(a), Value::String(b)) => Some(a == b),
-        (Value::ExternalAddress(a), Value::ExternalAddress(b)) => {
-            Some(a.type_id == b.type_id && std::ptr::eq(a.pointer, b.pointer))
-        }
+        (Value::ExternalAddress(a), Value::ExternalAddress(b)) => Some(a == b),
         // Either value is Multifield or Void → non-comparable
         (Value::Multifield(_) | Value::Void, _) | (_, Value::Multifield(_) | Value::Void) => None,
         // Cross-type atomic comparisons → definitively not equal

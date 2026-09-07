@@ -5,7 +5,7 @@
 
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::symbol::Symbol;
 use crate::value::Value;
@@ -106,21 +106,21 @@ pub enum VarMapError {
 }
 
 /// Smart reference for bound values. Stores small/Copy-like variants inline
-/// to avoid Rc heap allocation; wraps heap-owning variants in Rc for cheap cloning.
+/// to avoid Arc heap allocation; wraps heap-owning variants in Arc for cheap cloning.
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ValueRef {
     /// Symbol, Integer, Float, `ExternalAddress`, Void — no heap alloc needed.
     Inline(Value),
-    /// String, Multifield — heap-allocated data, share via Rc.
-    Shared(Rc<Value>),
+    /// String, Multifield — heap-allocated data, share via Arc.
+    Shared(Arc<Value>),
 }
 
 impl ValueRef {
     /// Wrap a `Value`, choosing inline or shared storage automatically.
     pub fn new(value: Value) -> Self {
         match &value {
-            Value::String(_) | Value::Multifield(_) => Self::Shared(Rc::new(value)),
+            Value::String(_) | Value::Multifield(_) => Self::Shared(Arc::new(value)),
             _ => Self::Inline(value),
         }
     }
@@ -130,7 +130,7 @@ impl Clone for ValueRef {
     fn clone(&self) -> Self {
         match self {
             Self::Inline(v) => Self::Inline(v.clone()),
-            Self::Shared(rc) => Self::Shared(rc.clone()),
+            Self::Shared(shared) => Self::Shared(Arc::clone(shared)),
         }
     }
 }
@@ -141,7 +141,7 @@ impl std::ops::Deref for ValueRef {
     fn deref(&self) -> &Value {
         match self {
             Self::Inline(v) => v,
-            Self::Shared(rc) => rc,
+            Self::Shared(shared) => shared,
         }
     }
 }

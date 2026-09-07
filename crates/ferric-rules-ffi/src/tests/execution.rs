@@ -1,9 +1,9 @@
 //! Tests for FFI execution and fact mutation APIs (Pass 005).
 
 use crate::engine::{
-    ferric_engine_assert_string, ferric_engine_free, ferric_engine_get_output,
-    ferric_engine_load_string, ferric_engine_new, ferric_engine_reset, ferric_engine_retract,
-    ferric_engine_run, ferric_engine_step,
+    ferric_engine_assert_string, ferric_engine_fact_count, ferric_engine_free,
+    ferric_engine_get_output, ferric_engine_load_string, ferric_engine_new, ferric_engine_reset,
+    ferric_engine_retract, ferric_engine_run, ferric_engine_step,
 };
 use crate::error::FerricError;
 
@@ -344,7 +344,7 @@ fn get_output_pointer_stays_stable_across_reads_without_writes() {
 }
 
 #[test]
-fn get_output_rejects_cross_thread_access() {
+fn borrowed_output_survives_serialized_transfer() {
     unsafe {
         let engine = ferric_engine_new();
         let source =
@@ -365,18 +365,25 @@ fn get_output_rejects_cross_thread_access() {
         assert!(!owner_ptr.is_null());
 
         let engine_addr = engine as usize;
-        let cross_thread_is_null = std::thread::spawn(move || {
+        let snapshot_addr = owner_ptr as usize;
+        let copied = std::thread::spawn(move || {
+            // The owner waits for join, retaining both engine and borrowed
+            // snapshot. Fact inspection does not invalidate the output cache.
             let engine = engine_addr as *const crate::engine::FerricEngine;
-            let channel = std::ffi::CString::new("t").unwrap();
-            ferric_engine_get_output(engine, channel.as_ptr()).is_null()
+            let snapshot = snapshot_addr as *const std::os::raw::c_char;
+            let mut count = 0;
+            assert_eq!(
+                ferric_engine_fact_count(engine, &mut count),
+                FerricError::Ok
+            );
+            std::ffi::CStr::from_ptr(snapshot)
+                .to_str()
+                .unwrap()
+                .to_owned()
         })
         .join()
         .unwrap();
-
-        assert!(
-            cross_thread_is_null,
-            "cross-thread get_output must fail with null pointer"
-        );
+        assert_eq!(copied, "hello");
 
         ferric_engine_free(engine);
     }

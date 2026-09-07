@@ -29,22 +29,25 @@ const runBatchSize = 100
 
 // Engine wraps a single ferric rules engine instance.
 //
-// An Engine is bound to the OS thread that created it. All methods
-// must be called from that same thread. For concurrent or multi-engine
-// use, use Coordinator and Manager instead.
+// Methods serialize native access and may be called from different goroutines.
+// Close waits for an admitted operation and destroys native state exactly once.
+// Coordinator, Manager, and PinnedEngine retain their pool and queue semantics.
 //
 // Engine implements io.Closer. Always defer Close() after creation.
 // An Engine must not be copied after first use.
 type Engine struct {
-	lifecycle sync.RWMutex
+	lifecycle sync.Mutex
 	handle    ffi.EngineHandle
 	closed    bool
 }
 
-// NewEngine creates a new engine on the current OS thread.
-// The caller is responsible for ensuring thread affinity
-// (e.g., via runtime.LockOSThread).
+// NewEngine creates an engine that supports serialized goroutine transfer.
 func NewEngine(opts ...EngineOption) (*Engine, error) {
+	// A constructor failure has only a thread-local native diagnostic. Keep
+	// construction and its immediate error copy on one OS thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	cfg := defaultEngineConfig()
 	for _, opt := range opts {
 		opt(&cfg)
@@ -228,7 +231,7 @@ func (e *Engine) Close() error {
 }
 
 // closeWith serializes explicit and finalizer cleanup. The handle becomes nil
-// only after the native free succeeds, so a failed thread-affine Close remains
+// only after the native free succeeds, so a rejected Close remains
 // retryable while successful cleanup is published exactly once.
 func (e *Engine) closeWith(free func(ffi.EngineHandle) ffi.ErrorCode) (bool, error) {
 	e.lifecycle.Lock()
@@ -246,16 +249,15 @@ func (e *Engine) closeWith(free func(ffi.EngineHandle) ffi.ErrorCode) (bool, err
 	return true, nil
 }
 
-// leaseHandle prevents Close from freeing the native engine until release is
-// called. Every native operation must hold this lease for its complete FFI
-// interaction, including error-message retrieval.
+// leaseHandle serializes a complete native operation, including result and
+// error-message copies, and prevents Close from freeing its handle.
 func (e *Engine) leaseHandle() (ffi.EngineHandle, func(), error) {
-	e.lifecycle.RLock()
+	e.lifecycle.Lock()
 	if e.closed {
-		e.lifecycle.RUnlock()
+		e.lifecycle.Unlock()
 		return nil, nil, ErrEngineClosed
 	}
-	return e.handle, e.lifecycle.RUnlock, nil
+	return e.handle, e.lifecycle.Unlock, nil
 }
 
 // --- Loading ---
@@ -479,8 +481,8 @@ func (e *Engine) RunWithLimit(ctx context.Context, limit int) (*RunResult, error
 
 // runWithLimit is the shared raw-engine run implementation. A non-nil
 // shouldInterrupt predicate forces chunked execution even when ctx itself is
-// not cancelable. The predicate is evaluated only on the engine's owner
-// thread, before the first chunk and between continuation chunks.
+// not cancelable. The predicate is evaluated by the admitted call before the
+// first chunk and between continuation chunks.
 func (e *Engine) runWithLimit(
 	ctx context.Context,
 	limit int,
@@ -617,7 +619,9 @@ func (e *Engine) Step() (*FiredRule, error) {
 	return &FiredRule{}, nil
 }
 
-// Halt requests the engine to halt. It is a no-op after Close.
+// Halt requests a halt after any currently admitted operation finishes. It is
+// a no-op after Close. To interrupt an active Run, cancel its context or use
+// PinnedEngine.Halt.
 func (e *Engine) Halt() {
 	handle, release, err := e.leaseHandle()
 	if err != nil {

@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
 use std::io::Write as IoWrite;
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ferric_rules_core::beta::{RuleId, Salience};
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarId, VarMap};
@@ -1652,7 +1652,7 @@ fn execute_list_focus_stack(
 fn execute_agenda(
     rete: &ReteNetwork,
     router: &mut OutputRouter,
-    all_rule_info: &crate::engine::RuleIndex<Rc<CompiledRuleInfo>>,
+    all_rule_info: &crate::engine::RuleIndex<Arc<CompiledRuleInfo>>,
 ) -> Result<(), ActionError> {
     let mut output = String::new();
     for activation in rete.agenda.iter_activations() {
@@ -2178,7 +2178,7 @@ fn evaluated_rule_selectors(
 
 fn selected_rule_ids(
     selectors: &[String],
-    all_rule_info: &crate::engine::RuleIndex<Rc<CompiledRuleInfo>>,
+    all_rule_info: &crate::engine::RuleIndex<Arc<CompiledRuleInfo>>,
     rule_modules: &crate::engine::RuleIndex<crate::modules::ModuleId>,
     module_registry: &ModuleRegistry,
     command_name: &str,

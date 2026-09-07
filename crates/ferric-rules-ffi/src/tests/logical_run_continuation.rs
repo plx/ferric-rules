@@ -611,66 +611,53 @@ unsafe fn start_eligible_logical_run(engine: *mut FerricEngine, source: &str) {
 }
 
 #[test]
-fn a_wrong_thread_mutating_call_leaves_the_logical_run_intact() {
+fn a_transferred_mutating_call_ends_logical_run_eligibility() {
     unsafe {
         let engine = ferric_engine_new();
         start_eligible_logical_run(engine, TWO_ACTIVATION_PROGRAM);
-
-        // A wrong-thread call is rejected before it reaches engine state, so
-        // per the thread-affinity contract it must change nothing at all —
-        // including this engine's continuation eligibility.
-        let engine_addr = engine as usize;
-        let rejected = std::thread::spawn(move || {
-            let engine = engine_addr as *mut FerricEngine;
-            ferric_engine_reset(engine)
+        let owned = Box::from_raw(engine);
+        let owned = std::thread::spawn(move || {
+            let engine = Box::into_raw(owned);
+            assert_eq!(ferric_engine_reset(engine), FerricError::Ok);
+            Box::from_raw(engine)
         })
         .join()
         .unwrap();
-        assert_eq!(rejected, FerricError::ThreadViolation);
-
+        let engine = Box::into_raw(owned);
         let mut fired = 0;
         let mut reason = FerricHaltReason::AgendaEmpty;
         assert_eq!(
             ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
-            FerricError::Ok,
-            "a rejected wrong-thread call must not end the owner's logical run"
+            FerricError::InvalidArgument
         );
-        assert_eq!(fired, 1);
-        assert_eq!(reason, FerricHaltReason::AgendaEmpty);
-
-        ferric_engine_free(engine);
+        assert_eq!(ferric_engine_free(engine), FerricError::Ok);
     }
 }
 
 #[test]
-fn a_wrong_thread_continuation_is_rejected_without_consuming_eligibility() {
+fn a_logical_run_can_continue_on_a_different_thread() {
     unsafe {
         let engine = ferric_engine_new();
         start_eligible_logical_run(engine, TWO_ACTIVATION_PROGRAM);
-
-        let engine_addr = engine as usize;
-        let (code, fired, reason) = std::thread::spawn(move || {
-            let engine = engine_addr as *mut FerricEngine;
+        let owned = Box::from_raw(engine);
+        std::thread::spawn(move || {
+            let engine = Box::into_raw(owned);
             let mut fired = 55;
             let mut reason = FerricHaltReason::ActionError;
-            let code = ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason);
-            (code, fired, reason)
+            assert_eq!(
+                ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+                FerricError::Ok
+            );
+            assert_eq!(fired, 1);
+            assert_eq!(reason, FerricHaltReason::AgendaEmpty);
+            assert_eq!(
+                ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+                FerricError::InvalidArgument
+            );
+            assert_eq!(ferric_engine_free(engine), FerricError::Ok);
         })
         .join()
         .unwrap();
-        assert_eq!(code, FerricError::ThreadViolation);
-        assert_eq!(fired, 55);
-        assert_eq!(reason, FerricHaltReason::ActionError);
-
-        let mut fired = 0;
-        let mut reason = FerricHaltReason::AgendaEmpty;
-        assert_eq!(
-            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
-            FerricError::Ok
-        );
-        assert_eq!(reason, FerricHaltReason::AgendaEmpty);
-
-        ferric_engine_free(engine);
     }
 }
 

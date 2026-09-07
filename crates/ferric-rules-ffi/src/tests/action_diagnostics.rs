@@ -143,7 +143,7 @@ fn clear_action_diagnostics_resets_count() {
 }
 
 #[test]
-fn clear_action_diagnostics_thread_violation_preserves_messages() {
+fn clear_action_diagnostics_after_thread_transfer() {
     unsafe {
         let engine = ferric_engine_new();
         load_visibility_warning_program(engine);
@@ -157,17 +157,14 @@ fn clear_action_diagnostics_thread_violation_preserves_messages() {
         })
         .join()
         .unwrap();
-        assert_eq!(result, FerricError::ThreadViolation);
+        assert_eq!(result, FerricError::Ok);
 
         let mut count: usize = 0;
         assert_eq!(
             ferric_engine_action_diagnostic_count(engine, &mut count),
             FerricError::Ok
         );
-        assert!(
-            count > 0,
-            "diagnostics should remain after thread violation"
-        );
+        assert_eq!(count, 0);
 
         ferric_engine_free(engine);
     }

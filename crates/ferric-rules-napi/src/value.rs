@@ -181,7 +181,8 @@ pub fn js_to_value(env: &Env, val: JsUnknown, engine: &mut Engine) -> Result<Val
 /// - `Value::Symbol` → `FerricSymbol` instance
 /// - `Value::String` → `string`
 /// - `Value::Multifield` → `Array`
-/// - `Value::Void` / `Value::ExternalAddress` → `null`
+/// - `Value::Void` → `null`
+/// - `Value::ExternalAddress` → explicit unsupported-value error
 ///
 /// # Errors
 ///
@@ -223,7 +224,11 @@ pub fn value_to_js(env: &Env, val: &Value, engine: &Engine) -> Result<JsUnknown>
             Ok(arr.into_unknown())
         }
 
-        Value::Void | Value::ExternalAddress(_) => env.get_null().map(JsNull::into_unknown),
+        Value::Void => env.get_null().map(JsNull::into_unknown),
+        Value::ExternalAddress(_) => Err(Error::new(
+            Status::InvalidArg,
+            "host external identities are not supported by the Node binding",
+        )),
     }
 }
 

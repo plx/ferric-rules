@@ -8,7 +8,6 @@
 //! tests), use [`AtomKey`].
 
 use smallvec::SmallVec;
-use std::ffi::c_void;
 use std::ops::{Deref, DerefMut};
 
 use crate::string::FerricString;
@@ -21,14 +20,24 @@ use crate::symbol::Symbol;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExternalTypeId(pub u32);
 
-/// An opaque pointer for embedding, with a type tag.
+/// An opaque host-assigned identity for embedding, with a type tag.
 ///
-/// The `pointer` field is a raw pointer managed by the embedding application.
-/// Ferric does not dereference it; it is only stored and passed back.
-#[derive(Clone, Copy, Debug)]
+/// The embedding application assigns `token` within the `type_id` namespace.
+/// Ferric only stores, compares, and returns this identity. It does not own a
+/// host object, dereference memory, or invoke a destructor when a value is
+/// dropped. Tokens and copies of them may move independently between threads.
+///
+/// The host must resolve the token through its own registry and enforce that
+/// registry's lifetime and synchronization rules. A token does not grant
+/// access to an object or imply that the object is thread-safe. It is not a
+/// memory address; there is deliberately no pointer conversion API.
+///
+/// Host identities are not supported in engine snapshots or language-binding
+/// values. Those boundaries reject them explicitly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ExternalAddress {
     pub type_id: ExternalTypeId,
-    pub pointer: *mut c_void,
+    pub token: u64,
 }
 
 /// An ordered collection of [`Value`]s.
@@ -186,7 +195,7 @@ pub enum Value {
     Float(f64),
     /// An ordered collection of values (heap-allocated to break size recursion).
     Multifield(Box<Multifield>),
-    /// An opaque pointer for embedding (with type tag).
+    /// An opaque host-assigned identity for embedding (with type tag).
     ExternalAddress(ExternalAddress),
     /// The void/nil value.
     Void,
@@ -208,9 +217,7 @@ impl Value {
             (Self::Integer(a), Self::Integer(b)) => a == b,
             (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
             (Self::Multifield(a), Self::Multifield(b)) => a == b,
-            (Self::ExternalAddress(a), Self::ExternalAddress(b)) => {
-                a.type_id == b.type_id && std::ptr::eq(a.pointer, b.pointer)
-            }
+            (Self::ExternalAddress(a), Self::ExternalAddress(b)) => a == b,
             (Self::Void, Self::Void) => true,
             _ => false,
         }
@@ -356,10 +363,10 @@ pub enum AtomKey {
     Integer(i64),
     /// Float stored as raw bits via `f64::to_bits()`.
     FloatBits(u64),
-    /// External address keyed by `(type_id, pointer_as_usize)`.
+    /// External identity keyed by `(type_id, token)`.
     ExternalAddress {
         type_id: ExternalTypeId,
-        pointer: usize,
+        token: u64,
     },
 }
 
@@ -388,7 +395,7 @@ impl TryFrom<&Value> for AtomKey {
             Value::Float(f) => Ok(Self::FloatBits(f.to_bits())),
             Value::ExternalAddress(ea) => Ok(Self::ExternalAddress {
                 type_id: ea.type_id,
-                pointer: ea.pointer as usize,
+                token: ea.token,
             }),
             Value::Multifield(_) | Value::Void => Err(()),
         }
@@ -396,20 +403,14 @@ impl TryFrom<&Value> for AtomKey {
 }
 
 impl From<AtomKey> for Value {
-    #[allow(unsafe_code)]
     fn from(value: AtomKey) -> Self {
         match value {
             AtomKey::Symbol(s) => Value::Symbol(s),
             AtomKey::String(s) => Value::String(s),
             AtomKey::Integer(i) => Value::Integer(i),
             AtomKey::FloatBits(bits) => Value::Float(f64::from_bits(bits)),
-            AtomKey::ExternalAddress { type_id, pointer } => {
-                Value::ExternalAddress(ExternalAddress {
-                    type_id,
-                    // Casting usize back to pointer requires allowing unsafe_code lint,
-                    // though the cast itself is not an unsafe operation.
-                    pointer: pointer as *mut c_void,
-                })
+            AtomKey::ExternalAddress { type_id, token } => {
+                Value::ExternalAddress(ExternalAddress { type_id, token })
             }
         }
     }
@@ -420,7 +421,7 @@ impl From<AtomKey> for Value {
 // ---------------------------------------------------------------------------
 //
 // `Value` and `AtomKey` contain `ExternalAddress` / `ExternalAddress`-derived
-// variants that hold raw pointers and cannot be serialized. All other variants
+// variants that identify host-managed objects and cannot be serialized. All other variants
 // are serialized through a surrogate enum that serde can derive for.
 
 #[cfg(feature = "serde")]

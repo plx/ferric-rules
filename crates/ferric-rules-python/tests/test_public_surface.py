@@ -4,13 +4,13 @@ This is a drift detector. It pins the *exact* set of public names the
 extension exposes at the package, class, and enum level so that an accidental
 addition or removal of a public symbol (easy to do with PyO3's `#[pymethods]`)
 fails loudly. It also checks the Python protocols each type implements and
-verifies thread-affinity enforcement behaviorally (affinity is a runtime
+verifies serialized thread transfer behaviorally (transfer is a runtime
 behavior in `PyEngine::with_engine`, not an attribute, so it cannot be
 witnessed with `hasattr`).
 
 Feature-gated surface is treated as optional so the freeze holds across build
 configurations: `Format` and the serialization methods are `#[cfg(serde)]`,
-and `engine_instance_count` is `#[cfg(testing)]` (see src/lib.rs).
+and the engine observation hooks are `#[cfg(testing)]` (see src/lib.rs).
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ _TOP_LEVEL = {
 if _HAS_SERDE:
     _TOP_LEVEL.add("Format")
 if _HAS_TESTING:
-    _TOP_LEVEL.add("engine_instance_count")
+    _TOP_LEVEL.update({"engine_instance_count", "engine_run_active"})
 
 
 # -- Expected class members (non-dunder) --
@@ -176,27 +176,14 @@ def test_protocol_methods_exist():
             assert hasattr(cls, member), f"{class_name}.{member}"
 
 
-def test_thread_affinity_is_enforced():
-    # thread_affinity is a behavior, not an attribute, so prove it by calling
-    # across threads and asserting the cross-thread guard raises a
-    # FerricRuntimeError (rather than panicking or silently succeeding).
+def test_serialized_thread_transfer_is_supported():
     engine = ferric.Engine()
     try:
-        captured: dict[str, BaseException] = {}
-
-        def call_from_worker():
-            try:
-                engine.rules()
-            except BaseException as exc:  # noqa: BLE001
-                captured["exc"] = exc
-
-        worker = threading.Thread(target=call_from_worker)
+        results = []
+        worker = threading.Thread(target=lambda: results.append(engine.rules()))
         worker.start()
-        worker.join()
-        exc = captured.get("exc")
-        assert isinstance(exc, ferric.FerricRuntimeError), (
-            f"thread affinity not enforced; got {exc!r}"
-        )
-        assert "wrong thread" in str(exc)
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert results == [[]]
     finally:
         engine.close()
