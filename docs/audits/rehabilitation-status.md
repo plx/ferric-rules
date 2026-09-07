@@ -46,14 +46,14 @@ selection example, including persistence/resume, across all four host languages.
 
 - [x] Replace dependency-policy machinery ([#297](https://github.com/plx/ferric-rules/issues/297)) with standard scanners, actionable
   scoped exceptions, and retained license notices; validate positive/negative cases.
-- [ ] Establish benchmark correctness oracles (#100), measure the threading
-  choice, implement all affected ownership/lifetime contracts and regression tests.
-- [ ] Correct template RHS assertions/cardinality and declared slot types,
+- [x] Establish benchmark correctness oracles (#100), measure and implement
+  the Rust/C threading contract (#303); remaining consumer work is listed below.
+- [x] Correct template RHS assertions/cardinality and declared slot types,
   correlated last-blocker `not`, multifield equality, and repeated ordinary joins
   discovered by the required evidence workloads.
-- [ ] Correct rule replacement/removal and template load safety (#157, #158,
+- [x] Correct rule replacement/removal and template load safety (#157, #158,
   #191); depth/breadth (#154); reset/named deffacts/initial-fact (#156, #161, #204).
-- [ ] Correct basic module export/focus (#160, #192, #193); document incremental
+- [x] Correct basic module export/focus (#160, #192, #193); document incremental
   load (#159); reject unsupported logical/optional strategy/module/salience cases
   (#164, #155, #205, #209, #210), retaining PR #254's complex-negation disclosure ([#300](https://github.com/plx/ferric-rules/issues/300)).
 - [ ] Validate host fact shape/provenance (#202, #203) and bound reachable
@@ -114,8 +114,10 @@ Template repair [PR #301](https://github.com/plx/ferric-rules/pull/301) merged a
 or intentionally skipped, with the ordered/template identity review finding
 fixed before merge. Benchmark oracles merged in PR #302 at `5f42ab13716f2c9f4b63934cd2189d2b34e51168`;
 the measured threading contract merged in PR #304 at `b601503766f98667525a6e20ce4a3dd8019f0951`.
-Their essential checks and fresh reviews passed. Core PR #306 and versioned
-persistence are the next integrations, followed by the prepared binding consumers.
+Their essential checks and fresh reviews passed. Core PR #306 merged at
+`56d0748b15bc12f5ad1f6f81cec57c681e9a6088` after 102 successful or intentionally
+skipped checks. Versioned persistence PR #307 is next, followed by prepared
+Node #308 and Python #309 consumers.
 
 All 17 retained facade benchmark suites now pass correctness oracles, as do
 runtime snapshot/fact-duplication suites. Repairs include invalid template RHS
@@ -130,7 +132,8 @@ configuration atomics permit shared reads. Trait, handoff/destruction, escaped
 value, concurrent-read, serde/tracing and independent reachability review pass.
 C calls remain serialized. Python/Go lifetime, reentrancy and TLS changes pass
 339 Python tests, C tests and sanitizer harnesses, and Go race tests; independent
-review findings are addressed. These changes and Swift are not yet landed.
+review findings are addressed. The Rust/C/Python/Go transfer contract is landed;
+the separate Swift wrapper and common consumer improvements remain pending.
 
 The [paired experiment](https://github.com/plx/ferric-rules/actions/runs/34056683658)
 uses the existing performance workflow with an optional bounded workload set.
@@ -186,7 +189,7 @@ The benchmark review identified a
 missing guard against comparing different workload sources. The guard is fixed
 and passes 19 focused tests; recorded ABAB sources also pass it unchanged.
 
-The integrated core candidate passes 57 authenticated pinned-CLIPS scenarios:
+The merged core passes 57 authenticated pinned-CLIPS scenarios:
 55 equivalent, two exact documented LEX/MEA divergences. All 35 added scenarios
 match. Existing 22 scenarios now have 20 equivalences. Existing reference facts,
 output and firing expectations are preserved; FR-RETE-012's error category was
@@ -211,7 +214,10 @@ invalid root/negative-output metadata and counter-exhaustion defects; focused
 public restore regressions and checked allocation fix them. Failed modify and
 rule replacement preserve the original state. Snapshot preflight, feature and
 release tests, and all five scaling checks pass. A release/scaling CI job now
-protects these paths. The schema and host values are unchanged by these repairs.
+protects these paths. The schema and host values are unchanged by these repairs. Two subsequent
+review fixes check configuration/agenda strategy agreement and unique, existing
+registered global identities. Both defects reproduced with focused public-restore
+regressions; all 59 snapshot tests pass after repair.
 
 The combined consumer candidate passed preflight, all 372 Python tests, exact
 packaged Rust/CLI installs and meaningful launch/snapshot resume. Node's real
@@ -230,7 +236,7 @@ deterministic regressions, consumer smokes and relevant sanitizer jobs. Do not
 start a new fuzzing campaign or broaden pointer probing. Run preflight before
 PR creation/updates, and repeat other suites only for changed paths or findings.
 
-Next: merge core and persistence after their checks, then the prepared TS,
+Next: merge persistence after its checks, then the prepared TS,
 Python, Go, host API, Swift and external-consumer changes in dependency order.
 Finish the one performance experiment and final integrated validation, then
 apply and verify the prepared finite backlog migration. Required outcomes
