@@ -1,0 +1,2591 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "version": "6.30 (3/17/15)",
+    "image": "ferric-rules/clips-reference:latest",
+    "image_id": "sha256:b4b99ba2f08102f9c18743c6adaecb5ab82789ddfa8628693cabfeced461a929",
+    "ferric_revision": "eb24cc50",
+    "verified_on": "2026-09-07"
+  },
+  "cases": [
+    {
+      "path": "agenda/001_empty_lhs.clp",
+      "level": "basic",
+      "covers": [
+        "agenda",
+        "empty-lhs"
+      ]
+    },
+    {
+      "path": "agenda/002_salience_precedence.clp",
+      "level": "basic",
+      "covers": [
+        "agenda",
+        "salience-precedence"
+      ]
+    },
+    {
+      "path": "agenda/003_depth_same_rule_recency.clp",
+      "level": "boundary",
+      "covers": [
+        "agenda",
+        "depth-same-rule-recency"
+      ]
+    },
+    {
+      "path": "agenda/004_refraction.clp",
+      "level": "boundary",
+      "covers": [
+        "agenda",
+        "refraction"
+      ]
+    },
+    {
+      "path": "agenda/005_retract_reassert_refires.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "retract-reassert-refires"
+      ]
+    },
+    {
+      "path": "agenda/006_positive_retract_cancels.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "positive-retract-cancels"
+      ]
+    },
+    {
+      "path": "agenda/007_forward_chain.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "forward-chain"
+      ]
+    },
+    {
+      "path": "agenda/008_halt_finishes_rhs.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "halt-finishes-rhs"
+      ]
+    },
+    {
+      "path": "agenda/009_run_from_rhs.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "run-from-rhs"
+      ]
+    },
+    {
+      "path": "agenda/010_modify_cancels_old_match.clp",
+      "level": "interaction",
+      "covers": [
+        "agenda",
+        "modify-cancels-old-match"
+      ]
+    },
+    {
+      "path": "facts/001_ordered_zero_fields.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "ordered-zero-fields"
+      ]
+    },
+    {
+      "path": "facts/002_ordered_scalar_types.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "ordered-scalar-types"
+      ]
+    },
+    {
+      "path": "facts/003_ordered_exact_arity.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "ordered-exact-arity"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/320"
+        ],
+        "summary": "CLIPS compatibility: ordered fact patterns do not enforce field cardinality",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?b` at line 6:52"
+          ],
+          "output": "a b\na b\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "facts/004_template_explicit_defaults.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "template-explicit-defaults"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/299"
+        ],
+        "summary": "Omitted template slots do not receive their declared defaults",
+        "observed": {
+          "diagnostics": [],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "facts/005_template_implicit_defaults.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "template-implicit-defaults"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/299"
+        ],
+        "summary": "Omitted template slots do not receive implicit defaults",
+        "observed": {
+          "diagnostics": [],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "facts/006_template_partial_pattern.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "template-partial-pattern"
+      ]
+    },
+    {
+      "path": "facts/007_template_slot_order.clp",
+      "level": "basic",
+      "covers": [
+        "facts",
+        "template-slot-order"
+      ]
+    },
+    {
+      "path": "facts/008_duplicate_ordered_suppressed.clp",
+      "level": "boundary",
+      "covers": [
+        "facts",
+        "duplicate-ordered-suppressed"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/103"
+        ],
+        "summary": "Duplicate ordered facts are retained",
+        "observed": {
+          "diagnostics": [],
+          "output": "same\nsame\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "facts/009_duplicate_template_defaults.clp",
+      "level": "boundary",
+      "covers": [
+        "facts",
+        "duplicate-template-defaults"
+      ]
+    },
+    {
+      "path": "facts/010_fact_types_remain_distinct.clp",
+      "level": "boundary",
+      "covers": [
+        "facts",
+        "fact-types-remain-distinct"
+      ]
+    },
+    {
+      "path": "facts/011_retract_address.clp",
+      "level": "interaction",
+      "covers": [
+        "facts",
+        "retract-address"
+      ]
+    },
+    {
+      "path": "facts/012_modify_preserves_slots.clp",
+      "level": "interaction",
+      "covers": [
+        "facts",
+        "modify-preserves-slots"
+      ]
+    },
+    {
+      "path": "facts/013_duplicate_preserves_original.clp",
+      "level": "interaction",
+      "covers": [
+        "facts",
+        "duplicate-preserves-original"
+      ]
+    },
+    {
+      "path": "facts/014_duplicate_existing_suppressed.clp",
+      "level": "interaction",
+      "covers": [
+        "facts",
+        "duplicate-existing-suppressed"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/103"
+        ],
+        "summary": "Reasserting an existing ordered fact creates another copy",
+        "observed": {
+          "diagnostics": [],
+          "output": "one copy\none copy\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "facts/015_multiple_deffacts_groups.clp",
+      "level": "interaction",
+      "covers": [
+        "facts",
+        "multiple-deffacts-groups"
+      ]
+    },
+    {
+      "path": "facts/016_ordered_empty_pattern_arity.clp",
+      "level": "boundary",
+      "covers": [
+        "facts",
+        "ordered-empty-pattern-arity"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/320"
+        ],
+        "summary": "CLIPS compatibility: ordered fact patterns do not enforce field cardinality",
+        "observed": {
+          "diagnostics": [],
+          "output": "empty\nempty\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "generics/bare-method-parameter.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "bare-method-parameter"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/323"
+        ],
+        "summary": "CLIPS compatibility: bare unrestricted defmethod parameters are rejected",
+        "observed": {
+          "diagnostics": [
+            "interpret error: expected parameter restriction (list like (?x INTEGER)) at line 5, column 22"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "generics/explicit-method-indices.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "explicit-method-indices"
+      ]
+    },
+    {
+      "path": "generics/float-dispatch.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "float-dispatch"
+      ]
+    },
+    {
+      "path": "generics/implicit-generic.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "implicit-generic"
+      ]
+    },
+    {
+      "path": "generics/import-generic.clp",
+      "level": "interaction",
+      "covers": [
+        "generics",
+        "import-generic"
+      ]
+    },
+    {
+      "path": "generics/integer-dispatch.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "integer-dispatch"
+      ]
+    },
+    {
+      "path": "generics/lexeme-dispatch.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "lexeme-dispatch"
+      ]
+    },
+    {
+      "path": "generics/lexeme-specificity.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "lexeme-specificity"
+      ]
+    },
+    {
+      "path": "generics/multiple-arguments.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "multiple-arguments"
+      ]
+    },
+    {
+      "path": "generics/multiple-type-restrictions.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "multiple-type-restrictions"
+      ]
+    },
+    {
+      "path": "generics/next-method.clp",
+      "level": "basic",
+      "covers": [
+        "generics",
+        "next-method"
+      ]
+    },
+    {
+      "path": "generics/number-specificity.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "number-specificity"
+      ]
+    },
+    {
+      "path": "generics/unrestricted-fallback.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "unrestricted-fallback"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/323"
+        ],
+        "summary": "CLIPS compatibility: bare unrestricted defmethod parameters are rejected",
+        "observed": {
+          "diagnostics": [
+            "interpret error: expected parameter restriction (list like (?x INTEGER)) at line 5, column 22"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "generics/variadic-method.clp",
+      "level": "boundary",
+      "covers": [
+        "generics",
+        "variadic-method"
+      ]
+    },
+    {
+      "path": "io/read-eof.clp",
+      "level": "boundary",
+      "covers": [
+        "read",
+        "EOF"
+      ]
+    },
+    {
+      "path": "io/read-integer.clp",
+      "level": "basic",
+      "covers": [
+        "read",
+        "INTEGER"
+      ]
+    },
+    {
+      "path": "io/read-string.clp",
+      "level": "basic",
+      "covers": [
+        "read",
+        "STRING"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/346"
+        ],
+        "summary": "CLIPS compatibility: read truncates quoted strings at whitespace",
+        "observed": {
+          "diagnostics": [],
+          "output": "FALSE:\"two\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "io/read-symbol.clp",
+      "level": "basic",
+      "covers": [
+        "read",
+        "SYMBOL"
+      ]
+    },
+    {
+      "path": "io/read-two-tokens.clp",
+      "level": "boundary",
+      "covers": [
+        "read",
+        "tokenization"
+      ]
+    },
+    {
+      "path": "io/readline-eof.clp",
+      "level": "boundary",
+      "covers": [
+        "readline",
+        "EOF"
+      ]
+    },
+    {
+      "path": "io/readline-whitespace.clp",
+      "level": "boundary",
+      "covers": [
+        "readline",
+        "whitespace"
+      ]
+    },
+    {
+      "path": "lifecycle/reset-clears-derived-facts.clp",
+      "level": "interaction",
+      "covers": [
+        "reset",
+        "assert",
+        "not"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/reset-clears-refraction.clp",
+      "level": "interaction",
+      "covers": [
+        "reset",
+        "refraction"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/reset-restores-deffacts.clp",
+      "level": "interaction",
+      "covers": [
+        "reset",
+        "deffacts",
+        "retract"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "lifecycle/reset-restores-global.clp",
+      "level": "interaction",
+      "covers": [
+        "reset",
+        "defglobal"
+      ],
+      "resets": 2
+    },
+    {
+      "path": "modules/focus-argument-order.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "focus-argument-order"
+      ]
+    },
+    {
+      "path": "modules/focus-default.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "focus-default"
+      ]
+    },
+    {
+      "path": "modules/focus-rhs-observation.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "focus-rhs-observation"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/192"
+        ],
+        "summary": "Focus changes are not visible immediately within the same RHS",
+        "observed": {
+          "diagnostics": [],
+          "output": "MAIN:(MAIN)\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "modules/focus-transfer.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "focus-transfer"
+      ]
+    },
+    {
+      "path": "modules/global-bind.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-bind"
+      ]
+    },
+    {
+      "path": "modules/global-expression-initializer.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-expression-initializer"
+      ]
+    },
+    {
+      "path": "modules/global-function-access.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-function-access"
+      ]
+    },
+    {
+      "path": "modules/global-literal.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-literal"
+      ]
+    },
+    {
+      "path": "modules/global-multifield.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-multifield"
+      ]
+    },
+    {
+      "path": "modules/global-multiple.clp",
+      "level": "basic",
+      "covers": [
+        "modules",
+        "global-multiple"
+      ]
+    },
+    {
+      "path": "modules/import-all-constructs.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "import-all-constructs"
+      ]
+    },
+    {
+      "path": "modules/import-function-named.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "import-function-named"
+      ]
+    },
+    {
+      "path": "modules/import-global-named.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "import-global-named"
+      ]
+    },
+    {
+      "path": "modules/import-template-named.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "import-template-named"
+      ]
+    },
+    {
+      "path": "modules/qualified-deffacts.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "qualified-deffacts"
+      ]
+    },
+    {
+      "path": "modules/qualified-function-call.clp",
+      "level": "interaction",
+      "covers": [
+        "modules",
+        "qualified-function-call"
+      ]
+    },
+    {
+      "path": "patterns/001_repeated_field_variable.clp",
+      "level": "basic",
+      "covers": [
+        "patterns",
+        "repeated-field-variable"
+      ]
+    },
+    {
+      "path": "patterns/002_join_shared_variable.clp",
+      "level": "basic",
+      "covers": [
+        "patterns",
+        "join-shared-variable"
+      ]
+    },
+    {
+      "path": "patterns/003_join_type_sensitive.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "join-type-sensitive"
+      ]
+    },
+    {
+      "path": "patterns/004_negated_literal.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "negated-literal"
+      ]
+    },
+    {
+      "path": "patterns/005_disjoined_literals.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "disjoined-literals"
+      ]
+    },
+    {
+      "path": "patterns/006_conjoined_negations.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "conjoined-negations"
+      ]
+    },
+    {
+      "path": "patterns/007_anonymous_single_field.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "anonymous-single-field"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/320"
+        ],
+        "summary": "CLIPS compatibility: ordered fact patterns do not enforce field cardinality",
+        "observed": {
+          "diagnostics": [],
+          "output": "one field\none field\none field\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "patterns/008_multifield_empty_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-empty-capture"
+      ]
+    },
+    {
+      "path": "patterns/009_multifield_suffix_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-suffix-capture"
+      ]
+    },
+    {
+      "path": "patterns/010_multifield_middle_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-middle-capture"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/321"
+        ],
+        "summary": "CLIPS compatibility: ordered multifield variables before fixed fields fail to match",
+        "observed": {
+          "diagnostics": [],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "patterns/011_template_multislot_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "template-multislot-capture"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/322"
+        ],
+        "summary": "CLIPS compatibility: template multislot patterns bind scalar values instead of matching sequences",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?values` at line 9:27"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "patterns/012_repeated_template_variable.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "repeated-template-variable"
+      ]
+    },
+    {
+      "path": "patterns/013_predicate_local.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "predicate-local"
+      ]
+    },
+    {
+      "path": "patterns/014_predicate_join.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "predicate-join"
+      ]
+    },
+    {
+      "path": "patterns/015_return_value_constraint.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "return-value-constraint"
+      ]
+    },
+    {
+      "path": "patterns/016_test_ce_join.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "test-ce-join"
+      ]
+    },
+    {
+      "path": "patterns/017_not_absent.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "not-absent"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/104"
+        ],
+        "summary": "Leading simple not is not seeded",
+        "observed": {
+          "diagnostics": [],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "patterns/018_not_correlated.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "not-correlated"
+      ]
+    },
+    {
+      "path": "patterns/019_not_retract_unblocks.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "not-retract-unblocks"
+      ]
+    },
+    {
+      "path": "patterns/020_not_assert_cancels.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "not-assert-cancels"
+      ]
+    },
+    {
+      "path": "patterns/021_exists_many_witnesses.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "exists-many-witnesses"
+      ]
+    },
+    {
+      "path": "patterns/022_exists_correlated.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "exists-correlated"
+      ]
+    },
+    {
+      "path": "patterns/023_exists_last_retraction.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "exists-last-retraction"
+      ]
+    },
+    {
+      "path": "patterns/024_forall_vacuous.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "forall-vacuous"
+      ]
+    },
+    {
+      "path": "patterns/025_forall_complete.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "forall-complete"
+      ]
+    },
+    {
+      "path": "patterns/026_forall_missing_witness.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "forall-missing-witness"
+      ]
+    },
+    {
+      "path": "patterns/027_forall_witness_added.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "forall-witness-added"
+      ]
+    },
+    {
+      "path": "patterns/028_ncc_join_correlation.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "ncc-join-correlation"
+      ]
+    },
+    {
+      "path": "patterns/029_ncc_retraction_unblocks.clp",
+      "level": "interaction",
+      "covers": [
+        "patterns",
+        "ncc-retraction-unblocks"
+      ]
+    },
+    {
+      "path": "patterns/030_multifield_prefix_capture.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-prefix-capture"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/321"
+        ],
+        "summary": "CLIPS compatibility: ordered multifield variables before fixed fields fail to match",
+        "observed": {
+          "diagnostics": [],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "patterns/031_multifield_middle_empty.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-middle-empty"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/321"
+        ],
+        "summary": "CLIPS compatibility: ordered multifield variables before fixed fields fail to match",
+        "observed": {
+          "diagnostics": [],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "patterns/032_template_multislot_whole_capture.clp",
+      "level": "basic",
+      "covers": [
+        "patterns",
+        "template-multislot-whole-capture"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/322"
+        ],
+        "summary": "CLIPS compatibility: template multislot patterns bind scalar values instead of matching sequences",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: type error in `length$`: expected MULTIFIELD, got SYMBOL at line 9:18"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "patterns/033_template_multislot_single_field.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "template-multislot-single-field"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/322"
+        ],
+        "summary": "CLIPS compatibility: template multislot patterns bind scalar values instead of matching sequences",
+        "observed": {
+          "diagnostics": [],
+          "output": "TRUE a\nTRUE a\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "patterns/034_anonymous_multifield.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "anonymous-multifield"
+      ]
+    },
+    {
+      "path": "patterns/035_multifield_split.clp",
+      "level": "boundary",
+      "covers": [
+        "patterns",
+        "multifield-split"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/321"
+        ],
+        "summary": "CLIPS compatibility: ordered multifield variables before fixed fields fail to match",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: type error in `length$`: expected MULTIFIELD, got SYMBOL at line 8:18"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "procedural/001_function_zero_arguments.clp",
+      "level": "boundary",
+      "covers": [
+        "answer",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/002_function_fixed_parameters.clp",
+      "level": "interaction",
+      "covers": [
+        "-",
+        "deffunction",
+        "difference"
+      ]
+    },
+    {
+      "path": "procedural/003_function_expression_sequence.clp",
+      "level": "interaction",
+      "covers": [
+        "*",
+        "+",
+        "calculate",
+        "deffunction"
+      ]
+    },
+    {
+      "path": "procedural/004_function_recursion.clp",
+      "level": "interaction",
+      "covers": [
+        "*",
+        "-",
+        "=",
+        "deffunction",
+        "factorial",
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/005_function_empty_variadic.clp",
+      "level": "boundary",
+      "covers": [
+        "count-tail",
+        "deffunction",
+        "length$"
+      ]
+    },
+    {
+      "path": "procedural/006_function_variadic_fields.clp",
+      "level": "interaction",
+      "covers": [
+        "deffunction",
+        "tail"
+      ]
+    },
+    {
+      "path": "procedural/007_function_local_bind.clp",
+      "level": "interaction",
+      "covers": [
+        "*",
+        "+",
+        "bind",
+        "calculate",
+        "deffunction"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/330"
+        ],
+        "summary": "CLIPS compatibility: allow local variable binding and parameter rebinding in deffunctions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: type error in `bind`: expected global variable reference (?*name*), got non-global-variable at line 6:29"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "procedural/008_function_parameter_rebind.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "deffunction",
+        "increment"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/330"
+        ],
+        "summary": "CLIPS compatibility: allow local variable binding and parameter rebinding in deffunctions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: type error in `bind`: expected global variable reference (?*name*), got non-global-variable at line 6:29"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "procedural/009_funcall_user_function.clp",
+      "level": "interaction",
+      "covers": [
+        "*",
+        "deffunction",
+        "funcall"
+      ]
+    },
+    {
+      "path": "procedural/010_if_branches.clp",
+      "level": "basic",
+      "covers": [
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/011_if_without_else.clp",
+      "level": "basic",
+      "covers": [
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/012_if_truthiness.clp",
+      "level": "boundary",
+      "covers": [
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/013_logic_short_circuit.clp",
+      "level": "boundary",
+      "covers": [
+        "+",
+        "and",
+        "bind",
+        "deffunction",
+        "defglobal",
+        "or",
+        "touch"
+      ]
+    },
+    {
+      "path": "procedural/014_if_expression_return.clp",
+      "level": "basic",
+      "covers": [
+        "choose",
+        "deffunction",
+        "if"
+      ]
+    },
+    {
+      "path": "procedural/020_while_global_counter.clp",
+      "level": "interaction",
+      "covers": [
+        "-",
+        ">",
+        "bind",
+        "defglobal",
+        "while"
+      ]
+    },
+    {
+      "path": "procedural/021_while_zero_iterations.clp",
+      "level": "boundary",
+      "covers": [
+        "while"
+      ]
+    },
+    {
+      "path": "procedural/022_count_explicit_bounds.clp",
+      "level": "boundary",
+      "covers": [
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/023_count_implicit_start.clp",
+      "level": "basic",
+      "covers": [
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/024_count_empty_range.clp",
+      "level": "boundary",
+      "covers": [
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/025_count_bound_evaluated_once.clp",
+      "level": "boundary",
+      "covers": [
+        "bind",
+        "defglobal",
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/026_nested_count_loops.clp",
+      "level": "interaction",
+      "covers": [
+        "loop-for-count"
+      ]
+    },
+    {
+      "path": "procedural/030_progn_multifield_index.clp",
+      "level": "interaction",
+      "covers": [
+        "create$",
+        "progn$"
+      ]
+    },
+    {
+      "path": "procedural/031_foreach_multifield.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "foreach"
+      ]
+    },
+    {
+      "path": "procedural/032_multifield_iteration_empty.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "foreach",
+        "progn$"
+      ]
+    },
+    {
+      "path": "procedural/033_switch_matching_case.clp",
+      "level": "basic",
+      "covers": [
+        "case",
+        "default",
+        "switch"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/331"
+        ],
+        "summary": "CLIPS compatibility: accept case clauses inside switch actions",
+        "observed": {
+          "diagnostics": [
+            "compile error: [EXPRNPSR3] Missing function declaration for case in rule `exercise` at line 12, column 9"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "procedural/034_switch_default.clp",
+      "level": "basic",
+      "covers": [
+        "case",
+        "default",
+        "switch"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/331"
+        ],
+        "summary": "CLIPS compatibility: accept case clauses inside switch actions",
+        "observed": {
+          "diagnostics": [
+            "compile error: [EXPRNPSR3] Missing function declaration for case in rule `exercise` at line 12, column 9"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "procedural/035_switch_type_sensitive.clp",
+      "level": "boundary",
+      "covers": [
+        "case",
+        "switch"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/331"
+        ],
+        "summary": "CLIPS compatibility: accept case clauses inside switch actions",
+        "observed": {
+          "diagnostics": [
+            "compile error: [EXPRNPSR3] Missing function declaration for case in rule `exercise` at line 12, column 9"
+          ],
+          "output": "",
+          "phase": "load"
+        }
+      }
+    },
+    {
+      "path": "procedural/036_function_count_loop.clp",
+      "level": "interaction",
+      "covers": [
+        "+",
+        "bind",
+        "deffunction",
+        "defglobal",
+        "loop-for-count",
+        "sum-to"
+      ]
+    },
+    {
+      "path": "queries/any-factp-empty.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "any-factp-empty"
+      ]
+    },
+    {
+      "path": "queries/any-factp-filter.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "any-factp-filter"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/324"
+        ],
+        "summary": "CLIPS compatibility: fact-query expressions return empty defaults despite matching facts",
+        "observed": {
+          "diagnostics": [],
+          "output": "FALSE:FALSE\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/any-factp-match.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "any-factp-match"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/324"
+        ],
+        "summary": "CLIPS compatibility: fact-query expressions return empty defaults despite matching facts",
+        "observed": {
+          "diagnostics": [],
+          "output": "FALSE\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/delayed-query-retract.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "delayed-query-retract"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/327"
+        ],
+        "summary": "CLIPS compatibility: query-bound fact variables cannot be retracted inside query bodies",
+        "observed": {
+          "diagnostics": [
+            "unbound variable: ?f"
+          ],
+          "output": "0:FALSE\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/do-for-all-facts-count.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "do-for-all-facts-count"
+      ]
+    },
+    {
+      "path": "queries/do-for-all-facts-filter.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "do-for-all-facts-filter"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/325"
+        ],
+        "summary": "CLIPS compatibility: action query predicates cannot evaluate query slot references",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unknown function `>` at line 8:35"
+          ],
+          "output": "0\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/do-for-all-facts-order.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "do-for-all-facts-order"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/326"
+        ],
+        "summary": "CLIPS compatibility: fact-query traversal does not preserve assertion order",
+        "observed": {
+          "diagnostics": [],
+          "output": "30\n10\n20\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/do-for-fact-first.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "do-for-fact-first"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/326"
+        ],
+        "summary": "CLIPS compatibility: fact-query traversal does not preserve assertion order",
+        "observed": {
+          "diagnostics": [],
+          "output": "30\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/fact-existence-lifecycle.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "fact-existence-lifecycle"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/328"
+        ],
+        "summary": "CLIPS compatibility: fact-address pattern bindings are unavailable to introspection expressions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?f` at line 6:30",
+            "expression evaluation error: unbound variable `?f` at line 8:30"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/fact-index-address.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-index-address"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/328"
+        ],
+        "summary": "CLIPS compatibility: fact-address pattern bindings are unavailable to introspection expressions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?f` at line 5:60"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/fact-relation-ordered.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-relation-ordered"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/328"
+        ],
+        "summary": "CLIPS compatibility: fact-address pattern bindings are unavailable to introspection expressions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?f` at line 5:63"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/fact-relation-template.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-relation-template"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/328"
+        ],
+        "summary": "CLIPS compatibility: fact-address pattern bindings are unavailable to introspection expressions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?f` at line 6:76"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/fact-slot-names-implied.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-slot-names-implied"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/328"
+        ],
+        "summary": "CLIPS compatibility: fact-address pattern bindings are unavailable to introspection expressions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?f` at line 5:65"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/fact-slot-names-template.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-slot-names-template"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/328"
+        ],
+        "summary": "CLIPS compatibility: fact-address pattern bindings are unavailable to introspection expressions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?f` at line 6:76"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/fact-slot-value-implied.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-slot-value-implied"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/328"
+        ],
+        "summary": "CLIPS compatibility: fact-address pattern bindings are unavailable to introspection expressions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?f` at line 5:72"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/fact-slot-value-multislot.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-slot-value-multislot"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/328"
+        ],
+        "summary": "CLIPS compatibility: fact-address pattern bindings are unavailable to introspection expressions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?f` at line 6:81"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/fact-slot-value-single.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "fact-slot-value-single"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/328"
+        ],
+        "summary": "CLIPS compatibility: fact-address pattern bindings are unavailable to introspection expressions",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unbound variable `?f` at line 6:78"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/find-all-facts-count.clp",
+      "level": "basic",
+      "covers": [
+        "queries",
+        "find-all-facts-count"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/324"
+        ],
+        "summary": "CLIPS compatibility: fact-query expressions return empty defaults despite matching facts",
+        "observed": {
+          "diagnostics": [],
+          "output": "0\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/find-all-facts-filter.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "find-all-facts-filter"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/324"
+        ],
+        "summary": "CLIPS compatibility: fact-query expressions return empty defaults despite matching facts",
+        "observed": {
+          "diagnostics": [],
+          "output": "0\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/find-fact-empty.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "find-fact-empty"
+      ]
+    },
+    {
+      "path": "queries/find-fact-first.clp",
+      "level": "boundary",
+      "covers": [
+        "queries",
+        "find-fact-first"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/324"
+        ],
+        "summary": "CLIPS compatibility: fact-query expressions return empty defaults despite matching facts",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: type error in `nth$`: expected index 1..0, got index 1 at line 8:55"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/query-cartesian-product.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "query-cartesian-product"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/325"
+        ],
+        "summary": "CLIPS compatibility: action query predicates cannot evaluate query slot references",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: unknown function `<` at line 8:45"
+          ],
+          "output": "0\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "queries/query-fact-index.clp",
+      "level": "interaction",
+      "covers": [
+        "queries",
+        "query-fact-index"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/329"
+        ],
+        "summary": "CLIPS compatibility: fact-index exposes internal slot-map identity instead of assertion index",
+        "observed": {
+          "diagnostics": [],
+          "output": "4294967297\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/001_add_integers.clp",
+      "level": "basic",
+      "covers": [
+        "+"
+      ]
+    },
+    {
+      "path": "stdlib/002_add_float_promotion.clp",
+      "level": "basic",
+      "covers": [
+        "+",
+        "floatp"
+      ]
+    },
+    {
+      "path": "stdlib/003_subtract_left_associative.clp",
+      "level": "basic",
+      "covers": [
+        "-"
+      ]
+    },
+    {
+      "path": "stdlib/004_multiply_signs.clp",
+      "level": "boundary",
+      "covers": [
+        "*"
+      ]
+    },
+    {
+      "path": "stdlib/005_division_returns_float.clp",
+      "level": "basic",
+      "covers": [
+        "/",
+        "floatp"
+      ]
+    },
+    {
+      "path": "stdlib/006_integer_division_signs.clp",
+      "level": "boundary",
+      "covers": [
+        "div"
+      ]
+    },
+    {
+      "path": "stdlib/007_modulo_signs.clp",
+      "level": "boundary",
+      "covers": [
+        "mod"
+      ]
+    },
+    {
+      "path": "stdlib/008_absolute_value_types.clp",
+      "level": "boundary",
+      "covers": [
+        "abs",
+        "floatp",
+        "integerp"
+      ]
+    },
+    {
+      "path": "stdlib/009_minimum_mixed_types.clp",
+      "level": "boundary",
+      "covers": [
+        "integerp",
+        "min"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/332"
+        ],
+        "summary": "CLIPS compatibility: preserve selected operand types in min and max",
+        "observed": {
+          "diagnostics": [],
+          "output": "2.0 FALSE\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/010_maximum_mixed_types.clp",
+      "level": "boundary",
+      "covers": [
+        "integerp",
+        "max"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/332"
+        ],
+        "summary": "CLIPS compatibility: preserve selected operand types in min and max",
+        "observed": {
+          "diagnostics": [],
+          "output": "8.0 FALSE\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/011_round_half_boundaries.clp",
+      "level": "boundary",
+      "covers": [
+        "round"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/333"
+        ],
+        "summary": "CLIPS compatibility: match round at positive half-integer ties",
+        "observed": {
+          "diagnostics": [],
+          "output": "3 -3 2 -2\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/013_power_and_square_root.clp",
+      "level": "basic",
+      "covers": [
+        "**",
+        "sqrt"
+      ]
+    },
+    {
+      "path": "stdlib/014_exponential_and_logs.clp",
+      "level": "basic",
+      "covers": [
+        "exp",
+        "log",
+        "log10"
+      ]
+    },
+    {
+      "path": "stdlib/015_trigonometry_zero.clp",
+      "level": "boundary",
+      "covers": [
+        "cos",
+        "sin",
+        "tan"
+      ]
+    },
+    {
+      "path": "stdlib/016_inverse_trigonometry_zero.clp",
+      "level": "boundary",
+      "covers": [
+        "acos",
+        "asin",
+        "atan"
+      ]
+    },
+    {
+      "path": "stdlib/017_hyperbolic_zero.clp",
+      "level": "boundary",
+      "covers": [
+        "acosh",
+        "asinh",
+        "atanh",
+        "cosh",
+        "sinh",
+        "tanh"
+      ]
+    },
+    {
+      "path": "stdlib/018_angle_conversions.clp",
+      "level": "basic",
+      "covers": [
+        "deg-grad",
+        "deg-rad",
+        "grad-deg",
+        "pi",
+        "rad-deg",
+        "round"
+      ]
+    },
+    {
+      "path": "stdlib/019_numeric_conversion.clp",
+      "level": "basic",
+      "covers": [
+        "float",
+        "integer"
+      ]
+    },
+    {
+      "path": "stdlib/020_numeric_binary_comparisons.clp",
+      "level": "basic",
+      "covers": [
+        "<",
+        "<=",
+        "<>",
+        "=",
+        ">",
+        ">="
+      ]
+    },
+    {
+      "path": "stdlib/021_value_equality_types.clp",
+      "level": "boundary",
+      "covers": [
+        "eq",
+        "neq"
+      ]
+    },
+    {
+      "path": "stdlib/022_logical_false_symbol.clp",
+      "level": "basic",
+      "covers": [
+        "and",
+        "not",
+        "or"
+      ]
+    },
+    {
+      "path": "stdlib/023_numeric_type_predicates.clp",
+      "level": "boundary",
+      "covers": [
+        "floatp",
+        "integerp",
+        "numberp"
+      ]
+    },
+    {
+      "path": "stdlib/024_lexeme_type_predicates.clp",
+      "level": "boundary",
+      "covers": [
+        "lexemep",
+        "stringp",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/025_multifield_type_predicate.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "multifieldp"
+      ]
+    },
+    {
+      "path": "stdlib/026_parity_negative_and_zero.clp",
+      "level": "boundary",
+      "covers": [
+        "evenp",
+        "oddp"
+      ]
+    },
+    {
+      "path": "stdlib/030_string_concatenation.clp",
+      "level": "basic",
+      "covers": [
+        "str-cat",
+        "stringp"
+      ]
+    },
+    {
+      "path": "stdlib/031_empty_string_concatenation.clp",
+      "level": "boundary",
+      "covers": [
+        "str-cat",
+        "stringp"
+      ]
+    },
+    {
+      "path": "stdlib/032_symbol_concatenation.clp",
+      "level": "basic",
+      "covers": [
+        "sym-cat",
+        "symbolp"
+      ]
+    },
+    {
+      "path": "stdlib/033_string_length_ascii.clp",
+      "level": "basic",
+      "covers": [
+        "str-length"
+      ]
+    },
+    {
+      "path": "stdlib/034_string_length_unicode.clp",
+      "level": "basic",
+      "covers": [
+        "str-length"
+      ]
+    },
+    {
+      "path": "stdlib/035_substring_one_based.clp",
+      "level": "basic",
+      "covers": [
+        "sub-string"
+      ]
+    },
+    {
+      "path": "stdlib/036_substring_clipped_bounds.clp",
+      "level": "boundary",
+      "covers": [
+        "sub-string"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/336"
+        ],
+        "summary": "CLIPS compatibility: clamp substring start indices below one",
+        "observed": {
+          "diagnostics": [],
+          "output": "[] [bc] []\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/037_string_index_found_and_missing.clp",
+      "level": "interaction",
+      "covers": [
+        "str-index"
+      ]
+    },
+    {
+      "path": "stdlib/038_string_index_empty_needle.clp",
+      "level": "boundary",
+      "covers": [
+        "str-index"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/337"
+        ],
+        "summary": "CLIPS compatibility: match str-index for an empty search string",
+        "observed": {
+          "diagnostics": [],
+          "output": "1 1\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/039_case_conversion_preserves_types.clp",
+      "level": "boundary",
+      "covers": [
+        "lowcase",
+        "stringp",
+        "symbolp",
+        "upcase"
+      ]
+    },
+    {
+      "path": "stdlib/040_string_comparison.clp",
+      "level": "basic",
+      "covers": [
+        "str-compare"
+      ]
+    },
+    {
+      "path": "stdlib/041_string_to_field_first_token.clp",
+      "level": "basic",
+      "covers": [
+        "floatp",
+        "integerp",
+        "string-to-field",
+        "symbolp"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/338"
+        ],
+        "summary": "CLIPS compatibility: parse only the first token in string-to-field",
+        "observed": {
+          "diagnostics": [],
+          "output": "42 trailing TRUE TRUE TRUE\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/042_explode_quoted_fields.clp",
+      "level": "interaction",
+      "covers": [
+        "explode$",
+        "integerp",
+        "length$",
+        "nth$",
+        "stringp"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/339"
+        ],
+        "summary": "CLIPS compatibility: preserve quoted fields when parsing explode$",
+        "observed": {
+          "diagnostics": [],
+          "output": "4 FALSE FALSE\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/043_funcall_builtin.clp",
+      "level": "interaction",
+      "covers": [
+        "funcall"
+      ]
+    },
+    {
+      "path": "stdlib/044_format_nil.clp",
+      "level": "basic",
+      "covers": [
+        "format"
+      ]
+    },
+    {
+      "path": "stdlib/045_string_length_symbol.clp",
+      "level": "boundary",
+      "covers": [
+        "str-length"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/335"
+        ],
+        "summary": "CLIPS compatibility: accept SYMBOL arguments to str-length",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: type error in `str-length`: expected STRING, got SYMBOL at line 11:17"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/046_numeric_equal_chain.clp",
+      "level": "boundary",
+      "covers": [
+        "="
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/334"
+        ],
+        "summary": "CLIPS compatibility: support variadic numeric comparisons",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: wrong number of arguments for `=`: expected 2, got 3 at line 11:17"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/047_numeric_less_chain.clp",
+      "level": "boundary",
+      "covers": [
+        "<"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/334"
+        ],
+        "summary": "CLIPS compatibility: support variadic numeric comparisons",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: wrong number of arguments for `<`: expected 2, got 3 at line 11:17"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/048_numeric_greater_chain.clp",
+      "level": "boundary",
+      "covers": [
+        ">"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/334"
+        ],
+        "summary": "CLIPS compatibility: support variadic numeric comparisons",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: wrong number of arguments for `>`: expected 2, got 3 at line 11:17"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/049_numeric_inequality_chain.clp",
+      "level": "boundary",
+      "covers": [
+        "<>"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/334"
+        ],
+        "summary": "CLIPS compatibility: support variadic numeric comparisons",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: wrong number of arguments for `!=`: expected 2, got 3 at line 11:17"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/050_create_multifield_flattening.clp",
+      "level": "interaction",
+      "covers": [
+        "create$"
+      ]
+    },
+    {
+      "path": "stdlib/051_empty_multifield.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "length$"
+      ]
+    },
+    {
+      "path": "stdlib/052_nth_one_based.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "nth$"
+      ]
+    },
+    {
+      "path": "stdlib/053_nth_out_of_bounds.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "nth$"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/341"
+        ],
+        "summary": "CLIPS compatibility: return nil for out-of-range nth$ indices",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: type error in `nth$`: expected index 1..2, got index 0 at line 11:17"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/054_member_scalar_type_sensitive.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "member$"
+      ]
+    },
+    {
+      "path": "stdlib/055_member_subsequence.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "member$"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/342"
+        ],
+        "summary": "CLIPS compatibility: search multifield subsequences with member$",
+        "observed": {
+          "diagnostics": [],
+          "output": "FALSE FALSE\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/056_subset_duplicates.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "subsetp"
+      ]
+    },
+    {
+      "path": "stdlib/057_insert_multifield_positions.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "insert$"
+      ]
+    },
+    {
+      "path": "stdlib/058_delete_inclusive_range.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "delete$"
+      ]
+    },
+    {
+      "path": "stdlib/059_replace_multifield_splice.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "replace$"
+      ]
+    },
+    {
+      "path": "stdlib/060_first_and_rest_empty.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "first$",
+        "rest$"
+      ]
+    },
+    {
+      "path": "stdlib/061_sort_comparator_direction.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "sort"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/343"
+        ],
+        "summary": "CLIPS compatibility: use CLIPS ordering for builtin sort predicates",
+        "observed": {
+          "diagnostics": [],
+          "output": "(1 2 3) (3 2 1)\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/062_sort_user_function.clp",
+      "level": "interaction",
+      "covers": [
+        ">",
+        "create$",
+        "deffunction",
+        "sort"
+      ]
+    },
+    {
+      "path": "stdlib/063_implode_preserves_string_quotes.clp",
+      "level": "basic",
+      "covers": [
+        "create$",
+        "implode$"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/344"
+        ],
+        "summary": "CLIPS compatibility: preserve quoted STRING fields in implode$",
+        "observed": {
+          "diagnostics": [],
+          "output": "a two words 3\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/064_subsequence_clipped_bounds.clp",
+      "level": "boundary",
+      "covers": [
+        "create$",
+        "subseq$"
+      ]
+    },
+    {
+      "path": "stdlib/065_numeric_less_equal_chain.clp",
+      "level": "boundary",
+      "covers": [
+        "<="
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/334"
+        ],
+        "summary": "CLIPS compatibility: support variadic numeric comparisons",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: wrong number of arguments for `<=`: expected 2, got 3 at line 11:17"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/066_numeric_greater_equal_chain.clp",
+      "level": "boundary",
+      "covers": [
+        ">="
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/334"
+        ],
+        "summary": "CLIPS compatibility: support variadic numeric comparisons",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: wrong number of arguments for `>=`: expected 2, got 3 at line 11:17"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/067_format_zero_padding.clp",
+      "level": "boundary",
+      "covers": [
+        "format"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/340"
+        ],
+        "summary": "CLIPS compatibility: honor zero padding in format integer directives",
+        "observed": {
+          "diagnostics": [],
+          "output": "   7\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/068_printout_multifield_string_quotes.clp",
+      "level": "boundary",
+      "covers": [
+        "printout",
+        "create$"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/345"
+        ],
+        "summary": "CLIPS compatibility: quote STRING elements when printing multifields",
+        "observed": {
+          "diagnostics": [],
+          "output": "(a two words)\n",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/069_nth_negative_index.clp",
+      "level": "boundary",
+      "covers": [
+        "nth$"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/341"
+        ],
+        "summary": "CLIPS compatibility: return nil for out-of-range nth$ indices",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: type error in `nth$`: expected index 1..2, got index -1 at line 11:17"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    },
+    {
+      "path": "stdlib/070_nth_excessive_index.clp",
+      "level": "boundary",
+      "covers": [
+        "nth$"
+      ],
+      "gap": {
+        "issues": [
+          "https://github.com/plx/ferric-rules/issues/341"
+        ],
+        "summary": "CLIPS compatibility: return nil for out-of-range nth$ indices",
+        "observed": {
+          "diagnostics": [
+            "expression evaluation error: type error in `nth$`: expected index 1..2, got index 3 at line 11:17"
+          ],
+          "output": "",
+          "phase": "complete"
+        }
+      }
+    }
+  ]
+}

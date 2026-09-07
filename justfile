@@ -299,6 +299,15 @@ compat-report *args:
 compat-diff *args:
     just _uv ferric-compat-diff {{args}}
 
+# Granular CLIPS corpus: conformance plus active known-gap characterizations
+compat-corpus *args:
+    cargo test -p ferric-rules --test compat_corpus {{args}}
+
+# Verify corpus goldens with the local CLIPS 6.30 Docker image (no fallback)
+compat-corpus-reference *args:
+    just _uv python -m ferric_tools.compat.corpus {{args}}
+
+
 # Enforce the exact pinned-CLIPS result policy for the semantic matrix
 compat-semantic-gate *args:
     just _uv ferric-compat-semantic-gate {{args}}
