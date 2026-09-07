@@ -129,7 +129,6 @@ pub fn load_errors_to_pyerr(errors: Vec<LoadError>) -> PyErr {
             }
             _ => FerricError::new_err(msg),
         },
-
     }
 }
 
