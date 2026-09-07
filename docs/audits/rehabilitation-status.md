@@ -2,8 +2,9 @@
 
 This is the execution record for the owner's September 6, 2026 instructions.
 It replaces the old production-readiness scope, scheduling and exit contract.
-Retired obligations are **not** a successful original audit. Required work below
-remains open until its implementation PR is merged.
+Retired obligations are **not** a successful original audit. All twelve
+implementation PRs are integrated at `df57506f5cf8892ee7808dda9979d7a53eec9c4d`.
+This closing record completes the remaining evidence gate #143 when merged.
 
 ## Baseline and supported scope
 
@@ -34,8 +35,9 @@ All 81 formerly open issues were triaged once. The replacement has 13 work/gate
 members, consolidating overlapping defects rather than making one PR per obsolete
 ticket. The label/dependency batch is **applied and separately verified against live state**.
 The full comparison covers 175 issues: 85 targeted updates, 72 retirements as
-not planned, and 90 untargeted issues unchanged. Eleven cohort members are
-completed; only #143 and #153 remain open. Issue #300 remains unchanged and open.
+not planned, and 90 untargeted issues unchanged. Twelve implementation members
+are completed; #143 is the final gate closed by this record. Issue #300 remains
+unchanged and open.
 Native edges changed from 221 to 59: 180 obsolete edges removed, 18 cohort edges
 added and 41 other edges preserved. Issue history and scope reasons remain.
 The existing selector defaults to this populated finite cohort; none was run
@@ -57,8 +59,8 @@ are retained under `.context/rehabilitation/backlog-final/`, run
 | #174 | Go module path and cheap lifecycle repairs | [#310](https://github.com/plx/ferric-rules/pull/310), merged `c6ed7774` |
 | #203 | Host value/fact provenance across adapters | [#311](https://github.com/plx/ferric-rules/pull/311), merged `6bae570e` |
 | #305 | Swift package and explicit header generation | [#312](https://github.com/plx/ferric-rules/pull/312), merged `46a88e16` |
-| #153 | Exact Rust/CLI consumers and shared example | [#313](https://github.com/plx/ferric-rules/pull/313), prepared and validated; merge pending |
-| #143 | Integrated evidence, CI and backlog migration | Measurements and live migration verified; #313 and final closing PR pending |
+| #153 | Exact Rust/CLI consumers and shared example | [#313](https://github.com/plx/ferric-rules/pull/313), merged `df57506f` |
+| #143 | Integrated evidence, CI and backlog migration | This closing record; complete on merge |
 
 Go #310's final observation records 45 successful checks and one intentional
 skip. Host #311 merged with all essential checks and three native/package
@@ -77,6 +79,20 @@ uses `Consumer.swift`, fixing Swift 6.1.2's special handling of `main.swift`.
 Exact merge-time observations and captured log remain in
 `.context/rehabilitation/pr312-merge-proof.md`; jobs pending then continued normally
 and were not counted as successful before completion.
+
+The final implementation PR #313 merged at `2026-09-07T15:18:23Z`, exact head
+`ff4f30c2a301e096ac8e0e4000b6bb7cb5b8847c`, after all 101 checks succeeded with
+one expected skip and no unresolved review threads. All seven native Rust target
+consumers and the aggregate passed. This record changes documentation only;
+native/package inputs and their completed validation remain those of the merged
+implementation. Fresh evidence review checks every reported median and delta;
+mandatory final-branch preflight passes with its automatic edits inspected.
+Raw checks/review: `.context/rehabilitation/pr313-merge-proof.md`; final review
+and preflight: `final-record-review.md` and `preflight-final-gate.log` in that
+evidence directory. The linked migration guidance now correctly describes RHS
+conditional actions and experimental LEX/MEA ordering, and the C value-copy
+contract distinguishes its legacy caller-owned pointers from rejected engine
+external values.
 
 ## Decisions and evidence
 
@@ -290,7 +306,8 @@ Qualified distinct template declarations work; unsupported unqualified cross-mod
 name collisions fail before state changes. Migration notes describe Python string,
 Node version/precision, Go cancellation/path, host handles and legacy snapshot breaks.
 
-Next: merge external-consumer PR #313 after its checks, complete final validation
-and merge #143's closing record. The backlog migration is applied and verified.
-Reconcile the starting checkout while preserving user changes. Completion
-requires all accepted implementation PRs merged.
+This record's merge completes the finite rehabilitation gate #143. All accepted
+implementation PRs are merged and the backlog migration is applied and verified.
+Further work uses the ordinary backlog and the explicit limitations above; the
+retired program must not restart. The coordinator preserves the starting branch
+and user files while archiving superseded local work and advancing to main.
