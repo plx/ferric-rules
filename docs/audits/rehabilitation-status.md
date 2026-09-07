@@ -50,7 +50,7 @@ no selector is run during migration.
 | #190 | Python values, configuration and packages | [#309](https://github.com/plx/ferric-rules/pull/309), merged `21fc8586` |
 | #174 | Go module path and cheap lifecycle repairs | [#310](https://github.com/plx/ferric-rules/pull/310), merged `c6ed7774` |
 | #203 | Host value/fact provenance across adapters | [#311](https://github.com/plx/ferric-rules/pull/311), merged `6bae570e` |
-| #305 | Swift package and explicit header generation | [#312](https://github.com/plx/ferric-rules/pull/312), prepared and validated |
+| #305 | Swift package and explicit header generation | [#312](https://github.com/plx/ferric-rules/pull/312), merged `46a88e16` |
 | #153 | Exact Rust/CLI consumers and shared example | [#313](https://github.com/plx/ferric-rules/pull/313), prepared and validated; merge pending |
 | #143 | Integrated evidence, CI and backlog migration | Final measurements complete; preceding merges/migration pending |
 
@@ -67,6 +67,15 @@ records 100 checks: 98 successful, one intentional skip and the ordinary
 performance report still running, with no failures. The pending report continued
 normally and was not counted as passed. The final guide correction received fresh
 review and mandatory preflight; see `.context/rehabilitation/pr311-merge-proof.md`.
+
+Swift #312 merged at `2026-09-07T14:17:47Z` with all 18 essential check names
+passing and no unresolved review threads. Unaffected distribution/performance
+jobs still pending were not counted as passed. Its fresh
+[Swift 6.1.2 CI job](https://github.com/plx/ferric-rules/actions/runs/34130186636/job/101768166731)
+built all three native slices, passed 14 strict-concurrency tests, built both iOS
+wrappers and ran the copied macOS consumer. The generated async entry point now
+uses `Consumer.swift`, fixing Swift 6.1.2's special handling of `main.swift`.
+Exact checks and captured log: `.context/rehabilitation/pr312-merge-proof.md`.
 
 ## Decisions and evidence
 
@@ -261,7 +270,7 @@ Qualified distinct template declarations work; unsupported unqualified cross-mod
 name collisions fail before state changes. Migration notes describe Python string,
 Node version/precision, Go cancellation/path, host handles and legacy snapshot breaks.
 
-Next: merge Swift and external-consumer changes in dependency order after their
-checks. Apply and verify the prepared issue/label/native-dependency batch,
-complete final validation and merge #143's closing record. Reconcile the starting
-checkout while preserving user changes. Completion requires all accepted implementation PRs merged.
+Next: merge the external-consumer change after its checks. Apply and verify the
+prepared issue/label/native-dependency batch, complete final validation and merge
+#143's closing record. Reconcile the starting checkout while preserving user
+changes. Completion requires all accepted implementation PRs merged.
