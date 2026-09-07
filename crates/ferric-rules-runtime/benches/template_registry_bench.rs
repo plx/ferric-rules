@@ -155,6 +155,8 @@ fn bench_owned_template_fact(c: &mut Criterion) {
 /// retain cheap sparse access; setup and engine destruction are excluded.
 fn bench_first_sparse_host_export(c: &mut Criterion) {
     let mut group = c.benchmark_group("host_first_sparse_export");
+    // Cold reads need more independent setups than the inexpensive warm controls.
+    group.sample_size(60);
     for count in [1_000, 100_000] {
         let mut source = String::from("(deffacts seed\n");
         for id in 0..count {
