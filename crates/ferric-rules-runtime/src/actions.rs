@@ -6,6 +6,7 @@
 //! - `modify`/`duplicate` support template-aware slot overrides (Pass 003).
 //! - `printout` with per-channel output capture via `OutputRouter` (Pass 004).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
 use std::io::Write as IoWrite;
@@ -87,12 +88,8 @@ impl ActionEvalEnv {
         context: &mut ActionExecutionContext<'_>,
     ) -> Result<Value, ActionError> {
         if !self.runtime_bindings.is_empty() {
-            let mut merged_env =
-                collect_outer_runtime_bindings(token, rule_info, &context.engine.symbol_table);
-            for (name, value) in &self.runtime_bindings {
-                insert_runtime_binding(&mut merged_env, name, value.clone());
-            }
-            let (bindings, var_map) = build_runtime_eval_bindings(&merged_env, context)?;
+            let (bindings, var_map) =
+                build_runtime_eval_bindings(token, rule_info, &self.runtime_bindings, context)?;
             return Self::eval_runtime_expr_with_bindings(
                 runtime_expr,
                 &bindings,
@@ -548,27 +545,6 @@ pub(crate) fn evaluate_test_condition(
     result
 }
 
-fn collect_outer_runtime_bindings(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    symbol_table: &SymbolTable,
-) -> RuntimeBindingEnv {
-    let mut env = RuntimeBindingEnv::new();
-    for index in 0..rule_info.var_map.len() {
-        #[allow(clippy::cast_possible_truncation)]
-        let var_id = VarId(index as u16);
-        let Some(value_ref) = token.bindings.get(var_id) else {
-            continue;
-        };
-        let symbol = rule_info.var_map.name(var_id);
-        let Some(name) = symbol_table.resolve_symbol_str(symbol) else {
-            continue;
-        };
-        insert_runtime_binding(&mut env, name, Value::clone(value_ref));
-    }
-    env
-}
-
 fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value) {
     // Both spellings share one current value, including after an RHS bind.
     env.insert(name.strip_prefix("$?").unwrap_or(name).to_string(), value);
@@ -598,24 +574,62 @@ fn seed_multifield_tail_bindings(
 }
 
 fn build_runtime_eval_bindings(
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
     env: &RuntimeBindingEnv,
     context: &mut ActionExecutionContext<'_>,
 ) -> Result<(BindingSet, VarMap), ActionError> {
     let mut var_map = VarMap::new();
     let mut bindings = BindingSet::new();
 
+    // Preserve outer VarId order: when both spellings exist, the later
+    // `$?name`/`name` alias wins, just as in the former merged map.
+    for index in 0..rule_info.var_map.len() {
+        #[allow(clippy::cast_possible_truncation)] // VarMap limits IDs to u16.
+        let outer_id = VarId(index as u16);
+        let Some(value) = token.bindings.get(outer_id) else {
+            continue;
+        };
+        let original = rule_info.var_map.name(outer_id);
+        let Some(name) = context.engine.symbol_table.resolve_symbol_str(original) else {
+            continue;
+        };
+        let name = name.strip_prefix("$?").unwrap_or(name);
+        // Reuse the interned canonical name when present, while retaining the
+        // current encoding's lookup/intern behavior for aliases and mixed tables.
+        let symbol = if let Some(symbol) = context
+            .engine
+            .symbol_table
+            .find_symbol(name, context.engine.config.string_encoding)
+        {
+            symbol
+        } else {
+            let name = name.to_owned();
+            context
+                .engine
+                .symbol_table
+                .intern_symbol(&name, context.engine.config.string_encoding)
+                .map_err(ActionError::Encoding)?
+        };
+        let id = var_map
+            .get_or_create(symbol)
+            .map_err(|error| ActionError::EvalError(error.to_string()))?;
+        bindings.set(id, value.clone());
+    }
+    // Runtime locals override outer aliases. Clone their values once, directly
+    // into the evaluation frame, without an intermediate owned-value map.
     for (name, value) in env {
+        let name = name.strip_prefix("$?").unwrap_or(name);
         let symbol = context
             .engine
             .symbol_table
             .intern_symbol(name, context.engine.config.string_encoding)
             .map_err(ActionError::Encoding)?;
-        let var_id = var_map
+        let id = var_map
             .get_or_create(symbol)
-            .map_err(|e| ActionError::EvalError(e.to_string()))?;
-        bindings.set(var_id, ValueRef::new(value.clone()));
+            .map_err(|error| ActionError::EvalError(error.to_string()))?;
+        bindings.set(id, ValueRef::new(value.clone()));
     }
-
     Ok((bindings, var_map))
 }
 
@@ -844,12 +858,12 @@ fn execute_single_action(
                     // Reconstruct a FunctionCall from the ActionExpr so we can
                     // route through execute_single_action normally.
                     let (branch_call, branch_runtime): (
-                        FunctionCall,
+                        Cow<'_, FunctionCall>,
                         Option<&crate::evaluator::RuntimeExpr>,
                     ) = match action_expr {
                         ActionExpr::FunctionCall(fc) => {
                             let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (fc.clone(), rt)
+                            (Cow::Borrowed(fc), rt)
                         }
                         ActionExpr::If { span, .. } => {
                             // Nested if: create a synthetic call with name "if"
@@ -860,7 +874,7 @@ fn execute_single_action(
                                 span: *span,
                             };
                             let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (synthetic, rt)
+                            (Cow::Owned(synthetic), rt)
                         }
                         ActionExpr::Switch { span, .. } => {
                             let synthetic = FunctionCall {
@@ -869,7 +883,7 @@ fn execute_single_action(
                                 span: *span,
                             };
                             let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (synthetic, rt)
+                            (Cow::Owned(synthetic), rt)
                         }
                         ActionExpr::While { span, .. } => {
                             let synthetic = FunctionCall {
@@ -878,7 +892,7 @@ fn execute_single_action(
                                 span: *span,
                             };
                             let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (synthetic, rt)
+                            (Cow::Owned(synthetic), rt)
                         }
                         ActionExpr::LoopForCount { span, .. } => {
                             let synthetic = FunctionCall {
@@ -887,7 +901,7 @@ fn execute_single_action(
                                 span: *span,
                             };
                             let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (synthetic, rt)
+                            (Cow::Owned(synthetic), rt)
                         }
                         ActionExpr::Progn { span, .. } => {
                             let synthetic = FunctionCall {
@@ -896,7 +910,7 @@ fn execute_single_action(
                                 span: *span,
                             };
                             let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                            (synthetic, rt)
+                            (Cow::Owned(synthetic), rt)
                         }
                         _ => {
                             // Literal/variable — evaluate as expression; not an
@@ -1044,6 +1058,7 @@ fn execute_single_action(
                     (si, ei)
                 };
 
+                let mut loop_frame: Option<(Token, CompiledRuleInfo, VarId)> = None;
                 for counter in start_int..=end_int {
                     crate::evaluator::consume_action_loop_iteration(
                         &context.engine.config,
@@ -1051,25 +1066,34 @@ fn execute_single_action(
                         span.clone(),
                     )
                     .map_err(ActionError::from)?;
-                    // Build an augmented token and rule_info with the loop variable bound.
+                    // Initialize after the first budget check: empty ranges and
+                    // exhausted budgets must not introduce a variable early.
                     let (loop_token, loop_rule_info) = if let Some(var) = var_name {
-                        augment_bindings_with_var(
-                            token,
-                            rule_info,
-                            var,
-                            Value::Integer(counter),
-                            &mut context.engine.symbol_table,
-                            &context.engine.config,
-                        )?
+                        if let Some((frame_token, _, id)) = &mut loop_frame {
+                            frame_token
+                                .bindings
+                                .set(*id, ValueRef::new(Value::Integer(counter)));
+                        } else {
+                            loop_frame = Some(augment_bindings_with_var(
+                                token,
+                                rule_info,
+                                var,
+                                Value::Integer(counter),
+                                &mut context.engine.symbol_table,
+                                &context.engine.config,
+                            )?);
+                        }
+                        let (frame_token, frame_info, _) = loop_frame.as_ref().unwrap();
+                        (frame_token, frame_info)
                     } else {
-                        (token.clone(), rule_info_clone_light(rule_info))
+                        (token, rule_info)
                     };
 
                     execute_loop_body(
                         reset_requested,
                         clear_requested,
-                        &loop_token,
-                        &loop_rule_info,
+                        loop_token,
+                        loop_rule_info,
                         body,
                         context,
                         eval_env,
@@ -1173,45 +1197,57 @@ fn execute_single_action(
                 ..
             }) = progn_runtime
             {
-                let elements: Vec<Value> = {
+                // Keep the evaluated list owned locally, so RHS mutation cannot
+                // change traversal, without copying it into a second vector.
+                let list_value = {
                     let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                    let list_val =
-                        crate::evaluator::eval(&mut ctx, list_expr).map_err(ActionError::from)?;
-                    match list_val {
-                        Value::Multifield(mf) => mf.as_slice().to_vec(),
-                        other => vec![other],
-                    }
+                    crate::evaluator::eval(&mut ctx, list_expr).map_err(ActionError::from)?
+                };
+                let elements = match &list_value {
+                    Value::Multifield(values) => values.as_slice(),
+                    other => std::slice::from_ref(other),
                 };
 
                 let index_var_name = format!("{var_name}-index");
+                let mut loop_frame: Option<(Token, CompiledRuleInfo, VarId, VarId)> = None;
                 for (idx, element) in elements.iter().enumerate() {
                     #[allow(clippy::cast_possible_wrap)]
                     // usize→i64: element counts can't exceed i64
                     let one_based = idx as i64 + 1;
 
-                    // Bind the element variable and the index variable.
-                    let (token1, rule_info1) = augment_bindings_with_var(
-                        token,
-                        rule_info,
-                        var_name,
-                        element.clone(),
-                        &mut context.engine.symbol_table,
-                        &context.engine.config,
-                    )?;
-                    let (loop_token, loop_rule_info) = augment_bindings_with_var(
-                        &token1,
-                        &rule_info1,
-                        &index_var_name,
-                        Value::Integer(one_based),
-                        &mut context.engine.symbol_table,
-                        &context.engine.config,
-                    )?;
+                    if let Some((frame_token, _, value_id, index_id)) = &mut loop_frame {
+                        frame_token
+                            .bindings
+                            .set(*value_id, ValueRef::new(element.clone()));
+                        frame_token
+                            .bindings
+                            .set(*index_id, ValueRef::new(Value::Integer(one_based)));
+                    } else {
+                        let (token1, info1, value_id) = augment_bindings_with_var(
+                            token,
+                            rule_info,
+                            var_name,
+                            element.clone(),
+                            &mut context.engine.symbol_table,
+                            &context.engine.config,
+                        )?;
+                        let (frame_token, frame_info, index_id) = augment_bindings_with_var(
+                            &token1,
+                            &info1,
+                            &index_var_name,
+                            Value::Integer(one_based),
+                            &mut context.engine.symbol_table,
+                            &context.engine.config,
+                        )?;
+                        loop_frame = Some((frame_token, frame_info, value_id, index_id));
+                    }
+                    let (loop_token, loop_rule_info, _, _) = loop_frame.as_ref().unwrap();
 
                     execute_loop_body(
                         reset_requested,
                         clear_requested,
-                        &loop_token,
-                        &loop_rule_info,
+                        loop_token,
+                        loop_rule_info,
                         body,
                         context,
                         eval_env,
@@ -1291,7 +1327,7 @@ fn execute_single_action(
     }
 }
 
-/// Create a lightweight clone of `CompiledRuleInfo` sharing only the `var_map`.
+/// Clone the metadata used by temporary action binding frames.
 ///
 /// Clones the parts needed for loop body execution.  `runtime_actions` is
 /// intentionally left empty because the loop body items are dispatched via
@@ -1300,7 +1336,8 @@ fn execute_single_action(
 fn rule_info_clone_light(rule_info: &CompiledRuleInfo) -> CompiledRuleInfo {
     CompiledRuleInfo {
         name: rule_info.name.clone(),
-        source_definition: rule_info.source_definition.clone(),
+        // Introspection reads the registered rule in Engine, not this frame.
+        source_definition: None,
         actions: Vec::new(),
         var_map: rule_info.var_map.clone(),
         fact_address_vars: rule_info.fact_address_vars.clone(),
@@ -1324,7 +1361,7 @@ fn augment_bindings_with_var(
     value: Value,
     symbol_table: &mut SymbolTable,
     config: &crate::config::EngineConfig,
-) -> Result<(Token, CompiledRuleInfo), ActionError> {
+) -> Result<(Token, CompiledRuleInfo, VarId), ActionError> {
     let sym = symbol_table
         .intern_symbol(var_name, config.string_encoding)
         .map_err(ActionError::from)?;
@@ -1338,7 +1375,7 @@ fn augment_bindings_with_var(
     let mut new_token = token.clone();
     new_token.bindings.set(var_id, ValueRef::new(value));
 
-    Ok((new_token, new_rule_info))
+    Ok((new_token, new_rule_info, var_id))
 }
 
 /// Execute a slice of loop body items.
@@ -1365,12 +1402,12 @@ fn execute_loop_body(
 ) -> Result<(), ActionError> {
     for (action_expr, rt_expr) in body {
         let (branch_call, branch_runtime): (
-            ferric_rules_parser::FunctionCall,
+            Cow<'_, ferric_rules_parser::FunctionCall>,
             Option<&crate::evaluator::RuntimeExpr>,
         ) = match action_expr {
             ActionExpr::FunctionCall(fc) => {
                 let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                (fc.clone(), rt)
+                (Cow::Borrowed(fc), rt)
             }
             ActionExpr::If { span, .. } => {
                 let synthetic = ferric_rules_parser::FunctionCall {
@@ -1379,7 +1416,7 @@ fn execute_loop_body(
                     span: *span,
                 };
                 let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                (synthetic, rt)
+                (Cow::Owned(synthetic), rt)
             }
             ActionExpr::While { span, .. } => {
                 let synthetic = ferric_rules_parser::FunctionCall {
@@ -1388,7 +1425,7 @@ fn execute_loop_body(
                     span: *span,
                 };
                 let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                (synthetic, rt)
+                (Cow::Owned(synthetic), rt)
             }
             ActionExpr::LoopForCount { span, .. } => {
                 let synthetic = ferric_rules_parser::FunctionCall {
@@ -1397,7 +1434,7 @@ fn execute_loop_body(
                     span: *span,
                 };
                 let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                (synthetic, rt)
+                (Cow::Owned(synthetic), rt)
             }
             ActionExpr::Progn { span, .. } => {
                 let synthetic = ferric_rules_parser::FunctionCall {
@@ -1406,7 +1443,7 @@ fn execute_loop_body(
                     span: *span,
                 };
                 let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                (synthetic, rt)
+                (Cow::Owned(synthetic), rt)
             }
             ActionExpr::QueryAction { name, span, .. } => {
                 let synthetic = ferric_rules_parser::FunctionCall {
@@ -1415,7 +1452,7 @@ fn execute_loop_body(
                     span: *span,
                 };
                 let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                (synthetic, rt)
+                (Cow::Owned(synthetic), rt)
             }
             ActionExpr::Switch { span, .. } => {
                 let synthetic = ferric_rules_parser::FunctionCall {
@@ -1424,7 +1461,7 @@ fn execute_loop_body(
                     span: *span,
                 };
                 let rt: Option<&crate::evaluator::RuntimeExpr> = rt_expr.as_deref();
-                (synthetic, rt)
+                (Cow::Owned(synthetic), rt)
             }
             _ => {
                 // Literal/variable — evaluate as expression; result is discarded.
@@ -1547,7 +1584,7 @@ fn execute_query_action(
             // Represent the FactId as an integer value.
             #[allow(clippy::cast_possible_wrap)] // FactId ffi is u64; wrap is acceptable here
             let fact_val = Value::Integer(fact_id.data().as_ffi() as i64);
-            let (new_token, new_rule_info) = augment_bindings_with_var(
+            let (new_token, new_rule_info, _) = augment_bindings_with_var(
                 &aug_token,
                 &aug_rule_info,
                 var_name,
@@ -2885,6 +2922,69 @@ fn resolve_fact_address(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn temporary_bindings_preserve_alias_precedence_and_values(
+            first in any::<i64>(),
+            second in any::<i64>(),
+            local in prop::option::of(any::<i64>()),
+            reverse in any::<bool>(),
+            mixed_encoding in any::<bool>(),
+            fields in prop::collection::vec(any::<i64>(), 0..32),
+        ) {
+            let mut engine = Engine::new(crate::EngineConfig::utf8());
+            engine.load_str("(defrule frame =>)").unwrap();
+            let mut info = rule_info_clone_light(engine.rule_info.iter().flatten().next().unwrap());
+            let mut token = Token {
+                fact: None,
+                parent: None,
+                owner_node: engine.rete.beta.root_id(),
+                bindings: BindingSet::new(),
+            };
+            let encoding = if mixed_encoding {
+                ferric_rules_core::StringEncoding::Ascii
+            } else {
+                ferric_rules_core::StringEncoding::Utf8
+            };
+            let names = if reverse { ["$?x", "x"] } else { ["x", "$?x"] };
+            for (name, value) in names.into_iter().zip([first, second]) {
+                let symbol = engine.symbol_table.intern_symbol(name, encoding).unwrap();
+                let id = info.var_map.get_or_create(symbol).unwrap();
+                token.bindings.set(id, ValueRef::new(Value::Integer(value)));
+            }
+            let mut multifield = ferric_rules_core::Multifield::new();
+            multifield.extend(fields.into_iter().map(Value::Integer));
+            let expected_tail = Value::Multifield(Box::new(multifield));
+            let symbol = engine.symbol_table.intern_symbol("$?tail", encoding).unwrap();
+            let id = info.var_map.get_or_create(symbol).unwrap();
+            token.bindings.set(id, ValueRef::new(expected_tail.clone()));
+            let symbol = engine.symbol_table.intern_symbol("unbound", encoding).unwrap();
+            info.var_map.get_or_create(symbol).unwrap();
+
+            let mut locals = RuntimeBindingEnv::from([("local".to_owned(), Value::Integer(0))]);
+            if let Some(value) = local {
+                locals.insert("$?x".to_owned(), Value::Integer(value));
+            }
+            let module = engine.module_registry.current_module();
+            let (bindings, names) = build_runtime_eval_bindings(
+                &token, &info, &locals,
+                &mut ActionExecutionContext { engine: &mut engine, current_module: module },
+            ).unwrap();
+            prop_assert_eq!(names.len(), 3);
+            for (name, expected) in [
+                ("x", Value::Integer(local.unwrap_or(second))),
+                ("tail", expected_tail),
+                ("local", Value::Integer(0)),
+            ] {
+                let symbol = engine.symbol_table.find_symbol(name, engine.config.string_encoding).unwrap();
+                let id = names.lookup(symbol).unwrap();
+                prop_assert!(bindings.get(id).unwrap().structural_eq(&expected));
+            }
+        }
+    }
 
     #[test]
     fn action_error_display() {
