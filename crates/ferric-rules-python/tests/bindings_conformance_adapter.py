@@ -10,7 +10,7 @@ from typing import Any
 
 import ferric
 
-HIGH_ID_ITERATIONS = 1_048_577
+HIGH_ID_ITERATIONS = 1
 
 
 def repository_root() -> Path:
@@ -57,8 +57,14 @@ def asserted_field(value: Any) -> Any:
 
 
 def value_case(case_id: str) -> Any:
-    if case_id == "value.void":
-        return asserted_field(None)
+    if case_id in {"value.void", "value.void.nested"}:
+        with ferric.Engine() as engine:
+            value = None if case_id == "value.void" else [None]
+            try:
+                engine.assert_fact("probe", value)
+            except ValueError:
+                return {"ingress": "rejected", "facts": engine.fact_count}
+            raise RuntimeError("void unexpectedly installed a fact")
     if case_id == "value.integer.boundaries":
         return {
             "minimum": asserted_field(-(1 << 63)),
@@ -75,7 +81,7 @@ def value_case(case_id: str) -> Any:
     if case_id == "value.multifield.nested":
         return asserted_field(
             [
-                None,
+                0,
                 7,
                 2.5,
                 ferric.Symbol("blue"),
@@ -342,11 +348,9 @@ def high_fact_id() -> Any:
             fact_id = engine.assert_fact("generation")
             engine.retract(fact_id)
         fact_id = engine.assert_fact("generation")
-        return {
-            "roundtrip": (
-                fact_id > 9_007_199_254_740_991 and engine.get_fact(fact_id) is not None
-            )
-        }
+        roundtrip = fact_id > 9_007_199_254_740_991 and engine.get_fact(fact_id) is not None
+        engine.retract(fact_id)
+        return {"roundtrip": roundtrip and engine.get_fact(fact_id) is None}
     finally:
         engine.close()
 

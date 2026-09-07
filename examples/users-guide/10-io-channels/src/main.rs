@@ -9,7 +9,7 @@ fn main() -> anyhow::Result<()> {
     let mut engine = Engine::with_rules(rules)?;
 
     engine.push_input("hello world");
-    engine.assert_ordered("prompt-line", vec![])?;
+    engine.assert_ordered("prompt-line", ())?;
     engine.run(RunLimit::Unlimited)?;
 
     let output = engine.get_output("t").unwrap_or("");

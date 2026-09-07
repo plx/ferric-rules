@@ -2708,7 +2708,7 @@ fn assert_ordered_and_propagate(
     engine: &mut Engine,
     relation: Symbol,
     fields: OrderedFields,
-) -> Result<crate::FactAssertionResult, ActionError> {
+) -> Result<crate::FactAssertionResult<FactId>, ActionError> {
     engine
         .assert_fact_internal(Fact::Ordered(OrderedFact { relation, fields }))
         .map_err(|error| ActionError::EvalError(error.to_string()))
@@ -2718,7 +2718,7 @@ fn assert_template_and_propagate(
     engine: &mut Engine,
     template_id: TemplateId,
     slots: Box<[Value]>,
-) -> Result<crate::FactAssertionResult, ActionError> {
+) -> Result<crate::FactAssertionResult<FactId>, ActionError> {
     engine
         .assert_fact_internal(Fact::Template(ferric_rules_core::TemplateFact {
             template_id,

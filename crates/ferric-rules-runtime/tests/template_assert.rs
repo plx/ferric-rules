@@ -1,6 +1,7 @@
 //! Declared-template identity and RHS named-slot assertion regressions.
 
-use ferric_rules_core::{Fact, FactId, TemplateFact};
+use ferric_rules_core::{Fact, TemplateFact};
+use ferric_rules_runtime::FactHandle as FactId;
 use ferric_rules_runtime::{Engine, HaltReason, RunLimit, Value};
 
 fn template_facts<'a>(engine: &'a Engine, name: &str) -> Vec<(FactId, &'a TemplateFact)> {
@@ -31,7 +32,7 @@ fn rhs_template_assert_evaluates_named_slots_fills_defaults_and_propagates() {
     let Value::Symbol(status) = facts[0].1.slots[1] else {
         panic!("default must be the ready symbol");
     };
-    assert_eq!(engine.resolve_symbol(status), Some("ready"));
+    assert_eq!(engine.resolve_core_symbol(status), Some("ready"));
 }
 
 #[test]
@@ -58,7 +59,7 @@ fn template_multislot_evaluates_every_expression_and_splices_multifields() {
         let Value::Symbol(symbol) = value else {
             panic!("expected symbol");
         };
-        assert_eq!(engine.resolve_symbol(*symbol), Some(expected));
+        assert_eq!(engine.resolve_core_symbol(*symbol), Some(expected));
     }
     assert!(matches!(values[3], Value::Integer(5)));
 }
@@ -144,7 +145,7 @@ fn modify_and_duplicate_preserve_complete_multislot_values() {
                 let names: Vec<_> = values
                     .iter()
                     .map(|value| match value {
-                        Value::Symbol(symbol) => engine.resolve_symbol(*symbol).unwrap(),
+                        Value::Symbol(symbol) => engine.resolve_core_symbol(*symbol).unwrap(),
                         _ => panic!("expected a symbol"),
                     })
                     .collect();
@@ -237,7 +238,7 @@ fn omitted_unconstrained_slots_derive_nil_and_empty_multifield() {
     let Value::Symbol(symbol) = facts[0].1.slots[0] else {
         panic!("unconstrained single slot defaults to nil");
     };
-    assert_eq!(engine.resolve_symbol(symbol), Some("nil"));
+    assert_eq!(engine.resolve_core_symbol(symbol), Some("nil"));
     assert!(matches!(&facts[0].1.slots[1], Value::Multifield(values) if values.is_empty()));
 }
 
@@ -297,7 +298,7 @@ fn multislot_omits_void_expression_results_and_preserves_effects() {
     let fields: Vec<_> = values
         .iter()
         .map(|value| match value {
-            Value::Symbol(symbol) => engine.resolve_symbol(*symbol).unwrap(),
+            Value::Symbol(symbol) => engine.resolve_core_symbol(*symbol).unwrap(),
             _ => panic!("only the two surrounding symbols should be retained"),
         })
         .collect();

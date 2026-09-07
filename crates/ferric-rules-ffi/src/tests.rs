@@ -74,3 +74,6 @@ mod pinned;
 
 #[cfg(test)]
 mod thread_transfer;
+
+#[cfg(test)]
+mod host_handles;

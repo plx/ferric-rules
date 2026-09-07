@@ -291,7 +291,7 @@ pub struct RuleDef {
 #[derive(Debug, Default)]
 pub struct LoadResult {
     /// Facts asserted during loading.
-    pub asserted_facts: Vec<FactId>,
+    pub asserted_facts: Vec<crate::FactHandle>,
     /// Rules registered during loading (typed constructs from Stage 2).
     pub rules: Vec<RuleConstruct>,
     /// Templates registered during loading.
@@ -754,6 +754,7 @@ impl Engine {
             }
         }
 
+        self.host.prune(&self.fact_base);
         if errors.is_empty() {
             ferric_event!(
                 info,
@@ -1522,7 +1523,7 @@ impl Engine {
     fn process_assert(&mut self, args: &[SExpr], result: &mut LoadResult) -> Result<(), LoadError> {
         for fact_expr in args {
             let fact_id = self.process_assert_fact(fact_expr, result)?;
-            result.asserted_facts.push(fact_id);
+            result.asserted_facts.push(self.host.export(fact_id));
         }
         Ok(())
     }
@@ -1573,8 +1574,16 @@ impl Engine {
             }
         }
 
-        self.assert_ordered(relation, fields)
-            .map_err(LoadError::Engine)
+        let relation = self
+            .symbol_table
+            .intern_symbol(relation, self.config.string_encoding)
+            .map_err(|error| LoadError::Engine(error.into()))?;
+        Ok(self
+            .assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
+                relation,
+                fields: fields.into_iter().collect(),
+            }))?
+            .fact_id())
     }
 
     /// Process a template fact within an assert form.
@@ -4979,7 +4988,7 @@ mod tests {
             .iter()
             .any(|error| error.to_string().contains("expression nesting limit")));
         // Failed replacement preserves the earlier, executable rule.
-        engine.assert_ordered("trigger", vec![]).unwrap();
+        engine.assert_ordered("trigger", ()).unwrap();
         assert_eq!(
             engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
             1
@@ -5281,7 +5290,7 @@ mod tests {
         let Value::Symbol(value) = engine.get_fact_slot_by_name(fact_id, "value").unwrap() else {
             panic!("eq must produce a symbol value");
         };
-        assert_eq!(engine.resolve_symbol(*value), Some("TRUE"));
+        assert_eq!(engine.resolve_core_symbol(*value), Some("TRUE"));
     }
 
     #[test]
@@ -6350,12 +6359,12 @@ mod tests {
         let fact_id = engine.find_facts("foo").unwrap()[1].0;
         let entry = engine
             .fact_base
-            .get(fact_id)
+            .get(engine.host.resolve(fact_id).unwrap())
             .expect("asserted fact should exist");
         match &entry.fact {
             ferric_rules_core::Fact::Ordered(ordered) => {
                 let relation = engine
-                    .resolve_symbol(ordered.relation)
+                    .resolve_core_symbol(ordered.relation)
                     .expect("relation symbol should resolve");
                 assert_eq!(relation, "foo");
                 assert_eq!(ordered.fields.len(), 1);
@@ -6363,7 +6372,7 @@ mod tests {
                     panic!("expected symbol field, got {:?}", ordered.fields[0]);
                 };
                 let field = engine
-                    .resolve_symbol(field_sym)
+                    .resolve_core_symbol(field_sym)
                     .expect("field symbol should resolve");
                 assert_eq!(field, "clear");
             }

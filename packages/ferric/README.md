@@ -30,9 +30,9 @@ Plain strings are CLIPS strings; `FerricSymbol` or canonical wire symbols are
 CLIPS symbols. Arrays are multifields; integers beyond the JavaScript safe
 integer range must use signed 64-bit `bigint`. Unsafe integral numbers are
 rejected, including values formerly guessed as floats. Run limits and counts
-are safe-integer numbers. Raw fact IDs are bigint generational handles belonging
+are safe-integer numbers. Raw fact IDs are opaque bigint handles belonging
 to their engine; persist application keys and query fresh IDs after restore.
-External addresses are rejected instead of silently becoming null.
+Stored null/void values, including nested ones, are rejected. Use a `FerricSymbol("nil")` for the CLIPS symbol. Multifields allow at most 32 nested levels and one million values per assertion. External addresses are rejected instead of silently becoming null.
 
 Configuration and format selectors reject fractional/out-of-range numbers.
 `maxCallDepth` accepts integers from zero through 4294967295; zero disallows

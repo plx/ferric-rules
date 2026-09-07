@@ -3,9 +3,9 @@
 use napi::{Env, JsObject, Result};
 use napi_derive::napi;
 
-use ferric_rules_core::{Fact as CoreFact, FactId};
+use ferric_rules_core::Fact as CoreFact;
 use ferric_rules_runtime::Engine;
-use slotmap::Key;
+use ferric_rules_runtime::FactHandle as FactId;
 
 use crate::value::{value_to_js, values_to_js_array};
 
@@ -45,15 +45,15 @@ pub fn fact_to_js(
 ) -> Result<JsObject> {
     let mut obj = env.create_object()?;
 
-    // Fact IDs are 64-bit generational keys, so expose them losslessly as
+    // Fact IDs are transient 64-bit host handles, so expose them losslessly as
     // JavaScript bigint values.
-    obj.set("id", env.create_bigint_from_u64(fact_id.data().as_ffi())?)?;
+    obj.set("id", env.create_bigint_from_u64(fact_id.as_raw())?)?;
 
     match fact {
         CoreFact::Ordered(ordered) => {
             obj.set("type", FactType::Ordered as u32)?;
             let relation = engine
-                .resolve_symbol(ordered.relation)
+                .resolve_core_symbol(ordered.relation)
                 .unwrap_or("<unknown>");
             obj.set("relation", env.create_string(relation)?)?;
 

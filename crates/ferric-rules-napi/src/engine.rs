@@ -6,11 +6,10 @@ use std::path::PathBuf;
 use napi::{Env, JsBigInt, JsNull, JsNumber, JsObject, JsUnknown, Result, ValueType};
 use napi_derive::napi;
 
-use ferric_rules_core::FactId;
 use ferric_rules_runtime::config::EngineConfig;
 use ferric_rules_runtime::execution::RunLimit;
 use ferric_rules_runtime::Engine as FerricEngine;
-use slotmap::{Key, KeyData};
+use ferric_rules_runtime::{FactHandle as FactId, HOST_VALUE_MAX_ITEMS};
 
 use crate::config::{checked_u32, Encoding, Strategy};
 use crate::error::{engine_error_to_napi, init_error_to_napi, load_errors_to_napi};
@@ -145,7 +144,7 @@ fn fact_id_from_js(id: JsUnknown) -> Result<FactId> {
         }
     };
 
-    Ok(FactId::from(KeyData::from_ffi(raw)))
+    Ok(FactId::from_raw(raw))
 }
 
 #[napi]
@@ -224,7 +223,7 @@ impl Engine {
         Ok(result
             .asserted_facts
             .iter()
-            .map(|fid| fid.data().as_ffi())
+            .map(|fid| fid.as_raw())
             .collect())
     }
 
@@ -238,9 +237,13 @@ impl Engine {
         if state.is_none() {
             return Err(napi::Error::from_reason("engine has been closed"));
         }
+        let mut remaining = HOST_VALUE_MAX_ITEMS;
+        if fields.len() > remaining {
+            return Err(napi::Error::from_reason("too many values in one assertion"));
+        }
         let staged = fields
             .into_iter()
-            .map(|item| js_to_owned(&env, item, 0))
+            .map(|item| js_to_owned(&env, item, 0, &mut remaining))
             .collect::<Result<Vec<_>>>()?;
         let engine = state
             .as_mut()
@@ -252,7 +255,7 @@ impl Engine {
         let fid = engine
             .assert_ordered(&relation, values)
             .map_err(engine_error_to_napi)?;
-        Ok(fid.data().as_ffi())
+        Ok(fid.as_raw())
     }
 
     /// Assert a template fact by template name and slot values.
@@ -267,11 +270,15 @@ impl Engine {
             return Err(napi::Error::from_reason("engine has been closed"));
         }
         let names = collect_object_keys(&slots)?;
+        let mut remaining = HOST_VALUE_MAX_ITEMS;
+        if names.len() > remaining {
+            return Err(napi::Error::from_reason("too many values in one assertion"));
+        }
         let staged = names
             .iter()
             .map(|name| {
                 let value: JsUnknown = slots.get_named_property_unchecked(name)?;
-                js_to_owned(&env, value, 0)
+                js_to_owned(&env, value, 0, &mut remaining)
             })
             .collect::<Result<Vec<_>>>()?;
         let engine = state
@@ -286,7 +293,7 @@ impl Engine {
         let fid = engine
             .assert_template(&template_name, &name_refs, values)
             .map_err(engine_error_to_napi)?;
-        Ok(fid.data().as_ffi())
+        Ok(fid.as_raw())
     }
 
     /// Retract a fact by its ID. Canonical IDs are `bigint`; safe legacy
@@ -436,7 +443,7 @@ impl Engine {
     #[napi(getter)]
     pub fn fact_count(&self) -> Result<f64> {
         let engine = self.engine()?;
-        let count = engine.facts().map_err(engine_error_to_napi)?.count();
+        let count = engine.fact_count();
         checked_count(count, "fact count")
     }
 

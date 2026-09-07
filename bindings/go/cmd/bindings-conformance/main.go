@@ -18,7 +18,7 @@ import (
 	ferric "github.com/plx/ferric-rules/bindings/go"
 )
 
-const highIDIterations = 1_048_577
+const highIDIterations = 1
 
 type record struct {
 	Case   string `json:"case"`
@@ -102,10 +102,32 @@ func assertedField(value any) (any, error) {
 	return normalize(fact.Fields[0]), nil
 }
 
+func voidValueCase(nested bool) (any, error) {
+	engine, err := withEngine()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = engine.Close() }()
+	var value any
+	if nested {
+		value = []any{nil}
+	}
+	_, assertionError := engine.AssertFact("probe", value)
+	count, err := engine.FactCount()
+	if err != nil {
+		return nil, err
+	}
+	ingress := "accepted"
+	if assertionError != nil {
+		ingress = "rejected"
+	}
+	return map[string]any{"ingress": ingress, "facts": count}, nil
+}
+
 func valueCase(caseID string) (any, error) {
 	switch caseID {
-	case "value.void":
-		return assertedField(nil)
+	case "value.void", "value.void.nested":
+		return voidValueCase(caseID == "value.void.nested")
 	case "value.integer.boundaries":
 		minimum, err := assertedField(int64(-1 << 63))
 		if err != nil {
@@ -124,7 +146,7 @@ func valueCase(caseID string) (any, error) {
 		return assertedField("red")
 	case "value.multifield.nested":
 		return assertedField([]any{
-			nil,
+			int64(0),
 			int64(7),
 			2.5,
 			ferric.Symbol("blue"),

@@ -5,9 +5,8 @@ use pyo3::types::PyDict;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use ferric_rules_core::{Fact as CoreFact, FactId};
-use ferric_rules_runtime::Engine;
-use slotmap::Key;
+use ferric_rules_core::Fact as CoreFact;
+use ferric_rules_runtime::{Engine, FactHandle};
 
 use crate::value::value_to_python;
 
@@ -26,7 +25,7 @@ pub enum FactType {
 /// This is a value copy — it does not hold a reference to the engine.
 #[pyclass(module = "ferric")]
 pub struct Fact {
-    /// Fact ID (as u64 from slotmap `KeyData::as_ffi()`).
+    /// Transient, engine-scoped fact identity represented losslessly as Python int.
     #[pyo3(get)]
     pub id: u64,
     /// Engine instance ID (used for cross-engine equality/hash).
@@ -94,17 +93,17 @@ impl Fact {
 /// Create a Python `Fact` snapshot from a Rust fact.
 pub fn fact_to_python(
     py: Python<'_>,
-    fact_id: FactId,
+    fact_id: FactHandle,
     fact: &CoreFact,
     engine: &Engine,
     engine_id: u64,
 ) -> PyResult<Fact> {
-    let id = fact_id.data().as_ffi();
+    let id = fact_id.as_raw();
 
     match fact {
         CoreFact::Ordered(ordered) => {
             let relation = engine
-                .resolve_symbol(ordered.relation)
+                .resolve_core_symbol(ordered.relation)
                 .unwrap_or("<unknown>")
                 .to_string();
             let fields: Vec<PyObject> = ordered

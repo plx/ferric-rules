@@ -1,12 +1,17 @@
 {
   "schema_version": 1,
-  "suite_version": "1.1.1",
+  "suite_version": "1.2.0",
   "bindings": ["rust", "c", "go", "node", "python"],
   "cases": [
     {
       "id": "value.void",
       "semantic": "value.void",
-      "canonical": {"type": "void"}
+      "canonical": {"ingress": "rejected", "facts": 0}
+    },
+    {
+      "id": "value.void.nested",
+      "semantic": "value.void",
+      "canonical": {"ingress": "rejected", "facts": 0}
     },
     {
       "id": "value.integer.boundaries",
@@ -45,7 +50,7 @@
       "canonical": {
         "type": "multifield",
         "value": [
-          {"type": "void"},
+          {"type": "integer", "value": "0"},
           {"type": "integer", "value": "7"},
           {"type": "float", "value": "2.5"},
           {"type": "symbol", "value": "blue"},

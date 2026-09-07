@@ -22,7 +22,6 @@ use ferric_rules_runtime::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use slotmap::Key as _;
 
 const SCHEMA_NAME: &str = "ferric.compat-observation";
 const SCHEMA_VERSION: u8 = 1;
@@ -874,7 +873,7 @@ fn capture_state(engine: &Engine, run_result: Option<RunResult>) -> Result<Captu
             observe_fact(
                 engine,
                 ordinal,
-                fact_id.data().as_ffi().to_string(),
+                fact_id.as_raw().to_string(),
                 ordered_fact_module,
                 fact,
             )
@@ -942,9 +941,11 @@ fn observe_fact(
 ) -> Result<FactObservation, String> {
     match fact {
         Fact::Ordered(ordered) => {
-            let relation = engine.resolve_symbol(ordered.relation).ok_or_else(|| {
-                format!("ordered fact {fact_id} has an unresolved relation symbol")
-            })?;
+            let relation = engine
+                .resolve_core_symbol(ordered.relation)
+                .ok_or_else(|| {
+                    format!("ordered fact {fact_id} has an unresolved relation symbol")
+                })?;
             let fields = ordered
                 .fields
                 .iter()
@@ -1014,7 +1015,7 @@ fn observe_value(engine: &Engine, value: &Value) -> Result<ValueObservation, Str
     match value {
         Value::Symbol(symbol) => {
             let value = engine
-                .resolve_symbol(*symbol)
+                .resolve_core_symbol(*symbol)
                 .ok_or_else(|| "fact value has an unresolved symbol".to_string())?;
             Ok(ValueObservation::Symbol {
                 value: value.to_string(),

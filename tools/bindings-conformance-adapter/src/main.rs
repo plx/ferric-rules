@@ -3,16 +3,15 @@ use std::fs;
 use std::path::PathBuf;
 
 use ferric_rules::core::{
-    ConflictResolutionStrategy, ExternalAddress, ExternalTypeId, Fact, Multifield, StringEncoding,
-    Value,
+    ConflictResolutionStrategy, ExternalAddress, ExternalTypeId, Fact, StringEncoding, Value,
 };
 use ferric_rules::runtime::{
-    Engine, EngineConfig, EngineError, HaltReason, LoadError, RunLimit, SerializationFormat,
+    Engine, EngineConfig, EngineError, HaltReason, HostValue, LoadError, RunLimit,
+    SerializationFormat,
 };
 use serde_json::{json, Value as JsonValue};
-use slotmap::Key;
 
-const HIGH_ID_ITERATIONS: usize = 1_048_577;
+const HIGH_ID_ITERATIONS: usize = 1;
 
 fn root() -> Result<PathBuf, String> {
     env::var_os("FERRIC_BINDINGS_CONFORMANCE_ROOT")
@@ -56,7 +55,7 @@ fn normalize_value(value: &Value, engine: &Engine) -> JsonValue {
         Value::Float(value) => json!({"type": "float", "value": value.to_string()}),
         Value::Symbol(symbol) => json!({
             "type": "symbol",
-            "value": engine.resolve_symbol(*symbol).unwrap_or("<unknown>")
+            "value": engine.resolve_core_symbol(*symbol).unwrap_or("<unknown>")
         }),
         Value::String(value) => json!({"type": "string", "value": value.as_str()}),
         Value::Multifield(values) => json!({
@@ -71,9 +70,10 @@ fn normalize_value(value: &Value, engine: &Engine) -> JsonValue {
     }
 }
 
-fn asserted_field(engine: &mut Engine, value: Value) -> Result<JsonValue, String> {
+fn asserted_field(engine: &mut Engine, value: impl Into<HostValue>) -> Result<JsonValue, String> {
+    let value: HostValue = value.into();
     let id = engine
-        .assert_ordered("probe", vec![value])
+        .assert_ordered("probe", value)
         .map_err(|error| error.to_string())?;
     let fact = engine
         .get_fact(id)
@@ -92,7 +92,20 @@ fn asserted_field(engine: &mut Engine, value: Value) -> Result<JsonValue, String
 fn value_case(case_id: &str) -> Result<JsonValue, String> {
     let mut engine = Engine::new(EngineConfig::default());
     match case_id {
-        "value.void" => asserted_field(&mut engine, Value::Void),
+        "value.void" | "value.void.nested" => {
+            let value = if case_id.ends_with(".nested") {
+                Value::Multifield(Box::new([Value::Void].into_iter().collect()))
+            } else {
+                Value::Void
+            };
+            let rejected = matches!(
+                engine.assert_ordered("probe", value),
+                Err(EngineError::InvalidHostValue(_))
+            );
+            Ok(
+                json!({"ingress": if rejected {"rejected"} else {"accepted"}, "facts": engine.facts().unwrap().count()}),
+            )
+        }
         "value.integer.boundaries" => {
             let minimum = asserted_field(&mut engine, Value::Integer(i64::MIN))?;
             let maximum = asserted_field(&mut engine, Value::Integer(i64::MAX))?;
@@ -103,7 +116,7 @@ fn value_case(case_id: &str) -> Result<JsonValue, String> {
             let symbol = engine
                 .intern_symbol("red")
                 .map_err(|error| error.to_string())?;
-            asserted_field(&mut engine, Value::Symbol(symbol))
+            asserted_field(&mut engine, HostValue::from(symbol))
         }
         "value.string.explicit" | "value.string.plain-host" => {
             let value = engine
@@ -118,18 +131,18 @@ fn value_case(case_id: &str) -> Result<JsonValue, String> {
             let text = engine
                 .create_string("text")
                 .map_err(|error| error.to_string())?;
-            let nested: Multifield = vec![Value::Integer(9)].into_iter().collect();
-            let values: Multifield = vec![
-                Value::Void,
-                Value::Integer(7),
-                Value::Float(2.5),
-                Value::Symbol(blue),
-                Value::String(text),
-                Value::Multifield(Box::new(nested)),
-            ]
-            .into_iter()
-            .collect();
-            asserted_field(&mut engine, Value::Multifield(Box::new(values)))
+            let nested =
+                HostValue::multifield(vec![9_i64.into()]).map_err(|error| error.to_string())?;
+            let values = HostValue::multifield(vec![
+                0_i64.into(),
+                7_i64.into(),
+                2.5_f64.into(),
+                blue.into(),
+                text.into(),
+                nested,
+            ])
+            .map_err(|error| error.to_string())?;
+            asserted_field(&mut engine, values)
         }
         "value.external-address" => {
             let external = Value::ExternalAddress(ExternalAddress {
@@ -425,7 +438,7 @@ fn high_fact_id() -> Result<JsonValue, String> {
     let id = engine
         .assert_ordered("generation", Vec::<Value>::new())
         .map_err(|error| error.to_string())?;
-    let above_safe_integer = id.data().as_ffi() > 9_007_199_254_740_991;
+    let above_safe_integer = id.as_raw() > 9_007_199_254_740_991;
     let roundtrip = above_safe_integer
         && engine
             .get_fact(id)

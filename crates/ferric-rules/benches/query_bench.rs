@@ -50,7 +50,7 @@ fn query_summaries(engine: &Engine, n_categories: usize) -> Vec<(usize, i64)> {
                     else {
                         return None;
                     };
-                    if engine.resolve_symbol(*actual_category) != Some(name.as_str()) {
+                    if engine.resolve_core_symbol(*actual_category) != Some(name.as_str()) {
                         return None;
                     }
                     let Value::Integer(value) = engine.get_fact_slot_by_name(id, "value").unwrap()

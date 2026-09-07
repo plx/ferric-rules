@@ -54,9 +54,7 @@ class TestAssertTemplate:
         assert fact.slots["active"] == ferric.Symbol("TRUE")
 
     def test_override_default(self, template_engine):
-        fid = template_engine.assert_template(
-            "person", name=ferric.String("Dave"), active=ferric.Symbol("FALSE")
-        )
+        fid = template_engine.assert_template("person", name=ferric.String("Dave"), active=ferric.Symbol("FALSE"))
         fact = template_engine.get_fact(fid)
         assert fact.slots["active"] == ferric.Symbol("FALSE")
 

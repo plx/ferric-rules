@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use ferric_rules_core::FactId;
+use ferric_rules_runtime::FactHandle as FactId;
 use ferric_rules_runtime::{Engine, EngineConfig, RunLimit};
 
 use super::commands::WatchTarget;
@@ -292,10 +292,7 @@ Keyboard shortcuts:
         for &id in &after {
             if !before.contains(&id) {
                 if let Ok(Some(fact)) = self.engine.get_fact(id) {
-                    let id_num = {
-                        use slotmap::Key as _;
-                        id.data().as_ffi()
-                    };
+                    let id_num = { id.as_raw() };
                     println!("==> f-{id_num}  {}", self.format_fact(fact));
                 }
             }
@@ -304,10 +301,7 @@ Keyboard shortcuts:
         // Facts removed (in before but not in after).
         for &id in before {
             if !after.contains(&id) {
-                let id_num = {
-                    use slotmap::Key as _;
-                    id.data().as_ffi()
-                };
+                let id_num = { id.as_raw() };
                 println!("<== f-{id_num}");
             }
         }
@@ -319,7 +313,7 @@ Keyboard shortcuts:
             ferric_rules_core::Fact::Ordered(o) => {
                 let relation = self
                     .engine
-                    .resolve_symbol(o.relation)
+                    .resolve_core_symbol(o.relation)
                     .unwrap_or("<unknown>");
                 let fields: Vec<String> = o
                     .fields

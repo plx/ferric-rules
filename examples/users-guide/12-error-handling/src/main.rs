@@ -22,7 +22,7 @@ fn demo_init_error() {
 fn demo_action_diagnostics() -> anyhow::Result<()> {
     let rules = include_str!("../rules/diagnostics.clp");
     let mut engine = Engine::with_rules(rules)?;
-    engine.assert_ordered("begin", vec![])?;
+    engine.assert_ordered("begin", ())?;
 
     let _ = engine.run(RunLimit::Unlimited)?;
 

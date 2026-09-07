@@ -5,8 +5,8 @@
 //! never from recording an earlier engine result.
 #![allow(dead_code)]
 
-use ferric_rules::core::{Fact, FactId, Value};
-use ferric_rules::runtime::{Engine, EngineConfig, HaltReason, RunLimit};
+use ferric_rules::core::{Fact, Value};
+use ferric_rules::runtime::{Engine, EngineConfig, FactHandle as FactId, HaltReason, RunLimit};
 
 pub fn verify_source(source: &str, expected_firings: usize) -> Engine {
     let mut engine = Engine::new(EngineConfig::utf8());
@@ -54,7 +54,7 @@ pub fn symbol<'a>(engine: &'a Engine, value: &Value) -> &'a str {
     let Value::Symbol(value) = value else {
         panic!("expected symbol, got {value:?}");
     };
-    engine.resolve_symbol(*value).unwrap()
+    engine.resolve_core_symbol(*value).unwrap()
 }
 
 pub fn integer(value: &Value) -> i64 {

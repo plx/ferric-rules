@@ -45,7 +45,7 @@ export interface FerricSymbolInstance {
  *   bigint                           → CLIPS integer (for values outside safe-integer range)
  *   boolean                          → CLIPS symbol TRUE / FALSE
  *   ClipsValue[]                     → CLIPS multifield
- *   null                             → CLIPS void
+ *   null                             → rejected as fact input (void output only)
  *
  * Conversion rules (CLIPS → JS):
  *   CLIPS symbol    → FerricSymbol (native) or WireSymbolObject (across postMessage)
@@ -68,9 +68,9 @@ export type ClipsValue =
 /**
  * Canonical identifier for a fact.
  *
- * Fact IDs are 64-bit generational values and are therefore always exposed as
+ * Fact IDs are engine-scoped opaque unsigned 64-bit handles, always exposed as
  * `bigint`, including when the current value would fit in a JavaScript safe
- * integer.
+ * integer. Reset/clear/restore require fresh handles queried from durable fields.
  */
 export type FactId = bigint;
 

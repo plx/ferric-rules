@@ -30,8 +30,11 @@ system. You load CLIPS source into it once, and at runtime:
 3. **Read** the results — either by pulling facts back out of working memory
    or by reading captured `printout` channels.
 
-Each `Engine` is `!Send + !Sync`: it lives on a single thread. Create one per
-decision context (per session, per request, per worker) or reset and reuse.
+Each Rust `Engine` is `Send + Sync`: ownership can move between threads, and
+shared reads are supported. Mutation requires exclusive access; serialize host
+operations when sharing an engine. Create one per decision context (per session,
+per request, per worker) or reset and reuse. See the [host contract](host-api.md)
+for the ownership of values and fact handles.
 
 The facade crate re-exports everything you need:
 
@@ -137,7 +140,7 @@ fn assert_person(engine: &mut Engine, name: &str, age: i64) -> anyhow::Result<()
     engine.assert_template(
         "person",
         &["name", "age"],
-        vec![name_sym, Value::Integer(age)],
+        vec![name_sym, Value::Integer(age).into()],
     )?;
     Ok(())
 }
@@ -166,10 +169,9 @@ You can opt into duplicates with `engine.set_fact_duplication(true)` or
 `(set-fact-duplication TRUE)`. The setter returns the previous setting, and
 the policy survives reset and serialization.
 
-> **Heads up:** the CLIPS literal form `(assert (person (name Alice) (age 30)))`
-> is currently rejected by ferric's RHS evaluator (it parses the slot specs as
-> function calls). Build template facts from Rust via `assert_template`, or use
-> ordered facts in `(assert ...)` actions.
+Rules can also assert template facts with named slots:
+`(assert (person (name Alice) (age 30)))`. Omitted slots use their declared
+defaults, and slot names, types and cardinality are validated.
 
 Partial patterns let rules match on just the slots they care about, which
 is usually what you want:
@@ -243,14 +245,14 @@ fn classify(engine: &mut Engine, smoke: &str, temperature: f64) -> anyhow::Resul
     engine.assert_ordered("sensor", vec![smoke_kind, smoke_level])?;
 
     let temp_kind = engine.symbol_value("temperature")?;
-    engine.assert_ordered("sensor", vec![temp_kind, Value::Float(temperature)])?;
+    engine.assert_ordered("sensor", vec![temp_kind, Value::Float(temperature).into()])?;
 
     engine.run(RunLimit::Unlimited)?;
 
     for (_, fact) in engine.find_facts("alert")? {
         if let ferric_rules::core::Fact::Ordered(of) = fact {
             if let Some(Value::Symbol(sym)) = of.fields.first() {
-                if let Some(name) = engine.resolve_symbol(*sym) {
+                if let Some(name) = engine.resolve_core_symbol(*sym) {
                     return Ok(Some(name.to_string()));
                 }
             }
@@ -618,7 +620,7 @@ input buffer. Push lines from Rust before the run:
 <!-- example: 10-io-channels/src/main.rs -->
 ```rust
 engine.push_input("hello world");
-engine.assert_ordered("prompt-line", vec![])?;
+engine.assert_ordered("prompt-line", ())?;
 engine.run(RunLimit::Unlimited)?;
 ```
 
@@ -688,8 +690,8 @@ Two categories of things can go wrong:
 **Fatal errors** return `Err` from the fallible engine methods.
 `Engine::with_rules` returns `InitError` on parse or compilation failure;
 `assert_*`, `retract`, `run`, and friends return `EngineError` for
-runtime problems (template not found, encoding violations, thread-affinity
-violations, recursion-limit exceeded).
+runtime problems (template not found, encoding violations, stale or foreign
+handles, recursion-limit exceeded).
 
 **Non-fatal action diagnostics** are warnings from the most recent `run` or
 `step` — for example, an unresolved module reference in a `focus` action.
@@ -811,7 +813,11 @@ fn run(engine: &mut Engine, inputs: &[(i64, &str, f64)]) -> anyhow::Result<()> {
         engine.assert_template(
             "reading",
             &["id", "kind", "value"],
-            vec![Value::Integer(*id), kind_sym, Value::Float(*value)],
+            vec![
+                Value::Integer(*id).into(),
+                kind_sym,
+                Value::Float(*value).into(),
+            ],
         )?;
     }
 
@@ -830,13 +836,11 @@ What's on display here:
   `engine.get_global("scale")`.
 - Diagnoses come out as **ordered** facts (`(diagnosis 1 alert "overheat")`)
   so they can be inspected with `find_facts("diagnosis")` from Rust.
-  Asserting template facts with named slots from a rule's RHS isn't
-  currently supported by ferric's evaluator — see §3 for the limitation.
+  Named template facts are another supported result shape; see §3.
 
-An earlier version of this example split normalization and diagnosis across
-modules. That shape currently misses the second phase because `NORMALIZE`
-modifies the facts that `DIAGNOSE` should consume. Keeping the chain in one
-module and using salience for phase order is the reliable pattern today.
+This example keeps normalization and diagnosis in one module and uses salience
+for phase order. Multi-module applications must also arrange the focus stack
+for each phase; see §9.
 
 ---
 
@@ -861,7 +865,7 @@ A non-exhaustive list worth internalizing:
 - **Templates are module-scoped.** Export them from the module that owns
   the shape; import them from modules that need them.
 - **Symbols are interned per-engine.** Use `engine.symbol_value("foo")`
-  when you need to build a `Value` with a specific symbol; `resolve_symbol`
+  when you need an engine-scoped `HostValue` with a specific symbol; `resolve_core_symbol`
   goes the other way.
 
 ---
