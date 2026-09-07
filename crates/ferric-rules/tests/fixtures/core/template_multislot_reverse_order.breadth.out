@@ -1,0 +1,4 @@
+retained (a marker b)|(c) :: (x div y)|(z)
+retained (a)|(b marker c) :: (x div y)|(z)
+retained (a marker b)|(c) :: (x)|(y div z)
+retained (a)|(b marker c) :: (x)|(y div z)

@@ -261,13 +261,13 @@ fn visit_join_matches(
                 })
             });
     let candidate_cost = sequence
-        .fields
-        .len()
+        .logical_width()
+        .saturating_add(sequence.segments.len())
         .saturating_add(value_cost)
         .saturating_add(test_cost)
         .saturating_add(binding_cost.saturating_mul(value_cost + 1))
         .saturating_add(1);
-    work.spend(sequence.fields.len() + 1)?;
+    work.spend(sequence.logical_width() + sequence.segments.len() + 1)?;
     let mut candidates = sequence.candidates(fact);
     loop {
         work.spend(candidate_cost)?;
@@ -291,12 +291,16 @@ fn validate_sequence_plan(
     symbols: &SymbolTable,
     work: &mut Work,
 ) -> Result<(), String> {
-    work.spend(sequence.fields.len() + sequence.tests.len() + tests.len() + bindings.len() + 1)?;
+    work.spend(
+        sequence.logical_width()
+            + sequence.segments.len()
+            + sequence.tests.len()
+            + tests.len()
+            + bindings.len()
+            + 1,
+    )?;
     sequence.validate()?;
-    let valid_slot = |slot| {
-        matches!(slot, crate::alpha::SlotIndex::Ordered(index)
-        if index < sequence.fields.len())
-    };
+    let valid_slot = sequence.logical_slot_validator();
     require!(
         tests.iter().all(|test| valid_slot(test.alpha_slot))
             && bindings.iter().all(|(slot, _)| valid_slot(*slot)),
@@ -386,34 +390,7 @@ impl ReteNetwork {
         );
         let mut work = Work(10_000_000);
         self.validate_alpha_snapshot(facts, symbols, &mut work)?;
-        // Alpha nodes are allocated before descendants and have one parent.
-        // Carry the entry kind forward so every sequence plan belongs to an
-        // ordered path, even when that path currently contains no facts.
-        let mut ordered_paths = vec![false; self.alpha.nodes.len()];
-        let mut ordered_memories = rustc_hash::FxHashSet::default();
-        for (index, node) in self.alpha.nodes.iter().enumerate() {
-            work.step()?;
-            let (children, memory) = match node {
-                AlphaNode::Entry {
-                    entry_type,
-                    children,
-                    memory,
-                } => {
-                    ordered_paths[index] = matches!(entry_type, AlphaEntryType::OrderedRelation(_));
-                    (children, memory)
-                }
-                AlphaNode::ConstantTest {
-                    children, memory, ..
-                } => (children, memory),
-            };
-            for child in children {
-                work.step()?;
-                ordered_paths[child.0 as usize] = ordered_paths[index];
-            }
-            if let Some(memory) = memory.filter(|_| ordered_paths[index]) {
-                ordered_memories.insert(memory);
-            }
-        }
+        let alpha_entries = self.alpha_memory_entry_types(&mut work)?;
 
         // MAX is a valid exhausted sentinel; rule loading checks capacity before
         // reclaiming or installing anything. Existing graph IDs remain below it.
@@ -482,11 +459,15 @@ impl ReteNetwork {
                     bindings,
                     ..
                 } => {
-                    require!(
-                        ordered_memories.contains(alpha_memory),
-                        "sequence plan belongs to a nonordered alpha path"
-                    );
                     validate_sequence_plan(sequence, tests, bindings, symbols, &mut work)?;
+                    let entry = alpha_entries
+                        .get(alpha_memory)
+                        .ok_or("sequence plan has no alpha source")?;
+                    require!(
+                        sequence.is_ordered()
+                            == matches!(entry, AlphaEntryType::OrderedRelation(_)),
+                        "sequence plan and alpha source have different fact kinds"
+                    );
                 }
                 BetaNode::Negative {
                     sequence: Some(sequence),
@@ -500,11 +481,15 @@ impl ReteNetwork {
                     tests,
                     ..
                 } => {
-                    require!(
-                        ordered_memories.contains(alpha_memory),
-                        "sequence plan belongs to a nonordered alpha path"
-                    );
                     validate_sequence_plan(sequence, tests, &[], symbols, &mut work)?;
+                    let entry = alpha_entries
+                        .get(alpha_memory)
+                        .ok_or("sequence plan has no alpha source")?;
+                    require!(
+                        sequence.is_ordered()
+                            == matches!(entry, AlphaEntryType::OrderedRelation(_)),
+                        "sequence plan and alpha source have different fact kinds"
+                    );
                 }
                 _ => {}
             }
@@ -1427,6 +1412,80 @@ impl ReteNetwork {
         })
     }
 
+    /// Template sequence plans paired with their original template identities.
+    /// The runtime uses this after core validation to check physical sources
+    /// against registered slot widths and scalar/multifield declarations.
+    #[doc(hidden)]
+    pub fn snapshot_template_sequence_patterns(
+        &self,
+    ) -> Result<Vec<(crate::fact::TemplateId, &SequencePattern)>, String> {
+        let mut work = Work(10_000_000);
+        let entries = self.alpha_memory_entry_types(&mut work)?;
+        let mut plans = Vec::new();
+        for node in self.beta.nodes.values() {
+            work.step()?;
+            if let BetaNode::Join {
+                alpha_memory,
+                sequence: Some(sequence),
+                ..
+            }
+            | BetaNode::Negative {
+                alpha_memory,
+                sequence: Some(sequence),
+                ..
+            }
+            | BetaNode::Exists {
+                alpha_memory,
+                sequence: Some(sequence),
+                ..
+            } = node
+            {
+                if let Some(AlphaEntryType::Template(template)) = entries.get(alpha_memory) {
+                    plans.push((*template, sequence.as_ref()));
+                }
+            }
+        }
+        Ok(plans)
+    }
+
+    fn alpha_memory_entry_types(
+        &self,
+        work: &mut Work,
+    ) -> Result<rustc_hash::FxHashMap<AlphaMemoryId, AlphaEntryType>, String> {
+        let mut paths = vec![None; self.alpha.nodes.len()];
+        let mut memories = rustc_hash::FxHashMap::default();
+        for (index, node) in self.alpha.nodes.iter().enumerate() {
+            work.step()?;
+            let (children, memory) = match node {
+                AlphaNode::Entry {
+                    entry_type,
+                    children,
+                    memory,
+                } => {
+                    paths[index] = Some(entry_type.clone());
+                    (children, memory)
+                }
+                AlphaNode::ConstantTest {
+                    children, memory, ..
+                } => (children, memory),
+            };
+            let entry = paths[index]
+                .clone()
+                .ok_or("alpha path has no entry source")?;
+            for child in children {
+                work.step()?;
+                require!(child.0 as usize > index, "cyclic alpha source path");
+                *paths
+                    .get_mut(child.0 as usize)
+                    .ok_or("dangling alpha source child")? = Some(entry.clone());
+            }
+            if let Some(memory) = memory {
+                memories.insert(*memory, entry);
+            }
+        }
+        Ok(memories)
+    }
+
     #[doc(hidden)]
     pub fn snapshot_template_ids(&self) -> impl Iterator<Item = crate::fact::TemplateId> + '_ {
         self.alpha
@@ -1581,7 +1640,10 @@ mod tests {
             fields: smallvec::smallvec![Value::Integer(1); 4],
         });
         let plan = SequencePattern {
-            fields: vec![crate::sequence::SequenceField::Multi; 3],
+            segments: vec![crate::sequence::SequenceSegment {
+                source: crate::sequence::SequenceSource::Ordered,
+                fields: vec![crate::sequence::SequenceField::Multi; 3],
+            }],
             tests: vec![crate::alpha::ConstantTest {
                 slot: crate::alpha::SlotIndex::Ordered(0),
                 test_type: ConstantTestType::Equal(crate::value::AtomKey::Integer(99)),
@@ -1600,6 +1662,48 @@ mod tests {
                 Ok(true)
             });
         assert_eq!(visited, 0);
+        assert_eq!(
+            result.unwrap_err(),
+            "snapshot validation work limit exceeded"
+        );
+    }
+
+    #[test]
+    fn rejected_template_cartesian_candidates_consume_snapshot_work() {
+        use crate::sequence::{SequenceField, SequenceSegment, SequenceSource};
+        let mut ids: slotmap::SlotMap<crate::fact::TemplateId, ()> = slotmap::SlotMap::with_key();
+        let values = Value::Multifield(Box::new(vec![Value::Integer(1); 4].into_iter().collect()));
+        let fact = Fact::Template(crate::fact::TemplateFact {
+            template_id: ids.insert(()),
+            slots: vec![values.clone(), values].into_boxed_slice(),
+        });
+        let plan = SequencePattern {
+            segments: (0..2)
+                .map(|index| SequenceSegment {
+                    source: SequenceSource::TemplateSlot(index),
+                    fields: vec![SequenceField::Multi; 3],
+                })
+                .collect(),
+            tests: vec![crate::alpha::ConstantTest {
+                slot: crate::alpha::SlotIndex::Template(0),
+                test_type: ConstantTestType::Equal(crate::value::AtomKey::Integer(99)),
+            }],
+        };
+        let token = crate::token::Token {
+            fact: None,
+            parent: None,
+            owner_node: NodeId(0),
+            bindings: crate::binding::BindingSet::new(),
+        };
+        let result = visit_join_matches(
+            &fact,
+            &token,
+            &[],
+            Some(&plan),
+            0,
+            &mut Work(100),
+            |_, _| panic!("rejected candidate reached visitor"),
+        );
         assert_eq!(
             result.unwrap_err(),
             "snapshot validation work limit exceeded"

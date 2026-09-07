@@ -74,7 +74,7 @@ pub struct TemplatePattern {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SlotConstraint {
     pub slot_name: String,
-    pub constraint: Constraint,
+    pub constraints: Vec<Constraint>,
     pub span: Span,
 }
 
@@ -1751,16 +1751,17 @@ fn interpret_pattern_slot_constraint(slot_expr: &SExpr) -> Result<SlotConstraint
         .ok_or_else(|| InterpretError::expected("slot name (symbol)", slot_list[0].span()))?
         .to_string();
 
-    let constraint = if slot_list.len() > 1 {
-        let (c, _consumed) = interpret_constraint_sequence(&slot_list[1..])?;
-        c
-    } else {
-        Constraint::Wildcard(slot_expr.span())
-    };
+    let mut constraints = Vec::new();
+    let mut offset = 1;
+    while offset < slot_list.len() {
+        let (constraint, consumed) = interpret_constraint_sequence(&slot_list[offset..])?;
+        constraints.push(constraint);
+        offset += consumed;
+    }
 
     Ok(SlotConstraint {
         slot_name,
-        constraint,
+        constraints,
         span: slot_expr.span(),
     })
 }
@@ -5100,6 +5101,57 @@ mod tests {
     }
 
     #[test]
+    fn interpret_template_multislot_preserves_every_connected_field() {
+        let parsed = parse_sexprs(
+            "(deftemplate item (multislot tags))
+             (defrule test (item (tags head $?middle ?last&~tail)) =>)",
+            file(),
+        );
+        let result = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let Construct::Rule(rule) = &result.constructs[1] else {
+            panic!("expected rule");
+        };
+        let Pattern::Template(pattern) = &rule.patterns[0] else {
+            panic!("expected template pattern");
+        };
+        let fields = &pattern.slot_constraints[0].constraints;
+        assert_eq!(fields.len(), 3);
+        assert!(matches!(&fields[0], Constraint::Literal(value)
+            if matches!(&value.value, LiteralKind::Symbol(symbol) if symbol == "head")));
+        assert!(matches!(&fields[1], Constraint::MultiVariable(name, _) if name == "middle"));
+        assert!(matches!(&fields[2], Constraint::And(parts, _) if parts.len() == 2));
+    }
+
+    #[test]
+    fn interpret_template_empty_multislot_is_distinct_from_wildcard() {
+        let parsed = parse_sexprs(
+            "(deftemplate item (multislot tags))
+             (defrule empty (item (tags)) =>)
+             (defrule one (item (tags ?)) =>)
+             (defrule any (item (tags $?)) =>)",
+            file(),
+        );
+        let result = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let fields: Vec<_> = result.constructs[1..]
+            .iter()
+            .map(|construct| {
+                let Construct::Rule(rule) = construct else {
+                    panic!("expected rule");
+                };
+                let Pattern::Template(pattern) = &rule.patterns[0] else {
+                    panic!("expected template pattern");
+                };
+                pattern.slot_constraints[0].constraints.as_slice()
+            })
+            .collect();
+        assert!(fields[0].is_empty());
+        assert!(matches!(fields[1], [Constraint::Wildcard(_)]));
+        assert!(matches!(fields[2], [Constraint::MultiWildcard(_)]));
+    }
+
+    #[test]
     fn interpret_template_connective_constraint() {
         let parsed = parse_sexprs(
             r"
@@ -5120,8 +5172,8 @@ mod tests {
         assert_eq!(tp.slot_constraints.len(), 1);
         let sc = &tp.slot_constraints[0];
         assert_eq!(sc.slot_name, "color");
-        let Constraint::And(terms, _) = &sc.constraint else {
-            panic!("expected And constraint in slot, got {:?}", sc.constraint);
+        let Constraint::And(terms, _) = &sc.constraints[0] else {
+            panic!("expected And constraint in slot, got {:?}", sc.constraints);
         };
         assert_eq!(terms.len(), 2);
         assert!(matches!(&terms[0], Constraint::Variable(name, _) if name == "c"));

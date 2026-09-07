@@ -40,7 +40,7 @@ pub struct CompilableRule {
 pub struct CompilablePattern {
     pub entry_type: AlphaEntryType,
     pub constant_tests: Vec<ConstantTest>,
-    /// Logical field matching for ordered patterns containing multifields.
+    /// Logical field matching for ordered or template sequence constraints.
     pub sequence: Option<SequencePattern>,
     /// Variable bindings: (`slot_index`, `variable_symbol`)
     /// The Symbol is the interned variable name (e.g., intern("x") for ?x)
@@ -574,12 +574,8 @@ impl ReteCompiler {
                 alpha_value_tests + sequence.tests.len(),
                 MAX_ALPHA_TESTS,
             )?;
-            let valid_slot =
-                |slot| matches!(slot, SlotIndex::Ordered(index) if index < sequence.fields.len());
-            let validation = sequence.validate().and_then(|()| {
-                if !matches!(pattern.entry_type, AlphaEntryType::OrderedRelation(_)) {
-                    return Err("ordered sequence plan requires an ordered relation".to_string());
-                }
+            let valid_slot = sequence.logical_slot_validator();
+            let validation = sequence.validate_entry(&pattern.entry_type).and_then(|()| {
                 if pattern
                     .variable_slots
                     .iter()

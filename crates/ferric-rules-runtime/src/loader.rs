@@ -30,14 +30,15 @@ use crate::qualified_name::{parse_qualified_name, QualifiedName};
 use ferric_rules_core::{
     AlphaEntryType, AtomKey, CompilableCondition, CompilablePattern, CompileResult,
     ConditionCompilationPlan, ConstantTest, ConstantTestType, Fact, FactId, FerricString,
-    JoinTestType, Salience, SlotIndex, TemplateFact, Value,
+    JoinTestType, Salience, SequenceField, SequencePattern, SequenceSegment, SequenceSource,
+    SlotIndex, TemplateFact, Value,
 };
 use ferric_rules_parser::{
     interpret_constructs, parse_sexprs, ActionExpr, Atom, Constraint, Construct, FactBody,
     FactValue, FileId, FunctionCall, FunctionConstruct, GenericConstruct, GlobalConstruct,
     InterpretError, InterpreterConfig, LiteralKind, MethodConstruct, ModuleConstruct,
     OrderedFactBody, OrderedPattern, ParseError, Pattern, RuleConstruct, SExpr, SlotConstraint,
-    Span, TemplateConstruct, TemplateFactBody, TemplatePattern,
+    SlotType, Span, TemplateConstruct, TemplateFactBody, TemplatePattern,
 };
 
 use crate::actions::{CompiledRuleInfo, CompiledTestCondition};
@@ -1602,7 +1603,7 @@ impl Engine {
 
     /// Process a template fact within an assert form.
     ///
-    /// Each remaining element should be a list of the form `(slot-name value)`.
+    /// Each remaining element supplies the complete value sequence of one slot.
     fn process_assert_template_fact(
         &mut self,
         template_id: ferric_rules_core::TemplateId,
@@ -1620,6 +1621,7 @@ impl Engine {
 
         // Start with defaults.
         let mut slots: Vec<Value> = registered.defaults.clone();
+        let mut seen = HashSet::new();
 
         for slot_expr in slot_exprs {
             let slot_list = slot_expr.as_list().ok_or_else(|| {
@@ -1628,7 +1630,9 @@ impl Engine {
                 ))
             })?;
             if slot_list.is_empty() {
-                continue;
+                return Err(LoadError::InvalidAssert(
+                    "empty template slot list".to_string(),
+                ));
             }
             let slot_name = slot_list[0].as_symbol().ok_or_else(|| {
                 LoadError::InvalidAssert(format!(
@@ -1640,14 +1644,36 @@ impl Engine {
                     "unknown slot `{slot_name}` in template `{template_name}`"
                 ))
             })?;
-
-            if slot_list.len() > 1 {
-                if let Some(value) = self.atom_to_value(&slot_list[1], result) {
-                    slots[slot_idx] = value;
-                }
+            if !seen.insert(slot_idx) {
+                return Err(LoadError::InvalidAssert(format!(
+                    "duplicate slot `{slot_name}` in template `{template_name}`"
+                )));
             }
-            // If slot_list.len() == 1, the slot keeps its default (empty multislot).
+
+            let mut fields = slot_list[1..]
+                .iter()
+                .map(|expression| {
+                    self.atom_to_value(expression, result).ok_or_else(|| {
+                        LoadError::InvalidAssert(format!(
+                            "expected literal value for slot `{slot_name}` in template `{template_name}`"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            slots[slot_idx] = match registered.slot_types[slot_idx] {
+                SlotType::Single if fields.len() == 1 => fields.pop().unwrap(),
+                SlotType::Single => {
+                    return Err(LoadError::InvalidAssert(format!(
+                        "single-field slot `{slot_name}` requires exactly one value"
+                    )));
+                }
+                SlotType::Multi => Value::Multifield(Box::new(fields.into_iter().collect())),
+            };
         }
+
+        registered
+            .validate_slots(&slots)
+            .map_err(LoadError::Compile)?;
 
         // Assert as a proper template fact.
         Ok(self
@@ -2372,7 +2398,9 @@ impl Engine {
             }
             Pattern::Template(template) => {
                 for slot in &template.slot_constraints {
-                    Self::collect_constraint_binding_variables(&slot.constraint, variables);
+                    for constraint in &slot.constraints {
+                        Self::collect_constraint_binding_variables(constraint, variables);
+                    }
                 }
             }
             Pattern::Assigned {
@@ -3186,11 +3214,16 @@ impl Engine {
             .slot_constraints
             .iter()
             .map(|slot_constraint| {
-                Self::expand_constraint_disjunctions(&slot_constraint.constraint)
+                let per_field: Vec<_> = slot_constraint
+                    .constraints
+                    .iter()
+                    .map(Self::expand_constraint_disjunctions)
+                    .collect();
+                Self::cartesian_product(&per_field)
                     .into_iter()
-                    .map(|constraint| SlotConstraint {
+                    .map(|constraints| SlotConstraint {
                         slot_name: slot_constraint.slot_name.clone(),
-                        constraint,
+                        constraints,
                         span: slot_constraint.span,
                     })
                     .collect()
@@ -3727,18 +3760,15 @@ impl Engine {
                         // retain their alpha filtering before enumerating splits.
                         // The first test is always the raw fact cardinality.
                         constant_tests.extend(prefix_tests);
-                        ferric_rules_core::SequencePattern {
-                            fields: ordered
-                                .constraints
-                                .iter()
-                                .map(|constraint| {
-                                    if Self::constraint_is_multifield(constraint) {
-                                        ferric_rules_core::SequenceField::Multi
-                                    } else {
-                                        ferric_rules_core::SequenceField::Single
-                                    }
-                                })
-                                .collect(),
+                        SequencePattern {
+                            segments: vec![SequenceSegment {
+                                source: SequenceSource::Ordered,
+                                fields: ordered
+                                    .constraints
+                                    .iter()
+                                    .map(Self::sequence_field)
+                                    .collect(),
+                            }],
                             tests,
                         }
                     });
@@ -3817,13 +3847,8 @@ impl Engine {
                             )
                         })?;
 
-                let entry_type = AlphaEntryType::Template(template_id);
-                let mut constant_tests = Vec::new();
-                let mut variable_slots = Vec::new();
-                let mut negated_variable_slots = Vec::new();
-                let mut seen_variable_slots = HashMap::new();
-                let mut slot_runtime_vars = HashMap::new();
-
+                let mut slot_indices = Vec::with_capacity(template.slot_constraints.len());
+                let mut seen_slots = HashSet::new();
                 for slot_constraint in &template.slot_constraints {
                     let slot_idx = registered.slot_index(&slot_constraint.slot_name).ok_or_else(
                         || {
@@ -3836,32 +3861,102 @@ impl Engine {
                             )
                         },
                     )?;
-
-                    let slot = SlotIndex::Template(slot_idx);
-                    self.translate_constraint(
-                        &slot_constraint.constraint,
-                        slot,
-                        &mut constant_tests,
-                        &mut variable_slots,
-                        &mut negated_variable_slots,
-                        &mut seen_variable_slots,
-                        generated_tests,
-                        &mut slot_runtime_vars,
-                        internal_slot_var_seed,
-                        in_negated_pattern,
-                    )?;
+                    if !seen_slots.insert(slot_idx) {
+                        return Err(Self::compile_error_at(
+                            &slot_constraint.span,
+                            &format!("duplicate slot `{}` in template pattern", slot_constraint.slot_name),
+                        ));
+                    }
+                    if registered.slot_types[slot_idx] == SlotType::Single {
+                        if slot_constraint.constraints.len() != 1 {
+                            return Err(Self::compile_error_at(
+                                &slot_constraint.span,
+                                &format!("single-field slot `{}` requires exactly one field constraint", slot_constraint.slot_name),
+                            ));
+                        }
+                        let constraint = &slot_constraint.constraints[0];
+                        if Self::constraint_is_multifield(constraint)
+                            && !matches!(constraint, Constraint::MultiWildcard(_))
+                        {
+                            return Err(Self::compile_error_at(
+                                &slot_constraint.span,
+                                &format!("single-field slot `{}` cannot bind a multifield variable", slot_constraint.slot_name),
+                            ));
+                        }
+                    }
+                    slot_indices.push(slot_idx);
                 }
 
+                let needs_sequence = slot_indices.iter().any(|&index| {
+                    registered.slot_types[index] == SlotType::Multi
+                });
+                let mut constant_tests = Vec::new();
+                let mut variable_slots = Vec::new();
+                let mut negated_variable_slots = Vec::new();
+                let mut seen_variable_slots = HashMap::new();
+                let mut slot_runtime_vars = HashMap::new();
+                let mut segments = Vec::new();
+                let mut scalar_slots = HashMap::new();
+                let mut logical_offset = 0;
+
+                // Preserve written slot order: independent multislot splits
+                // form a Cartesian product in that order in CLIPS.
+                for (slot_constraint, slot_idx) in template.slot_constraints.iter().zip(slot_indices) {
+                    let is_multi = registered.slot_types[slot_idx] == SlotType::Multi;
+                    if needs_sequence {
+                        segments.push(SequenceSegment {
+                            source: SequenceSource::TemplateSlot(slot_idx),
+                            fields: slot_constraint.constraints.iter().map(|constraint| {
+                                if is_multi { Self::sequence_field(constraint) } else { SequenceField::Single }
+                            }).collect(),
+                        });
+                        if !is_multi {
+                            scalar_slots.insert(logical_offset, slot_idx);
+                        }
+                    }
+                    for constraint in &slot_constraint.constraints {
+                        let slot = SlotIndex::Template(if needs_sequence { logical_offset } else { slot_idx });
+                        self.translate_constraint(
+                            constraint,
+                            slot,
+                            &mut constant_tests,
+                            &mut variable_slots,
+                            &mut negated_variable_slots,
+                            &mut seen_variable_slots,
+                            generated_tests,
+                            &mut slot_runtime_vars,
+                            internal_slot_var_seed,
+                            in_negated_pattern,
+                        )?;
+                        logical_offset += 1;
+                    }
+                }
+
+                let sequence = needs_sequence.then(|| {
+                    let mut tests = Vec::new();
+                    let mut alpha_tests = Vec::new();
+                    for test in constant_tests.drain(..) {
+                        if let Some(physical) = Self::physical_template_test(&test, &scalar_slots) {
+                            alpha_tests.push(physical);
+                        } else {
+                            tests.push(test);
+                        }
+                    }
+                    constant_tests = alpha_tests;
+                    SequencePattern { segments, tests }
+                });
+
                 Ok(CompilablePattern {
-                    entry_type,
+                    entry_type: AlphaEntryType::Template(template_id),
                     constant_tests,
-                    sequence: None,
+                    sequence,
                     variable_slots,
                     negated_variable_slots,
                     negated: false,
                     exists: false,
                 })
             }
+
             Pattern::Forall(_, span) => Err(Self::unsupported_pattern(
                 "forall",
                 span,
@@ -3883,6 +3978,43 @@ impl Engine {
                 "or CE reached translate_pattern unexpectedly (should be expanded via rule duplication)",
             )),
         }
+    }
+
+    fn sequence_field(constraint: &Constraint) -> SequenceField {
+        if Self::constraint_is_multifield(constraint) {
+            SequenceField::Multi
+        } else {
+            SequenceField::Single
+        }
+    }
+
+    // Tests on scalar sibling slots can filter physical facts before any
+    // multislot projection. Both sides of a slot comparison must be scalar.
+    fn physical_template_test(
+        test: &ConstantTest,
+        scalar_slots: &HashMap<usize, usize>,
+    ) -> Option<ConstantTest> {
+        let physical = |slot| {
+            let SlotIndex::Template(index) = slot else {
+                return None;
+            };
+            scalar_slots.get(&index).copied().map(SlotIndex::Template)
+        };
+        let mut mapped = test.clone();
+        mapped.slot = physical(test.slot)?;
+        match &mut mapped.test_type {
+            ConstantTestType::EqualSlot(other)
+            | ConstantTestType::NotEqualSlot(other)
+            | ConstantTestType::EqualSlotOffset(other, _)
+            | ConstantTestType::NotEqualSlotOffset(other, _)
+            | ConstantTestType::GreaterThanSlotOffset(other, _)
+            | ConstantTestType::LessThanSlotOffset(other, _)
+            | ConstantTestType::GreaterOrEqualSlotOffset(other, _)
+            | ConstantTestType::LessOrEqualSlotOffset(other, _) => *other = physical(*other)?,
+            ConstantTestType::OrderedFieldCount { .. } => return None,
+            _ => {}
+        }
+        Some(mapped)
     }
 
     fn test_uses_ordered_prefix(test: &ConstantTest, end: usize) -> bool {

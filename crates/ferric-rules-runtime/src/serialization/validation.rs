@@ -2,7 +2,7 @@
 
 use super::{Engine, SerializationError};
 use crate::evaluator::RuntimeExpr;
-use ferric_rules_core::{Fact, Value};
+use ferric_rules_core::{Fact, SequenceField, SequenceSource, Value};
 use ferric_rules_parser::{ActionExpr, SlotType};
 
 fn ensure(condition: bool, message: &str) -> Result<(), String> {
@@ -150,6 +150,26 @@ impl Engine {
                 self.template_defs.contains_key(id),
                 "alpha graph has dangling template",
             )?;
+        }
+        for (template_id, plan) in self.rete.snapshot_template_sequence_patterns()? {
+            let template = self
+                .template_defs
+                .get(template_id)
+                .ok_or("sequence plan has a dangling template")?;
+            for segment in &plan.segments {
+                let SequenceSource::TemplateSlot(index) = segment.source else {
+                    return Err("template sequence plan contains an ordered source".to_owned());
+                };
+                let kind = template
+                    .slot_types
+                    .get(index)
+                    .ok_or("sequence plan references an invalid physical template slot")?;
+                ensure(
+                    *kind == SlotType::Multi
+                        || segment.fields.as_slice() == [SequenceField::Single],
+                    "scalar template sequence source must consume exactly one single field",
+                )?;
+            }
         }
         for (_, entry) in self.fact_base.iter() {
             self.validate_snapshot_fact(&entry.fact)?;

@@ -103,7 +103,7 @@ pub(crate) fn check_expansion(
                         pattern
                             .slot_constraints
                             .iter()
-                            .map(|slot| Input::Constraint(&slot.constraint)),
+                            .flat_map(|slot| slot.constraints.iter().map(Input::Constraint)),
                     );
                     1
                 }
