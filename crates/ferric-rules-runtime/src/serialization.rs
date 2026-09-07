@@ -278,6 +278,7 @@ impl EngineSnapshotOwned {
             registered_deffacts: self.registered_deffacts,
             rule_info: self.rule_info,
             template_ids: self.template_ids,
+            template_local_ids: Engine::build_template_local_index(&self.template_defs),
             template_defs: self.template_defs,
             router: self.router,
             functions: self.functions,

@@ -187,6 +187,7 @@ pub struct Engine {
     // retain a cheap handle; redefinition installs a fresh allocation so captured
     // facts keep the exact shape against which they were validated.
     pub(crate) template_defs: slotmap::SlotMap<TemplateId, Arc<RegisteredTemplate>>,
+    pub(crate) template_local_ids: crate::loader::TemplateLocalIndex,
     /// Output router for capturing `printout` and related I/O.
     pub(crate) router: OutputRouter,
     /// Registry of user-defined functions loaded via `deffunction`.
@@ -269,6 +270,7 @@ impl Engine {
             rule_info: Vec::new(),
             template_ids: HashMap::default(),
             template_defs: slotmap::SlotMap::with_key(),
+            template_local_ids: crate::loader::TemplateLocalIndex::default(),
             router: OutputRouter::new(),
             functions: FunctionEnv::new(),
             globals: GlobalStore::new(),
@@ -1431,6 +1433,7 @@ impl Engine {
         self.rule_info.clear();
         self.template_ids.clear();
         self.template_defs = slotmap::SlotMap::with_key();
+        self.template_local_ids.clear();
         self.router.clear();
         self.functions = FunctionEnv::new();
         self.globals = GlobalStore::new();
@@ -1695,6 +1698,14 @@ impl Engine {
                 activation.id,
                 activation.rule
             );
+        }
+
+        let expected = Self::build_template_local_index(&self.template_defs);
+        assert_eq!(self.template_local_ids.len(), expected.len());
+        for (name, ids) in &self.template_local_ids {
+            let expected_ids = &expected[name];
+            assert_eq!(ids.len(), expected_ids.len());
+            assert!(expected_ids.iter().all(|id| ids.contains(id)));
         }
 
         for (template_id, module_id) in &self.template_modules {
