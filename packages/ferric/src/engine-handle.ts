@@ -2,8 +2,8 @@
  * EngineHandle — async wrapper around a synchronous Engine running on a
  * dedicated Worker thread.
  *
- * All methods return Promises and are safe to call from the main thread or
- * any other thread without blocking the event loop.
+ * Methods return Promises so native work does not block the calling JavaScript
+ * event loop. The handle itself belongs to its creating JavaScript isolate.
  *
  * ## Cooperative cancellation
  *
@@ -15,11 +15,11 @@
  * result with HaltReason.HaltRequested; it does not call native halt() merely
  * to represent host cancellation.
  *
- * ## Thread affinity
+ * ## Worker ownership
  *
- * The underlying Engine is created on the worker's OS thread and never
- * touched from any other thread. This satisfies the Ferric engine's
- * thread-affinity contract.
+ * Each worker owns its NAPI Engine instance and offloads load/run/snapshot work.
+ * The Rust engine permits serialized thread transfer; NAPI objects still belong
+ * to their V8 isolate, so workers retain ownership of their JavaScript objects.
  */
 
 import { Worker } from "node:worker_threads";
@@ -130,6 +130,7 @@ export class EngineHandle {
   private nextId = 0;
   private readonly pending = new Map<number, PendingEntry>();
   private closed = false;
+  private closePromise?: Promise<void>;
 
   private readonly onWorkerMessage = (resp: WorkerResponse): void => {
     const entry = this.pending.get(resp.id);
@@ -436,6 +437,9 @@ export class EngineHandle {
    * @param options.signal - AbortSignal for cancellation.
    */
   async run(options?: { limit?: number; signal?: AbortSignal }): Promise<RunResult> {
+    if (options != null && (typeof options !== "object" || Array.isArray(options))) {
+      throw new TypeError("EngineHandle.run: options must be an object with an optional limit and signal");
+    }
     const worker = this.worker;
     if (this.closed || !worker) {
       throw new Error("EngineHandle has been closed");
@@ -615,7 +619,7 @@ export class EngineHandle {
 
   /**
    * Serialize the engine's current state.
-   * @param format Serialization format. Default: Bincode.
+   * @param format Serialization format. Default: Cbor (recommended).
    * @returns A Buffer containing the snapshot.
    */
   async serialize(format?: Format): Promise<Buffer> {
@@ -634,24 +638,24 @@ export class EngineHandle {
   /**
    * Terminate the worker thread and release all resources.
    * In-flight operations will reject with an error.
-   * Idempotent — safe to call multiple times.
+   * Idempotent — all calls share the same cleanup completion barrier.
    */
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
-
     const snapshot = [...this.pending.values()];
     this.pending.clear();
-
-    if (this.worker) {
-      await this.worker.terminate();
-      this.worker = null;
-    }
-
-    const closedErr = new Error("EngineHandle closed");
-    for (const entry of snapshot) {
-      entry.reject(closedErr);
-    }
+    const worker = this.worker;
+    this.worker = null;
+    this.closePromise = Promise.resolve().then(async () => {
+      try {
+        if (worker) await worker.terminate();
+      } finally {
+        const closedErr = new Error("EngineHandle closed");
+        for (const entry of snapshot) entry.reject(closedErr);
+      }
+    });
+    return this.closePromise;
   }
 
   /**

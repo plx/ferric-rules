@@ -50,6 +50,7 @@ export {
   FerricModuleNotFoundError,
   FerricEncodingError,
   FerricSerializationError,
+  FerricIOError,
   ERROR_REGISTRY,
 } from "./types";
 

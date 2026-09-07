@@ -205,6 +205,13 @@ export declare class Engine {
   pushInput(line: string): void
   /** Clear accumulated action diagnostics. */
   clearDiagnostics(): void
+  /**
+   * Explicitly close and destroy this engine.
+   *
+   * After calling `close()`, any further method calls will throw an error.
+   * This is idempotent — calling it multiple times is safe.
+   */
+  close(): void
   /** Serialize the engine state to a Node.js `Buffer`. */
   serialize(format?: Format | undefined | null): Buffer
   /** Create an engine by deserializing from a Node.js `Buffer`. */
@@ -213,13 +220,6 @@ export declare class Engine {
   static fromSnapshotFile(path: string, format?: Format | undefined | null): Engine
   /** Save a serialized engine snapshot to a file. */
   saveSnapshot(path: string, format?: Format | undefined | null): void
-  /**
-   * Explicitly close and destroy this engine.
-   *
-   * After calling `close()`, any further method calls will throw an error.
-   * This is idempotent — calling it multiple times is safe.
-   */
-  close(): void
 }
 /**
  * A CLIPS symbol value — distinct from a plain string.

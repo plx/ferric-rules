@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import {
   mainPackageDirectory,
+  repositoryRoot,
   nativeBinaryName,
   nativeCrateDirectory,
   packPackage,
@@ -98,6 +99,13 @@ try {
         String(mainPackage.dependencies?.["detect-libc"]),
     );
   }
+  // Pack the installed locked compiler/type dependencies as testing tools;
+  // the external consumer has no type-resolution path back into the checkout.
+  const typeTools = [];
+  for (const name of ["typescript", "@types/node", "undici-types"]) {
+    const directory = dirname(requireFromMainPackage.resolve(`${name}/package.json`));
+    typeTools.push(await packPackage({ packageDirectory: directory, artifactsDirectory: dependencyArtifactsDirectory, runScripts: false }));
+  }
   const mainPack = await packPackage({
     packageDirectory: mainPackageDirectory,
     artifactsDirectory,
@@ -151,6 +159,7 @@ try {
       "--no-fund",
       "--package-lock=false",
       detectLibcPack.archivePath,
+      ...typeTools.map((tool) => tool.archivePath),
       platformPack.archivePath,
       mainPack.archivePath,
     ],
@@ -161,6 +170,36 @@ try {
       },
     },
   );
+
+  await writeFile(join(consumerDirectory, "launch-selection.clp"), await readFile(join(repositoryRoot, "examples/embedding/launch-selection.clp")));
+  await writeFile(join(consumerDirectory, "consumer.cts"), `
+    import ferric = require("@ferric-rules/node");
+    const engine = new ferric.Engine();
+    const id: ferric.FactId = engine.assertFact("typed", 9223372036854775807n);
+    engine.retract(id);
+    engine[Symbol.dispose]();
+    async function worker() {
+      const handle = await ferric.EngineHandle.create();
+      const snapshot: Buffer = await handle.serialize(ferric.Format.Cbor);
+      await handle[Symbol.asyncDispose]();
+      return snapshot;
+    }
+    void worker;
+  `);
+  await writeFile(join(consumerDirectory, "consumer.mts"), `
+    import { Engine, EngineHandle, Format, type RunResult } from "@ferric-rules/node";
+    const engine = new Engine();
+    const result: RunResult = engine.run(100);
+    const restored = Engine.fromSnapshot(engine.serialize(), Format.Cbor);
+    engine.close(); restored.close();
+    const dynamic = await import("@ferric-rules/node");
+    const handle = await EngineHandle.create();
+    await handle.close();
+    void result; void dynamic;
+  `);
+  for (const resolution of ["Node16", "NodeNext"]) {
+    runCommand(process.execPath, [join(consumerDirectory, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--target", "ES2022", "--module", resolution, "--moduleResolution", resolution, "--types", "node", "consumer.cts", "consumer.mts"], { cwd: consumerDirectory });
+  }
 
   const commonJsSmoke = `
     (async () => {
@@ -173,7 +212,24 @@ try {
       assert.equal(nativeMetadata.version, mainMetadata.version);
       assert.equal(rawNative.nativePackageVersion(), mainMetadata.version);
       const ferric = require("@ferric-rules/node");
-      const { Engine, EngineHandle } = ferric;
+      const { Engine, EngineHandle, FerricParseError, Format } = ferric;
+      assert.throws(() => require("@ferric-rules/node/dist/index.js"), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" });
+      const launch = require("node:fs").readFileSync("launch-selection.clp", "utf8");
+      const direct = Engine.fromSource(launch);
+      const checkpoint = direct.serialize();
+      const launchEngines = [direct, Engine.fromSnapshot(checkpoint, Format.Cbor), await EngineHandle.create({ source: launch }), await EngineHandle.create({ snapshot: { data: checkpoint } })];
+      for (const current of launchEngines) {
+        assert.deepEqual(await current.run(current instanceof EngineHandle ? { limit: 100 } : 100), { rulesFired: 1, haltReason: 0 });
+        const actions = await current.findFacts("action");
+        assert.equal(actions.length, 1);
+        assert.deepEqual(actions[0].fields.map((value) => value.value), ["session-42", "sign-in"]);
+        assert.equal(await current.getOutput("t"), "action session-42 sign-in\\n");
+        assert.equal((await current.run()).rulesFired, 0);
+        await current.close();
+      }
+      const invalid = new Engine();
+      assert.throws(() => invalid.load("(defrule incomplete"), FerricParseError);
+      invalid.close();
       assert.equal(Object.hasOwn(ferric, "__continueRun"), false);
       assert.equal(
         Object.hasOwn(rawNative.Engine.prototype, "__continueRun"),
@@ -225,8 +281,10 @@ try {
 
   const moduleSmoke = `
     import assert from "node:assert/strict";
+    import { Engine, EngineHandle } from "@ferric-rules/node";
     const ferric = await import("@ferric-rules/node");
-    assert.equal(typeof ferric.Engine, "function");
+    assert.equal(ferric.Engine, Engine);
+    assert.equal(ferric.EngineHandle, EngineHandle);
     const engine = ferric.Engine.fromSource(
       "(defrule smoke => (assert (module-result 42)))"
     );

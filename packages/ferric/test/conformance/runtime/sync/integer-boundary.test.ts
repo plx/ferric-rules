@@ -88,15 +88,12 @@ test("B-007 bigint outside i64 range is rejected", () => {
   e.close();
 });
 
-test("B-007 whole numbers at 2^63 stay floats instead of saturating", () => {
+test("B-007 unsafe whole numbers are rejected instead of guessed as floats", () => {
   const e = new Engine();
-  e.reset();
-  e.assertFact("big", 2 ** 63);
-  const [fact] = e.findFacts("big") as any[];
-  assert.ok(fact, "big fact should exist");
-  assert.strictEqual(typeof fact.fields[0], "number");
-  assert.strictEqual(fact.fields[0], 2 ** 63);
-  e.close();
+  try {
+    assert.throws(() => e.assertFact("big", 2 ** 63), /safe integer.*bigint/);
+    assert.strictEqual(e.factCount, 0);
+  } finally { e.close(); }
 });
 
 // ---------------------------------------------------------------------------

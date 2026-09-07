@@ -1,16 +1,16 @@
 # TypeScript Binding Architecture (Revised)
 
 Date: 2026-04-11
-Updated: 2026-08-09 (FR-NODE-011 bounded pool backpressure)
-Status: Draft for reimplementation
+Updated: 2026-09-06 (transferable runtime and guarded native access)
+Status: Implemented architecture; behavior is defined by the Normative Contract.
 
 Companion documents:
-- [Normative Contract](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-normative-contract.md)
-- [Conformance Matrix](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-conformance-matrix.md)
-- [Test Specification](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-test-spec.md)
+- [Normative Contract](typescript-binding-normative-contract.md)
+- [Conformance Matrix](typescript-binding-conformance-matrix.md)
+- [Test Specification](typescript-binding-test-spec.md)
 
 Supersedes as implementation target:
-- [Legacy API Design Draft](/Users/prb/conductor/workspaces/ferric-rules/santo-domingo/docs/typescript-binding-api.md)
+- [Legacy API Design Draft](typescript-binding-api.md)
 
 ## Purpose
 Define the high-level architecture for Node.js/TypeScript bindings to `ferric-rules` while delegating all strict behavior to the Normative Contract.
@@ -19,7 +19,7 @@ This document is intentionally descriptive. If this document conflicts with the 
 
 ## Goals
 1. Provide a TypeScript-native API that is ergonomic in Node.js.
-2. Preserve Ferric thread-affinity constraints.
+2. Keep JavaScript wrappers owned by their V8 isolate and serialize native access.
 3. Support both synchronous and non-blocking worker-backed usage.
 4. Keep native binding minimal and deterministic.
 
@@ -38,6 +38,9 @@ This document is intentionally descriptive. If this document conflicts with the 
 - Rust crate: `crates/ferric-rules-napi`
 - Exposes synchronous API directly backed by Ferric runtime.
 - Holds engine ownership and performs core value conversion.
+- The Rust engine supports ownership transfer and shared reads. JavaScript
+  wrappers remain isolate-owned, reject reentry, and serialize their native
+  operations. Workers provide event-loop offload and pool semantics.
 - No pooling/orchestration logic in Rust.
 
 ### Layer 2: `EngineHandle` (worker-backed async)
