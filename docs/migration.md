@@ -86,10 +86,11 @@ Fix any reported parse or compilation errors before proceeding.
     (not (condition-present)) => ...)
 ```
 
-### Use if/then/else for actions and expressions
+### Use if/then/else in actions and callable bodies
 
-The ordinary CLIPS `if`/`then`/`else` form works in rule RHS actions and
-evaluator expressions, including `deffunction` bodies. For example:
+The ordinary CLIPS `if`/`then`/`else` form works in rule RHS actions and callable
+bodies (`deffunction` and `defmethod`). A direct `if` expression inside an LHS
+`test` CE is unsupported. For example, this rule action is supported:
 
 ```clp
 ;; Supported in Ferric
@@ -269,7 +270,7 @@ engine borrowed inside a manager callback.
 | Depth / Breadth | Supported |
 | LEX / MEA | Experimental; documented CLIPS ordering differences |
 | `defclass` / COOL | Not supported |
-| `if` / `then` / `else` | Supported in rule RHS actions and evaluator/callable bodies |
+| `if` / `then` / `else` | Supported in rule RHS actions and callable bodies; direct use in `test` CEs is unsupported |
 | Certainty factors | Not supported |
 
 ## Primitive template slot types
