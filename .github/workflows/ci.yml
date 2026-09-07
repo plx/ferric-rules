@@ -277,6 +277,14 @@ jobs:
           uv sync --locked --python "$python_path"
           uv run --locked --python "$python_path" maturin develop --quiet
           uv run --locked --python "$python_path" pytest tests/ -v
+      - name: Exercise deterministic GIL and shutdown observations
+        if: matrix.python-version == '3.12'
+        working-directory: crates/ferric-rules-python
+        run: |
+          uv run --locked --python "$(command -v python)" \
+            maturin develop --quiet --features testing
+          .venv/bin/python -m pytest tests/test_gil_release.py \
+            tests/test_threading.py tests/test_public_surface.py -v
 
   node-bindings:
     name: Node.js Bindings

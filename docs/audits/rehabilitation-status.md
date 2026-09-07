@@ -46,8 +46,9 @@ selection example, including persistence/resume, across all four host languages.
 
 - [x] Replace dependency-policy machinery ([#297](https://github.com/plx/ferric-rules/issues/297)) with standard scanners, actionable
   scoped exceptions, and retained license notices; validate positive/negative cases.
-- [x] Establish benchmark correctness oracles (#100), measure and implement
-  the Rust/C threading contract (#303); remaining consumer work is listed below.
+- [x] Establish benchmark correctness oracles (#100), measure the threading
+  choice, and implement transferable Rust/C engine contracts and regressions.
+  Remaining binding delivery is tracked below.
 - [x] Correct template RHS assertions/cardinality and declared slot types,
   correlated last-blocker `not`, multifield equality, and repeated ordinary joins
   discovered by the required evidence workloads.
@@ -75,8 +76,9 @@ selection example, including persistence/resume, across all four host languages.
   as not planned, and point existing scheduling/docs to this finite scope.
 
 These are behavior groups, not a promise of one PR per historical issue.
-All 81 open historical issues have a locally prepared disposition: 18
-retained/consolidated behavior groups, plus dependency/threading/Swift additions.
+All 81 open historical issues have a locally prepared disposition. The finite
+cohort has 13 retained/consolidated issues, including dependency/threading/Swift
+additions; superseded obligations retain their history through retirement.
 The saved native baseline has 208 edges. Migration is not applied yet.
 Consolidate overlaps before selecting; each closing PR covers only one active
 cohort item. Required behavior may not be retired to complete the checklist.
@@ -185,6 +187,7 @@ versioned persistence will receive its own validation and comparison.
 Dependency simplification is merged in PR #298 (`142c8d6b`); template RHS and
 identity repair is merged in PR #301 (`21e007a1`). Benchmark PR #302 (`5f42ab13`)
 and measured thread-transfer PR #304 (`b6015037`) are also merged after full CI.
+The core repairs are merged in PR #306 (`56d0748b`).
 The benchmark review identified a
 missing guard against comparing different workload sources. The guard is fixed
 and passes 19 focused tests; recorded ABAB sources also pass it unchanged.
@@ -226,8 +229,22 @@ tests, 14 sanitizer tests and copied external consumer also passed on their
 recorded candidates. Later integration edits receive the affected checks.
 Final paired measurements are recorded in CI runs 34067449993 and 34067708016;
 join and persistence overhead triggered one bounded host-validation experiment.
-Its final measurement and decision remain open; no correctness-only run is a
-performance claim.
+The experiment did not resolve the representative string-join regression and
+was rejected. Retain the original host implementation; no second experiment or
+RETE redesign is planned. Final median details and the accepted absolute cost
+remain to be recorded; no correctness-only run is a performance claim.
+
+Persistence PR #307 and the Node/Python consumer PRs #308/#309 are open. Fresh
+snapshot review added two precise checks for configuration/agenda strategy
+agreement and registered global identities, preserving rule order and reset
+values after restore. The focused regressions and all 59 snapshot tests pass.
+Prepared Go, host-value, Swift and external-consumer changes follow in order.
+Native implementation is frozen for the final consumer pass. The fresh Swift package built at `3da6a41b` passes its three native slices,
+14 strict-concurrency tests, the same 14 Swift ASan tests, iOS wrapper builds,
+and copied external macOS consumer. Its inputs are unchanged at `42255df7`.
+Packaged Rust/CLI consumers pass at `1d09b2b4`, including pending and completed
+launch-selection snapshot resume. Full CI for stacked consumer PRs runs after
+retargeting to main and the normal validated head update.
 
 Validation stays focused on supported embedding contracts: owned values and
 errors remain usable after native calls, serialized close/use preserves handle
@@ -236,8 +253,9 @@ deterministic regressions, consumer smokes and relevant sanitizer jobs. Do not
 start a new fuzzing campaign or broaden pointer probing. Run preflight before
 PR creation/updates, and repeat other suites only for changed paths or findings.
 
-Next: merge persistence after its checks, then the prepared TS,
+Next: finish fresh consumer validation and merge persistence after its checks,
+then the prepared TS,
 Python, Go, host API, Swift and external-consumer changes in dependency order.
-Finish the one performance experiment and final integrated validation, then
+Record the accepted measured tradeoff and finish final integrated validation, then
 apply and verify the prepared finite backlog migration. Required outcomes
 remain open until their implementation PRs are merged.

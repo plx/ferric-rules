@@ -10,7 +10,7 @@ use ferric_rules::runtime::{Engine, EngineConfig, RunLimit};
 
 /// Engine serialization/deserialization benchmark.
 ///
-/// Measures `serialize()`/`deserialize()` round-trip latency at varying engine
+/// Measures recommended CBOR `serialize()`/`deserialize()` latency at varying engine
 /// sizes. Compilation is a separate comparison workload; no relative speed is
 /// assumed. The generated distinct keys intentionally leave joins unmatched.
 /// The untimed oracle checks stored facts and completes a join after restore.
@@ -115,7 +115,7 @@ fn generate_serde_source(n_templates: usize, n_rules: usize, n_facts: usize) -> 
 
 fn bench_serde_small(c: &mut Criterion) {
     let source = generate_serde_source(5, 10, 50);
-    let format = SerializationFormat::Bincode;
+    let format = SerializationFormat::Cbor;
 
     // Prepare engine state
     let mut engine = Engine::new(EngineConfig::utf8());
@@ -125,7 +125,7 @@ fn bench_serde_small(c: &mut Criterion) {
     let bytes = engine.serialize(format).unwrap();
     validate_snapshot(&engine, &bytes, format, 5, 10, 50);
 
-    let mut group = c.benchmark_group("serde_small");
+    let mut group = c.benchmark_group("snapshot_cbor_small");
 
     group.bench_function("serialize", |b| {
         b.iter(|| engine.serialize(format).unwrap());
@@ -149,7 +149,7 @@ fn bench_serde_small(c: &mut Criterion) {
 
 fn bench_serde_medium(c: &mut Criterion) {
     let source = generate_serde_source(20, 100, 500);
-    let format = SerializationFormat::Bincode;
+    let format = SerializationFormat::Cbor;
 
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
@@ -158,7 +158,7 @@ fn bench_serde_medium(c: &mut Criterion) {
     let bytes = engine.serialize(format).unwrap();
     validate_snapshot(&engine, &bytes, format, 20, 100, 500);
 
-    let mut group = c.benchmark_group("serde_medium");
+    let mut group = c.benchmark_group("snapshot_cbor_medium");
     group.sample_size(10);
 
     group.bench_function("serialize", |b| {
@@ -183,7 +183,7 @@ fn bench_serde_medium(c: &mut Criterion) {
 
 fn bench_serde_large(c: &mut Criterion) {
     let source = generate_serde_source(50, 500, 2000);
-    let format = SerializationFormat::Bincode;
+    let format = SerializationFormat::Cbor;
 
     let mut engine = Engine::new(EngineConfig::utf8());
     engine.load_str(&source).unwrap();
@@ -192,7 +192,7 @@ fn bench_serde_large(c: &mut Criterion) {
     let bytes = engine.serialize(format).unwrap();
     validate_snapshot(&engine, &bytes, format, 50, 500, 2000);
 
-    let mut group = c.benchmark_group("serde_large");
+    let mut group = c.benchmark_group("snapshot_cbor_large");
     group.sample_size(10);
 
     group.bench_function("serialize", |b| {
