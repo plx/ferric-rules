@@ -2,6 +2,8 @@ package ferric
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -243,7 +245,7 @@ func TestGetOutputEPreservesEmbeddedNULFromSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restored, err := NewEngine(WithSnapshot(modified, FormatJSON))
+	restored, err := NewEngine(WithSnapshot(replaceJSONSnapshotPayload(t, snapshot, modified), FormatJSON))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,10 +361,27 @@ func TestSnapshotBytesAndFilePathsDoNotUseCStringPolicy(t *testing.T) {
 func decodeJSONSnapshot(t *testing.T, snapshot []byte) map[string]any {
 	t.Helper()
 	var state map[string]any
-	if err := json.Unmarshal(snapshot, &state); err != nil {
+	if len(snapshot) < 52 || string(snapshot[:8]) != "FERRIC\x00S" || snapshot[10] != 1 {
+		t.Fatal("expected a versioned JSON snapshot")
+	}
+	if err := json.Unmarshal(snapshot[52:], &state); err != nil {
 		t.Fatal(err)
 	}
 	return state
+}
+
+// Applications may restore buffered text containing NUL. Keep the existing
+// output-copy regression valid under the public snapshot envelope.
+func replaceJSONSnapshotPayload(t *testing.T, snapshot, payload []byte) []byte {
+	t.Helper()
+	_ = decodeJSONSnapshot(t, snapshot)
+	result := append(append([]byte(nil), snapshot[:52]...), payload...)
+	binary.LittleEndian.PutUint64(result[12:20], uint64(len(payload)))
+	digest := sha256.New()
+	_, _ = digest.Write(result[:20])
+	_, _ = digest.Write(payload)
+	copy(result[20:52], digest.Sum(nil))
+	return result
 }
 
 func assertEmbeddedNULArgument(t *testing.T, err error, argument, value string) {

@@ -125,7 +125,7 @@ func TestEngineErrorsDescribeCurrentOperation(t *testing.T) {
 		ffi.ErrSerializationError,
 		serialization.FerricError,
 		"",
-		[]string{"deserialization failed"},
+		[]string{"legacy raw snapshots are unsupported"},
 		staleMessages,
 	)
 	staleMessages = append(staleMessages, serializationMessage)
