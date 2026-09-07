@@ -346,3 +346,62 @@ fn test_scaling_alpha_fanout() {
 
     assert_scaling("alpha_fanout", small, large, t_small, t_large, 8.0);
 }
+
+/// Incoming existential support must not scan every unrelated parent token.
+/// Keep supports per sensor fixed, so a full parent scan is quadratic in N.
+#[test]
+#[ignore = "requires release mode; run via just scaling-check"]
+fn test_scaling_exists_support_assertion() {
+    fn measure(n: usize) -> Duration {
+        measure_op_median(
+            || {
+                let mut engine = Engine::with_rules(
+                    "(defrule ready (sensor ?id) (exists (reading ?id ?sample)) =>)",
+                )
+                .unwrap();
+                for sensor in 0..n {
+                    engine
+                        .assert_ordered("sensor", i64::try_from(sensor).unwrap())
+                        .unwrap();
+                }
+                engine
+            },
+            |mut engine| {
+                for sensor in 0..n {
+                    for sample in 0..8_i64 {
+                        engine
+                            .assert_ordered(
+                                "reading",
+                                vec![
+                                    ferric_rules::core::Value::Integer(
+                                        i64::try_from(sensor).unwrap(),
+                                    ),
+                                    ferric_rules::core::Value::Integer(sample),
+                                ],
+                            )
+                            .unwrap();
+                    }
+                }
+                let result = engine.run(RunLimit::Unlimited).unwrap();
+                assert_eq!(result.rules_fired, n);
+                assert_eq!(
+                    result.halt_reason,
+                    ferric_rules::runtime::HaltReason::AgendaEmpty
+                );
+                assert!(engine.action_diagnostics().is_empty());
+                assert_eq!(engine.fact_count(), n * 9);
+                black_box(engine);
+            },
+        )
+    }
+
+    let (small, large) = (512, 2048);
+    assert_scaling(
+        "exists_support_assertion",
+        small,
+        large,
+        measure(small),
+        measure(large),
+        8.0,
+    );
+}

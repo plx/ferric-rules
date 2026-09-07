@@ -23,4 +23,4 @@ When claiming performance improvements:
 
 ### Scaling regression checks
 
-`just scaling-check` runs five `#[ignore]` integration tests that assert asymptotic scaling behavior of core operations (join propagation, engine run, retraction cascade, churn lifecycle, alpha fanout). Each test measures at two input sizes (4x apart) and asserts the time ratio stays within bounds consistent with the expected complexity class. This catches full complexity-class regressions (e.g. O(N) → O(N²)) without relying on absolute timing thresholds.
+`just scaling-check` runs six `#[ignore]` integration tests that assert asymptotic scaling behavior of core operations (join propagation, engine run, retraction cascade, churn lifecycle, alpha fanout, exists support assertion). Each test measures at two input sizes (4x apart) and asserts the time ratio stays within bounds consistent with the expected complexity class. This catches full complexity-class regressions (e.g. O(N) → O(N²)) without relying on absolute timing thresholds.
