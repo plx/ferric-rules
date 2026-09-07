@@ -87,6 +87,7 @@ _ENGINE_MEMBERS = {
     "load_file",
     "modules",
     "max_call_depth",
+    "effective_max_call_depth",
     "push_focus",
     "push_input",
     "reset",

@@ -70,9 +70,15 @@ These rules also apply inside nested multifields and template slots.
 `Engine(max_call_depth=64)` and `Engine.from_source(source, max_call_depth=64)`
 accept a keyword-only integer from 0 through 4,294,967,295; booleans and
 fractional values are rejected. Zero disallows user-function calls. The
-read-only `engine.max_call_depth` property reports the configured value.
-Persistence accepts the narrower documented snapshot limit of 256 nested
-user-function calls, so engines configured above that limit cannot be saved.
+read-only `engine.max_call_depth` property reports the requested value;
+`engine.effective_max_call_depth` reports its enforced ceiling of 32 in every
+build profile. Requested values survive snapshots. Active expression evaluation
+is separately bounded at 64 frames, and translated expression trees at 16
+levels, so nested bodies may reach their expression limit first. These limits
+return owned action diagnostics instead of overflowing native recursion.
+Release workers are tested with 512 KiB native stacks; unoptimized development
+builds need at least the ordinary Rust 2 MiB stack for the tested runtime paths.
+Arbitrarily tiny host thread stacks are unsupported.
 
 Snapshots use the versioned CBOR envelope by default. Explicit `Format` values
 remain available as experimental codecs inside the same envelope. Inputs are
