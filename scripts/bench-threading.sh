@@ -14,7 +14,7 @@ if ! [[ "$base_sha" =~ ^[0-9a-f]{40}$ && "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
     exit 1
 fi
 suites=(engine_bench waltz_bench churn_bench join_bench serialization_bench)
-filters=('^lifecycle_(load_reset_run|reset_run)_(100|1000)$' '^(waltz_100_junctions|waltz_500/waltz_500_junctions)$' '^churn_(500|2000)_facts$' '^join_(strings|nested_multifields)_(100|1000)$' '^serde_(small|medium)/(serialize|deserialize)$')
+filters=('^lifecycle_(load_reset_run|reset_run)_(100|1000)$' '^(waltz_100_junctions|waltz_500/waltz_500_junctions)$' '^churn_(500|2000)_facts$' '^join_(strings|nested_multifields)_(100|1000)$' '^snapshot_cbor_(small|medium)/(serialize|deserialize)$')
 package=ferric-rules
 expected=16
 if [[ "$mode" == threading-capi ]]; then
@@ -80,7 +80,7 @@ git worktree add --detach "$experiment/candidate" "$head_sha"
     uname -a
     lscpu
     printf 'features=serde; profile=bench; workspace LTO=true, codegen-units=1\n'
-    printf 'Default samples=30; core Waltz500/serde_medium groups override to10; C suites keep30.\n'
+    printf 'Default samples=30; core Waltz500/snapshot_cbor_medium groups override to10; C suites keep30.\n'
 } > "$output/environment.txt"
 # Finish both builds before measuring; each revision has its own output directory.
 for variant in base candidate; do
