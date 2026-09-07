@@ -463,13 +463,12 @@ impl Engine {
     }
 
     fn host_assertion_result(&self, result: FactAssertionResult<FactId>) -> FactAssertionResult {
-        self.host.prune(&self.fact_base);
         match result {
             FactAssertionResult::Asserted(id) => {
-                FactAssertionResult::Asserted(self.host.export(id))
+                FactAssertionResult::Asserted(self.host.export_after_prune(id, &self.fact_base))
             }
             FactAssertionResult::Duplicate(id) => {
-                FactAssertionResult::Duplicate(self.host.export(id))
+                FactAssertionResult::Duplicate(self.host.export_after_prune(id, &self.fact_base))
             }
         }
     }

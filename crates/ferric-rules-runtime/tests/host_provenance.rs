@@ -200,6 +200,59 @@ fn host_value_depth_limit_accepts_the_boundary_and_rejects_the_next_level() {
 }
 
 #[test]
+fn host_validation_checks_siblings_after_nested_and_empty_multifields() {
+    fn multifield(values: impl IntoIterator<Item = Value>) -> Value {
+        Value::Multifield(Box::new(values.into_iter().collect()))
+    }
+    let mut engine = Engine::new(EngineConfig::default());
+    let mut nested = Value::Integer(7);
+    for _ in 0..12 {
+        nested = multifield([nested, multifield([]), Value::Integer(8)]);
+    }
+    let valid = multifield([nested.clone(), multifield([]), Value::Integer(9)]);
+    let id = engine.assert_ordered("valid", valid.clone()).unwrap();
+    let Fact::Ordered(stored) = engine.get_fact(id).unwrap().unwrap() else {
+        unreachable!()
+    };
+    assert!(stored.fields[0].structural_eq(&valid));
+
+    for value in [
+        multifield([nested.clone(), Value::Void]),
+        multifield([multifield([Value::Void]), nested.clone()]),
+        multifield([multifield([]), nested, multifield([Value::Void])]),
+    ] {
+        assert!(matches!(
+            engine.assert_ordered("invalid", value),
+            Err(EngineError::InvalidHostValue(_))
+        ));
+    }
+    assert_eq!(engine.fact_count(), 1);
+    assert!(engine.find_facts("invalid").unwrap().is_empty());
+}
+
+#[test]
+fn host_validation_shares_the_item_budget_across_nested_siblings_and_fields() {
+    let wide = || {
+        Value::Multifield(Box::new(
+            std::iter::repeat_n(Value::Integer(1), 500_000).collect(),
+        ))
+    };
+    let mut engine = Engine::new(EngineConfig::default());
+    for values in [
+        vec![wide(), wide()],
+        vec![Value::Multifield(Box::new(
+            [wide(), wide()].into_iter().collect(),
+        ))],
+    ] {
+        assert!(matches!(
+            engine.assert_ordered("too-wide", values),
+            Err(EngineError::InvalidHostValue(_))
+        ));
+        assert_eq!(engine.fact_count(), 0);
+    }
+}
+
+#[test]
 fn ordered_host_facts_cannot_reenter_an_explicit_template_identity() {
     let mut engine = Engine::new(EngineConfig::default());
     let id = engine.assert_ordered("item", 7_i64).unwrap();

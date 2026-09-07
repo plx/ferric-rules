@@ -107,8 +107,22 @@ impl HostValue {
         if self.owner.is_some() && self.owner != owner {
             return Err(EngineError::ForeignHandle);
         }
-        let mut pending = vec![(&self.value, 0)];
-        while let Some((value, depth)) = pending.pop() {
+        // Keep only the unvisited sibling slices on the stack. Primitive
+        // fields need no allocation, and a wide multifield does not allocate
+        // one temporary entry per element. Stack length is bounded by depth.
+        let mut pending = SmallVec::<[(&[Value], usize); 8]>::new();
+        let mut values = std::slice::from_ref(&self.value);
+        let mut depth = 0;
+        loop {
+            let Some((value, siblings)) = values.split_first() else {
+                let Some((next, next_depth)) = pending.pop() else {
+                    break;
+                };
+                values = next;
+                depth = next_depth;
+                continue;
+            };
+            values = siblings;
             *remaining = remaining.checked_sub(1).ok_or_else(|| {
                 EngineError::InvalidHostValue("too many values in one assertion".into())
             })?;
@@ -124,14 +138,18 @@ impl HostValue {
                         return Err(EngineError::InvalidHostValue("non-ASCII bytes in an ASCII string".into()));
                     }
                 }
-                Value::Multifield(values) => {
+                Value::Multifield(children) => {
                     if depth >= HOST_VALUE_MAX_DEPTH {
                         return Err(EngineError::InvalidHostValue("multifield nesting exceeds 32".into()));
                     }
-                    if values.len() > *remaining {
+                    if children.len() > *remaining {
                         return Err(EngineError::InvalidHostValue("too many values in one assertion".into()));
                     }
-                    pending.extend(values.iter().map(|value| (value, depth + 1)));
+                    if !siblings.is_empty() {
+                        pending.push((siblings, depth));
+                    }
+                    values = children;
+                    depth += 1;
                 }
                 _ => {}
             }
@@ -245,6 +263,9 @@ impl HostState {
     }
     pub fn export(&self, fact: FactId) -> FactHandle {
         let mut handles = self.facts.lock().expect("host handle lock poisoned");
+        Self::export_locked(&mut handles, fact)
+    }
+    fn export_locked(handles: &mut FactHandles, fact: FactId) -> FactHandle {
         if let Some(&handle) = handles.by_fact.get(&fact) {
             return handle;
         }
@@ -252,6 +273,13 @@ impl HostState {
         handles.by_fact.insert(fact, handle);
         handles.by_handle.insert(handle, fact);
         handle
+    }
+    /// An assertion already needs the map to export its result. Reclaim stale
+    /// RHS handles under that same lock, retaining the ordinary prune policy.
+    pub fn export_after_prune(&self, fact: FactId, facts: &FactBase) -> FactHandle {
+        let mut handles = self.facts.lock().expect("host handle lock poisoned");
+        Self::prune_locked(&mut handles, facts);
+        Self::export_locked(&mut handles, fact)
     }
     pub fn resolve(&self, handle: FactHandle) -> Option<FactId> {
         self.facts
@@ -274,6 +302,9 @@ impl HostState {
     /// every operation. Stale entries remain bounded by live facts plus 256.
     pub fn prune(&self, facts: &FactBase) {
         let mut handles = self.facts.lock().expect("host handle lock poisoned");
+        Self::prune_locked(&mut handles, facts);
+    }
+    fn prune_locked(handles: &mut FactHandles, facts: &FactBase) {
         if handles.by_fact.len() > facts.len().saturating_mul(2).saturating_add(256) {
             handles.by_fact.retain(|fact, _| facts.get(*fact).is_some());
             handles
