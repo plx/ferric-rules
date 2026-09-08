@@ -2921,77 +2921,52 @@ fn builtin_abs(
 }
 
 /// `min` (1+ args)
-#[allow(clippy::cast_precision_loss)]
 fn builtin_min(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_min("min", args, 1, span)?;
-    let values = eval_args(ctx, args)?;
-    let mut use_float = false;
-    let mut min_int: i64 = i64::MAX;
-    let mut min_float: f64 = f64::INFINITY;
-    for v in &values {
-        match as_numeric(v, "min", span)? {
-            Numeric::Int(i) => {
-                if i < min_int {
-                    min_int = i;
-                }
-                if (i as f64) < min_float {
-                    min_float = i as f64;
-                }
-            }
-            Numeric::Flt(f) => {
-                use_float = true;
-                if f < min_float {
-                    min_float = f;
-                }
-            }
-        }
-    }
-    if use_float {
-        Ok(Value::Float(min_float))
-    } else {
-        Ok(Value::Integer(min_int))
-    }
+    builtin_extremum(ctx, args, span, "min", std::cmp::Ordering::Less)
 }
 
 /// `max` (1+ args)
-#[allow(clippy::cast_precision_loss)]
 fn builtin_max(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_min("max", args, 1, span)?;
+    builtin_extremum(ctx, args, span, "max", std::cmp::Ordering::Greater)
+}
+
+/// Return the first selected operand unchanged, including its type and zero sign.
+#[allow(clippy::cast_precision_loss)] // CLIPS converts mixed pairs, but compares integer pairs exactly.
+fn builtin_extremum(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+    function: &str,
+    preferred: std::cmp::Ordering,
+) -> Result<Value, EvalError> {
+    check_arity_min(function, args, 1, span)?;
     let values = eval_args(ctx, args)?;
-    let mut use_float = false;
-    let mut max_int: i64 = i64::MIN;
-    let mut max_float: f64 = f64::NEG_INFINITY;
-    for v in &values {
-        match as_numeric(v, "max", span)? {
-            Numeric::Int(i) => {
-                if i > max_int {
-                    max_int = i;
-                }
-                if (i as f64) > max_float {
-                    max_float = i as f64;
-                }
-            }
-            Numeric::Flt(f) => {
-                use_float = true;
-                if f > max_float {
-                    max_float = f;
-                }
-            }
+    let mut selected = &values[0];
+    let mut selected_numeric = as_numeric(selected, function, span)?;
+    for value in &values[1..] {
+        let candidate = as_numeric(value, function, span)?;
+        let ordering = match (&candidate, &selected_numeric) {
+            (Numeric::Int(a), Numeric::Int(b)) => Some(a.cmp(b)),
+            (Numeric::Int(a), Numeric::Flt(b)) => (*a as f64).partial_cmp(b),
+            (Numeric::Flt(a), Numeric::Int(b)) => a.partial_cmp(&(*b as f64)),
+            (Numeric::Flt(a), Numeric::Flt(b)) => a.partial_cmp(b),
+        };
+        // Ties retain the current operand. Future comparisons use its type,
+        // even when an earlier, discarded operand was a float.
+        if ordering == Some(preferred) {
+            selected = value;
+            selected_numeric = candidate;
         }
     }
-    if use_float {
-        Ok(Value::Float(max_float))
-    } else {
-        Ok(Value::Integer(max_int))
-    }
+    Ok(selected.clone())
 }
 
 // ---------------------------------------------------------------------------
