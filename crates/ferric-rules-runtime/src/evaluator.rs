@@ -4740,16 +4740,24 @@ fn builtin_str_index(
     };
     let find = as_lexeme_bytes(&values[0], ctx.symbol_table, "str-index", span)?;
     let search = as_lexeme_bytes(&values[1], ctx.symbol_table, "str-index", span)?;
-    match if find.is_empty() {
-        Some(0)
-    } else {
-        search.windows(find.len()).position(|part| part == find)
-    } {
-        Some(byte_pos) => {
-            // Convert byte offset to 1-based character position.
-            let char_pos = lexeme_length(&search[..byte_pos]) + 1;
+    // Choose the position unit from both complete operands. A valid prefix
+    // cannot make a raw haystack textual, and a raw needle may match inside a
+    // UTF-8 code point. str::find guarantees boundaries only in the text branch.
+    let position = match (std::str::from_utf8(find), std::str::from_utf8(search)) {
+        (Ok(find), Ok(search)) => search
+            .find(find)
+            .map(|byte_pos| search[..byte_pos].chars().count() + 1),
+        _ if find.is_empty() => Some(1),
+        _ => search
+            .windows(find.len())
+            .position(|part| part == find)
+            .map(|byte_pos| byte_pos + 1),
+    };
+    match position {
+        Some(position) =>
+        {
             #[allow(clippy::cast_possible_wrap)]
-            Ok(Value::Integer(char_pos as i64))
+            Ok(Value::Integer(position as i64))
         }
         None => Ok(clips_bool(
             false,
