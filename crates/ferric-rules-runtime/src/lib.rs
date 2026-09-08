@@ -52,9 +52,11 @@
 //! - For valid UTF-8, `sub-string` uses Unicode scalar positions, not grapheme
 //!   clusters. Explicit raw-byte values use byte positions.
 //! - `INSTANCE-NAME` is a distinct name value; this does not add COOL instances.
-//! - Legacy scanner builtins reject non-UTF-8 input until byte scanning is added.
+//! - `string-to-field` scans byte values; the legacy `explode$` scanner still
+//!   rejects non-UTF-8 input.
 
 mod byte_buffer;
+mod field_scanner;
 mod tracing_support;
 
 pub mod actions;

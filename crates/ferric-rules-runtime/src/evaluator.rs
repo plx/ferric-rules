@@ -56,6 +56,22 @@ fn format_span(span: Option<&SourceSpan>) -> String {
 // Errors
 // ---------------------------------------------------------------------------
 
+/// Metadata for a nonfatal scanner notice.
+///
+/// [`EvalError`] boxes this payload so notices do not enlarge every recursive
+/// evaluator result and its native stack frame.
+#[derive(Clone, Debug, thiserror::Error)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[error("[{code}] {message} in `{function}` on {channel} at input byte {offset} ({})", format_span(.span.as_ref()))]
+pub struct ScannerNoticeDiagnostic {
+    pub function: String,
+    pub code: String,
+    pub channel: String,
+    pub message: String,
+    pub offset: usize,
+    pub span: Option<SourceSpan>,
+}
+
 /// Errors during expression evaluation.
 #[derive(Clone, Debug, thiserror::Error)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -152,6 +168,10 @@ pub enum EvalError {
         reason: String,
         span: Option<SourceSpan>,
     },
+
+    /// A scanner notice preserves the returned field and does not request a halt.
+    #[error(transparent)]
+    ScannerNotice(Box<ScannerNoticeDiagnostic>),
 }
 
 // ---------------------------------------------------------------------------
@@ -4845,29 +4865,125 @@ fn builtin_str_compare(
     Ok(Value::Integer(result))
 }
 
-/// `string-to-field` — parse string as a typed value (integer, float, or symbol).
+/// `string-to-field` consumes exactly one CLIPS field token from lexeme bytes.
 fn builtin_string_to_field(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("string-to-field", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    let Value::String(s) = &val else {
-        return Err(EvalError::TypeError {
-            function: "string-to-field".to_string(),
-            expected: "STRING".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        });
+    if let Err(error) = check_arity_exact("string-to-field", args, 1, span) {
+        return Ok(string_to_field_failure(ctx, error));
+    }
+    let argument = match eval_inner(ctx, &args[0]) {
+        Ok(value) => value,
+        // Keep non-local control distinct from an argument evaluation failure.
+        Err(error @ EvalError::ReturnControl { .. }) => return Err(error),
+        Err(error) => return Ok(string_to_field_failure(ctx, error)),
     };
-    parse_string_as_value(
-        checked_text(s.as_bytes(), "string-to-field", span)?,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-        "string-to-field",
-        span,
+    // EnvArgTypeCheck tests EvaluationError after evaluating its operand. A
+    // sticky Halt by itself neither skips conversion nor gets cleared here.
+    if ctx.globals.evaluation_error() {
+        return Ok(string_to_field_error_value(ctx));
+    }
+    let bytes = match as_lexeme_bytes(&argument, ctx.symbol_table, "string-to-field", span) {
+        Ok(bytes) => bytes,
+        Err(error) => return Ok(string_to_field_failure(ctx, error)),
+    };
+    let scanned = crate::field_scanner::FieldScanner::clips_string(bytes).next_token();
+    // A SYMBOL/NAME argument may borrow the intern table. Own only the selected
+    // token before interning its result; do not clone an ignored input suffix.
+    let token = scanned.token.into_owned();
+    for notice in scanned.notices {
+        queue_string_to_field_notice(ctx, &notice, span);
+    }
+    match string_to_field_token_value(ctx, token, span) {
+        Ok(value) => Ok(value),
+        Err(error) => Ok(string_to_field_failure(ctx, error)),
+    }
+}
+
+fn string_to_field_error_value(ctx: &EvalContext<'_>) -> Value {
+    Value::String(
+        FerricString::new("*** ERROR ***", ctx.config.string_encoding)
+            .expect("ASCII error default is encodable"),
     )
+}
+
+fn string_to_field_failure(ctx: &mut EvalContext<'_>, error: EvalError) -> Value {
+    ctx.globals.push_halt_diagnostic(error);
+    string_to_field_error_value(ctx)
+}
+
+fn string_to_field_token_value(
+    ctx: &mut EvalContext<'_>,
+    token: crate::field_scanner::FieldToken<'static>,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    use crate::field_scanner::FieldToken;
+
+    let encoding = ctx.config.string_encoding;
+    let converted = match token {
+        FieldToken::Integer(value) => return Ok(Value::Integer(value)),
+        FieldToken::Float(value) => return Ok(Value::Float(value)),
+        FieldToken::String(bytes) => FerricString::from_bytes(&bytes, encoding).map(Value::String),
+        FieldToken::Symbol(bytes) => ctx
+            .symbol_table
+            .intern_symbol_bytes(&bytes, encoding)
+            .map(Value::Symbol),
+        FieldToken::InstanceName(bytes) => ctx
+            .symbol_table
+            .intern_symbol_bytes(&bytes, encoding)
+            .map(|symbol| {
+                Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol))
+            }),
+        FieldToken::Stop(_) => ctx
+            .symbol_table
+            .intern_symbol("EOF", encoding)
+            .map(Value::Symbol),
+        FieldToken::Unknown { .. } => return Ok(string_to_field_error_value(ctx)),
+        other => FerricString::from_bytes(
+            other
+                .non_atomic_print_form()
+                .expect("non-atomic token has a print form")
+                .as_ref(),
+            encoding,
+        )
+        .map(Value::String),
+    };
+    converted.map_err(|error| EvalError::TypeError {
+        function: "string-to-field".into(),
+        expected: "field permitted by the configured encoding".into(),
+        actual: error.to_string(),
+        span: span.cloned(),
+    })
+}
+
+fn queue_string_to_field_notice(
+    ctx: &mut EvalContext<'_>,
+    notice: &crate::field_scanner::ScanNotice,
+    span: Option<&SourceSpan>,
+) {
+    use crate::field_scanner::ScanNoticeChannel;
+
+    let channel = match notice.channel() {
+        ScanNoticeChannel::Warning => "wwarning",
+        ScanNoticeChannel::Error => "werror",
+    };
+    // Nonfatal scanner notices have an explicit logical-router projection and
+    // an observable diagnostic. Neither path sets EvaluationError or Halt.
+    ctx.globals
+        .push_printout_event(channel.into(), notice.router_bytes());
+    ctx.globals
+        .push_diagnostic(EvalError::ScannerNotice(Box::new(
+            ScannerNoticeDiagnostic {
+                function: "string-to-field".into(),
+                code: notice.code().into(),
+                channel: channel.into(),
+                message: notice.message().into(),
+                offset: notice.range().start,
+                span: span.cloned(),
+            },
+        )));
 }
 
 /// Parse a string token as integer, float, or symbol.
@@ -11459,3 +11575,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "evaluator/string_to_field_tests.rs"]
+mod string_to_field_tests;

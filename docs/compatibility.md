@@ -810,9 +810,22 @@ tolerance. For example, `(= 0.0 1e-20)` returns FALSE and `(= -0.0 0.0)` returns
 | `upcase` | Convert to uppercase (preserves type) | `(upcase "hello")` => `"HELLO"` |
 | `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
 | `str-compare` | Lexicographic comparison (-1, 0, or 1) | `(str-compare "a" "b")` => `-1` |
-| `string-to-field` | Parse string as typed value | `(string-to-field "42")` => `42` |
+| `string-to-field` | Read the first CLIPS field from STRING, SYMBOL, or INSTANCE-NAME bytes | `(string-to-field "42 trailing")` => `42` |
 | `explode$` | Split string by whitespace into multifield | `(explode$ "a b c")` => `(a b c)` |
 | `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
+
+`string-to-field` ignores the input after its first token and preserves INTEGER,
+FLOAT, STRING, SYMBOL, and INSTANCE-NAME identity. Empty or comment-only input
+returns the symbol `EOF`; variable and punctuation tokens return their literal
+print forms as strings. Quoted fields preserve bytes and CLIPS escape behavior.
+Like a CLIPS string source, the input ends at its first NUL byte.
+
+Integer overflow saturates with a scanner warning. An unterminated quoted field
+returns its partial string with a notice, including a literal `0xff` byte when
+the final escape reaches EOF. These notices remain observable through action
+diagnostics and the `wwarning` or `werror` output channel while evaluation
+continues. Wrong argument count or type halts evaluation; an unknown scanner
+token instead returns the string `*** ERROR ***` without a diagnostic.
 
 ### Multifield Functions
 

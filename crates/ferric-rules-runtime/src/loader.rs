@@ -349,6 +349,11 @@ impl Engine {
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         let diagnostics_start = self.action_diagnostics.len();
         let mut result = self.load_str_inner(source);
+        // Scanner notices and other evaluator output must be observable when
+        // a load boundary returns, before a later action clears stale events.
+        for (channel, bytes) in self.globals.take_printout_events() {
+            self.router.write(&channel, &bytes);
+        }
         self.drain_evaluator_diagnostics();
         self.globals.take_evaluation_halt();
         self.globals.take_sort_return();

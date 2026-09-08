@@ -7,6 +7,10 @@
 # Preserve exact fixture output and source markers on Windows checkouts.
 crates/ferric-rules/tests/fixtures/**/*.clp text eol=lf
 crates/ferric-rules/tests/fixtures/**/*.out text eol=lf
+# These scanner fixtures contain literal CR bytes inside quoted input.
+crates/ferric-rules/tests/fixtures/stdlib/string_to_field_whitespace_comments_and_empty.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/string_to_field_ascii_whitespace_controls.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/string_to_field_control_whitespace_edges.clp -text
 crates/ferric-rules-runtime/tests/fixtures/snapshots/*.clp text eol=lf
 crates/ferric-rules-runtime/tests/fixtures/snapshots/*.cbor -text
 

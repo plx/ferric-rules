@@ -192,11 +192,7 @@ fn instance_literals_match_typed_slots_and_predicates() {
 
 #[test]
 fn legacy_scanners_and_text_identifiers_reject_invalid_utf8_explicitly() {
-    for expression in [
-        "(string-to-field ?value)",
-        "(explode$ ?value)",
-        "(funcall ?value)",
-    ] {
+    for expression in ["(explode$ ?value)", "(funcall ?value)"] {
         let source = format!("(defrule check (input ?value) => {expression} (assert (after)))");
         let mut engine = Engine::with_rules(&source).unwrap();
         let raw = engine.create_string_bytes(b"\xff").unwrap();

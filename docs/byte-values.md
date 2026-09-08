@@ -14,10 +14,13 @@ name argument; a parameter with no type restriction can accept the name value.
 The host `Value::type_name()` accessor inspects the value tag without object
 lookup.
 
-This value-model prerequisite does not itself repair `string-to-field`,
-`explode$`, `read`, or `format`. Those functions require their own scanner and
-formatting changes. In particular, the legacy scanners report invalid UTF-8
-input instead of replacing bytes while that work remains pending.
+`string-to-field` scans the first CLIPS field from STRING, SYMBOL, or
+INSTANCE-NAME bytes, preserving the selected field's type and payload. Its
+quoted fields can return invalid UTF-8, including the partial-string result
+when a trailing escape reaches EOF. Scanner notices do not halt evaluation.
+The `explode$` scanner still rejects invalid UTF-8 input. Remaining scanner
+and formatting compatibility work for `explode$`, `read`, and `format` is
+tracked separately.
 The source parser still accepts text only: `save-facts` preserves byte values,
 but a saved file containing invalid UTF-8 cannot yet be read by `load-facts`.
 Dynamic symbol/name conversions accept either atom type, as CLIPS does. Ferric
