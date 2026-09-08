@@ -507,6 +507,12 @@ candidate/base median ratios. The suites use separate runners and package/featur
 selections; these statistics describe the measured suite, not arbitrary user
 programs, and absolute times cannot be compared between rows.
 
+![All 288 workload median ratios in two rounds; lower is faster, and repeated regressions are highlighted.](2026-09-07-performance-distribution.svg)
+
+The distribution makes the concentration of gains visible: many facade cases
+improve, while the runtime and core gains are concentrated in specific operations.
+The complete case-level records remain the source for every plotted point.
+
 | Suite | Cases | Linux runner CPU | First round | Repeat |
 | --- | ---: | --- | ---: | ---: |
 | Facade | 192 | AMD EPYC 9V74 80-Core Processor | -18.53% | -19.25% |
