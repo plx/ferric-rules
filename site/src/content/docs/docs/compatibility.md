@@ -34,6 +34,30 @@ Depth and breadth use activation creation order and match the pinned reference c
 
 Not implemented: Simplicity, Complexity, Random.
 
+## Predicate Sorting
+
+`sort` invokes its comparator and accepts scalar or multifield arguments:
+`(sort > 3 (create$ 1 2))` returns `(1 2 3)`, while `<` gives descending order.
+Only the actual symbol `FALSE` keeps the left field before the right field;
+other results, including zero and a Void predicate result, request exchange.
+Stable merge traversal preserves equal-key input order when the predicate
+returns `FALSE` for ties, and makes comparator calls in a defined order. Data expressions run once before comparisons, and
+empty or singleton inputs do not invoke the comparator.
+
+The comparator must be an unqualified symbol naming a supported visible
+builtin, deffunction or generic. Missing names and incompatible builtin or
+deffunction arity return `FALSE`, skip data and record a nonfatal diagnostic.
+Fatal expression or predicate errors stop subsequent rule actions, but may
+still carry a partial value into an enclosing assignment. Diagnostic presence
+alone does not distinguish these outcomes; inspect the run's halt reason.
+
+This support uses existing value representations. It does not add
+`INSTANCE-NAME` or invalid-UTF-8 strings, and it does not require reproducing
+the pinned CLIPS process fault for Void used as a data field. The CLIPS-valid
+`(sort bind c b a)` callback remains an unsupported local-binding/special-form
+invocation; comparator metadata does not imply parity for every builtin.
+Malformed source bind targets are a separate parsed-variable restriction.
+
 ## Known Differential Gaps
 
 The blocking pinned-CLIPS policy retains these differences as exact known deviations rather than reporting them as equivalent. Any unexplained or changed divergence fails the gate.

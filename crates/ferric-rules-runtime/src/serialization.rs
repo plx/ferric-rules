@@ -331,6 +331,11 @@ impl Engine {
     /// Invalid engine invariants, persistence limits, and unsupported codec
     /// values also produce errors. Successful writes satisfy the read limits.
     pub fn serialize(&self, format: SerializationFormat) -> Result<Vec<u8>, SerializationError> {
+        if self.globals.has_pending_diagnostics() {
+            return Err(SerializationError::InvalidState(
+                "pending evaluator diagnostics or control state must be consumed before serialization".into(),
+            ));
+        }
         self.validate_serializable()?;
         self.validate_restored_state()?;
 
@@ -580,6 +585,76 @@ mod tests {
     use super::*;
     use crate::config::EngineConfig;
     use crate::execution::RunLimit;
+
+    #[test]
+    fn snapshot_cannot_silently_discard_pending_evaluator_diagnostics() {
+        let mut engine = Engine::with_rules("(defrule ready (ready) =>)").unwrap();
+        engine
+            .globals
+            .push_diagnostic(crate::evaluator::EvalError::UnknownFunction {
+                name: "pending-sort-comparator".into(),
+                span: None,
+            });
+        for &format in SerializationFormat::ALL {
+            assert!(matches!(
+                engine.serialize(format),
+                Err(SerializationError::InvalidState(message))
+                    if message.contains("pending evaluator diagnostics")
+            ));
+        }
+        engine.drain_evaluator_diagnostics();
+        for &format in SerializationFormat::ALL {
+            let restored = Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
+            assert_eq!(restored.action_diagnostics().len(), 1);
+            assert!(restored.action_diagnostics()[0]
+                .to_string()
+                .contains("pending-sort-comparator"));
+        }
+    }
+
+    #[test]
+    fn snapshot_rejects_pending_evaluator_control_after_diagnostics_are_drained() {
+        let mut engine = Engine::with_rules("(defrule ready (ready) =>)").unwrap();
+        engine
+            .globals
+            .push_halt_diagnostic(crate::evaluator::EvalError::UnknownFunction {
+                name: "failed-sort-comparator".into(),
+                span: None,
+            });
+        engine.drain_evaluator_diagnostics();
+        for &format in SerializationFormat::ALL {
+            assert!(matches!(
+                engine.serialize(format),
+                Err(SerializationError::InvalidState(_))
+            ));
+        }
+        assert!(engine.globals.take_evaluation_halt());
+        assert!(!engine.globals.evaluation_error());
+        engine.globals.request_sort_return();
+        for &format in SerializationFormat::ALL {
+            assert!(matches!(
+                engine.serialize(format),
+                Err(SerializationError::InvalidState(_))
+            ));
+        }
+        assert!(engine.globals.take_sort_return());
+        engine.globals.begin_sort_recovery();
+        for &format in SerializationFormat::ALL {
+            assert!(matches!(
+                engine.serialize(format),
+                Err(SerializationError::InvalidState(_))
+            ));
+        }
+        engine.globals.end_sort_recovery();
+        for &format in SerializationFormat::ALL {
+            let restored = Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
+            assert_eq!(restored.action_diagnostics().len(), 1);
+            assert!(!restored.globals.evaluation_halted());
+            assert!(!restored.globals.evaluation_error());
+            assert!(!restored.globals.sort_return_requested());
+            assert!(!restored.globals.is_sort_recovery_active());
+        }
+    }
 
     fn alter_state(
         engine: &Engine,

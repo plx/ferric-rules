@@ -346,8 +346,24 @@ impl Engine {
     /// let result = engine.load_str("(assert (person John 30))").unwrap();
     /// assert_eq!(result.asserted_facts.len(), 1);
     /// ```
-    #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
+        let diagnostics_start = self.action_diagnostics.len();
+        let mut result = self.load_str_inner(source);
+        self.drain_evaluator_diagnostics();
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
+        if let Ok(loaded) = &mut result {
+            loaded.warnings.extend(
+                self.action_diagnostics[diagnostics_start..]
+                    .iter()
+                    .map(ToString::to_string),
+            );
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
+    fn load_str_inner(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_str", len = source.len());
         crate::source_limits::check_source_size(source.len()).map_err(|e| vec![e])?;
 
@@ -1392,7 +1408,7 @@ impl Engine {
             // without any rule context).  The block scope ensures the mutable
             // borrows on symbol_table and globals are released before the
             // subsequent self.globals.set() / self.registered_globals.push().
-            let value = {
+            let evaluation = {
                 let empty_bindings = ferric_rules_core::binding::BindingSet::new();
                 let empty_var_map = ferric_rules_core::binding::VarMap::new();
                 let mut ctx = crate::evaluator::EvalContext {
@@ -1416,8 +1432,20 @@ impl Engine {
                     template_defs: None,
                 };
                 crate::evaluator::eval(&mut ctx, &runtime_expr)
-                    .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
+                    .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))
             };
+
+            // A recovered expression value is usable by RHS consumers, but a
+            // failed global initializer must not publish the new global.
+            let evaluation_halted = self.globals.take_evaluation_halt();
+            self.globals.take_sort_return();
+            let value = evaluation?;
+            if evaluation_halted {
+                return Err(LoadError::Compile(format!(
+                    "global `{}` init: evaluation halted",
+                    def.name
+                )));
+            }
 
             // CLIPS commits named globals incrementally, even within one
             // defglobal group. Publish ownership only after this initializer
