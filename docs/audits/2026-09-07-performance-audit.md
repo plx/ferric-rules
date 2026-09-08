@@ -305,3 +305,23 @@ which violate its `FLOAT` slot constraint. Formatting those generated values
 with one decimal place preserves the intended data and lets the existing fact,
 firing, output, and quiescence oracles run. Comparisons use the repaired source
 on both revisions; failed runs contribute no performance claims.
+
+## Focused agenda selection
+
+A focused module could previously rescan every higher-priority dormant
+activation before each firing. Agenda selection now tries the first activation
+without allocating and builds a derived per-rule ordering only after a focus
+miss. Selection compares eligible rule heads using the existing priority keys.
+The index tracks additions and removals, invalidates on clear/sequence rebasing,
+and is rebuilt after snapshot restoration; serialized fields are unchanged.
+Focus eligibility is evaluated anew on every call. The public activation-based
+predicate API retains its priority order and one call per visited activation.
+
+A randomized differential test compares indexed selection with the original scan
+through arbitrary mutations under Depth, Breadth, Lex, and MEA. Integration tests
+exercise partial execution, retained dormant matches, later focus changes, exact
+output order, and resume through all five snapshot formats. The new
+`module_dormant_focus` release benchmarks cover 128, 512, and 2,048 facts under
+all four strategies, with result oracles. A separate scaling gate excludes setup
+and detects repeated dormant-activation scanning. The gate rejects the parent
+and passes the candidate; all eight scaling gates pass on the candidate.

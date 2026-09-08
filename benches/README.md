@@ -188,3 +188,11 @@ for checked public assertions and retractions, and
 end of an otherwise unexported arena. Sparse-read setup and engine destruction
 are excluded with `iter_batched_ref`; target values and stable identities are
 checked before timing. These complement the owned-template capture controls.
+
+### Dormant module focus
+
+`module_bench` includes `module_dormant_focus/{Depth,Breadth,Lex,Mea}/{128,512,2048}`.
+Each case resets and runs a focused module while a higher-salience dormant module
+retains one activation per input fact. Untimed oracles check firing counts, exact
+output order, retained dormant matches, and quiescence. The scaling gate measures
+execution after setup to catch repeated scans of the dormant agenda.

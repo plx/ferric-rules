@@ -1139,11 +1139,11 @@ impl Engine {
             let rule_info = &self.rule_info;
             let rule_modules = &self.rule_modules;
 
-            if let Some(activation) = self.rete.agenda.pop_matching(|a| {
-                if rule_index_get(rule_info, a.rule).is_none() {
+            if let Some(activation) = self.rete.agenda.pop_matching_rule(|rule| {
+                if rule_index_get(rule_info, rule).is_none() {
                     return true;
                 }
-                match rule_index_get(rule_modules, a.rule) {
+                match rule_index_get(rule_modules, rule) {
                     Some(module) => *module == focus_module,
                     None => true,
                 }

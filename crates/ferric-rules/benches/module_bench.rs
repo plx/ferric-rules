@@ -151,6 +151,60 @@ fn bench_module_3m_100i_run_only(c: &mut Criterion) {
     });
 }
 
+fn bench_dormant_focus(c: &mut Criterion) {
+    use ferric_rules::core::ConflictResolutionStrategy;
+    for strategy in [
+        ConflictResolutionStrategy::Depth,
+        ConflictResolutionStrategy::Breadth,
+        ConflictResolutionStrategy::Lex,
+        ConflictResolutionStrategy::Mea,
+    ] {
+        let mut group = c.benchmark_group(format!("module_dormant_focus/{strategy:?}"));
+        for size in [128, 512, 2048] {
+            let mut source = String::from(
+                "(defmodule MAIN (export ?ALL))\n\
+                 (deftemplate MAIN::item (slot id))\n\
+                 (deffacts MAIN::seed\n",
+            );
+            for id in 0..size {
+                writeln!(source, "(item (id {id}))").unwrap();
+            }
+            source.push_str(
+                ")\n\
+                (defmodule DORMANT (import MAIN ?ALL))\n\
+                (defmodule ACTIVE (import MAIN ?ALL))\n\
+                (defrule DORMANT::wait (declare (salience 100)) (MAIN::item (id ?id)) =>)\n\
+                (defrule ACTIVE::work (MAIN::item (id ?id)) => (printout t ?id crlf))\n\
+                (defrule MAIN::start => (focus ACTIVE))\n",
+            );
+            group.bench_function(size.to_string(), |b| {
+                let mut config = EngineConfig::utf8();
+                config.strategy = strategy;
+                let mut engine = Engine::new(config);
+                engine.load_str(&source).unwrap();
+                engine.reset().unwrap();
+                support::verify_run(&mut engine, size + 1);
+                let mut expected: Vec<_> = (0..size).collect();
+                if strategy != ConflictResolutionStrategy::Breadth {
+                    expected.reverse();
+                }
+                let mut expected_output = String::new();
+                for id in expected {
+                    writeln!(expected_output, "{id}").unwrap();
+                }
+                assert_eq!(engine.get_output("t"), Some(expected_output.as_str()));
+                assert_eq!(engine.agenda_len(), size);
+                assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+                b.iter(|| {
+                    engine.reset().unwrap();
+                    engine.run(RunLimit::Unlimited).unwrap()
+                });
+            });
+        }
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
     bench_module_3m_100i,
@@ -158,5 +212,6 @@ criterion_group!(
     bench_module_10m_50i,
     bench_module_20m_20i,
     bench_module_3m_100i_run_only,
+    bench_dormant_focus,
 );
 criterion_main!(benches);

@@ -116,6 +116,9 @@ pub struct AgendaKey {
 /// activations with the same salience are ordered.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Agenda {
+    /// Derived ordering within each rule, allocated only after a focus miss.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    rule_ordering: Option<RuleOrdering>,
     /// Ordered activations: key -> `ActivationId`.
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::btree_map"))]
     ordering: BTreeMap<AgendaKey, ActivationId>,
@@ -132,6 +135,17 @@ pub struct Agenda {
     strategy: ConflictResolutionStrategy,
 }
 
+type RuleOrdering = HashMap<RuleId, BTreeMap<AgendaKey, ActivationId>>;
+
+fn remove_rule_key(index: &mut RuleOrdering, rule: RuleId, key: &AgendaKey) {
+    if let Some(entries) = index.get_mut(&rule) {
+        entries.remove(key);
+        if entries.is_empty() {
+            index.remove(&rule);
+        }
+    }
+}
+
 impl Agenda {
     /// Create a new, empty agenda with the default (Depth) strategy.
     #[must_use]
@@ -143,6 +157,7 @@ impl Agenda {
     #[must_use]
     pub fn with_strategy(strategy: ConflictResolutionStrategy) -> Self {
         Self {
+            rule_ordering: None,
             ordering: BTreeMap::new(),
             activations: SlotMap::with_key(),
             id_to_key: SecondaryMap::new(),
@@ -202,12 +217,16 @@ impl Agenda {
 
         let key = self.build_key(&activation);
         let token = activation.token;
+        let rule = activation.rule;
         let id = self.activations.insert_with_key(|id| {
             activation.id = id;
             activation
         });
 
         self.ordering.insert(key.clone(), id);
+        if let Some(index) = &mut self.rule_ordering {
+            index.entry(rule).or_default().insert(key.clone(), id);
+        }
         self.id_to_key.insert(id, key);
 
         // Update token reverse index
@@ -218,6 +237,7 @@ impl Agenda {
 
     /// Reclaim sequence space while preserving the chronology of live matches.
     fn rebase_sequences(&mut self) {
+        self.rule_ordering = None;
         let mut chronological: Vec<_> = self
             .activations
             .iter()
@@ -245,10 +265,13 @@ impl Agenda {
     ///
     /// Returns `None` if the agenda is empty.
     pub fn pop(&mut self) -> Option<Activation> {
-        let (_, id) = self.ordering.pop_first()?;
+        let (key, id) = self.ordering.pop_first()?;
         self.id_to_key.remove(id);
 
         let activation = self.activations.remove(id)?;
+        if let Some(index) = &mut self.rule_ordering {
+            remove_rule_key(index, activation.rule, &key);
+        }
 
         // Clean up token reverse index
         remove_from_token_index(&mut self.token_to_activations, activation.token, id);
@@ -262,10 +285,14 @@ impl Agenda {
     /// for which `predicate` returns `true`. Returns `None` if no matching
     /// activation exists.
     pub fn pop_matching(&mut self, predicate: impl Fn(&Activation) -> bool) -> Option<Activation> {
+        let (_, &first) = self.ordering.first_key_value()?;
+        if self.activations.get(first).is_some_and(&predicate) {
+            return self.pop();
+        }
         let mut target_key = None;
         let mut target_id = None;
 
-        for (key, &id) in &self.ordering {
+        for (key, &id) in self.ordering.iter().skip(1) {
             if let Some(activation) = self.activations.get(id) {
                 if predicate(activation) {
                     target_key = Some(key.clone());
@@ -281,8 +308,54 @@ impl Agenda {
         self.ordering.remove(&key);
         self.id_to_key.remove(id);
         let activation = self.activations.remove(id)?;
+        if let Some(index) = &mut self.rule_ordering {
+            remove_rule_key(index, activation.rule, &key);
+        }
         remove_from_token_index(&mut self.token_to_activations, activation.token, id);
 
+        Some(activation)
+    }
+
+    /// Pop the highest-priority activation whose rule is eligible.
+    ///
+    /// Eligibility must depend only on the rule and remain stable during this
+    /// call. The predicate may be called in a different order or more than once
+    /// for a rule. Activation-specific or stateful predicates use `pop_matching`.
+    /// The first eligible entry takes the ordinary pop path; a focus miss builds
+    /// a derived per-rule index so later calls inspect rule heads, not every
+    /// activation belonging to a dormant rule.
+    pub fn pop_matching_rule(&mut self, predicate: impl Fn(RuleId) -> bool) -> Option<Activation> {
+        let (_, &first) = self.ordering.first_key_value()?;
+        if self
+            .activations
+            .get(first)
+            .is_some_and(|activation| predicate(activation.rule))
+        {
+            return self.pop();
+        }
+        let index = self.rule_ordering.get_or_insert_with(|| {
+            let mut index = RuleOrdering::default();
+            for (key, &id) in &self.ordering {
+                if let Some(activation) = self.activations.get(id) {
+                    index
+                        .entry(activation.rule)
+                        .or_default()
+                        .insert(key.clone(), id);
+                }
+            }
+            index
+        });
+        let (key, id) = index
+            .iter()
+            .filter(|(rule, _)| predicate(**rule))
+            .filter_map(|(_, entries)| entries.first_key_value())
+            .min_by(|(left, _), (right, _)| left.cmp(right))
+            .map(|(key, &id)| (key.clone(), id))?;
+        self.ordering.remove(&key);
+        self.id_to_key.remove(id);
+        let activation = self.activations.remove(id)?;
+        remove_rule_key(self.rule_ordering.as_mut().unwrap(), activation.rule, &key);
+        remove_from_token_index(&mut self.token_to_activations, activation.token, id);
         Some(activation)
     }
 
@@ -304,6 +377,11 @@ impl Agenda {
         for id in act_ids {
             if let Some(key) = self.id_to_key.remove(id) {
                 self.ordering.remove(&key);
+                if let Some(index) = &mut self.rule_ordering {
+                    if let Some(activation) = self.activations.get(id) {
+                        remove_rule_key(index, activation.rule, &key);
+                    }
+                }
             }
 
             if let Some(activation) = self.activations.remove(id) {
@@ -318,6 +396,9 @@ impl Agenda {
     ///
     /// Returns the removed activations.
     pub fn remove_activations_for_rule(&mut self, rule_id: RuleId) -> Vec<Activation> {
+        if let Some(index) = &mut self.rule_ordering {
+            index.remove(&rule_id);
+        }
         let act_ids: Vec<ActivationId> = self
             .activations
             .iter()
@@ -370,6 +451,7 @@ impl Agenda {
 
     /// Clear all activations, preserving the strategy.
     pub fn clear(&mut self) {
+        self.rule_ordering = None;
         self.ordering.clear();
         self.activations.clear();
         self.id_to_key.clear();
@@ -497,6 +579,17 @@ impl Agenda {
                 self.id_to_key.get(id) == Some(&key),
                 "activation ordering key does not match current strategy"
             );
+        }
+
+        if let Some(index) = &self.rule_ordering {
+            let mut expected = RuleOrdering::default();
+            for (key, &id) in &self.ordering {
+                expected
+                    .entry(self.activations[id].rule)
+                    .or_default()
+                    .insert(key.clone(), id);
+            }
+            crate::snapshot::require_eq!(index, &expected, "rule ordering index mismatch");
         }
 
         Ok(())
@@ -1720,7 +1813,102 @@ mod proptests {
     // Tests
     // ---------------------------------------------------------------------------
 
+    #[test]
+    fn eligible_front_keeps_rule_ordering_unallocated() {
+        let (_tokens, tokens) = make_token_pool();
+        for strategy in ALL_STRATEGIES {
+            let mut agenda = Agenda::with_strategy(strategy);
+            for index in 0..20 {
+                agenda.add(make_activation(
+                    RuleId(0),
+                    tokens[index % tokens.len()],
+                    Salience::DEFAULT,
+                    Timestamp::new(u64::try_from(index).unwrap()),
+                ));
+            }
+            while agenda.pop_matching_rule(|_| true).is_some() {
+                assert!(agenda.rule_ordering.is_none());
+                agenda.debug_assert_consistency();
+            }
+        }
+    }
+
+    #[test]
+    fn activation_predicates_keep_priority_order_and_one_call_per_entry() {
+        let (_tokens, tokens) = make_token_pool();
+        for target in [2, 1, 9] {
+            let mut agenda = Agenda::new();
+            for rule in 0..3 {
+                agenda.add(make_activation(
+                    RuleId(rule),
+                    tokens[0],
+                    Salience::new(i32::try_from(rule).unwrap()),
+                    Timestamp::ZERO,
+                ));
+            }
+            assert!(agenda.pop_matching_rule(|_| false).is_none());
+            let calls = std::cell::RefCell::new(Vec::new());
+            let selected = agenda.pop_matching(|activation| {
+                calls.borrow_mut().push(activation.rule.0);
+                activation.rule.0 == target
+            });
+            assert_eq!(selected.map(|a| a.rule.0), (target < 3).then_some(target));
+            assert_eq!(
+                *calls.borrow(),
+                match target {
+                    2 => vec![2],
+                    1 => vec![2, 1],
+                    _ => vec![2, 1, 0],
+                }
+            );
+            agenda.debug_assert_consistency();
+        }
+    }
+
     proptest! {
+        #[test]
+        fn rule_selection_matches_scans_through_arbitrary_mutations(
+            operations in prop::collection::vec((0u8..10, 0u8..5, 0usize..5, 0u8..32, -10i32..10, 0u64..1000), 0..120),
+        ) {
+            let (_tokens, tokens) = make_token_pool();
+            for strategy in ALL_STRATEGIES {
+                let mut indexed = Agenda::with_strategy(strategy);
+                let mut scanned = Agenda::with_strategy(strategy);
+                for &(operation, rule, token, mask, salience, timestamp) in &operations {
+                    let rule = RuleId(u32::from(rule));
+                    let token = tokens[token];
+                    match operation {
+                        0..=2 | 8 => {
+                            if operation == 8 {
+                                indexed.next_seq = ActivationSeq::new(u64::MAX);
+                                scanned.next_seq = ActivationSeq::new(u64::MAX);
+                            }
+                            let mut activation = make_activation(rule, token, Salience::new(salience), Timestamp::new(timestamp));
+                            activation.recency = SmallVec::from_slice(&[Timestamp::new(timestamp), Timestamp::new(timestamp ^ 7)]);
+                            prop_assert_eq!(indexed.add(activation.clone()), scanned.add(activation));
+                        }
+                        3 => {
+                            let eligible = |rule: RuleId| mask & (1 << rule.0) != 0;
+                            prop_assert_eq!(indexed.pop_matching_rule(eligible).map(|a| a.id), scanned.pop_matching(|a| eligible(a.rule)).map(|a| a.id));
+                        }
+                        4 => prop_assert_eq!(indexed.pop().map(|a| a.id), scanned.pop().map(|a| a.id)),
+                        5 => prop_assert_eq!(indexed.remove_activations_for_token(token).iter().map(|a| a.id).collect::<Vec<_>>(), scanned.remove_activations_for_token(token).iter().map(|a| a.id).collect::<Vec<_>>()),
+                        6 => prop_assert_eq!(indexed.remove_activations_for_rule(rule).iter().map(|a| a.id).collect::<Vec<_>>(), scanned.remove_activations_for_rule(rule).iter().map(|a| a.id).collect::<Vec<_>>()),
+                        7 => { indexed.clear(); scanned.clear(); }
+                        _ => {
+                            let eligible = |a: &Activation| a.timestamp.get() % 2 == u64::from(mask % 2);
+                            prop_assert_eq!(indexed.pop_matching(eligible).map(|a| a.id), scanned.pop_matching(eligible).map(|a| a.id));
+                        }
+                    }
+                    // Populate the derived index without changing membership,
+                    // so the next mutation must maintain it.
+                    prop_assert!(indexed.pop_matching_rule(|_| false).is_none());
+                    prop_assert_eq!(indexed.len(), scanned.len());
+                    indexed.debug_assert_consistency();
+                    scanned.debug_assert_consistency();
+                }
+            }
+        }
         /// Running arbitrary operations under every strategy keeps all four indices
         /// in sync (verified by `debug_assert_consistency`).
         #[test]
