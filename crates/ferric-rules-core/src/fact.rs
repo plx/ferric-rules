@@ -6,7 +6,9 @@
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
 use slotmap::SlotMap;
 use smallvec::SmallVec;
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
+use std::ops::Bound::{Excluded, Unbounded};
 
 use crate::symbol::{Symbol, SymbolId};
 use crate::value::Value;
@@ -374,6 +376,13 @@ pub struct FactBase {
     /// allocation.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) by_structural_fingerprint: Option<HashMap<u64, SmallVec<[FactId; 1]>>>,
+    /// Assertion chronology for templates whose live cursor has been used.
+    ///
+    /// Each tree is built once on demand, then maintained during insertion and
+    /// retraction. Empty trees remain initialized so later assertions become
+    /// visible without rebuilding. This derived index is omitted from snapshots.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    by_template_chronology: HashMap<TemplateId, BTreeMap<Timestamp, FactId>>,
     pub(crate) next_timestamp: Timestamp,
 }
 
@@ -392,6 +401,7 @@ impl FactBase {
             by_template: HashMap::default(),
             by_relation: SymbolMap::new(),
             by_structural_fingerprint: Some(HashMap::default()),
+            by_template_chronology: HashMap::default(),
             next_timestamp: Timestamp::ZERO,
         }
     }
@@ -532,6 +542,9 @@ impl FactBase {
                 let template_id = template.template_id;
                 let id = self.insert_fact(fact, fingerprint)?;
                 self.by_template.entry(template_id).or_default().insert(id);
+                if let Some(chronology) = self.by_template_chronology.get_mut(&template_id) {
+                    chronology.insert(self.facts[id].timestamp, id);
+                }
                 id
             }
         };
@@ -580,6 +593,10 @@ impl FactBase {
             }
             Fact::Template(template) => {
                 remove_from_set_index(&mut self.by_template, template.template_id, id);
+                if let Some(chronology) = self.by_template_chronology.get_mut(&template.template_id)
+                {
+                    chronology.remove(&entry.timestamp);
+                }
             }
         }
         if let (Some(index), Some(fingerprint)) = (&mut self.by_structural_fingerprint, fingerprint)
@@ -615,6 +632,43 @@ impl FactBase {
             .get(&template_id)
             .into_iter()
             .flat_map(|set| set.iter().copied())
+    }
+
+    /// Find the next live template fact in assertion order.
+    ///
+    /// `None` starts at the oldest assertion; `Some(timestamp)` selects the
+    /// oldest live fact strictly after that timestamp. Keeping the returned
+    /// timestamp as a cursor observes subsequent assertions and skips retracted
+    /// facts, including when their storage slots have been reused.
+    ///
+    /// The first lookup for a template builds a derived index in O(n log n)
+    /// time. Later lookups, assertions, and retractions use O(log n) tree
+    /// operations. Templates that have never been queried incur no tree cost.
+    /// Snapshots omit the index and rebuild it on the first lookup after restore.
+    /// A cursor belongs to this fact base's lifetime; reset starts a new chronology.
+    pub fn next_template_fact_after(
+        &mut self,
+        template_id: TemplateId,
+        after: Option<u64>,
+    ) -> Option<(FactId, u64)> {
+        let chronology = self
+            .by_template_chronology
+            .entry(template_id)
+            .or_insert_with(|| {
+                self.by_template
+                    .get(&template_id)
+                    .into_iter()
+                    .flat_map(|ids| ids.iter())
+                    .filter_map(|id| self.facts.get(*id).map(|entry| (entry.timestamp, *id)))
+                    .collect()
+            });
+        let next = match after {
+            Some(timestamp) => chronology
+                .range((Excluded(Timestamp::new(timestamp)), Unbounded))
+                .next(),
+            None => chronology.first_key_value(),
+        };
+        next.map(|(timestamp, id)| (*id, timestamp.get()))
     }
 
     /// Returns the number of facts in working memory.
@@ -878,6 +932,227 @@ mod tests {
 
         fb.retract(id);
         assert!(!fb.by_template.contains_key(&template_id));
+    }
+
+    #[test]
+    fn template_chronology_skips_retractions_and_observes_reused_slots_and_appends() {
+        use slotmap::Key;
+
+        let mut templates: SlotMap<TemplateId, ()> = SlotMap::with_key();
+        let template = templates.insert(());
+        let other_template = templates.insert(());
+        let mut fb = FactBase::new();
+        let first = fb.assert_template(template, Box::new([Value::Integer(10)]));
+        let removed = fb.assert_template(template, Box::new([Value::Integer(20)]));
+        let third = fb.assert_template(template, Box::new([Value::Integer(30)]));
+        let other = fb.assert_template(other_template, Box::new([]));
+
+        assert!(fb.by_template_chronology.is_empty());
+        assert_eq!(
+            fb.next_template_fact_after(template, None),
+            Some((first, 0))
+        );
+        assert!(!fb.by_template_chronology.contains_key(&other_template));
+        assert_eq!(fb.retract(removed).unwrap().id, removed);
+        let replacement = fb.assert_template(template, Box::new([Value::Integer(20)]));
+        assert_ne!(removed, replacement);
+        // The low word is the storage slot; the generation in the high word
+        // must not make a replacement inherit its predecessor's chronology.
+        assert_eq!(
+            removed.data().as_ffi() & u64::from(u32::MAX),
+            replacement.data().as_ffi() & u64::from(u32::MAX)
+        );
+        assert_eq!(
+            fb.next_template_fact_after(template, Some(0)),
+            Some((third, 2))
+        );
+        assert_eq!(
+            fb.next_template_fact_after(template, Some(2)),
+            Some((replacement, 4))
+        );
+        assert_eq!(fb.next_template_fact_after(template, Some(4)), None);
+
+        let appended = fb.assert_template(template, Box::new([Value::Integer(40)]));
+        assert_eq!(
+            fb.next_template_fact_after(template, Some(4)),
+            Some((appended, 5))
+        );
+        assert_eq!(
+            fb.next_template_fact_after(other_template, None),
+            Some((other, 3))
+        );
+        assert!(fb.get(removed).is_none());
+    }
+
+    #[test]
+    fn empty_template_chronology_stays_initialized_across_retraction_and_append() {
+        let mut templates: SlotMap<TemplateId, ()> = SlotMap::with_key();
+        let template = templates.insert(());
+        let mut fb = FactBase::new();
+
+        assert_eq!(fb.next_template_fact_after(template, None), None);
+        assert!(fb.by_template_chronology[&template].is_empty());
+        let first = fb.assert_template(template, Box::new([]));
+        assert_eq!(fb.by_template_chronology[&template].len(), 1);
+        assert_eq!(
+            fb.next_template_fact_after(template, None),
+            Some((first, 0))
+        );
+        fb.retract(first).unwrap();
+        assert!(fb.by_template_chronology[&template].is_empty());
+        assert_eq!(fb.next_template_fact_after(template, Some(0)), None);
+        let second = fb.assert_template(template, Box::new([]));
+        assert_eq!(fb.by_template_chronology[&template].len(), 1);
+        assert_eq!(
+            fb.next_template_fact_after(template, Some(0)),
+            Some((second, 1))
+        );
+    }
+
+    #[test]
+    fn template_chronology_rebuilds_from_live_assertion_order_after_slot_reuse() {
+        let mut templates: SlotMap<TemplateId, ()> = SlotMap::with_key();
+        let template = templates.insert(());
+        let mut fb = FactBase::new();
+        let removed = fb.assert_template(template, Box::new([]));
+        let survivor = fb.assert_template(template, Box::new([]));
+        fb.retract(removed).unwrap();
+        let replacement = fb.assert_template(template, Box::new([]));
+        assert_eq!(
+            fb.next_template_fact_after(template, None),
+            Some((survivor, 1))
+        );
+        assert_eq!(
+            fb.next_template_fact_after(template, Some(1)),
+            Some((replacement, 2))
+        );
+
+        // Deserialization omits this cache. Exercise the same rebuild path
+        // after the cache has already seen additional assertions and removals.
+        let appended = fb.assert_template(template, Box::new([]));
+        fb.retract(replacement).unwrap();
+        fb.by_template_chronology.clear();
+        assert_eq!(
+            fb.next_template_fact_after(template, None),
+            Some((survivor, 1))
+        );
+        assert_eq!(
+            fb.next_template_fact_after(template, Some(1)),
+            Some((appended, 3))
+        );
+        assert_eq!(fb.next_template_fact_after(template, Some(3)), None);
+        let after_rebuild = fb.assert_template(template, Box::new([]));
+        fb.retract(survivor).unwrap();
+        assert_eq!(
+            fb.next_template_fact_after(template, None),
+            Some((appended, 3))
+        );
+        assert_eq!(
+            fb.next_template_fact_after(template, Some(3)),
+            Some((after_rebuild, 4))
+        );
+    }
+
+    #[test]
+    fn template_chronology_keeps_template_generations_separate() {
+        let mut templates: SlotMap<TemplateId, ()> = SlotMap::with_key();
+        let old_template = templates.insert(());
+        let mut fb = FactBase::new();
+        let old_fact = fb.assert_template(old_template, Box::new([]));
+        assert_eq!(
+            fb.next_template_fact_after(old_template, None),
+            Some((old_fact, 0))
+        );
+        fb.retract(old_fact).unwrap();
+        templates.remove(old_template).unwrap();
+        let new_template = templates.insert(());
+        assert_ne!(old_template, new_template);
+        let new_fact = fb.assert_template(new_template, Box::new([]));
+
+        assert_eq!(fb.next_template_fact_after(old_template, None), None);
+        assert_eq!(
+            fb.next_template_fact_after(new_template, None),
+            Some((new_fact, 1))
+        );
+
+        // Engine reset replaces the fact base; no derived index or cursor can
+        // preserve assertions from the preceding chronology.
+        fb = FactBase::new();
+        assert_eq!(fb.next_template_fact_after(new_template, None), None);
+        let reset_fact = fb.assert_template(new_template, Box::new([]));
+        assert_eq!(
+            fb.next_template_fact_after(new_template, None),
+            Some((reset_fact, 0))
+        );
+    }
+
+    #[test]
+    fn template_chronology_duplicate_rejection_does_not_advance_the_cursor() {
+        let mut templates: SlotMap<TemplateId, ()> = SlotMap::with_key();
+        let template = templates.insert(());
+        let mut fb = FactBase::new();
+        let fact = Fact::Template(TemplateFact {
+            template_id: template,
+            slots: Box::new([Value::Integer(10)]),
+        });
+        let FactInsertionResult::Inserted(first) = fb.assert_fact(fact.clone(), false) else {
+            panic!("first assertion must insert");
+        };
+        assert_eq!(
+            fb.next_template_fact_after(template, None),
+            Some((first, 0))
+        );
+        assert_eq!(
+            fb.assert_fact(fact.clone(), false),
+            FactInsertionResult::Duplicate(first)
+        );
+        assert_eq!(fb.next_template_fact_after(template, Some(0)), None);
+        let FactInsertionResult::Inserted(second) = fb.assert_fact(fact, true) else {
+            panic!("duplicates are enabled");
+        };
+        assert_eq!(
+            fb.next_template_fact_after(template, Some(0)),
+            Some((second, 1))
+        );
+        fb.retract(first).unwrap();
+        assert_eq!(
+            fb.next_template_fact_after(template, None),
+            Some((second, 1))
+        );
+    }
+
+    #[test]
+    fn template_chronology_handles_exhausted_timestamps_without_wrapping() {
+        let mut templates: SlotMap<TemplateId, ()> = SlotMap::with_key();
+        let template = templates.insert(());
+        let mut fb = FactBase::new();
+        assert_eq!(fb.next_template_fact_after(template, Some(u64::MAX)), None);
+        fb.next_timestamp = Timestamp::new(u64::MAX - 1);
+        let last = fb.assert_template(template, Box::new([]));
+        assert_eq!(
+            fb.next_template_fact_after(template, None),
+            Some((last, u64::MAX - 1))
+        );
+        assert_eq!(
+            fb.next_template_fact_after(template, Some(u64::MAX - 1)),
+            None
+        );
+        assert_eq!(fb.next_template_fact_after(template, Some(u64::MAX)), None);
+        assert!(fb
+            .try_assert_fact(
+                Fact::Template(TemplateFact {
+                    template_id: template,
+                    slots: Box::new([]),
+                }),
+                true
+            )
+            .is_err());
+        assert_eq!(
+            fb.next_template_fact_after(template, None),
+            Some((last, u64::MAX - 1))
+        );
+        fb.retract(last).unwrap();
+        assert_eq!(fb.next_template_fact_after(template, None), None);
     }
 
     #[test]

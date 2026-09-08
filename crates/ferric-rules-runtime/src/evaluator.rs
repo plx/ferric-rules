@@ -16,7 +16,7 @@ use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_rules_core::string::FerricString;
 use ferric_rules_core::symbol::SymbolTable;
 use ferric_rules_core::value::Value;
-use ferric_rules_core::{FactBase, FactId, StringEncoding, TemplateId};
+use ferric_rules_core::{Fact, FactBase, FactId, StringEncoding, TemplateId};
 
 use crate::config::EngineConfig;
 use crate::functions::{FunctionEnv, GenericFunction, GenericRegistry, GlobalStore, UserFunction};
@@ -296,7 +296,42 @@ pub struct MethodChain {
 
 /// Fact identities used by compact slot references, independently of mutable
 /// RHS values or same-named loop variables.
-pub(crate) type CompactFactBindings = std::collections::HashMap<String, FactId>;
+pub(crate) type CompactFactBindings = std::collections::HashMap<String, CompactFactBinding>;
+
+/// A lexical fact member. Query bodies may retain the selected immutable record
+/// after retraction; ordinary LHS addresses continue to require a live fact.
+#[derive(Clone, Debug)]
+pub(crate) struct CompactFactBinding {
+    fact_id: FactId,
+    retained: Option<Arc<Fact>>,
+}
+
+impl CompactFactBinding {
+    pub(crate) fn live(fact_id: FactId) -> Self {
+        Self {
+            fact_id,
+            retained: None,
+        }
+    }
+
+    pub(crate) fn retained(fact_id: FactId, fact: Arc<Fact>) -> Self {
+        Self {
+            fact_id,
+            retained: Some(fact),
+        }
+    }
+
+    pub(crate) fn fact_id(&self) -> FactId {
+        self.fact_id
+    }
+
+    fn record<'a>(&'a self, facts: Option<&'a FactBase>) -> Option<&'a Fact> {
+        facts
+            .and_then(|facts| facts.get(self.fact_id))
+            .map(|entry| &entry.fact)
+            .or(self.retained.as_deref())
+    }
+}
 
 const COMPACT_FACT_SLOT_REF: &str = "__fact_slot_ref";
 
@@ -1017,7 +1052,7 @@ fn query_error(name: &str, actual: impl Into<String>, span: Option<&SourceSpan>)
     }
 }
 
-fn valid_query_member(name: &str) -> bool {
+pub(crate) fn valid_query_member(name: &str) -> bool {
     use ferric_rules_parser::{lex, FileId, Token};
     !name.is_empty() && lex(&format!("?{name}"), FileId(0)).is_ok_and(|tokens| {
         matches!(tokens.as_slice(), [token] if matches!(&token.token, Token::SingleVar(parsed) if parsed == name))
@@ -1057,7 +1092,7 @@ fn validate_query_predicate_body(
 /// CLIPS rejects local binds syntactically anywhere within a predicate, even
 /// in a branch that would not execute. Called function bodies have their own
 /// lexical scope and are deliberately not traversed here.
-fn validate_query_predicate(
+pub(crate) fn validate_query_predicate(
     ctx: &mut EvalContext<'_>,
     expr: &RuntimeExpr,
     name: &str,
@@ -1218,7 +1253,7 @@ fn eval_fact_query(
     }
     let mut compact_facts = ctx.compact_fact_bindings.cloned().unwrap_or_default();
     for ((member, _), choices) in members.iter().zip(&candidates) {
-        compact_facts.insert(member.clone(), choices[0]);
+        compact_facts.insert(member.clone(), CompactFactBinding::live(choices[0]));
     }
     let mut cursor = vec![0; members.len()];
     loop {
@@ -1230,7 +1265,7 @@ fn eval_fact_query(
             bindings.set(*variable, ValueRef::new(address));
             *compact_facts
                 .get_mut(member)
-                .expect("query member has a compact binding") = fact;
+                .expect("query member has a compact binding") = CompactFactBinding::live(fact);
         }
         let mut query_ctx = EvalContext {
             bindings: &bindings,
@@ -5976,6 +6011,25 @@ fn integer_to_fact_id(n: i64) -> ferric_rules_core::FactId {
     ferric_rules_core::FactId::from(slotmap::KeyData::from_ffi(ffi))
 }
 
+/// Decode the canonical address representation without normalizing an ordinary
+/// integer into a live key. Liveness and protected-fact policies belong to callers.
+pub(crate) fn checked_fact_address(value: &Value) -> Option<FactId> {
+    use slotmap::Key;
+
+    let Value::Integer(encoded) = value else {
+        return None;
+    };
+    let bits = u64::from_ne_bytes(encoded.to_ne_bytes());
+    let data = slotmap::KeyData::from_ffi(bits);
+    let fact_id = FactId::from(data);
+    // from_ffi normalizes even generations, so a plain integer like 1 can
+    // otherwise alias a live first-generation key. Slot zero is reserved.
+    // Exact forged canonical integers remain indistinguishable from addresses
+    // until the runtime has a distinct fact-address value type.
+    (data.as_ffi() == bits && !fact_id.is_null() && bits & u64::from(u32::MAX) != 0)
+        .then_some(fact_id)
+}
+
 /// `(fact-existp <integer>)` — returns TRUE if a fact with the given index exists.
 fn builtin_fact_existp(
     ctx: &mut EvalContext<'_>,
@@ -6014,8 +6068,6 @@ fn builtin_fact_index(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    use slotmap::Key;
-
     check_arity_exact("fact-index", args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
     let invalid_address = || EvalError::TypeError {
@@ -6024,19 +6076,7 @@ fn builtin_fact_index(
         actual: generic_value_type_name(&val).into(),
         span: span.cloned(),
     };
-    let Value::Integer(encoded) = val else {
-        return Err(invalid_address());
-    };
-    let bits = u64::from_ne_bytes(encoded.to_ne_bytes());
-    let data = slotmap::KeyData::from_ffi(bits);
-    let fact_id = ferric_rules_core::FactId::from(data);
-    // from_ffi normalizes even generations, so a plain integer like 1 can
-    // otherwise alias a live first-generation key. Slot zero is reserved.
-    // Exact forged canonical integers remain indistinguishable from addresses
-    // until the runtime has a distinct fact-address value type.
-    if data.as_ffi() != bits || fact_id.is_null() || bits & u64::from(u32::MAX) == 0 {
-        return Err(invalid_address());
-    }
+    let fact_id = checked_fact_address(&val).ok_or_else(invalid_address)?;
     let Some(fact_base) = ctx.fact_base else {
         return Ok(Value::Integer(-1));
     };
@@ -6162,11 +6202,10 @@ fn builtin_compact_fact_slot_ref(
                 actual: "unknown symbol".into(),
                 span: span.cloned(),
             })?;
-    let fact_id = ctx
+    let member = ctx
         .compact_fact_bindings
-        .and_then(|bindings| bindings.get(name))
-        .copied();
-    let Some(fact_id) = fact_id else {
+        .and_then(|bindings| bindings.get(name));
+    let Some(member) = member else {
         // A colon is also legal in an ordinary local name. Only an active
         // lexical fact member takes precedence over that exact full name.
         let full_name = format!("{name}:{slot_name}");
@@ -6184,12 +6223,19 @@ fn builtin_compact_fact_slot_ref(
             span: span.cloned(),
         });
     };
-    if matches!(
-        ctx.fact_base
-            .and_then(|facts| facts.get(fact_id))
-            .map(|entry| &entry.fact),
-        Some(ferric_rules_core::Fact::Ordered(_))
-    ) {
+    let fact = member
+        .record(ctx.fact_base)
+        .ok_or_else(|| EvalError::TypeError {
+            function: COMPACT_FACT_SLOT_REF.into(),
+            expected: "live or retained query fact".into(),
+            actual: if ctx.fact_base.is_some() {
+                format!("fact bound to ?{name} no longer exists")
+            } else {
+                "fact context is unavailable".into()
+            },
+            span: span.cloned(),
+        })?;
+    if matches!(fact, Fact::Ordered(_)) {
         return Err(EvalError::TypeError {
             function: COMPACT_FACT_SLOT_REF.into(),
             expected: "template fact".into(),
@@ -6197,14 +6243,13 @@ fn builtin_compact_fact_slot_ref(
             span: span.cloned(),
         });
     }
-    read_fact_slot_value(ctx, fact_id, slot_name, COMPACT_FACT_SLOT_REF, span, || {
-        format!("fact bound to ?{name} no longer exists")
-    })?
-    .ok_or_else(|| EvalError::TypeError {
-        function: COMPACT_FACT_SLOT_REF.into(),
-        expected: "live fact and template metadata".into(),
-        actual: "fact context or template metadata unavailable".into(),
-        span: span.cloned(),
+    read_record_slot_value(ctx, fact, slot_name, COMPACT_FACT_SLOT_REF, span)?.ok_or_else(|| {
+        EvalError::TypeError {
+            function: COMPACT_FACT_SLOT_REF.into(),
+            expected: "fact record and template metadata".into(),
+            actual: "fact context or template metadata unavailable".into(),
+            span: span.cloned(),
+        }
     })
 }
 
@@ -6259,7 +6304,19 @@ fn read_fact_slot_value(
             span: span.cloned(),
         });
     };
-    let value = match &entry.fact {
+    read_record_slot_value(ctx, &entry.fact, slot_name, function, span)
+}
+
+/// Shared slot decoding for live explicit introspection and lexical query
+/// records. Only compact query-member lookup may supply a retained record.
+fn read_record_slot_value(
+    ctx: &EvalContext<'_>,
+    fact: &Fact,
+    slot_name: &str,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<Option<Value>, EvalError> {
+    let value = match fact {
         ferric_rules_core::Fact::Template(tf) => {
             let Some(td) = ctx.template_defs else {
                 return Ok(None);
@@ -6763,7 +6820,7 @@ mod tests {
     fn expression_query_shadows_and_restores_both_scopes_on_success_and_error() {
         let (mut engine, fact) = compact_test_engine();
         add_query_item(&mut engine, 20);
-        let scope = CompactFactBindings::from([("f".into(), fact)]);
+        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
         let slot = compact_ref(&mut engine, "f", "value");
         let inner = expression_query(
             "any-factp",
@@ -6800,7 +6857,7 @@ mod tests {
             assert!(eval(ctx, &ordinary)
                 .unwrap()
                 .structural_eq(&Value::Integer(42)));
-            assert_eq!(ctx.compact_fact_bindings.unwrap()["f"], fact);
+            assert_eq!(ctx.compact_fact_bindings.unwrap()["f"].fact_id(), fact);
         });
     }
 
@@ -6892,7 +6949,7 @@ mod tests {
     #[test]
     fn compact_slot_reads_scalar_and_multifield_from_lexical_fact() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), fact)]);
+        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
         for slot in ["value", "tags"] {
             let compact = compact_ref(&mut engine, "f", slot);
             let RuntimeExpr::Call { args, .. } = &compact else {
@@ -6924,7 +6981,7 @@ mod tests {
         let fact = engine
             .fact_base
             .assert_ordered(relation, smallvec::smallvec![Value::Integer(7)]);
-        let scope = CompactFactBindings::from([("f".into(), fact)]);
+        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
         let compact = compact_ref(&mut engine, "f", "implied");
         let RuntimeExpr::Call { args, .. } = &compact else {
             unreachable!();
@@ -6948,7 +7005,7 @@ mod tests {
     #[test]
     fn compact_slot_rejects_malformed_arguments_without_evaluating_them() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), fact)]);
+        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
         let compact = compact_ref(&mut engine, "f", "value");
         let RuntimeExpr::Call { args, .. } = compact else {
             unreachable!();
@@ -6990,7 +7047,7 @@ mod tests {
     #[test]
     fn compact_slot_reports_absent_scope_stale_fact_and_missing_slot() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), fact)]);
+        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
         let compact = compact_ref(&mut engine, "f", "value");
         with_compact_context(&mut engine, None, |ctx| {
             assert!(
@@ -7021,9 +7078,189 @@ mod tests {
     }
 
     #[test]
+    fn retained_compact_record_keeps_old_identity_while_explicit_reads_stay_live() {
+        let (mut engine, fact) = compact_test_engine();
+        let record = Arc::new(engine.fact_base.get(fact).unwrap().fact.clone());
+        let member = CompactFactBinding::retained(fact, Arc::clone(&record));
+        let shared = member.clone();
+        assert!(Arc::ptr_eq(
+            member.retained.as_ref().unwrap(),
+            shared.retained.as_ref().unwrap()
+        ));
+        assert_eq!(shared.fact_id(), fact);
+        engine.fact_base.retract(fact).unwrap();
+        let replacement = add_query_item(&mut engine, 20);
+        assert_ne!(replacement, fact);
+        let scope = CompactFactBindings::from([("f".into(), member)]);
+        let compact = compact_ref(&mut engine, "f", "value");
+        let tags = compact_ref(&mut engine, "f", "tags");
+        let RuntimeExpr::Call { args, .. } = &compact else {
+            unreachable!()
+        };
+        let explicit = call(
+            "fact-slot-value",
+            vec![RuntimeExpr::Literal(encoded_address(fact)), args[1].clone()],
+        );
+        let replacement_slot = call(
+            "fact-slot-value",
+            vec![
+                RuntimeExpr::Literal(encoded_address(replacement)),
+                args[1].clone(),
+            ],
+        );
+        with_compact_context(&mut engine, Some(&scope), |ctx| {
+            assert!(eval(ctx, &compact)
+                .unwrap()
+                .structural_eq(&Value::Integer(10)));
+            assert!(
+                matches!(eval(ctx, &tags).unwrap(), Value::Multifield(fields) if fields.len() == 2)
+            );
+            let exists = eval(
+                ctx,
+                &call(
+                    "fact-existp",
+                    vec![RuntimeExpr::Literal(encoded_address(fact))],
+                ),
+            )
+            .unwrap();
+            assert!(!is_truthy(&exists, ctx.symbol_table));
+            assert!(eval(
+                ctx,
+                &call(
+                    "fact-index",
+                    vec![RuntimeExpr::Literal(encoded_address(fact))]
+                )
+            )
+            .unwrap()
+            .structural_eq(&Value::Integer(-1)));
+            // Preserve the explicit accessor's existing stale-address error;
+            // retaining a compact member must not turn it into a live fact.
+            assert!(matches!(
+                eval(ctx, &explicit),
+                Err(EvalError::TypeError { .. })
+            ));
+            assert!(eval(ctx, &replacement_slot)
+                .unwrap()
+                .structural_eq(&Value::Integer(20)));
+        });
+    }
+
+    #[test]
+    fn retained_compact_scope_survives_nested_result_queries_and_their_errors() {
+        let (mut engine, fact) = compact_test_engine();
+        let record = Arc::new(engine.fact_base.get(fact).unwrap().fact.clone());
+        let scope = CompactFactBindings::from([(
+            "f".into(),
+            CompactFactBinding::retained(fact, Arc::clone(&record)),
+        )]);
+        engine.fact_base.retract(fact).unwrap();
+        add_query_item(&mut engine, 20);
+        let compact = compact_ref(&mut engine, "f", "value");
+        let inherited = expression_query(
+            "any-factp",
+            &[("g", "item")],
+            call("=", vec![compact.clone(), int(10)]),
+        );
+        let shadowed = expression_query(
+            "any-factp",
+            &[("f", "item")],
+            call("=", vec![compact.clone(), int(20)]),
+        );
+        let error = expression_query(
+            "any-factp",
+            &[("f", "item")],
+            compact_ref(&mut engine, "f", "missing"),
+        );
+        let returned =
+            expression_query("any-factp", &[("f", "item")], call("return", vec![int(7)]));
+        with_compact_context(&mut engine, Some(&scope), |ctx| {
+            for expr in [inherited, shadowed] {
+                let result = eval(ctx, &expr).unwrap();
+                assert!(is_truthy(&result, ctx.symbol_table));
+            }
+            assert!(matches!(
+                eval(ctx, &error),
+                Err(EvalError::TypeError { .. })
+            ));
+            assert!(matches!(
+                eval(ctx, &returned),
+                Err(EvalError::ReturnOutsideCallable { .. })
+            ));
+            assert!(eval(ctx, &compact)
+                .unwrap()
+                .structural_eq(&Value::Integer(10)));
+            assert_eq!(ctx.compact_fact_bindings.unwrap()["f"].fact_id(), fact);
+        });
+        assert_eq!(
+            Arc::strong_count(&record),
+            2,
+            "temporary query scopes must release retained records"
+        );
+    }
+
+    #[test]
+    fn retained_compact_record_requires_template_metadata_and_rejects_ordered_records() {
+        let (mut engine, fact) = compact_test_engine();
+        let record = Arc::new(engine.fact_base.get(fact).unwrap().fact.clone());
+        let scope =
+            CompactFactBindings::from([("f".into(), CompactFactBinding::retained(fact, record))]);
+        engine.fact_base.retract(fact).unwrap();
+        let compact = compact_ref(&mut engine, "f", "value");
+        with_compact_context(&mut engine, Some(&scope), |ctx| {
+            // The retained record itself supplies fields; the template registry
+            // still supplies and checks the slot layout.
+            ctx.fact_base = None;
+            assert!(eval(ctx, &compact)
+                .unwrap()
+                .structural_eq(&Value::Integer(10)));
+            ctx.template_defs = None;
+            assert!(matches!(
+                eval(ctx, &compact),
+                Err(EvalError::TypeError { .. })
+            ));
+        });
+        let relation = engine
+            .symbol_table
+            .intern_symbol("row", engine.config.string_encoding)
+            .unwrap();
+        let ordered = engine
+            .fact_base
+            .assert_ordered(relation, smallvec::smallvec![Value::Integer(3)]);
+        let record = Arc::new(engine.fact_base.retract(ordered).unwrap().fact);
+        let scope = CompactFactBindings::from([(
+            "f".into(),
+            CompactFactBinding::retained(ordered, record),
+        )]);
+        let implied = compact_ref(&mut engine, "f", "implied");
+        with_compact_context(&mut engine, Some(&scope), |ctx| {
+            assert!(
+                matches!(eval(ctx, &implied), Err(EvalError::TypeError { expected, .. }) if expected == "template fact")
+            );
+        });
+    }
+
+    #[test]
+    fn checked_fact_address_preserves_stale_identity_without_normalizing_integers() {
+        let (mut engine, fact) = compact_test_engine();
+        let address = encoded_address(fact);
+        assert_eq!(checked_fact_address(&address), Some(fact));
+        engine.fact_base.retract(fact).unwrap();
+        assert_eq!(checked_fact_address(&address), Some(fact));
+        for invalid in [
+            Value::Integer(0),
+            Value::Integer(1),
+            Value::Integer(-1),
+            Value::Float(1.0),
+            Value::Void,
+        ] {
+            assert_eq!(checked_fact_address(&invalid), None);
+        }
+    }
+
+    #[test]
     fn compact_slot_requires_context_while_explicit_accessor_keeps_false_fallback() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), fact)]);
+        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
         let compact = compact_ref(&mut engine, "f", "value");
         let RuntimeExpr::Call { args, .. } = &compact else {
             unreachable!();
@@ -7052,7 +7289,7 @@ mod tests {
     #[test]
     fn compact_slot_access_stays_lazy_under_boolean_short_circuiting() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), fact)]);
+        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
         let missing = compact_ref(&mut engine, "f", "missing");
         with_compact_context(&mut engine, Some(&scope), |ctx| {
             let truth =
@@ -7071,7 +7308,7 @@ mod tests {
     #[test]
     fn compact_slot_scope_survives_scalar_loop_and_progn_shadowing() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), fact)]);
+        let scope = CompactFactBindings::from([("f".into(), CompactFactBinding::live(fact))]);
         let compact = compact_ref(&mut engine, "f", "value");
         let body = vec![(
             ferric_rules_parser::ActionExpr::Variable("unused".into(), dummy_span()),
@@ -7102,7 +7339,9 @@ mod tests {
     #[test]
     fn compact_slot_scope_is_not_inherited_by_callable_or_method_bodies() {
         let (mut engine, fact) = compact_test_engine();
-        let scope = CompactFactBindings::from([("f".into(), fact)]);
+        let record = Arc::new(engine.fact_base.retract(fact).unwrap().fact);
+        let scope =
+            CompactFactBindings::from([("f".into(), CompactFactBinding::retained(fact, record))]);
         let body = [ferric_rules_parser::ActionExpr::FunctionCall(
             ferric_rules_parser::FunctionCall {
                 name: COMPACT_FACT_SLOT_REF.into(),

@@ -3480,21 +3480,31 @@ fn do_for_fact_stops_after_first_match() {
     );
 }
 
-/// `delayed-do-for-all-facts` loads and parses correctly.
+/// Delayed query members remain usable by fact actions after selection.
 #[test]
-fn load_rule_with_delayed_do_for_all_facts() {
+fn delayed_do_for_all_facts_retracts_each_selected_fact_once() {
     let mut engine = new_utf8_engine();
     load_ok(
         &mut engine,
-        r"
-(deftemplate task (slot id))
-(defrule process
-    (go)
-    =>
-    (delayed-do-for-all-facts ((?t task)) TRUE (printout t ?t crlf)))
-(deffacts trigger (go))
-",
+        r#"
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)) (item (value 20)) (item (value 30)))
+(defglobal ?*count* = 0)
+(defrule probe =>
+    (delayed-do-for-all-facts ((?f item)) TRUE
+        (retract ?f)
+        (bind ?*count* (+ ?*count* 1)))
+    (printout t ?*count* ":" (any-factp ((?f item)) TRUE) crlf))
+"#,
     );
+    engine.reset().unwrap();
+    run_to_completion(&mut engine);
+    assert!(
+        engine.action_diagnostics().is_empty(),
+        "{:?}",
+        engine.action_diagnostics()
+    );
+    assert_eq!(engine.get_output("t"), Some("3:FALSE\n"));
 }
 
 /// `any-factp` evaluates existing template facts inside an `if` condition.
