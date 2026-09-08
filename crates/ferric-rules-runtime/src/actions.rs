@@ -557,6 +557,10 @@ pub(crate) fn evaluate_test_condition(
         .eval_runtime_expr(token, rule_info, test_expr, context)
         .map(|value| crate::evaluator::is_truthy(&value, &context.engine.symbol_table));
     let result = result.map(|passed| passed && !context.engine.globals.evaluation_error());
+    // EvaluationError belongs to this candidate. Preserve its failed result,
+    // then clear the transient bit before another match is evaluated; the
+    // separate HaltExecution state still stops the current rule execution.
+    context.engine.globals.clear_evaluation_error();
     flush_deferred_evaluation(context);
     result
 }
