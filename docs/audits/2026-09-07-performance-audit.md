@@ -36,7 +36,7 @@ These are local measurements; CI machines can produce different absolute times.
 | Existential joins | The compiler builds equality indexes, but right-side `exists` activation scans every parent. | Reuse the indexed candidate lookup; verify order, backfill, non-indexable values, and a new scaling gate. |
 | Template resolution | Every lookup scans all templates and allocates parsed names for each definition. | Index local-name candidates and defer discarded diagnostics; retain live visibility checks. |
 | Action loops | Counted loops copy token bindings and rule metadata for every iteration; runtime local bindings are rebuilt for expression evaluation. | Investigate frame reuse and removal of intermediate copies. |
-| Retraction | Every removed token scans all negative, NCC, and exists memories for parent cleanup. | Investigate cleanup through the token owner's child nodes. |
+| Retraction | Every removed token scans all negative, NCC, and exists memories for parent cleanup. | Follow the token owner's child nodes; borrow facts during read-only cleanup. |
 | Ordered membership | Linked hash membership preserves the repaired CLIPS traversal order but hashes each iterator step. | Evaluate only alternatives that preserve insertion order and bounded churn storage. |
 | Snapshots | Validation checks complete persisted state, graph bounds, identities, and resumed behavior. | Retain validation; use the snapshot suites to detect incidental regressions. |
 | Host boundaries | Provenance, transient handles, and synchronization are correctness requirements. | Retain the ownership contract and measure copies at the public API. |
@@ -166,3 +166,58 @@ improves them by 8.53–28.74%. Other controls are mixed, with engine creation
 +0.63% initially and +3.03% in the repeat. The repeat's largest regression is
 that engine-creation case. The large, repeatable compilation and runtime gains
 justify retaining the index.
+
+## Retraction cleanup
+
+Parent bookkeeping now visits only the removed token owner's immediate negative,
+NCC, and exists children. Alpha retraction uses its complete fact-to-memory
+reverse index instead of recursively visiting every branch under the relation.
+NCC result lookup visits the owner's partner children in ascending memory order,
+preserving the previous first-match behavior and subsequent unblocking path.
+Host and RHS retraction borrow facts while Rete reads them. Fact-slot expressions likewise
+borrow the containing fact and clone only the requested value; modify/duplicate
+retain an owned original across expression evaluation.
+
+The new regression also found an existing snapshot failure: removal of the last
+indexed parent left an empty outer beta-variable map. Snapshot validation
+rebuilds a sparse map from surviving tokens and correctly rejected that state.
+Beta cleanup now removes empty outer maps, matching alpha cleanup. The validator
+is unchanged. The minimal snapshot regression fails on the parent revision;
+restoration and refiring in all five formats pass with the fix.
+
+The independent-memory benchmark varies negative/NCC/exists rules from 1 to 512,
+excludes compilation, and times reset plus parent retraction. Its untimed oracle
+checks initial firings/results, complete cleanup, and refiring after reinsertion.
+A mixed shared-prefix test covers online installation and blocked/unblocked
+parents; its functional assertions pass on both revisions. A new scaling gate
+isolates cleanup of independent negative parents with compilation/assertion setup
+excluded from its measured operation.
+
+The independent-negative scaling gate initially still rejected the candidate
+after parent cleanup was narrowed. That exposed the separate alpha branch walk;
+using the existing membership index removes that second quadratic operation.
+The unchanged gate rejects the parent and passes the optimized cleanup. No
+scaling-test timings are used as performance measurements.
+
+Measured implementation: `86850c82`, against `23e2650f`, using identical benchmark
+sources on both revisions. Both passes cover 69 workloads: the new 12-case
+cleanup matrix plus all cascade, churn, negation, forall, query, and engine
+controls. Complete medians are in [the measurement record](2026-09-07-retraction-cleanup.json).
+
+| Workload | Before median | After median | Change |
+| --- | ---: | ---: | ---: |
+| 512 negative memories | 4.64 ms | 1.96 ms | -57.79% |
+| 512 NCC memories | 5.48 ms | 2.02 ms | -63.10% |
+| 512 exists memories | 6.50 ms | 3.66 ms | -43.79% |
+| Forall, 2,000 tasks | 29.71 ms | 25.68 ms | -13.55% |
+| Churn, 100,000 facts | 460.00 ms | 441.72 ms | -3.97% |
+| Small retraction, reset/run | 2.97 µs | 2.91 µs | -2.12% |
+
+The first pass's largest small-case regression is +4.48% for one negative memory;
+its repeat is +0.59%. The repeat's largest regression is +2.66% for the small
+three-layer cascade (first pass -2.77%). Both full passes retain these controls.
+The large independent-memory and forall gains reproduce, with broader smaller
+churn gains, so the change is a net win on the measured suite.
+
+Final validation includes `just preflight-pr`, 1,491 core/runtime tests with all
+features, and all seven scaling gates on the measured revision.

@@ -16,7 +16,6 @@ use crate::beta::{
 };
 use crate::binding::{BindingSet, ValueRef, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
-use crate::negative::NegativeMemoryId;
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::{AtomKey, Value};
@@ -233,7 +232,12 @@ impl ReteNetwork {
         // 4. For each removed token, clean up beta memory, agenda, and negative memories
         for (token_id, token) in &all_removed_tokens {
             // Handle NCC result-token decrement before generic memory cleanup.
-            self.ncc_handle_result_retraction(*token_id, fact_base, &mut new_activations);
+            self.ncc_handle_result_retraction(
+                *token_id,
+                token.owner_node,
+                fact_base,
+                &mut new_activations,
+            );
 
             // Remove activations for this token
             let acts = self.agenda.remove_activations_for_token(*token_id);
@@ -247,7 +251,7 @@ impl ReteNetwork {
             }
 
             // Clean up any negative memory references to this token
-            self.cleanup_negative_memories_for_token(*token_id);
+            self.cleanup_negative_memories_for_token(*token_id, token.owner_node);
         }
 
         // 5. Determine which alpha memories held this fact (before removal)
@@ -969,7 +973,7 @@ impl ReteNetwork {
             // If this token was an NCC subnetwork result, update the NCC result count.
             // This handles the forall(P, Q) case where a negated subpattern inside the
             // NCC subnetwork retracts its pass-through when a blocking fact arrives.
-            self.ncc_handle_result_retraction(tid, fact_base, new_activations);
+            self.ncc_handle_result_retraction(tid, token.owner_node, fact_base, new_activations);
 
             // Remove activations for this token
             self.agenda.remove_activations_for_token(tid);
@@ -982,36 +986,49 @@ impl ReteNetwork {
             }
 
             // Clean up negative memory entries if this token was tracked as a parent
-            self.cleanup_negative_memories_for_token(tid);
+            self.cleanup_negative_memories_for_token(tid, token.owner_node);
         }
     }
 
-    /// Clean up negative memory entries for a retracted token.
-    ///
-    /// If the token was a parent token tracked in any negative memory
-    /// (blocked or unblocked), remove those entries.
-    fn cleanup_negative_memories_for_token(&mut self, token_id: TokenId) {
-        // Scan all negative memories for entries referencing this token
-        let neg_mem_ids: Vec<NegativeMemoryId> = self.beta.neg_memory_ids().collect();
-        for neg_mem_id in neg_mem_ids {
-            if let Some(neg_mem) = self.beta.get_neg_memory_mut(neg_mem_id) {
-                neg_mem.remove_parent_token(token_id);
-            }
+    /// Remove parent bookkeeping only from children of the token's owner.
+    /// Other nodes cannot track this token as their left parent. This cleanup
+    /// has no propagation side effects; NCC result retraction is handled separately.
+    fn cleanup_negative_memories_for_token(&mut self, token_id: TokenId, owner: NodeId) {
+        if self.beta.neg_memories.is_empty()
+            && self.beta.ncc_memories.is_empty()
+            && self.beta.exists_memories.is_empty()
+        {
+            return;
         }
-
-        // Scan all NCC memories for entries referencing this token
-        let ncc_mem_ids: Vec<_> = self.beta.ncc_memory_ids().collect();
-        for ncc_mem_id in ncc_mem_ids {
-            if let Some(ncc_mem) = self.beta.get_ncc_memory_mut(ncc_mem_id) {
-                ncc_mem.remove_parent_token(token_id);
-            }
-        }
-
-        // Scan all exists memories for entries referencing this token
-        let exists_mem_ids: Vec<_> = self.beta.exists_memory_ids().collect();
-        for exists_mem_id in exists_mem_ids {
-            if let Some(exists_mem) = self.beta.get_exists_memory_mut(exists_mem_id) {
-                exists_mem.remove_parent_token(token_id);
+        let Some(children) = self
+            .beta
+            .get_node(owner)
+            .and_then(BetaNode::child_nodes)
+            .cloned()
+        else {
+            return;
+        };
+        for &child in children.iter() {
+            match self.beta.get_node(child) {
+                Some(BetaNode::Negative { neg_memory, .. }) => {
+                    let memory = *neg_memory;
+                    if let Some(memory) = self.beta.get_neg_memory_mut(memory) {
+                        memory.remove_parent_token(token_id);
+                    }
+                }
+                Some(BetaNode::Ncc { ncc_memory, .. }) => {
+                    let memory = *ncc_memory;
+                    if let Some(memory) = self.beta.get_ncc_memory_mut(memory) {
+                        memory.remove_parent_token(token_id);
+                    }
+                }
+                Some(BetaNode::Exists { exists_memory, .. }) => {
+                    let memory = *exists_memory;
+                    if let Some(memory) = self.beta.get_exists_memory_mut(memory) {
+                        memory.remove_parent_token(token_id);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -1170,23 +1187,44 @@ impl ReteNetwork {
     fn ncc_handle_result_retraction(
         &mut self,
         result_token_id: TokenId,
+        owner: NodeId,
         fact_base: &FactBase,
         new_activations: &mut Vec<ActivationId>,
     ) {
-        let ncc_mem_ids: Vec<_> = self.beta.ncc_memory_ids().collect();
-
+        if self.beta.ncc_memories.is_empty() {
+            return;
+        }
+        // A result is recorded by an immediate NCC partner child. Keep the
+        // previous ascending-memory search order, including its first-match
+        // behavior, when a shared subnetwork has multiple partners.
+        let mut partners: SmallVec<[_; 2]> = self
+            .beta
+            .get_node(owner)
+            .and_then(BetaNode::child_nodes)
+            .into_iter()
+            .flat_map(|children| children.iter())
+            .filter_map(|child| match self.beta.get_node(*child) {
+                Some(BetaNode::NccPartner {
+                    ncc_memory,
+                    ncc_node,
+                    ..
+                }) => Some((*ncc_memory, *ncc_node)),
+                _ => None,
+            })
+            .collect();
+        partners.sort_unstable_by_key(|(memory, _)| memory.0);
         let mut transition = None;
-        for ncc_memory_id in ncc_mem_ids {
+        for (ncc_memory_id, ncc_node_id) in partners {
             let Some(ncc_mem) = self.beta.get_ncc_memory_mut(ncc_memory_id) else {
                 continue;
             };
             if let Some((parent_token_id, new_count)) = ncc_mem.remove_result(result_token_id) {
-                transition = Some((ncc_memory_id, parent_token_id, new_count));
+                transition = Some((ncc_memory_id, ncc_node_id, parent_token_id, new_count));
                 break;
             }
         }
 
-        let Some((ncc_memory_id, parent_token_id, new_count)) = transition else {
+        let Some((ncc_memory_id, ncc_node_id, parent_token_id, new_count)) = transition else {
             return;
         };
         if new_count != 0 {
@@ -1199,10 +1237,6 @@ impl ReteNetwork {
             return;
         };
         let parent_bindings = parent_token.bindings.clone();
-
-        let Some(ncc_node_id) = self.beta.ncc_node_for_memory(ncc_memory_id) else {
-            return;
-        };
 
         let (beta_memory_id, children) = match self.beta.get_node(ncc_node_id) {
             Some(BetaNode::Ncc {

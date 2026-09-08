@@ -162,3 +162,13 @@ engine. Every handle is uniquely owned and freed once on the invoking thread,
 so the benchmark source works unchanged on the confined baseline and the
 transferable candidate. Use identical source, sizes, features, sampling, and
 profile for comparisons; no benchmark numbers come from smoke runs.
+
+### Independent-memory retraction
+
+`cargo bench -p ferric-rules --bench cascade_bench -- retract_independent_memories`
+varies independent negative, NCC, and exists rules from 1 to 512. Compilation is
+excluded; the timed operation resets the engine, retracts all parent facts, and
+runs to quiescence. Reset still includes assertion/matching work. Untimed oracles
+check initial firings and result values, parent cleanup, and refiring after a
+parent is reinserted. The separate independent-negative scaling gate excludes
+compilation and assertion setup to isolate destructive cleanup.

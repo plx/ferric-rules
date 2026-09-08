@@ -254,6 +254,12 @@ impl BetaMemory {
                                 key_map.remove(&key);
                             }
                         }
+                        // Keep the sparse index canonical when its last token is
+                        // removed, as alpha memory does. Snapshot validation
+                        // rebuilds the index from the surviving tokens.
+                        if key_map.is_empty() {
+                            self.var_indices.remove(&var_id);
+                        }
                     }
                 }
             }
@@ -376,6 +382,20 @@ pub enum BetaNode {
         exists_memory: ExistsMemoryId,
         children: Arc<[NodeId]>,
     },
+}
+
+impl BetaNode {
+    pub(crate) fn child_nodes(&self) -> Option<&Arc<[NodeId]>> {
+        match self {
+            Self::Root { children, .. }
+            | Self::Join { children, .. }
+            | Self::Predicate { children, .. }
+            | Self::Negative { children, .. }
+            | Self::Ncc { children, .. }
+            | Self::Exists { children, .. } => Some(children),
+            Self::Terminal { .. } | Self::NccPartner { .. } => None,
+        }
+    }
 }
 
 /// The beta network.

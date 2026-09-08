@@ -2543,7 +2543,7 @@ fn execute_retract(
                 context
                     .engine
                     .rete
-                    .retract_fact(fact_id, &fact, &context.engine.fact_base);
+                    .retract_fact(fact_id, fact, &context.engine.fact_base);
                 context.engine.fact_base.retract(fact_id);
             }
             _ => return Err(ActionError::InvalidRetract),
@@ -2624,7 +2624,7 @@ fn execute_fact_mutation(
                 .to_string(),
         ));
     }
-    let original_fact = get_fact_or_error(&context.engine.fact_base, fact_id)?;
+    let original_fact = get_fact_or_error(&context.engine.fact_base, fact_id)?.clone();
 
     match &original_fact {
         Fact::Ordered(ordered) => {
@@ -2737,10 +2737,10 @@ fn retract_original_fact(
     fact_base.retract(fact_id);
 }
 
-fn get_fact_or_error(fact_base: &FactBase, fact_id: FactId) -> Result<Fact, ActionError> {
+fn get_fact_or_error(fact_base: &FactBase, fact_id: FactId) -> Result<&Fact, ActionError> {
     fact_base
         .get(fact_id)
-        .map(|entry| entry.fact.clone())
+        .map(|entry| &entry.fact)
         .ok_or(ActionError::FactNotFound(fact_id))
 }
 

@@ -782,10 +782,10 @@ impl Engine {
             .fact_base
             .get(fact_id)
             .ok_or(EngineError::FactNotFound(handle))?;
-        let fact = entry.fact.clone();
-
-        // Retract from rete first (needs fact_base for negative node handling)
-        self.rete.retract_fact(fact_id, &fact, &self.fact_base);
+        // Retract from rete first (needs fact_base for negative node handling).
+        // Rete borrows the fact base throughout cleanup, so no owned copy is needed.
+        self.rete
+            .retract_fact(fact_id, &entry.fact, &self.fact_base);
 
         // Then retract from fact base
         self.fact_base

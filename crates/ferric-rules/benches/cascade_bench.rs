@@ -1,3 +1,5 @@
+#[path = "support/retraction_workloads.rs"]
+mod retraction_workloads;
 mod support;
 
 use std::fmt::Write as FmtWrite;
@@ -164,5 +166,6 @@ criterion_group!(
     bench_cascade_d10_30k,
     bench_cascade_d15_20k,
     bench_cascade_d3_100k_run_only,
+    retraction_workloads::bench_unrelated_memories,
 );
 criterion_main!(benches);
