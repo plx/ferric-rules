@@ -1,0 +1,259 @@
+{
+  "base_revision": "11858e9b0b85af1f085e2f3eed38e5df08982942",
+  "head_revision": "592e05e6450e93e593bd94f87887c24e33fdc1b8",
+  "benchmark_source_revision": "592e05e6450e93e593bd94f87887c24e33fdc1b8",
+  "overlaid_parent_files": [
+    "crates/ferric-rules-core/benches/storage_indices_bench.rs"
+  ],
+  "benchmark_sha256": {
+    "crates/ferric-rules-core/benches/storage_indices_bench.rs": "6e9e4f9f4d8411c6c0128eb0fd98bcc91438dc91a9671059e9321ec554a1556b",
+    "crates/ferric-rules/benches/churn_bench.rs": "48b91d51af590d02bb203454a24552b9e2cb2e871503da856d4c8f3b55771736"
+  },
+  "command": [
+    "cargo",
+    "bench",
+    "-p",
+    "ferric-rules",
+    "-p",
+    "ferric-rules-core",
+    "--features",
+    "serde",
+    "--bench",
+    "churn_bench",
+    "--bench",
+    "storage_indices_bench",
+    "--",
+    "^(churn_|beta_membership_sizes/|beta_exists_memory_store_cycle$|beta_memory_store_cycle$|beta_fanout_index_cycle$)",
+    "--noplot",
+    "--sample-size",
+    "20",
+    "--warm-up-time",
+    "1",
+    "--measurement-time",
+    "1"
+  ],
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)\nbinary: rustc\ncommit-hash: 254b59607d4417e9dffbc307138ae5c86280fe4c\ncommit-date: 2026-01-19\nhost: aarch64-apple-darwin\nrelease: 1.93.0\nLLVM version: 21.1.8\n",
+  "cpu": "Apple M4 Max\n",
+  "note": "Both release builds completed before measurements. No other cargo/rustc/maturin/pytest/just processes permitted during measurement. Existing group overrides retained.",
+  "rounds": [
+    {
+      "beta_exists_memory_store_cycle": {
+        "before_ns": 1626168.0277777778,
+        "after_ns": 1591624.9606481483,
+        "delta_percent": -2.124200361806028
+      },
+      "beta_fanout_index_cycle": {
+        "before_ns": 151317.2653958944,
+        "after_ns": 152945.2726426799,
+        "delta_percent": 1.0758899472086636
+      },
+      "beta_membership_sizes/1": {
+        "before_ns": 22.986224696867673,
+        "after_ns": 9.050287704527294,
+        "delta_percent": -60.62734170626734
+      },
+      "beta_membership_sizes/1024": {
+        "before_ns": 22259.55596899225,
+        "after_ns": 23871.57110038045,
+        "delta_percent": 7.241901561889885
+      },
+      "beta_membership_sizes/2": {
+        "before_ns": 37.738915645248284,
+        "after_ns": 9.425896066571731,
+        "delta_percent": -75.02340513655285
+      },
+      "beta_membership_sizes/3": {
+        "before_ns": 59.84265379108527,
+        "after_ns": 55.93125387418776,
+        "delta_percent": -6.536140476912122
+      },
+      "beta_membership_sizes/32": {
+        "before_ns": 860.9090876566643,
+        "after_ns": 933.2583795115731,
+        "delta_percent": 8.403824851220776
+      },
+      "beta_memory_store_cycle": {
+        "before_ns": 166027.3401098901,
+        "after_ns": 85789.74874020155,
+        "delta_percent": -48.327938830183584
+      },
+      "churn_10000/churn_10000_facts": {
+        "before_ns": 27777947.95,
+        "after_ns": 28337166.638888888,
+        "delta_percent": 2.0131749468876414
+      },
+      "churn_100000/churn_100000_facts": {
+        "before_ns": 411510333.5,
+        "after_ns": 408642083.0,
+        "delta_percent": -0.6970057047182232
+      },
+      "churn_1000_facts": {
+        "before_ns": 2531111.6884920634,
+        "after_ns": 2594510.4375,
+        "delta_percent": 2.5047788011957284
+      },
+      "churn_100_facts": {
+        "before_ns": 269762.6173611111,
+        "after_ns": 271873.07007575757,
+        "delta_percent": 0.7823369803019675
+      },
+      "churn_100_facts_run_only": {
+        "before_ns": 177886.99002849002,
+        "after_ns": 182591.49114923747,
+        "delta_percent": 2.644657217480595
+      },
+      "churn_2000_facts": {
+        "before_ns": 5137642.855263158,
+        "after_ns": 5251240.475,
+        "delta_percent": 2.211084400708563
+      },
+      "churn_25000/churn_25000_facts": {
+        "before_ns": 77489395.75,
+        "after_ns": 79598458.25,
+        "delta_percent": 2.7217433812548375
+      },
+      "churn_250_facts": {
+        "before_ns": 629241.8198529412,
+        "after_ns": 642050.8357371795,
+        "delta_percent": 2.035626921178224
+      },
+      "churn_50000/churn_50000_facts": {
+        "before_ns": 183189000.5,
+        "after_ns": 201787771.0,
+        "delta_percent": 10.15277688574976
+      },
+      "churn_5000_facts": {
+        "before_ns": 13599807.25,
+        "after_ns": 13891723.875,
+        "delta_percent": 2.146476193624003
+      },
+      "churn_500_facts": {
+        "before_ns": 1237703.65,
+        "after_ns": 1295927.5444444446,
+        "delta_percent": 4.704187019602357
+      }
+    },
+    {
+      "beta_exists_memory_store_cycle": {
+        "before_ns": 1756764.6416666666,
+        "after_ns": 1598641.5681818184,
+        "delta_percent": -9.000811476649185
+      },
+      "beta_fanout_index_cycle": {
+        "before_ns": 153061.3071684588,
+        "after_ns": 153573.71215880895,
+        "delta_percent": 0.3347710795297276
+      },
+      "beta_membership_sizes/1": {
+        "before_ns": 23.222065942869236,
+        "after_ns": 9.045133545599679,
+        "delta_percent": -61.049402030583956
+      },
+      "beta_membership_sizes/1024": {
+        "before_ns": 25015.530653379774,
+        "after_ns": 24422.02578783974,
+        "delta_percent": -2.372545574842122
+      },
+      "beta_membership_sizes/2": {
+        "before_ns": 38.00584115909841,
+        "after_ns": 9.454622853339394,
+        "delta_percent": -75.12323746825952
+      },
+      "beta_membership_sizes/3": {
+        "before_ns": 61.28385313721967,
+        "after_ns": 55.92755589944376,
+        "delta_percent": -8.740144366873793
+      },
+      "beta_membership_sizes/32": {
+        "before_ns": 949.9367327589381,
+        "after_ns": 930.8660433373548,
+        "delta_percent": -2.007574690389702
+      },
+      "beta_memory_store_cycle": {
+        "before_ns": 169739.3257783883,
+        "after_ns": 86363.0793425993,
+        "delta_percent": -49.12017062247852
+      },
+      "churn_10000/churn_10000_facts": {
+        "before_ns": 28470802.125,
+        "after_ns": 28625555.5,
+        "delta_percent": 0.5435511592562836
+      },
+      "churn_100000/churn_100000_facts": {
+        "before_ns": 416177229.0,
+        "after_ns": 409850041.5,
+        "delta_percent": -1.5203108337289661
+      },
+      "churn_1000_facts": {
+        "before_ns": 2630316.3,
+        "after_ns": 2815837.4749999996,
+        "delta_percent": 7.053188812311273
+      },
+      "churn_100_facts": {
+        "before_ns": 284652.1450403691,
+        "after_ns": 300507.29236111115,
+        "delta_percent": 5.5700080245288275
+      },
+      "churn_100_facts_run_only": {
+        "before_ns": 182881.0697422569,
+        "after_ns": 181626.84457671957,
+        "delta_percent": -0.6858146484515659
+      },
+      "churn_2000_facts": {
+        "before_ns": 5352031.25,
+        "after_ns": 5295067.55882353,
+        "delta_percent": -1.0643377909362983
+      },
+      "churn_25000/churn_25000_facts": {
+        "before_ns": 81600041.75,
+        "after_ns": 80724395.75,
+        "delta_percent": -1.0730950391946381
+      },
+      "churn_250_facts": {
+        "before_ns": 663765.3563701923,
+        "after_ns": 694200.2879699247,
+        "delta_percent": 4.585194347316679
+      },
+      "churn_50000/churn_50000_facts": {
+        "before_ns": 182331146.0,
+        "after_ns": 178412250.0,
+        "delta_percent": -2.1493288919491538
+      },
+      "churn_5000_facts": {
+        "before_ns": 14142041.75,
+        "after_ns": 13932557.375,
+        "delta_percent": -1.4812880537564577
+      },
+      "churn_500_facts": {
+        "before_ns": 1296041.9868421052,
+        "after_ns": 1395377.2628968256,
+        "delta_percent": 7.6645106457359224
+      }
+    }
+  ],
+  "profile": {
+    "release": {
+      "lto": true,
+      "codegen-units": 1,
+      "strip": "symbols",
+      "package": {
+        "ferric-rules-python": {
+          "strip": "none"
+        }
+      }
+    },
+    "ffi-dev": {
+      "inherits": "dev",
+      "panic": "unwind"
+    },
+    "ffi-release": {
+      "inherits": "release",
+      "panic": "unwind"
+    }
+  },
+  "suite": "local membership and churn controls",
+  "geomean_percent": [
+    -12.80290757461292,
+    -14.921962502737884
+  ]
+}

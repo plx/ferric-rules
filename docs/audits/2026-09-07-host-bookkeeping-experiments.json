@@ -16,7 +16,6 @@
       }
     },
     "environment": {
-      "baseline_revision": "201665e7",
       "machine": "Apple M4 Max",
       "host": "aarch64-apple-darwin",
       "os": "Darwin 27.0.0",
@@ -30,11 +29,13 @@
         "warm_up_seconds": 1,
         "measurement_seconds": 1,
         "note": "Existing benchmark groups retain their explicit sample-size overrides; Criterion may extend measurement for slow workloads."
-      },
-      "baseline_command": "cargo bench -p ferric-rules --features serde --bench '*' -- --noplot --sample-size 20 --warm-up-time 1 --measurement-time 1 --save-baseline audit-base"
+      }
     },
     "command": "cargo bench -p ferric-rules-runtime --features serde --bench template_registry_bench -- host_first_sparse_export --noplot --sample-size 20 --warm-up-time 1 --measurement-time 1",
-    "disposition": "Rejected: dense reverse indexing allocates through unexported fact slots and materially regresses sparse first exports."
+    "disposition": "Rejected: dense reverse indexing allocates through unexported fact slots and materially regresses sparse first exports.",
+    "base_revision": "4531b2f1588b451e1df79f3f2418aa942b20d4b6",
+    "candidate_revision": "Uncommitted dense-index prototype; rejected before the retained host implementation",
+    "prototype_patch_sha256": "3054295f40edc149899d8749b79bedf77b2a336d43f654bcc91ad6d6f49b10c9"
   },
   "rejected_synchronous_cleanup": {
     "base_revision": "4531b2f1588b451e1df79f3f2418aa942b20d4b6",

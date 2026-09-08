@@ -1,5 +1,23 @@
 # Performance audit after rehabilitation
 
+The retained changes address repeated template copies, existential join scans,
+template lookup, conditional-memory cleanup, action-loop frames, host boundary
+bookkeeping, focused agenda selection, and small ordered memberships. Each change
+is measured against its parent and reviewed in a separate PR. Broader prototypes
+that did not establish a net benefit are removed; their measurements remain in
+this report. All timing claims below are release Criterion medians.
+
+The PR sequence is [#316](https://github.com/plx/ferric-rules/pull/316),
+[#317](https://github.com/plx/ferric-rules/pull/317),
+[#318](https://github.com/plx/ferric-rules/pull/318),
+[#319](https://github.com/plx/ferric-rules/pull/319),
+[#347](https://github.com/plx/ferric-rules/pull/347),
+[#349](https://github.com/plx/ferric-rules/pull/349),
+[#350](https://github.com/plx/ferric-rules/pull/350), and
+[#354](https://github.com/plx/ferric-rules/pull/354).
+[#355](https://github.com/plx/ferric-rules/pull/355) retains benchmark coverage
+and the rejected cascade record without adding a production optimization.
+
 ## Measurement contract
 
 The starting revision is `201665e7`, after the rehabilitation PRs. Historical
@@ -24,9 +42,29 @@ cargo bench -p ferric-rules --features serde --bench '*' -- \
 
 Existing per-group sample-size overrides remain in effect. Criterion extends
 measurement time for workloads that cannot complete their samples in one second.
-Compilers and tests are stopped during measurement. Focused comparisons are
-repeated with an isolated baseline checkout, alternating baseline and candidate.
-These are local measurements; CI machines can produce different absolute times.
+Local measurements use quiet windows; contention monitoring excludes runs with
+competing builds. Later comparisons use isolated CI workers and identify their
+CPU in each evidence record. Both revisions compile before alternating two
+measurement rounds. Every pair uses identical benchmark source, package/feature
+selection, and release profiles. Independent suites can unify Cargo features
+differently; their absolute numbers are not interchangeable.
+
+The final suites can be reproduced from a checkout containing the audit runner:
+
+```sh
+for suite in audit-full audit-runtime audit-core audit-ffi; do
+  python3 scripts/bench-audit.py \
+    201665e77708b94edebcf87a4fb6fbcb3fd187fb \
+    c4785451c2fb5f8f320e0f0d5c9d88f834d945ec \
+    "$suite" "/tmp/ferric-audit-$suite"
+done
+```
+
+Run on an otherwise quiet machine. The runner creates isolated worktrees,
+checks matching release profiles, overlays identical benchmark source, completes
+both builds, and alternates two measurement rounds. Committed JSON records
+preserve all per-case medians and environments; linked CI artifacts additionally
+retain raw estimates, samples, and logs for their configured 30-day lifetime.
 
 ## Findings and disposition
 
@@ -35,9 +73,10 @@ These are local measurements; CI machines can produce different absolute times.
 | Template actions and host reads | Assertions, modifications, and owned reads deep-copy immutable template metadata. | Share immutable definitions; measure engine workloads and owned capture separately. |
 | Existential joins | The compiler builds equality indexes, but right-side `exists` activation scans every parent. | Reuse the indexed candidate lookup; verify order, backfill, non-indexable values, and a new scaling gate. |
 | Template resolution | Every lookup scans all templates and allocates parsed names for each definition. | Index local-name candidates and defer discarded diagnostics; retain live visibility checks. |
-| Action loops | Counted loops copy token bindings and rule metadata for every iteration; runtime local bindings are rebuilt for expression evaluation. | Investigate frame reuse and removal of intermediate copies. |
+| Action loops | Counted loops copy token bindings and rule metadata for every iteration; runtime local bindings are rebuilt for expression evaluation. | Reuse loop frames and build evaluation bindings directly; preserve scopes, budgets, and aliases. |
 | Retraction | Every removed token scans all negative, NCC, and exists memories for parent cleanup. | Follow the token owner's child nodes; borrow facts during read-only cleanup. |
-| Ordered membership | Linked hash membership preserves the repaired CLIPS traversal order but hashes each iterator step. | Evaluate only alternatives that preserve insertion order and bounded churn storage. |
+| Ordered membership | Linked hash membership preserves the repaired CLIPS traversal order but hashes each iterator step. | Keep up to two members inline; preserve insertion order and large-set allocation reuse. |
+| Focused agenda | Each firing rescans higher-priority dormant activations. | Lazily index rule priority after a focus miss; preserve all four strategies and snapshot resume. |
 | Snapshots | Validation checks complete persisted state, graph bounds, identities, and resumed behavior. | Retain validation; use the snapshot suites to detect incidental regressions. |
 | Host boundaries | Provenance, transient handles, and synchronization are correctness requirements. | Retain the ownership contract and measure copies at the public API. |
 
@@ -222,6 +261,14 @@ churn gains, so the change is a net win on the measured suite.
 Final validation includes `just preflight-pr`, 1,491 core/runtime tests with all
 features, and all seven scaling gates on the measured revision.
 
+The standard CI comparison flagged slower churn workloads. An additional
+[isolated Linux repeat](2026-09-07-retraction-ci-repeat.json) compared the direct
+parent and candidate across 75 workloads twice on AMD EPYC 7763. No case regressed
+more than 5% in either round. Repeat gains for 512 independent memories were
+62.72% (negative), 66.93% (NCC), and 50.17% (exists). The 100,000-fact churn control
+varied from -4.93% to +4.06%; 10,000-fact churn improved in both rounds. This
+resolves the earlier discrepancy without excluding its report from the audit.
+
 ## Temporary action frames
 
 Counted loops now create one binding frame lazily after the first iteration-budget
@@ -298,6 +345,22 @@ unexported fact. Direct assertion/retraction benchmarks verify one and eight
 integer fields, alongside sparse reads, owned captures, registry operations,
 and facade lifecycle/retraction/churn/query controls.
 
+The [narrowed host comparison](2026-09-07-host-bookkeeping.json) covers 79 cases
+on one AMD EPYC 7763 Linux runner, comparing `4531b2f1` and `3ea95d4a` in two
+release/LTO rounds. One-field assertion/retraction improves 6.22% and 4.39%;
+eight-field assertion/retraction improves 14.35% and 14.94%. Cold sparse exports
+remain within 3.44% of the parent in both rounds. Several small reset/run controls
+cost approximately 3–5% more. The equally weighted 79-case geometric mean is
+0.44% and 0.41% higher, so this is a targeted host-API improvement, not an
+overall-suite improvement. Those costs remain explicit in the cumulative
+report and are not erased by larger gains elsewhere.
+
+The narrowed change is retained for its repeatable public host assertion and
+retraction gains. It preserves sparse storage behavior and bounded reclamation;
+applications dominated by tiny internal reset/run cycles should account for the
+measured incremental cost. The stack's cumulative results are reported separately
+and are not attributed to this host change alone.
+
 ## Runtime snapshot benchmark repair
 
 The broader runtime audit exposed a pre-existing invalid workload: the large
@@ -327,30 +390,88 @@ all four strategies, with result oracles. A separate scaling gate excludes setup
 and detects repeated dormant-activation scanning. The gate rejects the parent
 and passes the candidate; all eight scaling gates pass on the candidate.
 
+The [paired focus record](2026-09-07-focused-agenda.json) covers 60 workloads on
+one Linux Intel Xeon 6973P-C runner, Rust 1.93.0, release/LTO. It compares
+`860a5800` and `8036a613`; the focus implementation is unchanged by the later
+narrowing of the shared host parent. Every targeted case improves in both rounds.
+Existing module, engine, strategy, Manners, and Waltz workloads remain controls.
+
+| Repeat workload | Before median | After median | Change |
+| --- | ---: | ---: | ---: |
+| Depth, 2,048 facts | 12,744.35 µs | 2,598.51 µs | -79.61% |
+| Breadth, 2,048 facts | 13,243.09 µs | 2,766.87 µs | -79.11% |
+| Lex, 2,048 facts | 12,904.68 µs | 2,820.46 µs | -78.14% |
+| MEA, 2,048 facts | 12,736.28 µs | 2,728.77 µs | -78.57% |
+| Depth, 512 facts | 1,169.27 µs | 575.68 µs | -50.77% |
+
+The first round's largest control regression is +5.83% for resetting/running 20
+facts; that case improves 5.44% in the repeat. The repeat's largest regression is
++0.71% for the small Waltz reset/run control. All controls remain in the record.
+
 ## Small ordered memberships
 
-Alpha and beta memory membership sets now keep their first two keys inline.
-The third distinct insertion promotes to the existing hash-linked storage in
-insertion order. Duplicate insertion does not promote or reorder a member;
-removal followed by reinsertion still appends. Promoted sets retain their
-allocation when cleared or reduced, avoiding churn between representations.
-Large-set insertion/removal remains hash based. Iterators preserve forward,
-reverse, and mixed-direction traversal and exact remaining lengths.
+Alpha and beta memory membership sets keep their first two distinct keys in the
+existing first/last fields while the hash table has zero capacity. The third
+insertion constructs three linked entries directly in insertion order. Neither
+the set nor its iterator needs an additional representation enum. Duplicate
+insertion does not promote or reorder a member; removal followed by reinsertion
+still appends. Larger sets retain hash-based insertion/removal and their allocation
+when cleared or reduced. An allocated table can also reach zero insertion
+capacity after colliding removals; the endpoint representation handles that case
+and reuses the allocation on promotion.
 
-Small sets reuse the existing first/last-key fields while the hash table has zero
-insertion capacity. This removes the representation and iterator enums. Linked
-iteration retains its direct table lookup, while the small case reads the endpoint
-fields. A fully occupied collision table can return to zero insertion capacity
-after removal; endpoint reuse preserves its allocation and ordering. A focused
-collision/reuse regression covers this boundary.
+Snapshots still encode the ordered key sequence and reject duplicates on decode.
+Randomized membership tests cover arbitrary mutations. Focused tests cover the
+promotion boundary, allocation reuse, colliding removals, and exact forward,
+reverse, and mixed-direction iterator lengths. All-feature optimized core/runtime
+tests, all eight scaling gates, and full preflight pass. Five new
+`beta_membership_sizes` controls measure cold construction, traversal, and removal
+at 1, 2, 3, 32, and 1,024 members, with duplicate/order/empty-result oracles.
 
-Snapshots still encode only the ordered key sequence, reconstruct the storage
-on decode, and reject duplicate members. Existing randomized membership tests
-cover arbitrary mutation; focused tests cover the promotion threshold and
-allocation reuse. New `beta_membership_sizes` controls measure cold construction,
-traversal, and removal at 1, 2, 3, 32, and 1,024 members, with duplicate/order and
-empty-result oracles. Core storage, join, cascade, churn, alpha fanout, engine,
-and Manners workloads remain paired controls.
+The [compact representation comparison](2026-09-07-membership-compact.json)
+measures `11858e9b` against `592e05e6` on one Intel Xeon Platinum 8573C runner.
+All 98 storage, join, cascade, churn, alpha-fanout, engine, and Manners cases run
+twice in release/LTO. The equally weighted geometric mean improves 4.71% and
+5.18%. Repeat medians are:
+
+| Workload | Before median | After median | Change |
+| --- | ---: | ---: | ---: |
+| One member | 57.63 ns | 17.26 ns | -70.06% |
+| Two members | 115.40 ns | 20.62 ns | -82.13% |
+| Three members | 174.56 ns | 142.56 ns | -18.33% |
+| Beta memory lifecycle | 706.01 µs | 206.73 µs | -70.72% |
+| Retraction across 512 negative memories | 4,266.06 µs | 3,966.48 µs | -7.02% |
+| Exists support storage control | 3,594.92 µs | 4,064.65 µs | +13.07% |
+
+All three conditional-memory retraction workloads at 512 memories improve in
+both rounds (6.62–7.02% in the repeat). The exists-support storage control costs
+14.33% and 13.07% more. Its own hash-map implementation is unchanged, but that
+does not invalidate the observed cost or establish its cause. Larger churn
+controls are approximately flat in the first round and up to 8.73% slower in the
+repeat. Those costs remain explicit.
+
+A separate [64-case runtime comparison](2026-09-07-membership-compact-runtime.json)
+against the preceding enum candidate finds medium MessagePack serialization
+5.97% / 5.75% slower. Runtime geometric means change +1.36% / -2.07%, so the compact
+representation is not claimed as a general runtime improvement.
+
+A further [paired local comparison](2026-09-07-membership-compact-local.json)
+covers 19 small-set/storage/churn cases on the Apple M4 Max. One/two/three-member
+repeat medians improve 61.05% / 75.12% / 8.74%, and beta-memory lifecycle improves
+49.12%. Exists-support storage improves 2.12% / 9.00% locally. No local case costs
+more than 5% in both rounds, although individual churn rounds vary. Both builds
+finished before measurement; no competing build/test processes were detected.
+The targeted storage and cleanup gains justify retention, with the Intel
+exists-storage and runtime MessagePack costs explicitly preserved above.
+
+The [initial enum experiment](2026-09-07-membership-initial.json) and
+[promotion refinement](2026-09-07-membership-promotion.json) also improved the
+storage suite overall, but the latter comparison exposed sizable churn costs on
+an AMD runner. A [direct promotion-only comparison](2026-09-07-promotion-isolation.json)
+confirms that constructing three entries directly improves that boundary by
+6.19% / 6.24%; it does not reproduce the broader churn regression. Different
+runner CPUs prevent attributing the cross-run difference to promotion alone.
+Those results motivated measuring the compact endpoint representation.
 
 ## Rejected cascade experiment
 
@@ -371,3 +492,111 @@ without a broader win, so the production optimization is removed.
 The 32-token-chain and four/32-branch benchmark controls remain, including exact
 traversal and empty-result oracles. The audit runner retains its complete
 facade/runtime/core/C ABI suites so future proposals can repeat this assessment.
+
+## Final retained stack
+
+The [complete final measurement record](2026-09-07-cumulative-final.json) covers
+288 cases twice, against the post-remediation starting revision `201665e7`.
+Facade, runtime, and C ABI comparisons measure `592e05e6`; core storage measures
+`c4785451`, which adds the three retained cascade benchmark controls. Production
+sources, crate manifests, and the lockfile are identical between those heads.
+The rejected cascade optimization is absent from all four final comparisons.
+The later stack merges reconcile audit documentation without changing these
+production sources.
+
+Each row below weights its cases equally and reports the geometric mean of
+candidate/base median ratios. The suites use separate runners and package/feature
+selections; these statistics describe the measured suite, not arbitrary user
+programs, and absolute times cannot be compared between rows.
+
+![All 288 workload median ratios in two rounds; lower is faster, and repeated regressions are highlighted.](2026-09-07-performance-distribution.svg)
+
+The distribution makes the concentration of gains visible: many facade cases
+improve, while the runtime and core gains are concentrated in specific operations.
+The complete case-level records remain the source for every plotted point.
+
+| Suite | Cases | Linux runner CPU | First round | Repeat |
+| --- | ---: | --- | ---: | ---: |
+| Facade | 192 | AMD EPYC 9V74 80-Core Processor | -18.53% | -19.25% |
+| Runtime | 64 | AMD EPYC 7763 64-Core Processor | -6.20% | -6.74% |
+| Core storage | 28 | AMD EPYC 7763 64-Core Processor | -14.36% | -14.32% |
+| C ABI | 4 | AMD EPYC 9V74 80-Core Processor | -1.81% | -0.89% |
+
+The facade improves more than 5% in 147 and 146 of 192 cases. In the repeat,
+indexed `exists` with 1,000 sensors improves 86.43%, the 100,000-iteration action
+loop improves 49.17%, dormant Depth focus at 2,048 facts improves 78.96%, and
+compiling 500 rules/50 templates improves 23.81%. Waltz with 1,000 junctions
+improves 12.73%; Manners with 128 guests is essentially unchanged (-0.85%).
+The 100,000-fact churn case varies from -11.39% to +0.45%, so it is not a repeatable
+final-stack gain. All five small reset/run controls improve in both rounds,
+with repeat gains of 1.68–5.66%.
+
+The runtime repeat improves owned eight/64-slot captures by 83.81% / 94.35%.
+C ABI lifecycle with 1,000 facts improves 5.50% / 5.90%; the 100-fact lifecycle
+and both owned-read/output controls remain within 1.6% of the baseline in both
+rounds. These are cumulative stack results, not isolated attribution to one PR.
+
+Every case slower by more than 5% in both final rounds is listed below. The
+threshold is a reporting rule, not a statistical significance test; full records
+also retain smaller and single-round regressions.
+
+| Workload | First change | Repeat change | Repeat before → after |
+| --- | ---: | ---: | ---: |
+| Facade: `api_query_scan_5000i_100c` | +7.00% | +7.02% | 18,633.105 → 19,941.725 µs |
+| Facade: `engine_create` | +20.56% | +38.25% | 0.661 → 0.914 µs |
+| Runtime: `deserialize/cbor/small` | +7.82% | +5.39% | 82.770 → 87.231 µs |
+| Runtime: `function_env_lookup_cycle` | +8.53% | +5.18% | 223.377 → 234.958 µs |
+| Runtime: `host_first_sparse_export/1000` | +19.42% | +6.36% | 0.202 → 0.214 µs |
+| Runtime: `host_first_sparse_export/100000` | +7.39% | +16.06% | 1.808 → 2.099 µs |
+| Runtime: `serialize/cbor/medium` | +6.20% | +5.46% | 521.020 → 549.476 µs |
+| Runtime: `serialize/cbor/small` | +8.21% | +6.40% | 146.913 → 156.317 µs |
+| Runtime: `serialize/json/large` | +5.57% | +5.30% | 4,067.143 → 4,282.560 µs |
+| Runtime: `serialize/json/medium` | +5.55% | +5.46% | 425.482 → 448.732 µs |
+| Runtime: `template_registry_list_cycle` | +12.49% | +15.36% | 0.342 → 0.394 µs |
+| Core storage: `beta_membership_sizes/1024` | +20.85% | +12.78% | 44.674 → 50.385 µs |
+
+The retained stack is a net improvement for the measured suites with explicit
+workload tradeoffs. It does not make every operation faster. Engine construction,
+query scans, registry operations, sparse exports, and serialization remain
+follow-up targets. The isolated PR records distinguish demonstrated local costs
+from cumulative observations whose cause has not been isolated.
+
+## Coverage and remaining costs
+
+Two complete experimental checkpoints remain in the evidence history:
+[before direct promotion](2026-09-07-cumulative-checkpoint.json), at `48e40b9c`,
+and [after direct promotion](2026-09-07-promotion-checkpoint.json), at `ad433f0b`.
+Each covers 288 cases twice. Both include the subsequently rejected cascade
+optimization and earlier enum membership representation; neither is the final
+retained stack. Their slower controls prompted the isolated comparisons above.
+
+The cumulative audit spans every Criterion executable in the facade, runtime,
+core-storage, and C ABI crates. It retains the existing workload oracles and adds
+controls for owned template capture, unrelated conditional memories, loop
+frames, sparse host exports, dormant focus, small memberships, and cascade traversal
+width. The runtime suite includes all five snapshot formats; the C ABI suite
+checks typed owned values, copied output, lifecycle cleanup, and missing-fact
+diagnostics through black-boxed function pointers.
+
+Correctness checks include full preflight, optimized core/runtime tests with all
+features, all eight scaling gates, schema-one snapshot compatibility, module
+visibility and ordering regressions, alias/scope properties, host provenance,
+concurrent shared exports, and the repository's platform, sanitizer, binding,
+package, and CLIPS compatibility checks. Debug-only engine diagnostics in the
+new focus integration test are conditionally compiled; its observable-behavior
+and snapshot assertions also execute in release builds.
+
+CPU sampling after the action-frame change identified token removal, ordered
+membership mutation, beta cleanup, propagation, and value copies as remaining
+costs. Samples were used to select experiments, not as timing evidence. Several
+historical suggestions were already implemented before this audit, including
+shared beta child arrays, compact fact-chain collection, inline scalar value
+references, and shared registered rule metadata.
+
+Further changes must preserve the repaired traversal and ownership contracts.
+Negative right activation cannot simply adopt an equality index if it changes
+blocked/unblocked traversal order. Bindings cannot borrow through engine
+mutation without preserving captured values and local alias precedence.
+Snapshot validation and host provenance checks remain required work. Global
+copy-on-write binding storage and broader alpha assertion routing remain
+possible research directions, without a measured improvement claim here.
