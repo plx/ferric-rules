@@ -1,5 +1,10 @@
 # Phase 6 Performance Analysis
 
+> Historical prototype measurements: rehabilitation corrected workload execution
+> and correctness checks, so the numbers below are not current regression
+> baselines. See the [post-rehabilitation performance audit](audits/2026-09-07-performance-audit.md)
+> for matched release measurements and retained correctness oracles.
+
 ## Benchmark Results (Phase 6 Baseline)
 
 ### Engine Microbenchmarks
