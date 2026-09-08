@@ -1,0 +1,175 @@
+---
+import report from "../generated/compatibility.json";
+import "../styles/compatibility-probes.css";
+
+const repository = "https://github.com/plx/ferric-rules";
+const { provenance, summary, groups } = report;
+const dispositions = Array.from(
+  new Map(
+    groups.flatMap((group) =>
+      group.cases.map((probe) => [
+        probe.disposition.kind,
+        probe.disposition.label,
+      ] as const),
+    ),
+  ),
+);
+const issueLabel = (url: string) => `Issue #${url.split("/").at(-1)}`;
+---
+
+<div class="compatibility-probes" data-compatibility-probes>
+  <div class="probe-stats" aria-label="Compatibility probe results">
+    <div><strong data-probe-total>{summary.total}</strong><span>probes executed</span></div>
+    <div><strong data-probe-matching>{summary.matching}</strong><span>exact matches</span></div>
+    <div><strong data-probe-different>{summary.different}</strong><span>characterized differences</span></div>
+  </div>
+
+  <p class="probe-context">
+    Each result comes from running the same program in CLIPS and Ferric. An exact
+    match requires successful execution, identical program output, and no Ferric
+    action diagnostics. Passing these focused examples does not prove full
+    compatibility for an entire language feature.
+  </p>
+
+  <details class="probe-provenance">
+    <summary>Build and reference provenance</summary>
+    {provenance.workspace_dirty && (
+      <p class="probe-workspace-note">Generated from a modified workspace. The revision identifies the checkout base; the source digest and inline programs identify the executed snapshot. Per-probe GitHub source links are available for clean builds.</p>
+    )}
+    <dl>
+      <div>
+        <dt>{provenance.workspace_dirty ? "Checkout base revision" : "Ferric source revision"}</dt>
+        <dd><a href={`${repository}/commit/${provenance.revision}`}><code>{provenance.revision}</code></a></dd>
+      </div>
+      <div><dt>Source digest</dt><dd><code>{provenance.source_digest}</code></dd></div>
+      <div><dt>CLIPS reference</dt><dd>{provenance.reference_version}</dd></div>
+      <div><dt>Reference image</dt><dd><code>{provenance.reference_image}</code></dd></div>
+      <div><dt>Generated</dt><dd><time datetime={provenance.generated_at}>{provenance.generated_at}</time></dd></div>
+    </dl>
+  </details>
+
+  <nav class="probe-groups-nav" aria-label="Probe groups">
+    <p>Jump to a group</p>
+    <ul>
+      {groups.map((group) => (
+        <li><a href={`#group-${group.id}`}>{group.title} <span>({group.cases.length})</span></a></li>
+      ))}
+    </ul>
+  </nav>
+
+  <form class="probe-filters" data-probe-filters hidden role="search" aria-label="Filter compatibility probes">
+    <label class="probe-search">
+      Search examples
+      <input type="search" name="query" data-probe-search placeholder="Title, feature, source, or issue…" autocomplete="off" />
+    </label>
+    <label>
+      Result
+      <select name="result" data-probe-result>
+        <option value="all">All results</option>
+        <option value="match">Exact match</option>
+        <option value="different">Difference</option>
+      </select>
+    </label>
+    <label>
+      Disposition
+      <select name="disposition" data-probe-disposition>
+        <option value="all">All dispositions</option>
+        {dispositions.map(([kind, label]) => <option value={kind}>{label}</option>)}
+      </select>
+    </label>
+    <label>
+      Level
+      <select name="level" data-probe-level>
+        <option value="all">All levels</option>
+        <option value="basic">Basic</option>
+        <option value="boundary">Boundary</option>
+        <option value="interaction">Interaction</option>
+      </select>
+    </label>
+    <div class="probe-filter-footer">
+      <p data-probe-count role="status" aria-live="polite" aria-atomic="true">Showing all {summary.total} probes.</p>
+      <button type="reset" data-probe-clear>Clear filters</button>
+    </div>
+  </form>
+
+  <p class="probe-empty" data-probe-empty hidden>No probes match these filters. Try another term or clear the filters.</p>
+
+  {groups.map((group) => (
+    <section class="probe-group" id={`group-${group.id}`} data-probe-group aria-labelledby={`heading-${group.id}`}>
+      <h2 id={`heading-${group.id}`}>{group.title}</h2>
+      <p class="probe-group-description">{group.description}</p>
+      <div class="probe-list">
+        {group.cases.map((probe) => (
+          <details
+            class="probe"
+            id={probe.id}
+            data-probe
+            data-result={probe.matches ? "match" : "different"}
+            data-disposition={probe.disposition.kind}
+            data-level={probe.level}
+          >
+            <summary>
+              <span class="probe-heading">
+                <span class="probe-title">{probe.title}</span>
+                <span class="probe-path">{probe.path}</span>
+              </span>
+              <span class="probe-badges">
+                <span class="probe-badge probe-level">{probe.level}</span>
+                <span class:list={["probe-badge", probe.matches ? "probe-match" : "probe-difference"]}>{probe.matches ? "Exact match" : "Difference"}</span>
+              </span>
+            </summary>
+            <div class="probe-body">
+              <div class="probe-actions">
+                <a href={`#${probe.id}`} aria-label={`Permanent link to ${probe.title}`}>Link to this probe</a>
+                {!provenance.workspace_dirty && <a href={`${repository}/blob/${provenance.revision}/tests/clips_compat/corpus/${probe.path}`}>View source on GitHub</a>}
+              </div>
+              <p class="probe-disposition"><strong>{probe.disposition.label}.</strong> {probe.disposition.explanation}</p>
+              {probe.disposition.issues.length > 0 && (
+                <ul class="probe-issues" aria-label="Tracking issues">
+                  {probe.disposition.issues.map((issue) => <li><a href={issue}>{issueLabel(issue)}</a></li>)}
+                </ul>
+              )}
+              <p class="probe-covers"><strong>Coverage:</strong> {probe.covers.join(", ")}</p>
+              <h3>Program</h3>
+              <pre class="probe-code" tabindex="0" aria-label="Program source"><code data-source>{probe.source}</code></pre>
+              <p class="probe-protocol">
+                <strong>Execution:</strong> Load into a fresh engine. Execute {probe.resets} reset/run {probe.resets === 1 ? "cycle" : "cycles"} total, with a limit of 1,000 rule firings per cycle.
+                {probe.resets > 1 && " Keep the same engine between cycles; the output below concatenates all runs."}
+              </p>
+              {probe.input !== null && (
+                <div class="probe-input">
+                  <h3>Input</h3>
+                  <p>The same input is supplied to both engines.</p>
+                  <pre class="probe-code" tabindex="0" aria-label="Program input"><code data-input>{probe.input}</code></pre>
+                </div>
+              )}
+              <div class="probe-outputs">
+                <div class="probe-output">
+                  <h3>CLIPS output</h3>
+                  <pre class="probe-code" tabindex="0" aria-label="CLIPS output" hidden={probe.clips_output === ""}><code data-output="clips">{probe.clips_output}</code></pre>
+                  {probe.clips_output === "" && <p class="probe-no-output" data-empty-output="clips">No program output (empty string).</p>}
+                </div>
+                <div class="probe-output">
+                  <h3>Ferric output</h3>
+                  <pre class="probe-code" tabindex="0" aria-label="Ferric output" hidden={probe.ferric_output === ""}><code data-output="ferric">{probe.ferric_output}</code></pre>
+                  {probe.ferric_output === "" && <p class="probe-no-output" data-empty-output="ferric">No program output (empty string).</p>}
+                </div>
+              </div>
+              <p class="probe-phase"><strong>Ferric phase:</strong> <code data-ferric-phase>{probe.ferric_phase}</code></p>
+              <div class="probe-diagnostics">
+                <h3>Ferric diagnostics</h3>
+                {probe.diagnostics.length > 0 ? (
+                  <ul>{probe.diagnostics.map((diagnostic) => <li><pre class="probe-code" tabindex="0" aria-label="Ferric diagnostic"><code data-diagnostic>{diagnostic}</code></pre></li>)}</ul>
+                ) : <p>No diagnostics.</p>}
+              </div>
+            </div>
+          </details>
+        ))}
+      </div>
+    </section>
+  ))}
+</div>
+
+<script>
+  import "../scripts/compatibility-probes";
+</script>

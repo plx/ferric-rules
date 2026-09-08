@@ -3,7 +3,7 @@ title: CLIPS Compatibility
 description: Supported CLIPS language areas, known differences, and current exclusions.
 ---
 
-Ferric targets semantic compatibility with the CLIPS Basic Programming Guide for the supported subset. “Supported” means implemented, not proven equivalent for every rule set in that area. Exact compatibility claims are limited to the reviewed differential policy cases and qualified by the known gaps below.
+Ferric targets semantic compatibility with the CLIPS Basic Programming Guide for the supported subset. “Supported” means implemented, not proven equivalent for every rule set in that area. The reviewed differential policy and the [generated compatibility probes](../compatibility-probes/) provide focused evidence, qualified by their known differences and coverage limits.
 
 ## Supported Core Areas
 
@@ -42,7 +42,7 @@ The blocking pinned-CLIPS policy retains these differences as exact known deviat
 | ----------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | LEX and MEA | Selected recency vectors and the MEA tiebreak differ. | `FR-RETE-009` LEX recency-vector ordering; `FR-RETE-009-MEA` MEA recency-vector ordering | [#155](https://github.com/plx/ferric-rules/issues/155) |
 
-The reviewed gate covers 57 scenarios: 55 equivalences and the two known LEX/MEA differences. All 35 scenarios added beyond the 22-case baseline match pinned CLIPS 6.30. Other corpus fixtures are not compatibility claims until they have a structured oracle and reviewed policy entry.
+The reviewed gate covers 57 scenarios: 55 equivalences and the two known LEX/MEA differences. All 35 scenarios added beyond the 22-case baseline match pinned CLIPS 6.30. The separate [compatibility probe explorer](../compatibility-probes/) runs the granular discovery corpus against CLIPS and Ferric, displaying every program, exact output, diagnostic, and difference explanation. Its current results are generated during the documentation build. The reviewed differential gate retains its own execution protocol and policy; the probe corpus complements that gate rather than changing its scenario counts.
 
 ## Known Exclusions
 

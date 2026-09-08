@@ -143,6 +143,10 @@ export const siteConfig = {
             "slug": "docs/compatibility"
           },
           {
+            "label": "Compatibility probes",
+            "slug": "docs/compatibility-probes"
+          },
+          {
             "label": "Embedding API",
             "slug": "docs/embedding"
           },
@@ -175,6 +179,12 @@ export const siteConfig = {
         "description": "Supported language features, known differences, and migration notes.",
         "slug": "docs/compatibility",
         "href": "docs/compatibility/"
+      },
+      {
+        "title": "Compatibility probes",
+        "description": "Executed CLIPS compatibility examples, exact engine outputs, and explanations of characterized differences.",
+        "slug": "docs/compatibility-probes",
+        "href": "docs/compatibility-probes/"
       },
       {
         "title": "Embedding API",

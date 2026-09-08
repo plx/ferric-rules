@@ -4,9 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "compatibility:generate": "node scripts/generate-compatibility.mjs",
+    "predev": "npm run compatibility:generate",
     "dev": "astro dev",
+    "prebuild": "npm run compatibility:generate",
     "build": "astro build",
     "preview": "vite preview --strictPort --base /ferric-rules",
+    "precheck": "npm run compatibility:generate",
     "check": "astro check",
     "typecheck": "tsgo --noEmit",
     "format": "prettier --write .",

@@ -90,6 +90,49 @@ Retained expression fact-query cases (`any-factp`, `find-fact`, and
 subset, including empty-result controls; they do not imply these forms are
 currently supported.
 
+## Explaining differences in the documentation
+
+[`dispositions.json`](dispositions.json) supplies reviewed explanations for the
+documentation's generated compatibility breakdown. It is separate from the
+execution manifest: the manifest records what happened, while a disposition
+explains the scope, impact, and current compatibility policy. The site's
+program source, CLIPS output, Ferric output, and diagnostics come from running
+the corpus; they are not copied into this prose metadata.
+
+Dispositions have three meanings:
+
+- **Tracked for correction** (`tracked-defect`): the linked issue records a
+  defect in behavior targeted for compatibility. This identifies work to do;
+  it does not promise a release or completion date, and does not assert that
+  the issue is currently open on GitHub.
+- **Deliberate subset boundary** (`deliberate-boundary`): the current documented
+  subset excludes this form. The explanation must identify that boundary and
+  distinguish it from a supported form failing accidentally. Keeping a probe
+  does not promise implementation. Expression fact queries and query-bound
+  slot expressions are current examples; see
+  [Fact-query expressions](../../../docs/compatibility.md#fact-query-expressions).
+- **Irrelevant to the target contract** (`irrelevant`): a reviewed difference
+  does not affect the compatibility contract being tested. This requires a
+  specific rationale; no current gap has this classification. Output order,
+  quoting, whitespace, numeric types, and missing actions are not automatically
+  irrelevant.
+
+The version-1 file has an `issues` object keyed by exact issue URLs and an
+`overrides` object keyed by manifest case paths. Each entry has `kind`, `label`,
+and `explanation` strings. Shared issue explanations describe all active probes
+linked to that issue. A case override supplies a more specific explanation when
+needed and includes an `issues` array matching that case's manifest links.
+Different dispositions across a case's issues require an explicit override.
+The generator rejects missing policies and stale issue or override entries.
+
+When adding or reviewing a gap, explain the observable CLIPS/Ferric difference,
+its practical impact, and whether correction is tracked or the feature is
+outside the supported subset. Base deliberate exclusions on the compatibility
+contract rather than inferring intent from an error. Review the explanation
+after changing a probe or its observed behavior. When a fix removes the last
+active gap for an issue, remove its disposition; passing probes receive their
+matching status from execution. Keep the historical issue entry in `GAPS.md`.
+
 ## Oracle provenance and safety
 
 All current `.out` files were executed on CLIPS **6.30 (3/17/15)** using the local

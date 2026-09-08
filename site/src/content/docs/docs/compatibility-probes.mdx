@@ -1,0 +1,49 @@
+---
+title: Compatibility probes
+description: Executed CLIPS compatibility examples, exact engine outputs, and explanations of every characterized difference.
+tableOfContents: false
+---
+
+import CompatibilityProbes from "../../../components/CompatibilityProbes.astro";
+
+Explore the compatibility corpus one behavior at a time. Groups progress from
+**basic** examples through **boundary** cases and **interactions** between features.
+Expand a probe to inspect its complete program, execution protocol, exact outputs,
+and any diagnostics or tracking issues.
+
+**Tracked defects** describe behavior intended to match CLIPS and link to work
+needed to correct it. **Deliberate boundaries** describe explicit limits of the
+current supported subset. These labels explain the current policy; a tracking
+issue does not promise a fix date. See the [compatibility overview](../compatibility/)
+for supported areas, exclusions, and the separate reviewed differential gate.
+
+<CompatibilityProbes />
+
+## Keeping these results current
+
+The documentation build generates this report by building Ferric and running the
+entire corpus in Ferric and the pinned CLIPS reference. Generation verifies the
+reference oracles and the exact current Ferric characterizations, including known
+differences. Missing probes, changed observations, or an unavailable reference
+fail generation instead of leaving an old report in place.
+
+To regenerate locally, run `just compat-docs` from the repository root. This
+requires Rust, `uv` with Python, and Docker with the CLIPS reference image built:
+
+```sh
+docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
+just compat-docs
+```
+
+The normal `npm run build` command in `site/` also generates a fresh report before
+building the site.
+
+The displayed output preserves whitespace, quoting, numeric formatting, and line
+order. Empty Ferric output is shown explicitly; diagnostic text is separate from
+program output. The build provenance above identifies the source revision,
+source digest, and reference engine used for this snapshot.
+
+This corpus is a discovery and characterization suite. Its coverage is broad but
+finite; the repository's [coverage matrix](https://github.com/plx/ferric-rules/blob/main/tests/clips_compat/corpus/COVERAGE.md)
+records areas that need additional probes or execution protocols. Excluded CLIPS
+features are not counted as unexplained compatibility failures.

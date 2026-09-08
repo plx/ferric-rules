@@ -5,6 +5,14 @@ on:
     branches: ["main"]
     paths:
       - "site/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - "tests/clips_compat/corpus/**"
+      - "tools/ferric-tools/**"
+      - "docker/clips-reference/**"
       - ".github/workflows/site-publish.yml"
   workflow_dispatch:
 
@@ -26,6 +34,15 @@ jobs:
         working-directory: site
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+          python-version: "3.12"
+      - name: Build CLIPS reference
+        working-directory: .
+        run: docker build -t ferric-rules/clips-reference:latest docker/clips-reference/
       - uses: actions/setup-node@v5
         with:
           node-version: 24
