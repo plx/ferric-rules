@@ -29,6 +29,10 @@ use crate::tracing_support::ferric_event;
 #[cfg(feature = "tracing")]
 use crate::tracing_support::ferric_span;
 
+#[path = "evaluator/format.rs"]
+mod format;
+use format::builtin_format;
+
 // ---------------------------------------------------------------------------
 // Source span for diagnostics
 // ---------------------------------------------------------------------------
@@ -6125,315 +6129,6 @@ fn builtin_printout(
     Ok(Value::Void)
 }
 
-/// `format` — CLIPS-style printf formatting.
-///
-/// `(format <channel> <format-string> <arg>*)`
-///
-/// Returns the formatted string. The channel argument is evaluated but not
-/// used for output (the evaluator has no router access; use `printout` for
-/// output to a channel).
-///
-/// Format directives:
-/// - `%d` — integer
-/// - `%f` — float (default 6 decimal places)
-/// - `%e` — scientific notation
-/// - `%g` — general (shorter of `%f` and `%e`)
-/// - `%s` — string representation
-/// - `%n` — newline character
-/// - `%r` — carriage return
-/// - `%%` — literal percent sign
-/// - Width/precision: `%10d`, `%-10s`, `%6.2f`, etc.
-fn builtin_format(
-    ctx: &mut EvalContext<'_>,
-    args: &[RuntimeExpr],
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    check_arity_min("format", args, 2, span)?;
-
-    // First arg is channel (evaluate but don't use for output)
-    let _channel = eval_inner(ctx, &args[0])?;
-
-    // Second arg is format string
-    let fmt_str = match eval_inner(ctx, &args[1])? {
-        Value::String(s) => s.as_bytes().to_vec(),
-        other => {
-            return Err(EvalError::TypeError {
-                function: "format".to_string(),
-                expected: "STRING".to_string(),
-                actual: generic_value_type_name(&other).to_string(),
-                span: span.cloned(),
-            });
-        }
-    };
-
-    // Remaining args are format arguments
-    let format_args = eval_args(ctx, &args[2..])?;
-
-    let result = apply_format_string(&fmt_str, &format_args, ctx.symbol_table, span)?;
-    let fs =
-        FerricString::from_bytes(result.as_bytes(), ctx.config.string_encoding).map_err(|_| {
-            EvalError::TypeError {
-                function: "format".to_string(),
-                expected: "valid string encoding".to_string(),
-                actual: "result contains invalid characters".to_string(),
-                span: span.cloned(),
-            }
-        })?;
-    Ok(Value::String(fs))
-}
-
-/// Apply CLIPS format directives to produce a formatted string.
-#[allow(clippy::too_many_lines)]
-fn apply_format_string(
-    fmt: impl AsRef<[u8]>,
-    args: &[Value],
-    symbol_table: &SymbolTable,
-    span: Option<&SourceSpan>,
-) -> Result<ByteBuffer, EvalError> {
-    let mut result = ByteBuffer::new();
-    // Preserve the existing Unicode format behavior for valid text. Raw formats
-    // use byte units so undecodable literal payloads are never replaced.
-    let text = std::str::from_utf8(fmt.as_ref());
-    let raw = text.is_err();
-    let units: Vec<char> = match text {
-        Ok(text) => text.chars().collect(),
-        Err(_) => fmt.as_ref().iter().copied().map(char::from).collect(),
-    };
-    let mut chars = units.into_iter().peekable();
-    let mut arg_idx = 0;
-
-    while let Some(ch) = chars.next() {
-        if ch != '%' {
-            if raw {
-                result.push_bytes(&[u8::try_from(u32::from(ch)).expect("input byte")]);
-            } else {
-                result.push(ch);
-            }
-            continue;
-        }
-
-        match chars.peek() {
-            None => {
-                result.push('%'); // trailing % — just emit it
-            }
-            Some('%') => {
-                chars.next();
-                result.push('%');
-            }
-            Some('n') => {
-                chars.next();
-                result.push('\n');
-            }
-            Some('r') => {
-                chars.next();
-                result.push('\r');
-            }
-            _ => {
-                // Parse optional flags, width, precision
-                let mut left_align = false;
-                let mut width: Option<usize> = None;
-                let mut precision: Option<usize> = None;
-
-                if chars.peek() == Some(&'-') {
-                    left_align = true;
-                    chars.next();
-                }
-
-                // Width
-                let mut width_str = String::new();
-                while let Some(&c) = chars.peek() {
-                    if c.is_ascii_digit() {
-                        width_str.push(c);
-                        chars.next();
-                    } else {
-                        break;
-                    }
-                }
-                if !width_str.is_empty() {
-                    width = width_str.parse().ok();
-                }
-
-                // Precision
-                if chars.peek() == Some(&'.') {
-                    chars.next();
-                    let mut prec_str = String::new();
-                    while let Some(&c) = chars.peek() {
-                        if c.is_ascii_digit() {
-                            prec_str.push(c);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                    precision = prec_str.parse().ok();
-                }
-
-                // Conversion character
-                let Some(conv) = chars.next() else {
-                    result.push('%');
-                    continue;
-                };
-
-                if arg_idx >= args.len() {
-                    return Err(EvalError::ArityMismatch {
-                        name: "format".to_string(),
-                        expected: format!("{}+", arg_idx + 3),
-                        actual: args.len() + 2,
-                        span: span.cloned(),
-                    });
-                }
-
-                let arg = &args[arg_idx];
-                arg_idx += 1;
-
-                let formatted = match conv {
-                    'd' => {
-                        let n = match arg {
-                            Value::Integer(i) => *i,
-                            #[allow(clippy::cast_possible_truncation)]
-                            Value::Float(f) => *f as i64,
-                            _ => {
-                                return Err(EvalError::TypeError {
-                                    function: "format".to_string(),
-                                    expected: "NUMBER for %d".to_string(),
-                                    actual: generic_value_type_name(arg).to_string(),
-                                    span: span.cloned(),
-                                })
-                            }
-                        };
-                        format!("{n}")
-                    }
-                    'f' => {
-                        let f = match arg {
-                            Value::Float(f) => *f,
-                            #[allow(clippy::cast_precision_loss)]
-                            Value::Integer(i) => *i as f64,
-                            _ => {
-                                return Err(EvalError::TypeError {
-                                    function: "format".to_string(),
-                                    expected: "NUMBER for %f".to_string(),
-                                    actual: generic_value_type_name(arg).to_string(),
-                                    span: span.cloned(),
-                                })
-                            }
-                        };
-                        let prec = precision.unwrap_or(6);
-                        format!("{f:.prec$}")
-                    }
-                    'e' => {
-                        let f = match arg {
-                            Value::Float(f) => *f,
-                            #[allow(clippy::cast_precision_loss)]
-                            Value::Integer(i) => *i as f64,
-                            _ => {
-                                return Err(EvalError::TypeError {
-                                    function: "format".to_string(),
-                                    expected: "NUMBER for %e".to_string(),
-                                    actual: generic_value_type_name(arg).to_string(),
-                                    span: span.cloned(),
-                                })
-                            }
-                        };
-                        let prec = precision.unwrap_or(6);
-                        format!("{f:.prec$e}")
-                    }
-                    'g' => {
-                        let f = match arg {
-                            Value::Float(f) => *f,
-                            #[allow(clippy::cast_precision_loss)]
-                            Value::Integer(i) => *i as f64,
-                            _ => {
-                                return Err(EvalError::TypeError {
-                                    function: "format".to_string(),
-                                    expected: "NUMBER for %g".to_string(),
-                                    actual: generic_value_type_name(arg).to_string(),
-                                    span: span.cloned(),
-                                })
-                            }
-                        };
-                        let f_str = format!("{f:.6}");
-                        let e_str = format!("{f:.6e}");
-                        if f_str.len() <= e_str.len() {
-                            f_str
-                        } else {
-                            e_str
-                        }
-                    }
-                    's' => {
-                        let formatted = format_value_for_format(arg, symbol_table);
-                        append_format_width(&mut result, &formatted, width, left_align);
-                        continue;
-                    }
-                    _ => {
-                        // Unknown directive — just emit literal.
-                        if raw && !conv.is_ascii() {
-                            result.push('%');
-                            result
-                                .push_bytes(&[u8::try_from(u32::from(conv)).expect("input byte")]);
-                            continue;
-                        }
-                        format!("%{conv}")
-                    }
-                };
-
-                append_format_width(&mut result, formatted.as_bytes(), width, left_align);
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-fn append_format_width(
-    result: &mut ByteBuffer,
-    bytes: &[u8],
-    width: Option<usize>,
-    left_align: bool,
-) {
-    let padding = width.unwrap_or(0).saturating_sub(lexeme_length(bytes));
-    if !left_align {
-        for _ in 0..padding {
-            result.push(' ');
-        }
-    }
-    result.push_bytes(bytes);
-    if left_align {
-        for _ in 0..padding {
-            result.push(' ');
-        }
-    }
-}
-
-/// Format a value for `%s` without conflating symbol controls and payload text.
-fn format_value_for_format(value: &Value, symbol_table: &SymbolTable) -> Vec<u8> {
-    match value {
-        Value::Integer(n) => n.to_string().into_bytes(),
-        Value::Float(f) => format_float_for_str_cat(*f).into_bytes(),
-        Value::Symbol(sym) => symbol_table
-            .resolve_symbol_bytes(*sym)
-            .expect("validated symbol")
-            .to_vec(),
-        Value::InstanceName(name) => symbol_table
-            .resolve_symbol_bytes(name.as_symbol())
-            .expect("validated instance name")
-            .to_vec(),
-        Value::String(s) => s.as_bytes().to_vec(),
-        Value::Void => Vec::new(),
-        Value::ExternalAddress(_) => b"<ExternalAddress>".to_vec(),
-        Value::Multifield(mf) => {
-            let mut output = vec![b'('];
-            for (index, value) in mf.iter().enumerate() {
-                if index > 0 {
-                    output.push(b' ');
-                }
-                output.extend(format_value_for_format(value, symbol_table));
-            }
-            output.push(b')');
-            output
-        }
-    }
-}
-
 /// Intern the `EOF` symbol — shared helper for `read`/`readline`.
 fn intern_eof_symbol(
     ctx: &mut EvalContext<'_>,
@@ -10803,7 +10498,7 @@ mod tests {
 
     #[test]
     fn test_format_scientific() {
-        // (format nil "%e" 12345.0) => contains "e" notation
+        // (format nil "%e" 12345.0) => normalized signed exponent.
         let result = eval_expr(&call(
             "format",
             vec![
@@ -10818,11 +10513,7 @@ mod tests {
         let Value::String(s) = result else {
             panic!("expected String");
         };
-        assert!(
-            s.as_str().unwrap().contains('e'),
-            "expected scientific notation, got: {}",
-            s.as_str().unwrap()
-        );
+        assert_eq!(s.as_str().unwrap(), "1.234500e+04");
     }
 
     // -----------------------------------------------------------------------
@@ -11459,3 +11150,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "evaluator/format_directive_tests.rs"]
+mod format_directive_tests;

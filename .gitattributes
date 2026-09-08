@@ -29,3 +29,12 @@ scripts/musl_static_libgcc_linker.py text eol=lf
 
 # Keep native Rust target provenance byte-identical on Windows.
 crates/ferric-rules-cli/release-targets.json text eol=lf
+
+# Keep format reference bytes exact in runtime and facade tests.
+crates/ferric-rules-runtime/src/formatting/fixtures/*.out text eol=lf
+crates/ferric-rules-runtime/src/formatting/fixtures/*.clp text eol=lf
+crates/ferric-rules-runtime/src/formatting/fixtures/character-empty-nul-byte-width-precision.expected.out -text
+crates/ferric-rules-runtime/src/formatting/fixtures/ordinary-directives.expected.out -text
+crates/ferric-rules-runtime/src/formatting/fixtures/unicode-width-and-precision.expected.out -text
+crates/ferric-rules/tests/fixtures/stdlib/format_ordinary_directives.out -text
+crates/ferric-rules/tests/fixtures/stdlib/format_unicode_width_and_precision.out -text

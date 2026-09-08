@@ -58,6 +58,50 @@ process fault for Void used as a data field. The CLIPS-valid
 invocation; comparator metadata does not imply parity for every builtin.
 Malformed source bind targets are a separate parsed-variable restriction.
 
+## Formatting
+
+`format` returns a STRING without writing to a router. Use
+`(printout t (format nil "n=%d" 42) crlf)` to print its result.
+
+Canonical lowercase `d`, `o`, `x`, `u`, `f`, `e`, `g`, `s`, and `c`
+conversions accept leading `-`/`0` flags, a minimum decimal width, and
+optional `.precision`. Left alignment overrides zero padding. Integer
+precision counts digits and disables width zero padding; zero precision
+with zero emits no digits. `%f` and `%e` default to six fractional digits;
+`%e` includes a signed exponent with at least two digits. `%g` defaults to
+six significant digits, treats explicit zero precision as one, chooses its
+notation from the rounded exponent, and removes trailing fractional zeroes.
+Negative zero is preserved. Infinity and NaN use lowercase spellings and
+space padding. `%n`, `%r`, `%t`, `%v`, and `%%` emit newline, carriage return,
+tab, vertical tab, and percent without consuming data.
+
+Numeric conversions accept INTEGER or FLOAT. `%s` accepts STRING, SYMBOL,
+and INSTANCE-NAME, with names rendered without brackets. `%c` accepts
+INTEGER, STRING, or SYMBOL; it takes the low integer byte or first lexeme
+byte and ignores precision. Width and string precision count raw bytes,
+including partial UTF-8 sequences. Control strings and `%s` operands stop
+at their first NUL. A NUL from `%c` keeps only padding before it; later
+fragments still append. Returned bytes follow the configured encoding policy.
+
+The complete control prefix and exact operand count are validated before
+any data expression runs. Data then evaluates once, sequentially, with each
+conversion checked before the next. Errors return an empty STRING and
+retain prior side effects. Invalid flags/counts and control, numeric, or
+`%s` type errors halt following actions. A `%c` type error instead records a
+nonfatal diagnostic and skips the remaining format operands; it does not
+clear an earlier halt.
+
+Ferric limits each call's control prefix and aggregate output to 16 MiB
+(16,777,216 bytes). FLOAT-to-integer conversion saturates at signed 64-bit
+endpoints, with NaN becoming zero. These are explicit engine policies.
+Scanner-admitted malformed fragments use a deterministic normalized-prefix
+and preserved-tail echo, including CLIPS's inserted `ll` for integer
+conversions. The algorithm matches five pinned echoes; other applications
+are Ferric policy, not universal C library parity. Other printf extensions,
+such as dynamic widths, positional arguments, length modifiers, and
+uppercase conversions, are unsupported. The return-only router policy also
+remains a documented difference.
+
 ## Known Differential Gaps
 
 The blocking pinned-CLIPS policy retains these differences as exact known deviations rather than reporting them as equivalent. Any unexplained or changed divergence fails the gate.

@@ -55,6 +55,7 @@
 //! - Legacy scanner builtins reject non-UTF-8 input until byte scanning is added.
 
 mod byte_buffer;
+mod formatting;
 mod tracing_support;
 
 pub mod actions;
