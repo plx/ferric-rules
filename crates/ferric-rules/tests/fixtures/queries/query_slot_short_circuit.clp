@@ -1,0 +1,16 @@
+;; Skipped compact accesses must neither fail nor trigger predicate effects.
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)) (item (value 20)) (item (value 30)))
+(defglobal ?*ticks* = 0)
+(deffunction tick () (bind ?*ticks* (+ ?*ticks* 1)) TRUE)
+(defrule probe =>
+  (bind ?count 0)
+  (bind ?sum 0)
+  (do-for-all-facts ((?f item))
+    (and (> ?f:value 10)
+         (or (= ?f:value 20) (tick))
+         (or TRUE ?f:missing)
+         (not (and FALSE ?f:missing)))
+    (bind ?count (+ ?count 1))
+    (bind ?sum (+ ?sum ?f:value)))
+  (printout t ?count ":" ?sum ":" ?*ticks* crlf))

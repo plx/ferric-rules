@@ -1,0 +1,6 @@
+loop:1:10
+loop:2:10
+progn:a:1:10
+progn:b:2:10
+query:10
+local:99:88

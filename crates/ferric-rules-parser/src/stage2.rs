@@ -1121,10 +1121,7 @@ fn interpret_function(elements: &[SExpr], span: Span) -> Result<FunctionConstruc
         });
     }
 
-    let mut body = Vec::new();
-    for elem in &elements[idx..] {
-        body.push(interpret_action_expr(elem)?);
-    }
+    let body = interpret_action_expr_sequence(&elements[idx..])?;
 
     Ok(FunctionConstruct {
         name,
@@ -1566,10 +1563,7 @@ fn interpret_method(elements: &[SExpr], span: Span) -> Result<MethodConstruct, I
         return Err(InterpretError::missing("method body", span));
     }
 
-    let mut body = Vec::new();
-    for elem in &elements[idx..] {
-        body.push(interpret_action_expr(elem)?);
-    }
+    let body = interpret_action_expr_sequence(&elements[idx..])?;
 
     Ok(MethodConstruct {
         name,
@@ -2171,10 +2165,7 @@ fn interpret_action_expr_as_slot_pair(expr: &SExpr) -> Result<ActionExpr, Interp
         if !list.is_empty() {
             if let Some(name) = list[0].as_symbol() {
                 // Build a FunctionCall directly, parsing sub-args normally
-                let mut args = Vec::new();
-                for arg_expr in &list[1..] {
-                    args.push(interpret_action_expr(arg_expr)?);
-                }
+                let args = interpret_action_expr_sequence(&list[1..])?;
                 return Ok(ActionExpr::FunctionCall(FunctionCall {
                     name: name.to_string(),
                     args,
@@ -2221,17 +2212,22 @@ fn interpret_function_call(expr: &SExpr) -> Result<FunctionCall, InterpretError>
         ));
     };
 
-    let mut args = Vec::new();
-    let mut i = 1usize;
-    while i < list.len() {
-        if let Some((slot_ref, consumed)) = try_interpret_fact_slot_ref_argument(&list[i..]) {
-            args.push(slot_ref);
-            i += consumed;
-            continue;
+    // A bind target is a variable name, not an evaluated expression. CLIPS
+    // permits colon-named locals here; value positions still denote slot reads.
+    let args = match (name.as_str(), &list[1..]) {
+        (
+            "bind",
+            [SExpr::Atom(Atom::SingleVar(variable), variable_span), SExpr::Atom(Atom::Connective(Connective::Colon), _), SExpr::Atom(Atom::Symbol(slot), slot_span), values @ ..],
+        ) => {
+            let mut args = vec![ActionExpr::Variable(
+                format!("{variable}:{slot}"),
+                variable_span.merge(*slot_span),
+            )];
+            args.extend(interpret_action_expr_sequence(values)?);
+            args
         }
-        args.push(interpret_action_expr(&list[i])?);
-        i += 1;
-    }
+        _ => interpret_action_expr_sequence(&list[1..])?,
+    };
 
     Ok(FunctionCall {
         name,
@@ -2271,6 +2267,34 @@ fn try_interpret_fact_slot_ref_argument(exprs: &[SExpr]) -> Option<(ActionExpr, 
     Some((slot_ref, 3))
 }
 
+/// Interpret one expression and report how many S-expressions it consumes.
+/// Compact `?fact:slot` references span three lexer atoms; delimiters and later
+/// expressions must be located after the complete reference.
+fn interpret_action_expr_prefix(
+    exprs: &[SExpr],
+    span: Span,
+) -> Result<(ActionExpr, usize), InterpretError> {
+    if let Some(reference) = try_interpret_fact_slot_ref_argument(exprs) {
+        return Ok(reference);
+    }
+    let first = exprs
+        .first()
+        .ok_or_else(|| InterpretError::missing("action expression", span))?;
+    Ok((interpret_action_expr(first)?, 1))
+}
+
+/// Interpret every expression in an argument list or body, without dropping
+/// trailing atoms or treating a compact reference's colon as a separate action.
+fn interpret_action_expr_sequence(mut exprs: &[SExpr]) -> Result<Vec<ActionExpr>, InterpretError> {
+    let mut expressions = Vec::new();
+    while let Some(first) = exprs.first() {
+        let (expression, consumed) = interpret_action_expr_prefix(exprs, first.span())?;
+        expressions.push(expression);
+        exprs = &exprs[consumed..];
+    }
+    Ok(expressions)
+}
+
 /// Interpret a CLIPS `(if <cond> then <action>* [else <action>*])` form.
 ///
 /// The S-expression list has already had its head `if` consumed — `rest` is
@@ -2280,19 +2304,17 @@ fn interpret_if_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Interpret
         return Err(InterpretError::missing("condition in (if ...)", span));
     }
 
-    let condition = interpret_action_expr(&rest[0])?;
+    let (condition, condition_len) = interpret_action_expr_prefix(rest, span)?;
 
     // Find `then` keyword.
-    let then_pos = rest[1..]
+    let then_pos = rest[condition_len..]
         .iter()
         .position(|e| e.as_symbol() == Some("then"))
         .ok_or_else(|| InterpretError::missing("then keyword in (if ... then ...)", span))?;
-    // `then_pos` is relative to `rest[1..]`, so absolute index is `then_pos + 1`.
-    let then_abs = then_pos + 1;
+    let then_abs = then_pos + condition_len;
 
-    // Elements between condition and `then` are not valid — the condition is
-    // always a single expression (rest[0]).  The `then` must appear at index 1.
-    if then_abs != 1 {
+    // There must be exactly one complete expression before `then`.
+    if then_abs != condition_len {
         return Err(InterpretError::invalid(
             "expected 'then' immediately after the if-condition",
             span,
@@ -2302,25 +2324,19 @@ fn interpret_if_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Interpret
     // Elements after `then` until `else` (or end) are the then-branch actions.
     let after_then = &rest[then_abs + 1..];
 
-    let else_pos = after_then
-        .iter()
-        .position(|e| e.as_symbol() == Some("else"));
-
-    let (then_exprs, else_exprs) = if let Some(ep) = else_pos {
-        (&after_then[..ep], &after_then[ep + 1..])
-    } else {
-        (after_then, [].as_slice())
-    };
-
-    let mut then_actions = Vec::with_capacity(then_exprs.len());
-    for e in then_exprs {
-        then_actions.push(interpret_action_expr(e)?);
+    // Only recognize `else` at an expression boundary: `?fact:else` is a
+    // reference to a slot, not the branch delimiter.
+    let mut then_actions = Vec::new();
+    let mut remaining = after_then;
+    while let Some(first) = remaining.first() {
+        if first.as_symbol() == Some("else") {
+            break;
+        }
+        let (action, consumed) = interpret_action_expr_prefix(remaining, first.span())?;
+        then_actions.push(action);
+        remaining = &remaining[consumed..];
     }
-
-    let mut else_actions = Vec::with_capacity(else_exprs.len());
-    for e in else_exprs {
-        else_actions.push(interpret_action_expr(e)?);
-    }
+    let else_actions = interpret_action_expr_sequence(remaining.get(1..).unwrap_or_default())?;
 
     Ok(ActionExpr::If {
         condition: Box::new(condition),
@@ -2338,18 +2354,15 @@ fn interpret_while_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Interp
         return Err(InterpretError::missing("condition in (while ...)", span));
     }
 
-    let condition = interpret_action_expr(&rest[0])?;
+    let (condition, condition_len) = interpret_action_expr_prefix(rest, span)?;
 
     // The `do` keyword is optional. If present immediately after the condition,
     // consume it; otherwise body starts right after the condition.
-    let has_do = rest.len() > 1 && rest[1].as_symbol() == Some("do");
-    let body_start = 1 + usize::from(has_do);
+    let has_do = rest.get(condition_len).and_then(SExpr::as_symbol) == Some("do");
+    let body_start = condition_len + usize::from(has_do);
 
     let body_exprs = &rest[body_start..];
-    let mut body = Vec::with_capacity(body_exprs.len());
-    for e in body_exprs {
-        body.push(interpret_action_expr(e)?);
-    }
+    let body = interpret_action_expr_sequence(body_exprs)?;
 
     Ok(ActionExpr::While {
         condition: Box::new(condition),
@@ -2366,13 +2379,12 @@ fn interpret_switch_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Inter
         return Err(InterpretError::missing("expression in (switch ...)", span));
     }
 
-    // First element is the discriminant expression.
-    let discriminant = interpret_action_expr(&rest[0])?;
+    let (discriminant, discriminant_len) = interpret_action_expr_prefix(rest, span)?;
 
     let mut cases = Vec::new();
     let mut default = None;
 
-    for clause in &rest[1..] {
+    for clause in &rest[discriminant_len..] {
         let clause_list = clause
             .as_list()
             .ok_or_else(|| InterpretError::expected("case or default clause", clause.span()))?;
@@ -2393,20 +2405,27 @@ fn interpret_switch_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Inter
                         clause.span(),
                     ));
                 }
-                let case_value = interpret_action_expr(&clause_list[1])?;
+                let (case_value, value_len) =
+                    interpret_action_expr_prefix(&clause_list[1..], clause.span())?;
+                let then_index = 1 + value_len;
 
                 // Find 'then' keyword
-                if clause_list[2].as_symbol() != Some("then") {
+                if clause_list.get(then_index).and_then(SExpr::as_symbol) != Some("then") {
                     return Err(InterpretError::expected(
                         "'then' keyword after case value",
-                        clause_list[2].span(),
+                        clause_list
+                            .get(then_index)
+                            .map_or(clause.span(), SExpr::span),
                     ));
                 }
 
-                let mut actions = Vec::new();
-                for action_expr in &clause_list[3..] {
-                    actions.push(interpret_action_expr(action_expr)?);
+                if then_index + 1 == clause_list.len() {
+                    return Err(InterpretError::missing(
+                        "action in case clause",
+                        clause.span(),
+                    ));
                 }
+                let actions = interpret_action_expr_sequence(&clause_list[then_index + 1..])?;
                 cases.push((case_value, actions));
             }
             Some("default") => {
@@ -2416,10 +2435,7 @@ fn interpret_switch_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Inter
                         clause.span(),
                     ));
                 }
-                let mut actions = Vec::new();
-                for action_expr in &clause_list[1..] {
-                    actions.push(interpret_action_expr(action_expr)?);
-                }
+                let actions = interpret_action_expr_sequence(&clause_list[1..])?;
                 default = Some(actions);
             }
             _ => {
@@ -2466,55 +2482,39 @@ fn interpret_loop_for_count_expr(rest: &[SExpr], span: Span) -> Result<ActionExp
         ));
     }
 
-    // Parse the spec: `(?var start end)`, `(?var end)`, or `(end)`.
-    let (var_name, start_expr, end_expr) = match spec_list.len() {
-        1 => {
-            // `(end)` — anonymous counter, start=1
-            let end = interpret_action_expr(&spec_list[0])?;
-            let start = ActionExpr::Literal(LiteralValue {
-                value: LiteralKind::Integer(1),
-                span: spec_list[0].span(),
-            });
-            (None, start, end)
-        }
-        2 => {
-            // `(?var end)` — named variable, start=1
-            let var = match spec_list[0].as_atom() {
-                Some(Atom::SingleVar(name)) => name.clone(),
-                _ => {
-                    return Err(InterpretError::expected(
-                        "?variable in loop-for-count spec",
-                        spec_list[0].span(),
-                    ))
-                }
-            };
-            let end = interpret_action_expr(&spec_list[1])?;
-            let start = ActionExpr::Literal(LiteralValue {
-                value: LiteralKind::Integer(1),
-                span: spec_list[0].span(),
-            });
-            (Some(var), start, end)
-        }
-        3 => {
-            // `(?var start end)` — named variable with explicit start
-            let var = match spec_list[0].as_atom() {
-                Some(Atom::SingleVar(name)) => name.clone(),
-                _ => {
-                    return Err(InterpretError::expected(
-                        "?variable in loop-for-count spec",
-                        spec_list[0].span(),
-                    ))
-                }
-            };
-            let start = interpret_action_expr(&spec_list[1])?;
-            let end = interpret_action_expr(&spec_list[2])?;
-            (Some(var), start, end)
-        }
-        _ => {
-            return Err(InterpretError::invalid(
-                "loop-for-count spec must be (?var end), (?var start end), or (end)",
-                rest[0].span(),
-            ))
+    // Count complete expressions, not raw atoms: `(?f:end)` is one bound,
+    // while `(?i ?f:start ?f:end)` has a variable and two bounds.
+    let default_start = ActionExpr::Literal(LiteralValue {
+        value: LiteralKind::Integer(1),
+        span: spec_list[0].span(),
+    });
+    let (first, first_len) = interpret_action_expr_prefix(spec_list, rest[0].span())?;
+    let (var_name, start_expr, end_expr) = if first_len == spec_list.len() {
+        (None, default_start, first)
+    } else {
+        let var = match (spec_list[0].as_atom(), first_len) {
+            (Some(Atom::SingleVar(name)), 1) => name.clone(),
+            _ => {
+                return Err(InterpretError::expected(
+                    "?variable in loop-for-count spec",
+                    spec_list[0].span(),
+                ))
+            }
+        };
+        let bounds = &spec_list[first_len..];
+        let (bound, bound_len) = interpret_action_expr_prefix(bounds, rest[0].span())?;
+        if bound_len == bounds.len() {
+            (Some(var), default_start, bound)
+        } else {
+            let (end, end_len) =
+                interpret_action_expr_prefix(&bounds[bound_len..], rest[0].span())?;
+            if bound_len + end_len != bounds.len() {
+                return Err(InterpretError::invalid(
+                    "loop-for-count spec must be (?var end), (?var start end), or (end)",
+                    rest[0].span(),
+                ));
+            }
+            (Some(var), bound, end)
         }
     };
 
@@ -2525,10 +2525,7 @@ fn interpret_loop_for_count_expr(rest: &[SExpr], span: Span) -> Result<ActionExp
     let body_start = usize::from(has_do);
 
     let body_exprs = &after_spec[body_start..];
-    let mut body = Vec::with_capacity(body_exprs.len());
-    for e in body_exprs {
-        body.push(interpret_action_expr(e)?);
-    }
+    let body = interpret_action_expr_sequence(body_exprs)?;
 
     Ok(ActionExpr::LoopForCount {
         var_name,
@@ -2572,14 +2569,17 @@ fn interpret_progn_dollar_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr,
         }
     };
 
-    let list_expr = interpret_action_expr(&spec_list[1])?;
+    let (list_expr, list_len) = interpret_action_expr_prefix(&spec_list[1..], rest[0].span())?;
+    if 1 + list_len != spec_list.len() {
+        return Err(InterpretError::invalid(
+            "progn$ spec must contain exactly one list expression after ?variable",
+            spec_list[1 + list_len].span(),
+        ));
+    }
 
     // Remaining elements after the spec are body actions (no `do` delimiter for progn$).
     let body_exprs = &rest[1..];
-    let mut body = Vec::with_capacity(body_exprs.len());
-    for e in body_exprs {
-        body.push(interpret_action_expr(e)?);
-    }
+    let body = interpret_action_expr_sequence(body_exprs)?;
 
     Ok(ActionExpr::Progn {
         var_name,
@@ -2612,20 +2612,15 @@ fn interpret_foreach_expr(rest: &[SExpr], span: Span) -> Result<ActionExpr, Inte
         }
     };
 
-    let list_expr = interpret_action_expr(&rest[1])?;
+    let (list_expr, list_len) = interpret_action_expr_prefix(&rest[1..], span)?;
 
     // Find optional `do` keyword (some CLIPS variants include it, some don't).
-    let body_start = if rest.len() > 2 && rest[2].as_symbol() == Some("do") {
-        3
-    } else {
-        2
-    };
+    let after_list = 1 + list_len;
+    let has_do = rest.get(after_list).and_then(SExpr::as_symbol) == Some("do");
+    let body_start = after_list + usize::from(has_do);
 
     let body_exprs = &rest[body_start..];
-    let mut body = Vec::with_capacity(body_exprs.len());
-    for e in body_exprs {
-        body.push(interpret_action_expr(e)?);
-    }
+    let body = interpret_action_expr_sequence(body_exprs)?;
 
     Ok(ActionExpr::Progn {
         var_name,
@@ -2700,14 +2695,10 @@ fn interpret_query_action_expr(
         bindings.push((var_name, template_name));
     }
 
-    // Second element is the query expression.
-    let query = interpret_action_expr(&rest[1])?;
+    let (query, query_len) = interpret_action_expr_prefix(&rest[1..], span)?;
 
     // Remaining elements (if any) are body actions.
-    let mut body = Vec::with_capacity(rest.len().saturating_sub(2));
-    for body_expr in &rest[2..] {
-        body.push(interpret_action_expr(body_expr)?);
-    }
+    let body = interpret_action_expr_sequence(&rest[1 + query_len..])?;
 
     Ok(ActionExpr::QueryAction {
         name: name.to_string(),
@@ -4132,6 +4123,309 @@ mod tests {
                     && args.len() == 2
                     && matches!(&args[0], ActionExpr::Variable(v, _) if v == "p")
         ));
+    }
+
+    fn slot_reference_expression(source: &str) -> ActionExpr {
+        let parsed = parse_sexprs(source, file());
+        assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+        assert_eq!(parsed.exprs.len(), 1);
+        interpret_action_expr(&parsed.exprs[0])
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    }
+
+    fn assert_slot_reference(expression: &ActionExpr, variable: &str, slot: &str) {
+        let ActionExpr::FunctionCall(call) = expression else {
+            panic!("expected compact slot reference, got {expression:?}");
+        };
+        assert_eq!(call.name, FACT_SLOT_REF_FN);
+        assert_eq!(call.args.len(), 2);
+        assert!(matches!(&call.args[0], ActionExpr::Variable(name, _) if name == variable));
+        assert!(matches!(
+            &call.args[1],
+            ActionExpr::Literal(LiteralValue { value: LiteralKind::Symbol(name), .. })
+                if name == slot
+        ));
+    }
+
+    #[test]
+    fn compact_slot_reference_prefix_consumes_only_its_three_atoms() {
+        let parsed = parse_sexprs("?f:value ?g:other 42", file());
+        assert!(parsed.errors.is_empty());
+        assert_eq!(
+            parsed.exprs.len(),
+            7,
+            "lexer must retain separate colon atoms"
+        );
+        let (expression, consumed) =
+            interpret_action_expr_prefix(&parsed.exprs, parsed.exprs[0].span()).unwrap();
+        assert_eq!(consumed, 3);
+        assert_slot_reference(&expression, "f", "value");
+        let ActionExpr::FunctionCall(call) = expression else {
+            unreachable!();
+        };
+        assert_eq!(
+            call.span,
+            parsed.exprs[0].span().merge(parsed.exprs[2].span())
+        );
+
+        let expressions = interpret_action_expr_sequence(&parsed.exprs).unwrap();
+        assert_eq!(expressions.len(), 3);
+        assert_slot_reference(&expressions[1], "g", "other");
+        assert!(matches!(&expressions[2], ActionExpr::Literal(lit)
+            if matches!(lit.value, LiteralKind::Integer(42))));
+        assert!(interpret_action_expr_prefix(&[], call.span).is_err());
+    }
+
+    #[test]
+    fn compact_slot_reference_query_predicate_preserves_complete_body() {
+        for name in [
+            "do-for-fact",
+            "do-for-all-facts",
+            "delayed-do-for-all-facts",
+        ] {
+            let expression = slot_reference_expression(&format!(
+                "({name} ((?f item)) ?f:enabled ?f:value (printout t ?f:value) ?f:other)"
+            ));
+            let ActionExpr::QueryAction { query, body, .. } = expression else {
+                panic!("expected query action");
+            };
+            assert_slot_reference(&query, "f", "enabled");
+            assert_eq!(body.len(), 3);
+            assert_slot_reference(&body[0], "f", "value");
+            let ActionExpr::FunctionCall(printout) = &body[1] else {
+                panic!("expected printout");
+            };
+            assert_eq!(printout.name, "printout");
+            assert_eq!(printout.args.len(), 2);
+            assert_slot_reference(&printout.args[1], "f", "value");
+            assert_slot_reference(&body[2], "f", "other");
+        }
+    }
+
+    #[test]
+    fn compact_slot_reference_if_respects_keyword_slots_and_branch_boundaries() {
+        let expression = slot_reference_expression(
+            "(if ?f:then then ?f:else (printout t yes) else ?f:then ?g:else)",
+        );
+        let ActionExpr::If {
+            condition,
+            then_actions,
+            else_actions,
+            ..
+        } = expression
+        else {
+            panic!("expected if");
+        };
+        assert_slot_reference(&condition, "f", "then");
+        assert_eq!(then_actions.len(), 2);
+        assert_slot_reference(&then_actions[0], "f", "else");
+        assert_eq!(else_actions.len(), 2);
+        assert_slot_reference(&else_actions[0], "f", "then");
+        assert_slot_reference(&else_actions[1], "g", "else");
+    }
+
+    #[test]
+    fn compact_slot_reference_while_condition_preserves_optional_do_and_body() {
+        for delimiter in ["do", ""] {
+            let expression =
+                slot_reference_expression(&format!("(while ?f:do {delimiter} ?f:value (break))"));
+            let ActionExpr::While {
+                condition, body, ..
+            } = expression
+            else {
+                panic!("expected while");
+            };
+            assert_slot_reference(&condition, "f", "do");
+            assert_eq!(body.len(), 2);
+            assert_slot_reference(&body[0], "f", "value");
+            assert!(matches!(&body[1], ActionExpr::FunctionCall(call) if call.name == "break"));
+        }
+    }
+
+    #[test]
+    fn compact_slot_reference_switch_discriminant_cases_and_bodies() {
+        let expression = slot_reference_expression(
+            "(switch ?f:value (case ?g:then then ?f:first ?f:second)
+                (case 2 then (printout t two)) (default ?f:last (printout t end)))",
+        );
+        let ActionExpr::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } = expression
+        else {
+            panic!("expected switch");
+        };
+        assert_slot_reference(&expr, "f", "value");
+        assert_eq!(cases.len(), 2);
+        assert_slot_reference(&cases[0].0, "g", "then");
+        assert_eq!(cases[0].1.len(), 2);
+        assert_slot_reference(&cases[0].1[0], "f", "first");
+        assert_slot_reference(&cases[0].1[1], "f", "second");
+        assert_eq!(cases[1].1.len(), 1);
+        let default = default.unwrap();
+        assert_eq!(default.len(), 2);
+        assert_slot_reference(&default[0], "f", "last");
+    }
+
+    #[test]
+    fn compact_slot_reference_loop_bounds_count_expressions_not_atoms() {
+        for (spec, expected_variable, explicit_start) in [
+            ("(?f:end)", None, false),
+            ("(?i ?f:end)", Some("i"), false),
+            ("(?i ?f:start ?f:end)", Some("i"), true),
+        ] {
+            for delimiter in ["do", ""] {
+                let expression = slot_reference_expression(&format!(
+                    "(loop-for-count {spec} {delimiter} ?f:value (printout t ?i))"
+                ));
+                let ActionExpr::LoopForCount {
+                    var_name,
+                    start,
+                    end,
+                    body,
+                    ..
+                } = expression
+                else {
+                    panic!("expected loop-for-count");
+                };
+                assert_eq!(var_name.as_deref(), expected_variable);
+                if explicit_start {
+                    assert_slot_reference(&start, "f", "start");
+                } else {
+                    assert!(matches!(start.as_ref(), ActionExpr::Literal(lit)
+                        if matches!(lit.value, LiteralKind::Integer(1))));
+                }
+                assert_slot_reference(&end, "f", "end");
+                assert_eq!(body.len(), 2);
+                assert_slot_reference(&body[0], "f", "value");
+            }
+        }
+    }
+
+    #[test]
+    fn compact_slot_reference_multifield_loop_operands_preserve_body() {
+        for source in [
+            "(progn$ (?item ?f:items) ?f:first (printout t ?item) ?f:last)",
+            "(foreach ?item ?f:items do ?f:first (printout t ?item) ?f:last)",
+            "(foreach ?item ?f:items ?f:first (printout t ?item) ?f:last)",
+        ] {
+            let expression = slot_reference_expression(source);
+            let ActionExpr::Progn {
+                var_name,
+                list_expr,
+                body,
+                ..
+            } = expression
+            else {
+                panic!("expected multifield loop");
+            };
+            assert_eq!(var_name, "item");
+            assert_slot_reference(&list_expr, "f", "items");
+            assert_eq!(body.len(), 3);
+            assert_slot_reference(&body[0], "f", "first");
+            assert_slot_reference(&body[2], "f", "last");
+        }
+    }
+
+    #[test]
+    fn compact_slot_reference_callable_bodies_preserve_following_expressions() {
+        for source in [
+            "(deffunction read-values (?f) ?f:first (printout t middle) ?f:last)",
+            "(defmethod read-values ((?f FACT-ADDRESS)) ?f:first (printout t middle) ?f:last)",
+        ] {
+            let parsed = parse_sexprs(source, file());
+            let result = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+            assert!(result.errors.is_empty(), "{source}: {:?}", result.errors);
+            let body = match &result.constructs[0] {
+                Construct::Function(function) => &function.body,
+                Construct::Method(method) => &method.body,
+                other => panic!("expected callable, got {other:?}"),
+            };
+            assert_eq!(body.len(), 3);
+            assert_slot_reference(&body[0], "f", "first");
+            assert_slot_reference(&body[2], "f", "last");
+        }
+    }
+
+    #[test]
+    fn compact_slot_reference_slot_pairs_preserve_keyword_names_and_all_values() {
+        let parsed = parse_sexprs("(modify ?target (if ?f:first ?f:second 42))", file());
+        let action = interpret_action(&parsed.exprs[0]).unwrap();
+        let ActionExpr::FunctionCall(slot) = &action.call.args[1] else {
+            panic!("expected slot pair");
+        };
+        assert_eq!(slot.name, "if");
+        assert_eq!(slot.args.len(), 3);
+        assert_slot_reference(&slot.args[0], "f", "first");
+        assert_slot_reference(&slot.args[1], "f", "second");
+        assert!(matches!(&slot.args[2], ActionExpr::Literal(lit)
+            if matches!(lit.value, LiteralKind::Integer(42))));
+    }
+
+    #[test]
+    fn compact_slot_reference_bind_target_is_a_distinct_colon_named_local() {
+        let expression = slot_reference_expression(
+            "(do-for-fact ((?f item)) TRUE
+                (bind ?f:value ?f:value ?g:other)
+                (bind ?f:then)
+                (bind ?local ?f:value)
+                ?f:value)",
+        );
+        let ActionExpr::QueryAction { body, .. } = expression else {
+            panic!("expected query");
+        };
+        assert_eq!(body.len(), 4);
+        let ActionExpr::FunctionCall(bind) = &body[0] else {
+            panic!("expected bind");
+        };
+        assert_eq!(bind.name, "bind");
+        assert_eq!(bind.args.len(), 3);
+        assert!(matches!(&bind.args[0], ActionExpr::Variable(name, _) if name == "f:value"));
+        assert_slot_reference(&bind.args[1], "f", "value");
+        assert_slot_reference(&bind.args[2], "g", "other");
+        let ActionExpr::FunctionCall(unbind) = &body[1] else {
+            panic!("expected unbind");
+        };
+        assert_eq!(unbind.args.len(), 1);
+        assert!(matches!(&unbind.args[0], ActionExpr::Variable(name, _) if name == "f:then"));
+        let ActionExpr::FunctionCall(ordinary_bind) = &body[2] else {
+            panic!("expected ordinary bind");
+        };
+        assert_eq!(ordinary_bind.args.len(), 2);
+        assert!(matches!(&ordinary_bind.args[0], ActionExpr::Variable(name, _) if name == "local"));
+        assert_slot_reference(&ordinary_bind.args[1], "f", "value");
+        assert_slot_reference(&body[3], "f", "value");
+    }
+
+    #[test]
+    fn compact_slot_reference_rejects_malformed_and_trailing_expressions() {
+        for source in [
+            "(printout t ?f:)",
+            "(printout t ?f:42)",
+            "(if ?f:value extra then yes)",
+            "(switch ?f:value extra (default yes))",
+            "(switch ?f:value (case ?g:value extra then yes))",
+            "(switch ?f:value (case ?g:value then))",
+            "(loop-for-count (?i ?f:start ?f:end extra) do yes)",
+            "(loop-for-count (?f:start ?g:end) do yes)",
+            "(loop-for-count ($?i ?f:end) do yes)",
+            "(progn$ (?item ?f:items extra) yes)",
+            "(progn$ (?item (create$ a b) ignored) yes)",
+            "(progn$ (?item ?f:items ?g:items) yes)",
+            "(progn$ (?item ?f:) yes)",
+            "(do-for-fact ((?f item)) ?f:value (printout t yes) :)",
+            "(while ?f:value do (break) :)",
+            "(foreach ?item ?f:items do (printout t ?item) :)",
+        ] {
+            let parsed = parse_sexprs(source, file());
+            assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+            assert!(
+                interpret_action_expr(&parsed.exprs[0]).is_err(),
+                "accepted {source}"
+            );
+        }
     }
 
     #[test]
