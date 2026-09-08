@@ -788,7 +788,7 @@ identically to their CLIPS counterparts for the supported argument types.
 | `str-cat` | Concatenate to string | `(str-cat "a" "b")` => `"ab"` |
 | `sym-cat` | Concatenate to symbol | `(sym-cat a b)` => `ab` |
 | `str-length` | String length in bytes | `(str-length "hello")` => `5` |
-| `sub-string` | Extract substring (1-indexed) | `(sub-string 1 3 "hello")` => `"hel"` |
+| `sub-string` | Extract a STRING from a STRING or SYMBOL (1-indexed, inclusive, clipped bounds) | `(sub-string 0 2 abc)` => `"ab"` |
 | `str-index` | Find substring position (1-indexed), FALSE if not found | `(str-index "lo" "hello")` => `4` |
 | `upcase` | Convert to uppercase (preserves type) | `(upcase "hello")` => `"HELLO"` |
 | `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
@@ -881,8 +881,17 @@ are equal if and only if their byte sequences are identical.
 
 ### sub-string Indexing
 
-`sub-string` uses **byte indices** (1-indexed), not Unicode codepoint indices.
-For ASCII content, byte and codepoint indices are identical.
+`sub-string` accepts INTEGER start and end positions followed by STRING or
+SYMBOL text, and always returns a STRING. Positions count Unicode scalar values,
+starting at one, and include both endpoints. Starts below one clip to one; ends
+beyond the text clip to its length. Empty text, reversed ranges, and starts past
+the text produce an empty STRING.
+
+Arguments are evaluated and validated from left to right. An end below one
+returns an empty STRING without evaluating the text argument. A positive end
+still evaluates and validates the text for reversed ranges and starts past the
+text. For example, `(sub-string 0 2 abc)` returns `"ab"`, while
+`(sub-string 3 2 abc)` returns `""`.
 
 ### Compatibility with CLIPS
 
