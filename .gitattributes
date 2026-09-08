@@ -31,3 +31,9 @@ crates/ferric-rules/tests/fixtures/**/*.out text eol=lf
 # Preserve literal CR and CRLF characters inside STRING test data.
 crates/ferric-rules/tests/fixtures/stdlib/printout_multifield_literal_control_bytes.clp -text
 crates/ferric-rules/tests/fixtures/stdlib/printout_multifield_literal_control_bytes.out -text
+
+# Preserve literal CR and CRLF in implode$ STRING fixtures.
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_control_characters.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_control_characters.out -text
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_crlf_preservation.clp -text
+crates/ferric-rules/tests/fixtures/stdlib/implode_literal_crlf_preservation.out -text

@@ -802,6 +802,7 @@ identically to their CLIPS counterparts for the supported argument types.
 | Function | Description | Example |
 |----------|-------------|---------|
 | `create$` | Create a multifield | `(create$ a b c)` |
+| `implode$` | Convert multifield fields to a STRING | `(implode$ (create$ a 3))` => `"a 3"` |
 | `length$` | Multifield length | `(length$ (create$ a b c))` => `3` |
 | `nth$` | Get nth element (1-indexed) | `(nth$ 2 (create$ a b c))` => `b` |
 | `member$` | Find element position | `(member$ b (create$ a b c))` => `2` |
@@ -812,6 +813,32 @@ identically to their CLIPS counterparts for the supported argument types.
 | `first$` | First element as multifield | `(first$ (create$ a b c))` => `(a)` |
 | `rest$` | All but first as multifield | `(rest$ (create$ a b c))` => `(b c)` |
 | `sort` | Sort multifield | `(sort < (create$ 3 1 2))` => `(1 2 3)` |
+
+`create$` evaluates VOID-producing operands for their effects but omits those
+scalar results from the multifield. Empty STRINGs remain fields.
+
+`implode$` accepts exactly one MULTIFIELD, evaluates that operand once, and
+returns a STRING. Fields are separated by one space without outer parentheses.
+An empty multifield returns an empty STRING; an empty STRING field contributes
+`""`. STRING fields have surrounding quotes, and embedded quotes and
+backslashes receive a preceding backslash. Literal control characters and
+UTF8 bytes remain unchanged. SYMBOL spellings, including `crlf`, `tab`,
+`vtab`, and `ff`, remain literal names. Scalar operands produce a type error;
+the argument-count check precedes operand evaluation.
+
+INTEGERs retain their exact decimal spelling. FLOATs use the same
+15-significant-digit representation as direct output, including `-0.0`,
+scientific notation, and the documented nonfinite spellings below. These
+field rules apply to the supplied slice or capture and leave the input values
+unchanged. The separate `str-cat`, `sym-cat`, `format`, and `save-facts`
+formatters retain their existing behavior.
+
+Quoted STRING-field round-tripping through `explode$` still depends on the
+tokenizer repair in [#339](https://github.com/plx/ferric-rules/issues/339).
+Arbitrary generated SYMBOL spellings are not a general source round-trip
+contract. The INSTANCE-NAME, typed FACT-ADDRESS, opaque host-address, and
+invalid-UTF8 boundaries described under direct output also apply to `implode$`;
+no INTEGER is reinterpreted as an address.
 
 ### Fact Introspection Functions
 
@@ -844,10 +871,9 @@ and appends a newline.
 
 Quotes and backslashes inside printed STRING fields remain literal; printing
 does not escape them. Literal control characters and UTF8 bytes also remain
-unchanged. This differs from CLIPS `implode$`, whose quoted fields escape
-embedded quotes and backslashes; that separate formatter is tracked in
-[#344](https://github.com/plx/ferric-rules/issues/344). SYMBOL fields retain
-their spelling. Only top-level SYMBOL operands `crlf`, `tab`, `vtab`, and `ff`
+unchanged. `implode$` uses the separate escaped field mode described above;
+direct printing retains raw embedded quotes and backslashes. SYMBOL fields
+retain their spelling. Only top-level SYMBOL operands `crlf`, `tab`, `vtab`, and `ff`
 expand to LF, TAB, VT, and FF; the same symbols inside a multifield remain
 literal names.
 
