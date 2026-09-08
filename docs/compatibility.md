@@ -753,11 +753,20 @@ identically to their CLIPS counterparts for the supported argument types.
 
 | Function | Description |
 |----------|-------------|
-| `=` | Numeric equality |
-| `!=` / `<>` | Numeric inequality |
-| `>`, `<`, `>=`, `<=` | Numeric ordering |
+| `=` | First numeric operand equals every subsequent operand |
+| `!=` / `<>` | First numeric operand differs from every subsequent operand |
+| `>`, `<`, `>=`, `<=` | Each adjacent numeric pair satisfies the ordering |
 | `eq` | Value equality (type-sensitive) |
 | `neq` | Value inequality |
+
+Numeric comparisons accept two or more operands and evaluate them from left to
+right, stopping at the first failed comparison. For example, `(< 1 2 3)` and
+`(<> 1 2 2)` return TRUE; `(< 2 1 (later-call))` returns FALSE without evaluating
+`later-call`. A reached nonnumeric operand produces a type error.
+
+INTEGER pairs compare exactly. Mixed INTEGER/FLOAT pairs use floating-point
+conversion, and FLOAT equality uses exact numeric equality without an epsilon
+tolerance. For example, `(= 0.0 1e-20)` returns FALSE and `(= -0.0 0.0)` returns TRUE.
 
 ### Logical Functions
 
