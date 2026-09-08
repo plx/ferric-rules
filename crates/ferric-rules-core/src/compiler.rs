@@ -52,6 +52,17 @@ pub struct CompilablePattern {
     pub exists: bool,
 }
 
+/// A scalar pattern with runtime-owned constraint expressions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompilableRuntimePattern {
+    pub pattern: CompilablePattern,
+    pub local_condition: Option<u32>,
+    pub local_bindings: Vec<(SlotIndex, Symbol)>,
+    pub negative_condition: Option<u32>,
+    /// Runtime semantics of the lazy negative node; exists wraps it in NCC inversion.
+    pub join_role: crate::rete::RuntimeConditionRole,
+}
+
 /// A compilable conditional element in rule order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompilableCondition {
@@ -65,6 +76,7 @@ pub enum CompilableCondition {
     /// A negated conjunction CE: `(not (and ...))`.
     /// May contain nested NCCs for deeply nested `not(and(...not(and(...))))`.
     Ncc(Vec<CompilableCondition>),
+    RuntimePattern(CompilableRuntimePattern),
 }
 
 /// Result of compiling a rule.
@@ -109,7 +121,9 @@ fn maximum_new_beta_nodes(conditions: &[CompilableCondition]) -> usize {
     1 + conditions
         .iter()
         .map(|condition| match condition {
-            CompilableCondition::Pattern(_) | CompilableCondition::Predicate { .. } => 1,
+            CompilableCondition::Pattern(_)
+            | CompilableCondition::Predicate { .. }
+            | CompilableCondition::RuntimePattern(_) => 1,
             // The nested count includes a terminal; replace it with the NCC/partner pair.
             CompilableCondition::Ncc(children) => 1 + maximum_new_beta_nodes(children),
         })
@@ -139,6 +153,7 @@ pub enum CompileError {
 pub(crate) struct AlphaPathKey {
     pub(crate) entry_type: AlphaEntryType,
     pub(crate) tests: Vec<ConstantTest>,
+    pub(crate) runtime: Option<crate::rete::RuntimeCondition>,
 }
 
 /// Canonical key for positive join nodes, used for node sharing.
@@ -391,6 +406,17 @@ impl ReteCompiler {
                             .map_err(|_| CompileError::VarMapOverflow)?;
                     }
                 }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    register_condition(
+                        &CompilableCondition::Pattern(runtime.pattern.clone()),
+                        var_map,
+                    )?;
+                    for &(_, variable) in &runtime.local_bindings {
+                        var_map
+                            .get_or_create(variable)
+                            .map_err(|_| CompileError::VarMapOverflow)?;
+                    }
+                }
                 CompilableCondition::Predicate { .. } => {}
                 CompilableCondition::Ncc(subconditions) => {
                     for subcondition in subconditions {
@@ -442,6 +468,21 @@ impl ReteCompiler {
                         &mut var_map,
                         &mut bound_vars,
                         &mut alpha_memories,
+                        rule_id,
+                        None,
+                    );
+                }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    current_parent = self.compile_pattern(
+                        rete,
+                        fact_base,
+                        current_parent,
+                        &runtime.pattern,
+                        &mut var_map,
+                        &mut bound_vars,
+                        &mut alpha_memories,
+                        rule_id,
+                        Some(runtime),
                     );
                 }
                 CompilableCondition::Predicate { condition_index } => {
@@ -522,6 +563,14 @@ impl ReteCompiler {
                         MAX_ALPHA_TESTS,
                     )?;
                 }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    Self::check_limit(
+                        "alpha tests",
+                        runtime.pattern.constant_tests.len()
+                            + usize::from(runtime.local_condition.is_some()),
+                        MAX_ALPHA_TESTS,
+                    )?;
+                }
                 CompilableCondition::Ncc(children) => pending.extend(children),
                 CompilableCondition::Predicate { .. } => {}
             }
@@ -532,6 +581,14 @@ impl ReteCompiler {
                 CompilableCondition::Pattern(pattern) => {
                     let context = format!("condition {condition_idx}");
                     Self::validate_pattern_structure(pattern, &context, true, true, &mut errors);
+                }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    Self::validate_runtime_pattern(
+                        runtime,
+                        &format!("condition {condition_idx}"),
+                        false,
+                        &mut errors,
+                    );
                 }
                 CompilableCondition::Predicate { .. } => {}
                 CompilableCondition::Ncc(subconditions) => {
@@ -587,6 +644,14 @@ impl ReteCompiler {
                         false, errors,
                     );
                 }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    Self::validate_runtime_pattern(
+                        runtime,
+                        &format!("{prefix} NCC subpattern {idx}"),
+                        subconditions.len() == 1,
+                        errors,
+                    );
+                }
                 CompilableCondition::Predicate { .. } => {}
                 CompilableCondition::Ncc(inner) => {
                     if inner.is_empty() {
@@ -599,6 +664,60 @@ impl ReteCompiler {
                         Self::validate_ncc_conditions(inner, &inner_prefix, errors);
                     }
                 }
+            }
+        }
+    }
+
+    fn validate_runtime_pattern(
+        runtime: &CompilableRuntimePattern,
+        context: &str,
+        is_ncc_inversion: bool,
+        errors: &mut Vec<PatternValidationError>,
+    ) {
+        Self::validate_pattern_structure(&runtime.pattern, context, true, true, errors);
+        if runtime.negative_condition.is_some()
+            && (!runtime.pattern.negated || runtime.pattern.exists)
+        {
+            Self::push_unsupported_structure_error(
+                errors,
+                format!("{context} runtime negative condition requires a plain negated pattern"),
+            );
+        }
+        if runtime.local_condition.is_none() && !runtime.local_bindings.is_empty() {
+            Self::push_unsupported_structure_error(
+                errors,
+                format!("{context} local bindings lack a runtime pattern condition"),
+            );
+        }
+        if !matches!(
+            runtime.join_role,
+            crate::rete::RuntimeConditionRole::NegativeJoin
+                | crate::rete::RuntimeConditionRole::ExistsJoin
+        ) {
+            Self::push_unsupported_structure_error(
+                errors,
+                format!("{context} has invalid lazy join runtime role"),
+            );
+        }
+        if runtime.join_role == crate::rete::RuntimeConditionRole::ExistsJoin && !is_ncc_inversion {
+            Self::push_unsupported_structure_error(
+                errors,
+                format!("{context} existential runtime role requires an NCC inversion"),
+            );
+        }
+        let mut seen = rustc_hash::FxHashSet::default();
+        for (slot, variable) in &runtime.local_bindings {
+            if !seen.insert(*variable)
+                || !matches!(
+                    (&runtime.pattern.entry_type, slot),
+                    (AlphaEntryType::OrderedRelation(_), SlotIndex::Ordered(_))
+                        | (AlphaEntryType::Template(_), SlotIndex::Template(_))
+                )
+            {
+                Self::push_unsupported_structure_error(
+                    errors,
+                    format!("{context} has duplicate or invalid local binding selectors"),
+                );
             }
         }
     }
@@ -679,10 +798,12 @@ impl ReteCompiler {
         &mut self,
         alpha: &mut AlphaNetwork,
         pattern: &CompilablePattern,
+        runtime: Option<crate::rete::RuntimeCondition>,
     ) -> (AlphaMemoryId, bool) {
         let key = AlphaPathKey {
             entry_type: pattern.entry_type.clone(),
             tests: pattern.constant_tests.clone(),
+            runtime: runtime.clone(),
         };
 
         if let Some(&mem_id) = self.alpha_path_cache.get(&key) {
@@ -697,6 +818,9 @@ impl ReteCompiler {
             current_node = alpha.create_constant_test_node(current_node, test.clone());
         }
 
+        if let Some(condition) = runtime {
+            current_node = alpha.create_runtime_predicate_node(current_node, condition);
+        }
         let mem_id = alpha.create_memory(current_node);
         self.alpha_path_cache.insert(key, mem_id);
         (mem_id, true)
@@ -728,6 +852,8 @@ impl ReteCompiler {
     }
 
     #[allow(clippy::too_many_arguments)]
+    // Keep alpha admission, extraction, and beta installation in one pattern transaction.
+    #[allow(clippy::too_many_lines)]
     fn compile_pattern(
         &mut self,
         rete: &mut ReteNetwork,
@@ -737,16 +863,53 @@ impl ReteCompiler {
         var_map: &mut VarMap,
         bound_vars: &mut SymbolSet,
         alpha_memories: &mut Vec<AlphaMemoryId>,
+        rule_id: RuleId,
+        runtime: Option<&CompilableRuntimePattern>,
     ) -> NodeId {
-        let (alpha_mem, alpha_created) = self.ensure_alpha_path(&mut rete.alpha, pattern);
+        let local = runtime.and_then(|runtime| {
+            runtime
+                .local_condition
+                .map(|condition_index| crate::rete::RuntimeCondition {
+                    rule: rule_id,
+                    condition_index,
+                    role: crate::rete::RuntimeConditionRole::PatternFilter,
+                    bindings: runtime
+                        .local_bindings
+                        .iter()
+                        .map(|&(slot, symbol)| {
+                            (
+                                slot,
+                                var_map
+                                    .lookup(symbol)
+                                    .expect("local variables were planned"),
+                            )
+                        })
+                        .collect(),
+                })
+        });
+        let (alpha_mem, alpha_created) =
+            self.ensure_alpha_path(&mut rete.alpha, pattern, local.clone());
         alpha_memories.push(alpha_mem);
         if alpha_created && !fact_base.is_empty() {
-            rete.alpha.backfill_memory(
-                alpha_mem,
-                &pattern.entry_type,
-                &pattern.constant_tests,
-                fact_base,
-            );
+            if local.is_some() {
+                let node = rete.alpha.nodes.iter().enumerate().find_map(|(index, node)|
+                    matches!(node, crate::alpha::AlphaNode::RuntimePredicate { memory: Some(memory), .. } if *memory == alpha_mem)
+                        .then_some(NodeId(u32::try_from(index).expect("bounded alpha graph")))).expect("runtime alpha owner exists");
+                rete.alpha.backfill_runtime_predicate(
+                    node,
+                    &pattern.entry_type,
+                    &pattern.constant_tests,
+                    fact_base,
+                );
+                rete.collect_alpha_runtime_requests(false);
+            } else {
+                rete.alpha.backfill_memory(
+                    alpha_mem,
+                    &pattern.entry_type,
+                    &pattern.constant_tests,
+                    fact_base,
+                );
+            }
         }
 
         let mut join_tests = SmallVec::<[JoinTest; 8]>::new();
@@ -811,6 +974,20 @@ impl ReteCompiler {
             let (neg_id, _beta_mem, _neg_mem) =
                 rete.beta
                     .create_negative_node(current_parent, alpha_mem, join_tests.into_vec());
+            if let Some((condition_index, role)) = runtime.and_then(|runtime| {
+                runtime
+                    .negative_condition
+                    .map(|index| (index, runtime.join_role))
+            }) {
+                if let Some(BetaNode::Negative { runtime, .. }) = rete.beta.nodes.get_mut(&neg_id) {
+                    *runtime = Some(crate::rete::RuntimeCondition {
+                        rule: rule_id,
+                        condition_index,
+                        role,
+                        bindings: binding_extractions.into_vec(),
+                    });
+                }
+            }
             neg_id
         } else if pattern.exists {
             let (exists_id, _beta_mem, _exists_mem) =
@@ -867,6 +1044,21 @@ impl ReteCompiler {
                         var_map,
                         &mut sub_bound_vars,
                         alpha_memories,
+                        rule_id,
+                        None,
+                    );
+                }
+                CompilableCondition::RuntimePattern(runtime) => {
+                    sub_parent = self.compile_pattern(
+                        rete,
+                        fact_base,
+                        sub_parent,
+                        &runtime.pattern,
+                        var_map,
+                        &mut sub_bound_vars,
+                        alpha_memories,
+                        rule_id,
+                        Some(runtime),
                     );
                 }
                 CompilableCondition::Predicate { condition_index } => {

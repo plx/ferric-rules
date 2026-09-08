@@ -72,7 +72,7 @@ The reviewed gate covers 57 scenarios: 55 equivalences and the two known LEX/MEA
 
 - COOL object system is intentionally out of scope.
 - Truth maintenance through the `logical` conditional element is intentionally out of scope.
-- CLIPS-valid complex negated constraints are explicitly rejected pending [#300](https://github.com/plx/ferric-rules/issues/300).
+- Runtime constraints on ordered sequence fields (`$?`) and scalar fields within multislots require sequence matching support. Fixed-width ordered and scalar template constraints inside `not` are evaluated at match time, including nonlinear expressions tracked in [#300](https://github.com/plx/ferric-rules/issues/300).
 - Some I/O utilities are limited while rule execution remains the core focus.
 
 ## Validation Posture

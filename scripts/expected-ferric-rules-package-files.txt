@@ -25,6 +25,16 @@ benches/waltz_bench.rs
 src/lib.rs
 tests/ferric_semantic_regressions.rs
 tests/fixtures/README.md
+tests/fixtures/constraints/explicit-ncc-equivalent.clp
+tests/fixtures/constraints/explicit-ncc-equivalent.out
+tests/fixtures/constraints/nonlinear-outer-return.clp
+tests/fixtures/constraints/nonlinear-outer-return.out
+tests/fixtures/constraints/nonlinear-predicate.clp
+tests/fixtures/constraints/nonlinear-predicate.out
+tests/fixtures/constraints/nonlinear-self-return.clp
+tests/fixtures/constraints/nonlinear-self-return.out
+tests/fixtures/constraints/simple-linear-control.clp
+tests/fixtures/constraints/simple-linear-control.out
 tests/fixtures/core/.gitkeep
 tests/fixtures/core/basic_match.clp
 tests/fixtures/core/bind_in_rhs.clp
@@ -161,6 +171,7 @@ tests/fixtures/stdlib/string_advanced.clp
 tests/fixtures/stdlib/string_ops.clp
 tests/fixtures/stdlib/type_predicates.clp
 tests/msrv_metadata.rs
+tests/negated_constraints.rs
 tests/numeric_comparison_chains.rs
 tests/scaling_tests.rs
 tests/sort_predicates.rs

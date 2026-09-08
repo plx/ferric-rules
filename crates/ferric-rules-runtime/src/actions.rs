@@ -341,8 +341,32 @@ fn eval_fact_slot_ref_call(
 /// A compiled condition evaluated when a partial match reaches its predicate node.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) enum CompiledTestCondition {
-    Expr(crate::evaluator::RuntimeExpr),
+pub(crate) struct CompiledTestCondition {
+    pub role: ferric_rules_core::RuntimeConditionRole,
+    pub expr: crate::evaluator::RuntimeExpr,
+}
+
+impl CompiledTestCondition {
+    pub(crate) fn join(expr: crate::evaluator::RuntimeExpr) -> Self {
+        Self {
+            role: ferric_rules_core::RuntimeConditionRole::PositiveJoin,
+            expr,
+        }
+    }
+
+    pub(crate) fn pattern(expr: crate::evaluator::RuntimeExpr) -> Self {
+        Self {
+            role: ferric_rules_core::RuntimeConditionRole::PatternFilter,
+            expr,
+        }
+    }
+
+    pub(crate) fn negative_join(expr: crate::evaluator::RuntimeExpr) -> Self {
+        Self {
+            role: ferric_rules_core::RuntimeConditionRole::NegativeJoin,
+            expr,
+        }
+    }
 }
 
 /// Runtime hint for trailing ordered multi-variable captures (`$?var`).
@@ -552,17 +576,86 @@ pub(crate) fn evaluate_test_condition(
         &mut eval_env.runtime_bindings,
     );
 
-    let CompiledTestCondition::Expr(test_expr) = test_condition;
-    let result = eval_env
-        .eval_runtime_expr(token, rule_info, test_expr, context)
-        .map(|value| crate::evaluator::is_truthy(&value, &context.engine.symbol_table));
-    let result = result.map(|passed| passed && !context.engine.globals.evaluation_error());
-    // EvaluationError belongs to this candidate. Preserve its failed result,
-    // then clear the transient bit before another match is evaluated; the
-    // separate HaltExecution state still stops the current rule execution.
-    context.engine.globals.clear_evaluation_error();
+    if eval_env.runtime_bindings.is_empty() {
+        return Ok(evaluate_runtime_condition(
+            &token.bindings,
+            &rule_info.var_map,
+            test_condition,
+            false,
+            context,
+        ));
+    }
+    let (bindings, var_map) =
+        build_runtime_eval_bindings(token, rule_info, &eval_env.runtime_bindings, context)?;
+    Ok(evaluate_runtime_condition(
+        &bindings,
+        &var_map,
+        test_condition,
+        false,
+        context,
+    ))
+}
+
+/// Evaluate a verified graph-owned condition against its isolated binding frame.
+/// Negative joins convert errors into conflicts. Exists joins do so only while
+/// replacing a selected support; an initial search rejects an erroneous support.
+pub(crate) fn evaluate_runtime_condition(
+    bindings: &BindingSet,
+    var_map: &VarMap,
+    condition: &CompiledTestCondition,
+    replacing_conflict: bool,
+    context: &mut ActionExecutionContext<'_>,
+) -> bool {
+    use crate::evaluator::{eval_lhs, LhsEvaluationMode};
+    use ferric_rules_core::RuntimeConditionRole;
+    let mode = match condition.role {
+        RuntimeConditionRole::PatternFilter => LhsEvaluationMode::Pattern,
+        RuntimeConditionRole::PositiveJoin
+        | RuntimeConditionRole::NegativeJoin
+        | RuntimeConditionRole::ExistsJoin => LhsEvaluationMode::Join,
+    };
+    let engine = &mut *context.engine;
+    let evaluation = eval_lhs(
+        &mut crate::evaluator::EvalContext {
+            bindings,
+            var_map,
+            symbol_table: &mut engine.symbol_table,
+            config: &engine.config,
+            functions: &engine.functions,
+            globals: &mut engine.globals,
+            generics: &engine.generics,
+            call_depth: 0,
+            expression_depth: 0,
+            current_module: context.current_module,
+            module_registry: &engine.module_registry,
+            function_modules: &engine.function_modules,
+            global_modules: &engine.global_modules,
+            generic_modules: &engine.generic_modules,
+            method_chain: None,
+            input_buffer: Some(&mut engine.input_buffer),
+            fact_base: Some(&engine.fact_base),
+            template_defs: Some(&engine.template_defs),
+        },
+        &condition.expr,
+        mode,
+    );
+    let error_conflicts = condition.role == RuntimeConditionRole::NegativeJoin
+        || (condition.role == RuntimeConditionRole::ExistsJoin && replacing_conflict);
+    let passed = match evaluation {
+        Ok(passed) if !engine.globals.evaluation_error() => passed,
+        Ok(_) => error_conflicts,
+        Err(error) => {
+            // Ordinary evaluator errors have not entered the deferred queue.
+            // Preserve their diagnostic and the halt needed by an enclosing RHS.
+            engine.globals.push_halt_diagnostic(error);
+            error_conflicts
+        }
+    };
+    // Capture this whole condition's verdict before clearing its transient
+    // error. A later candidate must not inherit it; sticky halt stays intact.
+    engine.globals.clear_evaluation_error();
     flush_deferred_evaluation(context);
-    result
+    passed
 }
 
 fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value) {
@@ -3036,6 +3129,63 @@ mod tests {
     use super::*;
 
     use proptest::prelude::*;
+
+    const EXISTS_PHASE_SOURCE: &str = r#"
+        (deffunction qualifies (?x ?a)
+          (printout t "CHECK:" ?x ":" ?a crlf) (> (/ ?a ?x) 0))
+        (defrule r (anchor ?a) (exists (data ?x&:(qualifies ?x ?a)))
+          (later) => (printout t "EXISTS" crlf))
+    "#;
+
+    #[test]
+    fn runtime_exists_initial_error_rejects_support() {
+        let mut engine = Engine::with_rules(EXISTS_PHASE_SOURCE).unwrap();
+        engine.assert_ordered("anchor", vec![2_i64]).unwrap();
+        let bad = engine.assert_ordered("data", vec![0_i64]).unwrap();
+        assert_eq!(engine.get_output("t"), Some("CHECK:0:2\n"));
+        assert_eq!(engine.action_diagnostics().len(), 1);
+        engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            0
+        );
+        engine.retract(bad).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            0
+        );
+        assert_eq!(engine.get_output("t"), Some("CHECK:0:2\n"));
+    }
+
+    #[test]
+    fn runtime_exists_skips_later_candidates_and_retains_replacement_error_support() {
+        let mut engine = Engine::with_rules(EXISTS_PHASE_SOURCE).unwrap();
+        engine.assert_ordered("anchor", vec![2_i64]).unwrap();
+        let selected = engine.assert_ordered("data", vec![9_i64]).unwrap();
+        let bad = engine.assert_ordered("data", vec![0_i64]).unwrap();
+        assert_eq!(engine.get_output("t"), Some("CHECK:9:2\n"));
+        assert!(engine.action_diagnostics().is_empty());
+        engine.retract(selected).unwrap();
+        assert_eq!(engine.get_output("t"), Some("CHECK:9:2\nCHECK:0:2\n"));
+        assert_eq!(engine.action_diagnostics().len(), 1);
+        // A later CE distinguishes retained support from an already fired rule.
+        let later = engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            1
+        );
+        assert_eq!(
+            engine.get_output("t"),
+            Some("CHECK:9:2\nCHECK:0:2\nEXISTS\n")
+        );
+        engine.retract(bad).unwrap();
+        engine.retract(later).unwrap();
+        engine.assert_ordered("later", Vec::<i64>::new()).unwrap();
+        assert_eq!(
+            engine.run(crate::RunLimit::Unlimited).unwrap().rules_fired,
+            0
+        );
+    }
 
     proptest! {
         #[test]

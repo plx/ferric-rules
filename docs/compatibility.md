@@ -77,10 +77,36 @@ engine snapshots are not a stable interchange contract across this change;
 retain application facts/rule source for rebuilding. The rehabilitation's
 versioned persistence work will define the supported snapshot envelope.
 
-Complex non-linear predicate or return-value constraints inside negated ordered
-patterns are CLIPS-valid but explicitly rejected during load. PR #254 removed an
-incorrect firing-time fallback; it did not complete that optional language
-feature. The remaining gap is tracked in [#300](https://github.com/plx/ferric-rules/issues/300).
+Nonlinear predicate and return-value constraints inside `not` are evaluated at
+match time for fixed-width ordered patterns and scalar template slots. For example,
+`(anchor ?limit) (not (data ?x&:(> (* ?x ?x) ?limit)))` suppresses the activation
+as soon as a matching data fact exists, and retracting its blocker can restore
+the activation before `run`.
+
+Constraints using only the current fact run as that fact enters the pattern
+network. Their result is retained, including when no outer match exists yet.
+Constraints requiring earlier patterns run in the join network. A negative join
+selects its first matching blocker and skips later callbacks while blocked;
+removing the blocker continues the search after that fact. Changes to globals
+alone do not reconsider earlier decisions. Retracting and asserting a fact again
+evaluates its constraints again.
+
+A fact-local evaluation error rejects that candidate. An evaluation error left
+set by a negative join counts as a blocker; an error during an RHS assertion also
+stops the active run. Ordinary positive predicates and multi-pattern NCC tests
+reject on error. Local variables introduced inside a negative or existential
+conditional element cannot escape that element. Expression variables, globals,
+and callable declarations are checked before rule installation, even with no
+facts present.
+
+This implements the scalar constraint gap tracked in
+[#300](https://github.com/plx/ferric-rules/issues/300). Runtime constraints on
+ordered sequence fields (`$?`) and scalar fields within multislots still require
+the sequence matching implementation; this path rejects them explicitly.
+Predicates on a whole multislot capture such as `$?items&:(check ?items)` are
+supported. Snapshot schema 5 retains the evaluated pattern memberships and
+selected conflicts; earlier snapshot versions require application migration
+(see [snapshots](snapshots.md)).
 
 ### Fact Identity
 

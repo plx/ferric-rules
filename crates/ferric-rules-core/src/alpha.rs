@@ -97,32 +97,45 @@ pub enum AlphaNode {
         children: Vec<NodeId>,
         memory: Option<AlphaMemoryId>,
     },
+    RuntimePredicate {
+        condition: crate::rete::RuntimeCondition,
+        children: Vec<NodeId>,
+        memory: Option<AlphaMemoryId>,
+    },
 }
 
 impl AlphaNode {
     #[must_use]
     fn memory(&self) -> Option<AlphaMemoryId> {
         match self {
-            Self::Entry { memory, .. } | Self::ConstantTest { memory, .. } => *memory,
+            Self::Entry { memory, .. }
+            | Self::ConstantTest { memory, .. }
+            | Self::RuntimePredicate { memory, .. } => *memory,
         }
     }
 
     fn memory_mut(&mut self) -> &mut Option<AlphaMemoryId> {
         match self {
-            Self::Entry { memory, .. } | Self::ConstantTest { memory, .. } => memory,
+            Self::Entry { memory, .. }
+            | Self::ConstantTest { memory, .. }
+            | Self::RuntimePredicate { memory, .. } => memory,
         }
     }
 
     #[must_use]
     fn children(&self) -> &[NodeId] {
         match self {
-            Self::Entry { children, .. } | Self::ConstantTest { children, .. } => children,
+            Self::Entry { children, .. }
+            | Self::ConstantTest { children, .. }
+            | Self::RuntimePredicate { children, .. } => children,
         }
     }
 
     fn children_mut(&mut self) -> &mut Vec<NodeId> {
         match self {
-            Self::Entry { children, .. } | Self::ConstantTest { children, .. } => children,
+            Self::Entry { children, .. }
+            | Self::ConstantTest { children, .. }
+            | Self::RuntimePredicate { children, .. } => children,
         }
     }
 }
@@ -204,6 +217,14 @@ impl AlphaMemory {
     /// Request indexing on a particular slot.
     ///
     /// Backfills existing facts into the index.
+    pub(crate) fn first_fact(&self) -> Option<FactId> {
+        self.facts.first()
+    }
+
+    pub(crate) fn successor_fact(&self, fact: FactId) -> Option<FactId> {
+        self.facts.successor(fact)
+    }
+
     pub fn request_index(&mut self, slot: SlotIndex, fact_base: &FactBase) {
         if self.indexed_slots.contains(&slot) {
             // Already indexed
@@ -341,6 +362,8 @@ pub struct AlphaNetwork {
     /// Populated on assertion, pruned on retraction. Eliminates the full
     /// alpha-memory scan in `memories_containing_fact`.
     pub(crate) fact_to_memories: SparseSecondaryMap<FactId, SmallVec<[AlphaMemoryId; 4]>>,
+    #[cfg_attr(feature = "serde", serde(skip, default))]
+    pub(crate) pending_runtime: Vec<(NodeId, FactId)>,
     pub(crate) next_node_id: u32,
     pub(crate) next_memory_id: u32,
 }
@@ -354,9 +377,83 @@ impl AlphaNetwork {
             memories: Vec::new(),
             entry_nodes: HashMap::default(),
             fact_to_memories: SparseSecondaryMap::new(),
+            pending_runtime: Vec::new(),
             next_node_id: 0,
             next_memory_id: 0,
         }
+    }
+
+    pub(crate) fn take_runtime_requests(&mut self) -> Vec<(NodeId, FactId)> {
+        std::mem::take(&mut self.pending_runtime)
+    }
+
+    pub(crate) fn create_runtime_predicate_node(
+        &mut self,
+        parent: NodeId,
+        condition: crate::rete::RuntimeCondition,
+    ) -> NodeId {
+        let id = NodeId(self.next_node_id);
+        self.next_node_id += 1;
+        self.nodes.push(AlphaNode::RuntimePredicate {
+            condition,
+            children: Vec::new(),
+            memory: None,
+        });
+        self.node_mut(parent)
+            .expect("alpha parent exists")
+            .children_mut()
+            .push(id);
+        id
+    }
+
+    pub(crate) fn backfill_runtime_predicate(
+        &mut self,
+        node: NodeId,
+        entry_type: &AlphaEntryType,
+        tests: &[ConstantTest],
+        facts: &FactBase,
+    ) {
+        let mut candidates: Vec<_> = facts
+            .iter()
+            .filter(|(_, entry)| {
+                fact_matches_entry_type(&entry.fact, entry_type)
+                    && tests.iter().all(|test| evaluate_test(&entry.fact, test))
+            })
+            .map(|(id, entry)| (entry.timestamp, id))
+            .collect();
+        candidates.sort_unstable_by_key(|(timestamp, _)| *timestamp);
+        self.pending_runtime
+            .extend(candidates.into_iter().map(|(_, fact)| (node, fact)));
+    }
+
+    pub(crate) fn resolve_runtime_predicate(
+        &mut self,
+        node: NodeId,
+        fact_id: FactId,
+        fact: &Fact,
+        passed: bool,
+    ) -> Option<AlphaMemoryId> {
+        let Some(AlphaNode::RuntimePredicate {
+            memory: Some(memory),
+            ..
+        }) = self.node(node)
+        else {
+            return None;
+        };
+        let memory = *memory;
+        if !passed || self.memory(memory)?.facts.contains(&fact_id) {
+            return None;
+        }
+        self.memory_mut(memory)?.insert(fact_id, fact);
+        if let Some(memories) = self.fact_to_memories.get_mut(fact_id) {
+            if !memories.contains(&memory) {
+                memories.push(memory);
+            }
+        } else {
+            self.fact_to_memories
+                .insert(fact_id, SmallVec::from_slice(&[memory]));
+        }
+        Some(memory)
     }
 
     pub(crate) fn structural_counts(&self) -> (usize, usize) {
@@ -632,6 +729,7 @@ impl AlphaNetwork {
 
     /// Clear all facts from all alpha memories, preserving network structure.
     pub fn clear_all_memories(&mut self) {
+        self.pending_runtime.clear();
         for memory in &mut self.memories {
             memory.clear();
         }
@@ -710,6 +808,10 @@ impl AlphaNetwork {
         fact: &Fact,
         accepted: &mut Vec<AlphaMemoryId>,
     ) {
+        if matches!(self.node(node_id), Some(AlphaNode::RuntimePredicate { .. })) {
+            self.pending_runtime.push((node_id, fact_id));
+            return;
+        }
         let Some((memory_id, children)) = self.propagation_plan(node_id, fact) else {
             return;
         };

@@ -65,8 +65,8 @@ pub use beta::{
 };
 pub use binding::{BindingSet, VarId, VarMap};
 pub use compiler::{
-    CompilableCondition, CompilablePattern, CompilableRule, CompileError, CompileResult,
-    ConditionCompilationPlan, ReteCompiler,
+    CompilableCondition, CompilablePattern, CompilableRule, CompilableRuntimePattern, CompileError,
+    CompileResult, ConditionCompilationPlan, ReteCompiler,
 };
 pub use encoding::{EncodingError, StringEncoding};
 pub use exists::{ExistsMemory, ExistsMemoryId};
@@ -76,7 +76,10 @@ pub use fact::{
 };
 pub use ncc::{NccMemory, NccMemoryId};
 pub use negative::{NegativeMemory, NegativeMemoryId};
-pub use rete::{PendingPredicateMatch, ReteCardinality, ReteNetwork};
+pub use rete::{
+    PendingPredicateMatch, PendingRuntimeMatch, ReteCardinality, ReteNetwork, RuntimeCondition,
+    RuntimeConditionRole, RuntimeConditionUse,
+};
 pub use strategy::ConflictResolutionStrategy;
 pub use string::FerricString;
 pub use symbol::{Symbol, SymbolTable};

@@ -369,8 +369,12 @@ impl Engine {
         }
         self.processing_predicates = true;
 
-        while let Some(pending) = self.rete.pop_pending_predicate_match() {
-            let Some(token) = self.rete.token_store.get(pending.parent_token).cloned() else {
+        while let Some(pending) = self.rete.pop_pending_runtime_match() {
+            let Some(bindings) = self.rete.runtime_match_bindings(&pending, &self.fact_base) else {
+                // A candidate can disappear before its callback is reached.
+                // Let the core validate/advance any still-live lazy search.
+                self.rete
+                    .resolve_runtime_match(pending, false, &self.fact_base);
                 continue;
             };
             let Some(info) = rule_index_get(&self.rule_info, pending.rule).cloned() else {
@@ -387,6 +391,13 @@ impl Engine {
                 )));
                 continue;
             };
+            if condition.role != pending.role {
+                self.action_diagnostics.push(ActionError::EvalError(format!(
+                    "rule `{}` has a mismatched role for match condition {}",
+                    info.name, pending.condition_index
+                )));
+                continue;
+            }
             let Some(current_module) = rule_index_get(&self.rule_modules, pending.rule).copied()
             else {
                 self.action_diagnostics.push(ActionError::EvalError(format!(
@@ -395,15 +406,19 @@ impl Engine {
                 )));
                 continue;
             };
-            let collected_facts = if info.multifield_tail_bindings.is_empty() {
-                smallvec::SmallVec::new()
-            } else {
-                self.rete
-                    .token_store
-                    .collect_all_facts(pending.parent_token)
-            };
-
-            let evaluation = {
+            let evaluation = if pending.role
+                == ferric_rules_core::RuntimeConditionRole::PositiveJoin
+                && !info.multifield_tail_bindings.is_empty()
+            {
+                let Some(parent) = pending.parent_token else {
+                    continue;
+                };
+                let Some(token) = self.rete.token_store.get(parent).cloned() else {
+                    self.rete
+                        .resolve_runtime_match(pending, false, &self.fact_base);
+                    continue;
+                };
+                let collected_facts = self.rete.token_store.collect_all_facts(parent);
                 let mut context = actions::ActionExecutionContext {
                     engine: self,
                     current_module,
@@ -415,6 +430,18 @@ impl Engine {
                     &collected_facts,
                     &mut context,
                 )
+            } else {
+                let mut context = actions::ActionExecutionContext {
+                    engine: self,
+                    current_module,
+                };
+                Ok(actions::evaluate_runtime_condition(
+                    &bindings,
+                    &info.var_map,
+                    condition,
+                    pending.replacing_conflict,
+                    &mut context,
+                ))
             };
             let passed = match evaluation {
                 Ok(passed) => passed,
@@ -431,7 +458,7 @@ impl Engine {
             };
 
             self.rete
-                .resolve_predicate_match_with_parent(pending, passed, token, &self.fact_base);
+                .resolve_runtime_match(pending, passed, &self.fact_base);
         }
 
         self.processing_predicates = false;

@@ -16,6 +16,7 @@ use crate::beta::{
 };
 use crate::binding::{BindingSet, ValueRef, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
+use crate::ordered_set::OrderedSet;
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::{AtomKey, Value};
@@ -27,6 +28,60 @@ pub struct PendingPredicateMatch {
     pub parent_token: TokenId,
     pub rule: RuleId,
     pub condition_index: u32,
+}
+
+/// Evaluation semantics belong to the graph site, not the expression spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RuntimeConditionRole {
+    PatternFilter,
+    PositiveJoin,
+    NegativeJoin,
+    ExistsJoin,
+}
+
+/// Runtime-owned expression and physical field extraction plan.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RuntimeCondition {
+    pub rule: RuleId,
+    pub condition_index: u32,
+    pub role: RuntimeConditionRole,
+    pub bindings: Vec<(SlotIndex, VarId)>,
+}
+
+/// A graph-owned request. Callers must obtain a fresh frame before evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingRuntimeMatch {
+    pub node: NodeId,
+    pub parent_token: Option<TokenId>,
+    pub fact: Option<FactId>,
+    pub rule: RuleId,
+    pub condition_index: u32,
+    pub role: RuntimeConditionRole,
+    /// A successor search after a selected conflict/support was removed.
+    /// CLIPS existential joins use a different error policy in this phase.
+    pub replacing_conflict: bool,
+    request_id: u64,
+}
+
+// Borrowed inputs keep stale-result validation allocation-free.
+struct RuntimeMatchFrame<'a> {
+    parent: Option<&'a BindingSet>,
+    fact: Option<&'a Fact>,
+    extractions: &'a [(SlotIndex, VarId)],
+}
+
+/// Stored condition usage exposed for cross-crate snapshot validation.
+#[derive(Clone, Debug)]
+pub struct RuntimeConditionUse {
+    pub node: NodeId,
+    pub rule: RuleId,
+    pub condition_index: u32,
+    pub role: RuntimeConditionRole,
+    pub bindings: Vec<(SlotIndex, VarId)>,
+    pub available_variables: Vec<VarId>,
+    pub entry_type: Option<crate::alpha::AlphaEntryType>,
 }
 
 /// Structural and runtime cardinalities used to verify atomic Rete changes.
@@ -59,7 +114,16 @@ pub struct ReteNetwork {
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::std_hash_set"))]
     pub(crate) disabled_rules: std::collections::HashSet<crate::beta::RuleId>,
     #[cfg_attr(feature = "serde", serde(skip, default))]
-    pub(crate) pending_predicate_matches: VecDeque<PendingPredicateMatch>,
+    pub(crate) pending_predicate_matches: VecDeque<PendingRuntimeMatch>,
+    #[cfg_attr(feature = "serde", serde(skip, default))]
+    pub(crate) runtime_searches: rustc_hash::FxHashMap<(NodeId, TokenId), PendingRuntimeMatch>,
+    #[cfg_attr(feature = "serde", serde(skip, default))]
+    next_runtime_request: u64,
+    /// CLIPS links blocked owners at the selected alpha match's list head.
+    /// Store selection order so replacement callbacks can visit it in reverse.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
+    pub(crate) runtime_conflicts:
+        rustc_hash::FxHashMap<(AlphaMemoryId, FactId), OrderedSet<(NodeId, TokenId)>>,
 }
 
 impl ReteNetwork {
@@ -89,6 +153,9 @@ impl ReteNetwork {
             agenda,
             disabled_rules: std::collections::HashSet::new(),
             pending_predicate_matches: VecDeque::new(),
+            runtime_searches: rustc_hash::FxHashMap::default(),
+            next_runtime_request: 0,
+            runtime_conflicts: rustc_hash::FxHashMap::default(),
         };
         rete.seed_root_token();
         rete
@@ -132,6 +199,7 @@ impl ReteNetwork {
 
         // 1. Propagate through alpha network
         let affected_memories = self.alpha.assert_fact(fact_id, fact);
+        self.collect_alpha_runtime_requests(false);
 
         // Capture all right-parent candidates before positive propagation. A
         // new left token can already join this fact in a downstream node; that
@@ -163,18 +231,13 @@ impl ReteNetwork {
 
         // 3. For each affected alpha memory, perform right activations on subscribed negative nodes
         for &alpha_mem_id in &affected_memories {
-            let neg_nodes: SmallVec<[NodeId; 4]> =
-                SmallVec::from_slice(self.beta.negative_nodes_for_alpha(alpha_mem_id));
-
-            for neg_node_id in neg_nodes {
-                self.negative_right_activate(
-                    neg_node_id,
-                    fact_id,
-                    fact,
-                    fact_base,
-                    &mut new_activations,
-                );
-            }
+            self.notify_negative_right(
+                alpha_mem_id,
+                fact_id,
+                fact,
+                fact_base,
+                &mut new_activations,
+            );
         }
 
         // 4. For each affected alpha memory, perform right activations on subscribed exists nodes
@@ -193,6 +256,7 @@ impl ReteNetwork {
             }
         }
 
+        self.prioritize_constraint_requests();
         new_activations
     }
 
@@ -277,6 +341,7 @@ impl ReteNetwork {
 
         // 7. Remove from alpha memories
         self.alpha.retract_fact(fact_id, fact);
+        self.prioritize_constraint_requests();
 
         removed_activations
     }
@@ -289,6 +354,8 @@ impl ReteNetwork {
         self.token_store.clear();
         self.beta.clear_all_runtime();
         self.pending_predicate_matches.clear();
+        self.runtime_searches.clear();
+        self.runtime_conflicts.clear();
         let strategy = self.agenda.strategy();
         self.agenda = Agenda::with_strategy(strategy);
 
@@ -400,6 +467,8 @@ impl ReteNetwork {
     /// new activations from being created for future token propagations.
     pub fn disable_rule(&mut self, rule_id: crate::beta::RuleId) {
         self.disabled_rules.insert(rule_id);
+        self.runtime_searches
+            .retain(|_, pending| pending.rule != rule_id);
         let _ = self.agenda.remove_activations_for_rule(rule_id);
         self.pending_predicate_matches
             .retain(|pending| pending.rule != rule_id);
@@ -432,10 +501,34 @@ impl ReteNetwork {
             self.disabled_rules.remove(rule);
         }
         self.pending_predicate_matches
-            .retain(|pending| retained.contains(&pending.node));
+            .retain(|pending| !removed.contains(&pending.rule));
+        self.runtime_searches
+            .retain(|(node, _), _| retained.contains(node));
         let alpha_memories = self.beta.retain_nodes(&retained);
         let mapping = self.alpha.retain_memories(&alpha_memories);
         self.beta.remap_alpha_memories(&mapping);
+        self.runtime_conflicts = std::mem::take(&mut self.runtime_conflicts)
+            .into_iter()
+            .filter_map(|((memory, fact), owners)| {
+                let memory = mapping.get(memory.0 as usize).copied().flatten()?;
+                let mut live = OrderedSet::default();
+                for &(node, parent) in &owners {
+                    if retained.contains(&node) {
+                        live.insert((node, parent));
+                    }
+                }
+                (!live.is_empty()).then_some(((memory, fact), live))
+            })
+            .collect();
+        for pending in &mut self.pending_predicate_matches {
+            if pending.role == RuntimeConditionRole::PatternFilter {
+                if let Some((index, _)) = self.alpha.nodes.iter().enumerate().find(|(_, node)| matches!(node,
+                    crate::alpha::AlphaNode::RuntimePredicate { condition, .. }
+                    if condition.rule == pending.rule && condition.condition_index == pending.condition_index)) {
+                    pending.node = NodeId(u32::try_from(index).expect("bounded alpha graph"));
+                }
+            }
+        }
         mapping
     }
 
@@ -448,7 +541,16 @@ impl ReteNetwork {
 
     /// Pop the next runtime predicate evaluation requested by token propagation.
     pub fn pop_pending_predicate_match(&mut self) -> Option<PendingPredicateMatch> {
-        self.pending_predicate_matches.pop_front()
+        if self.pending_predicate_matches.front()?.role != RuntimeConditionRole::PositiveJoin {
+            return None;
+        }
+        let pending = self.pending_predicate_matches.pop_front()?;
+        Some(PendingPredicateMatch {
+            node: pending.node,
+            parent_token: pending.parent_token?,
+            rule: pending.rule,
+            condition_index: pending.condition_index,
+        })
     }
 
     /// Resolve one pending predicate evaluation.
@@ -709,6 +811,26 @@ impl ReteNetwork {
         fact_base: &FactBase,
         new_activations: &mut Vec<ActivationId>,
     ) {
+        if let Some(BetaNode::Negative {
+            runtime: Some(_),
+            alpha_memory,
+            ..
+        }) = self.beta.get_node(neg_node_id)
+        {
+            let first = self
+                .alpha
+                .get_memory(*alpha_memory)
+                .and_then(AlphaMemory::first_fact);
+            self.start_runtime_negative_search(
+                neg_node_id,
+                parent_token_id,
+                first,
+                false,
+                fact_base,
+                new_activations,
+            );
+            return;
+        }
         let Some(neg_node) = self.beta.get_node(neg_node_id) else {
             return;
         };
@@ -809,6 +931,30 @@ impl ReteNetwork {
         fact_base: &FactBase,
         new_activations: &mut Vec<ActivationId>,
     ) {
+        if let Some(BetaNode::Negative {
+            runtime: Some(_),
+            parent,
+            ..
+        }) = self.beta.get_node(neg_node_id)
+        {
+            let parents: Vec<_> = self
+                .beta
+                .memory_id_for_node(*parent)
+                .and_then(|memory| self.beta.get_memory(memory))
+                .map(|memory| memory.tokens.iter().rev().copied().collect())
+                .unwrap_or_default();
+            for parent in parents {
+                self.start_runtime_negative_search(
+                    neg_node_id,
+                    parent,
+                    Some(fact_id),
+                    false,
+                    fact_base,
+                    new_activations,
+                );
+            }
+            return;
+        }
         let Some(neg_node) = self.beta.get_node(neg_node_id) else {
             return;
         };
@@ -885,10 +1031,20 @@ impl ReteNetwork {
         new_activations: &mut Vec<ActivationId>,
     ) {
         for &alpha_mem_id in affected_alpha_mems {
+            self.resume_runtime_conflicts(alpha_mem_id, fact_id, fact_base, new_activations);
             let neg_nodes: SmallVec<[NodeId; 4]> =
                 SmallVec::from_slice(self.beta.negative_nodes_for_alpha(alpha_mem_id));
 
             for neg_node_id in neg_nodes {
+                if matches!(
+                    self.beta.get_node(neg_node_id),
+                    Some(BetaNode::Negative {
+                        runtime: Some(_),
+                        ..
+                    })
+                ) {
+                    continue; // Runtime conflicts were resumed together in selection order.
+                }
                 // Find tokens blocked by this fact in this negative node
                 let Some(neg_node) = self.beta.get_node(neg_node_id) else {
                     continue;
@@ -994,6 +1150,8 @@ impl ReteNetwork {
     /// Other nodes cannot track this token as their left parent. This cleanup
     /// has no propagation side effects; NCC result retraction is handled separately.
     fn cleanup_negative_memories_for_token(&mut self, token_id: TokenId, owner: NodeId) {
+        self.runtime_searches
+            .retain(|(_, parent), _| *parent != token_id);
         if self.beta.neg_memories.is_empty()
             && self.beta.ncc_memories.is_empty()
             && self.beta.exists_memories.is_empty()
@@ -1010,8 +1168,23 @@ impl ReteNetwork {
         };
         for &child in children.iter() {
             match self.beta.get_node(child) {
-                Some(BetaNode::Negative { neg_memory, .. }) => {
+                Some(BetaNode::Negative {
+                    neg_memory,
+                    alpha_memory,
+                    runtime,
+                    ..
+                }) => {
                     let memory = *neg_memory;
+                    if runtime.is_some() {
+                        let alpha = *alpha_memory;
+                        let selected = self
+                            .beta
+                            .get_neg_memory(memory)
+                            .and_then(|state| state.blocked.get(&token_id)?.iter().next().copied());
+                        if let Some(fact) = selected {
+                            self.remove_runtime_conflict(alpha, fact, child, token_id);
+                        }
+                    }
                     if let Some(memory) = self.beta.get_neg_memory_mut(memory) {
                         memory.remove_parent_token(token_id);
                     }
@@ -1584,11 +1757,15 @@ impl ReteNetwork {
                     ..
                 } => {
                     self.pending_predicate_matches
-                        .push_back(PendingPredicateMatch {
+                        .push_back(PendingRuntimeMatch {
                             node: child_id,
-                            parent_token: token_id,
+                            parent_token: Some(token_id),
+                            fact: None,
                             rule: *rule,
                             condition_index: *condition_index,
+                            role: RuntimeConditionRole::PositiveJoin,
+                            replacing_conflict: false,
+                            request_id: 0,
                         });
                 }
                 BetaNode::Negative { .. } => {
@@ -1684,6 +1861,636 @@ impl ReteNetwork {
         }
 
         Ok(())
+    }
+}
+
+impl ReteNetwork {
+    /// Obtain the next request after previously resolved constraint continuations.
+    pub fn pop_pending_runtime_match(&mut self) -> Option<PendingRuntimeMatch> {
+        self.collect_alpha_runtime_requests(false);
+        self.pending_predicate_matches.pop_front()
+    }
+
+    pub(crate) fn collect_alpha_runtime_requests(&mut self, prioritize: bool) {
+        let before = self.pending_predicate_matches.len();
+        for (node, fact) in self.alpha.take_runtime_requests() {
+            let Some(crate::alpha::AlphaNode::RuntimePredicate { condition, .. }) =
+                self.alpha.get_node(node)
+            else {
+                continue;
+            };
+            self.pending_predicate_matches
+                .push_back(PendingRuntimeMatch {
+                    node,
+                    fact: Some(fact),
+                    parent_token: None,
+                    rule: condition.rule,
+                    condition_index: condition.condition_index,
+                    role: RuntimeConditionRole::PatternFilter,
+                    replacing_conflict: false,
+                    request_id: 0,
+                });
+        }
+        if prioritize {
+            self.prioritize_new_runtime_requests(before);
+        }
+    }
+
+    fn prioritize_constraint_requests(&mut self) {
+        let mut ordinary = VecDeque::new();
+        self.pending_predicate_matches.retain(|pending| {
+            if pending.role == RuntimeConditionRole::PositiveJoin {
+                ordinary.push_back(*pending);
+                false
+            } else {
+                true
+            }
+        });
+        self.pending_predicate_matches.append(&mut ordinary);
+    }
+
+    fn prioritize_new_runtime_requests(&mut self, before: usize) {
+        let mut continuation = self.pending_predicate_matches.split_off(before);
+        continuation.append(&mut self.pending_predicate_matches);
+        self.pending_predicate_matches = continuation;
+    }
+
+    /// Validate a request and construct its lexical frame before calling runtime code.
+    pub fn runtime_match_bindings(
+        &self,
+        pending: &PendingRuntimeMatch,
+        facts: &FactBase,
+    ) -> Option<BindingSet> {
+        let frame = self.runtime_match_frame(pending, facts)?;
+        let mut bindings = frame.parent.cloned().unwrap_or_default();
+        if let Some(fact) = frame.fact {
+            for &(slot, variable) in frame.extractions {
+                bindings.set(variable, ValueRef::new(get_slot_value(fact, slot)?.clone()));
+            }
+        }
+        Some(bindings)
+    }
+
+    fn runtime_match_frame<'a>(
+        &'a self,
+        pending: &PendingRuntimeMatch,
+        facts: &'a FactBase,
+    ) -> Option<RuntimeMatchFrame<'a>> {
+        if self.is_rule_disabled(pending.rule) {
+            return None;
+        }
+        let (parent, extractions) = match pending.role {
+            RuntimeConditionRole::PositiveJoin => {
+                let parent = pending.parent_token?;
+                let Some(BetaNode::Predicate {
+                    rule,
+                    condition_index,
+                    parent: node_parent,
+                    ..
+                }) = self.beta.get_node(pending.node)
+                else {
+                    return None;
+                };
+                let token = self.token_store.get(parent)?;
+                if *rule != pending.rule
+                    || *condition_index != pending.condition_index
+                    || token.owner_node != *node_parent
+                {
+                    return None;
+                }
+                return Some(RuntimeMatchFrame {
+                    parent: Some(&token.bindings),
+                    fact: None,
+                    extractions: &[],
+                });
+            }
+            RuntimeConditionRole::PatternFilter => {
+                let Some(crate::alpha::AlphaNode::RuntimePredicate {
+                    condition,
+                    memory: Some(memory),
+                    ..
+                }) = self.alpha.get_node(pending.node)
+                else {
+                    return None;
+                };
+                if condition.rule != pending.rule
+                    || condition.condition_index != pending.condition_index
+                    || condition.role != pending.role
+                    || self
+                        .alpha
+                        .get_memory(*memory)?
+                        .facts
+                        .contains(&pending.fact?)
+                {
+                    return None;
+                }
+                (None, condition.bindings.as_slice())
+            }
+            RuntimeConditionRole::NegativeJoin | RuntimeConditionRole::ExistsJoin => {
+                let parent = pending.parent_token?;
+                if self.runtime_searches.get(&(pending.node, parent)) != Some(pending) {
+                    return None;
+                }
+                let Some(BetaNode::Negative {
+                    runtime: Some(condition),
+                    parent: node_parent,
+                    alpha_memory,
+                    ..
+                }) = self.beta.get_node(pending.node)
+                else {
+                    return None;
+                };
+                let token = self.token_store.get(parent)?;
+                if condition.rule != pending.rule
+                    || condition.condition_index != pending.condition_index
+                    || condition.role != pending.role
+                    || token.owner_node != *node_parent
+                    || !self
+                        .alpha
+                        .get_memory(*alpha_memory)?
+                        .facts
+                        .contains(&pending.fact?)
+                {
+                    return None;
+                }
+                (Some(&token.bindings), condition.bindings.as_slice())
+            }
+        };
+        let fact = &facts.get(pending.fact?)?.fact;
+        for &(slot, _) in extractions {
+            get_slot_value(fact, slot)?;
+        }
+        Some(RuntimeMatchFrame {
+            parent,
+            fact: Some(fact),
+            extractions,
+        })
+    }
+
+    /// Resolve a runtime result; the runtime maps negative-join errors to conflicts.
+    pub fn resolve_runtime_match(
+        &mut self,
+        pending: PendingRuntimeMatch,
+        passed: bool,
+        facts: &FactBase,
+    ) -> Vec<ActivationId> {
+        let before = self.pending_predicate_matches.len();
+        let mut activations = Vec::new();
+        let live = self.runtime_match_frame(&pending, facts).is_some();
+        match pending.role {
+            RuntimeConditionRole::PositiveJoin if live && passed => {
+                activations = self.resolve_predicate_match(
+                    PendingPredicateMatch {
+                        node: pending.node,
+                        parent_token: pending.parent_token.expect("validated parent"),
+                        rule: pending.rule,
+                        condition_index: pending.condition_index,
+                    },
+                    passed,
+                    facts,
+                );
+            }
+            RuntimeConditionRole::PatternFilter if live => {
+                let fact_id = pending.fact.expect("validated fact");
+                let fact = &facts.get(fact_id).expect("validated fact").fact;
+                if let Some(memory) =
+                    self.alpha
+                        .resolve_runtime_predicate(pending.node, fact_id, fact, passed)
+                {
+                    self.notify_runtime_alpha_memory(
+                        memory,
+                        fact_id,
+                        fact,
+                        facts,
+                        &mut activations,
+                    );
+                }
+            }
+            RuntimeConditionRole::NegativeJoin | RuntimeConditionRole::ExistsJoin => {
+                if let Some(parent) = pending.parent_token {
+                    if self.runtime_searches.get(&(pending.node, parent)) == Some(&pending) {
+                        self.runtime_searches.remove(&(pending.node, parent));
+                        if live && passed {
+                            self.select_runtime_conflict(
+                                pending.node,
+                                parent,
+                                pending.fact.expect("validated fact"),
+                                facts,
+                                &mut activations,
+                            );
+                        } else if let Some(BetaNode::Negative { alpha_memory, .. }) =
+                            self.beta.get_node(pending.node)
+                        {
+                            let next = pending.fact.and_then(|fact| {
+                                self.alpha.get_memory(*alpha_memory)?.successor_fact(fact)
+                            });
+                            self.start_runtime_negative_search(
+                                pending.node,
+                                parent,
+                                next,
+                                pending.replacing_conflict,
+                                facts,
+                                &mut activations,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.prioritize_new_runtime_requests(before);
+        activations
+    }
+
+    fn notify_runtime_alpha_memory(
+        &mut self,
+        memory: AlphaMemoryId,
+        fact_id: FactId,
+        fact: &Fact,
+        facts: &FactBase,
+        activations: &mut Vec<ActivationId>,
+    ) {
+        let mut joins: Vec<_> = self
+            .beta
+            .join_nodes_for_alpha(memory)
+            .iter()
+            .map(|&node| (node, self.right_parent_candidates(node, fact)))
+            .collect();
+        joins.sort_unstable_by_key(|(node, _)| std::cmp::Reverse(node.0));
+        for (node, parents) in joins {
+            self.right_activate(node, parents, fact_id, fact, facts, activations);
+        }
+        self.notify_negative_right(memory, fact_id, fact, facts, activations);
+        let exists = self.beta.exists_nodes_for_alpha(memory).to_vec();
+        for node in exists {
+            self.exists_right_activate(node, fact_id, fact, facts, activations);
+        }
+    }
+
+    fn notify_negative_right(
+        &mut self,
+        memory: AlphaMemoryId,
+        fact_id: FactId,
+        fact: &Fact,
+        facts: &FactBase,
+        activations: &mut Vec<ActivationId>,
+    ) {
+        let nodes: SmallVec<[(NodeId, bool); 4]> = self
+            .beta
+            .negative_nodes_for_alpha(memory)
+            .iter()
+            .map(|&node| {
+                (
+                    node,
+                    matches!(
+                        self.beta.get_node(node),
+                        Some(BetaNode::Negative {
+                            runtime: Some(_),
+                            ..
+                        })
+                    ),
+                )
+            })
+            .collect();
+        // CLIPS links newly compiled runtime joins ahead of older subscribers.
+        // Keep the established primitive-node traversal unchanged.
+        for &(node, runtime) in nodes.iter().rev() {
+            if runtime {
+                self.negative_right_activate(node, fact_id, fact, facts, activations);
+            }
+        }
+        for (node, runtime) in nodes {
+            if !runtime {
+                self.negative_right_activate(node, fact_id, fact, facts, activations);
+            }
+        }
+    }
+
+    fn start_runtime_negative_search(
+        &mut self,
+        node: NodeId,
+        parent: TokenId,
+        mut candidate: Option<FactId>,
+        replacing_conflict: bool,
+        facts: &FactBase,
+        activations: &mut Vec<ActivationId>,
+    ) {
+        let Some(BetaNode::Negative {
+            runtime: Some(condition),
+            alpha_memory,
+            tests,
+            neg_memory,
+            ..
+        }) = self.beta.get_node(node)
+        else {
+            return;
+        };
+        let condition = condition.clone();
+        let alpha_memory = *alpha_memory;
+        let tests = tests.clone();
+        if self.is_rule_disabled(condition.rule)
+            || self.token_store.get(parent).is_none()
+            || self
+                .beta
+                .get_neg_memory(*neg_memory)
+                .is_some_and(|memory| memory.is_blocked(parent))
+            || self.runtime_searches.contains_key(&(node, parent))
+        {
+            return;
+        }
+        while let Some(fact_id) = candidate {
+            let next = self
+                .alpha
+                .get_memory(alpha_memory)
+                .and_then(|memory| memory.successor_fact(fact_id));
+            if let (Some(entry), Some(token)) = (facts.get(fact_id), self.token_store.get(parent)) {
+                if evaluate_join(&entry.fact, Some(token), &tests) {
+                    self.next_runtime_request = self
+                        .next_runtime_request
+                        .checked_add(1)
+                        .expect("runtime request identity exhausted");
+                    let pending = PendingRuntimeMatch {
+                        node,
+                        parent_token: Some(parent),
+                        fact: Some(fact_id),
+                        rule: condition.rule,
+                        condition_index: condition.condition_index,
+                        role: condition.role,
+                        replacing_conflict,
+                        request_id: self.next_runtime_request,
+                    };
+                    self.runtime_searches.insert((node, parent), pending);
+                    self.pending_predicate_matches.push_back(pending);
+                    return;
+                }
+            }
+            candidate = next;
+        }
+        self.emit_runtime_negative_passthrough(node, parent, facts, activations);
+    }
+
+    fn emit_runtime_negative_passthrough(
+        &mut self,
+        node: NodeId,
+        parent: TokenId,
+        facts: &FactBase,
+        activations: &mut Vec<ActivationId>,
+    ) {
+        let Some(BetaNode::Negative {
+            memory,
+            neg_memory,
+            children,
+            ..
+        }) = self.beta.get_node(node)
+        else {
+            return;
+        };
+        let (memory, neg_memory, children) = (*memory, *neg_memory, children.clone());
+        if self
+            .beta
+            .get_neg_memory(neg_memory)
+            .is_some_and(|memory| memory.is_unblocked(parent) || memory.is_blocked(parent))
+        {
+            return;
+        }
+        let Some(token) = self.token_store.get(parent) else {
+            return;
+        };
+        let passthrough = self.token_store.insert(Token {
+            fact: None,
+            bindings: token.bindings.clone(),
+            parent: Some(parent),
+            owner_node: node,
+        });
+        let bindings = &self
+            .token_store
+            .get(passthrough)
+            .expect("new token")
+            .bindings;
+        self.beta
+            .get_memory_mut(memory)
+            .expect("negative output memory")
+            .insert_indexed(passthrough, bindings);
+        self.beta
+            .get_neg_memory_mut(neg_memory)
+            .expect("negative state")
+            .set_unblocked(parent, passthrough);
+        self.propagate_token(passthrough, &children, facts, activations);
+    }
+
+    fn remove_runtime_conflict(
+        &mut self,
+        memory: AlphaMemoryId,
+        fact: FactId,
+        node: NodeId,
+        parent: TokenId,
+    ) {
+        if let Some(owners) = self.runtime_conflicts.get_mut(&(memory, fact)) {
+            owners.remove(&(node, parent));
+            if owners.is_empty() {
+                self.runtime_conflicts.remove(&(memory, fact));
+            }
+        }
+    }
+
+    fn resume_runtime_conflicts(
+        &mut self,
+        memory: AlphaMemoryId,
+        fact: FactId,
+        facts: &FactBase,
+        activations: &mut Vec<ActivationId>,
+    ) {
+        let next = self
+            .alpha
+            .get_memory(memory)
+            .and_then(|alpha| alpha.successor_fact(fact));
+        // An embedding caller may retract a candidate while its callback is pending.
+        // Continue those requests in their original queue order, without invoking stale work.
+        let mut pending: Vec<_> = self
+            .runtime_searches
+            .iter()
+            .filter_map(|(&(node, parent), request)| {
+                (request.fact == Some(fact)
+                    && matches!(self.beta.get_node(node),
+                Some(BetaNode::Negative { alpha_memory, .. }) if *alpha_memory == memory))
+                .then_some((request.request_id, node, parent, request.replacing_conflict))
+            })
+            .collect();
+        pending.sort_unstable_by_key(|(id, _, _, _)| *id);
+        for (_, node, parent, replacing) in pending {
+            self.runtime_searches.remove(&(node, parent));
+            self.start_runtime_negative_search(node, parent, next, replacing, facts, activations);
+        }
+        if let Some(owners) = self.runtime_conflicts.remove(&(memory, fact)) {
+            for &(node, parent) in owners.iter().rev() {
+                let Some(BetaNode::Negative { neg_memory, .. }) = self.beta.get_node(node) else {
+                    continue;
+                };
+                self.beta
+                    .get_neg_memory_mut(*neg_memory)
+                    .expect("negative state")
+                    .remove_blocker(parent, fact);
+                self.start_runtime_negative_search(node, parent, next, true, facts, activations);
+            }
+        }
+    }
+
+    fn select_runtime_conflict(
+        &mut self,
+        node: NodeId,
+        parent: TokenId,
+        fact: FactId,
+        facts: &FactBase,
+        activations: &mut Vec<ActivationId>,
+    ) {
+        let Some(BetaNode::Negative {
+            memory,
+            neg_memory,
+            alpha_memory,
+            ..
+        }) = self.beta.get_node(node)
+        else {
+            return;
+        };
+        let (memory, neg_memory, alpha_memory) = (*memory, *neg_memory, *alpha_memory);
+        let state = self
+            .beta
+            .get_neg_memory_mut(neg_memory)
+            .expect("negative state");
+        let passthrough = state.remove_unblocked(parent);
+        state.add_blocker(parent, fact);
+        self.runtime_conflicts
+            .entry((alpha_memory, fact))
+            .or_default()
+            .insert((node, parent));
+        if let Some(passthrough) = passthrough {
+            self.retract_token_cascade(passthrough, memory, facts, activations);
+        }
+    }
+}
+
+impl ReteNetwork {
+    /// Describe graph-owned runtime roles and lexical frames without evaluating them.
+    #[doc(hidden)]
+    // The alpha and beta passes describe one graph-owned lexical scope contract.
+    #[allow(clippy::too_many_lines)]
+    pub fn snapshot_runtime_condition_uses(&self) -> Vec<RuntimeConditionUse> {
+        let mut uses = Vec::new();
+        let mut entries = vec![None; self.alpha.nodes.len()];
+        let mut memory_entries = rustc_hash::FxHashMap::default();
+        for (index, node) in self.alpha.nodes.iter().enumerate() {
+            let (children, memory) = match node {
+                crate::alpha::AlphaNode::Entry {
+                    entry_type,
+                    children,
+                    memory,
+                } => {
+                    entries[index] = Some(entry_type.clone());
+                    (children, memory)
+                }
+                crate::alpha::AlphaNode::ConstantTest {
+                    children, memory, ..
+                }
+                | crate::alpha::AlphaNode::RuntimePredicate {
+                    children, memory, ..
+                } => (children, memory),
+            };
+            if let Some(memory) = memory {
+                memory_entries.insert(*memory, entries[index].clone());
+            }
+            for child in children {
+                if (child.0 as usize) < entries.len() {
+                    entries[child.0 as usize] = entries[index].clone();
+                }
+            }
+        }
+        for (index, node) in self.alpha.nodes.iter().enumerate() {
+            if let crate::alpha::AlphaNode::RuntimePredicate { condition, .. } = node {
+                uses.push(RuntimeConditionUse {
+                    node: NodeId(u32::try_from(index).expect("bounded alpha graph")),
+                    rule: condition.rule,
+                    condition_index: condition.condition_index,
+                    role: RuntimeConditionRole::PatternFilter,
+                    bindings: condition.bindings.clone(),
+                    available_variables: condition
+                        .bindings
+                        .iter()
+                        .map(|(_, variable)| *variable)
+                        .collect(),
+                    entry_type: entries[index].clone(),
+                });
+            }
+        }
+        for (&node, value) in &self.beta.nodes {
+            let (parent, owner_rule, condition_index, role, bindings) = match value {
+                BetaNode::Predicate {
+                    parent,
+                    rule,
+                    condition_index,
+                    ..
+                } => (
+                    *parent,
+                    *rule,
+                    *condition_index,
+                    RuntimeConditionRole::PositiveJoin,
+                    Vec::new(),
+                ),
+                BetaNode::Negative {
+                    parent,
+                    runtime: Some(condition),
+                    ..
+                } => (
+                    *parent,
+                    condition.rule,
+                    condition.condition_index,
+                    condition.role,
+                    condition.bindings.clone(),
+                ),
+                _ => continue,
+            };
+            let mut available_variables: Vec<_> =
+                bindings.iter().map(|(_, variable)| *variable).collect();
+            let mut current = Some(parent);
+            let mut seen = rustc_hash::FxHashSet::default();
+            while let Some(ancestor) = current {
+                if !seen.insert(ancestor) {
+                    break;
+                }
+                current = match self.beta.get_node(ancestor) {
+                    Some(BetaNode::Join {
+                        parent, bindings, ..
+                    }) => {
+                        available_variables.extend(bindings.iter().map(|(_, variable)| *variable));
+                        Some(*parent)
+                    }
+                    Some(
+                        BetaNode::Predicate { parent, .. }
+                        | BetaNode::Negative { parent, .. }
+                        | BetaNode::Ncc { parent, .. }
+                        | BetaNode::Exists { parent, .. },
+                    ) => Some(*parent),
+                    _ => None,
+                };
+            }
+            available_variables.sort_unstable_by_key(|variable| variable.0);
+            available_variables.dedup();
+            let entry_type = match value {
+                BetaNode::Negative { alpha_memory, .. } => {
+                    memory_entries.get(alpha_memory).cloned().flatten()
+                }
+                _ => None,
+            };
+            uses.push(RuntimeConditionUse {
+                node,
+                rule: owner_rule,
+                condition_index,
+                role,
+                bindings,
+                available_variables,
+                entry_type,
+            });
+        }
+        uses
     }
 }
 
@@ -4877,5 +5684,537 @@ mod tests {
             let neq_result = values_join_eq(&int_val, &float_val).is_some_and(|eq| !eq);
             prop_assert!(neq_result, "cross-type NotEqual must be true");
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_constraint_tests {
+    use super::*;
+    use crate::{
+        AlphaEntryType, CompilableCondition, CompilablePattern, CompilableRuntimePattern,
+        ReteCompiler, Salience, SymbolTable,
+    };
+
+    struct Fixture {
+        rete: ReteNetwork,
+        facts: FactBase,
+        compiler: ReteCompiler,
+        symbols: SymbolTable,
+        anchor: crate::Symbol,
+        data: crate::Symbol,
+        outer: VarId,
+        local: VarId,
+    }
+
+    impl Fixture {
+        fn new(local_filter: bool, negative: bool, downstream: bool) -> Self {
+            Self::with_initial(local_filter, negative, downstream, &[])
+        }
+
+        fn with_initial(
+            local_filter: bool,
+            negative: bool,
+            downstream: bool,
+            initial: &[(bool, i64)],
+        ) -> Self {
+            Self::with_role(
+                local_filter,
+                negative,
+                downstream,
+                initial,
+                RuntimeConditionRole::NegativeJoin,
+            )
+        }
+
+        fn with_role(
+            local_filter: bool,
+            negative: bool,
+            downstream: bool,
+            initial: &[(bool, i64)],
+            join_role: RuntimeConditionRole,
+        ) -> Self {
+            let mut symbols = SymbolTable::new();
+            let anchor = crate::Symbol(symbols.intern_utf8("anchor"));
+            let data = crate::Symbol(symbols.intern_utf8("data"));
+            let a = crate::Symbol(symbols.intern_utf8("a"));
+            let x = crate::Symbol(symbols.intern_utf8("x"));
+            let pattern = |relation, variable, negated| CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(relation),
+                constant_tests: vec![],
+                variable_slots: vec![(SlotIndex::Ordered(0), variable)],
+                negated_variable_slots: vec![],
+                negated,
+                exists: false,
+            };
+            let mut conditions = vec![
+                CompilableCondition::Pattern(pattern(anchor, a, false)),
+                CompilableCondition::RuntimePattern(CompilableRuntimePattern {
+                    pattern: pattern(data, x, true),
+                    local_condition: local_filter.then_some(0),
+                    local_bindings: if local_filter {
+                        vec![(SlotIndex::Ordered(0), x)]
+                    } else {
+                        vec![]
+                    },
+                    negative_condition: negative.then_some(1),
+                    join_role,
+                }),
+            ];
+            if join_role == RuntimeConditionRole::ExistsJoin {
+                let nested = conditions.pop().unwrap();
+                conditions.push(CompilableCondition::Ncc(vec![nested]));
+            }
+            if downstream {
+                conditions.push(CompilableCondition::Predicate { condition_index: 2 });
+            }
+            let mut compiler = ReteCompiler::new();
+            let mut rete = ReteNetwork::new();
+            let mut facts = FactBase::new();
+            for &(is_anchor, value) in initial {
+                facts.assert_ordered(
+                    if is_anchor { anchor } else { data },
+                    smallvec::smallvec![Value::Integer(value)],
+                );
+            }
+            let rule = compiler.allocate_rule_id();
+            let result = compiler
+                .compile_conditions(&mut rete, &facts, rule, Salience::DEFAULT, &conditions)
+                .unwrap();
+            Self {
+                rete,
+                facts,
+                compiler,
+                symbols,
+                anchor,
+                data,
+                outer: result.var_map.lookup(a).unwrap(),
+                local: result.var_map.lookup(x).unwrap(),
+            }
+        }
+
+        fn assert(&mut self, anchor: bool, value: i64) -> FactId {
+            let fact = Fact::Ordered(crate::OrderedFact {
+                relation: if anchor { self.anchor } else { self.data },
+                fields: smallvec::smallvec![Value::Integer(value)],
+            });
+            let Fact::Ordered(ordered) = &fact else {
+                unreachable!()
+            };
+            let id = self
+                .facts
+                .assert_ordered(ordered.relation, ordered.fields.clone());
+            self.rete.assert_fact(id, &fact, &self.facts);
+            id
+        }
+
+        fn retract(&mut self, id: FactId) {
+            let fact = self.facts.retract(id).unwrap().fact;
+            self.rete.retract_fact(id, &fact, &self.facts);
+        }
+
+        fn resolve(&mut self, role: RuntimeConditionRole, passed: bool) -> PendingRuntimeMatch {
+            let pending = self
+                .rete
+                .pop_pending_runtime_match()
+                .expect("expected request");
+            assert_eq!(pending.role, role);
+            assert!(self
+                .rete
+                .runtime_match_bindings(&pending, &self.facts)
+                .is_some());
+            self.rete
+                .resolve_runtime_match(pending, passed, &self.facts);
+            pending
+        }
+
+        fn valid(&self) {
+            self.rete
+                .validate_snapshot(&self.facts, &self.symbols)
+                .unwrap();
+            self.compiler.validate_snapshot(&self.rete).unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_filter_owns_local_frame_and_retains_rejection_without_outer() {
+        let mut fixture = Fixture::new(true, false, false);
+        let id = fixture.assert(false, 0);
+        let pending = fixture.rete.pop_pending_runtime_match().unwrap();
+        let bindings = fixture
+            .rete
+            .runtime_match_bindings(&pending, &fixture.facts)
+            .unwrap();
+        assert!(bindings.get(fixture.outer).is_none());
+        assert!(matches!(
+            bindings.get(fixture.local).map(|value| &**value),
+            Some(Value::Integer(0))
+        ));
+        fixture
+            .rete
+            .resolve_runtime_match(pending, false, &fixture.facts);
+        fixture.assert(true, 2);
+        assert!(fixture.rete.pop_pending_runtime_match().is_none());
+        assert_eq!(fixture.rete.agenda.len(), 1);
+        fixture.retract(id);
+        assert_eq!(fixture.rete.agenda.len(), 1);
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_negative_selects_one_conflict_and_defers_later_callback() {
+        let mut fixture = Fixture::new(false, true, false);
+        fixture.assert(true, 2);
+        let good = fixture.assert(false, 9);
+        let first = fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+        assert_eq!(first.fact, Some(good));
+        let bad = fixture.assert(false, 0);
+        assert!(fixture.rete.pop_pending_runtime_match().is_none());
+        fixture.valid();
+        fixture.retract(good);
+        let replacement = fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+        assert_eq!(replacement.fact, Some(bad));
+        assert_eq!(fixture.rete.agenda.len(), 0);
+        fixture.valid();
+        fixture.retract(bad);
+        assert_eq!(fixture.rete.agenda.len(), 1);
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_negative_does_not_revisit_rejected_predecessors() {
+        let mut fixture = Fixture::new(false, true, false);
+        fixture.assert(true, 2);
+        fixture.assert(false, 1);
+        fixture.resolve(RuntimeConditionRole::NegativeJoin, false);
+        let selected = fixture.assert(false, 9);
+        fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+        fixture.retract(selected);
+        assert!(fixture.rete.pop_pending_runtime_match().is_none());
+        assert_eq!(fixture.rete.agenda.len(), 1);
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_constraint_continuation_invalidates_downstream_before_callback() {
+        let mut fixture = Fixture::new(true, true, true);
+        fixture.assert(false, 3);
+        fixture.assert(true, 2);
+        fixture.resolve(RuntimeConditionRole::PatternFilter, true);
+        fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+        let stale = fixture.rete.pop_pending_runtime_match().unwrap();
+        assert_eq!(stale.role, RuntimeConditionRole::PositiveJoin);
+        assert!(fixture
+            .rete
+            .runtime_match_bindings(&stale, &fixture.facts)
+            .is_none());
+        fixture
+            .rete
+            .resolve_runtime_match(stale, false, &fixture.facts);
+        assert_eq!(fixture.rete.agenda.len(), 0);
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_removed_pending_candidate_resumes_at_successor() {
+        let mut fixture = Fixture::new(false, true, false);
+        fixture.assert(true, 2);
+        let first = fixture.assert(false, 1);
+        let stale = fixture.rete.pop_pending_runtime_match().unwrap();
+        let second = fixture.assert(false, 2);
+        fixture.retract(first);
+        assert!(fixture
+            .rete
+            .runtime_match_bindings(&stale, &fixture.facts)
+            .is_none());
+        fixture
+            .rete
+            .resolve_runtime_match(stale, true, &fixture.facts);
+        let replacement = fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+        assert_eq!(replacement.fact, Some(second));
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_backfill_queues_filters_in_assertion_order_without_early_admission() {
+        let mut fixture =
+            Fixture::with_initial(true, false, false, &[(false, 9), (false, 1), (true, 2)]);
+        let first = fixture.rete.pop_pending_runtime_match().unwrap();
+        let bindings = fixture
+            .rete
+            .runtime_match_bindings(&first, &fixture.facts)
+            .unwrap();
+        assert!(matches!(
+            bindings.get(fixture.local).map(|value| &**value),
+            Some(Value::Integer(9))
+        ));
+        fixture
+            .rete
+            .resolve_runtime_match(first, false, &fixture.facts);
+        assert_eq!(fixture.rete.agenda.len(), 1);
+        let second = fixture.resolve(RuntimeConditionRole::PatternFilter, true);
+        let fact = &fixture.facts.get(second.fact.unwrap()).unwrap().fact;
+        assert!(matches!(
+            get_slot_value(fact, SlotIndex::Ordered(0)),
+            Some(Value::Integer(1))
+        ));
+        assert_eq!(fixture.rete.agenda.len(), 0);
+        assert!(fixture.rete.pop_pending_runtime_match().is_none());
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_replacement_callbacks_reverse_selected_owner_order() {
+        let mut fixture = Fixture::new(false, true, false);
+        fixture.assert(true, 2);
+        fixture.assert(true, 4);
+        let first = fixture.assert(false, 9);
+        let latest = fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+        let earliest = fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+        let latest_value = fixture
+            .rete
+            .token_store
+            .get(latest.parent_token.unwrap())
+            .unwrap()
+            .bindings
+            .get(fixture.outer)
+            .unwrap();
+        assert!(matches!(&**latest_value, Value::Integer(4)));
+        let replacement = fixture.assert(false, 8);
+        assert!(fixture.rete.pop_pending_runtime_match().is_none());
+        fixture.valid();
+        fixture.retract(first);
+        let a = fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+        let b = fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+        assert_eq!(a.parent_token, earliest.parent_token);
+        assert_eq!(b.parent_token, latest.parent_token);
+        assert_eq!((a.fact, b.fact), (Some(replacement), Some(replacement)));
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_shared_alpha_conflicts_keep_cross_rule_order_after_rule_removal() {
+        let mut fixture = Fixture::new(false, true, false);
+        let a = crate::Symbol(fixture.symbols.intern_utf8("a"));
+        let x = crate::Symbol(fixture.symbols.intern_utf8("x"));
+        let pattern = |relation, variable, negated| CompilablePattern {
+            entry_type: AlphaEntryType::OrderedRelation(relation),
+            constant_tests: vec![],
+            variable_slots: vec![(SlotIndex::Ordered(0), variable)],
+            negated_variable_slots: vec![],
+            negated,
+            exists: false,
+        };
+        let later_rule = fixture.compiler.allocate_rule_id();
+        fixture
+            .compiler
+            .compile_conditions(
+                &mut fixture.rete,
+                &fixture.facts,
+                later_rule,
+                Salience::DEFAULT,
+                &[
+                    CompilableCondition::Pattern(pattern(fixture.anchor, a, false)),
+                    CompilableCondition::RuntimePattern(CompilableRuntimePattern {
+                        pattern: pattern(fixture.data, x, true),
+                        local_condition: None,
+                        local_bindings: vec![],
+                        negative_condition: Some(1),
+                        join_role: RuntimeConditionRole::NegativeJoin,
+                    }),
+                ],
+            )
+            .unwrap();
+        fixture.assert(true, 2);
+        fixture.assert(true, 4);
+        let selected = fixture.assert(false, 9);
+        let selection: Vec<_> = (0..4)
+            .map(|_| fixture.resolve(RuntimeConditionRole::NegativeJoin, true))
+            .collect();
+        assert_eq!(selection[0].rule, later_rule);
+        assert_eq!(selection[1].rule, later_rule);
+        let earlier_rule = selection[2].rule;
+        assert_ne!(earlier_rule, later_rule);
+        assert_eq!(selection[3].rule, earlier_rule);
+        let replacement = fixture.assert(false, 8);
+        fixture.retract(selected);
+        for original in selection.iter().rev() {
+            let request = fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+            assert_eq!(
+                (request.rule, request.parent_token),
+                (original.rule, original.parent_token)
+            );
+        }
+        fixture
+            .compiler
+            .remove_rules(&mut fixture.rete, &[earlier_rule]);
+        fixture.valid();
+        fixture.assert(false, 7);
+        fixture.retract(replacement);
+        for original in &selection[..2] {
+            let request = fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+            assert_eq!(
+                (request.rule, request.parent_token),
+                (original.rule, original.parent_token)
+            );
+        }
+        assert!(fixture.rete.pop_pending_runtime_match().is_none());
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_exists_inversion_preserves_initial_and_replacement_search_phases() {
+        let mut fixture =
+            Fixture::with_role(false, true, false, &[], RuntimeConditionRole::ExistsJoin);
+        fixture.assert(true, 2);
+        fixture.assert(false, 0);
+        let failed = fixture.resolve(RuntimeConditionRole::ExistsJoin, false);
+        assert!(!failed.replacing_conflict);
+        assert_eq!(fixture.rete.agenda.len(), 0);
+        let selected = fixture.assert(false, 9);
+        let accepted = fixture.resolve(RuntimeConditionRole::ExistsJoin, true);
+        assert!(!accepted.replacing_conflict);
+        assert_eq!(fixture.rete.agenda.len(), 1);
+        fixture.assert(false, 8);
+        fixture.assert(false, 7);
+        assert!(fixture.rete.pop_pending_runtime_match().is_none());
+        fixture.retract(selected);
+        let rejected = fixture.resolve(RuntimeConditionRole::ExistsJoin, false);
+        assert!(rejected.replacing_conflict);
+        let replacement = fixture.resolve(RuntimeConditionRole::ExistsJoin, true);
+        assert!(replacement.replacing_conflict);
+        assert_eq!(fixture.rete.agenda.len(), 1);
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_snapshot_rejects_existential_role_without_inversion() {
+        let mut fixture = Fixture::new(false, true, false);
+        let condition = fixture
+            .rete
+            .beta
+            .nodes
+            .values_mut()
+            .find_map(|node| match node {
+                BetaNode::Negative {
+                    runtime: Some(condition),
+                    ..
+                } => Some(condition),
+                _ => None,
+            })
+            .unwrap();
+        condition.role = RuntimeConditionRole::ExistsJoin;
+        assert!(fixture
+            .rete
+            .validate_snapshot(&fixture.facts, &fixture.symbols)
+            .is_err());
+    }
+
+    #[test]
+    fn runtime_snapshot_requires_ordered_selected_conflict_reverse_index() {
+        let mut fixture = Fixture::new(false, true, false);
+        fixture.assert(true, 2);
+        fixture.assert(false, 9);
+        fixture.resolve(RuntimeConditionRole::NegativeJoin, true);
+        fixture.valid();
+        fixture.rete.runtime_conflicts.clear();
+        let error = fixture
+            .rete
+            .validate_snapshot(&fixture.facts, &fixture.symbols)
+            .unwrap_err();
+        assert!(error.contains("lacks ordered reverse owner"), "{error}");
+    }
+
+    #[test]
+    fn runtime_disable_cancels_pending_owner_without_callbacks_or_snapshot_loss() {
+        let mut fixture = Fixture::new(false, true, false);
+        fixture.assert(true, 2);
+        fixture.assert(false, 9);
+        let pending = fixture.rete.pop_pending_runtime_match().unwrap();
+        fixture.rete.disable_rule(pending.rule);
+        assert!(fixture
+            .rete
+            .runtime_match_bindings(&pending, &fixture.facts)
+            .is_none());
+        fixture
+            .rete
+            .resolve_runtime_match(pending, true, &fixture.facts);
+        assert_eq!(fixture.rete.agenda.len(), 0);
+        fixture.valid();
+    }
+
+    #[test]
+    fn runtime_snapshot_rejects_negative_extraction_overwriting_absent_outer() {
+        let mut fixture = Fixture::new(false, true, false);
+        fixture.valid();
+        let condition = fixture
+            .rete
+            .beta
+            .nodes
+            .values_mut()
+            .find_map(|node| match node {
+                BetaNode::Negative {
+                    runtime: Some(condition),
+                    ..
+                } => Some(condition),
+                _ => None,
+            })
+            .unwrap();
+        condition
+            .bindings
+            .push((SlotIndex::Ordered(0), fixture.outer));
+        let error = fixture
+            .rete
+            .validate_snapshot(&fixture.facts, &fixture.symbols)
+            .unwrap_err();
+        assert!(error.contains("overwrites outer binding"), "{error}");
+    }
+
+    #[test]
+    fn runtime_snapshot_rejects_wrong_physical_selector_kind() {
+        let mut fixture = Fixture::new(true, true, false);
+        let condition = fixture
+            .rete
+            .alpha
+            .nodes
+            .iter_mut()
+            .find_map(|node| match node {
+                crate::alpha::AlphaNode::RuntimePredicate { condition, .. } => Some(condition),
+                _ => None,
+            })
+            .unwrap();
+        condition.bindings[0].0 = SlotIndex::Template(0);
+        let error = fixture
+            .rete
+            .validate_snapshot_rules(|_| Some((Salience::DEFAULT, 3)))
+            .unwrap_err();
+        assert!(error.contains("wrong fact kind"), "{error}");
+    }
+
+    #[test]
+    fn runtime_condition_plan_rejects_invalid_role_before_installation() {
+        let fixture = Fixture::new(false, false, false);
+        let before = fixture.rete.cardinality();
+        let invalid = CompilableRuntimePattern {
+            pattern: CompilablePattern {
+                entry_type: AlphaEntryType::OrderedRelation(fixture.data),
+                constant_tests: vec![],
+                variable_slots: vec![],
+                negated_variable_slots: vec![],
+                negated: false,
+                exists: false,
+            },
+            local_condition: None,
+            local_bindings: vec![],
+            negative_condition: Some(0),
+            join_role: RuntimeConditionRole::NegativeJoin,
+        };
+        assert!(fixture
+            .compiler
+            .plan_conditions(
+                Salience::DEFAULT,
+                vec![CompilableCondition::RuntimePattern(invalid)]
+            )
+            .is_err());
+        assert_eq!(fixture.rete.cardinality(), before);
     }
 }

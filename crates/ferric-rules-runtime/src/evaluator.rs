@@ -502,7 +502,141 @@ pub fn eval(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value, Eval
     result
 }
 
-fn finish_root_evaluation(result: Result<Value, EvalError>) -> Result<Value, EvalError> {
+/// Pattern and join networks use distinct Boolean primitive conventions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LhsEvaluationMode {
+    Pattern,
+    Join,
+}
+
+/// Evaluate a pattern or join test without changing ordinary expression truth.
+///
+/// Only the LHS Boolean tree is interpreted here. Function arguments and
+/// callable bodies retain ordinary evaluation. The caller owns the final
+/// `EvaluationError` decision and cleanup: in particular, a negative join can
+/// treat an error as a conflict while preserving the enclosing execution halt.
+pub(crate) fn eval_lhs(
+    ctx: &mut EvalContext<'_>,
+    expr: &RuntimeExpr,
+    mode: LhsEvaluationMode,
+) -> Result<bool, EvalError> {
+    let owns_action_loop_budget = ctx.config.begin_action_loop_budget_if_inactive();
+
+    #[cfg(feature = "tracing")]
+    let result = {
+        if EvalRunGuard::is_active() {
+            finish_root_evaluation(eval_lhs_inner(ctx, expr, mode))
+        } else {
+            let _run_guard = EvalRunGuard::enter_root();
+            ferric_span!(debug_span, "eval_lhs_root", call_depth = ctx.call_depth);
+            finish_root_evaluation(eval_lhs_inner(ctx, expr, mode))
+        }
+    };
+    #[cfg(not(feature = "tracing"))]
+    let result = finish_root_evaluation(eval_lhs_inner(ctx, expr, mode));
+
+    if owns_action_loop_budget {
+        ctx.config.end_action_loop_budget();
+    }
+    result
+}
+
+fn eval_lhs_inner(
+    ctx: &mut EvalContext<'_>,
+    expr: &RuntimeExpr,
+    mode: LhsEvaluationMode,
+) -> Result<bool, EvalError> {
+    if let RuntimeExpr::Call { name, args, .. } = expr {
+        if name == "and" || name == "or" {
+            if ctx.expression_depth >= MAX_EXPRESSION_DEPTH {
+                return Err(EvalError::ExpressionNestingLimit {
+                    limit: MAX_EXPRESSION_DEPTH,
+                });
+            }
+            ctx.expression_depth += 1;
+            let result = eval_lhs_boolean_arguments(ctx, args, mode, name == "and");
+            ctx.expression_depth -= 1;
+            return result;
+        }
+    }
+
+    let primitive = mode == LhsEvaluationMode::Join && lhs_join_primitive(ctx, expr);
+    let value = match eval_inner(ctx, expr) {
+        Ok(value) => value,
+        Err(error)
+            if primitive
+                && matches!(expr, RuntimeExpr::Call { .. })
+                && !matches!(error, EvalError::ReturnControl { .. }) =>
+        {
+            // CLIPS's callable primitive exposes FALSE plus Error/Halt on
+            // failure. A later primitive in join-level OR can clear Error
+            // while remaining skipped under Halt, so retain that distinction.
+            ctx.globals.push_halt_diagnostic(error);
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    if mode == LhsEvaluationMode::Join
+        && matches!(
+            expr,
+            RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. }
+        )
+    {
+        // CLIPS join getters report primitive success independently of the
+        // copied value. Resolve normally first so missing bindings still fail.
+        return Ok(true);
+    }
+    // Pattern/join fallback evaluation rejects only the actual FALSE symbol.
+    // In particular, a callback returning VOID satisfies an LHS predicate.
+    Ok(
+        !matches!(value, Value::Symbol(symbol) if ctx.symbol_table.resolve_symbol_str(symbol) == Some("FALSE")),
+    )
+}
+
+fn eval_lhs_boolean_arguments(
+    ctx: &mut EvalContext<'_>,
+    args: &[RuntimeExpr],
+    mode: LhsEvaluationMode,
+    conjunction: bool,
+) -> Result<bool, EvalError> {
+    for arg in args {
+        let passed = eval_lhs_inner(ctx, arg, mode)?;
+        if ctx.globals.evaluation_error()
+            && (mode == LhsEvaluationMode::Pattern || !lhs_join_primitive(ctx, arg))
+        {
+            return Ok(false);
+        }
+        if passed != conjunction {
+            return Ok(passed);
+        }
+    }
+    Ok(conjunction)
+}
+
+fn lhs_join_primitive(ctx: &EvalContext<'_>, expr: &RuntimeExpr) -> bool {
+    match expr {
+        RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. } => true,
+        RuntimeExpr::Call { name, .. } if !is_builtin_callable(name) => {
+            match parse_qualified_name(name) {
+                Ok(QualifiedName::Qualified { module, name }) => ctx
+                    .module_registry
+                    .get_by_name(&module)
+                    .is_some_and(|module| {
+                        ctx.functions.contains(module, &name)
+                            || ctx.generics.contains(module, &name)
+                    }),
+                Ok(QualifiedName::Unqualified(name)) => {
+                    !ctx.functions.modules_for_name(&name).is_empty()
+                        || !ctx.generics.modules_for_name(&name).is_empty()
+                }
+                Err(_) => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn finish_root_evaluation<T>(result: Result<T, EvalError>) -> Result<T, EvalError> {
     match result {
         Err(EvalError::ReturnControl { span, .. }) => {
             Err(EvalError::ReturnOutsideCallable { span })
@@ -6750,6 +6884,311 @@ mod tests {
 
     fn float(f: f64) -> RuntimeExpr {
         RuntimeExpr::Literal(Value::Float(f))
+    }
+
+    fn with_lhs_context(test: impl FnOnce(&mut EvalContext<'_>)) {
+        let (mut st, mut vm, mut bs, cfg, mut functions, mut globals, generics, mr, em) =
+            test_ctx();
+        let main = mr.main_module_id();
+        let false_value = clips_false(&mut st, cfg.string_encoding);
+        let variable = st.intern_symbol("field", cfg.string_encoding).unwrap();
+        bs.set(
+            vm.get_or_create(variable).unwrap(),
+            ValueRef::new(false_value.clone()),
+        );
+        globals.set(main, "gate", false_value);
+        functions.register(
+            main,
+            UserFunction {
+                name: "wrapped".into(),
+                parameters: Vec::new(),
+                wildcard_parameter: None,
+                body: vec![ferric_rules_parser::ActionExpr::FunctionCall(
+                    ferric_rules_parser::FunctionCall {
+                        name: "and".into(),
+                        args: vec![ferric_rules_parser::ActionExpr::GlobalVariable(
+                            "gate".into(),
+                            dummy_span(),
+                        )],
+                        span: dummy_span(),
+                    },
+                )],
+            },
+        );
+        functions.register(
+            main,
+            UserFunction {
+                name: "fails".into(),
+                parameters: Vec::new(),
+                wildcard_parameter: None,
+                body: vec![ferric_rules_parser::ActionExpr::FunctionCall(
+                    ferric_rules_parser::FunctionCall {
+                        name: "/".into(),
+                        args: [1, 0]
+                            .into_iter()
+                            .map(|value| {
+                                ferric_rules_parser::ActionExpr::Literal(
+                                    ferric_rules_parser::LiteralValue {
+                                        value: ferric_rules_parser::LiteralKind::Integer(value),
+                                        span: dummy_span(),
+                                    },
+                                )
+                            })
+                            .collect(),
+                        span: dummy_span(),
+                    },
+                )],
+            },
+        );
+        test(&mut EvalContext {
+            bindings: &bs,
+            var_map: &vm,
+            symbol_table: &mut st,
+            config: &cfg,
+            functions: &functions,
+            globals: &mut globals,
+            generics: &generics,
+            call_depth: 0,
+            expression_depth: 0,
+            current_module: main,
+            module_registry: &mr,
+            function_modules: &em,
+            global_modules: &em,
+            generic_modules: &em,
+            method_chain: None,
+            input_buffer: None,
+            fact_base: None,
+            template_defs: None,
+        });
+    }
+
+    fn lhs_print(ctx: &mut EvalContext<'_>) -> RuntimeExpr {
+        let channel = ctx
+            .symbol_table
+            .intern_symbol("t", ctx.config.string_encoding)
+            .unwrap();
+        call(
+            "printout",
+            vec![RuntimeExpr::Literal(Value::Symbol(channel)), int(7)],
+        )
+    }
+
+    #[test]
+    fn lhs_join_getters_keep_primitive_success_separate_from_false_values() {
+        with_lhs_context(|ctx| {
+            for reference in [
+                RuntimeExpr::BoundVar {
+                    name: "field".into(),
+                    span: None,
+                },
+                RuntimeExpr::GlobalVar {
+                    name: "gate".into(),
+                    span: None,
+                },
+            ] {
+                let expression = call("and", vec![call("or", vec![reference.clone()]), int(1)]);
+                assert!(eval_lhs(ctx, &expression, LhsEvaluationMode::Join).unwrap());
+                assert!(!eval_lhs(ctx, &expression, LhsEvaluationMode::Pattern).unwrap());
+                let ordinary = eval(ctx, &expression).unwrap();
+                assert!(is_false_symbol(&ordinary, ctx.symbol_table));
+                // A getter consumed as an ordinary function argument retains
+                // its FALSE value; only direct join Boolean operands differ.
+                assert!(
+                    eval_lhs(ctx, &call("not", vec![reference]), LhsEvaluationMode::Join).unwrap()
+                );
+            }
+            assert!(!eval_lhs(ctx, &call("wrapped", Vec::new()), LhsEvaluationMode::Join).unwrap());
+        });
+    }
+
+    #[test]
+    fn lhs_fallback_rejects_only_symbol_false_and_preserves_void_effects() {
+        with_lhs_context(|ctx| {
+            let false_value = clips_false(ctx.symbol_table, ctx.config.string_encoding);
+            let string_false =
+                Value::String(FerricString::new("FALSE", ctx.config.string_encoding).unwrap());
+            for mode in [LhsEvaluationMode::Pattern, LhsEvaluationMode::Join] {
+                assert!(!eval_lhs(ctx, &RuntimeExpr::Literal(false_value.clone()), mode).unwrap());
+                for value in [
+                    Value::Void,
+                    Value::Integer(0),
+                    Value::Float(0.0),
+                    string_false.clone(),
+                    Value::Multifield(Box::default()),
+                ] {
+                    assert!(eval_lhs(ctx, &RuntimeExpr::Literal(value), mode).unwrap());
+                }
+                let callback = lhs_print(ctx);
+                assert!(eval_lhs(ctx, &callback, mode).unwrap());
+                assert_eq!(
+                    ctx.globals.take_printout_events(),
+                    vec![("t".into(), "7".into())]
+                );
+            }
+            assert!(!is_truthy(&Value::Void, ctx.symbol_table));
+        });
+    }
+
+    #[test]
+    fn lhs_boolean_short_circuit_skips_unreached_callbacks_and_errors() {
+        with_lhs_context(|ctx| {
+            let false_expr =
+                RuntimeExpr::Literal(clips_false(ctx.symbol_table, ctx.config.string_encoding));
+            for mode in [LhsEvaluationMode::Pattern, LhsEvaluationMode::Join] {
+                let callback = lhs_print(ctx);
+                for (name, first, expected) in
+                    [("and", false_expr.clone(), false), ("or", int(1), true)]
+                {
+                    let expression = call(
+                        name,
+                        vec![first, callback.clone(), call("/", vec![int(1), int(0)])],
+                    );
+                    assert_eq!(eval_lhs(ctx, &expression, mode).unwrap(), expected);
+                    assert!(ctx.globals.take_printout_events().is_empty());
+                }
+                let expression = call("and", vec![call("/", vec![int(1), int(0)]), callback]);
+                assert!(matches!(
+                    eval_lhs(ctx, &expression, mode),
+                    Err(EvalError::DivisionByZero { .. })
+                ));
+                assert!(ctx.globals.take_printout_events().is_empty());
+                assert_eq!(ctx.expression_depth, 0);
+            }
+        });
+    }
+
+    #[test]
+    fn lhs_recovered_error_stops_group_without_consuming_error_or_halt() {
+        with_lhs_context(|ctx| {
+            let comparator = ctx
+                .symbol_table
+                .intern_symbol(">", ctx.config.string_encoding)
+                .unwrap();
+            let failed_sort = call(
+                "sort",
+                vec![
+                    RuntimeExpr::Literal(Value::Symbol(comparator)),
+                    call("/", vec![int(1), int(0)]),
+                    int(2),
+                ],
+            );
+            let callback = lhs_print(ctx);
+            for mode in [LhsEvaluationMode::Pattern, LhsEvaluationMode::Join] {
+                let expression = call("and", vec![failed_sort.clone(), callback.clone()]);
+                assert!(!eval_lhs(ctx, &expression, mode).unwrap());
+                assert!(ctx.globals.evaluation_error());
+                assert!(ctx.globals.evaluation_halted());
+                assert_eq!(ctx.globals.take_diagnostics().len(), 1);
+                assert!(ctx.globals.take_printout_events().is_empty());
+                // This models the caller's per-candidate cleanup: the error
+                // verdict has already been captured, while the halt remains.
+                ctx.globals.clear_evaluation_error();
+                assert!(ctx.globals.evaluation_halted());
+                assert!(eval_lhs(ctx, &int(1), mode).unwrap());
+                assert!(ctx.globals.take_evaluation_halt());
+            }
+        });
+    }
+
+    #[test]
+    fn lhs_join_or_preserves_callable_primitive_error_clearing() {
+        // Pinned CLIPS: a failed direct user-call primitive in join OR can
+        // reach a later user-call primitive. That call clears Error but skips
+        // its body under Halt. Pattern OR instead stops at the first error.
+        with_lhs_context(|ctx| {
+            let expression = call(
+                "or",
+                vec![call("fails", Vec::new()), call("wrapped", Vec::new())],
+            );
+            assert!(!eval_lhs(ctx, &expression, LhsEvaluationMode::Join).unwrap());
+            assert!(!ctx.globals.evaluation_error());
+            assert!(ctx.globals.evaluation_halted());
+            assert_eq!(ctx.globals.take_diagnostics().len(), 1);
+            assert!(ctx.globals.take_evaluation_halt());
+            assert!(matches!(
+                eval_lhs(ctx, &expression, LhsEvaluationMode::Pattern),
+                Err(EvalError::DivisionByZero { .. })
+            ));
+        });
+        with_lhs_context(|ctx| {
+            let expression = call(
+                "or",
+                vec![
+                    call("fails", Vec::new()),
+                    RuntimeExpr::BoundVar {
+                        name: "field".into(),
+                        span: None,
+                    },
+                ],
+            );
+            assert!(eval_lhs(ctx, &expression, LhsEvaluationMode::Join).unwrap());
+            assert!(ctx.globals.evaluation_error());
+            assert!(ctx.globals.evaluation_halted());
+            assert_eq!(ctx.globals.take_diagnostics().len(), 1);
+        });
+        with_lhs_context(|ctx| {
+            let expression = call(
+                "and",
+                vec![call("fails", Vec::new()), call("wrapped", Vec::new())],
+            );
+            assert!(!eval_lhs(ctx, &expression, LhsEvaluationMode::Join).unwrap());
+            assert!(ctx.globals.evaluation_error());
+            assert!(ctx.globals.evaluation_halted());
+            assert_eq!(ctx.globals.take_diagnostics().len(), 1);
+        });
+    }
+
+    #[test]
+    fn lhs_direct_getters_still_report_missing_bindings() {
+        with_lhs_context(|ctx| {
+            for mode in [LhsEvaluationMode::Pattern, LhsEvaluationMode::Join] {
+                assert!(matches!(
+                    eval_lhs(
+                        ctx,
+                        &RuntimeExpr::BoundVar {
+                            name: "missing".into(),
+                            span: None
+                        },
+                        mode
+                    ),
+                    Err(EvalError::UnboundVariable { .. })
+                ));
+                assert!(matches!(
+                    eval_lhs(
+                        ctx,
+                        &RuntimeExpr::GlobalVar {
+                            name: "missing".into(),
+                            span: None
+                        },
+                        mode
+                    ),
+                    Err(EvalError::UnboundGlobal { .. })
+                ));
+            }
+        });
+    }
+
+    #[test]
+    fn lhs_boolean_depth_shares_the_expression_limit_and_unwinds() {
+        with_lhs_context(|ctx| {
+            let mut expression = int(1);
+            for _ in 0..MAX_EXPRESSION_DEPTH {
+                expression = call("and", vec![expression]);
+            }
+            for mode in [LhsEvaluationMode::Pattern, LhsEvaluationMode::Join] {
+                assert!(matches!(
+                    eval_lhs(ctx, &expression, mode),
+                    Err(EvalError::ExpressionNestingLimit { .. })
+                ));
+                assert_eq!(ctx.expression_depth, 0);
+                assert!(eval_lhs(ctx, &int(1), mode).unwrap());
+                assert_eq!(ctx.expression_depth, 0);
+                assert!(matches!(
+                    eval_lhs(ctx, &call("return", vec![int(1)]), mode),
+                    Err(EvalError::ReturnOutsideCallable { .. })
+                ));
+            }
+        });
     }
 
     // -------------------------------------------------------------------

@@ -355,26 +355,32 @@ mod tests {
     #[test]
     fn fr_rete_004_complex_negation_not_deferred_to_fire() {
         let mut engine = new_utf8_engine();
-        let errors = engine
-            .load_str(
-                r"
-                (defrule no-square-greater
-                    (anchor ?min)
-                    (not (data ?x&:(> (* ?x ?x) (* ?min ?min))))
-                    =>
-                    (assert (safe-square ?min)))
-            ",
-            )
-            .expect_err("unsupported complex negation must fail during load");
-
-        assert!(
-            errors.iter().any(|error| matches!(
-                error,
-                crate::loader::LoadError::Compile(message)
-                    if message.contains("complex constraints inside negated patterns")
-            )),
-            "expected an explicit match-time support error, got {errors:?}"
+        load_ok(
+            &mut engine,
+            r"
+            (defrule no-square-greater
+                (anchor ?min)
+                (not (data ?x&:(> (* ?x ?x) (* ?min ?min))))
+                => (assert (safe-square ?min)))",
         );
+        engine.reset().unwrap();
+        engine.assert_ordered("anchor", vec![2_i64]).unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+        let blocker = engine.assert_ordered("data", vec![3_i64]).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            0,
+            "blockers suppress activation before run"
+        );
+        assert_eq!(run_to_completion(&mut engine).rules_fired, 0);
+        engine.retract(blocker).unwrap();
+        assert_eq!(
+            engine.agenda_len(),
+            1,
+            "retraction restores the match before run"
+        );
+        assert_eq!(run_to_completion(&mut engine).rules_fired, 1);
+        assert_has_fact_with_relation(&engine, "safe-square");
     }
 
     #[test]
@@ -533,7 +539,7 @@ mod tests {
             errors.iter().any(|error| matches!(
                 error,
                 crate::loader::LoadError::Compile(message)
-                    if message.contains("not exported by existential")
+                    if message.contains("unbound LHS variable")
             )),
             "expected an existential test-scope diagnostic, got {errors:?}"
         );
@@ -564,27 +570,25 @@ mod tests {
     }
 
     #[test]
-    fn fr_rete_005_complex_existential_constraint_fails_during_load() {
+    fn fr_rete_005_complex_existential_constraint_matches_before_run() {
         let mut engine = new_utf8_engine();
-        let errors = engine
-            .load_str(
-                r"
-                (defrule invalid
-                    (not (not (foo ?x&:(> (* ?x ?x) 4))))
-                    =>
-                    (assert (unexpected)))
-            ",
-            )
-            .expect_err("an existential-local runtime predicate must not fail silently");
-
-        assert!(
-            errors.iter().any(|error| matches!(
-                error,
-                crate::loader::LoadError::Compile(message)
-                    if message.contains("complex constraints inside existential patterns")
-            )),
-            "expected an explicit existential match-time diagnostic, got {errors:?}"
+        load_ok(
+            &mut engine,
+            r"
+            (defrule found
+                (not (not (foo ?x&:(> (* ?x ?x) 4))))
+                => (assert (found-large-square)))",
         );
+        engine.reset().unwrap();
+        engine.assert_ordered("foo", vec![1_i64]).unwrap();
+        assert_eq!(engine.agenda_len(), 0);
+        let first = engine.assert_ordered("foo", vec![3_i64]).unwrap();
+        let second = engine.assert_ordered("foo", vec![4_i64]).unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+        engine.retract(first).unwrap();
+        assert_eq!(engine.agenda_len(), 1);
+        engine.retract(second).unwrap();
+        assert_eq!(engine.agenda_len(), 0);
     }
 
     #[test]

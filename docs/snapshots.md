@@ -25,12 +25,23 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-Schema 1 is the first versioned snapshot format. Builds supporting schema 1 must
-keep its meaning and pass the stored schema fixture and resume regressions.
+Schema 5 stores typed runtime pattern filters and negative/existence join constraints,
+including retained pattern decisions and lazy selected-conflict/support state. It also
+distinguishes pattern and join Boolean evaluation. Versions 2–4 are reserved
+for the distinct ordered-cardinality, ordered-multifield, and template-multislot
+compatibility layouts. This build supports only version 5; versions 1–4 are
+explicitly rejected before payload decoding. Use the producing Ferric version
+to export durable application data before upgrading. The original schema-1 fixture
+is retained as a rejection regression, and its source resume behavior remains
+tested under the current schema. Builds supporting a schema must keep its
+meaning and pass the stored schema fixture and resume regressions.
 Changes to the serialized layout or runtime semantics that make an old state
 invalid require a schema-version change, a documented compatibility decision,
 and a fixture regression. Crate version and snapshot schema version are separate.
 Snapshots are not a promise to migrate arbitrary RETE internals forever.
+Combining incompatible layouts from separate compatibility changes requires
+another schema version; reserving distinct versions does not make their states
+interchangeable.
 
 This is an explicit pre-1.0 break from legacy raw snapshots. Unversioned bytes
 return `LegacySnapshot`; Ferric never guesses a codec, rebuilds an empty engine,
@@ -54,7 +65,7 @@ Every format uses the same binary envelope, including experimental JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`1`) |
+| 8–9 | Little-endian schema version (`5`) |
 | 10 | Codec: bincode `0`, JSON `1`, CBOR `2`, MessagePack `3`, Postcard `4` |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |
@@ -75,8 +86,8 @@ Runtime values allow 32 nested multifields; stored action/expression trees allow
 and terminal), and NCC nesting 4. Requested call-depth configuration is
 preserved; all restored engines apply the same effective 32-call ceiling and
 64 active-expression-frame limit as fresh engines. NCC partner branches must share their declared prefix and cannot form callback cycles.
-Graph validation has a 10,000,000-operation work allowance and a separate equal
-allowance for compiler-cache validation. It charges cross-products and test/index
+Graph validation has a 10,000,000-operation work allowance and separate equal
+allowances for compiler-cache and runtime-condition validation. It charges cross-products and test/index
 widths before evaluating them. A valid but unusually large engine can exceed
 these persistence bounds; its direct engine API remains usable.
 
@@ -94,8 +105,13 @@ ownership; runtime rule metadata; graph ancestry and memory ownership; exact
 positive joins and their bindings; complete negative/exists support and NCC
 ownership; token reverse indexes; activation identity, chronology, recency and
 strategy keys; and compiler-cache references. It rejects unfinished predicate
-work. Historical predicate outcomes are retained, since re-evaluating a predicate
-against globals changed later would alter refraction and resume behavior.
+work, including unfinished local filters and negative-conflict searches.
+Runtime conditions are checked against their graph-owned roles, physical field
+selectors, and lexical binding scopes. Historical predicate outcomes and local
+filter membership are retained, since re-evaluating against globals changed
+later would alter refraction and resume behavior. Runtime negative joins retain
+the selected conflict and candidate order; replacement proceeds after that
+conflict instead of reconsidering rejected predecessors.
 
 These checks run at snapshot boundaries, not on ordinary evaluation paths.
 Decoding creates a separate engine; an error cannot partially replace the caller's

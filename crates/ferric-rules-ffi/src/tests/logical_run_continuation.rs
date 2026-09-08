@@ -44,12 +44,8 @@ const EARLY_DIAGNOSTIC_PROGRAM: &str = r"
         (initial-fact)
         =>
         (assert (marker keep))
-        (assert (candidate 1))
+        (sort missing-comparator 2 1)
         (assert (follow-up)))
-    (defrule bad-match
-        (candidate ?value&:(/ 1 0))
-        =>
-        (assert (must-not-fire)))
     (defrule finish
         ?pending <- (follow-up)
         =>
@@ -162,6 +158,74 @@ fn continuation_preserves_diagnostics_from_an_early_chunk() {
             "continuation must not clear diagnostics from an earlier chunk"
         );
 
+        ferric_engine_free(engine);
+    }
+}
+
+#[test]
+fn match_error_ends_continuation_and_preserves_pending_work_for_a_fresh_run() {
+    unsafe {
+        let engine = ferric_engine_new();
+        load_and_reset(
+            engine,
+            r"
+            (defrule seed (initial-fact) =>
+                (assert (follow-up))
+                (assert (candidate 1))
+                (assert (must-not-continue)))
+            (defrule bad-match (candidate ?value&:(/ 1 0)) =>
+                (assert (must-not-fire)))
+            (defrule finish ?pending <- (follow-up) =>
+                (retract ?pending)
+                (assert (done)))
+            ",
+        );
+        let mut fired = 0;
+        let mut reason = FerricHaltReason::AgendaEmpty;
+        assert_eq!(
+            ferric_engine_run_ex(engine, 1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(fired, 1);
+        assert_eq!(reason, FerricHaltReason::ActionError);
+        let diagnostics = action_diagnostic_count(engine);
+        assert!(diagnostics > 0);
+        let mut pending = 0;
+        assert_eq!(
+            ferric_engine_agenda_count(engine, &mut pending),
+            FerricError::Ok
+        );
+        assert_eq!(pending, 1);
+        let mut facts = 0;
+        assert_eq!(
+            ferric_engine_fact_count(engine, &mut facts),
+            FerricError::Ok
+        );
+        // The host count excludes the protected synthetic initial-fact.
+        assert_eq!(facts, 2, "the failing assertion stops the remaining RHS");
+
+        fired = 99;
+        reason = FerricHaltReason::LimitReached;
+        assert_eq!(
+            ferric_engine_continue_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::InvalidArgument
+        );
+        assert_eq!(fired, 99);
+        assert_eq!(reason, FerricHaltReason::LimitReached);
+        assert_eq!(action_diagnostic_count(engine), diagnostics);
+
+        assert_eq!(
+            ferric_engine_run_ex(engine, -1, &mut fired, &mut reason),
+            FerricError::Ok
+        );
+        assert_eq!(fired, 1);
+        assert_eq!(reason, FerricHaltReason::AgendaEmpty);
+        assert_eq!(action_diagnostic_count(engine), 0);
+        assert_eq!(
+            ferric_engine_fact_count(engine, &mut facts),
+            FerricError::Ok
+        );
+        assert_eq!(facts, 2);
         ferric_engine_free(engine);
     }
 }

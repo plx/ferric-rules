@@ -76,6 +76,12 @@ impl<K: Copy + Eq + Hash> OrderedSet<K> {
         self.first = None;
         self.last = None;
     }
+    pub(crate) fn first(&self) -> Option<K> {
+        self.first
+    }
+    pub(crate) fn successor(&self, key: K) -> Option<K> {
+        self.entries.get(&key).and_then(|links| links.next)
+    }
     pub(crate) fn iter(&self) -> Iter<'_, K> {
         Iter {
             set: self,

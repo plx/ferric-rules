@@ -95,7 +95,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 1")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 5")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -133,6 +133,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
+const SCHEMA_VERSION: u16 = 5;
 
 fn format_id(format: SerializationFormat) -> u8 {
     match format {
@@ -150,9 +151,9 @@ fn envelope(payload: Vec<u8>, format: SerializationFormat) -> Result<Vec<u8>, Se
     }
     let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
     bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
     bytes.push(format_id(format));
-    bytes.push(0); // No optional capabilities in schema 1.
+    bytes.push(0); // No optional capabilities in this schema.
     bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     let mut checksum = Sha256::new();
     checksum.update(&bytes);
@@ -175,7 +176,7 @@ fn open_envelope(data: &[u8], format: SerializationFormat) -> Result<&[u8], Seri
         ));
     }
     let version = u16::from_le_bytes([data[8], data[9]]);
-    if version != 1 {
+    if version != SCHEMA_VERSION {
         return Err(SerializationError::UnsupportedVersion(version));
     }
     if data[10] != format_id(format) {
@@ -928,10 +929,10 @@ mod tests {
         for &format in SerializationFormat::ALL {
             let bytes = engine.serialize(format).unwrap();
             let mut changed = bytes.clone();
-            changed[8..10].copy_from_slice(&2_u16.to_le_bytes());
+            changed[8..10].copy_from_slice(&u16::MAX.to_le_bytes());
             assert!(matches!(
                 Engine::deserialize(&changed, format),
-                Err(SerializationError::UnsupportedVersion(2))
+                Err(SerializationError::UnsupportedVersion(u16::MAX))
             ));
             changed = bytes.clone();
             changed[11] = 1;
@@ -981,13 +982,39 @@ mod tests {
     #[test]
     fn legacy_raw_fixture_has_an_explicit_rejection_path() {
         let raw = include_bytes!("../tests/fixtures/snapshots/legacy-raw.cbor");
-        // Verify this is a meaningful old payload, not arbitrary garbage.
-        let legacy: EngineSnapshotOwned = decode(raw, SerializationFormat::Cbor).unwrap();
-        let legacy = legacy.into_engine();
-        assert_eq!(legacy.find_facts("durable").unwrap().len(), 1);
+        // Inspect the sealed historical data without requiring its old RETE
+        // layout to deserialize as the current engine schema.
+        let legacy: serde_json::Value = decode(raw, SerializationFormat::Cbor).unwrap();
+        assert_eq!(
+            legacy["symbol_table"]["utf8_strings"],
+            serde_json::json!(["initial-fact", "durable"])
+        );
+        assert_eq!(
+            legacy["fact_base"]["facts"][2]["value"]["fact"],
+            serde_json::json!({
+                "Ordered": { "relation": { "Utf8": 1 }, "fields": [{ "Integer": 42 }] }
+            })
+        );
         assert!(matches!(
             Engine::deserialize(raw, SerializationFormat::Cbor),
             Err(SerializationError::LegacySnapshot)
+        ));
+    }
+
+    #[test]
+    fn current_schema_requires_runtime_conflict_history() {
+        let engine = Engine::new(EngineConfig::default());
+        let result = alter_state(&engine, |state| {
+            assert!(state["rete"]
+                .as_object_mut()
+                .unwrap()
+                .remove("runtime_conflicts")
+                .is_some());
+        });
+        assert!(matches!(
+            result,
+            Err(SerializationError::Decode(message))
+                if message.contains("missing field `runtime_conflicts`")
         ));
     }
 
@@ -1541,10 +1568,35 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_one_snapshot_preserves_resume_and_reset_behavior() {
+    fn committed_schema_one_snapshot_is_rejected_before_payload_decode() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-1.cbor");
-        let restored = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
-        verify_schema_one_resume(restored);
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(1))
+        ));
+        let header_only = &bytes[..HEADER_LEN];
+        assert!(matches!(
+            Engine::deserialize(header_only, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(1))
+        ));
+    }
+
+    #[test]
+    fn earlier_schema_versions_are_rejected_before_payload_decode_in_all_codecs() {
+        let engine = Engine::new(EngineConfig::default());
+        for &format in SerializationFormat::ALL {
+            let bytes = engine.serialize(format).unwrap();
+            for version in 1_u16..=4 {
+                // An unsupported version takes precedence over the missing
+                // payload and invalid checksum, without invoking its codec.
+                let mut header_only = bytes[..HEADER_LEN].to_vec();
+                header_only[8..10].copy_from_slice(&version.to_le_bytes());
+                assert!(matches!(
+                    Engine::deserialize(&header_only, format),
+                    Err(SerializationError::UnsupportedVersion(found)) if found == version
+                ));
+            }
+        }
     }
 
     #[test]
@@ -1553,6 +1605,301 @@ mod tests {
         let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
         let restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
         verify_schema_one_resume(restored);
+    }
+
+    fn schema_five_fixture_engine() -> Engine {
+        let mut engine =
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-5.clp")).unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+        assert!(matches!(
+            engine.get_global("local-calls"),
+            Some(Value::Integer(2))
+        ));
+        assert!(matches!(
+            engine.get_global("join-calls"),
+            Some(Value::Integer(2))
+        ));
+        assert_eq!(engine.agenda_len(), 0);
+        engine
+    }
+
+    /// Explicit fixture maintenance command; ordinary test runs never write it.
+    #[test]
+    #[ignore = "regenerates the committed schema-5 snapshot"]
+    fn regenerate_schema_five_fixture() {
+        let bytes = schema_five_fixture_engine()
+            .serialize(SerializationFormat::Cbor)
+            .unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/snapshots/schema-5.cbor");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn schema_five_data(engine: &Engine, value: i64) -> crate::FactHandle {
+        engine
+            .find_facts("data")
+            .unwrap()
+            .into_iter()
+            .find_map(|(id, fact)| {
+                let Fact::Ordered(fact) = fact else {
+                    return None;
+                };
+                matches!(fact.fields.first(), Some(Value::Integer(found)) if *found == value)
+                    .then_some(id)
+            })
+            .expect("expected data fact")
+    }
+
+    fn verify_schema_five_pending_resume(mut engine: Engine) -> Engine {
+        assert_eq!(engine.agenda_len(), 1);
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("safe:2\n"));
+        // The remaining candidate was rejected before the selected conflict.
+        // Replacement must not rescan it or reevaluate its retained local test.
+        assert!(matches!(
+            engine.get_global("local-calls"),
+            Some(Value::Integer(2))
+        ));
+        assert!(matches!(
+            engine.get_global("join-calls"),
+            Some(Value::Integer(2))
+        ));
+        engine.assert_ordered("anchor", vec![1_i64]).unwrap();
+        assert_eq!(engine.agenda_len(), 0);
+        assert!(matches!(
+            engine.get_global("local-calls"),
+            Some(Value::Integer(2))
+        ));
+        assert!(matches!(
+            engine.get_global("join-calls"),
+            Some(Value::Integer(3))
+        ));
+        engine.retract(schema_five_data(&engine, 1)).unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("safe:2\nsafe:1\n"));
+        // Reasserting invokes the local filter again, now with gate FALSE.
+        engine.assert_ordered("data", vec![1_i64]).unwrap();
+        assert!(matches!(
+            engine.get_global("local-calls"),
+            Some(Value::Integer(3))
+        ));
+        assert!(matches!(
+            engine.get_global("join-calls"),
+            Some(Value::Integer(3))
+        ));
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        engine.assert_ordered("anchor", vec![3_i64]).unwrap();
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t"), Some("safe:2\nsafe:1\nsafe:3\n"));
+        assert!(engine.action_diagnostics().is_empty());
+        engine
+    }
+
+    #[test]
+    fn runtime_constraint_snapshots_preserve_history_and_resume_in_all_codecs() {
+        let blocked = schema_five_fixture_engine();
+        for &format in SerializationFormat::ALL {
+            let mut restored =
+                Engine::deserialize(&blocked.serialize(format).unwrap(), format).unwrap();
+            assert!(matches!(
+                restored.get_global("local-calls"),
+                Some(Value::Integer(2))
+            ));
+            assert!(matches!(
+                restored.get_global("join-calls"),
+                Some(Value::Integer(2))
+            ));
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+            restored.retract(schema_five_data(&restored, 2)).unwrap();
+            let pending =
+                Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+            let completed = verify_schema_five_pending_resume(pending);
+            let mut completed =
+                Engine::deserialize(&completed.serialize(format).unwrap(), format).unwrap();
+            assert_eq!(completed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+            completed.reset().unwrap();
+            assert!(matches!(
+                completed.get_global("local-calls"),
+                Some(Value::Integer(2))
+            ));
+            assert!(matches!(
+                completed.get_global("join-calls"),
+                Some(Value::Integer(2))
+            ));
+            assert_eq!(completed.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert_eq!(completed.agenda_len(), 0);
+        }
+    }
+
+    #[test]
+    fn committed_schema_five_snapshot_preserves_runtime_constraint_history() {
+        let bytes = include_bytes!("../tests/fixtures/snapshots/schema-5.cbor");
+        let mut engine = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
+        assert_eq!(engine.agenda_len(), 0);
+        assert!(matches!(
+            engine.get_global("local-calls"),
+            Some(Value::Integer(2))
+        ));
+        assert!(matches!(
+            engine.get_global("join-calls"),
+            Some(Value::Integer(2))
+        ));
+        engine.retract(schema_five_data(&engine, 2)).unwrap();
+        let mut completed = verify_schema_five_pending_resume(engine);
+        assert_eq!(completed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+    }
+
+    #[test]
+    fn runtime_constraint_snapshot_rejects_forged_role_and_binding_scope() {
+        let engine = schema_five_fixture_engine();
+        let wrong_role = alter_state(&engine, |state| {
+            let condition = state["rule_info"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .filter_map(|info| info.get_mut("test_conditions"))
+                .flat_map(|conditions| conditions.as_array_mut().unwrap())
+                .find(|condition| condition["role"] == "PatternFilter")
+                .unwrap();
+            condition["role"] = serde_json::json!("NegativeJoin");
+        });
+        assert!(
+            matches!(wrong_role, Err(SerializationError::InvalidState(message)) if message.contains("role"))
+        );
+        let wrong_scope = alter_state(&engine, |state| {
+            let condition = state["rule_info"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .filter_map(|info| info.get_mut("test_conditions"))
+                .flat_map(|conditions| conditions.as_array_mut().unwrap())
+                .find(|condition| condition["role"] == "PatternFilter")
+                .unwrap();
+            condition["expr"] = serde_json::json!({"BoundVar": {"name": "outside", "span": null}});
+        });
+        assert!(
+            matches!(wrong_scope, Err(SerializationError::InvalidState(message)) if message.contains("scope"))
+        );
+    }
+
+    const EXISTS_HISTORY_SOURCE: &str = r#"
+        (deffunction qualifies (?x ?a)
+          (printout t "CHECK:" ?x ":" ?a crlf) (> (/ ?a ?x) 0))
+        (defrule r (anchor ?a) (exists (data ?x&:(qualifies ?x ?a)))
+          (later) => (printout t "EXISTS" crlf))
+    "#;
+
+    #[test]
+    fn runtime_exists_snapshots_preserve_selected_support_and_error_phase_in_all_codecs() {
+        for &format in SerializationFormat::ALL {
+            for selected_first in [false, true] {
+                let mut engine = Engine::with_rules(EXISTS_HISTORY_SOURCE).unwrap();
+                engine.assert_ordered("anchor", vec![2_i64]).unwrap();
+                if selected_first {
+                    engine.assert_ordered("data", vec![9_i64]).unwrap();
+                }
+                engine.assert_ordered("data", vec![0_i64]).unwrap();
+                let expected = if selected_first {
+                    "CHECK:9:2\n"
+                } else {
+                    "CHECK:0:2\n"
+                };
+                assert_eq!(engine.get_output("t"), Some(expected));
+                assert_eq!(
+                    engine.action_diagnostics().len(),
+                    usize::from(!selected_first)
+                );
+                let mut restored =
+                    Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
+                assert_eq!(restored.get_output("t"), Some(expected));
+                if selected_first {
+                    restored.retract(schema_five_data(&restored, 9)).unwrap();
+                    assert_eq!(restored.get_output("t"), Some("CHECK:9:2\nCHECK:0:2\n"));
+                }
+                assert_eq!(restored.action_diagnostics().len(), 1);
+                // The callback error's effect on membership is historical;
+                // restoring must not rerun it or turn initial rejection into support.
+                let mut restored =
+                    Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+                let before = restored.get_output("t").unwrap().to_owned();
+                restored.assert_ordered("later", Vec::<i64>::new()).unwrap();
+                assert_eq!(
+                    restored.run(RunLimit::Unlimited).unwrap().rules_fired,
+                    usize::from(selected_first)
+                );
+                let expected = if selected_first {
+                    format!("{before}EXISTS\n")
+                } else {
+                    before
+                };
+                assert_eq!(restored.get_output("t"), Some(expected.as_str()));
+                restored.retract(schema_five_data(&restored, 0)).unwrap();
+                let mut completed =
+                    Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+                assert_eq!(completed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+                assert_eq!(completed.get_output("t"), Some(expected.as_str()));
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_exists_snapshot_rejects_negative_join_metadata_role() {
+        let engine = Engine::with_rules(EXISTS_HISTORY_SOURCE).unwrap();
+        let wrong_role = alter_state(&engine, |state| {
+            let condition = state["rule_info"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .filter_map(|info| info.get_mut("test_conditions"))
+                .flat_map(|conditions| conditions.as_array_mut().unwrap())
+                .find(|condition| condition["role"] == "ExistsJoin")
+                .unwrap();
+            condition["role"] = serde_json::json!("NegativeJoin");
+        });
+        assert!(
+            matches!(wrong_role, Err(SerializationError::InvalidState(message)) if message.contains("role"))
+        );
+    }
+
+    #[test]
+    fn runtime_constraint_error_conflict_survives_all_codecs_without_reevaluation() {
+        let blocked = Engine::with_rules(
+            r#"
+            (defglobal ?*calls* = 0)
+            (deffunction fails (?x ?a)
+              (bind ?*calls* (+ ?*calls* 1)) (/ ?a ?x))
+            (deffacts inputs (anchor 2) (data 0))
+            (defrule absent (anchor ?a) (not (data ?x&:(fails ?x ?a)))
+              => (printout t "safe" crlf))
+        "#,
+        )
+        .unwrap();
+        assert_eq!(blocked.agenda_len(), 0);
+        assert!(matches!(
+            blocked.get_global("calls"),
+            Some(Value::Integer(1))
+        ));
+        assert_eq!(blocked.action_diagnostics().len(), 1);
+        for &format in SerializationFormat::ALL {
+            let mut restored =
+                Engine::deserialize(&blocked.serialize(format).unwrap(), format).unwrap();
+            assert_eq!(restored.action_diagnostics().len(), 1);
+            assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+            assert!(matches!(
+                restored.get_global("calls"),
+                Some(Value::Integer(1))
+            ));
+            restored.retract(schema_five_data(&restored, 0)).unwrap();
+            let mut pending =
+                Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+            assert_eq!(pending.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert_eq!(pending.get_output("t"), Some("safe\n"));
+            assert!(matches!(
+                pending.get_global("calls"),
+                Some(Value::Integer(1))
+            ));
+            assert_eq!(pending.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        }
     }
 
     #[test]
