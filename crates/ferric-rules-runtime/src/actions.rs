@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ferric_rules_core::beta::{RuleId, Salience};
-use ferric_rules_core::binding::{BindingSet, ValueRef, VarId, VarMap};
+use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_rules_core::token::Token;
 use ferric_rules_core::{
     EncodingError, Fact, FactBase, FactId, OrderedFact, ReteNetwork, Symbol, SymbolTable,
@@ -40,7 +40,11 @@ pub(crate) struct ActionExecutionContext<'a> {
     pub current_module: crate::modules::ModuleId,
 }
 
+#[derive(Default)]
 struct ActionEvalEnv {
+    /// Captured once per activation; remains available after supporting facts
+    /// are retracted. Inner token bindings and explicit RHS locals override it.
+    fact_bindings: RuntimeBindingEnv,
     runtime_bindings: RuntimeBindingEnv,
 }
 
@@ -51,6 +55,31 @@ fn flush_deferred_printout(context: &mut ActionExecutionContext<'_>) {
 }
 
 impl ActionEvalEnv {
+    /// Mask outer RHS locals while query/loop bindings are in scope, then
+    /// restore them even when the body returns an error or a rule return.
+    fn with_local_scope<'a, T>(
+        &mut self,
+        names: impl IntoIterator<Item = &'a str>,
+        execute: impl FnOnce(&mut Self) -> Result<T, ActionError>,
+    ) -> Result<T, ActionError> {
+        let mut saved = HashMap::new();
+        for name in names {
+            let name = name.strip_prefix("$?").unwrap_or(name);
+            saved
+                .entry(name.to_string())
+                .or_insert_with(|| self.runtime_bindings.remove(name));
+        }
+        let result = execute(self);
+        for (name, previous) in saved {
+            if let Some(value) = previous {
+                self.runtime_bindings.insert(name, value);
+            } else {
+                self.runtime_bindings.remove(&name);
+            }
+        }
+        result
+    }
+
     fn make_eval_context<'ctx>(
         token: &'ctx Token,
         rule_info: &'ctx CompiledRuleInfo,
@@ -87,13 +116,14 @@ impl ActionEvalEnv {
         runtime_expr: &crate::evaluator::RuntimeExpr,
         context: &mut ActionExecutionContext<'_>,
     ) -> Result<Value, ActionError> {
-        if !self.runtime_bindings.is_empty() {
-            let mut merged_env =
-                collect_outer_runtime_bindings(token, rule_info, &context.engine.symbol_table);
-            for (name, value) in &self.runtime_bindings {
-                insert_runtime_binding(&mut merged_env, name, value.clone());
-            }
-            let (bindings, var_map) = build_runtime_eval_bindings(&merged_env, context)?;
+        if !self.fact_bindings.is_empty() || !self.runtime_bindings.is_empty() {
+            let (bindings, var_map) = build_runtime_eval_bindings(
+                token,
+                rule_info,
+                &self.fact_bindings,
+                &self.runtime_bindings,
+                context,
+            )?;
             return Self::eval_runtime_expr_with_bindings(
                 runtime_expr,
                 &bindings,
@@ -442,12 +472,18 @@ pub(crate) fn execute_actions(
     let mut errors = Vec::new();
     let mut reset_requested = false;
     let mut clear_requested = false;
-    let mut eval_env = ActionEvalEnv {
-        runtime_bindings: RuntimeBindingEnv::new(),
-    };
+    let mut eval_env = ActionEvalEnv::default();
     // Defensive: clear any stale deferred events that might have accumulated
     // in non-action evaluation contexts.
     let _ = context.engine.globals.take_printout_events();
+    if let Err(error) = seed_fact_address_bindings(
+        collected_facts,
+        &rule_info.fact_address_vars,
+        &mut eval_env.fact_bindings,
+    ) {
+        context.engine.config.end_action_loop_budget();
+        return (true, false, false, vec![error]);
+    }
     seed_multifield_tail_bindings(
         &context.engine.fact_base,
         collected_facts,
@@ -532,9 +568,7 @@ pub(crate) fn evaluate_test_condition(
     collected_facts: &[FactId],
     context: &mut ActionExecutionContext<'_>,
 ) -> Result<bool, ActionError> {
-    let mut eval_env = ActionEvalEnv {
-        runtime_bindings: RuntimeBindingEnv::new(),
-    };
+    let mut eval_env = ActionEvalEnv::default();
     seed_multifield_tail_bindings(
         &context.engine.fact_base,
         collected_facts,
@@ -550,25 +584,26 @@ pub(crate) fn evaluate_test_condition(
     result
 }
 
-fn collect_outer_runtime_bindings(
-    token: &Token,
-    rule_info: &CompiledRuleInfo,
-    symbol_table: &SymbolTable,
-) -> RuntimeBindingEnv {
-    let mut env = RuntimeBindingEnv::new();
-    for index in 0..rule_info.var_map.len() {
-        #[allow(clippy::cast_possible_truncation)]
-        let var_id = VarId(index as u16);
-        let Some(value_ref) = token.bindings.get(var_id) else {
-            continue;
-        };
-        let symbol = rule_info.var_map.name(var_id);
-        let Some(name) = symbol_table.resolve_symbol_str(symbol) else {
-            continue;
-        };
-        insert_runtime_binding(&mut env, name, Value::clone(value_ref));
+fn seed_fact_address_bindings(
+    collected_facts: &[FactId],
+    addresses: &HashMap<String, usize>,
+    env: &mut RuntimeBindingEnv,
+) -> Result<(), ActionError> {
+    if addresses.len() > ferric_rules_core::compiler::MAX_RULE_CONDITIONS {
+        return Err(ActionError::EvalError(
+            "too many fact-address bindings for one rule".to_string(),
+        ));
     }
-    env
+    for (name, index) in addresses {
+        let fact_id = collected_facts.get(*index).ok_or_else(|| {
+            ActionError::EvalError(format!(
+                "fact-address binding ?{name} references missing fact at position {index}"
+            ))
+        })?;
+        let encoded = i64::from_ne_bytes(fact_id.data().as_ffi().to_ne_bytes());
+        insert_runtime_binding(env, name, Value::Integer(encoded));
+    }
+    Ok(())
 }
 
 fn insert_runtime_binding(env: &mut RuntimeBindingEnv, name: &str, value: Value) {
@@ -600,22 +635,31 @@ fn seed_multifield_tail_bindings(
 }
 
 fn build_runtime_eval_bindings(
-    env: &RuntimeBindingEnv,
+    token: &Token,
+    rule_info: &CompiledRuleInfo,
+    fact_bindings: &RuntimeBindingEnv,
+    runtime_bindings: &RuntimeBindingEnv,
     context: &mut ActionExecutionContext<'_>,
 ) -> Result<(BindingSet, VarMap), ActionError> {
-    let mut var_map = VarMap::new();
-    let mut bindings = BindingSet::new();
+    // ValueRef clones share strings/multifields. Adding an address must not
+    // deep-copy all ordinary values for every expression in the RHS.
+    let mut var_map = rule_info.var_map.clone();
+    let mut bindings = token.bindings.clone();
 
-    for (name, value) in env {
-        let symbol = context
-            .engine
-            .symbol_table
-            .intern_symbol(name, context.engine.config.string_encoding)
-            .map_err(ActionError::Encoding)?;
-        let var_id = var_map
-            .get_or_create(symbol)
-            .map_err(|e| ActionError::EvalError(e.to_string()))?;
-        bindings.set(var_id, ValueRef::new(value.clone()));
+    for (env, overwrite) in [(fact_bindings, false), (runtime_bindings, true)] {
+        for (name, value) in env {
+            let symbol = context
+                .engine
+                .symbol_table
+                .intern_symbol(name, context.engine.config.string_encoding)
+                .map_err(ActionError::Encoding)?;
+            let var_id = var_map
+                .get_or_create(symbol)
+                .map_err(|e| ActionError::EvalError(e.to_string()))?;
+            if overwrite || bindings.get(var_id).is_none() {
+                bindings.set(var_id, ValueRef::new(value.clone()));
+            }
+        }
     }
 
     Ok((bindings, var_map))
@@ -832,10 +876,8 @@ fn execute_single_action(
                 ..
             }) = if_runtime
             {
-                let cond_value = {
-                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                    crate::evaluator::eval(&mut ctx, condition).map_err(ActionError::from)?
-                };
+                let cond_value =
+                    eval_env.eval_runtime_expr(token, rule_info, condition, context)?;
                 let branch =
                     if crate::evaluator::is_truthy(&cond_value, &context.engine.symbol_table) {
                         then_branch
@@ -963,10 +1005,8 @@ fn execute_single_action(
             {
                 loop {
                     // Evaluate condition.
-                    let cond_value = {
-                        let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                        crate::evaluator::eval(&mut ctx, condition).map_err(ActionError::from)?
-                    };
+                    let cond_value =
+                        eval_env.eval_runtime_expr(token, rule_info, condition, context)?;
                     if !crate::evaluator::is_truthy(&cond_value, &context.engine.symbol_table) {
                         break;
                     }
@@ -1020,9 +1060,8 @@ fn execute_single_action(
             }) = lfc_runtime
             {
                 let (start_int, end_int) = {
-                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                    let sv = crate::evaluator::eval(&mut ctx, start).map_err(ActionError::from)?;
-                    let ev = crate::evaluator::eval(&mut ctx, end).map_err(ActionError::from)?;
+                    let sv = eval_env.eval_runtime_expr(token, rule_info, start, context)?;
+                    let ev = eval_env.eval_runtime_expr(token, rule_info, end, context)?;
                     let si = match &sv {
                         Value::Integer(n) => *n,
                         #[allow(clippy::cast_possible_truncation)]
@@ -1067,16 +1106,18 @@ fn execute_single_action(
                         (token.clone(), rule_info_clone_light(rule_info))
                     };
 
-                    execute_loop_body(
-                        reset_requested,
-                        clear_requested,
-                        &loop_token,
-                        &loop_rule_info,
-                        body,
-                        context,
-                        eval_env,
-                        collected_facts,
-                    )?;
+                    eval_env.with_local_scope(var_name.as_deref(), |eval_env| {
+                        execute_loop_body(
+                            reset_requested,
+                            clear_requested,
+                            &loop_token,
+                            &loop_rule_info,
+                            body,
+                            context,
+                            eval_env,
+                            collected_facts,
+                        )
+                    })?;
                     if context.engine.is_halted() || *reset_requested || *clear_requested {
                         break;
                     }
@@ -1109,19 +1150,13 @@ fn execute_single_action(
             }) = switch_runtime
             {
                 // Evaluate the discriminant expression.
-                let disc_value = {
-                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                    crate::evaluator::eval(&mut ctx, expr).map_err(ActionError::from)?
-                };
+                let disc_value = eval_env.eval_runtime_expr(token, rule_info, expr, context)?;
 
                 // Find first matching case.
                 let mut matched_body = None;
                 for (test_val_expr, case_body) in cases {
-                    let test_value = {
-                        let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
-                        crate::evaluator::eval(&mut ctx, test_val_expr)
-                            .map_err(ActionError::from)?
-                    };
+                    let test_value =
+                        eval_env.eval_runtime_expr(token, rule_info, test_val_expr, context)?;
                     if disc_value.structural_eq(&test_value) {
                         matched_body = Some(case_body);
                         break;
@@ -1176,9 +1211,8 @@ fn execute_single_action(
             }) = progn_runtime
             {
                 let elements: Vec<Value> = {
-                    let mut ctx = ActionEvalEnv::make_eval_context(token, rule_info, context);
                     let list_val =
-                        crate::evaluator::eval(&mut ctx, list_expr).map_err(ActionError::from)?;
+                        eval_env.eval_runtime_expr(token, rule_info, list_expr, context)?;
                     match list_val {
                         Value::Multifield(mf) => mf.as_slice().to_vec(),
                         other => vec![other],
@@ -1209,15 +1243,20 @@ fn execute_single_action(
                         &context.engine.config,
                     )?;
 
-                    execute_loop_body(
-                        reset_requested,
-                        clear_requested,
-                        &loop_token,
-                        &loop_rule_info,
-                        body,
-                        context,
-                        eval_env,
-                        collected_facts,
+                    eval_env.with_local_scope(
+                        [var_name.as_str(), index_var_name.as_str()],
+                        |eval_env| {
+                            execute_loop_body(
+                                reset_requested,
+                                clear_requested,
+                                &loop_token,
+                                &loop_rule_info,
+                                body,
+                                context,
+                                eval_env,
+                                collected_facts,
+                            )
+                        },
                     )?;
                     if context.engine.is_halted() || *reset_requested || *clear_requested {
                         break;
@@ -1561,27 +1600,34 @@ fn execute_query_action(
             aug_rule_info = new_rule_info;
         }
 
-        // Evaluate the query expression.
-        let query_val = {
-            let mut ctx = ActionEvalEnv::make_eval_context(&aug_token, &aug_rule_info, context);
-            crate::evaluator::eval(&mut ctx, query).map_err(ActionError::from)?
-        };
-
-        if !crate::evaluator::is_truthy(&query_val, &context.engine.symbol_table) {
+        let matched = eval_env.with_local_scope(
+            candidate.iter().map(|(name, _)| name.as_str()),
+            |eval_env| {
+                let query_val =
+                    eval_env.eval_runtime_expr(&aug_token, &aug_rule_info, query, context)?;
+                if !crate::evaluator::is_truthy(&query_val, &context.engine.symbol_table) {
+                    return Ok(false);
+                }
+                if is_action_form {
+                    execute_loop_body(
+                        reset_requested,
+                        clear_requested,
+                        &aug_token,
+                        &aug_rule_info,
+                        body,
+                        context,
+                        eval_env,
+                        collected_facts,
+                    )?;
+                }
+                Ok(true)
+            },
+        )?;
+        if !matched {
             continue;
         }
 
         if is_action_form {
-            execute_loop_body(
-                reset_requested,
-                clear_requested,
-                &aug_token,
-                &aug_rule_info,
-                body,
-                context,
-                eval_env,
-                collected_facts,
-            )?;
             if context.engine.is_halted() || *reset_requested || *clear_requested {
                 break;
             }
@@ -2898,5 +2944,158 @@ mod tests {
     fn action_error_unbound_variable() {
         let err = ActionError::UnboundVariable("x".to_string());
         assert!(format!("{err}").contains('x'));
+    }
+
+    #[test]
+    fn local_scope_restores_bindings_after_error_and_rule_return() {
+        for error in [
+            ActionError::EvalError("stopped".into()),
+            ActionError::RuleReturn,
+        ] {
+            let mut env = ActionEvalEnv::default();
+            insert_runtime_binding(&mut env.runtime_bindings, "f", Value::Integer(42));
+            insert_runtime_binding(&mut env.runtime_bindings, "outside", Value::Integer(5));
+
+            let result: Result<(), ActionError> =
+                env.with_local_scope(["$?f", "f", "temporary"], |inner| {
+                    assert!(!inner.runtime_bindings.contains_key("f"));
+                    assert!(!inner.runtime_bindings.contains_key("temporary"));
+                    insert_runtime_binding(&mut inner.runtime_bindings, "f", Value::Integer(7));
+                    insert_runtime_binding(
+                        &mut inner.runtime_bindings,
+                        "temporary",
+                        Value::Integer(8),
+                    );
+                    insert_runtime_binding(
+                        &mut inner.runtime_bindings,
+                        "outside",
+                        Value::Integer(6),
+                    );
+                    Err(error.clone())
+                });
+
+            assert_eq!(result.unwrap_err().to_string(), error.to_string());
+            assert!(matches!(
+                env.runtime_bindings.get("f"),
+                Some(Value::Integer(42))
+            ));
+            assert!(!env.runtime_bindings.contains_key("temporary"));
+            assert!(matches!(
+                env.runtime_bindings.get("outside"),
+                Some(Value::Integer(6))
+            ));
+        }
+    }
+
+    #[test]
+    fn runtime_eval_bindings_preserve_shared_values_and_precedence() {
+        let mut engine = Engine::new(crate::EngineConfig::utf8());
+        let mut rule_info = CompiledRuleInfo {
+            name: "binding-test".into(),
+            source_definition: None,
+            actions: Vec::new(),
+            var_map: VarMap::new(),
+            fact_address_vars: HashMap::new(),
+            salience: Salience::new(0),
+            test_conditions: Vec::new(),
+            runtime_actions: Vec::new(),
+            multifield_tail_bindings: Vec::new(),
+        };
+        let mut multifield = ferric_rules_core::Multifield::new();
+        multifield.push(Value::Integer(7));
+        multifield.push(Value::Integer(8));
+        let shared = Arc::new(Value::Multifield(Box::new(multifield)));
+        let mut token = Token {
+            fact: None,
+            bindings: BindingSet::new(),
+            parent: None,
+            owner_node: ferric_rules_core::token::NodeId(0),
+        };
+        for (name, value) in [
+            ("ordinary", ValueRef::Shared(Arc::clone(&shared))),
+            ("shadow", ValueRef::new(Value::Integer(2))),
+            ("local", ValueRef::new(Value::Integer(20))),
+        ] {
+            let symbol = engine
+                .symbol_table
+                .intern_symbol(name, engine.config.string_encoding)
+                .unwrap();
+            let id = rule_info.var_map.get_or_create(symbol).unwrap();
+            token.bindings.set(id, value);
+        }
+        let fact_bindings = HashMap::from([
+            ("shadow".into(), Value::Integer(1)),
+            ("only_fact".into(), Value::Integer(3)),
+            ("local".into(), Value::Integer(10)),
+        ]);
+        let runtime_bindings = HashMap::from([("local".into(), Value::Integer(30))]);
+        let current_module = engine.module_registry.current_module();
+        let (bindings, var_map) = build_runtime_eval_bindings(
+            &token,
+            &rule_info,
+            &fact_bindings,
+            &runtime_bindings,
+            &mut ActionExecutionContext {
+                engine: &mut engine,
+                current_module,
+            },
+        )
+        .unwrap();
+
+        for (name, expected) in [("shadow", 2), ("only_fact", 3), ("local", 30)] {
+            let symbol = engine
+                .symbol_table
+                .intern_symbol(name, engine.config.string_encoding)
+                .unwrap();
+            let id = var_map.lookup(symbol).unwrap();
+            assert!(bindings
+                .get(id)
+                .unwrap()
+                .structural_eq(&Value::Integer(expected)));
+        }
+        let symbol = engine
+            .symbol_table
+            .intern_symbol("ordinary", engine.config.string_encoding)
+            .unwrap();
+        let id = var_map.lookup(symbol).unwrap();
+        let ValueRef::Shared(merged) = bindings.get(id).unwrap() else {
+            panic!("ordinary multifield must retain shared storage");
+        };
+        assert!(Arc::ptr_eq(&shared, merged));
+        assert_eq!(rule_info.var_map.len(), 3);
+        assert_eq!(token.bindings.bound_count(), 3);
+        let local_symbol = engine
+            .symbol_table
+            .intern_symbol("local", engine.config.string_encoding)
+            .unwrap();
+        let local_id = rule_info.var_map.lookup(local_symbol).unwrap();
+        assert!(token
+            .bindings
+            .get(local_id)
+            .unwrap()
+            .structural_eq(&Value::Integer(20)));
+    }
+
+    #[test]
+    fn fact_address_seed_rejects_oversized_mapping() {
+        let addresses = (0..=ferric_rules_core::compiler::MAX_RULE_CONDITIONS)
+            .map(|index| (format!("f{index}"), 0))
+            .collect();
+        let mut env = RuntimeBindingEnv::new();
+        let error = seed_fact_address_bindings(&[], &addresses, &mut env).unwrap_err();
+        assert!(error.to_string().contains("too many fact-address bindings"));
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn fact_address_seed_rejects_out_of_range_mapping_without_indexing() {
+        let fact_id = FactId::from(slotmap::KeyData::from_ffi(0x0000_0001_0000_0001));
+        let addresses = HashMap::from([("f".into(), usize::MAX)]);
+        let mut env = RuntimeBindingEnv::new();
+        let error = seed_fact_address_bindings(&[fact_id], &addresses, &mut env).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("references missing fact at position"));
+        assert!(env.is_empty());
     }
 }

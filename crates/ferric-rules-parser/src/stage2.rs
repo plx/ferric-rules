@@ -2053,6 +2053,16 @@ fn interpret_action(expr: &SExpr) -> Result<Action, InterpretError> {
                         },
                     });
                 }
+                Some("switch") => {
+                    let switch_expr = interpret_switch_expr(&list[1..], expr.span())?;
+                    return Ok(Action {
+                        call: FunctionCall {
+                            name: "switch".to_string(),
+                            args: vec![switch_expr],
+                            span: expr.span(),
+                        },
+                    });
+                }
                 Some("loop-for-count") => {
                     let lfc_expr = interpret_loop_for_count_expr(&list[1..], expr.span())?;
                     return Ok(Action {
