@@ -330,6 +330,9 @@ pub struct EvalContext<'a> {
     pub input_buffer: Option<&'a mut VecDeque<String>>,
     /// Optional read-only access to the fact base for introspection builtins.
     pub fact_base: Option<&'a ferric_rules_core::FactBase>,
+    /// Protected initial fact, whose public index is always zero. This identity
+    /// distinguishes it from user facts, including those asserted before loading.
+    pub(crate) initial_fact_id: Option<ferric_rules_core::FactId>,
     /// Optional read-only access to template definitions for introspection builtins.
     pub(crate) template_defs: Option<
         &'a slotmap::SlotMap<
@@ -809,6 +812,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                     method_chain: ctx.method_chain.clone(),
                     input_buffer: ctx.input_buffer.as_deref_mut(),
                     fact_base: ctx.fact_base,
+                    initial_fact_id: ctx.initial_fact_id,
                     template_defs: ctx.template_defs,
                 };
 
@@ -913,6 +917,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                     method_chain: ctx.method_chain.clone(),
                     input_buffer: ctx.input_buffer.as_deref_mut(),
                     fact_base: ctx.fact_base,
+                    initial_fact_id: ctx.initial_fact_id,
                     template_defs: ctx.template_defs,
                 };
 
@@ -1190,6 +1195,7 @@ fn execute_callable_body(
         method_chain,
         input_buffer: ctx.input_buffer.as_deref_mut(),
         fact_base: ctx.fact_base,
+        initial_fact_id: ctx.initial_fact_id,
         template_defs: ctx.template_defs,
     };
 
@@ -5642,7 +5648,7 @@ fn builtin_get_focus_stack(
 // Fact introspection builtins
 // ===========================================================================
 
-/// Convert a user-supplied integer fact index to a `FactId`.
+/// Decode an integer-encoded fact address to a `FactId`.
 ///
 /// Fact addresses in ferric are stored as integers in bindings via
 /// `fact_id.data().as_ffi() as i64`. This reverses the conversion.
@@ -5680,26 +5686,66 @@ fn builtin_fact_existp(
     ))
 }
 
-/// `(fact-index <integer>)` — returns the fact index (identity on integers).
+/// `(fact-index <fact-address>)` — return the public assertion index, or -1
+/// when the addressed fact has been retracted.
 ///
-/// In CLIPS, fact addresses are integers, so this function simply validates
-/// that the argument is an integer and returns it unchanged.
+/// Query bindings currently encode addresses as integers. Validate that
+/// representation without confusing small integer indices with addresses.
 fn builtin_fact_index(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
+    use slotmap::Key;
+
     check_arity_exact("fact-index", args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
-    match val {
-        Value::Integer(n) => Ok(Value::Integer(n)),
-        _ => Err(EvalError::TypeError {
-            function: "fact-index".into(),
-            expected: "INTEGER (fact-address)".into(),
-            actual: generic_value_type_name(&val).into(),
-            span: span.cloned(),
-        }),
+    let invalid_address = || EvalError::TypeError {
+        function: "fact-index".into(),
+        expected: "fact-address".into(),
+        actual: generic_value_type_name(&val).into(),
+        span: span.cloned(),
+    };
+    let Value::Integer(encoded) = val else {
+        return Err(invalid_address());
+    };
+    let bits = u64::from_ne_bytes(encoded.to_ne_bytes());
+    let data = slotmap::KeyData::from_ffi(bits);
+    let fact_id = ferric_rules_core::FactId::from(data);
+    // from_ffi normalizes even generations, so a plain integer like 1 can
+    // otherwise alias a live first-generation key. Slot zero is reserved.
+    // Exact forged canonical integers remain indistinguishable from addresses
+    // until the runtime has a distinct fact-address value type.
+    if data.as_ffi() != bits || fact_id.is_null() || bits & u64::from(u32::MAX) == 0 {
+        return Err(invalid_address());
     }
+    let Some(fact_base) = ctx.fact_base else {
+        return Ok(Value::Integer(-1));
+    };
+    let Some(entry) = fact_base.get(fact_id) else {
+        return Ok(Value::Integer(-1));
+    };
+    if ctx.initial_fact_id == Some(fact_id) {
+        return Ok(Value::Integer(0));
+    }
+    // Chronology includes the protected fact, but public user indices start at
+    // one and skip that assertion. It can be installed after host-created facts.
+    let initial_precedes = ctx
+        .initial_fact_id
+        .and_then(|id| fact_base.get(id))
+        .is_some_and(|initial| initial.timestamp < entry.timestamp);
+    let index = if initial_precedes {
+        Some(entry.timestamp.get())
+    } else {
+        entry.timestamp.get().checked_add(1)
+    }
+    .and_then(|index| i64::try_from(index).ok())
+    .ok_or_else(|| EvalError::UnsupportedOperation {
+        operation: "fact-index".into(),
+        reason: "fact index exceeds the signed 64-bit integer range".into(),
+        span: span.cloned(),
+    })?;
+    Ok(Value::Integer(index))
 }
 
 /// `(fact-relation <integer>)` — returns the relation name of a fact as a SYMBOL.
@@ -6010,9 +6056,210 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         eval(&mut ctx, expr)
+    }
+
+    fn encoded_address(id: ferric_rules_core::FactId) -> Value {
+        use slotmap::Key;
+        Value::Integer(i64::from_ne_bytes(id.data().as_ffi().to_ne_bytes()))
+    }
+
+    fn eval_index(
+        facts: Option<&ferric_rules_core::FactBase>,
+        initial_fact_id: Option<ferric_rules_core::FactId>,
+        address: Value,
+    ) -> Result<i64, EvalError> {
+        let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
+        let mut ctx = EvalContext {
+            bindings: &bs,
+            var_map: &vm,
+            symbol_table: &mut st,
+            config: &cfg,
+            functions: &fenv,
+            globals: &mut gs,
+            generics: &generics,
+            call_depth: 0,
+            expression_depth: 0,
+            current_module: mr.main_module_id(),
+            module_registry: &mr,
+            function_modules: &em,
+            global_modules: &em,
+            generic_modules: &em,
+            method_chain: None,
+            input_buffer: None,
+            fact_base: facts,
+            initial_fact_id,
+            template_defs: None,
+        };
+        eval(
+            &mut ctx,
+            &RuntimeExpr::Call {
+                name: "fact-index".into(),
+                args: vec![RuntimeExpr::Literal(address)],
+                span: Some(SourceSpan { line: 4, column: 7 }),
+            },
+        )
+        .map(|value| match value {
+            Value::Integer(index) => index,
+            value => panic!("fact-index returned {value:?}"),
+        })
+    }
+
+    #[test]
+    fn fact_index_keeps_host_facts_stable_when_initial_fact_is_installed_late() {
+        let mut engine = crate::Engine::new(EngineConfig::utf8());
+        let host_initial = engine
+            .assert_ordered("initial-fact", Vec::<Value>::new())
+            .unwrap();
+        engine.assert_ordered("item", 7_i64).unwrap();
+        let mut users: Vec<_> = engine.fact_base.iter().map(|(id, _)| id).collect();
+        users.sort_by_key(|id| engine.fact_base.get(*id).unwrap().timestamp);
+        for (id, expected) in users.iter().zip([1, 2]) {
+            assert_eq!(
+                eval_index(Some(&engine.fact_base), None, encoded_address(*id)).unwrap(),
+                expected
+            );
+        }
+
+        engine.ensure_initial_fact().unwrap();
+        let protected = engine.initial_fact_id.unwrap();
+        assert!(!users.contains(&protected));
+        assert!(engine.get_fact(host_initial).unwrap().is_some());
+        assert_eq!(engine.fact_count(), 2);
+        for (id, expected) in users.iter().zip([1, 2]) {
+            assert_eq!(
+                eval_index(
+                    Some(&engine.fact_base),
+                    Some(protected),
+                    encoded_address(*id)
+                )
+                .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            eval_index(
+                Some(&engine.fact_base),
+                Some(protected),
+                encoded_address(protected)
+            )
+            .unwrap(),
+            0
+        );
+        engine.ensure_initial_fact().unwrap();
+        assert_eq!(engine.fact_base.len(), 3);
+
+        engine.retract(host_initial).unwrap();
+        engine.assert_ordered("new-item", 8_i64).unwrap();
+        assert_eq!(
+            eval_index(
+                Some(&engine.fact_base),
+                Some(protected),
+                encoded_address(users[0])
+            )
+            .unwrap(),
+            -1
+        );
+        let (new_id, _) = engine
+            .fact_base
+            .iter()
+            .max_by_key(|(_, fact)| fact.timestamp)
+            .unwrap();
+        assert_eq!(
+            eval_index(
+                Some(&engine.fact_base),
+                Some(protected),
+                encoded_address(new_id)
+            )
+            .unwrap(),
+            3
+        );
+        engine.debug_assert_consistency();
+    }
+
+    #[test]
+    fn fact_index_rejects_nonaddresses_without_normalizing_them_into_live_keys() {
+        let mut engine = crate::Engine::with_rules("").unwrap();
+        engine.assert_ordered("item", 7_i64).unwrap();
+        for value in [
+            Value::Integer(0),
+            Value::Integer(1),
+            Value::Integer(-1),
+            Value::Integer(i64::MIN),
+            Value::Integer((2_i64 << 32) | 1), // Even generation.
+            Value::Integer(1_i64 << 32),       // Reserved slot zero.
+            Value::Integer((1_i64 << 32) | i64::from(u32::MAX)), // Null key.
+            Value::Float(1.0),
+            Value::String(FerricString::new("1", StringEncoding::Utf8).unwrap()),
+        ] {
+            let error = eval_index(
+                Some(&engine.fact_base),
+                engine.initial_fact_id,
+                value.clone(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, EvalError::TypeError {
+                ref function, ref expected, span: Some(SourceSpan { line: 4, column: 7 }), ..
+            } if function == "fact-index" && expected == "fact-address"),
+                "{value:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fact_index_preserves_signed_address_bits_and_reports_absent_addresses() {
+        let engine = crate::Engine::with_rules("").unwrap();
+        let initial = encoded_address(engine.initial_fact_id.unwrap());
+        assert_eq!(eval_index(None, None, initial).unwrap(), -1);
+        // Canonical high generations are encoded as negative integers. They
+        // must remain addresses; this unallocated generation is simply absent.
+        let negative_address =
+            Value::Integer(i64::from_ne_bytes(0x8000_0001_0000_0001_u64.to_ne_bytes()));
+        assert_eq!(
+            eval_index(
+                Some(&engine.fact_base),
+                engine.initial_fact_id,
+                negative_address
+            )
+            .unwrap(),
+            -1
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn fact_index_checks_the_integer_boundary_before_initial_fact_installation() {
+        let mut engine = crate::Engine::new(EngineConfig::utf8());
+        let maximum = u64::try_from(i64::MAX).unwrap();
+        for timestamp in [maximum - 1, maximum, u64::MAX - 1] {
+            let mut state = serde_json::to_value(&engine.fact_base).unwrap();
+            state["next_timestamp"] = serde_json::json!(timestamp);
+            engine.fact_base = serde_json::from_value(state).unwrap();
+            engine
+                .assert_ordered(
+                    "item",
+                    FerricString::new(&timestamp.to_string(), StringEncoding::Utf8).unwrap(),
+                )
+                .unwrap();
+            let (id, _) = engine
+                .fact_base
+                .iter()
+                .max_by_key(|(_, entry)| entry.timestamp)
+                .unwrap();
+            let result = eval_index(Some(&engine.fact_base), None, encoded_address(id));
+            if timestamp == maximum - 1 {
+                assert_eq!(result.unwrap(), i64::MAX);
+            } else {
+                assert!(
+                    matches!(result, Err(EvalError::UnsupportedOperation { ref operation, .. })
+                    if operation == "fact-index")
+                );
+            }
+        }
     }
 
     /// Helper to check if a value is the TRUE symbol.
@@ -6101,6 +6348,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(
@@ -6147,6 +6395,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
 
@@ -6199,6 +6448,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
 
@@ -6235,6 +6485,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(
@@ -6274,6 +6525,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call(
@@ -6316,6 +6568,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("bind", vec![int(5), int(10)]);
@@ -6385,6 +6638,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("double", vec![int(5)]);
@@ -6430,6 +6684,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("add", vec![int(3), int(7)]);
@@ -6459,6 +6714,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         // double expects 1 arg, passing 2
@@ -6499,6 +6755,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("first", vec![int(10), int(20), int(30)]);
@@ -6545,6 +6802,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("inf", vec![int(1)]);
@@ -6602,6 +6860,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let recursive_expr = call("inf", vec![int(1)]);
@@ -6661,6 +6920,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &call("inc", vec![int(5)])).unwrap();
@@ -6714,6 +6974,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &call("quadruple", vec![int(3)])).unwrap();
@@ -6893,6 +7154,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call(">", vec![int(5), int(3)]);
@@ -6921,6 +7183,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("<", vec![int(5), int(3)]);
@@ -6949,6 +7212,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("=", vec![int(3), int(3)]);
@@ -6977,6 +7241,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("!=", vec![int(3), int(4)]);
@@ -7005,6 +7270,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call(">=", vec![int(5), int(5)]);
@@ -7033,6 +7299,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("<=", vec![int(3), int(5)]);
@@ -7065,6 +7332,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("eq", vec![int(42), int(42)]);
@@ -7093,6 +7361,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("neq", vec![int(1), float(1.0)]);
@@ -7127,6 +7396,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call(
@@ -7163,6 +7433,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call(
@@ -7199,6 +7470,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call(
@@ -7234,6 +7506,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("not", vec![RuntimeExpr::Literal(false_sym)]);
@@ -7263,6 +7536,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("not", vec![RuntimeExpr::Literal(true_sym)]);
@@ -7321,6 +7595,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("integerp", vec![int(42)]);
@@ -7349,6 +7624,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("integerp", vec![float(3.125)]);
@@ -7377,6 +7653,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("floatp", vec![float(3.125)]);
@@ -7405,6 +7682,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("numberp", vec![int(42)]);
@@ -7433,6 +7711,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("numberp", vec![float(1.0)]);
@@ -7462,6 +7741,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("symbolp", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
@@ -7491,6 +7771,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("stringp", vec![RuntimeExpr::Literal(Value::String(fs))]);
@@ -7524,6 +7805,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("lexemep", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
@@ -7553,6 +7835,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("lexemep", vec![RuntimeExpr::Literal(Value::String(fs))]);
@@ -7581,6 +7864,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("lexemep", vec![int(42)]);
@@ -7621,6 +7905,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call(
@@ -7652,6 +7937,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("multifieldp", vec![int(0)]);
@@ -7690,6 +7976,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("evenp", vec![int(4)]);
@@ -7718,6 +8005,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("evenp", vec![int(0)]);
@@ -7746,6 +8034,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("evenp", vec![int(7)]);
@@ -7790,6 +8079,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("oddp", vec![int(7)]);
@@ -7818,6 +8108,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("oddp", vec![int(0)]);
@@ -7846,6 +8137,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("oddp", vec![int(4)]);
@@ -7909,6 +8201,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("integer", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
@@ -7960,6 +8253,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("float", vec![RuntimeExpr::Literal(Value::Symbol(sym))]);
@@ -8016,6 +8310,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("+", vec![int(1), RuntimeExpr::Literal(Value::Symbol(sym))]);
@@ -8431,6 +8726,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("sym-cat", vec![str_lit("foo"), str_lit("bar")]);
@@ -8465,6 +8761,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let expr = call("sym-cat", vec![]);
@@ -8499,6 +8796,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
 
@@ -8545,6 +8843,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
 
@@ -8639,6 +8938,7 @@ mod tests {
                 method_chain: None,
                 input_buffer: None,
                 fact_base: None,
+                initial_fact_id: None,
                 template_defs: None,
             };
             let expr = call(
@@ -8709,6 +9009,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &call("load", vec![str_lit("x.clp")])).unwrap();
@@ -9257,6 +9558,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9286,6 +9588,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9336,6 +9639,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9371,6 +9675,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9402,6 +9707,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9437,6 +9743,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9468,6 +9775,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9503,6 +9811,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9534,6 +9843,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9588,6 +9898,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9631,6 +9942,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9854,6 +10166,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9884,6 +10197,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9914,6 +10228,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9947,6 +10262,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -9981,6 +10297,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -10018,6 +10335,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -10051,6 +10369,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -10085,6 +10404,7 @@ mod tests {
             method_chain: None,
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let first = eval(&mut ctx, &expr).unwrap();
@@ -10151,6 +10471,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();
@@ -10196,6 +10517,7 @@ mod tests {
             method_chain: None,
             input_buffer: None,
             fact_base: None,
+            initial_fact_id: None,
             template_defs: None,
         };
         let result = eval(&mut ctx, &expr).unwrap();

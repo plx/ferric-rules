@@ -712,6 +712,75 @@ mod tests {
     }
 
     #[test]
+    fn public_fact_indices_preserve_wide_snapshot_chronology() {
+        let engine = Engine::with_rules(
+            "(deftemplate item (slot value))
+             (defrule index =>
+               (do-for-fact ((?f item)) TRUE (printout t (fact-index ?f) crlf)))",
+        )
+        .unwrap();
+        let maximum = u64::try_from(i64::MAX).unwrap();
+        for timestamp in [maximum - 1, maximum, maximum + 1, u64::MAX - 1] {
+            let mut wide = alter_state(&engine, |state| {
+                state["fact_base"]["next_timestamp"] = serde_json::json!(timestamp);
+            })
+            .unwrap();
+            wide.assert_template("item", &["value"], [7_i64]).unwrap();
+
+            for &format in SerializationFormat::ALL {
+                let mut restored =
+                    Engine::deserialize(&wide.serialize(format).unwrap(), format).unwrap();
+                assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+                if timestamp <= maximum {
+                    assert!(restored.action_diagnostics().is_empty());
+                    assert_eq!(restored.get_output("t").unwrap(), format!("{timestamp}\n"));
+                } else {
+                    assert!(matches!(restored.action_diagnostics(),
+                        [crate::ActionError::Evaluator(crate::evaluator::EvalError::UnsupportedOperation {
+                            operation, reason, ..
+                        })] if operation == "fact-index" && reason.contains("signed 64-bit")));
+                    assert_eq!(restored.get_output("t").unwrap_or(""), "");
+                }
+                // Introspection overflow does not corrupt or invalidate the
+                // supported u64 chronology, even at assertion exhaustion.
+                let mut again =
+                    Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+                let handle = again.facts().unwrap().next().unwrap().0;
+                again.retract(handle).unwrap();
+                again.reset().unwrap();
+                again.assert_template("item", &["value"], [8_i64]).unwrap();
+                assert_eq!(again.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+                assert!(again.action_diagnostics().is_empty());
+                assert_eq!(again.get_output("t").unwrap(), "1\n");
+            }
+        }
+    }
+
+    #[test]
+    fn exhausted_initial_fact_installation_does_not_adopt_a_user_fact() {
+        let mut engine = Engine::new(EngineConfig::utf8());
+        engine
+            .assert_ordered("initial-fact", Vec::<Value>::new())
+            .unwrap();
+        let mut restored = alter_state(&engine, |state| {
+            state["fact_base"]["next_timestamp"] = serde_json::json!(u64::MAX);
+        })
+        .unwrap();
+        assert!(matches!(
+            restored.ensure_initial_fact(),
+            Err(crate::EngineError::FactTimestampExhausted(_))
+        ));
+        assert!(restored.initial_fact_id.is_none());
+        assert_eq!(restored.fact_count(), 1);
+        assert_eq!(restored.facts().unwrap().count(), 1);
+        for &format in SerializationFormat::ALL {
+            let again = Engine::deserialize(&restored.serialize(format).unwrap(), format).unwrap();
+            assert!(again.initial_fact_id.is_none());
+            assert_eq!(again.fact_count(), 1);
+        }
+    }
+
+    #[test]
     fn rhs_assertion_stops_at_timestamp_exhaustion_without_wrapping() {
         for (definition, first, second) in [
             ("", "(first 1)", "(second 2)"),

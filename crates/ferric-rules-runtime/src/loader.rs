@@ -741,7 +741,7 @@ impl Engine {
             // Explicit initial-fact patterns use a protected built-in fact.
             // Empty/negative prefixes use the independent RETE root token.
             if let Err(e) = self.ensure_initial_fact() {
-                errors.push(e);
+                errors.push(e.into());
             }
 
             // Register dormant definitions; reset will assert their facts.
@@ -783,34 +783,6 @@ impl Engine {
             ferric_event!(warn, error_count = errors.len(), "engine_load_str_failed");
             Err(errors)
         }
-    }
-
-    /// Ensure `(initial-fact)` is present in working memory.
-    ///
-    /// Explicit `(initial-fact)` patterns match this protected built-in fact.
-    /// Empty/negative prefixes use the independent RETE root token. It is
-    /// asserted once; subsequent calls are no-ops.
-    ///
-    /// The `FactId` is stored in `self.initial_fact_id` so that `facts()` can
-    /// exclude it from user-visible results.
-    fn ensure_initial_fact(&mut self) -> Result<(), LoadError> {
-        // Already asserted in a previous load_str call.
-        if self.initial_fact_id.is_some() {
-            return Ok(());
-        }
-
-        let initial_sym = self
-            .symbol_table
-            .intern_symbol("initial-fact", self.config.string_encoding)
-            .map_err(|e| LoadError::Compile(format!("initial-fact symbol: {e}")))?;
-
-        let result = self.assert_fact_internal(Fact::Ordered(ferric_rules_core::OrderedFact {
-            relation: initial_sym,
-            fields: smallvec::SmallVec::new(),
-        }))?;
-        self.initial_fact_id = Some(result.fact_id());
-
-        Ok(())
     }
 
     /// Load CLIPS source code from a file.
@@ -1412,7 +1384,8 @@ impl Engine {
                     generic_modules: &self.generic_modules,
                     method_chain: None,
                     input_buffer: None,
-                    fact_base: None,
+                    fact_base: Some(&self.fact_base),
+                    initial_fact_id: self.initial_fact_id,
                     template_defs: None,
                 };
                 crate::evaluator::eval(&mut ctx, &runtime_expr)
@@ -1492,6 +1465,7 @@ impl Engine {
                         method_chain: None,
                         input_buffer: None,
                         fact_base: None,
+                        initial_fact_id: None,
                         template_defs: None,
                     };
                     crate::evaluator::eval(&mut ctx, &runtime_expr)
