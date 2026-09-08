@@ -3898,9 +3898,9 @@ fn builtin_unwatch(
     Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding))
 }
 
-/// `str-length` — return the character length of a STRING.
+/// `str-length` — return the character length of a STRING or SYMBOL.
 ///
-/// Takes 1 argument (must be STRING). Returns an INTEGER.
+/// Takes 1 argument (must be STRING or SYMBOL). Returns an INTEGER.
 fn builtin_str_length(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -3908,18 +3908,20 @@ fn builtin_str_length(
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-length", args, 1, span)?;
     let val = eval_inner(ctx, &args[0])?;
-    match &val {
-        Value::String(s) => {
-            let char_len = i64::try_from(s.as_str().chars().count()).unwrap_or(i64::MAX);
-            Ok(Value::Integer(char_len))
+    let lexeme = match &val {
+        Value::String(s) => s.as_str(),
+        Value::Symbol(s) => ctx.symbol_table.resolve_symbol_str(*s).unwrap_or("???"),
+        _ => {
+            return Err(EvalError::TypeError {
+                function: "str-length".to_string(),
+                expected: "STRING or SYMBOL".to_string(),
+                actual: generic_value_type_name(&val).to_string(),
+                span: span.cloned(),
+            })
         }
-        _ => Err(EvalError::TypeError {
-            function: "str-length".to_string(),
-            expected: "STRING".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        }),
-    }
+    };
+    let char_len = i64::try_from(lexeme.chars().count()).unwrap_or(i64::MAX);
+    Ok(Value::Integer(char_len))
 }
 
 /// `sub-string` — extract a substring by 1-indexed inclusive position.
