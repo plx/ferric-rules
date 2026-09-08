@@ -1,0 +1,3 @@
+all:8:a:x:a:y:b:x:b:y:
+first:2:a:x
+reverse:8:x:a:x:b:y:a:y:b:

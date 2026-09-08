@@ -224,11 +224,24 @@ error. Slot reads follow normal expression evaluation, so skipped branches do
 not access missing slots. Ordinary rule LHS fact-address slot access remains
 available.
 
-CLIPS query expressions (`any-factp`, `find-fact`, `find-all-facts`) in
-expressions or callable bodies are unsupported. They report a load or
-execution error rather than inventing FALSE/empty results. Use the host fact
-inspection API for these queries. This limitation does not restrict normal
-joins or host-side typed fact inspection.
+`any-factp`, `find-fact`, and `find-all-facts` also work in RHS expressions,
+deffunctions, and methods. `any-factp` returns TRUE or FALSE; `find-fact`
+returns the first matching tuple as a multifield of fact addresses, and
+`find-all-facts` concatenates every matching tuple into one multifield.
+Both find forms return an empty multifield when nothing matches. Query
+members follow declaration order, with the first member outermost and each
+template's facts visited in assertion order. The any/first forms stop after
+the first match.
+
+Query restrictions currently require one visible, unqualified, declared
+deftemplate per member. Multiple-template restrictions, queries in global
+initializers, and `do-for-*` forms inside expressions or callable bodies
+remain unsupported. Local `bind` syntax in a predicate is a load error;
+global binds are allowed. Each
+expression-query candidate shares the configured action-loop budget with
+surrounding loops and nested queries. Empty queries do not evaluate their
+predicates. Snapshot restoration preserves query definitions and assertion
+order without changing the serialized format.
 
 ### Activation Ordering Contract
 

@@ -2658,8 +2658,15 @@ fn interpret_query_action_expr(
             rest[0].span(),
         )
     })?;
+    if binding_list.is_empty() {
+        return Err(InterpretError::missing(
+            "at least one query member binding",
+            rest[0].span(),
+        ));
+    }
 
     let mut bindings = Vec::with_capacity(binding_list.len());
+    let mut member_names = std::collections::HashSet::with_capacity(binding_list.len());
     for binding_expr in binding_list {
         let pair = binding_expr.as_list().ok_or_else(|| {
             InterpretError::expected(
@@ -2668,37 +2675,65 @@ fn interpret_query_action_expr(
             )
         })?;
 
-        if pair.len() < 2 {
-            return Err(InterpretError::missing(
-                "template name in binding pair (?var template)",
+        let member_expr = pair.first().ok_or_else(|| {
+            InterpretError::missing(
+                "?variable and template name in query binding",
                 binding_expr.span(),
-            ));
-        }
-
-        let var_name = match pair[0].as_atom() {
-            Some(Atom::SingleVar(name)) => name.clone(),
+            )
+        })?;
+        let var_name = match member_expr.as_atom() {
+            Some(Atom::SingleVar(name)) if !name.is_empty() => name,
             _ => {
                 return Err(InterpretError::expected(
-                    "?variable in binding pair",
-                    pair[0].span(),
+                    "named single-field query member (?name)",
+                    member_expr.span(),
                 ))
             }
         };
+        if !member_names.insert(var_name.as_str()) {
+            return Err(InterpretError::invalid(
+                &format!("duplicate query member ?{var_name} in ({name} ...)"),
+                member_expr.span(),
+            ));
+        }
 
-        let template_name = pair[1]
+        let template_expr = pair.get(1).ok_or_else(|| {
+            InterpretError::missing(
+                "template name in binding pair (?var template)",
+                binding_expr.span(),
+            )
+        })?;
+        let template_name = template_expr
             .as_symbol()
             .ok_or_else(|| {
-                InterpretError::expected("template name (symbol) in binding pair", pair[1].span())
+                InterpretError::expected(
+                    "template name (symbol) in binding pair",
+                    template_expr.span(),
+                )
             })?
             .to_string();
+        if let Some(extra_template) = pair.get(2) {
+            return Err(InterpretError::invalid(
+                "multiple-template query restrictions are unsupported; use one template per query member",
+                extra_template.span(),
+            ));
+        }
 
-        bindings.push((var_name, template_name));
+        bindings.push((var_name.clone(), template_name));
     }
 
     let (query, query_len) = interpret_action_expr_prefix(&rest[1..], span)?;
 
-    // Remaining elements (if any) are body actions.
-    let body = interpret_action_expr_sequence(&rest[1 + query_len..])?;
+    // Result-only queries have exactly one predicate and no body. Account for
+    // all atoms of a compact slot predicate before checking trailing elements.
+    let body_exprs = &rest[1 + query_len..];
+    if matches!(name, "any-factp" | "find-fact" | "find-all-facts") && !body_exprs.is_empty() {
+        return Err(InterpretError::invalid(
+            &format!("{name} does not accept body expressions after its query predicate"),
+            body_exprs[0].span(),
+        ));
+    }
+    let body = interpret_action_expr_sequence(body_exprs)?;
 
     Ok(ActionExpr::QueryAction {
         name: name.to_string(),
@@ -5927,5 +5962,153 @@ mod tests {
             !result.errors.is_empty(),
             "should error: bad binding variable"
         );
+    }
+
+    #[test]
+    fn query_bindings_require_nonempty_named_single_field_members() {
+        for name in [
+            "do-for-fact",
+            "do-for-all-facts",
+            "delayed-do-for-all-facts",
+            "any-factp",
+            "find-fact",
+            "find-all-facts",
+        ] {
+            for (bindings, diagnostic) in [
+                ("()", "at least one query member binding"),
+                ("(())", "?variable and template name"),
+                ("((? item))", "named single-field query member"),
+                ("(($? item))", "named single-field query member"),
+                ("(($?f item))", "named single-field query member"),
+                ("((f item))", "named single-field query member"),
+                ("((?*f* item))", "named single-field query member"),
+                ("((?f))", "template name in binding pair"),
+                ("((?f 42))", "template name (symbol)"),
+                ("((?f (create$ item)))", "template name (symbol)"),
+            ] {
+                let source = format!("({name} {bindings} TRUE)");
+                let parsed = parse_sexprs(&source, file());
+                assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+                let error = interpret_action_expr(&parsed.exprs[0]).unwrap_err();
+                assert!(error.message.contains(diagnostic), "{source}: {error:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn query_bindings_reject_duplicate_members_within_one_scope() {
+        for name in [
+            "do-for-fact",
+            "do-for-all-facts",
+            "delayed-do-for-all-facts",
+            "any-factp",
+            "find-fact",
+            "find-all-facts",
+        ] {
+            let source = format!("({name} ((?f item) (?f other)) TRUE)");
+            let parsed = parse_sexprs(&source, file());
+            let error = interpret_action_expr(&parsed.exprs[0]).unwrap_err();
+            assert!(
+                error.message.contains("duplicate query member ?f"),
+                "{error:?}"
+            );
+            assert_eq!(error.span.start.offset, source.rfind("?f").unwrap());
+        }
+    }
+
+    #[test]
+    fn query_template_alternatives_report_an_explicit_support_limit() {
+        // CLIPS accepts multiple template restrictions for one member. Ferric
+        // must report its support limit instead of silently choosing the first.
+        for name in [
+            "do-for-fact",
+            "do-for-all-facts",
+            "delayed-do-for-all-facts",
+            "any-factp",
+            "find-fact",
+            "find-all-facts",
+        ] {
+            let source = format!("({name} ((?f item other)) TRUE)");
+            let parsed = parse_sexprs(&source, file());
+            let error = interpret_action_expr(&parsed.exprs[0]).unwrap_err();
+            assert!(
+                error
+                    .message
+                    .contains("multiple-template query restrictions are unsupported"),
+                "{error:?}"
+            );
+            assert_eq!(error.span.start.offset, source.find("other").unwrap());
+        }
+    }
+
+    #[test]
+    fn query_result_forms_reject_body_after_the_complete_predicate() {
+        for name in ["any-factp", "find-fact", "find-all-facts"] {
+            for predicate in ["TRUE", "?f:enabled", "(> ?f:value 10)"] {
+                for trailing in ["ignored", "(printout t wrong)", "?f:other"] {
+                    let source = format!("({name} ((?f item)) {predicate} {trailing})");
+                    let parsed = parse_sexprs(&source, file());
+                    let error = interpret_action_expr(&parsed.exprs[0]).unwrap_err();
+                    assert!(
+                        error.message.contains("does not accept body expressions"),
+                        "{error:?}"
+                    );
+                    assert_eq!(error.span.start.offset, source.len() - trailing.len() - 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn query_result_forms_preserve_compact_predicates_and_binding_order() {
+        for name in ["any-factp", "find-fact", "find-all-facts"] {
+            let expression = slot_reference_expression(&format!(
+                "({name} ((?second right) (?first left)) ?second:enabled)"
+            ));
+            let ActionExpr::QueryAction {
+                bindings,
+                query,
+                body,
+                ..
+            } = expression
+            else {
+                panic!("expected query");
+            };
+            assert_eq!(
+                bindings,
+                [
+                    ("second".into(), "right".into()),
+                    ("first".into(), "left".into())
+                ]
+            );
+            assert_slot_reference(&query, "second", "enabled");
+            assert!(body.is_empty());
+        }
+    }
+
+    #[test]
+    fn nested_query_members_can_shadow_outer_members() {
+        let expression = slot_reference_expression(
+            "(any-factp ((?f item)) (any-factp ((?f other)) ?f:enabled))",
+        );
+        let ActionExpr::QueryAction {
+            bindings, query, ..
+        } = expression
+        else {
+            panic!("expected outer query");
+        };
+        assert_eq!(bindings, [("f".into(), "item".into())]);
+        let ActionExpr::QueryAction {
+            bindings,
+            query,
+            body,
+            ..
+        } = query.as_ref()
+        else {
+            panic!("expected nested query");
+        };
+        assert_eq!(bindings, &[("f".into(), "other".into())]);
+        assert_slot_reference(query, "f", "enabled");
+        assert!(body.is_empty());
     }
 }

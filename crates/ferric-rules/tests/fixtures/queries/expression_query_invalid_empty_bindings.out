@@ -1,0 +1,7 @@
+
+[PRNTUTIL2] Syntax Error:  Check appropriate syntax for fact-set query function.
+
+ERROR:
+(defrule MAIN::probe
+   =>
+   (printout t (any-factp ()

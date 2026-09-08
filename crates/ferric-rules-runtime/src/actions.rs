@@ -130,6 +130,11 @@ impl ActionEvalEnv {
             initial_fact_id: engine.initial_fact_id,
             template_defs: Some(&engine.template_defs),
             compact_fact_bindings: Some(compact_facts),
+            template_resolver: Some(crate::loader::TemplateResolver {
+                template_local_ids: &engine.template_local_ids,
+                template_modules: &engine.template_modules,
+                module_registry: &engine.module_registry,
+            }),
         }
     }
 
@@ -207,6 +212,11 @@ impl ActionEvalEnv {
             initial_fact_id: engine.initial_fact_id,
             template_defs: Some(&engine.template_defs),
             compact_fact_bindings: Some(compact_facts),
+            template_resolver: Some(crate::loader::TemplateResolver {
+                template_local_ids: &engine.template_local_ids,
+                template_modules: &engine.template_modules,
+                module_registry: &engine.module_registry,
+            }),
         };
         crate::evaluator::eval(&mut ctx, runtime_expr).map_err(ActionError::from)
     }
@@ -1135,6 +1145,18 @@ fn execute_single_action(
                 _ => None,
             };
 
+            // Result forms retain their evaluation and early-stop semantics
+            // even when the enclosing action discards the returned value.
+            if let Some(rt @ crate::evaluator::RuntimeExpr::QueryAction { name, .. }) =
+                query_runtime
+            {
+                if matches!(name.as_str(), "any-factp" | "find-fact" | "find-all-facts") {
+                    return eval_env
+                        .eval_runtime_expr(token, rule_info, rt, context)
+                        .map(|_| ());
+                }
+            }
+
             if let Some(crate::evaluator::RuntimeExpr::QueryAction {
                 name,
                 bindings,
@@ -1344,13 +1366,8 @@ fn execute_loop_body(
 
 /// Execute a fact-query macro action.
 ///
-/// Handles `do-for-fact`, `do-for-all-facts`, `delayed-do-for-all-facts`,
-/// `any-factp`, `find-fact`, and `find-all-facts`.
-///
-/// For action forms (`do-for-*`), executes `body` for each matching fact and
-/// returns `Ok(())`. For expression forms (`any-factp`, `find-*`), the return
-/// value is discarded here. Fact queries used as expressions are explicitly
-/// unsupported because the pure evaluator has no fact-base access.
+/// Executes `body` for supported `do-for-*` action forms. Result queries use
+/// the ordinary evaluator, including when their returned value is discarded.
 #[allow(clippy::too_many_arguments)]
 fn execute_query_action(
     reset_requested: &mut bool,
@@ -1376,17 +1393,20 @@ fn execute_query_action(
     //
     // We collect all IDs first to avoid borrow issues when executing the body
     // (body actions may assert/retract facts, which would mutate the fact base
-    // while we're iterating it).  This also serves as the snapshot required by
-    // `delayed-do-for-all-facts`.
+    // while we're iterating it). Delayed predicate matching is a separate part
+    // of delayed-query semantics.
 
     // Resolve each binding to (variable_name, Vec<FactId>).
     let mut binding_fact_ids: Vec<(String, Vec<FactId>)> = Vec::with_capacity(bindings.len());
     for (var_name, template_name) in bindings {
-        let Some(&tid) = context.engine.template_ids.get(template_name.as_str()) else {
-            // Unknown template — no facts match; result is empty / FALSE.
-            return Ok(());
-        };
-        let ids: Vec<FactId> = context.engine.fact_base.facts_by_template(tid).collect();
+        let tid = crate::loader::TemplateResolver {
+            template_local_ids: &context.engine.template_local_ids,
+            template_modules: &context.engine.template_modules,
+            module_registry: &context.engine.module_registry,
+        }
+        .resolve_query_reference(template_name, context.current_module)
+        .map_err(ActionError::EvalError)?;
+        let ids = crate::evaluator::ordered_query_fact_ids(&context.engine.fact_base, tid);
         binding_fact_ids.push((var_name.clone(), ids));
     }
 

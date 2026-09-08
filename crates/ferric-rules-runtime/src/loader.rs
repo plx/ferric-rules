@@ -58,6 +58,195 @@ pub(crate) enum TemplateLookupError {
     Ambiguous(smallvec::SmallVec<[crate::modules::ModuleId; 2]>),
 }
 
+/// Borrowed template lookup state shared by loading and expression queries.
+/// Visibility is evaluated against the live module registry on every lookup.
+#[derive(Clone, Copy)]
+pub(crate) struct TemplateResolver<'a> {
+    pub(crate) template_local_ids: &'a TemplateLocalIndex,
+    pub(crate) template_modules:
+        &'a slotmap::SecondaryMap<ferric_rules_core::TemplateId, crate::modules::ModuleId>,
+    pub(crate) module_registry: &'a crate::modules::ModuleRegistry,
+}
+
+impl TemplateResolver<'_> {
+    /// CLIPS query restrictions use visible unqualified deftemplate names.
+    pub(crate) fn resolve_query_reference(
+        &self,
+        raw_name: &str,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<ferric_rules_core::TemplateId, String> {
+        if raw_name.contains("::") {
+            return Err(format!(
+                "qualified template `{raw_name}` is unsupported in fact queries"
+            ));
+        }
+        self.resolve_reference(raw_name, current_module)
+    }
+
+    pub(crate) fn resolve_reference(
+        &self,
+        raw_name: &str,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<ferric_rules_core::TemplateId, String> {
+        self.resolve_id(raw_name, current_module).map_err(|error| {
+            let current_module_label = self.module_registry.module_name(current_module).unwrap_or("?");
+            match error {
+                TemplateLookupError::Unknown => format!("unknown template `{raw_name}`"),
+                TemplateLookupError::NotVisible => format!(
+                    "template `{raw_name}` is not visible from module `{current_module_label}`"
+                ),
+                TemplateLookupError::Ambiguous(modules) => {
+                    let modules: BTreeSet<_> = modules.iter().map(|module| {
+                        self.module_registry.module_name(*module).unwrap_or("?")
+                    }).collect();
+                    format!(
+                        "template `{raw_name}` is ambiguous from module `{current_module_label}` (matches modules: {})",
+                        modules.into_iter().collect::<Vec<_>>().join(", ")
+                    )
+                }
+            }
+        })
+    }
+
+    /// Resolve without allocating diagnostics that ordered-relation probes discard.
+    /// Only name candidates are indexed; visibility is always checked live.
+    pub(crate) fn resolve_id(
+        &self,
+        raw_name: &str,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<ferric_rules_core::TemplateId, TemplateLookupError> {
+        let (qualified_module_name, wanted_local_name) = Engine::template_ref_parts(raw_name);
+        let candidates = self
+            .template_local_ids
+            .get(wanted_local_name)
+            .ok_or(TemplateLookupError::Unknown)?;
+        let module_for = |id| {
+            self.template_modules
+                .get(id)
+                .copied()
+                .unwrap_or_else(|| self.module_registry.main_module_id())
+        };
+        let choose = |ids: smallvec::SmallVec<[ferric_rules_core::TemplateId; 2]>| {
+            if ids.len() == 1 {
+                Ok(ids[0])
+            } else {
+                Err(TemplateLookupError::Ambiguous(
+                    ids.into_iter().map(module_for).collect(),
+                ))
+            }
+        };
+        if let Some(module_name) = qualified_module_name {
+            let target_module = self
+                .module_registry
+                .get_by_name(module_name)
+                .ok_or(TemplateLookupError::Unknown)?;
+            let matches: smallvec::SmallVec<_> = candidates
+                .iter()
+                .copied()
+                .filter(|id| module_for(*id) == target_module)
+                .collect();
+            if matches.is_empty() {
+                return Err(TemplateLookupError::Unknown);
+            }
+            let id = choose(matches)?;
+            if !self.module_registry.is_construct_visible(
+                current_module,
+                target_module,
+                "deftemplate",
+                wanted_local_name,
+            ) {
+                return Err(TemplateLookupError::NotVisible);
+            }
+            return Ok(id);
+        }
+        let local: smallvec::SmallVec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|id| module_for(*id) == current_module)
+            .collect();
+        if !local.is_empty() {
+            return choose(local);
+        }
+        let visible: smallvec::SmallVec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.module_registry.is_construct_visible(
+                    current_module,
+                    module_for(*id),
+                    "deftemplate",
+                    wanted_local_name,
+                )
+            })
+            .collect();
+        if visible.is_empty() {
+            return Err(TemplateLookupError::NotVisible);
+        }
+        choose(visible)
+    }
+}
+
+/// Resolve predicate call names before candidate iteration, including empty
+/// queries. A callable being defined can refer to itself before registration.
+pub(crate) fn validate_query_callable(
+    raw_name: &str,
+    functions: &crate::functions::FunctionEnv,
+    generics: &crate::functions::GenericRegistry,
+    modules: &crate::modules::ModuleRegistry,
+    current_module: crate::modules::ModuleId,
+    self_name: Option<&str>,
+) -> Result<(), String> {
+    if self_name == Some(raw_name)
+        || raw_name == "call-next-method"
+        || crate::evaluator::is_builtin_callable(raw_name)
+    {
+        return Ok(());
+    }
+    let unknown =
+        || format!("[EXPRNPSR3] query predicate callable `{raw_name}` is not declared or visible");
+    let qualified = parse_qualified_name(raw_name).map_err(|_| unknown())?;
+    let visible =
+        |owner, name: &str, kind| modules.is_construct_visible(current_module, owner, kind, name);
+    let (name, requested_module) = match &qualified {
+        QualifiedName::Qualified { module, name } => (
+            name.as_str(),
+            Some(modules.get_by_name(module).ok_or_else(unknown)?),
+        ),
+        QualifiedName::Unqualified(name) => (name.as_str(), None),
+    };
+    if let Some(owner) = requested_module {
+        if (functions.contains(owner, name) && visible(owner, name, "deffunction"))
+            || (generics.contains(owner, name) && visible(owner, name, "defgeneric"))
+        {
+            return Ok(());
+        }
+        return Err(unknown());
+    }
+    if functions.contains(current_module, name) || generics.contains(current_module, name) {
+        return Ok(());
+    }
+    let mut owners: Vec<_> = functions
+        .modules_for_name(name)
+        .into_iter()
+        .filter(|owner| visible(*owner, name, "deffunction"))
+        .chain(
+            generics
+                .modules_for_name(name)
+                .into_iter()
+                .filter(|owner| visible(*owner, name, "defgeneric")),
+        )
+        .collect();
+    owners.sort_by_key(|owner| owner.0);
+    owners.dedup();
+    match owners.len() {
+        1 => Ok(()),
+        0 => Err(unknown()),
+        _ => Err(format!(
+            "[EXPRNPSR3] query predicate callable `{raw_name}` is ambiguous"
+        )),
+    }
+}
+
 /// Translated rule data including fact-address variable bindings.
 struct TranslatedRule {
     salience: Salience,
@@ -481,6 +670,20 @@ impl Engine {
                         } else {
                             self.module_registry.current_module()
                         };
+                        // Query restrictions must exist where the rule is written;
+                        // later declarations must not make an invalid query loadable.
+                        if let Err(error) = rule.actions.iter().try_for_each(|action| {
+                            action.call.args.iter().try_for_each(|expr| {
+                                self.validate_expression_query_declarations(
+                                    expr,
+                                    owning_module,
+                                    None,
+                                )
+                            })
+                        }) {
+                            errors.push(error);
+                            continue;
+                        }
                         rules_with_module.push((rule, owning_module));
                     }
                     Construct::Template(template) => {
@@ -572,6 +775,31 @@ impl Engine {
                             continue;
                         }
                         let owning_module = self.module_registry.current_module();
+                        if let Err(error) = func.body.iter().try_for_each(|expr| {
+                            self.validate_expression_query_declarations(
+                                expr,
+                                owning_module,
+                                Some(&func.name),
+                            )
+                        }) {
+                            errors.push(error);
+                            continue;
+                        }
+                        let ordinary = func
+                            .parameters
+                            .iter()
+                            .map(String::as_str)
+                            .chain(func.wildcard_parameter.as_deref())
+                            .map(|name| Self::existential_scope_variable_name(name).to_owned())
+                            .collect();
+                        if let Err((span, message)) = crate::query_validation::validate_query_scopes(
+                            &func.body,
+                            ordinary,
+                            &HashSet::new(),
+                        ) {
+                            errors.push(Self::compile_error_at(&span, &message));
+                            continue;
+                        }
                         // Conflict check: a deffunction cannot share a name with
                         // an existing defgeneric (or vice versa).
                         if self.generics.contains(owning_module, &func.name) {
@@ -665,6 +893,31 @@ impl Engine {
                             continue;
                         }
                         let owning_module = self.module_registry.current_module();
+                        if let Err(error) = method.body.iter().try_for_each(|expr| {
+                            self.validate_expression_query_declarations(
+                                expr,
+                                owning_module,
+                                Some(&method.name),
+                            )
+                        }) {
+                            errors.push(error);
+                            continue;
+                        }
+                        let ordinary = method
+                            .parameters
+                            .iter()
+                            .map(|parameter| parameter.name.as_str())
+                            .chain(method.wildcard_parameter.as_deref())
+                            .map(|name| Self::existential_scope_variable_name(name).to_owned())
+                            .collect();
+                        if let Err((span, message)) = crate::query_validation::validate_query_scopes(
+                            &method.body,
+                            ordinary,
+                            &HashSet::new(),
+                        ) {
+                            errors.push(Self::compile_error_at(&span, &message));
+                            continue;
+                        }
                         // Conflict check: a defmethod that would auto-create a
                         // generic cannot share a name with an existing deffunction.
                         if !self.generics.contains(owning_module, &method.name)
@@ -907,29 +1160,21 @@ impl Engine {
         index
     }
 
+    fn template_resolver(&self) -> TemplateResolver<'_> {
+        TemplateResolver {
+            template_local_ids: &self.template_local_ids,
+            template_modules: &self.template_modules,
+            module_registry: &self.module_registry,
+        }
+    }
+
     pub(crate) fn resolve_template_reference(
         &self,
         raw_name: &str,
         current_module: crate::modules::ModuleId,
     ) -> Result<ferric_rules_core::TemplateId, String> {
-        self.resolve_template_id(raw_name, current_module).map_err(|error| {
-            let current_module_label = self.module_registry.module_name(current_module).unwrap_or("?");
-            match error {
-                TemplateLookupError::Unknown => format!("unknown template `{raw_name}`"),
-                TemplateLookupError::NotVisible => format!(
-                    "template `{raw_name}` is not visible from module `{current_module_label}`"
-                ),
-                TemplateLookupError::Ambiguous(modules) => {
-                    let modules: BTreeSet<_> = modules.iter().map(|module| {
-                        self.module_registry.module_name(*module).unwrap_or("?")
-                    }).collect();
-                    format!(
-                        "template `{raw_name}` is ambiguous from module `{current_module_label}` (matches modules: {})",
-                        modules.into_iter().collect::<Vec<_>>().join(", ")
-                    )
-                }
-            }
-        })
+        self.template_resolver()
+            .resolve_reference(raw_name, current_module)
     }
 
     /// Resolve without allocating diagnostics that ordered-relation probes discard.
@@ -939,74 +1184,8 @@ impl Engine {
         raw_name: &str,
         current_module: crate::modules::ModuleId,
     ) -> Result<ferric_rules_core::TemplateId, TemplateLookupError> {
-        let (qualified_module_name, wanted_local_name) = Self::template_ref_parts(raw_name);
-        let candidates = self
-            .template_local_ids
-            .get(wanted_local_name)
-            .ok_or(TemplateLookupError::Unknown)?;
-        let module_for = |id| {
-            self.template_modules
-                .get(id)
-                .copied()
-                .unwrap_or_else(|| self.module_registry.main_module_id())
-        };
-        let choose = |ids: smallvec::SmallVec<[ferric_rules_core::TemplateId; 2]>| {
-            if ids.len() == 1 {
-                Ok(ids[0])
-            } else {
-                Err(TemplateLookupError::Ambiguous(
-                    ids.into_iter().map(module_for).collect(),
-                ))
-            }
-        };
-        if let Some(module_name) = qualified_module_name {
-            let target_module = self
-                .module_registry
-                .get_by_name(module_name)
-                .ok_or(TemplateLookupError::Unknown)?;
-            let matches: smallvec::SmallVec<_> = candidates
-                .iter()
-                .copied()
-                .filter(|id| module_for(*id) == target_module)
-                .collect();
-            if matches.is_empty() {
-                return Err(TemplateLookupError::Unknown);
-            }
-            let id = choose(matches)?;
-            if !self.module_registry.is_construct_visible(
-                current_module,
-                target_module,
-                "deftemplate",
-                wanted_local_name,
-            ) {
-                return Err(TemplateLookupError::NotVisible);
-            }
-            return Ok(id);
-        }
-        let local: smallvec::SmallVec<_> = candidates
-            .iter()
-            .copied()
-            .filter(|id| module_for(*id) == current_module)
-            .collect();
-        if !local.is_empty() {
-            return choose(local);
-        }
-        let visible: smallvec::SmallVec<_> = candidates
-            .iter()
-            .copied()
-            .filter(|id| {
-                self.module_registry.is_construct_visible(
-                    current_module,
-                    module_for(*id),
-                    "deftemplate",
-                    wanted_local_name,
-                )
-            })
-            .collect();
-        if visible.is_empty() {
-            return Err(TemplateLookupError::NotVisible);
-        }
-        choose(visible)
+        self.template_resolver()
+            .resolve_id(raw_name, current_module)
     }
 
     /// Process an ordered fact body.
@@ -1350,6 +1529,8 @@ impl Engine {
                 ));
             }
 
+            self.validate_expression_query_declarations(&def.value, current_module, None)?;
+
             // Translate the init-value expression.  This must happen before we
             // construct the EvalContext because from_action_expr also needs
             // &mut symbol_table.
@@ -1388,6 +1569,10 @@ impl Engine {
                     initial_fact_id: self.initial_fact_id,
                     template_defs: None,
                     compact_fact_bindings: None,
+                    // Globals currently persist initializer values for reset,
+                    // not executable initializers. Query results (especially
+                    // addresses) cannot safely be captured by that policy.
+                    template_resolver: None,
                 };
                 crate::evaluator::eval(&mut ctx, &runtime_expr)
                     .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
@@ -1469,6 +1654,7 @@ impl Engine {
                         initial_fact_id: None,
                         template_defs: None,
                         compact_fact_bindings: None,
+                        template_resolver: None,
                     };
                     crate::evaluator::eval(&mut ctx, &runtime_expr)
                 };
@@ -1970,6 +2156,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Mirrors every structured expression and its query scope.
     fn validate_action_expr_as_expression(
         &self,
         expr: &ActionExpr,
@@ -1990,7 +2177,12 @@ impl Engine {
                     rule_name,
                 )?;
                 for arg in &call.args {
-                    self.validate_action_expr_as_expression(arg, current_module, rule_name, query_members)?;
+                    self.validate_action_expr_as_expression(
+                        arg,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
@@ -2000,63 +2192,153 @@ impl Engine {
                 else_actions,
                 ..
             } => {
-                self.validate_action_expr_as_expression(condition, current_module, rule_name, query_members)?;
+                self.validate_action_expr_as_expression(
+                    condition,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in then_actions {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name, query_members)?;
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 for action in else_actions {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name, query_members)?;
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
             ActionExpr::While {
                 condition, body, ..
             } => {
-                self.validate_action_expr_as_expression(condition, current_module, rule_name, query_members)?;
+                self.validate_action_expr_as_expression(
+                    condition,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in body {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name, query_members)?;
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
             ActionExpr::LoopForCount {
                 start, end, body, ..
             } => {
-                self.validate_action_expr_as_expression(start, current_module, rule_name, query_members)?;
-                self.validate_action_expr_as_expression(end, current_module, rule_name, query_members)?;
+                self.validate_action_expr_as_expression(
+                    start,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
+                self.validate_action_expr_as_expression(
+                    end,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in body {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name, query_members)?;
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
             ActionExpr::Progn {
                 list_expr, body, ..
             } => {
-                self.validate_action_expr_as_expression(list_expr, current_module, rule_name, query_members)?;
+                self.validate_action_expr_as_expression(
+                    list_expr,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for action in body {
-                    self.validate_action_expr_as_expression(action, current_module, rule_name, query_members)?;
+                    self.validate_action_expr_as_expression(
+                        action,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                 }
                 Ok(())
             }
-            ActionExpr::QueryAction { name, span, .. } => Err(Self::compile_error_at(
+            ActionExpr::QueryAction {
+                name,
+                bindings,
+                query,
+                body,
                 span,
-                &format!("{name} in an expression is unsupported; use a rule RHS do-for-* action or the host fact API"),
-            )),
+            } => {
+                if !Self::is_result_query(name) {
+                    return Err(Self::compile_error_at(
+                        span,
+                        &format!("{name} in an expression is unsupported; use a rule RHS action"),
+                    ));
+                }
+                self.validate_query_declaration(name, bindings, body, span, current_module)?;
+                Self::validate_query_predicate_bindings(query)?;
+                let mut nested_members = query_members.clone();
+                nested_members.extend(bindings.iter().map(|(name, _)| name.clone()));
+                self.validate_action_expr_as_expression(
+                    query,
+                    current_module,
+                    rule_name,
+                    &nested_members,
+                )
+            }
             ActionExpr::Switch {
                 expr,
                 cases,
                 default,
                 ..
             } => {
-                self.validate_action_expr_as_expression(expr, current_module, rule_name, query_members)?;
+                self.validate_action_expr_as_expression(
+                    expr,
+                    current_module,
+                    rule_name,
+                    query_members,
+                )?;
                 for (case_expr, actions) in cases {
-                    self.validate_action_expr_as_expression(case_expr, current_module, rule_name, query_members)?;
+                    self.validate_action_expr_as_expression(
+                        case_expr,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    )?;
                     for action in actions {
-                        self.validate_action_expr_as_expression(action, current_module, rule_name, query_members)?;
+                        self.validate_action_expr_as_expression(
+                            action,
+                            current_module,
+                            rule_name,
+                            query_members,
+                        )?;
                     }
                 }
                 if let Some(default_actions) = default {
                     for action in default_actions {
-                        self.validate_action_expr_as_expression(action, current_module, rule_name, query_members)?;
+                        self.validate_action_expr_as_expression(
+                            action,
+                            current_module,
+                            rule_name,
+                            query_members,
+                        )?;
                     }
                 }
                 Ok(())
@@ -2173,11 +2455,22 @@ impl Engine {
                 Ok(())
             }
             ActionExpr::QueryAction {
+                name,
                 bindings,
                 query,
                 body,
-                ..
+                span,
             } => {
+                if Self::is_result_query(name) {
+                    return self.validate_action_expr_as_expression(
+                        expr,
+                        current_module,
+                        rule_name,
+                        query_members,
+                    );
+                }
+                self.validate_query_declaration(name, bindings, body, span, current_module)?;
+                Self::validate_query_predicate_bindings(query)?;
                 let mut nested_members = query_members.clone();
                 nested_members.extend(bindings.iter().map(|(name, _)| name.clone()));
                 self.validate_action_expr_as_expression(
@@ -2235,6 +2528,174 @@ impl Engine {
                     }
                 }
                 Ok(())
+            }
+        }
+    }
+
+    fn is_result_query(name: &str) -> bool {
+        matches!(name, "any-factp" | "find-fact" | "find-all-facts")
+    }
+
+    fn validate_query_declaration(
+        &self,
+        name: &str,
+        bindings: &[(String, String)],
+        body: &[ActionExpr],
+        span: &Span,
+        current_module: crate::modules::ModuleId,
+    ) -> Result<(), LoadError> {
+        if bindings.is_empty() {
+            return Err(Self::compile_error_at(
+                span,
+                "fact queries require at least one member",
+            ));
+        }
+        if Self::is_result_query(name) && !body.is_empty() {
+            return Err(Self::compile_error_at(
+                span,
+                "result fact queries cannot have body actions",
+            ));
+        }
+        let mut names = HashSet::new();
+        for (member, template) in bindings {
+            if member.is_empty() || !names.insert(member) {
+                return Err(Self::compile_error_at(
+                    span,
+                    "fact queries require distinct named single-field members",
+                ));
+            }
+            self.template_resolver()
+                .resolve_query_reference(template, current_module)
+                .map_err(|message| Self::compile_error_at(span, &message))?;
+        }
+        Ok(())
+    }
+
+    /// Validate query declarations inside callable/global expressions without
+    /// changing the existing declaration policy for ordinary function calls.
+    fn validate_expression_query_declarations(
+        &self,
+        expr: &ActionExpr,
+        current_module: crate::modules::ModuleId,
+        self_name: Option<&str>,
+    ) -> Result<(), LoadError> {
+        let mut pending = vec![expr];
+        while let Some(expr) = pending.pop() {
+            if let ActionExpr::QueryAction {
+                name,
+                bindings,
+                query,
+                body,
+                span,
+            } = expr
+            {
+                if Self::is_result_query(name) {
+                    self.validate_query_declaration(name, bindings, body, span, current_module)?;
+                    Self::validate_query_predicate_bindings(query)?;
+                    self.validate_query_predicate_callables(query, current_module, self_name)?;
+                }
+            }
+            Self::push_action_expr_children(expr, &mut pending);
+        }
+        Ok(())
+    }
+
+    fn validate_query_predicate_callables(
+        &self,
+        expr: &ActionExpr,
+        current_module: crate::modules::ModuleId,
+        self_name: Option<&str>,
+    ) -> Result<(), LoadError> {
+        let mut pending = vec![expr];
+        while let Some(expr) = pending.pop() {
+            if let ActionExpr::FunctionCall(call) = expr {
+                validate_query_callable(
+                    &call.name,
+                    &self.functions,
+                    &self.generics,
+                    &self.module_registry,
+                    current_module,
+                    self_name,
+                )
+                .map_err(|message| Self::compile_error_at(&call.span, &message))?;
+            }
+            Self::push_action_expr_children(expr, &mut pending);
+        }
+        Ok(())
+    }
+
+    /// CLIPS disallows local bind syntax anywhere in a query predicate; a
+    /// called function's body belongs to its own scope and is not inspected.
+    fn validate_query_predicate_bindings(expr: &ActionExpr) -> Result<(), LoadError> {
+        let mut pending = vec![expr];
+        while let Some(expr) = pending.pop() {
+            if let ActionExpr::FunctionCall(call) = expr {
+                if call.name == "bind"
+                    && matches!(call.args.first(), Some(ActionExpr::Variable(..)))
+                {
+                    return Err(Self::compile_error_at(
+                        &call.span,
+                        "[FACTQPSR2] local bind is not allowed in a fact-query predicate",
+                    ));
+                }
+            }
+            Self::push_action_expr_children(expr, &mut pending);
+        }
+        Ok(())
+    }
+
+    fn push_action_expr_children<'a>(expr: &'a ActionExpr, pending: &mut Vec<&'a ActionExpr>) {
+        match expr {
+            ActionExpr::FunctionCall(call) => pending.extend(&call.args),
+            ActionExpr::If {
+                condition,
+                then_actions,
+                else_actions,
+                ..
+            } => {
+                pending.push(condition);
+                pending.extend(then_actions);
+                pending.extend(else_actions);
+            }
+            ActionExpr::While {
+                condition, body, ..
+            } => {
+                pending.push(condition);
+                pending.extend(body);
+            }
+            ActionExpr::LoopForCount {
+                start, end, body, ..
+            } => {
+                pending.push(start);
+                pending.push(end);
+                pending.extend(body);
+            }
+            ActionExpr::Progn {
+                list_expr, body, ..
+            } => {
+                pending.push(list_expr);
+                pending.extend(body);
+            }
+            ActionExpr::QueryAction { query, body, .. } => {
+                pending.push(query);
+                pending.extend(body);
+            }
+            ActionExpr::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                pending.push(expr);
+                for (value, actions) in cases {
+                    pending.push(value);
+                    pending.extend(actions);
+                }
+                if let Some(actions) = default {
+                    pending.extend(actions);
+                }
+            }
+            ActionExpr::Literal(..) | ActionExpr::Variable(..) | ActionExpr::GlobalVariable(..) => {
             }
         }
     }
@@ -2632,6 +3093,20 @@ impl Engine {
         scope: &RuleRhsScope<'_>,
         rhs_locals: &mut HashSet<String>,
     ) -> Result<(), LoadError> {
+        if call.name == "__fact_slot_ref" {
+            if let [ActionExpr::Variable(member, _), ActionExpr::Literal(slot)] =
+                call.args.as_slice()
+            {
+                if let LiteralKind::Symbol(slot) = &slot.value {
+                    let ordinary_name = format!("{member}:{slot}");
+                    if rhs_locals.contains(&ordinary_name)
+                        || scope.exported.contains(&ordinary_name)
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
         if call.name == "bind" {
             if let Some(ActionExpr::Variable(name, _)) = call.args.first() {
                 for value in call.args.iter().skip(1) {
@@ -3528,6 +4003,20 @@ impl Engine {
         // The visible initial-fact is separate state, not support for this match.
 
         Self::validate_rule_rhs_scope(rule, &existential_locals, &exported_variables)?;
+        let mut query_ordinary = exported_variables.clone();
+        for action in &rule.actions {
+            if action.call.name == "bind" {
+                if let Some(ActionExpr::Variable(name, _)) = action.call.args.first() {
+                    query_ordinary.insert(Self::existential_scope_variable_name(name).to_owned());
+                }
+            }
+        }
+        crate::query_validation::validate_query_scopes(
+            rule.actions.iter().flat_map(|action| &action.call.args),
+            query_ordinary,
+            &fact_address_vars.keys().cloned().collect(),
+        )
+        .map_err(|(span, message)| Self::compile_error_at(&span, &message))?;
 
         Ok(TranslatedRule {
             salience: Salience::new(rule.salience),
@@ -6345,6 +6834,94 @@ mod tests {
         assert_eq!(result.functions[0].name, "add-one");
         assert!(result.rules.is_empty());
         assert!(result.asserted_facts.is_empty());
+    }
+
+    #[test]
+    fn expression_queries_in_global_initializers_fail_without_persisting_results() {
+        let mut engine = new_utf8_engine();
+        load_ok(
+            &mut engine,
+            r"
+            (deftemplate item (slot value))
+            (deffacts seed (item (value 30)))
+            (deffunction query () (find-fact ((?f item)) TRUE))
+            (defglobal ?*kept* = 7)
+        ",
+        );
+        engine.reset().unwrap();
+        let main = engine.module_registry.main_module_id();
+        for initializer in [
+            "(any-factp ((?f item)) TRUE)",
+            "(find-fact ((?f item)) TRUE)",
+            "(find-all-facts ((?f item)) TRUE)",
+            "(query)",
+        ] {
+            let errors = engine
+                .load_str(&format!("(defglobal ?*invalid* = {initializer})"))
+                .unwrap_err();
+            assert!(errors.iter().any(|error| error
+                .to_string()
+                .contains("template context is unavailable")));
+            assert!(!engine.globals.contains(main, "invalid"));
+            assert!(!engine
+                .registered_globals
+                .iter()
+                .any(|(_, name, _)| name == "invalid"));
+        }
+        engine.reset().unwrap();
+        assert!(matches!(
+            engine.globals.get(main, "kept"),
+            Some(Value::Integer(7))
+        ));
+        assert!(!engine.globals.contains(main, "invalid"));
+    }
+
+    #[test]
+    fn invalid_expression_query_does_not_replace_callable_or_create_generic() {
+        let mut engine = new_utf8_engine();
+        load_ok(&mut engine, "(deffunction keep () 7)");
+        let main = engine.module_registry.main_module_id();
+        for source in [
+            "(deffunction keep () (any-factp ((?f missing)) TRUE))",
+            "(defmethod absent ((?x INTEGER)) (find-fact ((?f missing)) TRUE))",
+        ] {
+            let errors = engine.load_str(source).unwrap_err();
+            assert!(errors
+                .iter()
+                .any(|error| error.to_string().contains("unknown template")));
+        }
+        assert!(engine.functions.contains(main, "keep"));
+        assert!(!engine.generics.contains(main, "absent"));
+        assert!(!engine
+            .generic_modules
+            .get(&main)
+            .is_some_and(|names| names.contains_key("absent")));
+        load_ok(&mut engine, "(defrule invoke => (printout t (keep) crlf))");
+        engine.reset().unwrap();
+        engine.run(crate::RunLimit::Unlimited).unwrap();
+        assert!(engine.action_diagnostics().is_empty());
+        assert_eq!(engine.get_output("t"), Some("7\n"));
+    }
+
+    #[test]
+    fn expression_query_cannot_resolve_a_template_declared_later() {
+        let mut engine = new_utf8_engine();
+        load_ok(&mut engine, "(defrule keep => (assert (kept)))");
+        let errors = engine
+            .load_str(
+                r"
+            (defrule keep => (printout t (any-factp ((?f later)) TRUE) crlf))
+            (deftemplate later (slot value))
+        ",
+            )
+            .unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|error| error.to_string().contains("unknown template `later`")));
+        engine.reset().unwrap();
+        engine.run(crate::RunLimit::Unlimited).unwrap();
+        assert_eq!(engine.find_facts("kept").unwrap().len(), 1);
+        assert_eq!(engine.get_output("t").unwrap_or(""), "");
     }
 
     #[test]
