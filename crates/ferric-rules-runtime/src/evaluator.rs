@@ -4046,21 +4046,27 @@ fn as_lexeme_str(
 }
 
 /// `str-index` — find substring, return 1-based position or FALSE.
+/// An empty needle returns the position after the haystack's last character.
 fn builtin_str_index(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
     check_arity_exact("str-index", args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    let find = as_lexeme_str(&values[0], ctx.symbol_table, "str-index", span)?;
-    let search = as_lexeme_str(&values[1], ctx.symbol_table, "str-index", span)?;
-    match search.find(find.as_str()) {
+    let needle_value = eval_inner(ctx, &args[0])?;
+    let needle = as_lexeme_str(&needle_value, ctx.symbol_table, "str-index", span)?;
+    let haystack_value = eval_inner(ctx, &args[1])?;
+    let haystack = as_lexeme_str(&haystack_value, ctx.symbol_table, "str-index", span)?;
+    let position = if needle.is_empty() {
+        Some(haystack.len())
+    } else {
+        haystack.find(needle.as_str())
+    };
+    match position {
         Some(byte_pos) => {
             // Convert byte offset to 1-based character position.
-            let char_pos = search[..byte_pos].chars().count() + 1;
-            #[allow(clippy::cast_possible_wrap)]
-            Ok(Value::Integer(char_pos as i64))
+            let char_pos = haystack[..byte_pos].chars().count() + 1;
+            Ok(Value::Integer(i64::try_from(char_pos).unwrap_or(i64::MAX)))
         }
         None => Ok(clips_bool(
             false,

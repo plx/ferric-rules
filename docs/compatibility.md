@@ -789,13 +789,20 @@ identically to their CLIPS counterparts for the supported argument types.
 | `sym-cat` | Concatenate to symbol | `(sym-cat a b)` => `ab` |
 | `str-length` | String length in bytes | `(str-length "hello")` => `5` |
 | `sub-string` | Extract substring (1-indexed) | `(sub-string 1 3 "hello")` => `"hel"` |
-| `str-index` | Find substring position (1-indexed), FALSE if not found | `(str-index "lo" "hello")` => `4` |
+| `str-index` | First substring position (1-indexed), FALSE if not found; empty needle returns length + 1 | `(str-index "" "abc")` => `4` |
 | `upcase` | Convert to uppercase (preserves type) | `(upcase "hello")` => `"HELLO"` |
 | `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
 | `str-compare` | Lexicographic comparison (-1, 0, or 1) | `(str-compare "a" "b")` => `-1` |
 | `string-to-field` | Parse string as typed value | `(string-to-field "42")` => `42` |
 | `explode$` | Split string by whitespace into multifield | `(explode$ "a b c")` => `(a b c)` |
 | `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
+
+`str-index` accepts STRING or SYMBOL needle and haystack arguments. It evaluates
+and validates each argument once, from left to right, including the haystack when
+the needle is empty. Positions count Unicode scalar values. An empty needle
+returns the haystack's character count plus one: `(str-index "" "abc")` returns
+`4`, and `(str-index "" "")` returns `1`. A nonempty needle returns the first
+matching position or FALSE.
 
 ### Multifield Functions
 

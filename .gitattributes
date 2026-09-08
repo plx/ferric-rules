@@ -23,3 +23,7 @@ scripts/musl_static_libgcc_linker.py text eol=lf
 
 # Keep native Rust target provenance byte-identical on Windows.
 crates/ferric-rules-cli/release-targets.json text eol=lf
+
+# Preserve exact fixture output and source markers on Windows checkouts.
+crates/ferric-rules/tests/fixtures/**/*.clp text eol=lf
+crates/ferric-rules/tests/fixtures/**/*.out text eol=lf
