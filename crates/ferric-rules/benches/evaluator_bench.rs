@@ -392,6 +392,63 @@ fn bench_test_ce_matching(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_control_frames(c: &mut Criterion) {
+    let mut members = String::new();
+    for i in 1..=1000 {
+        write!(members, " {i}").unwrap();
+    }
+    let cases = [
+        (
+            "unnamed_10000",
+            "(loop-for-count (10000) (bind ?sum (+ ?sum 1)))".to_owned(),
+            10000_i64,
+        ),
+        (
+            "progn_1000",
+            format!(
+                "(progn$ (?item (create${members})) (bind ?sum (+ ?sum (* ?item ?item-index))))"
+            ),
+            1000 * 1001 * 2001 / 6,
+        ),
+        (
+            "nested_100x100",
+            "(loop-for-count (?i 1 100) (loop-for-count (?j 1 100) (bind ?sum (+ ?sum 1))))"
+                .to_owned(),
+            10000,
+        ),
+        (
+            "conditional_10000",
+            "(loop-for-count (?i 1 10000) (if (= (mod ?i 2) 0) then (bind ?sum (+ ?sum ?i))))"
+                .to_owned(),
+            5000 * 5001,
+        ),
+    ];
+    let mut group = c.benchmark_group("eval_control_frames");
+    for (name, body, expected) in cases {
+        let source = format!(
+            "(deftemplate result (slot val)) (deffacts seed (trigger))
+            (defrule control (trigger) => (bind ?sum 0) {body} (assert (result (val ?sum))))"
+        );
+        group.bench_function(name, |b| {
+            let mut engine = Engine::new(EngineConfig::utf8());
+            engine.load_str(&source).unwrap();
+            engine.reset().unwrap();
+            support::verify_run(&mut engine, 1);
+            let ids = support::template_ids(&engine, "result");
+            assert_eq!(ids.len(), 1);
+            assert_eq!(
+                support::integer(engine.get_fact_slot_by_name(ids[0], "val").unwrap()),
+                expected
+            );
+            b.iter(|| {
+                engine.reset().unwrap();
+                engine.run(RunLimit::Unlimited).unwrap()
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_evaluator_arithmetic,
@@ -399,5 +456,6 @@ criterion_group!(
     bench_evaluator_loop,
     bench_evaluator_string,
     bench_test_ce_matching,
+    bench_control_frames,
 );
 criterion_main!(benches);
