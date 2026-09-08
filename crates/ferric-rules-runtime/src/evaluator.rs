@@ -3216,8 +3216,13 @@ fn builtin_round(
 ) -> Result<Value, EvalError> {
     check_arity_exact("round", args, 1, span)?;
     let values = eval_args(ctx, args)?;
-    let f = as_float(&values[0], "round", span)?;
-    Ok(Value::Integer(f.round() as i64))
+    let rounded = match as_numeric(&values[0], "round", span)? {
+        Numeric::Int(value) => value,
+        // CLIPS chooses the lower integer at half ties, including the
+        // floating-point subtraction effects around representable boundaries.
+        Numeric::Flt(value) => (value - 0.5).ceil() as i64,
+    };
+    Ok(Value::Integer(rounded))
 }
 
 #[allow(clippy::cast_possible_truncation)]
