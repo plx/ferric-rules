@@ -9,7 +9,7 @@
 
 #[cfg(feature = "tracing")]
 use std::cell::Cell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
@@ -335,6 +335,16 @@ impl CompactFactBinding {
 
 const COMPACT_FACT_SLOT_REF: &str = "__fact_slot_ref";
 
+/// Mutable state belonging to one callable invocation, never to the engine.
+#[derive(Default)]
+pub(crate) struct CallableLocals {
+    values: HashMap<String, Value>,
+    /// These names read from the current immutable iterator/query frame before
+    /// local values; writes to generated indexes remain ordinary assignments.
+    lexical_names: HashSet<String>,
+    protected_names: HashSet<String>,
+}
+
 /// Context needed for expression evaluation.
 ///
 /// Construction is crate-private (through the private template registry field).
@@ -344,6 +354,9 @@ const COMPACT_FACT_SLOT_REF: &str = "__fact_slot_ref";
 pub struct EvalContext<'a> {
     pub bindings: &'a BindingSet,
     pub var_map: &'a VarMap,
+    /// Invocation-local overrides over the immutable original parameter frame.
+    /// Removing an override restores the original parameter, if one exists.
+    pub(crate) callable_locals: Option<&'a mut CallableLocals>,
     pub symbol_table: &'a mut SymbolTable,
     pub config: &'a EngineConfig,
     pub functions: &'a FunctionEnv,
@@ -384,6 +397,59 @@ pub struct EvalContext<'a> {
             Arc<crate::templates::RegisteredTemplate>,
         >,
     >,
+}
+
+fn ordinary_binding(ctx: &mut EvalContext<'_>, name: &str) -> Option<Value> {
+    // Single-field and multifield spellings refer to the same binding.
+    let name = name.strip_prefix("$?").unwrap_or(name);
+    if let Some(locals) = ctx.callable_locals.as_deref() {
+        if !locals.lexical_names.contains(name) {
+            if let Some(value) = locals.values.get(name) {
+                return Some(value.clone());
+            }
+        }
+    }
+    let symbol = ctx
+        .symbol_table
+        .intern_symbol(name, ctx.config.string_encoding)
+        .ok()?;
+    let variable = ctx.var_map.lookup(symbol)?;
+    ctx.bindings.get(variable).map(|value| (**value).clone())
+}
+
+/// Lexical iterator and query names read from their temporary immutable frame.
+/// Local assignments persist; scope metadata is restored on every exit.
+fn with_callable_local_scope<'a, T>(
+    ctx: &mut EvalContext<'_>,
+    names: impl IntoIterator<Item = &'a str>,
+    protected_name: Option<&str>,
+    execute: impl FnOnce(&mut EvalContext<'_>) -> Result<T, EvalError>,
+) -> Result<T, EvalError> {
+    let mut added = Vec::new();
+    let mut added_protection = false;
+    if let Some(locals) = ctx.callable_locals.as_deref_mut() {
+        for name in names {
+            let name = name.strip_prefix("$?").unwrap_or(name);
+            if locals.lexical_names.insert(name.to_string()) {
+                added.push(name.to_string());
+            }
+        }
+        if let Some(name) = protected_name {
+            added_protection = locals.protected_names.insert(name.to_string());
+        }
+    }
+    let result = execute(ctx);
+    if let Some(locals) = ctx.callable_locals.as_deref_mut() {
+        for name in added {
+            locals.lexical_names.remove(&name);
+        }
+        if added_protection {
+            locals
+                .protected_names
+                .remove(protected_name.expect("added protected name"));
+        }
+    }
+    result
 }
 
 fn module_label(ctx: &EvalContext<'_>, module_id: crate::modules::ModuleId) -> String {
@@ -581,31 +647,10 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
     match expr {
         RuntimeExpr::Literal(v) => Ok(v.clone()),
         RuntimeExpr::BoundVar { name, span } => {
-            // Single-field and multifield spellings refer to the same binding.
-            // Compiled template slots and callable wildcard parameters store
-            // the bare name; ordered-tail RHS frames use that name as well.
-            let binding_name = name.strip_prefix("$?").unwrap_or(name);
-            let sym = ctx
-                .symbol_table
-                .intern_symbol(binding_name, ctx.config.string_encoding)
-                .map_err(|_| EvalError::UnboundVariable {
-                    name: name.clone(),
-                    span: span.clone(),
-                })?;
-            let var_id = ctx
-                .var_map
-                .lookup(sym)
-                .ok_or_else(|| EvalError::UnboundVariable {
-                    name: name.clone(),
-                    span: span.clone(),
-                })?;
-            ctx.bindings
-                .get(var_id)
-                .map(|v| (**v).clone())
-                .ok_or_else(|| EvalError::UnboundVariable {
-                    name: name.clone(),
-                    span: span.clone(),
-                })
+            ordinary_binding(ctx, name).ok_or_else(|| EvalError::UnboundVariable {
+                name: name.clone(),
+                span: span.clone(),
+            })
         }
         RuntimeExpr::GlobalVar { name, span } => {
             // Module-qualified global references (MODULE::name) use the qualified path.
@@ -838,39 +883,46 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                     iter_bindings.set(var_id, ValueRef::new(Value::Integer(counter)));
                 }
 
-                let mut iter_ctx = EvalContext {
-                    bindings: &iter_bindings,
-                    var_map: &iter_var_map,
-                    symbol_table: ctx.symbol_table,
-                    config: ctx.config,
-                    functions: ctx.functions,
-                    globals: ctx.globals,
-                    generics: ctx.generics,
-                    call_depth: ctx.call_depth,
-                    expression_depth: ctx.expression_depth,
-                    current_module: ctx.current_module,
-                    module_registry: ctx.module_registry,
-                    function_modules: ctx.function_modules,
-                    global_modules: ctx.global_modules,
-                    generic_modules: ctx.generic_modules,
-                    method_chain: ctx.method_chain.clone(),
-                    input_buffer: ctx.input_buffer.as_deref_mut(),
-                    fact_base: ctx.fact_base,
-                    compact_fact_bindings: ctx.compact_fact_bindings,
-                    template_resolver: ctx.template_resolver,
-                    initial_fact_id: ctx.initial_fact_id,
-                    template_defs: ctx.template_defs,
-                };
+                with_callable_local_scope(ctx, var_name.as_deref(), var_name.as_deref(), |ctx| {
+                    let mut iter_ctx = EvalContext {
+                        bindings: &iter_bindings,
+                        var_map: &iter_var_map,
+                        callable_locals: ctx.callable_locals.as_deref_mut(),
+                        symbol_table: ctx.symbol_table,
+                        config: ctx.config,
+                        functions: ctx.functions,
+                        globals: ctx.globals,
+                        generics: ctx.generics,
+                        call_depth: ctx.call_depth,
+                        expression_depth: ctx.expression_depth,
+                        current_module: ctx.current_module,
+                        module_registry: ctx.module_registry,
+                        function_modules: ctx.function_modules,
+                        global_modules: ctx.global_modules,
+                        generic_modules: ctx.generic_modules,
+                        method_chain: ctx.method_chain.clone(),
+                        input_buffer: ctx.input_buffer.as_deref_mut(),
+                        fact_base: ctx.fact_base,
+                        compact_fact_bindings: ctx.compact_fact_bindings,
+                        template_resolver: ctx.template_resolver,
+                        initial_fact_id: ctx.initial_fact_id,
+                        template_defs: ctx.template_defs,
+                    };
 
-                for (action_expr, rt_expr) in body {
-                    if let Some(rt) = rt_expr {
-                        result = eval_inner(&mut iter_ctx, rt)?;
-                    } else {
-                        let rt =
-                            from_action_expr(action_expr, iter_ctx.symbol_table, iter_ctx.config)?;
-                        result = eval_inner(&mut iter_ctx, &rt)?;
+                    for (action_expr, rt_expr) in body {
+                        if let Some(rt) = rt_expr {
+                            result = eval_inner(&mut iter_ctx, rt)?;
+                        } else {
+                            let rt = from_action_expr(
+                                action_expr,
+                                iter_ctx.symbol_table,
+                                iter_ctx.config,
+                            )?;
+                            result = eval_inner(&mut iter_ctx, &rt)?;
+                        }
                     }
-                }
+                    Ok(())
+                })?;
             }
             Ok(result)
         }
@@ -945,39 +997,51 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                         })?;
                 iter_bindings.set(idx_var_id, ValueRef::new(Value::Integer(one_based)));
 
-                let mut iter_ctx = EvalContext {
-                    bindings: &iter_bindings,
-                    var_map: &iter_var_map,
-                    symbol_table: ctx.symbol_table,
-                    config: ctx.config,
-                    functions: ctx.functions,
-                    globals: ctx.globals,
-                    generics: ctx.generics,
-                    call_depth: ctx.call_depth,
-                    expression_depth: ctx.expression_depth,
-                    current_module: ctx.current_module,
-                    module_registry: ctx.module_registry,
-                    function_modules: ctx.function_modules,
-                    global_modules: ctx.global_modules,
-                    generic_modules: ctx.generic_modules,
-                    method_chain: ctx.method_chain.clone(),
-                    input_buffer: ctx.input_buffer.as_deref_mut(),
-                    fact_base: ctx.fact_base,
-                    compact_fact_bindings: ctx.compact_fact_bindings,
-                    template_resolver: ctx.template_resolver,
-                    initial_fact_id: ctx.initial_fact_id,
-                    template_defs: ctx.template_defs,
-                };
+                with_callable_local_scope(
+                    ctx,
+                    [var_name.as_str(), index_var_name.as_str()],
+                    Some(var_name),
+                    |ctx| {
+                        let mut iter_ctx = EvalContext {
+                            bindings: &iter_bindings,
+                            var_map: &iter_var_map,
+                            callable_locals: ctx.callable_locals.as_deref_mut(),
+                            symbol_table: ctx.symbol_table,
+                            config: ctx.config,
+                            functions: ctx.functions,
+                            globals: ctx.globals,
+                            generics: ctx.generics,
+                            call_depth: ctx.call_depth,
+                            expression_depth: ctx.expression_depth,
+                            current_module: ctx.current_module,
+                            module_registry: ctx.module_registry,
+                            function_modules: ctx.function_modules,
+                            global_modules: ctx.global_modules,
+                            generic_modules: ctx.generic_modules,
+                            method_chain: ctx.method_chain.clone(),
+                            input_buffer: ctx.input_buffer.as_deref_mut(),
+                            fact_base: ctx.fact_base,
+                            compact_fact_bindings: ctx.compact_fact_bindings,
+                            template_resolver: ctx.template_resolver,
+                            initial_fact_id: ctx.initial_fact_id,
+                            template_defs: ctx.template_defs,
+                        };
 
-                for (action_expr, rt_expr) in body {
-                    if let Some(rt) = rt_expr {
-                        result = eval_inner(&mut iter_ctx, rt)?;
-                    } else {
-                        let rt =
-                            from_action_expr(action_expr, iter_ctx.symbol_table, iter_ctx.config)?;
-                        result = eval_inner(&mut iter_ctx, &rt)?;
-                    }
-                }
+                        for (action_expr, rt_expr) in body {
+                            if let Some(rt) = rt_expr {
+                                result = eval_inner(&mut iter_ctx, rt)?;
+                            } else {
+                                let rt = from_action_expr(
+                                    action_expr,
+                                    iter_ctx.symbol_table,
+                                    iter_ctx.config,
+                                )?;
+                                result = eval_inner(&mut iter_ctx, &rt)?;
+                            }
+                        }
+                        Ok(())
+                    },
+                )?;
             }
             Ok(result)
         }
@@ -1267,31 +1331,39 @@ fn eval_fact_query(
                 .get_mut(member)
                 .expect("query member has a compact binding") = CompactFactBinding::live(fact);
         }
-        let mut query_ctx = EvalContext {
-            bindings: &bindings,
-            var_map: &var_map,
-            symbol_table: ctx.symbol_table,
-            config: ctx.config,
-            functions: ctx.functions,
-            globals: ctx.globals,
-            generics: ctx.generics,
-            call_depth: ctx.call_depth,
-            expression_depth: ctx.expression_depth,
-            current_module: ctx.current_module,
-            module_registry: ctx.module_registry,
-            function_modules: ctx.function_modules,
-            global_modules: ctx.global_modules,
-            generic_modules: ctx.generic_modules,
-            method_chain: ctx.method_chain.clone(),
-            input_buffer: ctx.input_buffer.as_deref_mut(),
-            fact_base: ctx.fact_base,
-            compact_fact_bindings: Some(&compact_facts),
-            template_resolver: ctx.template_resolver,
-            initial_fact_id: ctx.initial_fact_id,
-            template_defs: ctx.template_defs,
-        };
-        let value = eval_inner(&mut query_ctx, predicate)?;
-        if is_truthy(&value, query_ctx.symbol_table) {
+        let value = with_callable_local_scope(
+            ctx,
+            members.iter().map(|(name, _)| name.as_str()),
+            None,
+            |ctx| {
+                let mut query_ctx = EvalContext {
+                    bindings: &bindings,
+                    var_map: &var_map,
+                    callable_locals: ctx.callable_locals.as_deref_mut(),
+                    symbol_table: ctx.symbol_table,
+                    config: ctx.config,
+                    functions: ctx.functions,
+                    globals: ctx.globals,
+                    generics: ctx.generics,
+                    call_depth: ctx.call_depth,
+                    expression_depth: ctx.expression_depth,
+                    current_module: ctx.current_module,
+                    module_registry: ctx.module_registry,
+                    function_modules: ctx.function_modules,
+                    global_modules: ctx.global_modules,
+                    generic_modules: ctx.generic_modules,
+                    method_chain: ctx.method_chain.clone(),
+                    input_buffer: ctx.input_buffer.as_deref_mut(),
+                    fact_base: ctx.fact_base,
+                    compact_fact_bindings: Some(&compact_facts),
+                    template_resolver: ctx.template_resolver,
+                    initial_fact_id: ctx.initial_fact_id,
+                    template_defs: ctx.template_defs,
+                };
+                eval_inner(&mut query_ctx, predicate)
+            },
+        )?;
+        if is_truthy(&value, ctx.symbol_table) {
             if name == "any-factp" {
                 return Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding));
             }
@@ -1501,10 +1573,14 @@ fn execute_callable_body(
         body_exprs.push(from_action_expr(body_expr, ctx.symbol_table, ctx.config)?);
     }
 
+    // Each invocation has its own overrides, leaving original parameters intact
+    // for local unbind and leaving caller locals outside the callable's scope.
+    let mut callable_locals = CallableLocals::default();
     // Execute body expressions in an inner frame that inherits shared runtime state.
     let mut inner_ctx = EvalContext {
         bindings,
         var_map,
+        callable_locals: Some(&mut callable_locals),
         symbol_table: ctx.symbol_table,
         config: ctx.config,
         functions: ctx.functions,
@@ -2884,15 +2960,20 @@ fn dispatch_builtin(
 // `bind` special form
 // ---------------------------------------------------------------------------
 
-/// `bind` — set a global variable. The first argument must be an unevaluated
-/// global variable reference (`?*name*`); the second is the new value.
+/// `bind` — update an invocation-local override or an existing global variable.
+/// A local bind with no values removes its override; multiple values are spliced
+/// into a multifield. Global assignment retains its existing one-value policy.
 ///
 /// Returns the value that was bound.
+#[allow(clippy::too_many_lines)] // Keep the existing global visibility policy beside local dispatch.
 fn dispatch_bind(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
+    if let Some(RuntimeExpr::BoundVar { name, .. }) = args.first() {
+        return dispatch_local_bind(ctx, name, &args[1..], span);
+    }
     check_arity_exact("bind", args, 2, span)?;
 
     match &args[0] {
@@ -2993,6 +3074,64 @@ fn dispatch_bind(
             actual: "non-global-variable".to_string(),
             span: span.cloned(),
         }),
+    }
+}
+
+fn dispatch_local_bind(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    values: &[RuntimeExpr],
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    if ctx.callable_locals.is_none() {
+        return Err(EvalError::UnsupportedOperation {
+            operation: "bind".into(),
+            reason: "local binding requires a callable invocation".into(),
+            span: span.cloned(),
+        });
+    }
+    let name = name.strip_prefix("$?").unwrap_or(name);
+    if ctx
+        .callable_locals
+        .as_deref()
+        .is_some_and(|locals| locals.protected_names.contains(name))
+    {
+        return Err(EvalError::UnsupportedOperation {
+            operation: "bind".into(),
+            reason: format!("cannot rebind active iteration variable ?{name}"),
+            span: span.cloned(),
+        });
+    }
+    // Evaluate before replacing the binding so an error leaves its previous
+    // value intact, while nested expressions retain their own side effects.
+    let value = match values {
+        [] => None,
+        [value] => Some(eval_inner(ctx, value)?),
+        _ => {
+            let values = eval_args(ctx, values)?;
+            let mut fields = ferric_rules_core::Multifield::new();
+            for value in values {
+                match value {
+                    Value::Multifield(multifield) => {
+                        fields.extend(multifield.iter().cloned());
+                    }
+                    Value::Void => {}
+                    value => fields.push(value),
+                }
+            }
+            Some(Value::Multifield(Box::new(fields)))
+        }
+    };
+    let locals = ctx
+        .callable_locals
+        .as_deref_mut()
+        .expect("checked callable frame");
+    if let Some(value) = value {
+        locals.values.insert(name.to_string(), value.clone());
+        Ok(value)
+    } else {
+        locals.values.remove(name);
+        Ok(clips_false(ctx.symbol_table, ctx.config.string_encoding))
     }
 }
 
@@ -6209,14 +6348,8 @@ fn builtin_compact_fact_slot_ref(
         // A colon is also legal in an ordinary local name. Only an active
         // lexical fact member takes precedence over that exact full name.
         let full_name = format!("{name}:{slot_name}");
-        let ordinary = ctx
-            .symbol_table
-            .intern_symbol(&full_name, ctx.config.string_encoding)
-            .ok()
-            .and_then(|symbol| ctx.var_map.lookup(symbol))
-            .and_then(|variable| ctx.bindings.get(variable));
-        if let Some(value) = ordinary {
-            return Ok((**value).clone());
+        if let Some(value) = ordinary_binding(ctx, &full_name) {
+            return Ok(value);
         }
         return Err(EvalError::UnboundVariable {
             name: name.clone(),
@@ -6526,6 +6659,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -6563,6 +6697,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -6634,6 +6769,15 @@ mod tests {
         scope: Option<&CompactFactBindings>,
         run: impl FnOnce(&mut EvalContext<'_>) -> T,
     ) -> T {
+        with_compact_local_context(engine, scope, None, run)
+    }
+
+    fn with_compact_local_context<T>(
+        engine: &mut crate::Engine,
+        scope: Option<&CompactFactBindings>,
+        callable_locals: Option<&mut CallableLocals>,
+        run: impl FnOnce(&mut EvalContext<'_>) -> T,
+    ) -> T {
         // Deliberately collide with the compact member name: slot lookup must
         // retain the lexical fact even when the ordinary value is a scalar.
         let mut var_map = VarMap::new();
@@ -6648,6 +6792,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bindings,
             var_map: &var_map,
+            callable_locals,
             symbol_table: &mut engine.symbol_table,
             config: &engine.config,
             functions: &engine.functions,
@@ -6673,6 +6818,259 @@ mod tests {
             template_defs: Some(&engine.template_defs),
         };
         run(&mut ctx)
+    }
+
+    fn local_read(name: &str) -> RuntimeExpr {
+        RuntimeExpr::BoundVar {
+            name: name.into(),
+            span: None,
+        }
+    }
+
+    fn local_bind(name: &str, values: Vec<RuntimeExpr>) -> RuntimeExpr {
+        call(
+            "bind",
+            std::iter::once(local_read(name)).chain(values).collect(),
+        )
+    }
+
+    #[test]
+    fn callable_local_unbind_restores_parameters_and_normalizes_multifield_names() {
+        let (mut engine, _) = compact_test_engine();
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, None, Some(&mut locals), |ctx| {
+            assert!(eval(ctx, &local_read("f"))
+                .unwrap()
+                .structural_eq(&Value::Integer(42)));
+            assert!(eval(ctx, &local_bind("$?f", vec![int(99)]))
+                .unwrap()
+                .structural_eq(&Value::Integer(99)));
+            assert!(eval(ctx, &local_read("f"))
+                .unwrap()
+                .structural_eq(&Value::Integer(99)));
+            let unbound = eval(ctx, &local_bind("f", vec![])).unwrap();
+            assert!(!is_truthy(&unbound, ctx.symbol_table));
+            assert!(eval(ctx, &local_read("$?f"))
+                .unwrap()
+                .structural_eq(&Value::Integer(42)));
+            eval(ctx, &local_bind("temporary", vec![int(7)])).unwrap();
+            eval(ctx, &local_bind("$?temporary", vec![])).unwrap();
+            assert!(matches!(
+                eval(ctx, &local_read("temporary")),
+                Err(EvalError::UnboundVariable { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn callable_local_many_values_splice_multifields_and_omit_void() {
+        let (mut engine, _) = compact_test_engine();
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, None, Some(&mut locals), |ctx| {
+            let fields = call("create$", vec![int(2), int(3)]);
+            let result = eval(
+                ctx,
+                &local_bind(
+                    "values",
+                    vec![int(1), fields, RuntimeExpr::Literal(Value::Void), int(4)],
+                ),
+            )
+            .unwrap();
+            let expected: ferric_rules_core::Multifield = (1..=4).map(Value::Integer).collect();
+            assert!(result.structural_eq(&Value::Multifield(Box::new(expected))));
+            assert!(eval(ctx, &local_read("$?values"))
+                .unwrap()
+                .structural_eq(&result));
+            assert!(matches!(
+                eval(
+                    ctx,
+                    &local_bind("f", vec![RuntimeExpr::Literal(Value::Void)])
+                )
+                .unwrap(),
+                Value::Void
+            ));
+            assert!(matches!(eval(ctx, &local_read("f")).unwrap(), Value::Void));
+            let empty = eval(
+                ctx,
+                &local_bind(
+                    "values",
+                    vec![
+                        RuntimeExpr::Literal(Value::Void),
+                        RuntimeExpr::Literal(Value::Void),
+                    ],
+                ),
+            )
+            .unwrap();
+            assert!(matches!(empty, Value::Multifield(ref values) if values.is_empty()));
+        });
+    }
+
+    #[test]
+    fn callable_local_rhs_error_keeps_prior_value_and_completed_nested_effects() {
+        let (mut engine, _) = compact_test_engine();
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, None, Some(&mut locals), |ctx| {
+            eval(ctx, &local_bind("f", vec![int(99)])).unwrap();
+            let expr = local_bind(
+                "f",
+                vec![
+                    local_bind("trace", vec![int(1)]),
+                    call("/", vec![int(1), int(0)]),
+                    local_bind("trace", vec![int(2)]),
+                ],
+            );
+            assert!(eval(ctx, &expr).is_err());
+            assert!(eval(ctx, &local_read("f"))
+                .unwrap()
+                .structural_eq(&Value::Integer(99)));
+            assert!(eval(ctx, &local_read("trace"))
+                .unwrap()
+                .structural_eq(&Value::Integer(1)));
+            let nested = local_bind(
+                "f",
+                vec![
+                    local_bind("f", vec![int(2)]),
+                    call("/", vec![int(1), int(0)]),
+                ],
+            );
+            assert!(eval(ctx, &nested).is_err());
+            assert!(eval(ctx, &local_read("f"))
+                .unwrap()
+                .structural_eq(&Value::Integer(2)));
+        });
+    }
+
+    #[test]
+    fn callable_local_scope_restores_nested_metadata_on_errors_and_return() {
+        let (mut engine, _) = compact_test_engine();
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, None, Some(&mut locals), |ctx| {
+            eval(ctx, &local_bind("f", vec![int(99)])).unwrap();
+            for returning in [false, true] {
+                let result: Result<(), EvalError> =
+                    with_callable_local_scope(ctx, ["f", "f"], Some("f"), |ctx| {
+                        assert!(eval(ctx, &local_read("f"))
+                            .unwrap()
+                            .structural_eq(&Value::Integer(42)));
+                        // An illegal iterator bind fails before evaluating its RHS.
+                        assert!(eval(
+                            ctx,
+                            &local_bind("$?f", vec![local_bind("forbidden-effect", vec![int(1)])])
+                        )
+                        .is_err());
+                        let nested: Result<(), EvalError> =
+                            with_callable_local_scope(ctx, ["f"], Some("f"), |_| {
+                                Err(EvalError::UnboundVariable {
+                                    name: "missing".into(),
+                                    span: None,
+                                })
+                            });
+                        assert!(nested.is_err());
+                        assert!(ctx
+                            .callable_locals
+                            .as_deref()
+                            .unwrap()
+                            .protected_names
+                            .contains("f"));
+                        eval(ctx, &local_bind("progress", vec![int(7)])).unwrap();
+                        if returning {
+                            Err(EvalError::ReturnControl {
+                                value: Value::Integer(8),
+                                span: None,
+                            })
+                        } else {
+                            Err(EvalError::UnboundVariable {
+                                name: "missing".into(),
+                                span: None,
+                            })
+                        }
+                    });
+                assert!(result.is_err());
+                assert!(eval(ctx, &local_read("f"))
+                    .unwrap()
+                    .structural_eq(&Value::Integer(99)));
+                assert!(eval(ctx, &local_read("progress"))
+                    .unwrap()
+                    .structural_eq(&Value::Integer(7)));
+                assert!(eval(ctx, &local_read("forbidden-effect")).is_err());
+                let locals = ctx.callable_locals.as_deref().unwrap();
+                assert!(locals.lexical_names.is_empty());
+                assert!(locals.protected_names.is_empty());
+            }
+        });
+    }
+
+    #[test]
+    fn callable_local_query_scope_masks_members_and_restores_on_early_exits() {
+        let (mut engine, fact) = compact_test_engine();
+        let slot = compact_ref(&mut engine, "f", "value");
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, None, Some(&mut locals), |ctx| {
+            eval(ctx, &local_bind("f", vec![int(99)])).unwrap();
+            eval(ctx, &local_bind("f:value", vec![int(91)])).unwrap();
+            let same_fact = call(
+                "=",
+                vec![local_read("f"), RuntimeExpr::Literal(encoded_address(fact))],
+            );
+            let nested = expression_query("any-factp", &[("f", "item")], same_fact.clone());
+            let predicate = call(
+                "and",
+                vec![nested, same_fact, call("=", vec![slot.clone(), int(10)])],
+            );
+            let query = expression_query("any-factp", &[("f", "item")], predicate);
+            let found = eval(ctx, &query).unwrap();
+            assert!(is_truthy(&found, ctx.symbol_table));
+            for predicate in [
+                call("/", vec![int(1), int(0)]),
+                call("return", vec![int(8)]),
+            ] {
+                let query = expression_query("any-factp", &[("f", "item")], predicate);
+                assert!(eval(ctx, &query).is_err());
+                assert!(ctx
+                    .callable_locals
+                    .as_deref()
+                    .unwrap()
+                    .lexical_names
+                    .is_empty());
+            }
+            assert!(eval(ctx, &local_read("f"))
+                .unwrap()
+                .structural_eq(&Value::Integer(99)));
+            assert!(eval(ctx, &slot).unwrap().structural_eq(&Value::Integer(91)));
+        });
+    }
+
+    #[test]
+    fn callable_local_frames_are_fresh_after_return_or_failure() {
+        let (mut engine, _) = compact_test_engine();
+        engine
+            .load_str(
+                "(deffunction isolated (?f) (bind ?temporary 7) (bind ?f 8) (return ?temporary))
+                         (deffunction failed () (bind ?temporary 9) (/ 1 0))
+                         (deffunction absent () ?temporary)",
+            )
+            .unwrap();
+        let mut locals = CallableLocals::default();
+        with_compact_local_context(&mut engine, None, Some(&mut locals), |ctx| {
+            eval(ctx, &local_bind("f", vec![int(99)])).unwrap();
+            eval(ctx, &local_bind("temporary", vec![int(100)])).unwrap();
+            for _ in 0..2 {
+                assert!(eval(ctx, &call("isolated", vec![int(42)]))
+                    .unwrap()
+                    .structural_eq(&Value::Integer(7)));
+                assert!(eval(ctx, &call("failed", vec![])).is_err());
+                assert!(matches!(
+                    eval(ctx, &call("absent", vec![])),
+                    Err(EvalError::UnboundVariable { .. })
+                ));
+                assert!(eval(ctx, &local_read("f"))
+                    .unwrap()
+                    .structural_eq(&Value::Integer(99)));
+                assert!(eval(ctx, &local_read("temporary"))
+                    .unwrap()
+                    .structural_eq(&Value::Integer(100)));
+            }
+        });
     }
 
     fn expression_query(
@@ -7599,6 +7997,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -7648,6 +8047,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -7703,6 +8103,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -7742,6 +8143,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -7784,6 +8186,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -7824,11 +8227,12 @@ mod tests {
     }
 
     #[test]
-    fn bind_with_non_global_first_arg_returns_type_error() {
+    fn bind_with_literal_target_returns_type_error() {
         let (mut st, vm, bs, cfg, fenv, mut gs, generics, mr, em) = test_ctx();
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -7901,6 +8305,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -7949,6 +8354,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -7981,6 +8387,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8024,6 +8431,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8073,6 +8481,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8133,6 +8542,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8195,6 +8605,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8251,6 +8662,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8433,6 +8845,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8464,6 +8877,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8495,6 +8909,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8526,6 +8941,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8557,6 +8973,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8588,6 +9005,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8623,6 +9041,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8654,6 +9073,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8691,6 +9111,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8730,6 +9151,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8769,6 +9191,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8807,6 +9230,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8839,6 +9263,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8900,6 +9325,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8931,6 +9357,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8962,6 +9389,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -8993,6 +9421,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9024,6 +9453,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9056,6 +9486,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9088,6 +9519,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9124,6 +9556,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9156,6 +9589,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9187,6 +9621,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9230,6 +9665,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9264,6 +9700,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9305,6 +9742,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9336,6 +9774,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9367,6 +9806,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9414,6 +9854,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9445,6 +9886,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9476,6 +9918,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9542,6 +9985,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9596,6 +10040,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -9655,6 +10100,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -10073,6 +10519,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -10110,6 +10557,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -10147,6 +10595,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -10196,6 +10645,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -10293,6 +10743,7 @@ mod tests {
             let mut ctx = EvalContext {
                 bindings: &bs,
                 var_map: &vm,
+                callable_locals: None,
                 symbol_table: &mut st,
                 config: &cfg,
                 functions: &fenv,
@@ -10366,6 +10817,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -10900,6 +11352,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -10932,6 +11385,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -10985,6 +11439,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11023,6 +11478,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11057,6 +11513,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11095,6 +11552,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11129,6 +11587,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11167,6 +11626,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11201,6 +11661,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11258,6 +11719,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11304,6 +11766,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11530,6 +11993,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11563,6 +12027,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11596,6 +12061,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11632,6 +12098,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11669,6 +12136,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11709,6 +12177,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11745,6 +12214,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11782,6 +12252,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11851,6 +12322,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,
@@ -11899,6 +12371,7 @@ mod tests {
         let mut ctx = EvalContext {
             bindings: &bs,
             var_map: &vm,
+            callable_locals: None,
             symbol_table: &mut st,
             config: &cfg,
             functions: &fenv,

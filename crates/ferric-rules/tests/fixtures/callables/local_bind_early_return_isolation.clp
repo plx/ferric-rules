@@ -1,0 +1,7 @@
+(deffunction early (?n)
+  (bind ?saved ?n)
+  (loop-for-count (?i 1 3)
+    (if (= ?i 2) then (return (+ ?saved ?i)))
+    (bind ?n 99))
+  -1)
+(defrule probe => (printout t (early 10) ":" (early 20) crlf))

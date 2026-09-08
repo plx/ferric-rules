@@ -54,6 +54,7 @@
 mod tracing_support;
 
 pub mod actions;
+mod callable_validation;
 pub mod config;
 pub mod engine;
 pub mod evaluator;

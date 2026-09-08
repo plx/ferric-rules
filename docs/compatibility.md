@@ -553,7 +553,7 @@ and following top-level constructs retain their incremental load behavior.
 ### Mutation via bind
 
 - `(bind ?*name* <value>)` updates an existing global variable.
-- `bind` does **not** create new variables -- the global must already exist.
+- A global target must already exist; global `bind` does not create a new global.
 - Globals are accessible from rule RHS actions and function bodies.
 
 ### Reset Behavior
@@ -565,6 +565,26 @@ On `(reset)`, globals are restored to their declared initial values.
 ## 16.7 Deffunctions
 
 Ferric supports user-defined functions via `deffunction`.
+
+Within a deffunction or method, `(bind ?name <value>)` creates or updates a
+local binding that remains visible for the rest of that invocation. Parameters
+can be rebound the same way. Each nested, recursive, or subsequent call has its
+own locals, and methods invoked through `call-next-method` receive the original
+call arguments.
+
+A local bind returns the value it stores. Multiple values form a multifield;
+`?name` and `$?name` access the same binding. `(bind ?name)` removes the local
+override and returns FALSE. A parameter then exposes its original argument;
+an ordinary local becomes unbound. A bind in an untaken branch does not
+initialize its target.
+
+Local updates remain visible across conditionals and iterations. Iterator
+and query references have lexical scope, so their reads use the current
+iteration or selected fact. Binding an iterator itself is rejected. A generated
+`-index` name can also name an ordinary local: writing that local leaves the
+lexical index unchanged inside the loop, and the ordinary value is visible
+afterward. Callable locals are transient invocation state and are not stored
+in engine snapshots.
 
 ```clp
 (deffunction double (?x) (* ?x 2))

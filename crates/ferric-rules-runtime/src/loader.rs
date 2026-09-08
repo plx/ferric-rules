@@ -800,6 +800,12 @@ impl Engine {
                             errors.push(Self::compile_error_at(&span, &message));
                             continue;
                         }
+                        if let Err((span, message)) =
+                            crate::callable_validation::validate_iterator_binds(&func.body)
+                        {
+                            errors.push(Self::compile_error_at(&span, &message));
+                            continue;
+                        }
                         // Conflict check: a deffunction cannot share a name with
                         // an existing defgeneric (or vice versa).
                         if self.generics.contains(owning_module, &func.name) {
@@ -915,6 +921,12 @@ impl Engine {
                             ordinary,
                             &HashSet::new(),
                         ) {
+                            errors.push(Self::compile_error_at(&span, &message));
+                            continue;
+                        }
+                        if let Err((span, message)) =
+                            crate::callable_validation::validate_iterator_binds(&method.body)
+                        {
                             errors.push(Self::compile_error_at(&span, &message));
                             continue;
                         }
@@ -1558,6 +1570,7 @@ impl Engine {
                     generics: &self.generics,
                     call_depth: 0,
                     expression_depth: 0,
+                    callable_locals: None,
                     current_module: self.module_registry.current_module(),
                     module_registry: &self.module_registry,
                     function_modules: &self.function_modules,
@@ -1643,6 +1656,7 @@ impl Engine {
                         generics: &self.generics,
                         call_depth: 0,
                         expression_depth: 0,
+                        callable_locals: None,
                         current_module: self.module_registry.current_module(),
                         module_registry: &self.module_registry,
                         function_modules: &self.function_modules,
