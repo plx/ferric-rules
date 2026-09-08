@@ -1,0 +1,15 @@
+;; #341 pinned nth$ behavior: result-types-and-nil
+(deffunction show (?x) (printout t (integerp ?x) ":" (floatp ?x) ":" (stringp ?x) ":" (symbolp ?x) ":[" ?x "]" crlf))
+(deffacts startup (go))
+(defrule exercise (go) =>
+(show (nth$ 0 (create$ 7 2.5 "two words" red nil FALSE "é")))
+(show (nth$ 1 (create$ 7 2.5 "two words" red nil FALSE "é")))
+(show (nth$ 2 (create$ 7 2.5 "two words" red nil FALSE "é")))
+(show (nth$ 3 (create$ 7 2.5 "two words" red nil FALSE "é")))
+(show (nth$ 4 (create$ 7 2.5 "two words" red nil FALSE "é")))
+(show (nth$ 5 (create$ 7 2.5 "two words" red nil FALSE "é")))
+(show (nth$ 6 (create$ 7 2.5 "two words" red nil FALSE "é")))
+(show (nth$ 7 (create$ 7 2.5 "two words" red nil FALSE "é")))
+(show (nth$ 8 (create$ 7 2.5 "two words" red nil FALSE "é")))
+(printout t (eq (nth$ 0 (create$ a)) nil) ":" (eq (nth$ 0 (create$ a)) FALSE) crlf)
+)
