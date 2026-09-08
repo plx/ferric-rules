@@ -215,13 +215,20 @@ pre-1.0 corrections to previously silent behavior.
 
 ### Fact-query expressions
 
-Use the host fact inspection API for queries. RHS `do-for-*` actions retain
-their existing fact iteration, but CLIPS query expressions (`any-factp`,
-`find-fact`, `find-all-facts`) in expressions or callable bodies are unsupported.
-They now report a load or execution error rather than inventing FALSE/empty
-results. Query-bound `?fact:slot` expressions remain unsupported; ordinary
-rule LHS fact-address slot access remains available. This limitation does not
-restrict normal joins or host-side typed fact inspection.
+RHS `do-for-fact`, `do-for-all-facts`, and `delayed-do-for-all-facts` actions
+support compact `?fact:slot` reads in their predicates and bodies, including
+single slots and multislots. Nested query members shadow and restore outer
+members; same-named loop variables do not change which fact a compact slot
+reference reads. Explicitly rebinding a query member with `bind` is a load
+error. Slot reads follow normal expression evaluation, so skipped branches do
+not access missing slots. Ordinary rule LHS fact-address slot access remains
+available.
+
+CLIPS query expressions (`any-factp`, `find-fact`, `find-all-facts`) in
+expressions or callable bodies are unsupported. They report a load or
+execution error rather than inventing FALSE/empty results. Use the host fact
+inspection API for these queries. This limitation does not restrict normal
+joins or host-side typed fact inspection.
 
 ### Activation Ordering Contract
 
