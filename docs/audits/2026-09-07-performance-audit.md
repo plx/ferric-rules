@@ -361,6 +361,15 @@ applications dominated by tiny internal reset/run cycles should account for the
 measured incremental cost. The stack's cumulative results are reported separately
 and are not attributed to this host change alone.
 
+## Runtime snapshot benchmark repair
+
+The broader runtime audit exposed a pre-existing invalid workload: the large
+snapshot generator printed integral floating-point values as integer literals,
+which violate its `FLOAT` slot constraint. Formatting those generated values
+with one decimal place preserves the intended data and lets the existing fact,
+firing, output, and quiescence oracles run. Comparisons use the repaired source
+on both revisions; failed runs contribute no performance claims.
+
 ## Focused agenda selection
 
 A focused module could previously rescan every higher-priority dormant
@@ -484,15 +493,6 @@ The 32-token-chain and four/32-branch benchmark controls remain, including exact
 traversal and empty-result oracles. The audit runner retains its complete
 facade/runtime/core/C ABI suites so future proposals can repeat this assessment.
 
-## Runtime snapshot benchmark repair
-
-The broader runtime audit exposed a pre-existing invalid workload: the large
-snapshot generator printed integral floating-point values as integer literals,
-which violate its `FLOAT` slot constraint. Formatting those generated values
-with one decimal place preserves the intended data and lets the existing fact,
-firing, output, and quiescence oracles run. Comparisons use the repaired source
-on both revisions; failed runs contribute no performance claims.
-
 ## Final retained stack
 
 The [complete final measurement record](2026-09-07-cumulative-final.json) covers
@@ -501,6 +501,8 @@ Facade, runtime, and C ABI comparisons measure `592e05e6`; core storage measures
 `c4785451`, which adds the three retained cascade benchmark controls. Production
 sources, crate manifests, and the lockfile are identical between those heads.
 The rejected cascade optimization is absent from all four final comparisons.
+The later stack merges reconcile audit documentation without changing these
+production sources.
 
 Each row below weights its cases equally and reports the geometric mean of
 candidate/base median ratios. The suites use separate runners and package/feature
