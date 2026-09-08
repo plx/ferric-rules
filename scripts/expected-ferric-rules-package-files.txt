@@ -80,6 +80,8 @@ tests/fixtures/stdlib/009_minimum_mixed_types.clp
 tests/fixtures/stdlib/009_minimum_mixed_types.out
 tests/fixtures/stdlib/010_maximum_mixed_types.clp
 tests/fixtures/stdlib/010_maximum_mixed_types.out
+tests/fixtures/stdlib/011_round_half_boundaries.clp
+tests/fixtures/stdlib/011_round_half_boundaries.out
 tests/fixtures/stdlib/033_string_length_ascii.clp
 tests/fixtures/stdlib/033_string_length_ascii.out
 tests/fixtures/stdlib/035_substring_one_based.clp
@@ -253,6 +255,16 @@ tests/fixtures/stdlib/printout_multifield_top_and_multifield_strings.clp
 tests/fixtures/stdlib/printout_multifield_top_and_multifield_strings.out
 tests/fixtures/stdlib/printout_multifield_unicode_fields.clp
 tests/fixtures/stdlib/printout_multifield_unicode_fields.out
+tests/fixtures/stdlib/round_adjacent_halves.clp
+tests/fixtures/stdlib/round_adjacent_halves.out
+tests/fixtures/stdlib/round_half_ladder.clp
+tests/fixtures/stdlib/round_half_ladder.out
+tests/fixtures/stdlib/round_integer_identity.clp
+tests/fixtures/stdlib/round_integer_identity.out
+tests/fixtures/stdlib/round_large_integral_floats.clp
+tests/fixtures/stdlib/round_large_integral_floats.out
+tests/fixtures/stdlib/round_ordinary_nonties.clp
+tests/fixtures/stdlib/round_ordinary_nonties.out
 tests/fixtures/stdlib/str_index_arguments_once.clp
 tests/fixtures/stdlib/str_index_arguments_once.out
 tests/fixtures/stdlib/str_index_bound_callable.clp
@@ -305,6 +317,7 @@ tests/multifield_printout.rs
 tests/nth_indices.rs
 tests/numeric_comparison_chains.rs
 tests/numeric_extrema.rs
+tests/rounding.rs
 tests/scaling_tests.rs
 tests/string_index.rs
 tests/string_length_lexemes.rs
