@@ -2378,7 +2378,7 @@ fn runtime_value_type_name(value: &Value) -> &'static str {
 ///
 /// The first argument is the channel name (typically `t`) and must be a literal.
 /// Remaining arguments are evaluated and formatted, with the special symbols
-/// `crlf`, `tab`, and `ff` producing `\n`, `\t`, and `\x0C` respectively.
+/// `crlf`, `tab`, `vtab`, and `ff` producing `\n`, `\t`, `\x0B`, and `\x0C` respectively.
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters
 fn execute_printout(
     token: &Token,
@@ -2413,7 +2413,11 @@ fn execute_printout(
     for arg in &args[1..] {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
         flush_deferred_printout(context);
-        format_printout_value(&value, &context.engine.symbol_table, &mut output);
+        crate::value_print::append_printout_value(
+            &value,
+            &context.engine.symbol_table,
+            &mut output,
+        );
     }
 
     context.engine.router.write(&channel, &output);
@@ -2438,55 +2442,15 @@ fn execute_println(
     for arg in args {
         let value = eval_env.eval_expr(token, rule_info, arg, context, collected_facts)?;
         flush_deferred_printout(context);
-        format_printout_value(&value, &context.engine.symbol_table, &mut output);
+        crate::value_print::append_printout_value(
+            &value,
+            &context.engine.symbol_table,
+            &mut output,
+        );
     }
     output.push('\n');
     context.engine.router.write("t", &output);
     Ok(())
-}
-
-/// Format a `Value` for `printout` output.
-///
-/// Special symbols `crlf`, `tab`, and `ff` are expanded to their control
-/// characters. All other values are formatted as their display string.
-/// Strings are written without surrounding quotes.
-fn format_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut String) {
-    match value {
-        Value::Integer(n) => output.push_str(&n.to_string()),
-        Value::Float(f) => {
-            // CLIPS always shows a decimal point: 3.0 not 3.
-            if f.fract() == 0.0 {
-                // Use write! to avoid the intermediate String allocation
-                // that clippy::format_push_string warns about.
-                let _ = write!(output, "{f:.1}");
-            } else {
-                output.push_str(&f.to_string());
-            }
-        }
-        Value::Symbol(sym) => {
-            if let Some(name) = symbol_table.resolve_symbol_str(*sym) {
-                match name {
-                    "crlf" => output.push('\n'),
-                    "tab" => output.push('\t'),
-                    "ff" => output.push('\x0C'),
-                    other => output.push_str(other),
-                }
-            }
-        }
-        Value::String(s) => output.push_str(s.as_str()),
-        Value::Void => {}
-        Value::ExternalAddress(_) => output.push_str("<ExternalAddress>"),
-        Value::Multifield(mf) => {
-            output.push('(');
-            for (i, v) in mf.as_slice().iter().enumerate() {
-                if i > 0 {
-                    output.push(' ');
-                }
-                format_printout_value(v, symbol_table, output);
-            }
-            output.push(')');
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)] // Context requires all these parameters

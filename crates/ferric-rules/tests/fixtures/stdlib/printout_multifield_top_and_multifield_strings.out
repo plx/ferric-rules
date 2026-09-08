@@ -1,0 +1,8 @@
+top:[]|mf:("")
+top:[a]|mf:("a")
+top:[two words]|mf:("two words")
+top:[ leading ]|mf:(" leading ")
+top:[a"b]|mf:("a"b")
+top:[a\b]|mf:("a\b")
+top:["]|mf:(""")
+top:[\]|mf:("\")

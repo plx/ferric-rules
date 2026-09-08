@@ -70,6 +70,7 @@ mod source_limits;
 mod template_identity;
 mod template_reload;
 pub(crate) mod templates;
+mod value_print;
 
 #[cfg(test)]
 mod integration_tests;

@@ -21,6 +21,34 @@ Ferric targets semantic compatibility with the CLIPS Basic Programming Guide for
 | Globals                                                     | Supported                 |
 | Core math, string, multifield, predicate, and I/O functions | Supported subset          |
 
+## Direct Output
+
+`printout` writes top-level STRING contents without quotes. Multifields use
+parentheses, one space between fields, and quotes around STRING fields:
+`(printout t (create$ "a" "two words") crlf)` writes `("a" "two words")` and
+a newline. Empty multifields print `()` and empty STRING fields print `""`.
+The same rendering applies inside deffunctions and methods and to Ferric's
+RHS `println`, which adds a newline.
+
+Printed STRING fields retain literal embedded quotes, backslashes, control
+characters, and UTF8 bytes. CLIPS `implode$` instead escapes embedded quotes
+and backslashes; its separate compatibility repair is tracked in
+[#344](https://github.com/plx/ferric-rules/issues/344). SYMBOL fields remain
+literal, including `crlf`, `tab`, `vtab`, and `ff`. Those four symbols expand
+to LF, TAB, VT, and FF only as top-level output operands.
+
+FLOAT output uses up to 15 significant decimal digits, preserving `-0.0`.
+Rounded decimal exponents from -4 through 14 use fixed notation; other values
+use scientific notation such as `1e-05` and `1e+15`. Integral fixed-form
+FLOATs include `.0`; nonfinite spellings are `nan.0`, `inf.0`, and `-inf.0`.
+INTEGER spelling remains exact. These rules do not change `str-cat`,
+`sym-cat`, `format`, or `save-facts` formatting.
+
+Typed INSTANCE-NAME and FACT-ADDRESS print forms remain representation gaps;
+INTEGERs are printed as integers and host ExternalAddress values retain an
+opaque placeholder. This output contract does not cover arbitrary invalid
+UTF8 strings or general source round-tripping.
+
 ## Conflict Resolution
 
 Depth and breadth use activation creation order and match the pinned reference cases. The retained LEX and MEA host options are experimental Ferric strategies with the ordering gaps below.
