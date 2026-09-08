@@ -818,7 +818,7 @@ identically to their CLIPS counterparts for the supported argument types.
 | Function | Description | Example |
 |----------|-------------|---------|
 | `fact-existp` | Check if fact index is live | `(fact-existp 1)` => `TRUE` |
-| `fact-index` | Extract integer index from fact address | `(fact-index 1)` => `1` |
+| `fact-index` | Public assertion index (zero for the protected initial fact, -1 for a retracted address) | `(fact-index ?f)` => `1` for the first user fact |
 | `fact-relation` | Get relation name as symbol | `(fact-relation 1)` => `person` |
 | `fact-slot-value` | Get named slot value | `(fact-slot-value 1 name)` => `"Alice"` |
 | `fact-slot-names` | Get slot names as multifield | `(fact-slot-names 1)` => `(name age)` |

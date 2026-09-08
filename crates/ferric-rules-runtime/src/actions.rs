@@ -75,6 +75,7 @@ impl ActionEvalEnv {
             method_chain: None,
             input_buffer: Some(&mut engine.input_buffer),
             fact_base: Some(&engine.fact_base),
+            initial_fact_id: engine.initial_fact_id,
             template_defs: Some(&engine.template_defs),
         }
     }
@@ -198,6 +199,7 @@ impl ActionEvalEnv {
             method_chain: None,
             input_buffer: Some(&mut engine.input_buffer),
             fact_base: Some(&engine.fact_base),
+            initial_fact_id: engine.initial_fact_id,
             template_defs: Some(&engine.template_defs),
         };
         crate::evaluator::eval(&mut ctx, runtime_expr).map_err(ActionError::from)

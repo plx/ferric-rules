@@ -73,6 +73,20 @@ tests/fixtures/negation/ncc_basic.clp
 tests/fixtures/negation/not_multiple_patterns.clp
 tests/fixtures/negation/not_retract.clp
 tests/fixtures/negation/simple_not.clp
+tests/fixtures/queries/public_index_duplicates.clp
+tests/fixtures/queries/public_index_duplicates.out
+tests/fixtures/queries/public_index_global_initializer.clp
+tests/fixtures/queries/public_index_global_initializer.out
+tests/fixtures/queries/public_index_host_lifecycle.clp
+tests/fixtures/queries/public_index_host_lifecycle.out
+tests/fixtures/queries/public_index_later.clp
+tests/fixtures/queries/public_index_later.out
+tests/fixtures/queries/public_index_lifecycle.clp
+tests/fixtures/queries/public_index_lifecycle.out
+tests/fixtures/queries/public_index_nested.clp
+tests/fixtures/queries/public_index_nested.out
+tests/fixtures/queries/public_index_original.clp
+tests/fixtures/queries/public_index_original.out
 tests/fixtures/smoke.clp
 tests/fixtures/stdlib/.gitkeep
 tests/fixtures/stdlib/comparison_ops.clp
@@ -88,4 +102,5 @@ tests/fixtures/stdlib/string_advanced.clp
 tests/fixtures/stdlib/string_ops.clp
 tests/fixtures/stdlib/type_predicates.clp
 tests/msrv_metadata.rs
+tests/public_fact_indices.rs
 tests/scaling_tests.rs
