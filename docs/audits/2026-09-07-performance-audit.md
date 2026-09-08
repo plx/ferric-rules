@@ -336,20 +336,25 @@ traversal, and removal at 1, 2, 3, 32, and 1,024 members, with duplicate/order a
 empty-result oracles. Core storage, join, cascade, churn, alpha fanout, engine,
 and Manners workloads remain paired controls.
 
-## Cascade traversal overhead
+## Rejected cascade experiment
 
-Cascade removal stores its first eight pending token IDs inline and spills to
-the heap for wider traversals. The existing LIFO order, hash-set child order,
-returned token sequence, and index cleanup are unchanged. Conditional parent
-cleanup borrows the owner's child array and the disjoint negative/NCC/exists
-memory vectors directly, avoiding an atomic reference-count update per removed
-token without changing traversal order or propagation.
+Keeping eight pending cascade tokens inline and borrowing the owner child array
+passed optimized correctness tests, but did not establish a broad performance
+win. Two paired 99-case comparisons are retained in the
+[initial record](2026-09-07-cascade-initial.json) and
+[repeat record](2026-09-07-cascade-repeat.json). Both used AMD EPYC 7763 Linux
+runners with release/LTO builds and identical benchmark source on both revisions.
 
-A regression test compares removal order with the original vector-stack
-traversal across zero, one, seven, eight, nine, and 32 branches, each 12 tokens
-deep, and verifies unrelated tokens and reverse-index membership survive.
-`token_cascade_stack` controls separately cover a 32-token chain and fanouts of
-four and 32, with exact traversal and empty-result oracles before measurement.
+The four-branch microbenchmark improves 14.84% / 13.55% in the first comparison
+and 17.20% / 17.41% in the second (second repeat: 286.17 to 236.34 ns).
+The equally weighted complete suite changes +0.07% / -0.01%, then +0.85% / +0.39%.
+The second comparison also regresses two core storage controls by more than 5%
+in both rounds. The microbenchmark gain does not justify retaining this change
+without a broader win, so the production optimization is removed.
+
+The 32-token-chain and four/32-branch benchmark controls remain, including exact
+traversal and empty-result oracles. The audit runner retains its complete
+facade/runtime/core/C ABI suites so future proposals can repeat this assessment.
 
 ## Runtime snapshot benchmark repair
 

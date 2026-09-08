@@ -145,8 +145,7 @@ impl TokenStore {
         debug_assert!(self.tokens.contains_key(root_id), "root token must exist");
 
         let mut removed = Vec::new();
-        let mut stack = SmallVec::<[TokenId; 8]>::new();
-        stack.push(root_id);
+        let mut stack = vec![root_id];
 
         while let Some(id) = stack.pop() {
             // Collect children before removing the token
@@ -515,41 +514,6 @@ mod tests {
 
         let result = store.remove(fake_id);
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn cascade_stack_preserves_lifo_order_through_inline_spills() {
-        for width in [0, 1, 7, 8, 9, 32] {
-            let mut store = TokenStore::new();
-            let facts = make_fact_ids(1);
-            let root = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
-            let survivor = store.insert(make_token(Some(facts[0]), None, NodeId(0)));
-            for _ in 0..width {
-                let mut parent = root;
-                for _ in 0..12 {
-                    parent = store.insert(make_token(Some(facts[0]), Some(parent), NodeId(1)));
-                }
-            }
-            let mut expected = Vec::new();
-            let mut stack = vec![root];
-            while let Some(id) = stack.pop() {
-                stack.extend(store.children(id));
-                expected.push(id);
-            }
-            let removed = store.remove_cascade(root);
-            assert_eq!(
-                removed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-                expected
-            );
-            assert_eq!(removed.len(), 1 + width * 12);
-            assert_eq!(store.len(), 1);
-            assert!(store.get(survivor).is_some());
-            assert_eq!(
-                store.tokens_containing(facts[0]).collect::<Vec<_>>(),
-                [survivor]
-            );
-            store.debug_assert_consistency();
-        }
     }
 
     #[test]
