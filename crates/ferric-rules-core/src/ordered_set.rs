@@ -28,6 +28,40 @@ impl<K> Default for LinkedSet<K> {
 }
 
 impl<K: Copy + Eq + Hash> LinkedSet<K> {
+    /// Build the first linked block without repeatedly looking up its predecessors.
+    /// The inline caller has already checked that the three keys are distinct.
+    fn from_three(first: K, middle: K, last: K) -> Self {
+        Self {
+            entries: [
+                (
+                    first,
+                    Links {
+                        previous: None,
+                        next: Some(middle),
+                    },
+                ),
+                (
+                    middle,
+                    Links {
+                        previous: Some(first),
+                        next: Some(last),
+                    },
+                ),
+                (
+                    last,
+                    Links {
+                        previous: Some(middle),
+                        next: None,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            first: Some(first),
+            last: Some(last),
+        }
+    }
+
     pub(crate) fn insert(&mut self, key: K) -> bool {
         let std::collections::hash_map::Entry::Vacant(entry) = self.entries.entry(key) else {
             return false;
@@ -142,12 +176,7 @@ impl<K: Copy + Eq + Hash> OrderedSet<K> {
                 if values.len() < 2 {
                     values.push(key);
                 } else {
-                    let mut linked = LinkedSet::default();
-                    for &value in values.iter() {
-                        linked.insert(value);
-                    }
-                    linked.insert(key);
-                    *self = Self::Linked(linked);
+                    *self = Self::Linked(LinkedSet::from_three(values[0], values[1], key));
                 }
                 true
             }
