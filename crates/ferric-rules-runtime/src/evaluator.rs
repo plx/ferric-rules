@@ -9,6 +9,7 @@
 
 #[cfg(feature = "tracing")]
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -3292,25 +3293,68 @@ fn builtin_grad_deg(
 // Comparison built-ins
 // ---------------------------------------------------------------------------
 
-/// Helper: extract two numeric values for comparison.
-#[allow(clippy::cast_precision_loss)]
-fn eval_cmp_pair(
+#[derive(Clone, Copy)]
+enum NumericComparison {
+    Greater,
+    Less,
+    GreaterOrEqual,
+    LessOrEqual,
+    Equal,
+    NotEqual,
+}
+
+impl NumericComparison {
+    #[allow(clippy::cast_precision_loss)]
+    fn matches(self, left: &Numeric, right: &Numeric) -> bool {
+        let order = match (left, right) {
+            (Numeric::Int(left), Numeric::Int(right)) => Some(left.cmp(right)),
+            (Numeric::Flt(left), Numeric::Flt(right)) => left.partial_cmp(right),
+            (Numeric::Int(left), Numeric::Flt(right)) => (*left as f64).partial_cmp(right),
+            (Numeric::Flt(left), Numeric::Int(right)) => left.partial_cmp(&(*right as f64)),
+        };
+        match self {
+            Self::Greater => order == Some(Ordering::Greater),
+            Self::Less => order == Some(Ordering::Less),
+            Self::GreaterOrEqual => matches!(order, Some(Ordering::Greater | Ordering::Equal)),
+            Self::LessOrEqual => matches!(order, Some(Ordering::Less | Ordering::Equal)),
+            Self::Equal => order == Some(Ordering::Equal),
+            Self::NotEqual => order != Some(Ordering::Equal),
+        }
+    }
+}
+
+/// Evaluate only the operands needed to decide a numeric comparison chain.
+/// Equality and inequality keep the first operand; ordering advances the cursor.
+fn eval_cmp_chain(
     ctx: &mut EvalContext<'_>,
     name: &str,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
-) -> Result<(f64, f64), EvalError> {
-    check_arity_exact(name, args, 2, span)?;
-    let values = eval_args(ctx, args)?;
-    let lhs = match as_numeric(&values[0], name, span)? {
-        Numeric::Int(i) => i as f64,
-        Numeric::Flt(f) => f,
-    };
-    let rhs = match as_numeric(&values[1], name, span)? {
-        Numeric::Int(i) => i as f64,
-        Numeric::Flt(f) => f,
-    };
-    Ok((lhs, rhs))
+    comparison: NumericComparison,
+) -> Result<Value, EvalError> {
+    check_arity_min(name, args, 2, span)?;
+    let mut previous = as_numeric(&eval_inner(ctx, &args[0])?, name, span)?;
+    for argument in &args[1..] {
+        let next = as_numeric(&eval_inner(ctx, argument)?, name, span)?;
+        if !comparison.matches(&previous, &next) {
+            return Ok(clips_bool(
+                false,
+                ctx.symbol_table,
+                ctx.config.string_encoding,
+            ));
+        }
+        if !matches!(
+            comparison,
+            NumericComparison::Equal | NumericComparison::NotEqual
+        ) {
+            previous = next;
+        }
+    }
+    Ok(clips_bool(
+        true,
+        ctx.symbol_table,
+        ctx.config.string_encoding,
+    ))
 }
 
 fn builtin_cmp_gt(
@@ -3318,12 +3362,7 @@ fn builtin_cmp_gt(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, ">", args, span)?;
-    Ok(clips_bool(
-        l > r,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, ">", args, span, NumericComparison::Greater)
 }
 
 fn builtin_cmp_lt(
@@ -3331,12 +3370,7 @@ fn builtin_cmp_lt(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, "<", args, span)?;
-    Ok(clips_bool(
-        l < r,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, "<", args, span, NumericComparison::Less)
 }
 
 fn builtin_cmp_gte(
@@ -3344,12 +3378,7 @@ fn builtin_cmp_gte(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, ">=", args, span)?;
-    Ok(clips_bool(
-        l >= r,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, ">=", args, span, NumericComparison::GreaterOrEqual)
 }
 
 fn builtin_cmp_lte(
@@ -3357,40 +3386,23 @@ fn builtin_cmp_lte(
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, "<=", args, span)?;
-    Ok(clips_bool(
-        l <= r,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, "<=", args, span, NumericComparison::LessOrEqual)
 }
 
-#[allow(clippy::float_cmp)]
 fn builtin_cmp_eq(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, "=", args, span)?;
-    Ok(clips_bool(
-        (l - r).abs() < f64::EPSILON || l == r,
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, "=", args, span, NumericComparison::Equal)
 }
 
-#[allow(clippy::float_cmp)]
 fn builtin_cmp_neq(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    let (l, r) = eval_cmp_pair(ctx, "!=", args, span)?;
-    Ok(clips_bool(
-        !((l - r).abs() < f64::EPSILON || l == r),
-        ctx.symbol_table,
-        ctx.config.string_encoding,
-    ))
+    eval_cmp_chain(ctx, "!=", args, span, NumericComparison::NotEqual)
 }
 
 /// `eq` — value equality (symbols, strings, numbers).
