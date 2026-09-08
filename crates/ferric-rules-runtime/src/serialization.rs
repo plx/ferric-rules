@@ -978,7 +978,7 @@ mod tests {
         }
         // The aggregate budget also applies when no collection advertises a size.
         let mut cbor = vec![0x9f];
-        cbor.extend(std::iter::repeat_n(0xf6, limited::MAX_ITEMS + 1));
+        cbor.resize(limited::MAX_ITEMS + 2, 0xf6);
         cbor.push(0xff);
         assert!(decode::<Vec<()>>(&cbor, SerializationFormat::Cbor)
             .unwrap_err()
