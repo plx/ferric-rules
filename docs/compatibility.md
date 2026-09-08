@@ -834,6 +834,37 @@ identically to their CLIPS counterparts for the supported argument types.
 | `load-facts` | Load facts from a `.fct` file into working memory |
 | `save-facts` | Save all facts to a `.fct` file |
 
+`printout` writes a top-level STRING without surrounding quotes. A MULTIFIELD
+uses parentheses and one space between fields, with STRING fields surrounded
+by quotes: `(printout t (create$ "a" "two words") crlf)` writes
+`("a" "two words")` followed by a newline. An empty multifield writes `()`;
+an empty STRING field writes `""`. These rules apply to RHS output and output
+from deffunctions and methods. Ferric's RHS `println` uses the same rendering
+and appends a newline.
+
+Quotes and backslashes inside printed STRING fields remain literal; printing
+does not escape them. Literal control characters and UTF8 bytes also remain
+unchanged. This differs from CLIPS `implode$`, whose quoted fields escape
+embedded quotes and backslashes; that separate formatter is tracked in
+[#344](https://github.com/plx/ferric-rules/issues/344). SYMBOL fields retain
+their spelling. Only top-level SYMBOL operands `crlf`, `tab`, `vtab`, and `ff`
+expand to LF, TAB, VT, and FF; the same symbols inside a multifield remain
+literal names.
+
+Direct output renders FLOATs with up to 15 significant decimal digits, using
+fixed notation for rounded decimal exponents from -4 through 14 and scientific
+notation otherwise. Integral fixed-form FLOATs include `.0`; for example,
+`1.0`, `-0.0`, `1e-05`, and `1e+15`. Nonfinite spellings are `nan.0`, `inf.0`,
+and `-inf.0`. INTEGERs retain exact decimal spelling, including values above
+2^53. This output formatter leaves `str-cat`, `sym-cat`, `format`, and
+`save-facts` formatting unchanged.
+
+This contract covers Ferric's supported numeric, lexeme, and multifield values.
+Typed INSTANCE-NAME and FACT-ADDRESS print forms remain representation gaps;
+ordinary INTEGERs are never interpreted as addresses while printing. Host
+ExternalAddress values retain Ferric's opaque placeholder. Arbitrary invalid
+UTF8 string bytes and general source round-tripping are outside this contract.
+
 **format note:** In Ferric, `format` is an evaluator-only function that
 returns a formatted string. It does not write directly to a router. Use
 `(printout t (format nil "n=%d" 42) crlf)` to produce output.

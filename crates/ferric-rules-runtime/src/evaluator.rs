@@ -5120,45 +5120,6 @@ fn printout_channel_name(
     }
 }
 
-fn append_printout_value(value: &Value, symbol_table: &SymbolTable, output: &mut String) {
-    use std::fmt::Write as _;
-    match value {
-        Value::Integer(n) => {
-            let _ = write!(output, "{n}");
-        }
-        Value::Float(f) => {
-            if f.fract() == 0.0 {
-                let _ = write!(output, "{f:.1}");
-            } else {
-                let _ = write!(output, "{f}");
-            }
-        }
-        Value::Symbol(sym) => {
-            if let Some(name) = symbol_table.resolve_symbol_str(*sym) {
-                match name {
-                    "crlf" => output.push('\n'),
-                    "tab" => output.push('\t'),
-                    "ff" => output.push('\x0C'),
-                    other => output.push_str(other),
-                }
-            }
-        }
-        Value::String(s) => output.push_str(s.as_str()),
-        Value::Void => {}
-        Value::ExternalAddress(_) => output.push_str("<ExternalAddress>"),
-        Value::Multifield(mf) => {
-            output.push('(');
-            for (index, item) in mf.iter().enumerate() {
-                if index > 0 {
-                    output.push(' ');
-                }
-                append_printout_value(item, symbol_table, output);
-            }
-            output.push(')');
-        }
-    }
-}
-
 /// `printout` — evaluator-level output command for deffunction/method bodies.
 ///
 /// Events are queued into `GlobalStore` and flushed by the action executor
@@ -5175,7 +5136,7 @@ fn builtin_printout(
     let mut output = String::new();
     for expr in &args[1..] {
         let value = eval_inner(ctx, expr)?;
-        append_printout_value(&value, ctx.symbol_table, &mut output);
+        crate::value_print::append_printout_value(&value, ctx.symbol_table, &mut output);
     }
 
     ctx.globals.push_printout_event(channel, output);
