@@ -1,0 +1,6 @@
+[FACTQPSR1] Duplicate fact member variable name in function find-all-facts.
+
+ERROR:
+(defrule MAIN::probe
+   =>
+   (printout t (find-all-facts ((?f item) (?f

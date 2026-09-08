@@ -17,7 +17,7 @@ use ferric_rules_core::binding::{BindingSet, ValueRef, VarMap};
 use ferric_rules_core::string::FerricString;
 use ferric_rules_core::symbol::SymbolTable;
 use ferric_rules_core::value::Value;
-use ferric_rules_core::{FactId, StringEncoding};
+use ferric_rules_core::{FactBase, FactId, StringEncoding, TemplateId};
 
 use crate::config::EngineConfig;
 use crate::functions::{FunctionEnv, GenericFunction, GenericRegistry, GlobalStore, UserFunction};
@@ -338,6 +338,8 @@ pub struct EvalContext<'a> {
     pub fact_base: Option<&'a ferric_rules_core::FactBase>,
     /// Lexical fact scope for the parser's compact `?fact:slot` form.
     pub(crate) compact_fact_bindings: Option<&'a CompactFactBindings>,
+    /// Live template visibility for expression-query restrictions.
+    pub(crate) template_resolver: Option<crate::loader::TemplateResolver<'a>>,
     /// Protected initial fact, whose public index is always zero. This identity
     /// distinguishes it from user facts, including those asserted before loading.
     pub(crate) initial_fact_id: Option<ferric_rules_core::FactId>,
@@ -821,6 +823,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                     input_buffer: ctx.input_buffer.as_deref_mut(),
                     fact_base: ctx.fact_base,
                     compact_fact_bindings: ctx.compact_fact_bindings,
+                    template_resolver: ctx.template_resolver,
                     initial_fact_id: ctx.initial_fact_id,
                     template_defs: ctx.template_defs,
                 };
@@ -927,6 +930,7 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                     input_buffer: ctx.input_buffer.as_deref_mut(),
                     fact_base: ctx.fact_base,
                     compact_fact_bindings: ctx.compact_fact_bindings,
+                    template_resolver: ctx.template_resolver,
                     initial_fact_id: ctx.initial_fact_id,
                     template_defs: ctx.template_defs,
                 };
@@ -982,20 +986,297 @@ fn eval_dispatch(ctx: &mut EvalContext<'_>, expr: &RuntimeExpr) -> Result<Value,
                 Ok(Value::Void)
             }
         }
-        RuntimeExpr::QueryAction { name, span, .. } => {
-            // Fact-query macros (`do-for-fact`, `any-factp`, etc.) require
-            // access to the fact base, which is not available inside the pure
-            // expression evaluator.  These forms are fully handled in
-            // `execute_single_action` when invoked as top-level RHS actions.
-            //
-            // A fabricated FALSE/empty result would silently change decisions.
-            Err(EvalError::UnsupportedOperation {
-                operation: name.clone(),
-                reason: "fact queries in expression/callable contexts are not supported; use a rule RHS do-for-* action or the host fact API".into(),
-                span: span.clone(),
-            })
+        RuntimeExpr::QueryAction {
+            name,
+            bindings,
+            query,
+            body,
+            span,
+        } => eval_fact_query(ctx, name, bindings, query, body.is_empty(), span.as_ref()),
+    }
+}
+
+/// Assertion chronology is independent of slot-map position after retraction.
+/// Shared with action queries so first-match and complete traversal agree.
+pub(crate) fn ordered_query_fact_ids(fact_base: &FactBase, template_id: TemplateId) -> Vec<FactId> {
+    let mut facts: Vec<_> = fact_base.facts_by_template(template_id).collect();
+    facts.sort_unstable_by_key(|id| {
+        fact_base
+            .get(*id)
+            .expect("template index only contains active facts")
+            .timestamp
+    });
+    facts
+}
+
+fn query_error(name: &str, actual: impl Into<String>, span: Option<&SourceSpan>) -> EvalError {
+    EvalError::TypeError {
+        function: name.into(),
+        expected: "valid fact-query expression".into(),
+        actual: actual.into(),
+        span: span.cloned(),
+    }
+}
+
+fn valid_query_member(name: &str) -> bool {
+    use ferric_rules_parser::{lex, FileId, Token};
+    !name.is_empty() && lex(&format!("?{name}"), FileId(0)).is_ok_and(|tokens| {
+        matches!(tokens.as_slice(), [token] if matches!(&token.token, Token::SingleVar(parsed) if parsed == name))
+    })
+}
+
+/// The cursor is a mixed-radix number: the last declared member advances first.
+fn advance_query_cursor(cursor: &mut [usize], candidates: &[Vec<FactId>]) -> bool {
+    for (index, choices) in cursor.iter_mut().zip(candidates).rev() {
+        *index += 1;
+        if *index < choices.len() {
+            return true;
+        }
+        *index = 0;
+    }
+    false
+}
+
+fn validate_query_predicate_body(
+    ctx: &mut EvalContext<'_>,
+    body: &[(ferric_rules_parser::ActionExpr, Option<Box<RuntimeExpr>>)],
+    name: &str,
+    span: Option<&SourceSpan>,
+    depth: usize,
+) -> Result<(), EvalError> {
+    for (action, compiled) in body {
+        if let Some(expr) = compiled {
+            validate_query_predicate(ctx, expr, name, span, depth)?;
+        } else {
+            let expr = from_action_expr(action, ctx.symbol_table, ctx.config)?;
+            validate_query_predicate(ctx, &expr, name, span, depth)?;
         }
     }
+    Ok(())
+}
+
+/// CLIPS rejects local binds syntactically anywhere within a predicate, even
+/// in a branch that would not execute. Called function bodies have their own
+/// lexical scope and are deliberately not traversed here.
+fn validate_query_predicate(
+    ctx: &mut EvalContext<'_>,
+    expr: &RuntimeExpr,
+    name: &str,
+    span: Option<&SourceSpan>,
+    depth: usize,
+) -> Result<(), EvalError> {
+    if depth >= MAX_EXPRESSION_DEPTH {
+        return Err(EvalError::ExpressionNestingLimit {
+            limit: MAX_EXPRESSION_DEPTH,
+        });
+    }
+    let next = depth + 1;
+    match expr {
+        RuntimeExpr::Literal(_) | RuntimeExpr::BoundVar { .. } | RuntimeExpr::GlobalVar { .. } => {}
+        RuntimeExpr::Call {
+            name: function,
+            args,
+            ..
+        } => {
+            if function == "bind" && !matches!(args.first(), Some(RuntimeExpr::GlobalVar { .. })) {
+                return Err(query_error(
+                    name,
+                    "[FACTQPSR2] local bind is not allowed in a query predicate",
+                    span,
+                ));
+            }
+            crate::loader::validate_query_callable(
+                function,
+                ctx.functions,
+                ctx.generics,
+                ctx.module_registry,
+                ctx.current_module,
+                None,
+            )
+            .map_err(|error| query_error(name, error, span))?;
+            for arg in args {
+                validate_query_predicate(ctx, arg, name, span, next)?;
+            }
+        }
+        RuntimeExpr::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            validate_query_predicate(ctx, condition, name, span, next)?;
+            validate_query_predicate_body(ctx, then_branch, name, span, next)?;
+            validate_query_predicate_body(ctx, else_branch, name, span, next)?;
+        }
+        RuntimeExpr::While {
+            condition, body, ..
+        } => {
+            validate_query_predicate(ctx, condition, name, span, next)?;
+            validate_query_predicate_body(ctx, body, name, span, next)?;
+        }
+        RuntimeExpr::LoopForCount {
+            start, end, body, ..
+        } => {
+            validate_query_predicate(ctx, start, name, span, next)?;
+            validate_query_predicate(ctx, end, name, span, next)?;
+            validate_query_predicate_body(ctx, body, name, span, next)?;
+        }
+        RuntimeExpr::Progn {
+            list_expr, body, ..
+        } => {
+            validate_query_predicate(ctx, list_expr, name, span, next)?;
+            validate_query_predicate_body(ctx, body, name, span, next)?;
+        }
+        RuntimeExpr::QueryAction { query, body, .. } => {
+            validate_query_predicate(ctx, query, name, span, next)?;
+            validate_query_predicate_body(ctx, body, name, span, next)?;
+        }
+        RuntimeExpr::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
+            validate_query_predicate(ctx, expr, name, span, next)?;
+            for (case, body) in cases {
+                validate_query_predicate(ctx, case, name, span, next)?;
+                validate_query_predicate_body(ctx, body, name, span, next)?;
+            }
+            if let Some(body) = default {
+                validate_query_predicate_body(ctx, body, name, span, next)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)] // Query validation, scope construction, and lazy traversal form one evaluation.
+fn eval_fact_query(
+    ctx: &mut EvalContext<'_>,
+    name: &str,
+    members: &[(String, String)],
+    predicate: &RuntimeExpr,
+    body_is_empty: bool,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    if !matches!(name, "any-factp" | "find-fact" | "find-all-facts") {
+        return Err(EvalError::UnsupportedOperation {
+            operation: name.into(),
+            reason: "only any-factp, find-fact, and find-all-facts are supported in expression/callable contexts".into(),
+            span: span.cloned(),
+        });
+    }
+    if members.is_empty() || !body_is_empty {
+        return Err(query_error(
+            name,
+            "a nonempty binding list and no trailing body are required",
+            span,
+        ));
+    }
+    let fact_base = ctx
+        .fact_base
+        .ok_or_else(|| query_error(name, "fact context is unavailable", span))?;
+    let resolver = ctx
+        .template_resolver
+        .ok_or_else(|| query_error(name, "template context is unavailable", span))?;
+    validate_query_predicate(ctx, predicate, name, span, 0)?;
+
+    let mut member_names = std::collections::HashSet::with_capacity(members.len());
+    let mut candidates = Vec::with_capacity(members.len());
+    let mut var_map = ctx.var_map.clone();
+    let mut bindings = ctx.bindings.clone();
+    let mut member_vars = Vec::with_capacity(members.len());
+    for (member, template) in members {
+        if !valid_query_member(member) || !member_names.insert(member.as_str()) {
+            return Err(query_error(
+                name,
+                format!("invalid or duplicate query member ?{member}"),
+                span,
+            ));
+        }
+        let template_id = resolver
+            .resolve_query_reference(template, ctx.current_module)
+            .map_err(|error| query_error(name, error, span))?;
+        candidates.push(ordered_query_fact_ids(fact_base, template_id));
+        let symbol = ctx
+            .symbol_table
+            .intern_symbol(member, ctx.config.string_encoding)
+            .map_err(|error| query_error(name, error.to_string(), span))?;
+        member_vars.push(
+            var_map
+                .get_or_create(symbol)
+                .map_err(|error| query_error(name, error.to_string(), span))?,
+        );
+    }
+
+    let mut result = ferric_rules_core::Multifield::new();
+    if candidates.iter().any(Vec::is_empty) {
+        return Ok(if name == "any-factp" {
+            clips_false(ctx.symbol_table, ctx.config.string_encoding)
+        } else {
+            Value::Multifield(Box::new(result))
+        });
+    }
+    let mut compact_facts = ctx.compact_fact_bindings.cloned().unwrap_or_default();
+    for ((member, _), choices) in members.iter().zip(&candidates) {
+        compact_facts.insert(member.clone(), choices[0]);
+    }
+    let mut cursor = vec![0; members.len()];
+    loop {
+        consume_action_loop_iteration(ctx.config, name, span.cloned())?;
+        for (index, ((member, _), variable)) in members.iter().zip(&member_vars).enumerate() {
+            use slotmap::Key;
+            let fact = candidates[index][cursor[index]];
+            let address = Value::Integer(i64::from_ne_bytes(fact.data().as_ffi().to_ne_bytes()));
+            bindings.set(*variable, ValueRef::new(address));
+            *compact_facts
+                .get_mut(member)
+                .expect("query member has a compact binding") = fact;
+        }
+        let mut query_ctx = EvalContext {
+            bindings: &bindings,
+            var_map: &var_map,
+            symbol_table: ctx.symbol_table,
+            config: ctx.config,
+            functions: ctx.functions,
+            globals: ctx.globals,
+            generics: ctx.generics,
+            call_depth: ctx.call_depth,
+            expression_depth: ctx.expression_depth,
+            current_module: ctx.current_module,
+            module_registry: ctx.module_registry,
+            function_modules: ctx.function_modules,
+            global_modules: ctx.global_modules,
+            generic_modules: ctx.generic_modules,
+            method_chain: ctx.method_chain.clone(),
+            input_buffer: ctx.input_buffer.as_deref_mut(),
+            fact_base: ctx.fact_base,
+            compact_fact_bindings: Some(&compact_facts),
+            template_resolver: ctx.template_resolver,
+            initial_fact_id: ctx.initial_fact_id,
+            template_defs: ctx.template_defs,
+        };
+        let value = eval_inner(&mut query_ctx, predicate)?;
+        if is_truthy(&value, query_ctx.symbol_table) {
+            if name == "any-factp" {
+                return Ok(clips_true(ctx.symbol_table, ctx.config.string_encoding));
+            }
+            for variable in &member_vars {
+                result.push((**bindings.get(*variable).expect("query member is bound")).clone());
+            }
+            if name == "find-fact" {
+                break;
+            }
+        }
+        if !advance_query_cursor(&mut cursor, &candidates) {
+            break;
+        }
+    }
+    Ok(if name == "any-factp" {
+        clips_false(ctx.symbol_table, ctx.config.string_encoding)
+    } else {
+        Value::Multifield(Box::new(result))
+    })
 }
 
 pub(crate) fn consume_action_loop_iteration(
@@ -1206,6 +1487,7 @@ fn execute_callable_body(
         input_buffer: ctx.input_buffer.as_deref_mut(),
         fact_base: ctx.fact_base,
         compact_fact_bindings: None,
+        template_resolver: ctx.template_resolver,
         initial_fact_id: ctx.initial_fact_id,
         template_defs: ctx.template_defs,
     };
@@ -5860,11 +6142,25 @@ fn builtin_compact_fact_slot_ref(
     let fact_id = ctx
         .compact_fact_bindings
         .and_then(|bindings| bindings.get(name))
-        .copied()
-        .ok_or_else(|| EvalError::UnboundVariable {
+        .copied();
+    let Some(fact_id) = fact_id else {
+        // A colon is also legal in an ordinary local name. Only an active
+        // lexical fact member takes precedence over that exact full name.
+        let full_name = format!("{name}:{slot_name}");
+        let ordinary = ctx
+            .symbol_table
+            .intern_symbol(&full_name, ctx.config.string_encoding)
+            .ok()
+            .and_then(|symbol| ctx.var_map.lookup(symbol))
+            .and_then(|variable| ctx.bindings.get(variable));
+        if let Some(value) = ordinary {
+            return Ok((**value).clone());
+        }
+        return Err(EvalError::UnboundVariable {
             name: name.clone(),
             span: span.cloned(),
-        })?;
+        });
+    };
     if matches!(
         ctx.fact_base
             .and_then(|facts| facts.get(fact_id))
@@ -6166,6 +6462,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -6202,6 +6499,7 @@ mod tests {
             input_buffer: None,
             fact_base: facts,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id,
             template_defs: None,
         };
@@ -6286,10 +6584,286 @@ mod tests {
             input_buffer: None,
             fact_base: Some(&engine.fact_base),
             compact_fact_bindings: scope,
+            template_resolver: Some(crate::loader::TemplateResolver {
+                template_local_ids: &engine.template_local_ids,
+                template_modules: &engine.template_modules,
+                module_registry: &engine.module_registry,
+            }),
             initial_fact_id: engine.initial_fact_id,
             template_defs: Some(&engine.template_defs),
         };
         run(&mut ctx)
+    }
+
+    fn expression_query(
+        name: &str,
+        members: &[(&str, &str)],
+        predicate: RuntimeExpr,
+    ) -> RuntimeExpr {
+        RuntimeExpr::QueryAction {
+            name: name.into(),
+            bindings: members
+                .iter()
+                .map(|(member, template)| ((*member).into(), (*template).into()))
+                .collect(),
+            query: Box::new(predicate),
+            body: Vec::new(),
+            span: Some(SourceSpan { line: 4, column: 7 }),
+        }
+    }
+
+    fn add_query_item(engine: &mut crate::Engine, value: i64) -> FactId {
+        engine.fact_base.assert_template(
+            engine.template_ids["item"],
+            vec![Value::Integer(value), Value::Multifield(Box::default())].into_boxed_slice(),
+        )
+    }
+
+    #[test]
+    fn expression_query_orders_reused_storage_and_flattens_tuples() {
+        let (mut engine, old) = compact_test_engine();
+        let first = add_query_item(&mut engine, 20);
+        engine.fact_base.retract(old).unwrap();
+        let second = add_query_item(&mut engine, 30);
+        assert_eq!(
+            ordered_query_fact_ids(&engine.fact_base, engine.template_ids["item"]),
+            vec![first, second]
+        );
+        let expr = expression_query("find-all-facts", &[("a", "item"), ("b", "item")], int(1));
+        with_compact_context(&mut engine, None, |ctx| {
+            let result = eval(ctx, &expr).unwrap();
+            let expected: ferric_rules_core::Multifield =
+                [first, first, first, second, second, first, second, second]
+                    .into_iter()
+                    .map(encoded_address)
+                    .collect();
+            assert!(result.structural_eq(&Value::Multifield(Box::new(expected))));
+        });
+    }
+
+    #[test]
+    fn expression_query_stops_before_enumerating_large_cartesian_product() {
+        let (mut engine, _) = compact_test_engine();
+        for value in 11..50 {
+            add_query_item(&mut engine, value);
+        }
+        engine.config.max_action_loop_iterations = 1;
+        let members = [
+            ("a", "item"),
+            ("b", "item"),
+            ("c", "item"),
+            ("d", "item"),
+            ("e", "item"),
+        ];
+        for name in ["any-factp", "find-fact"] {
+            let expr = expression_query(name, &members, int(1));
+            with_compact_context(&mut engine, None, |ctx| {
+                let result = eval(ctx, &expr).unwrap();
+                if name == "any-factp" {
+                    assert!(is_truthy(&result, ctx.symbol_table));
+                } else {
+                    assert!(matches!(result, Value::Multifield(fields) if fields.len() == 5));
+                }
+            });
+        }
+        for name in ["any-factp", "find-fact", "find-all-facts"] {
+            let predicate = call("=", vec![int(1), int(2)]);
+            let expr = expression_query(name, &members, predicate);
+            with_compact_context(&mut engine, None, |ctx| {
+                assert!(matches!(
+                    eval(ctx, &expr),
+                    Err(EvalError::ActionIterationLimit { limit: 1, .. })
+                ));
+            });
+        }
+    }
+
+    #[test]
+    fn expression_query_inherits_nested_budget_and_expression_depth() {
+        let (mut engine, _) = compact_test_engine();
+        engine.config.max_action_loop_iterations = 1;
+        let inner = expression_query("any-factp", &[("b", "item")], int(1));
+        let outer = expression_query("any-factp", &[("a", "item")], inner);
+        with_compact_context(&mut engine, None, |ctx| {
+            assert!(matches!(
+                eval(ctx, &outer),
+                Err(EvalError::ActionIterationLimit { limit: 1, .. })
+            ));
+            assert_eq!(ctx.expression_depth, 0);
+        });
+        engine.config.max_action_loop_iterations = 10;
+        with_compact_context(&mut engine, None, |ctx| {
+            ctx.expression_depth = MAX_EXPRESSION_DEPTH - 1;
+            assert!(matches!(
+                eval(ctx, &outer),
+                Err(EvalError::ExpressionNestingLimit { .. })
+            ));
+            assert_eq!(ctx.expression_depth, MAX_EXPRESSION_DEPTH - 1);
+        });
+    }
+
+    #[test]
+    fn expression_query_empty_candidates_are_lazy_but_declarations_are_checked() {
+        let (mut engine, fact) = compact_test_engine();
+        engine.fact_base.retract(fact).unwrap();
+        engine.config.max_action_loop_iterations = 0;
+        for name in ["any-factp", "find-fact", "find-all-facts"] {
+            let expr = expression_query(name, &[("f", "item")], call("/", vec![int(1), int(0)]));
+            with_compact_context(&mut engine, None, |ctx| {
+                let result = eval(ctx, &expr).unwrap();
+                if name == "any-factp" {
+                    assert!(!is_truthy(&result, ctx.symbol_table));
+                } else {
+                    assert!(matches!(result, Value::Multifield(fields) if fields.is_empty()));
+                }
+            });
+        }
+        let expr = expression_query("any-factp", &[("a", "item"), ("b", "missing")], int(1));
+        with_compact_context(&mut engine, None, |ctx| {
+            assert!(
+                matches!(eval(ctx, &expr), Err(EvalError::TypeError { actual, .. }) if actual.contains("unknown template"))
+            );
+        });
+        let unknown = expression_query(
+            "any-factp",
+            &[("f", "item")],
+            call("absent-predicate", vec![]),
+        );
+        with_compact_context(&mut engine, None, |ctx| {
+            assert!(
+                matches!(eval(ctx, &unknown), Err(EvalError::TypeError { actual, .. }) if actual.contains("absent-predicate"))
+            );
+        });
+    }
+
+    #[test]
+    fn expression_query_shadows_and_restores_both_scopes_on_success_and_error() {
+        let (mut engine, fact) = compact_test_engine();
+        add_query_item(&mut engine, 20);
+        let scope = CompactFactBindings::from([("f".into(), fact)]);
+        let slot = compact_ref(&mut engine, "f", "value");
+        let inner = expression_query(
+            "any-factp",
+            &[("f", "item")],
+            call("=", vec![slot.clone(), int(20)]),
+        );
+        let outer = expression_query(
+            "find-fact",
+            &[("f", "item")],
+            call("and", vec![inner, call("=", vec![slot.clone(), int(10)])]),
+        );
+        let error = expression_query(
+            "any-factp",
+            &[("f", "item")],
+            compact_ref(&mut engine, "f", "missing"),
+        );
+        let returned =
+            expression_query("any-factp", &[("f", "item")], call("return", vec![int(7)]));
+        with_compact_context(&mut engine, Some(&scope), |ctx| {
+            let result = eval(ctx, &outer).unwrap();
+            assert!(
+                matches!(result, Value::Multifield(fields) if fields.len() == 1 && fields[0].structural_eq(&encoded_address(fact)))
+            );
+            assert!(eval(ctx, &error).is_err());
+            assert!(matches!(
+                eval(ctx, &returned),
+                Err(EvalError::ReturnOutsideCallable { .. })
+            ));
+            assert!(eval(ctx, &slot).unwrap().structural_eq(&Value::Integer(10)));
+            let ordinary = RuntimeExpr::BoundVar {
+                name: "f".into(),
+                span: None,
+            };
+            assert!(eval(ctx, &ordinary)
+                .unwrap()
+                .structural_eq(&Value::Integer(42)));
+            assert_eq!(ctx.compact_fact_bindings.unwrap()["f"], fact);
+        });
+    }
+
+    #[test]
+    fn expression_query_rejects_restored_malformed_headers_and_missing_context() {
+        let (mut engine, _) = compact_test_engine();
+        let mut malformed = vec![
+            expression_query("any-factp", &[], int(1)),
+            expression_query("any-factp", &[("f", "item"), ("f", "item")], int(1)),
+            expression_query("any-factp", &[("f", "MAIN::item")], int(1)),
+        ];
+        for member in ["", "?", "$?f", "f:slot", "*global*", "f trailing"] {
+            malformed.push(expression_query("find-fact", &[(member, "item")], int(1)));
+        }
+        let mut body = expression_query("find-all-facts", &[("f", "item")], int(1));
+        let RuntimeExpr::QueryAction { body: items, .. } = &mut body else {
+            unreachable!()
+        };
+        items.push((
+            ferric_rules_parser::ActionExpr::Variable("f".into(), dummy_span()),
+            Some(Box::new(int(99))),
+        ));
+        malformed.push(body);
+        for expr in malformed {
+            with_compact_context(&mut engine, None, |ctx| {
+                assert!(
+                    matches!(eval(ctx, &expr), Err(EvalError::TypeError { .. })),
+                    "{expr:?}"
+                );
+            });
+        }
+        for name in [
+            "do-for-fact",
+            "do-for-all-facts",
+            "delayed-do-for-all-facts",
+            "forged-query",
+        ] {
+            let expr = expression_query(name, &[("f", "item")], int(1));
+            with_compact_context(&mut engine, None, |ctx| {
+                assert!(matches!(
+                    eval(ctx, &expr),
+                    Err(EvalError::UnsupportedOperation { .. })
+                ));
+            });
+        }
+        let expr = expression_query("any-factp", &[("f", "item")], int(1));
+        with_compact_context(&mut engine, None, |ctx| {
+            ctx.fact_base = None;
+            assert!(
+                matches!(eval(ctx, &expr), Err(EvalError::TypeError { actual, .. }) if actual.contains("fact context"))
+            );
+        });
+        with_compact_context(&mut engine, None, |ctx| {
+            ctx.template_resolver = None;
+            assert!(
+                matches!(eval(ctx, &expr), Err(EvalError::TypeError { actual, .. }) if actual.contains("template context"))
+            );
+        });
+    }
+
+    #[test]
+    fn expression_query_rejects_local_bind_in_cached_and_fallback_predicate_bodies() {
+        use ferric_rules_parser::{ActionExpr, FunctionCall};
+        let (mut engine, _) = compact_test_engine();
+        let bind = ActionExpr::FunctionCall(FunctionCall {
+            name: "bind".into(),
+            args: vec![ActionExpr::Variable("temporary".into(), dummy_span())],
+            span: dummy_span(),
+        });
+        for cached in [false, true] {
+            let compiled = cached.then(|| {
+                Box::new(from_action_expr(&bind, &mut engine.symbol_table, &engine.config).unwrap())
+            });
+            let predicate = RuntimeExpr::If {
+                condition: Box::new(call("=", vec![int(1), int(2)])),
+                then_branch: vec![(bind.clone(), compiled)],
+                else_branch: Vec::new(),
+                span: None,
+            };
+            let expr = expression_query("any-factp", &[("f", "item")], predicate);
+            with_compact_context(&mut engine, None, |ctx| {
+                assert!(
+                    matches!(eval(ctx, &expr), Err(EvalError::TypeError { actual, .. }) if actual.contains("FACTQPSR2"))
+                );
+            });
+        }
     }
 
     #[test]
@@ -6779,6 +7353,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -6827,6 +7402,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -6881,6 +7457,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -6919,6 +7496,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -6960,6 +7538,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7004,6 +7583,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7075,6 +7655,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7122,6 +7703,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7153,6 +7735,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7195,6 +7778,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7243,6 +7827,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7302,6 +7887,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7363,6 +7949,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7418,6 +8005,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7599,6 +8187,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7629,6 +8218,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7659,6 +8249,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7689,6 +8280,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7719,6 +8311,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7749,6 +8342,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7783,6 +8377,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7813,6 +8408,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7849,6 +8445,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7887,6 +8484,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7925,6 +8523,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7962,6 +8561,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -7993,6 +8593,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8053,6 +8654,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8083,6 +8685,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8113,6 +8716,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8143,6 +8747,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8173,6 +8778,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8204,6 +8810,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8235,6 +8842,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8270,6 +8878,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8301,6 +8910,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8331,6 +8941,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8373,6 +8984,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8406,6 +9018,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8446,6 +9059,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8476,6 +9090,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8506,6 +9121,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8552,6 +9168,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8582,6 +9199,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8612,6 +9230,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8677,6 +9296,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8730,6 +9350,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -8788,6 +9409,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -9205,6 +9827,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -9241,6 +9864,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -9277,6 +9901,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -9325,6 +9950,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -9421,6 +10047,7 @@ mod tests {
                 input_buffer: None,
                 fact_base: None,
                 compact_fact_bindings: None,
+                template_resolver: None,
                 initial_fact_id: None,
                 template_defs: None,
             };
@@ -9493,6 +10120,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10043,6 +10671,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10074,6 +10703,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10126,6 +10756,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10163,6 +10794,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10196,6 +10828,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10233,6 +10866,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10266,6 +10900,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10303,6 +10938,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10336,6 +10972,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10392,6 +11029,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10437,6 +11075,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10662,6 +11301,7 @@ mod tests {
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10694,6 +11334,7 @@ mod tests {
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10726,6 +11367,7 @@ mod tests {
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10761,6 +11403,7 @@ mod tests {
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10797,6 +11440,7 @@ mod tests {
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10836,6 +11480,7 @@ mod tests {
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10871,6 +11516,7 @@ mod tests {
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10907,6 +11553,7 @@ mod tests {
             input_buffer: Some(&mut input_buffer),
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -10975,6 +11622,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };
@@ -11022,6 +11670,7 @@ mod tests {
             input_buffer: None,
             fact_base: None,
             compact_fact_bindings: None,
+            template_resolver: None,
             initial_fact_id: None,
             template_defs: None,
         };

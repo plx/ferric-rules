@@ -63,6 +63,7 @@ pub mod host;
 pub mod loader;
 pub mod modules;
 pub mod qualified_name;
+mod query_validation;
 pub mod router;
 #[cfg(feature = "serde")]
 pub mod serialization;

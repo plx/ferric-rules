@@ -1,0 +1,6 @@
+[PRNTUTIL1] Unable to find deftemplate DATA::item.
+
+ERROR:
+(defrule MAIN::probe
+   =>
+   (printout t (any-factp ((?f DATA::item
