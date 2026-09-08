@@ -1,7 +1,8 @@
 //! Insertion-ordered membership with constant-time insertion and removal.
 //!
-//! Links are owned keys rather than pointers. Snapshots contain only the ordered
-//! key sequence; deserialization rebuilds links and rejects duplicate entries.
+//! The first two keys reuse the endpoint fields while the table has zero capacity.
+//! Promoted sets retain their allocation, even when emptied. Snapshots contain
+//! only the ordered key sequence and reject duplicate entries on decode.
 use rustc_hash::FxHashMap as HashMap;
 use std::hash::Hash;
 
@@ -11,13 +12,13 @@ struct Links<K> {
     next: Option<K>,
 }
 
-pub(crate) struct LinkedSet<K> {
+pub(crate) struct OrderedSet<K> {
     entries: HashMap<K, Links<K>>,
     first: Option<K>,
     last: Option<K>,
 }
 
-impl<K> Default for LinkedSet<K> {
+impl<K> Default for OrderedSet<K> {
     fn default() -> Self {
         Self {
             entries: HashMap::default(),
@@ -27,42 +28,51 @@ impl<K> Default for LinkedSet<K> {
     }
 }
 
-impl<K: Copy + Eq + Hash> LinkedSet<K> {
-    /// Build the first linked block without repeatedly looking up its predecessors.
-    /// The inline caller has already checked that the three keys are distinct.
-    fn from_three(first: K, middle: K, last: K) -> Self {
-        Self {
-            entries: [
-                (
-                    first,
-                    Links {
-                        previous: None,
-                        next: Some(middle),
-                    },
-                ),
-                (
-                    middle,
-                    Links {
-                        previous: Some(first),
-                        next: Some(last),
-                    },
-                ),
-                (
-                    last,
-                    Links {
-                        previous: Some(middle),
-                        next: None,
-                    },
-                ),
-            ]
-            .into_iter()
-            .collect(),
-            first: Some(first),
-            last: Some(last),
-        }
-    }
-
+impl<K: Copy + Eq + Hash> OrderedSet<K> {
     pub(crate) fn insert(&mut self, key: K) -> bool {
+        // Zero insertion capacity implies an empty table. It can also follow
+        // tombstone-heavy removal from an allocated table; using the endpoints
+        // again preserves that allocation for the next promotion.
+        if self.entries.capacity() == 0 {
+            if self.first.is_none() {
+                self.first = Some(key);
+                self.last = Some(key);
+                return true;
+            }
+            if self.first == Some(key) || self.last == Some(key) {
+                return false;
+            }
+            if self.first == self.last {
+                self.last = Some(key);
+                return true;
+            }
+            let first = self.first.unwrap();
+            let middle = self.last.unwrap();
+            self.entries.reserve(3);
+            self.entries.insert(
+                first,
+                Links {
+                    previous: None,
+                    next: Some(middle),
+                },
+            );
+            self.entries.insert(
+                middle,
+                Links {
+                    previous: Some(first),
+                    next: Some(key),
+                },
+            );
+            self.entries.insert(
+                key,
+                Links {
+                    previous: Some(middle),
+                    next: None,
+                },
+            );
+            self.last = Some(key);
+            return true;
+        }
         let std::collections::hash_map::Entry::Vacant(entry) = self.entries.entry(key) else {
             return false;
         };
@@ -80,6 +90,22 @@ impl<K: Copy + Eq + Hash> LinkedSet<K> {
     }
 
     pub(crate) fn remove(&mut self, key: &K) -> bool {
+        if self.entries.capacity() == 0 {
+            if self.first.as_ref() == Some(key) {
+                if self.first == self.last {
+                    self.first = None;
+                    self.last = None;
+                } else {
+                    self.first = self.last;
+                }
+                return true;
+            }
+            if self.last.as_ref() == Some(key) {
+                self.last = self.first;
+                return true;
+            }
+            return false;
+        }
         let Some(links) = self.entries.remove(key) else {
             return false;
         };
@@ -97,18 +123,33 @@ impl<K: Copy + Eq + Hash> LinkedSet<K> {
     }
 
     pub(crate) fn contains(&self, key: &K) -> bool {
-        self.entries.contains_key(key)
+        if self.entries.capacity() == 0 {
+            self.first.as_ref() == Some(key) || self.last.as_ref() == Some(key)
+        } else {
+            self.entries.contains_key(key)
+        }
     }
+
     pub(crate) fn len(&self) -> usize {
-        self.entries.len()
+        if self.entries.capacity() == 0 {
+            usize::from(self.first.is_some()) + usize::from(self.first != self.last)
+        } else {
+            self.entries.len()
+        }
     }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.first.is_none()
+    }
+
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.first = None;
         self.last = None;
     }
-    pub(crate) fn iter(&self) -> LinkedIter<'_, K> {
-        LinkedIter {
+
+    pub(crate) fn iter(&self) -> Iter<'_, K> {
+        Iter {
             set: self,
             front: self.first,
             back: self.last,
@@ -117,21 +158,35 @@ impl<K: Copy + Eq + Hash> LinkedSet<K> {
     }
 }
 
-pub(crate) struct LinkedIter<'a, K> {
-    set: &'a LinkedSet<K>,
+pub(crate) struct Iter<'a, K> {
+    set: &'a OrderedSet<K>,
     front: Option<K>,
     back: Option<K>,
     remaining: usize,
 }
 
-impl<'a, K: Copy + Eq + Hash> Iterator for LinkedIter<'a, K> {
+impl<'a, K: Copy + Eq + Hash> Iterator for Iter<'a, K> {
     type Item = &'a K;
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             return None;
         }
-        let (key, links) = self.set.entries.get_key_value(&self.front?)?;
-        self.front = links.next;
+        let front = self.front?;
+        if let Some((key, links)) = self.set.entries.get_key_value(&front) {
+            self.front = links.next;
+            self.remaining -= 1;
+            return Some(key);
+        }
+        // A table miss with remaining members is the header-only small case.
+        // The linked traversal above retains its original lookup and control flow.
+        debug_assert_eq!(self.set.entries.capacity(), 0);
+        let key = if self.set.first == Some(front) {
+            self.front = self.set.last;
+            self.set.first.as_ref()?
+        } else {
+            self.front = None;
+            self.set.last.as_ref()?
+        };
         self.remaining -= 1;
         Some(key)
     }
@@ -140,124 +195,27 @@ impl<'a, K: Copy + Eq + Hash> Iterator for LinkedIter<'a, K> {
     }
 }
 
-impl<K: Copy + Eq + Hash> DoubleEndedIterator for LinkedIter<'_, K> {
+impl<K: Copy + Eq + Hash> DoubleEndedIterator for Iter<'_, K> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             return None;
         }
-        let (key, links) = self.set.entries.get_key_value(&self.back?)?;
-        self.back = links.previous;
+        let back = self.back?;
+        if let Some((key, links)) = self.set.entries.get_key_value(&back) {
+            self.back = links.previous;
+            self.remaining -= 1;
+            return Some(key);
+        }
+        debug_assert_eq!(self.set.entries.capacity(), 0);
+        let key = if self.set.first == Some(back) {
+            self.back = None;
+            self.set.first.as_ref()?
+        } else {
+            self.back = self.set.first;
+            self.set.last.as_ref()?
+        };
         self.remaining -= 1;
         Some(key)
-    }
-}
-impl<K: Copy + Eq + Hash> ExactSizeIterator for LinkedIter<'_, K> {}
-
-/// Keep sets of up to two keys inline; larger sets retain the hash-linked
-/// representation and its insertion order.
-pub(crate) enum OrderedSet<K> {
-    Inline(smallvec::SmallVec<[K; 2]>),
-    Linked(LinkedSet<K>),
-}
-
-impl<K> Default for OrderedSet<K> {
-    fn default() -> Self {
-        Self::Inline(smallvec::SmallVec::new())
-    }
-}
-
-impl<K: Copy + Eq + Hash> OrderedSet<K> {
-    pub(crate) fn insert(&mut self, key: K) -> bool {
-        match self {
-            Self::Inline(values) => {
-                if values.contains(&key) {
-                    return false;
-                }
-                if values.len() < 2 {
-                    values.push(key);
-                } else {
-                    *self = Self::Linked(LinkedSet::from_three(values[0], values[1], key));
-                }
-                true
-            }
-            Self::Linked(linked) => linked.insert(key),
-        }
-    }
-
-    pub(crate) fn remove(&mut self, key: &K) -> bool {
-        match self {
-            Self::Inline(values) => {
-                let Some(index) = values.iter().position(|value| value == key) else {
-                    return false;
-                };
-                values.remove(index);
-                true
-            }
-            Self::Linked(linked) => linked.remove(key),
-        }
-    }
-
-    pub(crate) fn contains(&self, key: &K) -> bool {
-        match self {
-            Self::Inline(values) => values.contains(key),
-            Self::Linked(linked) => linked.contains(key),
-        }
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        match self {
-            Self::Inline(values) => values.len(),
-            Self::Linked(linked) => linked.len(),
-        }
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub(crate) fn clear(&mut self) {
-        match self {
-            Self::Inline(values) => values.clear(),
-            // Retain the existing allocation for large-set reset/reuse.
-            Self::Linked(linked) => linked.clear(),
-        }
-    }
-
-    pub(crate) fn iter(&self) -> Iter<'_, K> {
-        match self {
-            Self::Inline(values) => Iter::Inline(values.iter()),
-            Self::Linked(linked) => Iter::Linked(linked.iter()),
-        }
-    }
-}
-
-pub(crate) enum Iter<'a, K> {
-    Inline(std::slice::Iter<'a, K>),
-    Linked(LinkedIter<'a, K>),
-}
-
-impl<'a, K: Copy + Eq + Hash> Iterator for Iter<'a, K> {
-    type Item = &'a K;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Inline(values) => values.next(),
-            Self::Linked(linked) => linked.next(),
-        }
-    }
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        match self {
-            Self::Inline(values) => values.size_hint(),
-            Self::Linked(linked) => linked.size_hint(),
-        }
-    }
-}
-
-impl<K: Copy + Eq + Hash> DoubleEndedIterator for Iter<'_, K> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Inline(values) => values.next_back(),
-            Self::Linked(linked) => linked.next_back(),
-        }
     }
 }
 impl<K: Copy + Eq + Hash> ExactSizeIterator for Iter<'_, K> {}
@@ -302,31 +260,25 @@ mod tests {
         assert!(set.insert(9));
         assert!(set.insert(2));
         assert!(!set.insert(9));
-        assert!(matches!(set, OrderedSet::Inline(_)));
+        assert_eq!(set.entries.capacity(), 0);
         assert!(set.remove(&9));
         assert!(set.insert(9));
         assert_eq!(set.iter().copied().collect::<Vec<_>>(), [2, 9]);
         assert!(set.insert(7));
-        assert!(matches!(set, OrderedSet::Linked(_)));
+        assert!(set.entries.capacity() > 0);
         assert_eq!(set.iter().copied().collect::<Vec<_>>(), [2, 9, 7]);
         assert!(!set.insert(9));
         assert!(set.remove(&9));
         assert!(set.insert(9));
         assert_eq!(set.iter().copied().collect::<Vec<_>>(), [2, 7, 9]);
-        let capacity = match &set {
-            OrderedSet::Linked(linked) => linked.entries.capacity(),
-            OrderedSet::Inline(_) => unreachable!(),
-        };
+        let capacity = set.entries.capacity();
         set.clear();
         assert!(set.is_empty());
         for key in 0..1024 {
             assert!(set.insert(key));
             assert!(set.remove(&key));
         }
-        match &set {
-            OrderedSet::Linked(linked) => assert_eq!(linked.entries.capacity(), capacity),
-            OrderedSet::Inline(_) => panic!("large-set allocation should be retained"),
-        }
+        assert_eq!(set.entries.capacity(), capacity);
     }
 
     #[test]
@@ -352,6 +304,53 @@ mod tests {
             assert_eq!(iter.len(), 0);
             assert_eq!(iter.next(), None);
             assert_eq!(iter.next_back(), None);
+        }
+    }
+
+    #[test]
+    fn full_collision_table_survives_emptying_and_small_reuse() {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        struct Collision(usize);
+        impl std::hash::Hash for Collision {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                state.write_u8(0);
+            }
+        }
+
+        let mut set = OrderedSet::default();
+        for key in 0..3 {
+            assert!(set.insert(Collision(key)));
+        }
+        // Reserve only after promotion, when every member is in the table.
+        set.entries.reserve(32);
+        let capacity = set.entries.capacity();
+        for key in 3..capacity {
+            assert!(set.insert(Collision(key)));
+        }
+        for key in 0..capacity {
+            assert!(set.remove(&Collision(key)));
+        }
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+        // A full cluster can leave an allocated table with zero insertion
+        // capacity. Reuse must remain correct whichever erase policy Rust uses.
+        for _ in 0..4 {
+            assert!(set.insert(Collision(90)));
+            assert!(set.insert(Collision(80)));
+            assert_eq!(set.iter().map(|key| key.0).collect::<Vec<_>>(), [90, 80]);
+            assert_eq!(
+                set.iter().rev().map(|key| key.0).collect::<Vec<_>>(),
+                [80, 90]
+            );
+            assert!(set.remove(&Collision(90)));
+            assert!(set.insert(Collision(70)));
+            assert!(set.insert(Collision(60)));
+            assert_eq!(
+                set.iter().map(|key| key.0).collect::<Vec<_>>(),
+                [80, 70, 60]
+            );
+            set.clear();
+            assert_eq!(set.len(), 0);
         }
     }
 
