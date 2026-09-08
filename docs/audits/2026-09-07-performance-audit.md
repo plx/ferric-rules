@@ -297,6 +297,15 @@ unexported fact. Direct assertion/retraction benchmarks verify one and eight
 integer fields, alongside sparse reads, owned captures, registry operations,
 and facade lifecycle/retraction/churn/query controls.
 
+## Runtime snapshot benchmark repair
+
+The broader runtime audit exposed a pre-existing invalid workload: the large
+snapshot generator printed integral floating-point values as integer literals,
+which violate its `FLOAT` slot constraint. Formatting those generated values
+with one decimal place preserves the intended data and lets the existing fact,
+firing, output, and quiescence oracles run. Comparisons use the repaired source
+on both revisions; failed runs contribute no performance claims.
+
 ## Focused agenda selection
 
 A focused module could previously rescan every higher-priority dormant
@@ -341,12 +350,3 @@ allocation reuse. New `beta_membership_sizes` controls measure cold construction
 traversal, and removal at 1, 2, 3, 32, and 1,024 members, with duplicate/order and
 empty-result oracles. Core storage, join, cascade, churn, alpha fanout, engine,
 and Manners workloads remain paired controls.
-
-## Runtime snapshot benchmark repair
-
-The broader runtime audit exposed a pre-existing invalid workload: the large
-snapshot generator printed integral floating-point values as integer literals,
-which violate its `FLOAT` slot constraint. Formatting those generated values
-with one decimal place preserves the intended data and lets the existing fact,
-firing, output, and quiescence oracles run. Comparisons use the repaired source
-on both revisions; failed runs contribute no performance claims.
