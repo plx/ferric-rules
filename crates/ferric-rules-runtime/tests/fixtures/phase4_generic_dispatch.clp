@@ -13,7 +13,7 @@
     100)
 
 ;; Unrestricted fallback
-(defmethod describe ((?x))
+(defmethod describe (?x)
     0)
 
 ;; A simpler generic for testing specificity ordering

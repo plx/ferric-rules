@@ -1,0 +1,5 @@
+[GENRCPSR13] Expected a valid class name or query.
+
+ERROR:
+(defmethod MAIN::invalid
+   ((?x)

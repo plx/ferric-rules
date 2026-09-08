@@ -1050,7 +1050,7 @@ fn generic_dispatch_unrestricted_is_least_specific() {
         r"
         (defgeneric classify)
         (defmethod classify ((?x INTEGER)) 1)
-        (defmethod classify ((?x))         2)
+        (defmethod classify (?x)          2)
         (defrule test (go) => (printout t (classify 42) crlf))
         (deffacts startup (go))
     ",
@@ -1150,7 +1150,7 @@ fn call_next_method_three_level_chain() {
         (defgeneric classify)
         (defmethod classify ((?x INTEGER)) (+ 1000 (call-next-method)))
         (defmethod classify ((?x NUMBER))  (+ 100 (call-next-method)))
-        (defmethod classify ((?x))         7)
+        (defmethod classify (?x)          7)
         (defrule test (go) => (printout t (classify 5) crlf))
         (deffacts startup (go))
     ",

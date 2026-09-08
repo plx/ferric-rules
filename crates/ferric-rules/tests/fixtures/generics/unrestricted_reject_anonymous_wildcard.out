@@ -1,0 +1,5 @@
+[GENRCPSR9] Expected a variable or '(' for parameter specification.
+
+ERROR:
+(defmethod MAIN::invalid
+   ($?

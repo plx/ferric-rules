@@ -6596,7 +6596,7 @@ mod tests {
     fn load_defmethod_with_index_succeeds() {
         let mut engine = new_utf8_engine();
         let result = engine
-            .load_str("(defmethod display 1 ((?x)) ?x)")
+            .load_str("(defmethod display 1 (?x) ?x)")
             .expect("load should succeed");
         assert_eq!(result.methods.len(), 1);
         assert_eq!(result.methods[0].index, Some(1));

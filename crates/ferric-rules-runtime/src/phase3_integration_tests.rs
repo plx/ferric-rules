@@ -2572,7 +2572,7 @@ mod tests {
             r"
             (defgeneric passthrough)
             (defmethod passthrough 1 ((?x INTEGER)) (+ ?x 0))
-            (defmethod passthrough 2 ((?x)) 99)
+            (defmethod passthrough 2 (?x) 99)
             (defrule trigger (trigger) => (assert (result (passthrough hello))))
             (deffacts startup (trigger))
         ",
@@ -2598,7 +2598,7 @@ mod tests {
             r"
             (defgeneric classify)
             (defmethod classify 1 ((?x INTEGER)) 111)
-            (defmethod classify 2 ((?x)) 222)
+            (defmethod classify 2 (?x) 222)
             (defrule run (trigger) => (assert (result (classify 10))))
             (deffacts startup (trigger))
         ",

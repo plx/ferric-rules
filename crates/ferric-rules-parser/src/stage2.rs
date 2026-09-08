@@ -18,6 +18,7 @@
 
 use crate::sexpr::{nesting_depth_message, Atom, Connective, SExpr};
 use crate::span::Span;
+use std::collections::HashSet;
 use std::fmt;
 
 // ============================================================================
@@ -1465,7 +1466,7 @@ fn interpret_generic(elements: &[SExpr], span: Span) -> Result<GenericConstruct,
 /// (defmethod display 1 ((?x INTEGER))      ; with explicit index
 ///   (printout t "Int:" ?x crlf))
 ///
-/// (defmethod display ((?x) $?rest) ?x)     ; untyped + wildcard
+/// (defmethod display (?x $?rest) ?x)       ; untyped + wildcard
 /// ```
 fn interpret_method(elements: &[SExpr], span: Span) -> Result<MethodConstruct, InterpretError> {
     if elements.is_empty() {
@@ -1505,60 +1506,35 @@ fn interpret_method(elements: &[SExpr], span: Span) -> Result<MethodConstruct, I
     // Parse parameters
     let mut parameters = Vec::new();
     let mut wildcard_parameter = None;
+    let mut parameter_names = HashSet::new();
+    let mut register_name = |name: &str, span| {
+        if name.is_empty() {
+            return Err(InterpretError::missing("method parameter name", span));
+        }
+        if !parameter_names.insert(name.to_owned()) {
+            return Err(InterpretError::invalid(
+                &format!("duplicate method parameter name: {name}"),
+                span,
+            ));
+        }
+        Ok(())
+    };
 
     for param_expr in param_list {
-        // Check for wildcard ($?rest)
-        if let Some(Atom::MultiVar(var_name)) = param_expr.as_atom() {
-            wildcard_parameter = Some(var_name.clone());
-            continue;
-        }
-
-        // Regular parameter: must be a list like (?name TYPE1 TYPE2 ...)
-        let restriction_list = param_expr.as_list().ok_or_else(|| {
-            InterpretError::expected(
-                "parameter restriction (list like (?x INTEGER))",
-                param_expr.span(),
-            )
-        })?;
-
-        if restriction_list.is_empty() {
+        if wildcard_parameter.is_some() {
             return Err(InterpretError::invalid(
-                "empty parameter restriction",
+                "wildcard parameter must be the last method parameter",
                 param_expr.span(),
             ));
         }
-
-        // First element must be a single variable
-        let param_name = match restriction_list[0].as_atom() {
-            Some(Atom::SingleVar(v)) => v.clone(),
-            _ => {
-                return Err(InterpretError::expected(
-                    "parameter variable (?name)",
-                    restriction_list[0].span(),
-                ));
-            }
-        };
-
-        // Remaining elements are type restrictions (symbols)
-        let mut type_restrictions = Vec::new();
-        for type_expr in &restriction_list[1..] {
-            let type_name = type_expr
-                .as_symbol()
-                .ok_or_else(|| {
-                    InterpretError::expected(
-                        "type restriction (symbol like INTEGER, FLOAT)",
-                        type_expr.span(),
-                    )
-                })?
-                .to_string();
-            type_restrictions.push(type_name);
+        if let Some(Atom::MultiVar(var_name)) = param_expr.as_atom() {
+            register_name(var_name, param_expr.span())?;
+            wildcard_parameter = Some(var_name.clone());
+        } else {
+            let parameter = interpret_method_parameter(param_expr)?;
+            register_name(&parameter.name, parameter.span)?;
+            parameters.push(parameter);
         }
-
-        parameters.push(MethodParameter {
-            name: param_name,
-            type_restrictions,
-            span: param_expr.span(),
-        });
     }
 
     // Body expressions (at least one required)
@@ -1578,6 +1554,61 @@ fn interpret_method(elements: &[SExpr], span: Span) -> Result<MethodConstruct, I
         parameters,
         wildcard_parameter,
         body,
+    })
+}
+
+/// Unrestricted method parameters are bare variables; parentheses introduce
+/// one or more type restrictions rather than another spelling of a bare variable.
+fn interpret_method_parameter(param_expr: &SExpr) -> Result<MethodParameter, InterpretError> {
+    if let Some(Atom::SingleVar(name)) = param_expr.as_atom() {
+        return Ok(MethodParameter {
+            name: name.clone(),
+            type_restrictions: Vec::new(),
+            span: param_expr.span(),
+        });
+    }
+    let restriction_list = param_expr.as_list().ok_or_else(|| {
+        InterpretError::expected(
+            "parameter variable (?name) or restriction list like (?name INTEGER)",
+            param_expr.span(),
+        )
+    })?;
+    if restriction_list.is_empty() {
+        return Err(InterpretError::invalid(
+            "empty parameter restriction",
+            param_expr.span(),
+        ));
+    }
+    let name = match restriction_list[0].as_atom() {
+        Some(Atom::SingleVar(name)) => name.clone(),
+        _ => {
+            return Err(InterpretError::expected(
+                "parameter variable (?name)",
+                restriction_list[0].span(),
+            ));
+        }
+    };
+    if restriction_list.len() == 1 {
+        return Err(InterpretError::missing(
+            "type restriction; use a bare ?name for an unrestricted parameter",
+            param_expr.span(),
+        ));
+    }
+    let type_restrictions = restriction_list[1..]
+        .iter()
+        .map(|type_expr| {
+            type_expr.as_symbol().map(str::to_owned).ok_or_else(|| {
+                InterpretError::expected(
+                    "type restriction (symbol like INTEGER, FLOAT)",
+                    type_expr.span(),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(MethodParameter {
+        name,
+        type_restrictions,
+        span: param_expr.span(),
     })
 }
 
@@ -4931,7 +4962,7 @@ mod tests {
 
     #[test]
     fn interpret_defmethod_untyped_param() {
-        let result = interpret_source_inner("(defmethod display ((?x)) ?x)");
+        let result = interpret_source_inner("(defmethod display (?x) ?x)");
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let Construct::Method(m) = &result.constructs[0] else {
             panic!("expected Method construct");
@@ -4943,13 +4974,72 @@ mod tests {
 
     #[test]
     fn interpret_defmethod_wildcard_param() {
-        let result = interpret_source_inner("(defmethod display ((?x) $?rest) ?x)");
+        let result = interpret_source_inner("(defmethod display (?x $?rest) ?x)");
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let Construct::Method(m) = &result.constructs[0] else {
             panic!("expected Method construct");
         };
         assert_eq!(m.parameters.len(), 1);
         assert_eq!(m.wildcard_parameter.as_deref(), Some("rest"));
+    }
+
+    #[test]
+    fn interpret_defmethod_mixed_unrestricted_and_typed_parameters() {
+        let result = interpret_source_inner(
+            "(defmethod display 3 (?first (?number INTEGER FLOAT) ?last $?rest) ?first)",
+        );
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Construct::Method(method) = &result.constructs[0] else {
+            panic!("expected method");
+        };
+        assert_eq!(method.index, Some(3));
+        assert_eq!(method.parameters.len(), 3);
+        assert_eq!(method.parameters[0].name, "first");
+        assert!(method.parameters[0].type_restrictions.is_empty());
+        assert_eq!(method.parameters[1].type_restrictions, ["INTEGER", "FLOAT"]);
+        assert_eq!(method.parameters[2].name, "last");
+        assert!(method.parameters[2].type_restrictions.is_empty());
+        assert_eq!(method.wildcard_parameter.as_deref(), Some("rest"));
+    }
+
+    #[test]
+    fn interpret_defmethod_parenthesized_unrestricted_parameter_is_invalid() {
+        let result = interpret_source_inner("(defmethod display ((?x)) ?x)");
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("bare ?name"));
+        assert!(result.constructs.is_empty());
+    }
+
+    #[test]
+    fn interpret_defmethod_wildcard_must_be_last() {
+        for signature in ["($?rest ?x)", "($?rest (?x INTEGER))", "($?a $?b)"] {
+            let result = interpret_source_inner(&format!("(defmethod display {signature} 1)"));
+            assert_eq!(result.errors.len(), 1, "{signature}");
+            assert!(result.errors[0].message.contains("last method parameter"));
+            assert!(result.constructs.is_empty());
+        }
+    }
+
+    #[test]
+    fn interpret_defmethod_anonymous_parameters_are_invalid() {
+        for signature in ["(?)", "($?)", "((? INTEGER))"] {
+            let result = interpret_source_inner(&format!("(defmethod display {signature} 1)"));
+            assert_eq!(result.errors.len(), 1, "{signature}");
+            assert!(result.errors[0].message.contains("method parameter name"));
+            assert!(result.constructs.is_empty());
+        }
+    }
+
+    #[test]
+    fn interpret_defmethod_parameter_names_must_be_unique() {
+        for signature in ["(?x ?x)", "(?x $?x)", "(?x (?x INTEGER))"] {
+            let result = interpret_source_inner(&format!("(defmethod display {signature} 1)"));
+            assert_eq!(result.errors.len(), 1, "{signature}");
+            assert!(result.errors[0]
+                .message
+                .contains("duplicate method parameter name"));
+            assert!(result.constructs.is_empty());
+        }
     }
 
     #[test]

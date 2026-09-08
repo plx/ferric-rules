@@ -1,0 +1,6 @@
+[PRCCODE8] No parameters allowed after wildcard parameter.
+
+ERROR:
+(defmethod MAIN::invalid
+   ($?rest
+    ?x
