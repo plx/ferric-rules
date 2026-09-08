@@ -138,7 +138,7 @@ const EXPECTED: &str = "action session-42 sign-in\n";
 
 fn selected(engine: &Engine) {
     assert_eq!(engine.find_facts("action").unwrap().len(), 1);
-    assert_eq!(engine.get_output("t"), Some(EXPECTED));
+    assert_eq!(engine.get_output("t").expect("launch output is UTF-8"), Some(EXPECTED));
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

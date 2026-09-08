@@ -62,8 +62,8 @@ impl Handle {
             unsafe extern "C" fn(_, _, _, _) -> _,
             engine.0.as_ptr(),
             -1,
-            &raw mut fired,
-            &raw mut reason
+            ptr::addr_of_mut!(fired),
+            ptr::addr_of_mut!(reason)
         ));
         (engine, fired, reason)
     }
@@ -74,20 +74,20 @@ impl Handle {
             ferric_engine_get_output_copy,
             unsafe extern "C" fn(_, _, _, _, _) -> _,
             self.0.as_ptr().cast_const(),
-            c"t".as_ptr(),
+            b"t\0".as_ptr().cast(),
             ptr::null_mut(),
             0,
-            &raw mut length
+            ptr::addr_of_mut!(length)
         ));
         let mut bytes = vec![0; length];
         check(call!(
             ferric_engine_get_output_copy,
             unsafe extern "C" fn(_, _, _, _, _) -> _,
             self.0.as_ptr().cast_const(),
-            c"t".as_ptr(),
+            b"t\0".as_ptr().cast(),
             bytes.as_mut_ptr().cast(),
             bytes.len(),
-            &raw mut length
+            ptr::addr_of_mut!(length)
         ));
         bytes
     }
@@ -98,27 +98,27 @@ impl Handle {
             ferric_engine_fact_count,
             unsafe extern "C" fn(_, _) -> _,
             self.0.as_ptr().cast_const(),
-            &raw mut fact_count
+            ptr::addr_of_mut!(fact_count)
         ));
         let mut selected_count = 0;
         check(call!(
             ferric_engine_find_fact_ids,
             unsafe extern "C" fn(_, _, _, _, _) -> _,
             self.0.as_ptr().cast_const(),
-            c"selected".as_ptr(),
+            b"selected\0".as_ptr().cast(),
             ptr::null_mut(),
             0,
-            &raw mut selected_count
+            ptr::addr_of_mut!(selected_count)
         ));
         let mut ids = vec![0; selected_count];
         check(call!(
             ferric_engine_find_fact_ids,
             unsafe extern "C" fn(_, _, _, _, _) -> _,
             self.0.as_ptr().cast_const(),
-            c"selected".as_ptr(),
+            b"selected\0".as_ptr().cast(),
             ids.as_mut_ptr(),
             ids.len(),
-            &raw mut selected_count
+            ptr::addr_of_mut!(selected_count)
         ));
         let selected = ids.into_iter().map(|id| self.fields(id)).collect();
         Observation {
@@ -136,14 +136,14 @@ impl Handle {
             self.0.as_ptr().cast_const(),
             id,
             0,
-            &raw mut number
+            ptr::addr_of_mut!(number)
         ));
         let integer = number.integer;
         let number_type = number.value_type;
         check(call!(
             ferric_value_free,
             unsafe extern "C" fn(_) -> _,
-            &raw mut number
+            ptr::addr_of_mut!(number)
         ));
         assert_eq!(number_type, FerricValueType::Integer.as_raw());
 
@@ -154,7 +154,7 @@ impl Handle {
             self.0.as_ptr().cast_const(),
             id,
             1,
-            &raw mut label
+            ptr::addr_of_mut!(label)
         ));
         // Check the tag before interpreting its active pointer field, just as
         // a typed host wrapper must. This is decoding, not the workload oracle.
@@ -167,7 +167,7 @@ impl Handle {
         check(call!(
             ferric_value_free,
             unsafe extern "C" fn(_) -> _,
-            &raw mut label
+            ptr::addr_of_mut!(label)
         ));
         (integer, text)
     }
@@ -242,7 +242,7 @@ fn verify_error_copy(engine: &Handle) {
         engine.0.as_ptr().cast_const(),
         ptr::null_mut(),
         0,
-        &raw mut length
+        ptr::addr_of_mut!(length)
     ));
     let mut bytes = vec![0_u8; length];
     check(call!(
@@ -251,7 +251,7 @@ fn verify_error_copy(engine: &Handle) {
         engine.0.as_ptr().cast_const(),
         bytes.as_mut_ptr().cast(),
         bytes.len(),
-        &raw mut length
+        ptr::addr_of_mut!(length)
     ));
     let message = CStr::from_bytes_with_nul(&bytes).unwrap().to_str().unwrap();
     assert!(

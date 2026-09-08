@@ -1,0 +1,12 @@
+(deffunction show (?label ?fields)
+ (printout t ?label ":" (length$ ?fields) crlf)
+ (progn$ (?field ?fields)
+  (printout t (integerp ?field) ":" (floatp ?field) ":" (stringp ?field) ":" (symbolp ?field) ":[" ?field "]" crlf)))
+(defglobal ?*trace* = 0)
+(deffunction mark (?value) (bind ?*trace* (+ ?*trace* 1)) ?value)
+(defrule probe =>
+ (show fields (explode$ (mark "a \"two words\" 3")))
+ (printout t "trace:" ?*trace* crlf)
+ (bind ?*trace* 0)
+ (show empty (explode$ (mark "")))
+ (printout t "trace:" ?*trace* crlf))

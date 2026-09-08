@@ -50,6 +50,7 @@ _TOP_LEVEL = {
     "Strategy",
     "String",
     "Symbol",
+    "InstanceName",
     "ferric",  # the compiled extension module, re-exposed under the package
 }
 if _HAS_SERDE:
@@ -81,6 +82,7 @@ _ENGINE_MEMBERS = {
     "get_fact_slot",
     "get_global",
     "get_output",
+    "get_output_bytes",
     "halt",
     "is_halted",
     "load",
@@ -118,8 +120,9 @@ _CLASS_MEMBERS = {
         "slots",
         "template_name",
     },
-    "Symbol": {"value"},
-    "String": {"value"},
+    "Symbol": {"value", "bytes"},
+    "String": {"value", "bytes"},
+    "InstanceName": {"value", "bytes"},
     "RunResult": {"halt_reason", "rules_fired"},
     "FiredRule": {"rule_name"},
 }
@@ -148,6 +151,7 @@ _PROTOCOLS = {
     "Fact": {"__eq__", "__hash__", "__repr__"},
     "Symbol": {"__eq__", "__hash__", "__init__", "__repr__", "__str__"},
     "String": {"__eq__", "__hash__", "__init__", "__repr__", "__str__"},
+    "InstanceName": {"__eq__", "__hash__", "__init__", "__repr__", "__str__"},
     "RunResult": {"__repr__"},
     "FiredRule": {"__repr__"},
 }

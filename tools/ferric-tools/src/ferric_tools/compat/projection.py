@@ -61,6 +61,8 @@ def _canonical_value(raw: object, *, engine: str) -> dict:
     if type(raw) is not dict:
         raise ObservationProjectionError(f"{engine} value is not an object")
     assert isinstance(raw, dict)
+    if "bytes" in raw:
+        raise ObservationProjectionError(f"{engine} byte value is not supported by oracle v1")
     value_type = raw.get("type")
     if type(value_type) is not str:
         raise ObservationProjectionError(f"{engine} value has no string type")
@@ -427,7 +429,8 @@ def _halt_reason(raw: object) -> str:
 def _validate_raw_envelope(raw: dict, *, engine: str) -> None:
     if raw.get("schema") != _OBSERVATION_SCHEMA:
         raise ObservationProjectionError(f"{engine} observation schema is unsupported")
-    if type(raw.get("version")) is not int or raw["version"] != _OBSERVATION_VERSION:
+    versions = {_OBSERVATION_VERSION, 2} if engine == "ferric" else {_OBSERVATION_VERSION}
+    if type(raw.get("version")) is not int or raw["version"] not in versions:
         raise ObservationProjectionError(f"{engine} observation version is unsupported")
     engine_identity = raw.get("engine")
     if type(engine_identity) is not dict or engine_identity.get("name") != engine:
@@ -564,6 +567,8 @@ def _channel_map(raw: dict, *, engine: str) -> dict[str, str]:
     for channel in channels:
         if type(channel) is not dict:
             raise ObservationProjectionError(f"{engine} channel record is malformed")
+        if "bytes" in channel:
+            raise ObservationProjectionError(f"{engine} byte channel is not supported by oracle v1")
         name = channel.get("name")
         text = channel.get("text")
         if type(name) is not str or not name or type(text) is not str:

@@ -346,8 +346,29 @@ impl Engine {
     /// let result = engine.load_str("(assert (person John 30))").unwrap();
     /// assert_eq!(result.asserted_facts.len(), 1);
     /// ```
-    #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
     pub fn load_str(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
+        let diagnostics_start = self.action_diagnostics.len();
+        let mut result = self.load_str_inner(source);
+        // Scanner notices and other evaluator output must be observable when
+        // a load boundary returns, before a later action clears stale events.
+        for (channel, bytes) in self.globals.take_printout_events() {
+            self.router.write(&channel, &bytes);
+        }
+        self.drain_evaluator_diagnostics();
+        self.globals.take_evaluation_halt();
+        self.globals.take_sort_return();
+        if let Ok(loaded) = &mut result {
+            loaded.warnings.extend(
+                self.action_diagnostics[diagnostics_start..]
+                    .iter()
+                    .map(ToString::to_string),
+            );
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_lines)] // Sequential pipeline steps; each section is clearly delineated
+    fn load_str_inner(&mut self, source: &str) -> Result<LoadResult, Vec<LoadError>> {
         ferric_span!(info_span, "engine_load_str", len = source.len());
         crate::source_limits::check_source_size(source.len()).map_err(|e| vec![e])?;
 
@@ -1264,6 +1285,7 @@ impl Engine {
                 } else {
                     match slot_def.allowed_types.as_ref().and_then(|types| types.first()) {
                     None | Some(SlotValueType::Symbol) => Value::Symbol(self.compile_symbol("nil")?),
+                    Some(SlotValueType::InstanceName) => Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(self.compile_symbol("nil")?)),
                     Some(SlotValueType::String) => Value::String(self.compile_string("")?),
                     Some(SlotValueType::Integer) => Value::Integer(0),
                     Some(SlotValueType::Float) => Value::Float(0.0),
@@ -1392,7 +1414,7 @@ impl Engine {
             // without any rule context).  The block scope ensures the mutable
             // borrows on symbol_table and globals are released before the
             // subsequent self.globals.set() / self.registered_globals.push().
-            let value = {
+            let evaluation = {
                 let empty_bindings = ferric_rules_core::binding::BindingSet::new();
                 let empty_var_map = ferric_rules_core::binding::VarMap::new();
                 let mut ctx = crate::evaluator::EvalContext {
@@ -1416,8 +1438,20 @@ impl Engine {
                     template_defs: None,
                 };
                 crate::evaluator::eval(&mut ctx, &runtime_expr)
-                    .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))?
+                    .map_err(|e| LoadError::Compile(format!("global `{}` init: {e}", def.name)))
             };
+
+            // A recovered expression value is usable by RHS consumers, but a
+            // failed global initializer must not publish the new global.
+            let evaluation_halted = self.globals.take_evaluation_halt();
+            self.globals.take_sort_return();
+            let value = evaluation?;
+            if evaluation_halted {
+                return Err(LoadError::Compile(format!(
+                    "global `{}` init: evaluation halted",
+                    def.name
+                )));
+            }
 
             // CLIPS commits named globals incrementally, even within one
             // defglobal group. Publish ownership only after this initializer
@@ -1530,6 +1564,14 @@ impl Engine {
             LiteralKind::Float(f) => Some(Value::Float(*f)),
             LiteralKind::String(s) => self.warned_string_value(s, line, result),
             LiteralKind::Symbol(s) => self.warned_symbol_value(s, line, result),
+            LiteralKind::InstanceName(s) => {
+                self.warned_symbol_value(s, line, result).map(|v| match v {
+                    Value::Symbol(symbol) => {
+                        Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol))
+                    }
+                    _ => unreachable!(),
+                })
+            }
         }
     }
 
@@ -1672,6 +1714,12 @@ impl Engine {
             Atom::Float(f) => Some(Value::Float(*f)),
             Atom::String(s) => self.warned_string_value(s, line, result),
             Atom::Symbol(s) => self.warned_symbol_value(s, line, result),
+            Atom::InstanceName(s) => self.warned_symbol_value(s, line, result).map(|v| match v {
+                Value::Symbol(symbol) => {
+                    Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol))
+                }
+                _ => unreachable!(),
+            }),
             // Variables and connectives are not supported as fact values in Phase 1
             Atom::SingleVar(_) | Atom::MultiVar(_) | Atom::GlobalVar(_) | Atom::Connective(_) => {
                 None
@@ -4544,6 +4592,9 @@ impl Engine {
                 Atom::Float(f) => Some(PredicateOperand::Literal(LiteralKind::Float(*f))),
                 Atom::String(s) => Some(PredicateOperand::Literal(LiteralKind::String(s.clone()))),
                 Atom::Symbol(s) => Some(PredicateOperand::Literal(LiteralKind::Symbol(s.clone()))),
+                Atom::InstanceName(s) => Some(PredicateOperand::Literal(
+                    LiteralKind::InstanceName(s.clone()),
+                )),
                 Atom::SingleVar(name) | Atom::MultiVar(name) => {
                     Some(PredicateOperand::Variable(name.clone()))
                 }
@@ -4684,6 +4735,9 @@ impl Engine {
                 let sym = self.compile_symbol(s)?;
                 Ok(Some(AtomKey::Symbol(sym)))
             }
+            LiteralKind::InstanceName(s) => Ok(Some(AtomKey::InstanceName(
+                ferric_rules_core::InstanceName::from_symbol(self.compile_symbol(s)?),
+            ))),
             LiteralKind::String(s) => {
                 let fs = self.compile_string(s)?;
                 Ok(Some(AtomKey::String(fs)))
@@ -5251,7 +5305,9 @@ mod tests {
             {
                 assert!(matches!(ordered.fields[1], Value::Float(f) if (f - 3.14).abs() < 0.001));
             }
-            assert!(matches!(&ordered.fields[2], Value::String(s) if s.as_str() == "hello"));
+            assert!(
+                matches!(&ordered.fields[2], Value::String(s) if s.as_str().unwrap() == "hello")
+            );
             assert!(matches!(&ordered.fields[3], Value::Symbol(_)));
         } else {
             panic!("expected ordered fact");
@@ -6407,7 +6463,12 @@ mod tests {
 
         engine.reset().expect("reset");
         run_to_completion(&mut engine);
-        let output = engine.get_output("t").unwrap_or("").trim().to_string();
+        let output = engine
+            .get_output("t")
+            .unwrap()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         assert_eq!(output, "42");
     }
 
@@ -6433,7 +6494,7 @@ mod tests {
 
         engine.reset().expect("reset");
         run_to_completion(&mut engine);
-        let output = engine.get_output("t").unwrap_or("");
+        let output = engine.get_output("t").unwrap().unwrap_or("");
         assert!(
             output.contains("GOOD"),
             "expected valid rule to run after recovery, got: {output:?}"

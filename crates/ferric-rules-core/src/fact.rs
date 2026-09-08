@@ -82,6 +82,7 @@ fn remove_from_candidate_index(
 pub(crate) struct SymbolMap<T> {
     pub(crate) ascii: Vec<Option<T>>,
     pub(crate) utf8: Vec<Option<T>>,
+    pub(crate) bytes: Vec<Option<T>>,
 }
 
 impl<T> SymbolMap<T> {
@@ -89,6 +90,7 @@ impl<T> SymbolMap<T> {
         Self {
             ascii: Vec::new(),
             utf8: Vec::new(),
+            bytes: Vec::new(),
         }
     }
 
@@ -114,6 +116,7 @@ impl<T> SymbolMap<T> {
         self.ascii
             .iter()
             .chain(self.utf8.iter())
+            .chain(self.bytes.iter())
             .filter_map(Option::as_ref)
     }
 
@@ -125,6 +128,7 @@ impl<T> SymbolMap<T> {
         match key.0 {
             SymbolId::Ascii(idx) => self.ascii.get(idx as usize),
             SymbolId::Utf8(idx) => self.utf8.get(idx as usize),
+            SymbolId::Bytes(idx) => self.bytes.get(idx as usize),
         }
     }
 
@@ -132,6 +136,7 @@ impl<T> SymbolMap<T> {
         match key.0 {
             SymbolId::Ascii(idx) => self.ascii.get_mut(idx as usize),
             SymbolId::Utf8(idx) => self.utf8.get_mut(idx as usize),
+            SymbolId::Bytes(idx) => self.bytes.get_mut(idx as usize),
         }
     }
 
@@ -150,6 +155,13 @@ impl<T> SymbolMap<T> {
                     self.utf8.resize_with(idx + 1, || None);
                 }
                 &mut self.utf8[idx]
+            }
+            SymbolId::Bytes(idx) => {
+                let idx = idx as usize;
+                if idx >= self.bytes.len() {
+                    self.bytes.resize_with(idx + 1, || None);
+                }
+                &mut self.bytes[idx]
             }
         }
     }
@@ -304,6 +316,10 @@ fn hash_value_structurally(value: &Value, hasher: &mut FxHasher) {
         }
         Value::Void => {
             6_u8.hash(hasher);
+        }
+        Value::InstanceName(name) => {
+            7_u8.hash(hasher);
+            name.hash(hasher);
         }
     }
 }
@@ -1421,5 +1437,53 @@ mod proptests {
             fb.retract(tmpl_id);
             prop_assert_eq!(fb.len(), baseline_len);
         }
+    }
+}
+
+#[cfg(test)]
+mod byte_value_tests {
+    use super::*;
+    use crate::{FerricString, InstanceName, StringEncoding, SymbolTable};
+
+    #[test]
+    fn byte_fact_fingerprints_preserve_types_and_retraction_indexes() {
+        let mut symbols = SymbolTable::new();
+        let relation = symbols
+            .intern_symbol_bytes(b"row\xff", StringEncoding::Utf8)
+            .unwrap();
+        let atom = symbols
+            .intern_symbol_bytes(b"\xc3", StringEncoding::Utf8)
+            .unwrap();
+        let name = Value::InstanceName(InstanceName::from_symbol(atom));
+        let make = |value| {
+            Fact::Ordered(OrderedFact {
+                relation,
+                fields: smallvec::smallvec![value],
+            })
+        };
+        let mut facts = FactBase::new();
+        let FactInsertionResult::Inserted(named) = facts.assert_fact(make(name.clone()), false)
+        else {
+            panic!("first insert")
+        };
+        assert_eq!(
+            facts.assert_fact(make(name), false),
+            FactInsertionResult::Duplicate(named)
+        );
+        let FactInsertionResult::Inserted(symbolic) =
+            facts.assert_fact(make(Value::Symbol(atom)), false)
+        else {
+            panic!("distinct symbol")
+        };
+        let string =
+            Value::String(FerricString::from_bytes(b"\xc3", StringEncoding::Utf8).unwrap());
+        assert!(matches!(
+            facts.assert_fact(make(string), false),
+            FactInsertionResult::Inserted(_)
+        ));
+        assert_eq!(facts.facts_by_relation(relation).count(), 3);
+        facts.retract(named);
+        facts.retract(symbolic);
+        assert_eq!(facts.facts_by_relation(relation).count(), 1);
     }
 }

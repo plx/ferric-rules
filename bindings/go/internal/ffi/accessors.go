@@ -47,3 +47,11 @@ func MakeConfig(encoding StringEncoding, strategy ConflictStrategy, maxCallDepth
 	}
 	return &c
 }
+
+// ValueGetBytes copies the byte-span lexeme payload into a lossless Go string.
+func ValueGetBytes(v *Value) string {
+	if v.multifield_len == 0 {
+		return ""
+	}
+	return string(unsafe.Slice((*byte)(unsafe.Pointer(v.string_ptr)), v.multifield_len))
+}

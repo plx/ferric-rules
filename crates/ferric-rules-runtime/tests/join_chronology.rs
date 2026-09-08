@@ -42,7 +42,7 @@ fn fire_gate(engine: &mut Engine, expected: &str, count: usize) {
     let result = engine.run(RunLimit::Unlimited).unwrap();
     assert_eq!(result.rules_fired, count);
     assert!(engine.action_diagnostics().is_empty());
-    assert_eq!(engine.get_output("t"), Some(expected));
+    assert_eq!(engine.get_output("t").unwrap(), Some(expected));
     engine.clear_output_channel("t");
     engine.retract(gate).unwrap();
     #[cfg(debug_assertions)]
@@ -129,5 +129,5 @@ fn joined_predicate_matches_follow_the_same_creation_order() {
     )
     .unwrap();
     assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 2);
-    assert_eq!(engine.get_output("t"), Some("a 8\nb 3\n"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("a 8\nb 3\n"));
 }

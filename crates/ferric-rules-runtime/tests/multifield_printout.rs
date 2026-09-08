@@ -6,7 +6,7 @@
 //! a claim of CLIPS parity for those separate functions.
 
 use ferric_rules_core::Value;
-use ferric_rules_runtime::{Engine, EngineConfig, HaltReason, RunLimit};
+use ferric_rules_runtime::{Engine, EngineConfig, HaltReason, HostValue, RunLimit};
 
 fn engine(source: &str) -> Engine {
     let mut engine = Engine::new(EngineConfig::utf8());
@@ -33,7 +33,9 @@ fn global_string<'a>(engine: &'a Engine, name: &str) -> &'a str {
             engine.get_global(name)
         )
     };
-    value.as_str()
+    value
+        .as_str()
+        .expect("fixture STRING must contain valid UTF-8")
 }
 
 #[test]
@@ -64,8 +66,8 @@ fn both_print_paths_preserve_actual_field_types_values_and_void_return() {
     assert!(matches!(engine.get_global("result"), Some(Value::Void)));
     let line = "(\"\" \"a\"b\" \"a\\b\" 9007199254740993 -0.0 two words)\n";
     assert_eq!(
-        engine.get_output("t"),
-        Some(format!("{line}{line}").as_str())
+        engine.get_output_bytes("t"),
+        Some(format!("{line}{line}").as_bytes())
     );
 }
 
@@ -92,7 +94,7 @@ fn raw_string_bytes_are_only_surrounded_by_quotes_inside_a_multifield() {
         assert_eq!(global_string(&engine, "text").as_bytes(), text.as_bytes());
         let line = format!("[{text}]|(\"{text}\")\n");
         assert_eq!(
-            engine.get_output("t").unwrap().as_bytes(),
+            engine.get_output_bytes("t").unwrap(),
             format!("{line}{line}").as_bytes()
         );
     }
@@ -125,8 +127,8 @@ fn finite_float_spelling_keeps_the_underlying_bits_in_both_print_paths() {
         );
         let line = format!("{expected}|({expected})\n");
         assert_eq!(
-            engine.get_output("t"),
-            Some(format!("{line}{line}").as_str())
+            engine.get_output_bytes("t"),
+            Some(format!("{line}{line}").as_bytes())
         );
     }
 }
@@ -150,8 +152,8 @@ fn integer_fields_never_pass_through_float_formatting() {
         ]
     ));
     assert_eq!(
-        engine.get_output("t"),
-        Some("(-9223372036854775808 9223372036854775807 9007199254740993)\n")
+        engine.get_output_bytes("t"),
+        Some(b"(-9223372036854775808 9223372036854775807 9007199254740993)\n".as_slice())
     );
 }
 
@@ -177,8 +179,8 @@ fn control_symbols_expand_only_at_top_level_and_are_not_retyped() {
         assert_eq!(engine.resolve_core_symbol(*symbol), Some(name));
         let line = format!("[{control}]|({name})\n");
         assert_eq!(
-            engine.get_output("t"),
-            Some(format!("{line}{line}").as_str())
+            engine.get_output_bytes("t"),
+            Some(format!("{line}{line}").as_bytes())
         );
     }
 }
@@ -198,8 +200,8 @@ fn formatting_does_not_repeat_operand_effects() {
         Some(Value::Integer(12))
     ));
     assert_eq!(
-        engine.get_output("t"),
-        Some("[(\"a\" \"two words\")|plain words]\n")
+        engine.get_output_bytes("t"),
+        Some(b"[(\"a\" \"two words\")|plain words]\n".as_slice())
     );
 }
 
@@ -208,7 +210,10 @@ fn action_only_println_keeps_its_newline_and_uses_the_same_field_mode() {
     // println is a Ferric convenience action, not a CLIPS comparator/builtin claim.
     let mut engine = engine(r#"(defrule exercise => (println "raw " (create$ "two words")))"#);
     run(&mut engine);
-    assert_eq!(engine.get_output("t"), Some("raw (\"two words\")\n"));
+    assert_eq!(
+        engine.get_output_bytes("t"),
+        Some(b"raw (\"two words\")\n".as_slice())
+    );
 }
 
 #[test]
@@ -261,8 +266,8 @@ fn save_facts_keeps_escaped_string_fields_instead_of_printout_raw_quotes() {
     ));
     run(&mut engine);
     assert_eq!(
-        engine.get_output("t"),
-        Some("(\"a\"b\" \"a\\b\" \"two words\" 3.5)\n")
+        engine.get_output_bytes("t"),
+        Some(b"(\"a\"b\" \"a\\b\" \"two words\" 3.5)\n".as_slice())
     );
     let saved = std::fs::read_to_string(path).unwrap();
     assert!(
@@ -271,4 +276,118 @@ fn save_facts_keeps_escaped_string_fields_instead_of_printout_raw_quotes() {
             .any(|line| line == r#"(row "a\"b" "a\\b" "two words" 3.5)"#),
         "{saved:?}"
     );
+}
+
+// PR379 host-byte contract extensions, not newly executed CLIPS source oracles.
+// Direct CLIPS field spelling supplies the delimiters: STRING gets surrounding
+// quotes only inside a multifield, SYMBOL stays raw, INSTANCE-NAME gets brackets.
+// Payload bytes, including NUL and invalid UTF-8, must remain untouched.
+struct HostBytePrintCase {
+    text: &'static [u8],
+    symbol: &'static [u8],
+    name: &'static [u8],
+    line: &'static [u8],
+    valid_utf8_output: bool,
+}
+
+const HOST_BYTE_PRINT_CASES: &[HostBytePrintCase] = &[
+    HostBytePrintCase {
+        text: b"t\0\xff\"\\z",
+        symbol: b"s\0\xc3",
+        name: b"n\0\xff",
+        line: b"t\0\xff\"\\z|s\0\xc3|[n\0\xff]|(\"t\0\xff\"\\z\" s\0\xc3 [n\0\xff])\n",
+        valid_utf8_output: false,
+    },
+    HostBytePrintCase {
+        text: b"",
+        symbol: b"crlf\0tail",
+        name: b"crlf",
+        line: b"|crlf\0tail|[crlf]|(\"\" crlf\0tail [crlf])\n",
+        valid_utf8_output: true,
+    },
+];
+
+const HOST_BYTE_PRINT_SOURCE: &str = r#"
+    (defglobal ?*captured* = pending ?*result* = pending)
+    (deffunction emit (?text ?symbol ?name)
+      (printout t ?text "|" ?symbol "|" ?name "|"
+        (create$ ?text ?symbol ?name) crlf))
+    (defrule exercise (raw-payload ?text ?symbol ?name) =>
+      (bind ?*captured* (create$ ?text ?symbol ?name))
+      (printout t ?text "|" ?symbol "|" ?name "|"
+        ?*captured* crlf)
+      (bind ?*result* (emit ?text ?symbol ?name)))
+"#;
+
+fn host_byte_print_engine(case: &HostBytePrintCase) -> Engine {
+    let mut engine = engine(HOST_BYTE_PRINT_SOURCE);
+    let values: Vec<HostValue> = vec![
+        engine.create_string_bytes(case.text).unwrap().into(),
+        engine.symbol_value_bytes(case.symbol).unwrap(),
+        engine.instance_name_value_bytes(case.name).unwrap(),
+    ];
+    engine.assert_ordered("raw-payload", values).unwrap();
+    engine
+}
+
+fn assert_host_byte_print(engine: &Engine, case: &HostBytePrintCase) {
+    let Some(Value::Multifield(fields)) = engine.get_global("captured") else {
+        panic!("captured fields must retain an actual MULTIFIELD")
+    };
+    let [Value::String(text), Value::Symbol(symbol), Value::InstanceName(name)] = fields.as_slice()
+    else {
+        panic!("STRING, SYMBOL, and INSTANCE-NAME must retain distinct variants")
+    };
+    assert_eq!(text.as_bytes(), case.text);
+    assert_eq!(engine.resolve_core_symbol_bytes(*symbol), Some(case.symbol));
+    assert_eq!(
+        engine.resolve_core_symbol_bytes(name.as_symbol()),
+        Some(case.name)
+    );
+    assert!(matches!(engine.get_global("result"), Some(Value::Void)));
+    let expected = case.line.repeat(2);
+    assert_eq!(engine.get_output_bytes("t"), Some(expected.as_slice()));
+    if case.valid_utf8_output {
+        // NUL is valid UTF-8 and must not be mistaken for a terminator or error.
+        assert_eq!(
+            engine.get_output("t").unwrap().unwrap().as_bytes(),
+            expected
+        );
+    } else {
+        assert!(engine.get_output("t").is_err());
+    }
+    assert!(engine.action_diagnostics().is_empty());
+}
+
+#[test]
+fn host_byte_contract_preserves_raw_fields_in_action_and_callable_print_paths() {
+    for case in HOST_BYTE_PRINT_CASES {
+        let mut engine = host_byte_print_engine(case);
+        run(&mut engine);
+        assert_host_byte_print(&engine, case);
+    }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn host_byte_contract_preserves_pending_completed_print_state_in_all_formats() {
+    use ferric_rules_runtime::SerializationFormat;
+
+    for case in HOST_BYTE_PRINT_CASES {
+        let engine = host_byte_print_engine(case);
+        for &format in SerializationFormat::ALL {
+            let mut pending = Engine::deserialize(&engine.serialize(format).unwrap(), format)
+                .unwrap_or_else(|error| panic!("pending {format:?}: {error:?}"));
+            assert_eq!(pending.get_output_bytes("t"), None);
+            run(&mut pending);
+            assert_host_byte_print(&pending, case);
+            let mut completed = Engine::deserialize(&pending.serialize(format).unwrap(), format)
+                .unwrap_or_else(|error| panic!("completed {format:?}: {error:?}"));
+            assert_host_byte_print(&completed, case);
+            let result = completed.run(RunLimit::Count(10)).unwrap();
+            assert_eq!(result.rules_fired, 0);
+            assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
+            assert_host_byte_print(&completed, case);
+        }
+    }
 }

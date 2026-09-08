@@ -54,7 +54,11 @@ const NativeFerricSymbol = native["FerricSymbol"] as any;
 const nativeContinueRun = native["__continueRun"] as NativeContinueRun;
 
 /** Shim the shared helper with this worker's native FerricSymbol constructor. */
-const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol);
+const wireToNative = (val: unknown): unknown => fromWireToNative(val, NativeFerricSymbol, {
+  FerricStringBytes: native["FerricStringBytes"] as any,
+  FerricSymbolBytes: native["FerricSymbolBytes"] as any,
+  FerricInstanceName: native["FerricInstanceName"] as any,
+});
 
 // ---------------------------------------------------------------------------
 // Engine state
@@ -257,6 +261,8 @@ function handleMethod(method: string, args: unknown[]): unknown {
       return undefined;
 
     // I/O
+    case "getOutputBytes":
+      return engine.getOutputBytes(args[0] as string);
     case "getOutput":
       return engine.getOutput(args[0] as string);
     case "clearOutput":

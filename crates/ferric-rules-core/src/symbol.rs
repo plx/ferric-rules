@@ -17,17 +17,38 @@ use crate::encoding::{EncodingError, StringEncoding};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Symbol(pub(crate) SymbolId);
 
-/// Internal symbol identifier, distinguishing ASCII and UTF-8 interning pools.
+/// An instance-name value with an interned, unbracketed spelling.
+/// This lexical identity does not imply that a COOL object exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct InstanceName(Symbol);
+
+impl InstanceName {
+    /// Wrap a core symbol identity without changing its spelling or ownership.
+    #[must_use]
+    pub const fn from_symbol(symbol: Symbol) -> Self {
+        Self(symbol)
+    }
+
+    /// Access the interned, unbracketed spelling identity.
+    #[must_use]
+    pub const fn as_symbol(self) -> Symbol {
+        self.0
+    }
+}
+
+/// Internal symbol identifier, distinguishing the encoding-specific pools.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum SymbolId {
     Ascii(u32),
     Utf8(u32),
+    Bytes(u32),
 }
 
 /// Symbol interning table with encoding awareness.
 ///
-/// Maintains two separate pools (ASCII and UTF-8) to support the
+/// Maintains text pools (ASCII and UTF-8) and an explicit byte pool to support the
 /// `AsciiSymbolsUtf8Strings` encoding mode, where symbols are ASCII-only
 /// even though strings may be UTF-8.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -41,13 +62,19 @@ pub struct SymbolTable {
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
     pub(crate) utf8_to_id: HashMap<Box<str>, u32>,
     pub(crate) utf8_strings: Vec<Box<str>>,
+
+    /// Invalid UTF-8 spellings admitted only through explicit byte APIs.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_helpers::fx_hash_map"))]
+    pub(crate) bytes_to_id: HashMap<Box<[u8]>, u32>,
+    pub(crate) bytes_strings: Vec<Box<[u8]>>,
 }
 
 /// An opaque rollback point for symbol interning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SymbolTableCheckpoint {
-    ascii_len: usize,
-    utf8_len: usize,
+    ascii: usize,
+    utf8: usize,
+    bytes: usize,
 }
 
 impl SymbolTable {
@@ -59,6 +86,8 @@ impl SymbolTable {
             ascii_strings: Vec::new(),
             utf8_to_id: HashMap::default(),
             utf8_strings: Vec::new(),
+            bytes_to_id: HashMap::default(),
+            bytes_strings: Vec::new(),
         }
     }
 
@@ -66,8 +95,9 @@ impl SymbolTable {
     #[must_use]
     pub fn checkpoint(&self) -> SymbolTableCheckpoint {
         SymbolTableCheckpoint {
-            ascii_len: self.ascii_strings.len(),
-            utf8_len: self.utf8_strings.len(),
+            ascii: self.ascii_strings.len(),
+            utf8: self.utf8_strings.len(),
+            bytes: self.bytes_strings.len(),
         }
     }
 
@@ -77,23 +107,31 @@ impl SymbolTable {
     /// any symbols from the discarded suffix are exposed to callers.
     pub fn restore(&mut self, checkpoint: SymbolTableCheckpoint) {
         assert!(
-            checkpoint.ascii_len <= self.ascii_strings.len()
-                && checkpoint.utf8_len <= self.utf8_strings.len(),
+            checkpoint.ascii <= self.ascii_strings.len()
+                && checkpoint.utf8 <= self.utf8_strings.len()
+                && checkpoint.bytes <= self.bytes_strings.len(),
             "symbol-table checkpoint is newer than the current table"
         );
-        while self.ascii_strings.len() > checkpoint.ascii_len {
+        while self.ascii_strings.len() > checkpoint.ascii {
             let symbol = self
                 .ascii_strings
                 .pop()
                 .expect("length check guarantees an ASCII symbol");
             self.ascii_to_id.remove(symbol.as_ref());
         }
-        while self.utf8_strings.len() > checkpoint.utf8_len {
+        while self.utf8_strings.len() > checkpoint.utf8 {
             let symbol = self
                 .utf8_strings
                 .pop()
                 .expect("length check guarantees a UTF-8 symbol");
             self.utf8_to_id.remove(symbol.as_ref());
+        }
+        while self.bytes_strings.len() > checkpoint.bytes {
+            let symbol = self
+                .bytes_strings
+                .pop()
+                .expect("length check guarantees a byte symbol");
+            self.bytes_to_id.remove(symbol.as_ref());
         }
     }
 
@@ -137,6 +175,7 @@ impl SymbolTable {
         match id {
             SymbolId::Ascii(i) => &self.ascii_strings[i as usize],
             SymbolId::Utf8(i) => self.utf8_strings[i as usize].as_bytes(),
+            SymbolId::Bytes(i) => &self.bytes_strings[i as usize],
         }
     }
 
@@ -146,17 +185,19 @@ impl SymbolTable {
     ///
     /// Panics if the `SymbolId` is not valid for this table.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn resolve_str(&self, id: SymbolId) -> Option<&str> {
         match id {
             SymbolId::Ascii(i) => std::str::from_utf8(&self.ascii_strings[i as usize]).ok(),
             SymbolId::Utf8(i) => Some(&self.utf8_strings[i as usize]),
+            SymbolId::Bytes(i) => std::str::from_utf8(&self.bytes_strings[i as usize]).ok(),
         }
     }
 
-    /// Returns the total number of interned symbols (across both pools).
+    /// Returns the total number of interned symbols (across all pools).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.ascii_strings.len() + self.utf8_strings.len()
+        self.ascii_strings.len() + self.utf8_strings.len() + self.bytes_strings.len()
     }
 
     /// Returns `true` if no symbols have been interned.
@@ -175,14 +216,53 @@ impl SymbolTable {
         self.resolve(sym.0)
     }
 
-    /// Resolve a [`Symbol`] to a `&str`, if possible.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `Symbol` is not valid for this table.
+    /// Resolve valid text, returning `None` for an unknown identity or invalid UTF-8.
+    /// Use `resolve_symbol_text` to distinguish these cases.
     #[must_use]
     pub fn resolve_symbol_str(&self, sym: Symbol) -> Option<&str> {
-        self.resolve_str(sym.0)
+        self.resolve_symbol_text(sym).ok().flatten()
+    }
+
+    /// Resolve exact spelling bytes, returning `None` for a dangling identity.
+    #[must_use]
+    pub fn resolve_symbol_bytes(&self, symbol: Symbol) -> Option<&[u8]> {
+        match symbol.0 {
+            SymbolId::Ascii(i) => self.ascii_strings.get(i as usize).map(AsRef::as_ref),
+            SymbolId::Utf8(i) => self
+                .utf8_strings
+                .get(i as usize)
+                .map(|text| text.as_bytes()),
+            SymbolId::Bytes(i) => self.bytes_strings.get(i as usize).map(AsRef::as_ref),
+        }
+    }
+
+    /// Resolve checked text, distinguishing unknown identities from invalid UTF-8.
+    pub fn resolve_symbol_text(&self, symbol: Symbol) -> Result<Option<&str>, std::str::Utf8Error> {
+        self.resolve_symbol_bytes(symbol)
+            .map(std::str::from_utf8)
+            .transpose()
+    }
+
+    /// Intern exact bytes, preserving valid-text identities and strict symbol modes.
+    pub fn intern_symbol_bytes(
+        &mut self,
+        bytes: &[u8],
+        encoding: StringEncoding,
+    ) -> Result<Symbol, EncodingError> {
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            return self.intern_symbol(text, encoding);
+        }
+        if encoding != StringEncoding::Utf8 {
+            return Err(EncodingError::NonAsciiSymbolBytes(bytes.to_vec()));
+        }
+        if let Some(&id) = self.bytes_to_id.get(bytes) {
+            return Ok(Symbol(SymbolId::Bytes(id)));
+        }
+        let id = u32::try_from(self.bytes_strings.len()).expect("symbol count exceeds u32");
+        let owned: Box<[u8]> = bytes.into();
+        self.bytes_to_id.insert(owned.clone(), id);
+        self.bytes_strings.push(owned);
+        Ok(Symbol(SymbolId::Bytes(id)))
     }
 
     /// Intern a symbol with encoding enforcement.
@@ -552,5 +632,61 @@ mod tests {
             .intern_symbol("hello", StringEncoding::AsciiSymbolsUtf8Strings)
             .unwrap();
         assert_eq!(table.resolve_symbol(sym), b"hello");
+    }
+}
+
+#[cfg(test)]
+mod byte_tests {
+    use super::*;
+
+    #[test]
+    fn byte_interning_is_canonical_and_rollback_covers_the_new_pool() {
+        let mut table = SymbolTable::new();
+        let text = table.intern_symbol("é", StringEncoding::Utf8).unwrap();
+        assert_eq!(
+            text,
+            table
+                .intern_symbol_bytes("é".as_bytes(), StringEncoding::Utf8)
+                .unwrap()
+        );
+        let retained = table
+            .intern_symbol_bytes(b"\xc3", StringEncoding::Utf8)
+            .unwrap();
+        let checkpoint = table.checkpoint();
+        let discarded = table
+            .intern_symbol_bytes(b"\xff", StringEncoding::Utf8)
+            .unwrap();
+        assert_eq!(table.resolve_symbol_bytes(discarded), Some(&b"\xff"[..]));
+        assert!(table.resolve_symbol_text(discarded).is_err());
+        assert_eq!(table.resolve_symbol_str(discarded), None);
+        table.restore(checkpoint);
+        assert_eq!(table.resolve_symbol_bytes(discarded), None);
+        assert_eq!(table.resolve_symbol_text(discarded).unwrap(), None);
+        assert_eq!(table.resolve_symbol_bytes(retained), Some(&b"\xc3"[..]));
+        assert_eq!(
+            retained,
+            table
+                .intern_symbol_bytes(b"\xc3", StringEncoding::Utf8)
+                .unwrap()
+        );
+        assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn strict_symbol_modes_reject_raw_spellings_without_interning() {
+        let mut table = SymbolTable::new();
+        for mode in [
+            StringEncoding::Ascii,
+            StringEncoding::AsciiSymbolsUtf8Strings,
+        ] {
+            assert!(table.intern_symbol_bytes(b"\xff", mode).is_err());
+            assert!(table.intern_symbol_bytes("é".as_bytes(), mode).is_err());
+        }
+        assert!(table.is_empty());
+        let symbol = table
+            .intern_symbol_bytes(b"name", StringEncoding::Ascii)
+            .unwrap();
+        let name = InstanceName::from_symbol(symbol);
+        assert_eq!(name.as_symbol(), symbol);
     }
 }

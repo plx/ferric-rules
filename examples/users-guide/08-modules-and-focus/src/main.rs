@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
     engine.push_focus("SENSORS")?;
     engine.run(RunLimit::Unlimited)?;
 
-    let output = engine.get_output("t").unwrap_or("");
+    let output = engine.get_output("t")?.unwrap_or("");
     print!("{output}");
 
     let sensors_first = output.find("SENSORS observed").unwrap_or(usize::MAX);

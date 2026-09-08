@@ -47,7 +47,7 @@ fn use_and_destroy_after_creator_thread_has_exited() {
         .unwrap();
     let first = engine.run(RunLimit::Count(1)).unwrap();
     assert_eq!(first.rules_fired, 1);
-    assert_eq!(engine.get_output("t"), Some("1|"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("1|"));
 
     thread::spawn(move || {
         let id = engine
@@ -56,7 +56,7 @@ fn use_and_destroy_after_creator_thread_has_exited() {
         let second = engine.run(RunLimit::Unlimited).unwrap();
         assert_eq!(second.rules_fired, 1);
         assert_eq!(second.halt_reason, HaltReason::AgendaEmpty);
-        assert_eq!(engine.get_output("t"), Some("1|2|"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("1|2|"));
         assert_eq!(engine.find_facts("recorded").unwrap().len(), 2);
         assert!(matches!(
             engine.get_global("count"),
@@ -66,7 +66,7 @@ fn use_and_destroy_after_creator_thread_has_exited() {
         assert!(engine.get_fact(id).unwrap().is_none());
         engine.reset().unwrap();
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("1|"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("1|"));
         drop(engine);
     })
     .join()
@@ -233,7 +233,7 @@ fn snapshots_and_restored_engines_can_cross_threads() {
         thread::spawn(move || {
             let mut restored = restored;
             assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-            assert_eq!(restored.get_output("t"), Some("1|2|"));
+            assert_eq!(restored.get_output("t").unwrap(), Some("1|2|"));
             assert!(matches!(
                 restored.get_global("count"),
                 Some(Value::Integer(2))
@@ -288,7 +288,7 @@ fn shared_engine_reads_can_overlap_without_a_host_mutex() {
                             .count(),
                         1
                     );
-                    assert_eq!(engine.get_output("t"), Some("1|"));
+                    assert_eq!(engine.get_output("t").unwrap(), Some("1|"));
                     assert!(matches!(
                         engine.get_global("count"),
                         Some(Value::Integer(1))
@@ -306,7 +306,7 @@ fn shared_engine_reads_can_overlap_without_a_host_mutex() {
                             .assert_template("item", &["number"], vec![Value::Integer(2)])
                             .unwrap();
                         assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-                        assert_eq!(restored.get_output("t"), Some("1|2|"));
+                        assert_eq!(restored.get_output("t").unwrap(), Some("1|2|"));
                     }
                 }
             });

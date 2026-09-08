@@ -13,7 +13,10 @@ fn validate_workload(source: &str, n_blockers: usize) {
         support::template_symbols(&engine, "phase", "name"),
         ["clear"]
     );
-    assert_eq!(engine.get_output("t"), Some("Signal clear\n"));
+    assert_eq!(
+        engine.get_output("t").expect("fixture output is UTF-8"),
+        Some("Signal clear\n")
+    );
 }
 
 /// Negative node pressure benchmark.

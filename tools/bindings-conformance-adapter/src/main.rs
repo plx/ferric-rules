@@ -53,11 +53,19 @@ fn normalize_value(value: &Value, engine: &Engine) -> JsonValue {
         Value::Void => json!({"type": "void"}),
         Value::Integer(value) => json!({"type": "integer", "value": value.to_string()}),
         Value::Float(value) => json!({"type": "float", "value": value.to_string()}),
-        Value::Symbol(symbol) => json!({
-            "type": "symbol",
-            "value": engine.resolve_core_symbol(*symbol).unwrap_or("<unknown>")
-        }),
-        Value::String(value) => json!({"type": "string", "value": value.as_str()}),
+        Value::Symbol(symbol) => normalize_lexeme(
+            "symbol",
+            engine
+                .resolve_core_symbol_bytes(*symbol)
+                .expect("fact symbol belongs to this engine"),
+        ),
+        Value::String(value) => normalize_lexeme("string", value.as_bytes()),
+        Value::InstanceName(name) => normalize_lexeme(
+            "instance_name",
+            engine
+                .resolve_core_symbol_bytes(name.as_symbol())
+                .expect("fact name belongs to this engine"),
+        ),
         Value::Multifield(values) => json!({
             "type": "multifield",
             "value": values
@@ -67,6 +75,13 @@ fn normalize_value(value: &Value, engine: &Engine) -> JsonValue {
                 .collect::<Vec<_>>()
         }),
         Value::ExternalAddress(_) => json!({"type": "external_address"}),
+    }
+}
+
+fn normalize_lexeme(kind: &str, bytes: &[u8]) -> JsonValue {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => json!({"type": kind, "value": text}),
+        Err(_) => json!({"type": kind, "bytes": bytes}),
     }
 }
 

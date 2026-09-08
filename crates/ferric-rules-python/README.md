@@ -65,7 +65,7 @@ application needs a stored sentinel. Conversion rejects unsupported objects and
 external identities explicitly. Host multifields are
 limited to 32 levels and 1,000,000 total values in an assertion.
 
-Returned symbol/string values use owned `Symbol`/`String` wrappers. Equality
+Returned SYMBOL, STRING, and INSTANCE-NAME values use owned `Symbol`, `String`, and `InstanceName` wrappers. Equality
 and hashing compare only wrappers of the same type and payload; neither equals
 a plain Python string. Use `.value` or `str(value)` when comparing host text.
 These rules also apply inside nested multifields and template slots. Owned
@@ -217,3 +217,7 @@ Ferric is available under either the
 [Apache License 2.0](https://github.com/plx/ferric-rules/blob/main/LICENSE-APACHE)
 or the [MIT License](https://github.com/plx/ferric-rules/blob/main/LICENSE-MIT),
 at your option. Both license texts are included in every distribution.
+
+`String`, `Symbol`, and `InstanceName` accept `str` or `bytes`, retain exact immutable bytes through `.bytes`, and expose `.value`/`str(value)` using checked UTF-8 decoding. Invalid bytes raise `UnicodeDecodeError` on text access. `Engine.get_output_bytes(channel)` returns exact bytes; `get_output(channel)` performs the same checked decoding. The three wrapper types remain distinct in facts and all snapshot codecs.
+
+Instance-name values retain their type and bytes without creating COOL objects. Use `instance-namep` or the binding's distinct value type for classification. `type` and restricted generic dispatch on a missing instance report an action error and stop later actions. The runtime conversions accept either symbol or name values; CLIPS's additional static restriction on certain literal conversion calls is not enforced yet.

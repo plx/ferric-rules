@@ -5,6 +5,8 @@ use std::fmt::Write as _;
 
 use ferric_rules_core::{SymbolTable, Value};
 
+use crate::byte_buffer::ByteBuffer;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Context {
     TopLevel,
@@ -13,36 +15,46 @@ enum Context {
 
 /// Append one printout operand. Control SYMBOLs expand only at the top level;
 /// STRING fields in multifields use raw quotes, without escaping their contents.
-pub(crate) fn append_printout_value(value: &Value, symbols: &SymbolTable, output: &mut String) {
+pub(crate) fn append_printout_value(value: &Value, symbols: &SymbolTable, output: &mut ByteBuffer) {
     append_value(value, symbols, output, Context::TopLevel);
 }
 
-fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, context: Context) {
+fn append_value(value: &Value, symbols: &SymbolTable, output: &mut ByteBuffer, context: Context) {
     match value {
         Value::Integer(number) => {
             let _ = write!(output, "{number}");
         }
         Value::Float(number) => append_float(*number, output),
         Value::Symbol(symbol) => {
-            if let Some(name) = symbols.resolve_symbol_str(*symbol) {
-                if context == Context::TopLevel {
-                    match name {
-                        "crlf" => output.push('\n'),
-                        "tab" => output.push('\t'),
-                        "vtab" => output.push('\x0b'),
-                        "ff" => output.push('\x0c'),
-                        other => output.push_str(other),
-                    }
-                } else {
-                    output.push_str(name);
+            let name = symbols
+                .resolve_symbol_bytes(*symbol)
+                .expect("validated symbol");
+            if context == Context::TopLevel {
+                match name {
+                    b"crlf" => output.push('\n'),
+                    b"tab" => output.push('\t'),
+                    b"vtab" => output.push('\x0b'),
+                    b"ff" => output.push('\x0c'),
+                    other => output.push_bytes(other),
                 }
+            } else {
+                output.push_bytes(name);
             }
+        }
+        Value::InstanceName(name) => {
+            output.push('[');
+            output.push_bytes(
+                symbols
+                    .resolve_symbol_bytes(name.as_symbol())
+                    .expect("validated instance name"),
+            );
+            output.push(']');
         }
         Value::String(string) => {
             if context == Context::Field {
                 output.push('"');
             }
-            output.push_str(string.as_str());
+            output.push_bytes(string.as_bytes());
             if context == Context::Field {
                 output.push('"');
             }
@@ -67,7 +79,7 @@ fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, conte
 /// CLIPS 6.30 `FloatToString` uses `%.15g` and appends `.0` when the result has
 /// neither a decimal point nor an exponent. Round once in scientific notation
 /// so the notation decision uses the rounded exponent, including cutovers.
-fn append_float(value: f64, output: &mut String) {
+fn append_float(value: f64, output: &mut ByteBuffer) {
     if value.is_nan() {
         output.push_str("nan.0");
         return;

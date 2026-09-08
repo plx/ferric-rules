@@ -23,6 +23,8 @@ export type {
   FactId,
   FactIdInput,
   WireSymbolObject,
+  WireByteLexemeObject,
+  FerricByteLexemeInstance,
   RunResult,
   FiredRule,
   RuleInfo,
@@ -61,6 +63,9 @@ export {
 export {
   Engine,
   FerricSymbol,
+  FerricStringBytes,
+  FerricSymbolBytes,
+  FerricInstanceName,
 } from "./native";
 
 export type {

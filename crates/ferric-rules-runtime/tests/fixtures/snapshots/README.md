@@ -23,9 +23,35 @@ construct with `Engine::with_rules`, set focus to `WORK`, run exactly one firing
 then call `serialize(SerializationFormat::Cbor)`. At this checkpoint item 3 is
 `done`, global `seen` is 1, item 1 is pending, and item 2 is blocked.
 
-The committed-byte regression resumes item 1, retracts item 2's blocker and resumes
-it, checks exact output/global/final facts and quiescence, then resets and reruns
-the named seeds. Host handles are freshly queried after restore. This fixture
-records the supported versioned layout; a future incompatible layout needs a
-new envelope version or an explicit migration, rather than silently replacing
-this fixture to accept previously unreadable persisted data.
+The source regression resumes item 1, retracts item 2's blocker and resumes it,
+checks exact output/global/final facts and quiescence, then resets and reruns
+the named seeds using current snapshots. The sealed version-one bytes are now
+an explicit rejection control. An incompatible layout needs a new envelope
+version or an explicit migration; old fixtures are never silently replaced.
+
+## Schema 6: byte lexemes and typed instance names
+
+Schema 6 is the current layout. Versions 2–5 are reserved by other incompatible
+compatibility branches; this prerequisite uses a distinct version. All versions
+1–5 are rejected before decoding payloads. The sealed `schema-1.cbor` and
+`legacy-raw.cbor` bytes remain unchanged as explicit rejection controls; the
+schema-1 source still exercises its behavior through newly produced snapshots.
+
+`schema-6.clp` supplies a typed INSTANCE-NAME template, a `[seed]` literal and
+one pending capture rule. The generator additionally asserts one payload with
+STRING bytes `61 00 ff 7a`, SYMBOL bytes `73 ff` and INSTANCE-NAME bytes `6e ff`.
+It runs one activation, leaving `TRUE\n` in the router. Restore runs
+the remaining capture, checks exact raw output and three distinct global value
+types, retracts the host fact and resets/replays the source seed. The same source
+protocol is exercised with every codec.
+
+Regenerate this unpublished layout deliberately with:
+
+```sh
+cargo test -p ferric-rules-runtime --all-features --lib \
+  serialization::tests::generate_schema_six_fixture -- --ignored --exact
+```
+
+The schema now includes the interned byte pool, distinct INSTANCE-NAME values,
+byte-string representation, and byte router/event payloads. Text access is
+checked; snapshots do not substitute escaped or replacement text for bytes.

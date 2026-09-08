@@ -31,7 +31,7 @@ The same rendering applies inside deffunctions and methods and to Ferric's
 RHS `println`, which adds a newline.
 
 Printed STRING fields retain literal embedded quotes, backslashes, control
-characters, and UTF8 bytes. CLIPS `implode$` instead escapes embedded quotes
+characters, and raw bytes. CLIPS `implode$` instead escapes embedded quotes
 and backslashes; its separate compatibility repair is tracked in
 [#344](https://github.com/plx/ferric-rules/issues/344). SYMBOL fields remain
 literal, including `crlf`, `tab`, `vtab`, and `ff`. Those four symbols expand
@@ -44,10 +44,11 @@ FLOATs include `.0`; nonfinite spellings are `nan.0`, `inf.0`, and `-inf.0`.
 INTEGER spelling remains exact. These rules do not change `str-cat`,
 `sym-cat`, `format`, or `save-facts` formatting.
 
-Typed INSTANCE-NAME and FACT-ADDRESS print forms remain representation gaps;
+STRING and SYMBOL payloads retain NUL and invalid UTF8 bytes. INSTANCE-NAME
+values print as bracketed raw name bytes, at the top level and inside
+multifields. Typed FACT-ADDRESS print forms remain a representation gap;
 INTEGERs are printed as integers and host ExternalAddress values retain an
-opaque placeholder. This output contract does not cover arbitrary invalid
-UTF8 strings or general source round-tripping.
+opaque placeholder. General source round-tripping is a separate contract.
 
 ## Conflict Resolution
 
@@ -61,6 +62,30 @@ Depth and breadth use activation creation order and match the pinned reference c
 | MEA      | First-pattern recency, then LEX tiebreak. |
 
 Not implemented: Simplicity, Complexity, Random.
+
+## Predicate Sorting
+
+`sort` invokes its comparator and accepts scalar or multifield arguments:
+`(sort > 3 (create$ 1 2))` returns `(1 2 3)`, while `<` gives descending order.
+Only the actual symbol `FALSE` keeps the left field before the right field;
+other results, including zero and a Void predicate result, request exchange.
+Stable merge traversal preserves equal-key input order when the predicate
+returns `FALSE` for ties, and makes comparator calls in a defined order. Data expressions run once before comparisons, and
+empty or singleton inputs do not invoke the comparator.
+
+The comparator must be an unqualified symbol naming a supported visible
+builtin, deffunction or generic. Missing names and incompatible builtin or
+deffunction arity return `FALSE`, skip data and record a nonfatal diagnostic.
+Fatal expression or predicate errors stop subsequent rule actions, but may
+still carry a partial value into an enclosing assignment. Diagnostic presence
+alone does not distinguish these outcomes; inspect the run's halt reason.
+
+The value layer supports `INSTANCE-NAME` and byte lexemes, including strings
+that are not valid UTF-8. This does not require reproducing the pinned CLIPS
+process fault for Void used as a data field. The CLIPS-valid
+`(sort bind c b a)` callback remains an unsupported local-binding/special-form
+invocation; comparator metadata does not imply parity for every builtin.
+Malformed source bind targets are a separate parsed-variable restriction.
 
 ## Known Differential Gaps
 

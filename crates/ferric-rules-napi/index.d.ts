@@ -199,6 +199,8 @@ export declare class Engine {
    * Returns `null` if the channel has no captured output.
    */
   getOutput(channel: string): string | null
+  /** Retrieve exact captured bytes without UTF-8 decoding. */
+  getOutputBytes(channel: string): Uint8Array | null
   /** Clear captured output for a channel. */
   clearOutput(channel: string): void
   /** Push a line of input for `read`/`readline` to consume. */
@@ -237,4 +239,31 @@ export declare class FerricSymbol {
   toString(): string
   /** Return the symbol name (for JS `valueOf` protocol). */
   valueOf(): string
+}
+/** A typed CLIPS lexeme containing exact bytes. */
+export declare class FerricStringBytes {
+  constructor(bytes: Uint8Array)
+  /** A fresh copy of the exact payload. */
+  get bytes(): Uint8Array
+  /** Checked UTF-8; invalid bytes produce `FerricEncodingError`. */
+  get value(): string
+  toString(): string
+}
+/** A typed CLIPS lexeme containing exact bytes. */
+export declare class FerricSymbolBytes {
+  constructor(bytes: Uint8Array)
+  /** A fresh copy of the exact payload. */
+  get bytes(): Uint8Array
+  /** Checked UTF-8; invalid bytes produce `FerricEncodingError`. */
+  get value(): string
+  toString(): string
+}
+/** A typed CLIPS lexeme containing exact bytes. */
+export declare class FerricInstanceName {
+  constructor(bytes: Uint8Array)
+  /** A fresh copy of the exact payload. */
+  get bytes(): Uint8Array
+  /** Checked UTF-8; invalid bytes produce `FerricEncodingError`. */
+  get value(): string
+  toString(): string
 }

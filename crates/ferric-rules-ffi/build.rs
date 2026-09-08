@@ -113,11 +113,14 @@ pub const HEADER_PREAMBLE: &str = r"/*
  *    the first NUL. Hosts starting from length-bearing strings
  *    must reject embedded NUL before calling those entry points;
  *    ferric_value_symbol_bytes() and ferric_value_string_bytes()
- *    provide checked value construction. Legacy FerricValue
- *    egress rejects unrepresentable Symbol/String data with
- *    FERRIC_ERROR_INVALID_ARGUMENT. Borrowed output returns NULL
- *    and records that error; ferric_engine_get_output_copy()
- *    preserves all bytes and reports an authoritative length.
+ *    provide checked text construction. The explicit _raw
+ *    constructors preserve arbitrary bytes. FerricValue egress
+ *    uses STRING_BYTES/SYMBOL_BYTES for non-text data, and the
+ *    distinct INSTANCE_NAME tag for unbracketed name bytes.
+ *    These tags use string_ptr with multifield_len as byte count.
+ *    Free them only with ferric_value_free(), not ferric_string_free().
+ *    Borrowed output rejects embedded NUL and invalid UTF-8;
+ *    ferric_engine_get_output_copy() preserves every byte.
  *
  * 10. Bounds annotations: Pointer parameters and struct fields
  *    carry FERRIC_COUNTED_BY, FERRIC_SIZED_BY, and
@@ -318,6 +321,9 @@ FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_STRING == 4, "FERRIC_VALUE_TYPE_STRING mu
 FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_MULTIFIELD == 5, "FERRIC_VALUE_TYPE_MULTIFIELD must be 5");
 FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS == 6,
                      "FERRIC_VALUE_TYPE_EXTERNAL_ADDRESS must be 6");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_STRING_BYTES == 7, "StringBytes tag must be 7");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_SYMBOL_BYTES == 8, "SymbolBytes tag must be 8");
+FERRIC_STATIC_ASSERT(FERRIC_VALUE_TYPE_INSTANCE_NAME == 9, "InstanceName tag must be 9");
 
 /* FerricStringEncoding: stable numeric values. */
 FERRIC_STATIC_ASSERT(FERRIC_STRING_ENCODING_ASCII == 0, "FERRIC_STRING_ENCODING_ASCII must be 0");
@@ -403,15 +409,24 @@ FERRIC_STATIC_ASSERT(FERRIC_SERIALIZATION_FORMAT_POSTCARD == 4,
 const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
     // ── Struct fields ──────────────────────────────────────────────────
     //
-    // FerricValue.string_ptr: NUL-terminated string when non-null.
-    (
-        "char *string_ptr;",
-        "char * FERRIC_NULL_TERMINATED string_ptr;",
-    ),
-    // FerricValue.multifield_ptr: array of multifield_len elements.
+    // string_ptr is either a C string or a byte span, selected by value_type;
+    // an unconditional NUL-termination annotation would misdescribe byte tags.
+    // multifield_len is also used by byte tags; only Multifield activates this pointer.
     (
         "struct FerricValue *multifield_ptr;",
-        "struct FerricValue *multifield_ptr FERRIC_COUNTED_BY(multifield_len);",
+        "struct FerricValue *multifield_ptr FERRIC_COUNTED_BY(value_type == FERRIC_VALUE_TYPE_MULTIFIELD ? multifield_len : 0);",
+    ),
+    (
+        "ferric_value_string_raw(const uint8_t *data,",
+        "ferric_value_string_raw(const uint8_t *data FERRIC_SIZED_BY(len),",
+    ),
+    (
+        "ferric_value_symbol_raw(const uint8_t *data,",
+        "ferric_value_symbol_raw(const uint8_t *data FERRIC_SIZED_BY(len),",
+    ),
+    (
+        "ferric_value_instance_name(const uint8_t *data,",
+        "ferric_value_instance_name(const uint8_t *data FERRIC_SIZED_BY(len),",
     ),
     // ── Return types ───────────────────────────────────────────────────
     //
@@ -650,6 +665,12 @@ const BOUNDS_ANNOTATIONS: &[(&str, &str)] = &[
 ];
 
 fn main() {
+    // The environment trigger below replaces Cargo's default package scan.
+    // cbindgen must also rerun for source and configuration changes, including
+    // documentation-only edits that appear in the generated C header.
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=cbindgen.toml");
+
     // Keep cbindgen's source parser on the authored `extern "C"` signatures
     // while Rust compilation expands those same items into generated panic
     // wrappers plus non-extern implementations.

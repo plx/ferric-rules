@@ -49,7 +49,10 @@ fn validate_string(source: &str, n: usize) {
         else {
             panic!("fragment text must be a string")
         };
-        assert_eq!(text.as_str(), format!("{word}-{}", &word[..3]));
+        assert_eq!(
+            text.as_str().expect("fixture string is UTF-8"),
+            format!("{word}-{}", &word[..3])
+        );
     }
 }
 

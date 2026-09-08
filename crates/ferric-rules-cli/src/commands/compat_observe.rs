@@ -24,7 +24,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 const SCHEMA_NAME: &str = "ferric.compat-observation";
-const SCHEMA_VERSION: u8 = 1;
+const SCHEMA_VERSION: u8 = 2;
 const DIAGNOSTIC_TAXONOMY_VERSION: u8 = 1;
 const MAX_FIXTURE_ID_BYTES: usize = 128;
 const MIN_NONCE_HEX_BYTES: usize = 32;
@@ -884,11 +884,14 @@ fn capture_state(engine: &Engine, run_result: Option<RunResult>) -> Result<Captu
     let channels = KNOWN_CHANNELS
         .iter()
         .map(|name| {
-            let output = engine.get_output(name);
+            let output = engine.get_output_bytes(name);
+            let data = output.unwrap_or_default();
+            let text = std::str::from_utf8(data).ok().map(str::to_owned);
             ChannelObservation {
                 name: (*name).to_string(),
                 present: output.is_some(),
-                text: output.unwrap_or_default().to_string(),
+                bytes: text.is_none().then(|| data.to_vec()),
+                text,
             }
         })
         .collect();
@@ -1014,16 +1017,24 @@ fn observe_fact(
 fn observe_value(engine: &Engine, value: &Value) -> Result<ValueObservation, String> {
     match value {
         Value::Symbol(symbol) => {
-            let value = engine
-                .resolve_core_symbol(*symbol)
+            let bytes = engine
+                .resolve_core_symbol_bytes(*symbol)
                 .ok_or_else(|| "fact value has an unresolved symbol".to_string())?;
             Ok(ValueObservation::Symbol {
-                value: value.to_string(),
+                data: LexemeObservation::new(bytes),
             })
         }
         Value::String(value) => Ok(ValueObservation::String {
-            value: value.as_str().to_string(),
+            data: LexemeObservation::new(value.as_bytes()),
         }),
+        Value::InstanceName(name) => {
+            let bytes = engine
+                .resolve_core_symbol_bytes(name.as_symbol())
+                .ok_or_else(|| "fact value has an unresolved instance name".to_string())?;
+            Ok(ValueObservation::InstanceName {
+                data: LexemeObservation::new(bytes),
+            })
+        }
         Value::Integer(value) => Ok(ValueObservation::Integer {
             value: value.to_string(),
         }),
@@ -1275,12 +1286,32 @@ struct SlotObservation {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 enum ValueObservation {
-    Symbol { value: String },
-    String { value: String },
-    Integer { value: String },
-    Float { value: String, bits: String },
-    Multifield { values: Vec<ValueObservation> },
-    ExternalAddress { external_type_id: u32, opaque: bool },
+    Symbol {
+        #[serde(flatten)]
+        data: LexemeObservation,
+    },
+    String {
+        #[serde(flatten)]
+        data: LexemeObservation,
+    },
+    InstanceName {
+        #[serde(flatten)]
+        data: LexemeObservation,
+    },
+    Integer {
+        value: String,
+    },
+    Float {
+        value: String,
+        bits: String,
+    },
+    Multifield {
+        values: Vec<ValueObservation>,
+    },
+    ExternalAddress {
+        external_type_id: u32,
+        opaque: bool,
+    },
     Void,
 }
 
@@ -1288,7 +1319,28 @@ enum ValueObservation {
 struct ChannelObservation {
     name: String,
     present: bool,
-    text: String,
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<Vec<u8>>,
+}
+
+/// Exactly one of value/bytes is populated; the CLIPS type remains explicit.
+#[derive(Serialize)]
+struct LexemeObservation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<Vec<u8>>,
+}
+
+impl LexemeObservation {
+    fn new(bytes: &[u8]) -> Self {
+        let value = std::str::from_utf8(bytes).ok().map(str::to_owned);
+        Self {
+            bytes: value.is_none().then(|| bytes.to_vec()),
+            value,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -1363,6 +1415,56 @@ struct Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observation_preserves_raw_lexeme_types_and_bytes() {
+        let mut engine = Engine::new(EngineConfig::default());
+        let payload = b"a\0\xff\xc3";
+        let string = Value::String(engine.create_string_bytes(payload).unwrap());
+        let symbol = engine.symbol_value_bytes(payload).unwrap();
+        let instance = engine.instance_name_value_bytes(payload).unwrap();
+        let fact = engine
+            .assert_ordered("raw", vec![string.into(), symbol, instance])
+            .unwrap();
+        let host_fact = engine.get_fact(fact).unwrap().unwrap();
+        let Fact::Ordered(ordered) = host_fact else {
+            panic!("expected ordered fact")
+        };
+        for (value, expected_type) in
+            ordered
+                .fields
+                .iter()
+                .zip(["string", "symbol", "instance-name"])
+        {
+            let observed = serde_json::to_value(observe_value(&engine, value).unwrap()).unwrap();
+            assert_eq!(observed["type"], expected_type);
+            assert_eq!(observed["bytes"], serde_json::json!([97, 0, 255, 195]));
+            assert!(observed.get("value").is_none());
+        }
+    }
+
+    #[test]
+    fn raw_output_observation_uses_bytes_without_fabricating_text() {
+        let mut engine = Engine::new(EngineConfig::default());
+        engine
+            .load_str("(defrule emit (raw ?x) => (printout t ?x))")
+            .unwrap();
+        engine.reset().unwrap();
+        let value = engine.create_string_bytes(b"a\xff").unwrap();
+        engine.assert_ordered("raw", value).unwrap();
+        let result = engine.run(RunLimit::Unlimited).unwrap();
+        let state = capture_state(&engine, Some(result)).unwrap();
+        let channel = state
+            .channels
+            .iter()
+            .find(|channel| channel.name == "t")
+            .unwrap();
+        let channel = serde_json::to_value(channel).unwrap();
+        assert_eq!(channel["text"], serde_json::Value::Null);
+        assert_eq!(channel["bytes"], serde_json::json!([97, 255]));
+        assert_eq!(engine.get_output_bytes("t"), Some(b"a\xff".as_slice()));
+        assert!(engine.get_output("t").is_err());
+    }
 
     #[test]
     fn sha256_parser_requires_lowercase_canonical_text() {

@@ -53,6 +53,7 @@ fn verify_snapshot(name: &str, bytes: &[u8], format: SerializationFormat) {
     assert_eq!(result.rules_fired, expected.len());
     let mut actual = restored
         .get_output("t")
+        .unwrap()
         .unwrap_or("")
         .lines()
         .map(str::to_owned)

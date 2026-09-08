@@ -1,0 +1,16 @@
+(deffunction show (?label ?value)
+ (printout t ?label ":" (integerp ?value) ":" (floatp ?value) ":"
+  (stringp ?value) ":" (symbolp ?value) ":[" ?value "]" crlf))
+(defrule probe =>
+ (show plain (string-to-field "red blue"))
+ (show module (string-to-field "MAIN::name rest"))
+ (show colon (string-to-field "a:b rest"))
+ (show semicolon (string-to-field "red;comment"))
+ (show paren (string-to-field "red(blue)"))
+ (show quote (string-to-field "red\"blue\""))
+ (show ampersand (string-to-field "a&b tail"))
+ (show pipe (string-to-field "a|b tail"))
+ (show tilde (string-to-field "a~b tail"))
+ (show backslash (string-to-field "a\\b tail"))
+ (show unicode (string-to-field "café tail"))
+)
