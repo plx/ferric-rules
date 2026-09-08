@@ -1,4 +1,4 @@
-;; More than sixteen candidates exercise indexed joins with dynamic positions.
+;; More than sixteen candidates cover dynamic-position joins and indexed descendants.
 (defglobal ?*left-arrival* = 0 ?*right-arrival* = 0 ?*indexed-left* = 0 ?*indexed-right* = 0)
 (deffacts input
   (key-before k0)

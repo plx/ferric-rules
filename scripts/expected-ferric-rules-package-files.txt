@@ -77,6 +77,8 @@ tests/fixtures/core/ordered_multifield_suffix_capture.clp
 tests/fixtures/core/ordered_multifield_suffix_capture.out
 tests/fixtures/core/ordered_multifield_three_captures.clp
 tests/fixtures/core/ordered_multifield_three_captures.out
+tests/fixtures/core/ordered_sequence_prefix_indexing.clp
+tests/fixtures/core/ordered_sequence_prefix_indexing.out
 tests/fixtures/core/ordered_single_wildcard_arity.clp
 tests/fixtures/core/ordered_single_wildcard_arity.out
 tests/fixtures/core/refraction.clp

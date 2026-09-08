@@ -14,7 +14,7 @@ use crate::alpha::{
 use crate::beta::{BetaNetwork, BetaNode, JoinTest, JoinTestType, RuleId, Salience};
 use crate::binding::{VarId, VarMap};
 use crate::fact::FactBase;
-use crate::rete::ReteNetwork;
+use crate::rete::{indexable_tests, ReteNetwork};
 use crate::sequence::SequencePattern;
 use crate::symbol::{Symbol, SymbolId};
 use crate::token::NodeId;
@@ -847,25 +847,20 @@ impl ReteCompiler {
             });
         }
 
-        // Request alpha memory indexing for equality join tests so that
-        // left activations can use O(1) hash lookups instead of full scans.
-        for test in &join_tests {
-            if pattern.sequence.is_none() && test.test_type == JoinTestType::Equal {
-                if let Some(mem) = rete.alpha.get_memory_mut(alpha_mem) {
-                    mem.request_index(test.alpha_slot, fact_base);
-                }
+        // Index only equality selectors that identify physical fact fields.
+        // The same selection is used during left and right activation.
+        for (alpha_slot, _) in indexable_tests(&join_tests, pattern.sequence.as_ref()) {
+            if let Some(mem) = rete.alpha.get_memory_mut(alpha_mem) {
+                mem.request_index(alpha_slot, fact_base);
             }
         }
 
-        // Request beta memory indexing on the parent for equality join tests so that
-        // right activations can use O(1) hash lookups instead of full parent-token scans.
-        if pattern.sequence.is_none() && current_parent != rete.beta.root_id() {
+        // Backfill parent indexes too, including when this rule is installed late.
+        if current_parent != rete.beta.root_id() {
             if let Some(parent_mem_id) = rete.beta.memory_id_for_node(current_parent) {
-                for test in &join_tests {
-                    if test.test_type == JoinTestType::Equal {
-                        if let Some(parent_mem) = rete.beta.get_memory_mut(parent_mem_id) {
-                            parent_mem.request_var_index(test.beta_var, &rete.token_store);
-                        }
+                for (_, beta_var) in indexable_tests(&join_tests, pattern.sequence.as_ref()) {
+                    if let Some(parent_mem) = rete.beta.get_memory_mut(parent_mem_id) {
+                        parent_mem.request_var_index(beta_var, &rete.token_store);
                     }
                 }
             }
