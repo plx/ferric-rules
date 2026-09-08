@@ -215,6 +215,30 @@ pre-1.0 corrections to previously silent behavior.
 
 ### Fact-query expressions
 
+Query members and ordinary aliases of their fact addresses can be used by RHS
+`retract`, `modify`, and `duplicate`. The current ordinary binding determines
+the target, including query members that shadow an LHS address and inner loop
+variables that shadow query members. Repeating a retraction of the same address
+is harmless; invalid targets still stop the rule with a diagnostic.
+
+Immediate `do-for-fact` and `do-for-all-facts` queries visit live facts in
+assertion order. They skip future facts removed by a body and can visit newly
+asserted facts. In multi-member queries, the last member varies first and an
+outer member remains selected while its inner members advance.
+`delayed-do-for-all-facts` selects all matching tuples before executing any
+body, so body effects cannot change its selection. Selected query members keep
+their original compact slot values even after retraction; their addresses
+remain distinct from subsequently asserted replacements, and `fact-existp`
+continues to report live working-memory membership. Retained compact values do
+not change the existing stale-address behavior of explicit introspection calls.
+
+Action-query traversal shares the configured action-loop budget: each visited
+member costs one iteration, and delayed queries also charge each selected body.
+This bounds selection before any delayed body executes and live loops that
+keep asserting facts. The chronology index and retained query records are
+transient or derived state; snapshots omit them and reconstruct chronology on
+first use. Existing Ferric halt/reset/clear action boundaries remain unchanged.
+
 RHS `do-for-fact`, `do-for-all-facts`, and `delayed-do-for-all-facts` actions
 support compact `?fact:slot` reads in their predicates and bodies, including
 single slots and multislots. Nested query members shadow and restore outer

@@ -1,0 +1,10 @@
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)) (item (value 20)))
+(defglobal ?*sum* = 0)
+(defrule probe =>
+  (do-for-fact ((?f item)) (= ?f:value 10)
+    (bind ?saved ?f) (modify ?saved (value 11)))
+  (do-for-fact ((?f item)) (= ?f:value 20)
+    (bind ?saved ?f) (duplicate ?saved (value 21)))
+  (do-for-all-facts ((?f item)) TRUE (bind ?*sum* (+ ?*sum* ?f:value)))
+  (printout t (length$ (find-all-facts ((?f item)) TRUE)) ":" ?*sum* crlf))

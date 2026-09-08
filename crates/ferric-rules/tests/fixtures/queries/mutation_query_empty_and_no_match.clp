@@ -1,0 +1,11 @@
+(deftemplate item (slot value))
+(deffacts seed (item (value 10)))
+(defglobal ?*count* = 0)
+(defrule probe =>
+  (do-for-fact ((?f item)) FALSE (bind ?*count* (+ ?*count* 1)))
+  (do-for-all-facts ((?f item)) FALSE (bind ?*count* (+ ?*count* 1)))
+  (delayed-do-for-all-facts ((?f item)) FALSE (bind ?*count* (+ ?*count* 1)))
+  (do-for-fact ((?f item)) TRUE (retract ?f))
+  (do-for-all-facts ((?f item)) TRUE (bind ?*count* (+ ?*count* 1)))
+  (delayed-do-for-all-facts ((?f item)) TRUE (bind ?*count* (+ ?*count* 1)))
+  (printout t ?*count* ":" (any-factp ((?f item)) TRUE) crlf))
