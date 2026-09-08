@@ -1,0 +1,8 @@
+query-shadow:2
+after-query:1
+loop-shadow:1
+after-loop:1
+progn-shadow:a
+progn-shadow:b
+after-progn:1
+rebind-visible
