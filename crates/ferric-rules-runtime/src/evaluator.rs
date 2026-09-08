@@ -4894,7 +4894,7 @@ fn builtin_string_to_field(
     // token before interning its result; do not clone an ignored input suffix.
     let token = scanned.token.into_owned();
     for notice in scanned.notices {
-        queue_string_to_field_notice(ctx, &notice, span);
+        queue_field_scan_notice(ctx, &notice, "string-to-field", span);
     }
     match string_to_field_token_value(ctx, token, span) {
         Ok(value) => Ok(value),
@@ -4921,6 +4921,27 @@ fn string_to_field_token_value(
 ) -> Result<Value, EvalError> {
     use crate::field_scanner::FieldToken;
 
+    match token {
+        FieldToken::Stop(_) => ctx
+            .symbol_table
+            .intern_symbol("EOF", ctx.config.string_encoding)
+            .map(Value::Symbol)
+            .map_err(|error| scanned_field_encoding_error(error, "string-to-field", span)),
+        FieldToken::Unknown { .. } => Ok(string_to_field_error_value(ctx)),
+        other => scanned_field_value(ctx, other, "string-to-field", span),
+    }
+}
+
+/// Convert a scanned field without changing a consumer's STOP/UNKNOWN policy.
+/// Consumers handle STOP before calling; non-atomic fields use scanner print forms.
+fn scanned_field_value(
+    ctx: &mut EvalContext<'_>,
+    token: crate::field_scanner::FieldToken<'_>,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> Result<Value, EvalError> {
+    use crate::field_scanner::FieldToken;
+
     let encoding = ctx.config.string_encoding;
     let converted = match token {
         FieldToken::Integer(value) => return Ok(Value::Integer(value)),
@@ -4936,11 +4957,6 @@ fn string_to_field_token_value(
             .map(|symbol| {
                 Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol))
             }),
-        FieldToken::Stop(_) => ctx
-            .symbol_table
-            .intern_symbol("EOF", encoding)
-            .map(Value::Symbol),
-        FieldToken::Unknown { .. } => return Ok(string_to_field_error_value(ctx)),
         other => FerricString::from_bytes(
             other
                 .non_atomic_print_form()
@@ -4950,17 +4966,26 @@ fn string_to_field_token_value(
         )
         .map(Value::String),
     };
-    converted.map_err(|error| EvalError::TypeError {
-        function: "string-to-field".into(),
+    converted.map_err(|error| scanned_field_encoding_error(error, function, span))
+}
+
+fn scanned_field_encoding_error(
+    error: impl std::fmt::Display,
+    function: &str,
+    span: Option<&SourceSpan>,
+) -> EvalError {
+    EvalError::TypeError {
+        function: function.into(),
         expected: "field permitted by the configured encoding".into(),
         actual: error.to_string(),
         span: span.cloned(),
-    })
+    }
 }
 
-fn queue_string_to_field_notice(
+fn queue_field_scan_notice(
     ctx: &mut EvalContext<'_>,
     notice: &crate::field_scanner::ScanNotice,
+    function: &str,
     span: Option<&SourceSpan>,
 ) {
     use crate::field_scanner::ScanNoticeChannel;
@@ -4976,7 +5001,7 @@ fn queue_string_to_field_notice(
     ctx.globals
         .push_diagnostic(EvalError::ScannerNotice(Box::new(
             ScannerNoticeDiagnostic {
-                function: "string-to-field".into(),
+                function: function.into(),
                 code: notice.code().into(),
                 channel: channel.into(),
                 message: notice.message().into(),
@@ -4986,70 +5011,62 @@ fn queue_string_to_field_notice(
         )));
 }
 
-/// Parse a string token as integer, float, or symbol.
-fn parse_string_as_value(
-    s: &str,
-    symbol_table: &mut SymbolTable,
-    encoding: StringEncoding,
-    function: &str,
-    span: Option<&SourceSpan>,
-) -> Result<Value, EvalError> {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        let sym = symbol_table
-            .intern_symbol("", encoding)
-            .map_err(|e| EvalError::TypeError {
-                function: function.to_string(),
-                expected: "encodable symbol".to_string(),
-                actual: format!("{e}"),
-                span: span.cloned(),
-            })?;
-        return Ok(Value::Symbol(sym));
-    }
-    if let Ok(n) = trimmed.parse::<i64>() {
-        return Ok(Value::Integer(n));
-    }
-    if let Ok(f) = trimmed.parse::<f64>() {
-        return Ok(Value::Float(f));
-    }
-    let sym = symbol_table
-        .intern_symbol(trimmed, encoding)
-        .map_err(|e| EvalError::TypeError {
-            function: function.to_string(),
-            expected: "encodable symbol".to_string(),
-            actual: format!("{e}"),
-            span: span.cloned(),
-        })?;
-    Ok(Value::Symbol(sym))
-}
-
-/// `explode$` / `str-explode` — split string by whitespace into multifield.
+/// `explode$` / `str-explode` scan STRING bytes into typed CLIPS fields.
 fn builtin_explode_mf(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
     span: Option<&SourceSpan>,
 ) -> Result<Value, EvalError> {
-    check_arity_exact("explode$", args, 1, span)?;
-    let val = eval_inner(ctx, &args[0])?;
-    let Value::String(s) = &val else {
-        return Err(EvalError::TypeError {
-            function: "explode$".to_string(),
-            expected: "STRING".to_string(),
-            actual: generic_value_type_name(&val).to_string(),
-            span: span.cloned(),
-        });
-    };
-    let mut result = ferric_rules_core::value::Multifield::new();
-    for word in checked_text(s.as_bytes(), "explode$", span)?.split_whitespace() {
-        result.push(parse_string_as_value(
-            word,
-            ctx.symbol_table,
-            ctx.config.string_encoding,
-            "explode$",
-            span,
-        )?);
+    use crate::field_scanner::{FieldScanner, FieldToken};
+
+    if let Err(error) = check_arity_exact("explode$", args, 1, span) {
+        return Ok(explode_field_failure(ctx, error));
     }
-    Ok(Value::Multifield(Box::new(result)))
+    let argument = match eval_inner(ctx, &args[0]) {
+        Ok(value) => value,
+        // Preserve the existing evaluator's non-local control protocol.
+        Err(error @ EvalError::ReturnControl { .. }) => return Err(error),
+        Err(error) => return Ok(explode_field_failure(ctx, error)),
+    };
+    // EnvArgTypeCheck observes EvaluationError after evaluating the operand.
+    // A sticky Halt alone neither skips literal scanning nor gets cleared here.
+    if ctx.globals.evaluation_error() {
+        return Ok(Value::Multifield(Box::default()));
+    }
+    let Value::String(text) = argument else {
+        return Ok(explode_field_failure(
+            ctx,
+            EvalError::TypeError {
+                function: "explode$".into(),
+                expected: "STRING".into(),
+                actual: generic_value_type_name(&argument).into(),
+                span: span.cloned(),
+            },
+        ));
+    };
+    let mut tokens = FieldScanner::clips_string(text.as_bytes());
+    let mut fields = ferric_rules_core::value::Multifield::new();
+    loop {
+        let scanned = tokens.next_token();
+        for notice in scanned.notices {
+            queue_field_scan_notice(ctx, &notice, "explode$", span);
+        }
+        if matches!(scanned.token, FieldToken::Stop(_)) {
+            break;
+        }
+        // StringToMultifield stores each non-atomic token's print form as a
+        // STRING, including UNKNOWN. STOP contributes no field, including EOF.
+        match scanned_field_value(ctx, scanned.token, "explode$", span) {
+            Ok(value) => fields.push(value),
+            Err(error) => return Ok(explode_field_failure(ctx, error)),
+        }
+    }
+    Ok(Value::Multifield(Box::new(fields)))
+}
+
+fn explode_field_failure(ctx: &mut EvalContext<'_>, error: EvalError) -> Value {
+    ctx.globals.push_halt_diagnostic(error);
+    Value::Multifield(Box::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -11579,3 +11596,7 @@ mod tests {
 #[cfg(test)]
 #[path = "evaluator/string_to_field_tests.rs"]
 mod string_to_field_tests;
+
+#[cfg(test)]
+#[path = "evaluator/explode_fields_tests.rs"]
+mod explode_fields_tests;

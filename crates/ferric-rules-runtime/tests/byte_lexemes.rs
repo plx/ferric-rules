@@ -191,23 +191,21 @@ fn instance_literals_match_typed_slots_and_predicates() {
 }
 
 #[test]
-fn legacy_scanners_and_text_identifiers_reject_invalid_utf8_explicitly() {
-    for expression in ["(explode$ ?value)", "(funcall ?value)"] {
-        let source = format!("(defrule check (input ?value) => {expression} (assert (after)))");
-        let mut engine = Engine::with_rules(&source).unwrap();
-        let raw = engine.create_string_bytes(b"\xff").unwrap();
-        engine.assert_ordered("input", [raw]).unwrap();
-        assert_eq!(
-            engine.run(RunLimit::Unlimited).unwrap().halt_reason,
-            HaltReason::ActionError,
-            "{expression}"
-        );
-        assert!(engine
-            .action_diagnostics()
-            .iter()
-            .any(|error| error.to_string().contains("UTF-8")));
-        assert!(engine.find_facts("after").unwrap().is_empty());
-    }
+fn text_identifiers_reject_invalid_utf8_explicitly() {
+    let mut engine =
+        Engine::with_rules("(defrule check (input ?value) => (funcall ?value) (assert (after)))")
+            .unwrap();
+    let raw = engine.create_string_bytes(b"\xff").unwrap();
+    engine.assert_ordered("input", [raw]).unwrap();
+    assert_eq!(
+        engine.run(RunLimit::Unlimited).unwrap().halt_reason,
+        HaltReason::ActionError,
+    );
+    assert!(engine
+        .action_diagnostics()
+        .iter()
+        .any(|error| error.to_string().contains("UTF-8")));
+    assert!(engine.find_facts("after").unwrap().is_empty());
 }
 
 #[test]

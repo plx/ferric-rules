@@ -33,3 +33,6 @@ scripts/musl_static_libgcc_linker.py text eol=lf
 
 # Keep native Rust target provenance byte-identical on Windows.
 crates/ferric-rules-cli/release-targets.json text eol=lf
+
+# Preserve the literal CRLF inside this CLIPS scanner input.
+crates/ferric-rules/tests/fixtures/stdlib/explode_ordinary_and_empty_fields.clp -text

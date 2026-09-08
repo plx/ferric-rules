@@ -811,7 +811,7 @@ tolerance. For example, `(= 0.0 1e-20)` returns FALSE and `(= -0.0 0.0)` returns
 | `lowcase` | Convert to lowercase (preserves type) | `(lowcase "HELLO")` => `"hello"` |
 | `str-compare` | Lexicographic comparison (-1, 0, or 1) | `(str-compare "a" "b")` => `-1` |
 | `string-to-field` | Read the first CLIPS field from STRING, SYMBOL, or INSTANCE-NAME bytes | `(string-to-field "42 trailing")` => `42` |
-| `explode$` | Split string by whitespace into multifield | `(explode$ "a b c")` => `(a b c)` |
+| `explode$`, `str-explode` | Scan STRING bytes into typed CLIPS fields | `(explode$ "a \"two words\" 3")` => `(a "two words" 3)` |
 | `funcall` | Call function by name at runtime | `(funcall + 1 2)` => `3` |
 
 `string-to-field` ignores the input after its first token and preserves INTEGER,
@@ -826,6 +826,19 @@ the final escape reaches EOF. These notices remain observable through action
 diagnostics and the `wwarning` or `werror` output channel while evaluation
 continues. Wrong argument count or type halts evaluation; an unknown scanner
 token instead returns the string `*** ERROR ***` without a diagnostic.
+
+`explode$` (also named `str-explode`) scans every field and returns a
+MULTIFIELD, preserving quoted strings, INTEGER/FLOAT distinctions, symbols,
+and instance names. Empty input returns an empty multifield. Variable and
+punctuation tokens become strings of their print forms; an unknown token
+becomes the string `<<<unprintable character>>>` and scanning continues.
+It shares the byte, escape, NUL, and nonfatal notice behavior described above,
+retaining earlier fields when a later quoted string is incomplete.
+
+Both aliases require exactly one STRING argument, evaluated once. Wrong
+argument count, wrong type, or an operand error yields an empty multifield
+and halts evaluation. SYMBOL and INSTANCE-NAME input values are not accepted
+by these aliases.
 
 ### Multifield Functions
 

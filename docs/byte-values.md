@@ -18,9 +18,11 @@ lookup.
 INSTANCE-NAME bytes, preserving the selected field's type and payload. Its
 quoted fields can return invalid UTF-8, including the partial-string result
 when a trailing escape reaches EOF. Scanner notices do not halt evaluation.
-The `explode$` scanner still rejects invalid UTF-8 input. Remaining scanner
-and formatting compatibility work for `explode$`, `read`, and `format` is
-tracked separately.
+`explode$` and its `str-explode` alias scan all fields from a STRING, preserving
+raw bytes and each field's type. Empty input produces an empty multifield;
+nonfatal scanner notices retain preceding fields and any partial quoted field.
+Both scanners stop at the first NUL byte. Remaining scanner and formatting
+compatibility work for `read` and `format` is tracked separately.
 The source parser still accepts text only: `save-facts` preserves byte values,
 but a saved file containing invalid UTF-8 cannot yet be read by `load-facts`.
 Dynamic symbol/name conversions accept either atom type, as CLIPS does. Ferric
