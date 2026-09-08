@@ -7,6 +7,8 @@
 # Preserve exact fixture output and source markers on Windows checkouts.
 crates/ferric-rules/tests/fixtures/**/*.clp text eol=lf
 crates/ferric-rules/tests/fixtures/**/*.out text eol=lf
+crates/ferric-rules-runtime/tests/fixtures/snapshots/*.clp text eol=lf
+crates/ferric-rules-runtime/tests/fixtures/snapshots/*.cbor -text
 
 # Keep checked-in text shipped by the Node package byte-identical on Windows.
 packages/ferric/package.json text eol=lf

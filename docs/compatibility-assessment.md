@@ -156,6 +156,16 @@ unsupported evidence is `pending/oracle-invalid:*`; the exact composed input
 is retained under `.ferric-compat/failures/`, when one exists, and
 `compat-run` exits nonzero.
 
+Ferric's raw `compat-observe` envelope is version 2. Valid UTF-8 lexemes retain
+`value` text; other STRING/SYMBOL/INSTANCE-NAME values carry a `bytes` array
+with the same semantic `type`. Raw channel output has `text: null` and a
+`bytes` array. The adapter never decodes those bytes with replacement.
+Projection still accepts version-1 observations. The current engine-neutral
+oracle v1 supports textual strings and symbols; it explicitly rejects byte
+values, instance names, and raw channels as unsupported evidence while
+retaining the raw envelope. These cases require byte-aware direct assertions
+until a separate oracle protocol revision supports their comparison.
+
 Diagnostics use taxonomy version 1 and retain their engine-native message
 alongside the canonical fields `phase`, `category`, and `continued`. The
 semantic mappings are `parse/syntax-error`, `load/construct-error`, and

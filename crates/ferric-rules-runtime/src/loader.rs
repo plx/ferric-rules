@@ -1280,6 +1280,7 @@ impl Engine {
                 } else {
                     match slot_def.allowed_types.as_ref().and_then(|types| types.first()) {
                     None | Some(SlotValueType::Symbol) => Value::Symbol(self.compile_symbol("nil")?),
+                    Some(SlotValueType::InstanceName) => Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(self.compile_symbol("nil")?)),
                     Some(SlotValueType::String) => Value::String(self.compile_string("")?),
                     Some(SlotValueType::Integer) => Value::Integer(0),
                     Some(SlotValueType::Float) => Value::Float(0.0),
@@ -1558,6 +1559,14 @@ impl Engine {
             LiteralKind::Float(f) => Some(Value::Float(*f)),
             LiteralKind::String(s) => self.warned_string_value(s, line, result),
             LiteralKind::Symbol(s) => self.warned_symbol_value(s, line, result),
+            LiteralKind::InstanceName(s) => {
+                self.warned_symbol_value(s, line, result).map(|v| match v {
+                    Value::Symbol(symbol) => {
+                        Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol))
+                    }
+                    _ => unreachable!(),
+                })
+            }
         }
     }
 
@@ -1700,6 +1709,12 @@ impl Engine {
             Atom::Float(f) => Some(Value::Float(*f)),
             Atom::String(s) => self.warned_string_value(s, line, result),
             Atom::Symbol(s) => self.warned_symbol_value(s, line, result),
+            Atom::InstanceName(s) => self.warned_symbol_value(s, line, result).map(|v| match v {
+                Value::Symbol(symbol) => {
+                    Value::InstanceName(ferric_rules_core::InstanceName::from_symbol(symbol))
+                }
+                _ => unreachable!(),
+            }),
             // Variables and connectives are not supported as fact values in Phase 1
             Atom::SingleVar(_) | Atom::MultiVar(_) | Atom::GlobalVar(_) | Atom::Connective(_) => {
                 None
@@ -4572,6 +4587,9 @@ impl Engine {
                 Atom::Float(f) => Some(PredicateOperand::Literal(LiteralKind::Float(*f))),
                 Atom::String(s) => Some(PredicateOperand::Literal(LiteralKind::String(s.clone()))),
                 Atom::Symbol(s) => Some(PredicateOperand::Literal(LiteralKind::Symbol(s.clone()))),
+                Atom::InstanceName(s) => Some(PredicateOperand::Literal(
+                    LiteralKind::InstanceName(s.clone()),
+                )),
                 Atom::SingleVar(name) | Atom::MultiVar(name) => {
                     Some(PredicateOperand::Variable(name.clone()))
                 }
@@ -4712,6 +4730,9 @@ impl Engine {
                 let sym = self.compile_symbol(s)?;
                 Ok(Some(AtomKey::Symbol(sym)))
             }
+            LiteralKind::InstanceName(s) => Ok(Some(AtomKey::InstanceName(
+                ferric_rules_core::InstanceName::from_symbol(self.compile_symbol(s)?),
+            ))),
             LiteralKind::String(s) => {
                 let fs = self.compile_string(s)?;
                 Ok(Some(AtomKey::String(fs)))
@@ -5279,7 +5300,9 @@ mod tests {
             {
                 assert!(matches!(ordered.fields[1], Value::Float(f) if (f - 3.14).abs() < 0.001));
             }
-            assert!(matches!(&ordered.fields[2], Value::String(s) if s.as_str() == "hello"));
+            assert!(
+                matches!(&ordered.fields[2], Value::String(s) if s.as_str().unwrap() == "hello")
+            );
             assert!(matches!(&ordered.fields[3], Value::Symbol(_)));
         } else {
             panic!("expected ordered fact");
@@ -6435,7 +6458,12 @@ mod tests {
 
         engine.reset().expect("reset");
         run_to_completion(&mut engine);
-        let output = engine.get_output("t").unwrap_or("").trim().to_string();
+        let output = engine
+            .get_output("t")
+            .unwrap()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         assert_eq!(output, "42");
     }
 
@@ -6461,7 +6489,7 @@ mod tests {
 
         engine.reset().expect("reset");
         run_to_completion(&mut engine);
-        let output = engine.get_output("t").unwrap_or("");
+        let output = engine.get_output("t").unwrap().unwrap_or("");
         assert!(
             output.contains("GOOD"),
             "expected valid rule to run after recovery, got: {output:?}"

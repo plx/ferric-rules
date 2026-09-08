@@ -232,7 +232,7 @@ func TestGetOutputEPreservesEmbeddedNULFromSnapshot(t *testing.T) {
 	for _, rawEntry := range buffers {
 		entry, entryOK := rawEntry.([]any)
 		if entryOK && len(entry) == 2 && entry[0] == "t" {
-			entry[1] = "a\x00b"
+			entry[1] = []int{97, 0, 98}
 			replaced = true
 			break
 		}

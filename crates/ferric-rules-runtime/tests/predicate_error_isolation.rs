@@ -78,7 +78,7 @@ fn assert_rhs_stops_with_valid_matches_pending(engine: &mut Engine) {
     assert_eq!(integer(engine, "plain"), 0);
     assert_eq!(integer(engine, "bad"), 0);
     assert_eq!(integer(engine, "calls"), 1);
-    assert_eq!(engine.get_output("t").unwrap_or(""), "");
+    assert_eq!(engine.get_output("t").unwrap().unwrap_or(""), "");
     assert_error(engine);
     assert_eq!(engine.agenda_len(), 2);
 }
@@ -91,7 +91,7 @@ fn host_assertion_isolates_error_for_both_candidate_orders() {
         assert_error(&engine);
         assert_eq!(engine.agenda_len(), 2, "good_first={good_first}");
         assert_valid_matches_run(&mut engine, 1);
-        assert_eq!(engine.get_output("t"), Some("GOOD\nPLAIN\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("GOOD\nPLAIN\n"));
         assert_eq!(engine.run(RunLimit::Count(10)).unwrap().rules_fired, 0);
     }
 }
@@ -102,7 +102,7 @@ fn rhs_halt_preserves_later_matches_for_the_next_run_in_both_orders() {
         let mut engine = setup(good_first, true, "3 1");
         assert_rhs_stops_with_valid_matches_pending(&mut engine);
         assert_valid_matches_run(&mut engine, 1);
-        assert_eq!(engine.get_output("t"), Some("GOOD\nPLAIN\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("GOOD\nPLAIN\n"));
         assert_eq!(engine.run(RunLimit::Count(10)).unwrap().rules_fired, 0);
     }
 }
@@ -124,7 +124,7 @@ fn three_field_recovery_still_admits_its_own_predicate_result() {
     }
     assert!(engine.action_diagnostics().is_empty());
     // This control pins membership, not unrelated same-salience tie order.
-    assert_eq!(engine.get_output("t").unwrap().lines().count(), 3);
+    assert_eq!(engine.get_output("t").unwrap().unwrap().lines().count(), 3);
     assert_eq!(engine.run(RunLimit::Count(10)).unwrap().rules_fired, 0);
 }
 
@@ -173,7 +173,7 @@ fn rhs_error_snapshots_preserve_second_run_activations_in_all_codecs() {
             assert_eq!(restored.agenda_len(), 2);
             assert_error(&restored);
             assert_valid_matches_run(&mut restored, 1);
-            assert_eq!(restored.get_output("t"), Some("GOOD\nPLAIN\n"));
+            assert_eq!(restored.get_output("t").unwrap(), Some("GOOD\nPLAIN\n"));
             assert_eq!(restored.run(RunLimit::Count(10)).unwrap().rules_fired, 0);
         }
     }

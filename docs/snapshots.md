@@ -25,8 +25,13 @@ of persisting a handle. See [host-api.md](host-api.md).
 
 ## Versions and application updates
 
-Schema 1 is the first versioned snapshot format. Builds supporting schema 1 must
-keep its meaning and pass the stored schema fixture and resume regressions.
+Schema 6 is the current format. It adds byte lexeme pools, typed instance names,
+and byte output buffers. Schemas 1–5 are rejected before payload decoding;
+versions 2–5 are reserved by other compatibility branches, and future combined
+layouts need a fresh version number. The current stored fixture and resume
+regressions cover the complete schema-6 layout. Schema 1 remains the first
+historical versioned format; its stored bytes are kept unchanged for rejection
+coverage.
 Changes to the serialized layout or runtime semantics that make an old state
 invalid require a schema-version change, a documented compatibility decision,
 and a fixture regression. Crate version and snapshot schema version are separate.
@@ -54,7 +59,7 @@ Every format uses the same binary envelope, including experimental JSON:
 | Bytes | Meaning |
 | --- | --- |
 | 0–7 | Magic `FERRIC\0S` |
-| 8–9 | Little-endian schema version (`1`) |
+| 8–9 | Little-endian schema version (`6`) |
 | 10 | Codec: bincode `0`, JSON `1`, CBOR `2`, MessagePack `3`, Postcard `4` |
 | 11 | Capability flags (`0`; unknown flags are rejected) |
 | 12–19 | Little-endian payload byte length |

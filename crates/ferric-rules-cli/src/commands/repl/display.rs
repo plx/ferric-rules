@@ -1,16 +1,16 @@
 //! Output formatting for the REPL: values, facts, errors.
 
+use std::io::Write;
+
 use ferric_rules_core::{Fact, Value};
 use ferric_rules_runtime::Engine;
 
 /// Format a [`Value`] for display in the REPL.
 pub(crate) fn format_value(value: &Value, engine: &Engine) -> String {
     match value {
-        Value::Symbol(sym) => engine
-            .resolve_core_symbol(*sym)
-            .unwrap_or("<unknown>")
-            .to_string(),
-        Value::String(s) => format!("\"{}\"", s.as_str()),
+        Value::Symbol(sym) => display_symbol(engine, *sym),
+        Value::InstanceName(name) => format!("[{}]", display_symbol(engine, name.as_symbol())),
+        Value::String(s) => format!("\"{}\"", display_bytes(s.as_bytes())),
         Value::Integer(i) => i.to_string(),
         Value::Float(f) => {
             if f.fract() == 0.0 {
@@ -30,11 +30,27 @@ pub(crate) fn format_value(value: &Value, engine: &Engine) -> String {
     }
 }
 
+// Interactive inspection escapes invalid bytes explicitly. Captured rule output
+// uses write_all below, so this diagnostic representation never changes data.
+fn display_bytes(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_string(),
+        Err(_) => bytes.escape_ascii().to_string(),
+    }
+}
+
+fn display_symbol(engine: &Engine, symbol: ferric_rules_core::Symbol) -> String {
+    engine
+        .resolve_core_symbol_bytes(symbol)
+        .map_or_else(|| "<unknown>".to_string(), display_bytes)
+}
+
 /// Print everything written to the `"t"` output channel, then clear it.
 pub(crate) fn print_output(engine: &mut Engine) {
-    if let Some(output) = engine.get_output("t") {
-        if !output.is_empty() {
-            print!("{output}");
+    if let Some(output) = engine.get_output_bytes("t") {
+        if let Err(error) = std::io::stdout().lock().write_all(output) {
+            eprintln!("Error writing output: {error}");
+            return;
         }
     }
     engine.clear_output_channel("t");
@@ -50,9 +66,7 @@ pub(crate) fn print_facts(engine: &Engine) {
                 let id_num = { id.as_raw() };
                 match fact {
                     Fact::Ordered(o) => {
-                        let relation = engine
-                            .resolve_core_symbol(o.relation)
-                            .unwrap_or("<unknown>");
+                        let relation = display_symbol(engine, o.relation);
                         print!("f-{id_num:<5}  ({relation}");
                         for field in &o.fields {
                             print!(" {}", format_value(field, engine));

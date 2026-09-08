@@ -196,6 +196,12 @@ pub enum FerricValueType {
     String = 4,
     Multifield = 5,
     ExternalAddress = 6,
+    /// Byte-preserving STRING transport; `string_ptr` has `multifield_len` bytes.
+    StringBytes = 7,
+    /// Byte-preserving SYMBOL transport; `string_ptr` has `multifield_len` bytes.
+    SymbolBytes = 8,
+    /// INSTANCE-NAME transport; unbracketed bytes in `string_ptr`/`multifield_len`.
+    InstanceName = 9,
 }
 
 impl FerricValueType {
@@ -215,6 +221,9 @@ impl FerricValueType {
             4 => Some(Self::String),
             5 => Some(Self::Multifield),
             6 => Some(Self::ExternalAddress),
+            7 => Some(Self::StringBytes),
+            8 => Some(Self::SymbolBytes),
+            9 => Some(Self::InstanceName),
             _ => None,
         }
     }
@@ -225,7 +234,7 @@ impl TryFrom<u32> for FerricValueType {
 
     fn try_from(raw: u32) -> Result<Self, Self::Error> {
         Self::from_raw(raw)
-            .ok_or_else(|| format!("invalid value_type discriminant: {raw} (expected 0..=6)"))
+            .ok_or_else(|| format!("invalid value_type discriminant: {raw} (expected 0..=9)"))
     }
 }
 
@@ -255,7 +264,15 @@ impl TryFrom<u32> for FerricValueType {
 /// | Symbol | `string_ptr` |
 /// | String | `string_ptr` |
 /// | Multifield | `multifield_ptr`, `multifield_len` |
-/// | ExternalAddress | `external_type_id`, `external_pointer` |
+/// | `ExternalAddress` | `external_type_id`, `external_pointer` |
+/// | `StringBytes` / `SymbolBytes` / `InstanceName` | `string_ptr`, `multifield_len` (byte count) |
+///
+/// The byte transport tags preserve the existing structure layout. Their
+/// `string_ptr` is a byte span, with no trailing NUL requirement; a zero-length
+/// span may have a null pointer. `multifield_ptr` is inactive for these tags.
+/// `StringBytes` and `SymbolBytes` retain CLIPS STRING and SYMBOL semantics.
+/// Only `ferric_value_free` may release an owned byte span: do not pass it to
+/// `ferric_string_free`, which requires a NUL-terminated allocation.
 #[repr(C)]
 pub struct FerricValue {
     /// Raw `FerricValueType` discriminant.
@@ -365,9 +382,9 @@ use ferric_rules_core::Value;
 /// The caller owns the resulting `FerricValue` and must free it with
 /// `ferric_value_free` or the type-specific free functions.
 ///
-/// Legacy `FerricValue` string payloads are NUL-terminated and therefore
-/// cannot represent embedded NUL. Such values return an error instead of
-/// silently becoming an empty or truncated C string.
+/// Valid UTF-8 without embedded NUL retains the legacy String/Symbol tag.
+/// All other lexemes use a byte-span tag, preserving the complete value.
+/// Instance names always use their distinct byte-span tag.
 /// Host external identities are also rejected: they are not memory addresses
 /// and cannot be represented by the legacy `external_pointer` field.
 pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricValue, String> {
@@ -382,35 +399,24 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricVa
             float: *f,
             ..FerricValue::void()
         }),
-        Value::Symbol(sym) => {
-            let name = engine.resolve_core_symbol(*sym).unwrap_or("<unknown>");
-            let cstring = CString::new(name).map_err(|error| {
-                format!(
-                    "symbol contains embedded NUL at byte {}; legacy FerricValue \
-                     C-string egress cannot represent it",
-                    error.nul_position()
-                )
-            })?;
-            Ok(FerricValue {
-                value_type: FerricValueType::Symbol.as_raw(),
-                string_ptr: cstring.into_raw(),
-                ..FerricValue::void()
-            })
-        }
-        Value::String(s) => {
-            let cstring = CString::new(s.as_str()).map_err(|error| {
-                format!(
-                    "string contains embedded NUL at byte {}; legacy FerricValue \
-                     C-string egress cannot represent it",
-                    error.nul_position()
-                )
-            })?;
-            Ok(FerricValue {
-                value_type: FerricValueType::String.as_raw(),
-                string_ptr: cstring.into_raw(),
-                ..FerricValue::void()
-            })
-        }
+        Value::Symbol(sym) => lexeme_to_ferric(
+            engine
+                .resolve_core_symbol_bytes(*sym)
+                .ok_or("unknown symbol")?,
+            FerricValueType::Symbol,
+            FerricValueType::SymbolBytes,
+        ),
+        Value::String(s) => lexeme_to_ferric(
+            s.as_bytes(),
+            FerricValueType::String,
+            FerricValueType::StringBytes,
+        ),
+        Value::InstanceName(name) => Ok(owned_byte_value(
+            engine
+                .resolve_core_symbol_bytes(name.as_symbol())
+                .ok_or("unknown instance name")?,
+            FerricValueType::InstanceName,
+        )),
         Value::Multifield(mf) => {
             let mut values = OwnedFerricValues::with_capacity(mf.len());
             for element in mf.iter() {
@@ -423,6 +429,54 @@ pub(crate) fn value_to_ferric(value: &Value, engine: &Engine) -> Result<FerricVa
         ),
         Value::Void => Ok(FerricValue::void()),
     }
+}
+
+/// Preserve legacy text tags when their complete representation is lossless.
+fn lexeme_to_ferric(
+    bytes: &[u8],
+    text_type: FerricValueType,
+    bytes_type: FerricValueType,
+) -> Result<FerricValue, String> {
+    if std::str::from_utf8(bytes).is_ok() && !bytes.contains(&0) {
+        let text = CString::new(bytes).map_err(|error| error.to_string())?;
+        Ok(FerricValue {
+            value_type: text_type.as_raw(),
+            string_ptr: text.into_raw(),
+            ..FerricValue::void()
+        })
+    } else {
+        Ok(owned_byte_value(bytes, bytes_type))
+    }
+}
+
+fn owned_byte_value(bytes: &[u8], value_type: FerricValueType) -> FerricValue {
+    FerricValue {
+        value_type: value_type.as_raw(),
+        string_ptr: if bytes.is_empty() {
+            ptr::null_mut()
+        } else {
+            Box::into_raw(bytes.to_vec().into_boxed_slice())
+                .cast::<u8>()
+                .cast()
+        },
+        multifield_len: bytes.len(),
+        ..FerricValue::void()
+    }
+}
+
+/// Validate the size/address portion of a caller-owned byte span before reading.
+/// The caller remains responsible for the readable allocation's actual lifetime.
+unsafe fn borrowed_bytes<'a>(data: *const u8, len: usize) -> Result<&'a [u8], String> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if data.is_null() {
+        return Err("byte span pointer is null with non-zero length".to_string());
+    }
+    if len > isize::MAX as usize || (data as usize).checked_add(len).is_none() {
+        return Err("byte span length exceeds the addressable range".to_string());
+    }
+    Ok(std::slice::from_raw_parts(data, len))
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +531,16 @@ pub(crate) unsafe fn ferric_to_value(
                 .map(HostValue::from)
                 .map_err(|error| error.to_string())
         }
+        FerricValueType::StringBytes => engine
+            .create_string_bytes(borrowed_bytes(fv.string_ptr.cast(), fv.multifield_len)?)
+            .map(HostValue::from)
+            .map_err(|error| error.to_string()),
+        FerricValueType::SymbolBytes => engine
+            .symbol_value_bytes(borrowed_bytes(fv.string_ptr.cast(), fv.multifield_len)?)
+            .map_err(|error| error.to_string()),
+        FerricValueType::InstanceName => engine
+            .instance_name_value_bytes(borrowed_bytes(fv.string_ptr.cast(), fv.multifield_len)?)
+            .map_err(|error| error.to_string()),
         FerricValueType::Multifield => {
             if depth >= HOST_VALUE_MAX_DEPTH {
                 return Err("multifield nesting exceeds 32".into());
@@ -707,6 +771,110 @@ unsafe fn ferric_value_from_bytes(
     FerricError::Ok
 }
 
+/// Copy an arbitrary byte span into an owned STRING value.
+///
+/// The result uses `FerricValueType::StringBytes`: `string_ptr` points to
+/// exactly `multifield_len` bytes, with no trailing NUL requirement. Embedded
+/// NUL and invalid UTF-8 are preserved. Instance-name bytes exclude brackets.
+/// Release the result with `ferric_value_free`, never `ferric_string_free`.
+/// Engine encoding constraints are checked when the value is asserted.
+///
+/// Null `data` is accepted only with zero length. On failure, `*out_value`
+/// is Void; a null `out_value` returns `NullPointer` without writing.
+///
+/// # Safety
+///
+/// - `out_value` must point to writable, resource-free `FerricValue` storage.
+/// - For nonzero `len`, `data` must point to `len` readable bytes.
+/// - The input span must not overlap `out_value`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
+#[no_mangle]
+pub unsafe extern "C" fn ferric_value_string_raw(
+    data: *const u8,
+    len: usize,
+    out_value: *mut FerricValue,
+) -> FerricError {
+    ferric_value_from_raw(data, len, out_value, FerricValueType::StringBytes)
+}
+
+/// Copy an arbitrary byte span into an owned SYMBOL value.
+///
+/// The result uses `FerricValueType::SymbolBytes`: `string_ptr` points to
+/// exactly `multifield_len` bytes, with no trailing NUL requirement. Embedded
+/// NUL and invalid UTF-8 are preserved. Instance-name bytes exclude brackets.
+/// Release the result with `ferric_value_free`, never `ferric_string_free`.
+/// Engine encoding constraints are checked when the value is asserted.
+///
+/// Null `data` is accepted only with zero length. On failure, `*out_value`
+/// is Void; a null `out_value` returns `NullPointer` without writing.
+///
+/// # Safety
+///
+/// - `out_value` must point to writable, resource-free `FerricValue` storage.
+/// - For nonzero `len`, `data` must point to `len` readable bytes.
+/// - The input span must not overlap `out_value`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
+#[no_mangle]
+pub unsafe extern "C" fn ferric_value_symbol_raw(
+    data: *const u8,
+    len: usize,
+    out_value: *mut FerricValue,
+) -> FerricError {
+    ferric_value_from_raw(data, len, out_value, FerricValueType::SymbolBytes)
+}
+
+/// Copy an arbitrary byte span into an owned INSTANCE-NAME value.
+///
+/// The result uses `FerricValueType::InstanceName`: `string_ptr` points to
+/// exactly `multifield_len` bytes, with no trailing NUL requirement. Embedded
+/// NUL and invalid UTF-8 are preserved. Instance-name bytes exclude brackets.
+/// Release the result with `ferric_value_free`, never `ferric_string_free`.
+/// Engine encoding constraints are checked when the value is asserted.
+///
+/// Null `data` is accepted only with zero length. On failure, `*out_value`
+/// is Void; a null `out_value` returns `NullPointer` without writing.
+///
+/// # Safety
+///
+/// - `out_value` must point to writable, resource-free `FerricValue` storage.
+/// - For nonzero `len`, `data` must point to `len` readable bytes.
+/// - The input span must not overlap `out_value`.
+#[cfg_attr(ferric_ffi_compile, ffi_export)]
+#[no_mangle]
+pub unsafe extern "C" fn ferric_value_instance_name(
+    data: *const u8,
+    len: usize,
+    out_value: *mut FerricValue,
+) -> FerricError {
+    ferric_value_from_raw(data, len, out_value, FerricValueType::InstanceName)
+}
+
+unsafe fn ferric_value_from_raw(
+    data: *const u8,
+    len: usize,
+    out_value: *mut FerricValue,
+    value_type: FerricValueType,
+) -> FerricError {
+    if out_value.is_null() {
+        set_global_error("raw value constructor: out_value is null".to_string());
+        return FerricError::NullPointer;
+    }
+    ptr::write(out_value, FerricValue::void());
+    if data.is_null() && len != 0 {
+        set_global_error("raw value constructor: data is null with non-zero length".to_string());
+        return FerricError::NullPointer;
+    }
+    let bytes = match borrowed_bytes(data, len) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            set_global_error(error);
+            return FerricError::InvalidArgument;
+        }
+    };
+    ptr::write(out_value, owned_byte_value(bytes, value_type));
+    FerricError::Ok
+}
+
 /// Create a void `FerricValue` with all fields zeroed/null.
 #[cfg_attr(ferric_ffi_compile, ffi_export)]
 #[no_mangle]
@@ -845,6 +1013,12 @@ unsafe fn copy_borrowed_ferric_value(
                 ..FerricValue::void()
             })
         }
+        tag @ (FerricValueType::StringBytes
+        | FerricValueType::SymbolBytes
+        | FerricValueType::InstanceName) => Ok(owned_byte_value(
+            borrowed_bytes(value.string_ptr.cast(), value.multifield_len)?,
+            tag,
+        )),
         FerricValueType::Multifield => copy_borrowed_ferric_values(
             value.multifield_ptr,
             value.multifield_len,
@@ -1023,6 +1197,22 @@ unsafe fn free_value_resources(val: &FerricValue) -> Result<(), String> {
             }
             Ok(())
         }
+        Some(
+            FerricValueType::StringBytes
+            | FerricValueType::SymbolBytes
+            | FerricValueType::InstanceName,
+        ) => {
+            // Only allocations produced by owned_byte_value may be freed here.
+            // Empty owned spans have no allocation.
+            borrowed_bytes(val.string_ptr.cast(), val.multifield_len)?;
+            if val.multifield_len != 0 {
+                drop(Box::from_raw(ptr::slice_from_raw_parts_mut(
+                    val.string_ptr.cast::<u8>(),
+                    val.multifield_len,
+                )));
+            }
+            Ok(())
+        }
         Some(FerricValueType::Multifield) => {
             let mut result = Ok(());
             if !val.multifield_ptr.is_null() && val.multifield_len > 0 {
@@ -1045,7 +1235,7 @@ unsafe fn free_value_resources(val: &FerricValue) -> Result<(), String> {
             | FerricValueType::ExternalAddress,
         ) => Ok(()),
         None => Err(format!(
-            "cannot free value: invalid value_type discriminant: {} (expected 0..=6); \
+            "cannot free value: invalid value_type discriminant: {} (expected 0..=9); \
              its owned resources were not freed",
             val.value_type
         )),

@@ -889,9 +889,9 @@ it can end the current rule after sort supplies its result, while other
 activations remain eligible to run.
 
 **Compatibility boundary.** These semantics apply to Ferric's supported
-runtime value representations and callable implementations. They do not add
-an `INSTANCE-NAME` type or arbitrary invalid-UTF-8 string representation, or
-repair unrelated builtin and qualified-declaration limitations. The pinned
+runtime value representations and callable implementations. Instance-name
+values and byte lexemes are supported by the value layer; unrelated builtin
+and qualified-declaration limitations remain. The pinned
 CLIPS 6.30 process faults when Void is used as a sort data field; that case has
 no supported returned-value contract and is not a required process fault in
 Ferric. A Void *predicate result* is distinct and is supported as described
@@ -1151,9 +1151,10 @@ global channel as a fallback or for pre-engine failures.
 
 ### Embedded-NUL String Policy
 
-Ferric's Rust strings can contain `\0`, but the legacy C ABI represents input
-strings and `FerricValue` Symbol/String payloads as NUL-terminated C strings.
-The C ABI therefore uses an explicit-rejection policy at that legacy boundary:
+Ferric strings, symbols, and instance names can preserve arbitrary bytes.
+Legacy C text entry points still use NUL-terminated UTF-8 strings; explicit raw
+constructors and appended transport tags carry byte spans without changing the
+`FerricValue` layout:
 
 - A legacy `const char *` input ends at its first NUL by definition; bytes
   after it are not part of the C string. Bindings starting from a
@@ -1162,19 +1163,24 @@ The C ABI therefore uses an explicit-rejection policy at that legacy boundary:
 - `ferric_value_symbol_bytes` and `ferric_value_string_bytes` accept an
   explicit UTF-8 byte span and return `FERRIC_ERROR_INVALID_ARGUMENT` if it
   contains embedded NUL. Their output remains Void on failure.
-- Fact-field, global, and named-slot queries return
-  `FERRIC_ERROR_INVALID_ARGUMENT` (with a diagnostic) instead of converting a
-  stored NUL-bearing Symbol/String to empty or truncated `FerricValue` data.
-  This rule applies recursively to multifields.
+- `ferric_value_string_raw`, `ferric_value_symbol_raw`, and
+  `ferric_value_instance_name` copy arbitrary bytes. Their transport tags are
+  `STRING_BYTES` (7), `SYMBOL_BYTES` (8), and `INSTANCE_NAME` (9).
+- Fact-field, global, and named-slot queries retain the legacy String/Symbol
+  tags for valid UTF-8 without NUL. Other strings and symbols use their byte
+  tags, recursively inside multifields. Instance names always use tag 9;
+  their payload excludes brackets. Byte tags use `string_ptr` together with
+  `multifield_len` as the byte count. Free them with `ferric_value_free`,
+  never `ferric_string_free`.
 - `ferric_engine_get_output` returns NULL and records
-  `FERRIC_ERROR_INVALID_ARGUMENT` when captured output contains embedded NUL.
-  Use `ferric_engine_get_output_copy` for exact access.
+  `FERRIC_ERROR_INVALID_ARGUMENT` when captured output contains embedded NUL
+  or invalid UTF-8. Use `ferric_engine_get_output_copy` for exact access.
 - Length-reporting copy APIs preserve every source byte, including embedded
   NUL. Their reported length includes one additional trailing terminator, so
   callers must use `out_len` rather than `strlen`.
 - Snapshot serialization/deserialization APIs are byte-oriented and preserve
-  their serialized bytes exactly. If a restored engine contains NUL-bearing
-  values, the same legacy-egress rejection rules apply.
+  their serialized bytes exactly, including byte lexemes and instance names.
+  Restored values use the same lossless byte-span egress.
 
 The Go binding rejects embedded NUL before every legacy `C.CString`
 conversion. Rejections return `ErrInvalidArgument` through error-bearing APIs;

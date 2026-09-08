@@ -11,7 +11,7 @@
 
 import { resolve } from "node:path";
 import { convertNativeError } from "./types";
-import type { Fact, FactId, FactIdInput } from "./types";
+import type { Fact, FactId, FactIdInput, FerricByteLexemeInstance } from "./types";
 
 // ---------------------------------------------------------------------------
 // Native class type declarations
@@ -70,6 +70,7 @@ export interface NativeEngine {
   setFocus(moduleName: string): void;
   pushFocus(moduleName: string): void;
   getOutput(channel: string): string | null;
+  getOutputBytes(channel: string): Uint8Array | null;
   clearOutput(channel: string): void;
   pushInput(line: string): void;
   readonly diagnostics: string[];
@@ -223,3 +224,9 @@ export const Engine = wrapEngineWithErrorConversion(
  * Plain strings are mapped to CLIPS *strings* (quoted), not symbols.
  */
 export const FerricSymbol = nativeModule["FerricSymbol"] as NativeFerricSymbolConstructor;
+
+/** Explicit byte lexemes never replace invalid UTF-8. Constructors copy input. */
+export const FerricStringBytes = nativeModule["FerricStringBytes"] as new (bytes: Uint8Array) => FerricByteLexemeInstance;
+export const FerricSymbolBytes = nativeModule["FerricSymbolBytes"] as new (bytes: Uint8Array) => FerricByteLexemeInstance;
+export const FerricInstanceName = nativeModule["FerricInstanceName"] as new (bytes: Uint8Array) => FerricByteLexemeInstance;
+export const byteLexemeConstructors = { FerricStringBytes, FerricSymbolBytes, FerricInstanceName };

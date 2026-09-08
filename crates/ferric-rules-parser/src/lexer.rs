@@ -37,6 +37,8 @@ pub enum Token {
     Equals,
     /// `<-` (left arrow / assignment)
     LeftArrow,
+    /// Bracketed instance-name literal, stored without brackets.
+    InstanceName(String),
 }
 
 /// A token paired with its source location.
@@ -450,9 +452,16 @@ impl<'a> Lexer<'a> {
     fn lex_symbol(&mut self) {
         let start = self.position;
         let mut symbol = String::new();
+        let bracket_prefix = self.chars.peek().is_some_and(|&(_, ch)| ch == '[');
 
         while let Some(&(_, ch)) = self.chars.peek() {
-            if is_symbol_char(ch) {
+            if bracket_prefix {
+                if !is_bracket_symbol_char(ch) {
+                    break;
+                }
+                symbol.push(ch);
+                self.advance();
+            } else if is_symbol_char(ch) {
                 symbol.push(ch);
                 self.advance();
             } else if ch == ':' {
@@ -476,13 +485,26 @@ impl<'a> Lexer<'a> {
         }
 
         let span = Span::new(start, self.position, self.file_id);
-        self.tokens
-            .push(SpannedToken::new(Token::Symbol(symbol), span));
+        let token = if symbol.len() > 2 && symbol.starts_with('[') && symbol.ends_with(']') {
+            Token::InstanceName(symbol[1..symbol.len() - 1].to_owned())
+        } else {
+            Token::Symbol(symbol)
+        };
+        self.tokens.push(SpannedToken::new(token, span));
     }
 }
 
 fn is_symbol_start(ch: char) -> bool {
     is_symbol_char(ch)
+}
+
+// CLIPS 6.30 ScanSymbol accepts printable non-delimiter ASCII and every
+// UTF-8 start/continuation byte. In particular, Unicode whitespace does not
+// terminate a bracket-prefixed spelling; it is data within that token.
+// Keep this separate from ordinary identifiers and compact variable syntax.
+fn is_bracket_symbol_char(ch: char) -> bool {
+    !ch.is_ascii()
+        || (ch.is_ascii_graphic() && !matches!(ch, '<' | '"' | '(' | ')' | '&' | '|' | '~' | ';'))
 }
 
 fn is_symbol_char(ch: char) -> bool {
@@ -976,5 +998,88 @@ mod proptests {
                 other => prop_assert!(false, "Expected String, got {:?}", other),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod instance_name_tests {
+    use super::*;
+
+    #[test]
+    fn instance_name_tokens_are_distinct_and_keep_unbracketed_unicode() {
+        let tokens = lex(
+            "[widget] [é] [] [x]tail Templates[1] [a:b] [DATA::é]",
+            FileId(0),
+        )
+        .unwrap();
+        assert_eq!(tokens[0].token, Token::InstanceName("widget".into()));
+        assert_eq!(tokens[1].token, Token::InstanceName("é".into()));
+        assert_eq!(tokens[2].token, Token::Symbol("[]".into()));
+        assert_eq!(tokens[3].token, Token::Symbol("[x]tail".into()));
+        assert_eq!(tokens[4].token, Token::Symbol("Templates[1]".into()));
+        assert_eq!(tokens[5].token, Token::InstanceName("a:b".into()));
+        assert_eq!(tokens[6].token, Token::InstanceName("DATA::é".into()));
+    }
+
+    #[test]
+    fn bracket_names_follow_scan_symbol_ascii_continuation() {
+        // Literal continuation alphabet from CLIPS 6.30 scanner.c ScanSymbol;
+        // control bytes, DEL and its explicit delimiters are absent.
+        let accepted = r"!#$%'*+,-./0123456789:=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{}";
+        for byte in 0_u8..=127 {
+            let ch = char::from(byte);
+            let source = format!("[a{ch}b]");
+            let mut lexer = Lexer::new(&source, FileId(0));
+            lexer.lex_symbol();
+            if accepted.contains(ch) {
+                assert_eq!(
+                    lexer.tokens[0].token,
+                    Token::InstanceName(format!("a{ch}b")),
+                    "byte {byte}"
+                );
+                assert!(lexer.chars.peek().is_none(), "byte {byte}");
+            } else {
+                assert_eq!(
+                    lexer.tokens[0].token,
+                    Token::Symbol("[a".into()),
+                    "byte {byte}"
+                );
+                assert_eq!(
+                    lexer.chars.peek().map(|&(_, ch)| ch),
+                    Some(ch),
+                    "delimiter {byte} is left for the next token"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bracket_names_preserve_non_ascii_characters_and_classify_only_outer_brackets() {
+        for body in [
+            "a?b",
+            r"a\b",
+            "a\u{a0}b",
+            "a\u{85}b",
+            "a\u{2003}b",
+            "a🙂b",
+            "a][b",
+            "[]",
+        ] {
+            let source = format!("[{body}]");
+            let tokens = lex(&source, FileId(0)).unwrap();
+            assert_eq!(tokens.len(), 1, "{source:?}");
+            assert_eq!(tokens[0].token, Token::InstanceName(body.into()));
+        }
+        let tokens = lex("[a<b]", FileId(0)).unwrap();
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].token, Token::Symbol("[a".into()));
+        assert_eq!(tokens[1].token, Token::Symbol("<b]".into()));
+        let tokens = lex("[a?b] ?fact:slot MODULE::rule ?f<-(row)", FileId(0)).unwrap();
+        assert_eq!(tokens[1].token, Token::SingleVar("fact".into()));
+        assert_eq!(tokens[2].token, Token::Colon);
+        assert_eq!(tokens[3].token, Token::Symbol("slot".into()));
+        assert_eq!(tokens[4].token, Token::Symbol("MODULE::rule".into()));
+        assert_eq!(tokens[5].token, Token::SingleVar("f".into()));
+        assert_eq!(tokens[6].token, Token::LeftArrow);
     }
 }

@@ -23,6 +23,7 @@ benches/support/mod.rs
 benches/support/retraction_workloads.rs
 benches/waltz_bench.rs
 src/lib.rs
+tests/byte_lexemes.rs
 tests/ferric_semantic_regressions.rs
 tests/fixtures/README.md
 tests/fixtures/core/.gitkeep
@@ -160,6 +161,7 @@ tests/fixtures/stdlib/sort_predicate_variadic_flatten_empty_singleton.out
 tests/fixtures/stdlib/string_advanced.clp
 tests/fixtures/stdlib/string_ops.clp
 tests/fixtures/stdlib/type_predicates.clp
+tests/instance_name_grammar.rs
 tests/msrv_metadata.rs
 tests/numeric_comparison_chains.rs
 tests/scaling_tests.rs

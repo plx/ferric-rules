@@ -123,6 +123,7 @@ pub enum LiteralKind {
     Float(f64),
     String(String),
     Symbol(String),
+    InstanceName(String),
 }
 
 // ============================================================================
@@ -241,7 +242,7 @@ pub enum SlotType {
 }
 
 /// Primitive value kinds accepted by a template slot's `(type ...)` attribute.
-/// Ordering also matches CLIPS' derived-default preference.
+/// Ordering provides a canonical representation for stored type unions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SlotValueType {
@@ -250,6 +251,7 @@ pub enum SlotValueType {
     Integer,
     Float,
     ExternalAddress,
+    InstanceName,
 }
 
 #[derive(Clone, Debug)]
@@ -1992,6 +1994,10 @@ fn interpret_constraint(expr: &SExpr) -> Result<Constraint, InterpretError> {
             value: LiteralKind::Symbol(s.clone()),
             span: expr.span(),
         })),
+        Atom::InstanceName(name) => Ok(Constraint::Literal(LiteralValue {
+            value: LiteralKind::InstanceName(name.clone()),
+            span: expr.span(),
+        })),
         Atom::SingleVar(name) => {
             if name.is_empty() {
                 // Just "?" without a name
@@ -2766,6 +2772,10 @@ fn interpret_action_expr(expr: &SExpr) -> Result<ActionExpr, InterpretError> {
             value: LiteralKind::Symbol(s.clone()),
             span: expr.span(),
         })),
+        Atom::InstanceName(name) => Ok(ActionExpr::Literal(LiteralValue {
+            value: LiteralKind::InstanceName(name.clone()),
+            span: expr.span(),
+        })),
         Atom::SingleVar(name) => Ok(ActionExpr::Variable(name.clone(), expr.span())),
         Atom::MultiVar(name) => Ok(ActionExpr::Variable(format!("$?{name}"), expr.span())),
         Atom::GlobalVar(name) => Ok(ActionExpr::GlobalVariable(name.clone(), expr.span())),
@@ -2886,7 +2896,7 @@ fn interpret_slot_types(
     }
     let mut types = Vec::new();
     for value in values {
-        use SlotValueType::{ExternalAddress, Float, Integer, String, Symbol};
+        use SlotValueType::{ExternalAddress, Float, InstanceName, Integer, String, Symbol};
         let kinds: &[_] = match value.as_symbol() {
             Some("SYMBOL") => &[Symbol],
             Some("STRING") => &[String],
@@ -2895,7 +2905,8 @@ fn interpret_slot_types(
             Some("NUMBER") => &[Integer, Float],
             Some("LEXEME") => &[Symbol, String],
             Some("EXTERNAL-ADDRESS") => &[ExternalAddress],
-            _ => return Err(InterpretError::invalid("unsupported slot type; expected SYMBOL, STRING, INTEGER, FLOAT, NUMBER, LEXEME, or EXTERNAL-ADDRESS", value.span())),
+            Some("INSTANCE-NAME") => &[InstanceName],
+            _ => return Err(InterpretError::invalid("unsupported slot type; expected SYMBOL, STRING, INTEGER, FLOAT, NUMBER, LEXEME, EXTERNAL-ADDRESS, or INSTANCE-NAME", value.span())),
         };
         types.extend_from_slice(kinds);
     }
@@ -2958,6 +2969,10 @@ fn interpret_default_value(expr: &SExpr) -> Result<DefaultValue, InterpretError>
         },
         Atom::Symbol(s) => LiteralValue {
             value: LiteralKind::Symbol(s.clone()),
+            span: expr.span(),
+        },
+        Atom::InstanceName(name) => LiteralValue {
+            value: LiteralKind::InstanceName(name.clone()),
             span: expr.span(),
         },
         _ => {
@@ -3083,6 +3098,10 @@ fn interpret_fact_value(expr: &SExpr) -> Result<FactValue, InterpretError> {
         })),
         Atom::Symbol(s) => Ok(FactValue::Literal(LiteralValue {
             value: LiteralKind::Symbol(s.clone()),
+            span: expr.span(),
+        })),
+        Atom::InstanceName(name) => Ok(FactValue::Literal(LiteralValue {
+            value: LiteralKind::InstanceName(name.clone()),
             span: expr.span(),
         })),
         Atom::SingleVar(name) => Ok(FactValue::Variable(name.clone(), expr.span())),
@@ -5623,5 +5642,69 @@ mod tests {
             !result.errors.is_empty(),
             "should error: bad binding variable"
         );
+    }
+}
+
+#[cfg(test)]
+mod instance_name_tests {
+    use super::*;
+    use crate::sexpr::parse_sexprs;
+    use crate::span::FileId;
+
+    #[test]
+    fn instance_names_remain_typed_in_actions_constraints_defaults_and_facts() {
+        let parsed = parse_sexprs("[widget]", FileId(0));
+        assert!(parsed.errors.is_empty());
+        let atom = &parsed.exprs[0];
+        assert!(
+            matches!(interpret_action_expr(atom).unwrap(), ActionExpr::Literal(LiteralValue { value: LiteralKind::InstanceName(ref name), .. }) if name == "widget")
+        );
+        assert!(
+            matches!(interpret_fact_value(atom).unwrap(), FactValue::Literal(LiteralValue { value: LiteralKind::InstanceName(ref name), .. }) if name == "widget")
+        );
+        let parsed = parse_sexprs("(deftemplate holder (slot value (type INSTANCE-NAME) (default [widget]))) (defrule match (row [widget]) => (printout t [widget]))", FileId(0));
+        assert!(parsed.errors.is_empty());
+        let result = interpret_constructs(&parsed.exprs, &InterpreterConfig::default());
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let Construct::Template(template) = &result.constructs[0] else {
+            panic!("template")
+        };
+        assert_eq!(
+            template.slots[0].allowed_types,
+            Some(vec![SlotValueType::InstanceName])
+        );
+        assert!(
+            matches!(template.slots[0].default, Some(DefaultValue::Value(LiteralValue { value: LiteralKind::InstanceName(ref name), .. })) if name == "widget")
+        );
+        let Construct::Rule(rule) = &result.constructs[1] else {
+            panic!("rule")
+        };
+        assert!(
+            matches!(rule.actions[0].call.args[1], ActionExpr::Literal(LiteralValue { value: LiteralKind::InstanceName(ref name), .. }) if name == "widget")
+        );
+    }
+
+    #[test]
+    fn bracket_continuation_reaches_typed_literals_without_absorbing_less_than() {
+        for (source, expected) in [
+            ("[a?b]", "a?b"),
+            (r"[a\b]", r"a\b"),
+            ("[a\u{a0}b]", "a\u{a0}b"),
+            ("[a\u{85}b]", "a\u{85}b"),
+            ("[a,b:DATA::x]", "a,b:DATA::x"),
+        ] {
+            let parsed = parse_sexprs(source, FileId(0));
+            assert!(parsed.errors.is_empty(), "{source:?}");
+            assert_eq!(parsed.exprs.len(), 1, "{source:?}");
+            assert!(matches!(interpret_action_expr(&parsed.exprs[0]).unwrap(),
+                ActionExpr::Literal(LiteralValue { value: LiteralKind::InstanceName(name), .. }) if name == expected));
+        }
+        let parsed = parse_sexprs("[a<b]", FileId(0));
+        assert!(parsed.errors.is_empty());
+        assert_eq!(parsed.exprs.len(), 2);
+        for (expr, expected) in parsed.exprs.iter().zip(["[a", "<b]"]) {
+            assert!(matches!(interpret_action_expr(expr).unwrap(),
+                ActionExpr::Literal(LiteralValue { value: LiteralKind::Symbol(name), .. }) if name == expected));
+        }
     }
 }

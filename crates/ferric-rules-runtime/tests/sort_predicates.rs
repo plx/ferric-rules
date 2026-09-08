@@ -209,7 +209,7 @@ fn merge_traversal_calls_each_head_pair_once_in_clips_order() {
         let Some(Value::String(calls)) = engine.get_global("calls") else {
             panic!("expected comparator trace string")
         };
-        assert_eq!(calls.as_str(), trace);
+        assert_eq!(calls.as_str().unwrap(), trace);
     }
 }
 
@@ -229,7 +229,7 @@ fn only_the_false_symbol_prevents_exchange_including_void_results() {
         let mut engine = sort_engine("exchange (create$ 3 1 2)", &definitions);
         assert_integer_fields(&mut engine, expected);
         if body.starts_with("(printout") {
-            assert_eq!(engine.get_output("t"), Some("called;called;"));
+            assert_eq!(engine.get_output("t").unwrap(), Some("called;called;"));
         }
     }
 }
@@ -564,7 +564,7 @@ fn enclosing_printout_and_if_stop_before_emitting_or_running_selected_values() {
         BOOM,
     );
     assert_failure(&mut engine, "division by zero");
-    assert_eq!(engine.get_output("t"), Some("prefix:"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("prefix:"));
     assert_global_symbol(&engine, "result", "pending");
     assert_trace(&engine, 123);
 

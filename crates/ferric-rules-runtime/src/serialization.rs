@@ -95,7 +95,7 @@ pub enum SerializationError {
     #[error("legacy raw snapshots are unsupported; use the producing Ferric version to export application data")]
     LegacySnapshot,
 
-    #[error("unsupported snapshot schema version {0}; this build supports version 1")]
+    #[error("unsupported snapshot schema version {0}; this build supports version 6")]
     UnsupportedVersion(u16),
 
     #[error("snapshot format does not match requested {0}")]
@@ -133,6 +133,7 @@ pub enum SnapshotFileError {
 pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"FERRIC\0S";
 const HEADER_LEN: usize = 52;
+const SCHEMA_VERSION: u16 = 6;
 
 fn format_id(format: SerializationFormat) -> u8 {
     match format {
@@ -150,9 +151,9 @@ fn envelope(payload: Vec<u8>, format: SerializationFormat) -> Result<Vec<u8>, Se
     }
     let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
     bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&SCHEMA_VERSION.to_le_bytes());
     bytes.push(format_id(format));
-    bytes.push(0); // No optional capabilities in schema 1.
+    bytes.push(0); // No optional capabilities in schema 6.
     bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     let mut checksum = Sha256::new();
     checksum.update(&bytes);
@@ -175,7 +176,7 @@ fn open_envelope(data: &[u8], format: SerializationFormat) -> Result<&[u8], Seri
         ));
     }
     let version = u16::from_le_bytes([data[8], data[9]]);
-    if version != 1 {
+    if version != SCHEMA_VERSION {
         return Err(SerializationError::UnsupportedVersion(version));
     }
     if data[10] != format_id(format) {
@@ -809,7 +810,10 @@ mod tests {
             assert!(restored.action_diagnostics()[0]
                 .to_string()
                 .contains("timestamp capacity exhausted"));
-            assert!(restored.get_output("t").map_or(true, str::is_empty));
+            assert!(restored
+                .get_output("t")
+                .unwrap()
+                .map_or(true, str::is_empty));
             let bytes = restored.serialize(SerializationFormat::Cbor).unwrap();
             Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
         }
@@ -889,7 +893,7 @@ mod tests {
             );
             assert_eq!(restored.rules().len(), 1);
             assert_eq!(restored.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-            assert_eq!(restored.get_output("t"), Some("old\n"));
+            assert_eq!(restored.get_output("t").unwrap(), Some("old\n"));
             let bytes = restored.serialize(SerializationFormat::Cbor).unwrap();
             Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
         }
@@ -981,10 +985,16 @@ mod tests {
     #[test]
     fn legacy_raw_fixture_has_an_explicit_rejection_path() {
         let raw = include_bytes!("../tests/fixtures/snapshots/legacy-raw.cbor");
-        // Verify this is a meaningful old payload, not arbitrary garbage.
-        let legacy: EngineSnapshotOwned = decode(raw, SerializationFormat::Cbor).unwrap();
-        let legacy = legacy.into_engine();
-        assert_eq!(legacy.find_facts("durable").unwrap().len(), 1);
+        // Inspect historical data without decoding its retired internal layout.
+        let legacy: serde_json::Value = decode(raw, SerializationFormat::Cbor).unwrap();
+        assert_eq!(
+            legacy["symbol_table"]["utf8_strings"],
+            serde_json::json!(["initial-fact", "durable"])
+        );
+        assert_eq!(
+            legacy["fact_base"]["facts"][2]["value"]["fact"],
+            serde_json::json!({"Ordered": { "relation": {"Utf8": 1}, "fields": [{"Integer": 42}] }})
+        );
         assert!(matches!(
             Engine::deserialize(raw, SerializationFormat::Cbor),
             Err(SerializationError::LegacySnapshot)
@@ -1112,7 +1122,7 @@ mod tests {
             assert_eq!(original.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
             let bytes = original.serialize(format).unwrap();
             let mut resumed = Engine::deserialize(&bytes, format).unwrap();
-            assert_eq!(resumed.get_output("t"), Some("8\n"));
+            assert_eq!(resumed.get_output("t").unwrap(), Some("8\n"));
             assert_eq!(
                 resumed.run(RunLimit::Unlimited).unwrap().rules_fired,
                 0,
@@ -1128,7 +1138,7 @@ mod tests {
             assert_eq!(resumed.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
             resumed.retract(blockers[1]).unwrap();
             assert_eq!(resumed.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-            assert_eq!(resumed.get_output("t"), Some("8\n7\n"));
+            assert_eq!(resumed.get_output("t").unwrap(), Some("8\n7\n"));
             assert_eq!(resumed.find_facts("picked").unwrap().len(), 2);
             assert!(matches!(
                 resumed
@@ -1505,23 +1515,26 @@ mod tests {
             Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-1.clp")).unwrap();
         engine.set_focus("WORK").unwrap();
         assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("done 3\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("done 3\n"));
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         engine
     }
 
     fn verify_schema_one_resume(mut engine: Engine) {
         assert_eq!(engine.facts().unwrap().count(), 4);
-        assert_eq!(engine.get_output("t"), Some("done 3\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("done 3\n"));
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(1))));
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("done 3\ndone 1\n"));
+        assert_eq!(engine.get_output("t").unwrap(), Some("done 3\ndone 1\n"));
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(2))));
         let blocker = engine.find_facts("blocked").unwrap()[0].0;
         engine.retract(blocker).unwrap();
         engine.set_focus("WORK").unwrap();
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
-        assert_eq!(engine.get_output("t"), Some("done 3\ndone 1\ndone 2\n"));
+        assert_eq!(
+            engine.get_output("t").unwrap(),
+            Some("done 3\ndone 1\ndone 2\n")
+        );
         assert!(matches!(engine.get_global("seen"), Some(Value::Integer(3))));
         assert_eq!(engine.facts().unwrap().count(), 3);
         assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
@@ -1541,10 +1554,29 @@ mod tests {
     }
 
     #[test]
-    fn committed_schema_one_snapshot_preserves_resume_and_reset_behavior() {
+    fn committed_schema_one_snapshot_is_rejected_before_payload_decode() {
         let bytes = include_bytes!("../tests/fixtures/snapshots/schema-1.cbor");
-        let restored = Engine::deserialize(bytes, SerializationFormat::Cbor).unwrap();
-        verify_schema_one_resume(restored);
+        assert!(matches!(
+            Engine::deserialize(bytes, SerializationFormat::Cbor),
+            Err(SerializationError::UnsupportedVersion(1))
+        ));
+    }
+
+    #[test]
+    fn earlier_reserved_schemas_are_rejected_before_payload_decode() {
+        for &format in SerializationFormat::ALL {
+            let bytes = Engine::new(EngineConfig::default())
+                .serialize(format)
+                .unwrap();
+            for version in 1_u16..6 {
+                let mut forged = bytes.clone();
+                forged[8..10].copy_from_slice(&version.to_le_bytes());
+                // Deliberately leave the checksum stale: version rejection comes first.
+                assert!(
+                    matches!(Engine::deserialize(&forged, format), Err(SerializationError::UnsupportedVersion(actual)) if actual == version)
+                );
+            }
+        }
     }
 
     #[test]
@@ -1553,6 +1585,142 @@ mod tests {
         let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
         let restored = Engine::deserialize(&bytes, SerializationFormat::Cbor).unwrap();
         verify_schema_one_resume(restored);
+    }
+
+    fn schema_six_fixture_engine() -> Engine {
+        let mut engine =
+            Engine::with_rules(include_str!("../tests/fixtures/snapshots/schema-6.clp")).unwrap();
+        let text = engine.create_string_bytes(b"a\0\xffz").unwrap();
+        let symbol = engine.symbol_value_bytes(b"s\xff").unwrap();
+        let name = engine.instance_name_value_bytes(b"n\xff").unwrap();
+        engine
+            .assert_ordered("payload", vec![crate::HostValue::from(text), symbol, name])
+            .unwrap();
+        assert_eq!(engine.run(RunLimit::Count(1)).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t").unwrap(), Some("TRUE\n"));
+        engine
+    }
+
+    fn verify_schema_six_resume(mut engine: Engine) {
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(
+            engine.get_output_bytes("t"),
+            Some(b"TRUE\na\0\xffz|s\xff|[n\xff]\n".as_slice())
+        );
+        assert!(engine.get_output("t").is_err());
+        let Some(Value::Multifield(fields)) = engine.get_global("captured") else {
+            panic!("captured multifield")
+        };
+        let [Value::String(text), Value::Symbol(symbol), Value::InstanceName(name)] =
+            fields.as_slice()
+        else {
+            panic!("distinct lexeme types")
+        };
+        assert_eq!(text.as_bytes(), b"a\0\xffz");
+        assert_eq!(
+            engine.resolve_core_symbol_bytes(*symbol),
+            Some(b"s\xff".as_slice())
+        );
+        assert_eq!(
+            engine.resolve_core_symbol_bytes(name.as_symbol()),
+            Some(b"n\xff".as_slice())
+        );
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 0);
+        let handle = engine.find_facts("payload").unwrap()[0].0;
+        engine.retract(handle).unwrap();
+        engine.reset().unwrap();
+        assert!(engine.find_facts("payload").unwrap().is_empty());
+        assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+        assert_eq!(engine.get_output("t").unwrap(), Some("TRUE\n"));
+    }
+
+    #[test]
+    fn schema_six_source_roundtrips_every_codec() {
+        for &format in SerializationFormat::ALL {
+            let engine = schema_six_fixture_engine();
+            verify_schema_six_resume(
+                Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn committed_schema_six_snapshot_preserves_bytes_and_typed_names() {
+        verify_schema_six_resume(
+            Engine::deserialize(
+                include_bytes!("../tests/fixtures/snapshots/schema-6.cbor"),
+                SerializationFormat::Cbor,
+            )
+            .unwrap(),
+        );
+    }
+
+    #[test]
+    #[ignore = "explicit reproducible fixture generator"]
+    fn generate_schema_six_fixture() {
+        let engine = schema_six_fixture_engine();
+        let bytes = engine.serialize(SerializationFormat::Cbor).unwrap();
+        std::fs::write(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/snapshots/schema-6.cbor"
+            ),
+            bytes,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn snapshot_rejects_raw_names_and_strings_when_configuration_is_strict() {
+        let engine = schema_six_fixture_engine();
+        for encoding in ["Ascii", "AsciiSymbolsUtf8Strings"] {
+            let result = alter_state(&engine, |state| {
+                state["config"]["string_encoding"] = serde_json::json!(encoding);
+            });
+            assert!(
+                matches!(result, Err(SerializationError::InvalidState(_))),
+                "{encoding}"
+            );
+        }
+        let mut engine = Engine::new(EngineConfig::utf8());
+        let value = engine.create_string_bytes(b"\xff").unwrap();
+        engine.assert_ordered("raw", [value]).unwrap();
+        let result = alter_state(&engine, |state| {
+            state["config"]["string_encoding"] = serde_json::json!("Ascii");
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("encoding"))
+        );
+    }
+
+    #[test]
+    fn byte_value_symbols_cannot_be_forged_into_relation_identifiers() {
+        let mut engine = Engine::with_rules("(deffacts seed (item 1))").unwrap();
+        let raw = engine.symbol_value_bytes(b"\xff").unwrap();
+        let Value::Symbol(symbol) = raw.as_value() else {
+            unreachable!()
+        };
+        let raw_symbol = serde_json::to_value(symbol).unwrap();
+        engine.assert_ordered("data", [raw]).unwrap();
+        for &format in SerializationFormat::ALL {
+            // The same pool entry is valid as ordinary fact data.
+            Engine::deserialize(&engine.serialize(format).unwrap(), format).unwrap();
+        }
+        let result = alter_state(&engine, |state| {
+            state["registered_deffacts"][0]["facts"][0]["Ordered"]["relation"] = raw_symbol.clone();
+        });
+        assert!(
+            matches!(result, Err(SerializationError::InvalidState(message)) if message.contains("relation"))
+        );
+        let result = alter_state(&engine, |state| {
+            let facts = state["fact_base"]["facts"].as_array_mut().unwrap();
+            let fact = facts
+                .iter_mut()
+                .find_map(|slot| slot.get_mut("value")?.get_mut("fact")?.get_mut("Ordered"))
+                .unwrap();
+            fact["relation"] = raw_symbol;
+        });
+        assert!(matches!(result, Err(SerializationError::InvalidState(_))));
     }
 
     #[test]
@@ -2091,7 +2259,7 @@ mod tests {
                 result.rules_fired, 1,
                 "format {format:?} lost the passing predicate token"
             );
-            assert_eq!(restored.get_output("t"), Some("1\n"));
+            assert_eq!(restored.get_output("t").unwrap(), Some("1\n"));
         }
     }
 

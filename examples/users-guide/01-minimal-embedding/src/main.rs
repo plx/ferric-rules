@@ -17,6 +17,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     engine.assert_ordered_symbol("user", "Alice")?;
     engine.run(RunLimit::Unlimited)?;
 
-    assert_eq!(engine.get_output("t"), Some("Hello, Alice!\n"));
+    assert_eq!(engine.get_output("t")?, Some("Hello, Alice!\n"));
     Ok(())
 }

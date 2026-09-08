@@ -27,6 +27,6 @@ fn main() -> anyhow::Result<()> {
         panic!("expected session-count to be an Integer");
     }
 
-    print!("{}", engine.get_output("t").unwrap_or(""));
+    print!("{}", engine.get_output("t")?.unwrap_or(""));
     Ok(())
 }

@@ -36,9 +36,10 @@
 //! - **Embedded-NUL policy**: Legacy NUL-terminated inputs end at their first
 //!   NUL. Hosts converting length-bearing strings must reject embedded NUL
 //!   before calling those entry points; the checked value constructors do this
-//!   explicitly. Legacy `FerricValue` and borrowed-output egress reject
-//!   unrepresentable content instead of returning empty/truncated strings.
-//!   Length-reporting copy and serialization APIs preserve exact bytes.
+//!   explicitly. Raw value constructors and appended byte-span value tags
+//!   preserve arbitrary STRING, SYMBOL, and INSTANCE-NAME bytes. Borrowed
+//!   text output rejects embedded NUL and invalid UTF-8; length-reporting
+//!   output copy and serialization APIs preserve exact bytes.
 //!
 //! - **Logical-run continuation**: `ferric_engine_run_ex` starts a fresh logical
 //!   run. After it returns `LimitReached`, `ferric_engine_continue_run_ex` runs

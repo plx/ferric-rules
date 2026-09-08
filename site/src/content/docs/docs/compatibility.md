@@ -51,9 +51,9 @@ Fatal expression or predicate errors stop subsequent rule actions, but may
 still carry a partial value into an enclosing assignment. Diagnostic presence
 alone does not distinguish these outcomes; inspect the run's halt reason.
 
-This support uses existing value representations. It does not add
-`INSTANCE-NAME` or invalid-UTF-8 strings, and it does not require reproducing
-the pinned CLIPS process fault for Void used as a data field. The CLIPS-valid
+The value layer supports `INSTANCE-NAME` and byte lexemes, including strings
+that are not valid UTF-8. This does not require reproducing the pinned CLIPS
+process fault for Void used as a data field. The CLIPS-valid
 `(sort bind c b a)` callback remains an unsupported local-binding/special-form
 invocation; comparator metadata does not imply parity for every builtin.
 Malformed source bind targets are a separate parsed-variable restriction.

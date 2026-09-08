@@ -534,7 +534,11 @@ pub fn assert_load_error_contains(engine: &mut Engine, source: &str, expected_su
 pub fn load_run_output(engine: &mut Engine, source: &str, channel: &str) -> String {
     load_ok(engine, source);
     run_to_completion(engine);
-    engine.get_output(channel).unwrap_or("").to_string()
+    engine
+        .get_output(channel)
+        .unwrap()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Load source, run to completion, and return the stdout output (alias for "t" channel).
@@ -566,7 +570,7 @@ fn run_printout_expr_rule(
     load_ok(engine, &source);
     engine.reset().expect("reset should succeed");
     run_to_completion(engine);
-    engine.get_output("t").unwrap_or("").to_string()
+    engine.get_output("t").unwrap().unwrap_or("").to_string()
 }
 
 /// Load a deffunction and a rule that calls it, run, and return the output.

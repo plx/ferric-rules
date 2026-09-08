@@ -55,14 +55,17 @@ fn existential_support_preserves_order_across_indexing_and_backfill() {
                 // activation per matching parent, in the original traversal order.
                 engine.retract(first).unwrap();
                 fire(&mut engine, count);
-                assert_eq!(engine.get_output("t"), Some(expected.as_str()));
+                assert_eq!(engine.get_output("t").unwrap(), Some(expected.as_str()));
                 engine.retract(second).unwrap();
                 fire(&mut engine, 0);
                 engine
                     .assert_ordered("support", vec![key(1, kind), Value::Integer(3)])
                     .unwrap();
                 fire(&mut engine, count);
-                assert_eq!(engine.get_output("t"), Some(expected.repeat(2).as_str()));
+                assert_eq!(
+                    engine.get_output("t").unwrap(),
+                    Some(expected.repeat(2).as_str())
+                );
             }
         }
     }

@@ -129,7 +129,7 @@ fn reset_creates_root_matches_before_seed_matches_for_depth_and_breadth() {
         for _ in 0..3 {
             engine.reset().unwrap();
             run(&mut engine, 2);
-            assert_eq!(engine.get_output("t"), Some(expected));
+            assert_eq!(engine.get_output("t").unwrap(), Some(expected));
         }
     }
 }
@@ -140,7 +140,7 @@ fn template_seed_multislots_preserve_all_typed_fields_and_empty_values() {
         (deffacts seed (packet (items red blue 3.5) (empty)))
         (defrule inspect (packet (items $?items) (empty $?empty)) => (printout t (length$ ?items) ":" (length$ ?empty)))"#).unwrap();
     run(&mut engine, 1);
-    assert_eq!(engine.get_output("t"), Some("3:0"));
+    assert_eq!(engine.get_output("t").unwrap(), Some("3:0"));
     let (_, Fact::Template(fact)) = engine.facts().unwrap().next().unwrap() else {
         panic!("template required")
     };

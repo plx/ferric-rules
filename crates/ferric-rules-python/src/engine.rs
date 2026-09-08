@@ -839,8 +839,22 @@ impl PyEngine {
     // -- I/O --
 
     /// Get captured output for a channel (e.g. "stdout").
-    fn get_output(&self, channel: &str) -> PyResult<Option<String>> {
-        self.with_engine(|engine| Ok(engine.get_output(channel).map(String::from)))
+    fn get_output(&self, py: Python<'_>, channel: &str) -> PyResult<Option<String>> {
+        self.with_engine(|engine| {
+            engine
+                .get_output_bytes(channel)
+                .map(|bytes| crate::value::checked_text(py, bytes))
+                .transpose()
+        })
+    }
+
+    /// Get the exact captured bytes, including invalid UTF-8 and embedded NUL.
+    fn get_output_bytes(&self, py: Python<'_>, channel: &str) -> PyResult<Option<PyObject>> {
+        self.with_engine(|engine| {
+            Ok(engine
+                .get_output_bytes(channel)
+                .map(|bytes| pyo3::types::PyBytes::new(py, bytes).into_any().unbind()))
+        })
     }
 
     /// Clear captured output for a channel.

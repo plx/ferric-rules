@@ -73,7 +73,13 @@ fn assert_no_refiring(engine: &mut Engine, fixture: &Fixture) {
     let result = engine.run(RunLimit::Count(20)).unwrap();
     assert_eq!(result.rules_fired, 0, "{}", fixture.name);
     assert_eq!(result.halt_reason, HaltReason::AgendaEmpty);
-    assert_eq!(engine.get_output("t").unwrap_or(""), fixture.output);
+    assert_eq!(
+        engine
+            .get_output("t")
+            .expect("fixture output is UTF-8")
+            .unwrap_or(""),
+        fixture.output
+    );
     assert!(engine.action_diagnostics().is_empty());
 }
 
@@ -93,7 +99,10 @@ fn assert_fixture_output(engine: &mut Engine, fixture: &Fixture) {
     );
     assert_eq!(result.rules_fired, fixture.firings, "{}", fixture.name);
     assert_eq!(
-        engine.get_output("t").unwrap_or(""),
+        engine
+            .get_output("t")
+            .expect("fixture output is UTF-8")
+            .unwrap_or(""),
         fixture.output,
         "{}",
         fixture.name

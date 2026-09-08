@@ -34,6 +34,9 @@ mod output_lifetime;
 mod embedded_nul;
 
 #[cfg(test)]
+mod byte_lexemes;
+
+#[cfg(test)]
 mod action_diagnostics;
 
 #[cfg(test)]

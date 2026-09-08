@@ -113,6 +113,8 @@ pub enum Atom {
     GlobalVar(String),
     /// Connective operator.
     Connective(Connective),
+    /// Instance-name literal, stored without brackets.
+    InstanceName(String),
 }
 
 /// Connective operators in CLIPS.
@@ -303,6 +305,7 @@ impl Parser {
                 Token::Float(f) => Atom::Float(*f),
                 Token::String(s) => Atom::String(s.clone()),
                 Token::Symbol(s) => Atom::Symbol(s.clone()),
+                Token::InstanceName(name) => Atom::InstanceName(name.clone()),
                 Token::SingleVar(v) => Atom::SingleVar(v.clone()),
                 Token::MultiVar(v) => Atom::MultiVar(v.clone()),
                 Token::GlobalVar(v) => Atom::GlobalVar(v.clone()),

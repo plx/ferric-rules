@@ -24,7 +24,7 @@ fn verify(mut engine: Engine, expected: &str) {
     assert_eq!(run.rules_fired, 2);
     assert_eq!(run.halt_reason, HaltReason::AgendaEmpty);
     assert!(engine.action_diagnostics().is_empty());
-    assert_eq!(engine.get_output("t"), Some(expected));
+    assert_eq!(engine.get_output("t").unwrap(), Some(expected));
 }
 
 #[test]

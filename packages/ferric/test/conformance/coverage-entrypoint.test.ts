@@ -41,6 +41,7 @@ import "./runtime/pool/thread-default.test.ts";
 import "./runtime/pool/thread-validation.test.ts";
 import "./runtime/pool/wire-conversion.test.ts";
 
+import "./runtime/sync/byte-lexemes.test.ts";
 import "./runtime/sync/dispose.test.ts";
 import "./runtime/sync/engine-smoke.test.ts";
 import "./runtime/sync/error-mapping.test.ts";

@@ -160,7 +160,7 @@ pub struct GlobalStore {
     )]
     pub(crate) values: ModuleNameMap<Value>,
     pub(crate) gensym_counter: i64,
-    printout_events: Vec<(String, String)>,
+    printout_events: Vec<(String, Vec<u8>)>,
     /// Deferred diagnostics are drained at engine operation boundaries.
     #[cfg_attr(feature = "serde", serde(skip))]
     diagnostics: Vec<crate::evaluator::EvalError>,
@@ -236,12 +236,12 @@ impl GlobalStore {
     }
 
     /// Queue a deferred `printout` event emitted from expression evaluation.
-    pub fn push_printout_event(&mut self, channel: String, text: String) {
-        self.printout_events.push((channel, text));
+    pub fn push_printout_event(&mut self, channel: String, text: impl AsRef<[u8]>) {
+        self.printout_events.push((channel, text.as_ref().to_vec()));
     }
 
     /// Drain queued deferred `printout` events in FIFO order.
-    pub fn take_printout_events(&mut self) -> Vec<(String, String)> {
+    pub fn take_printout_events(&mut self) -> Vec<(String, Vec<u8>)> {
         std::mem::take(&mut self.printout_events)
     }
 
@@ -749,13 +749,13 @@ mod tests {
     #[test]
     fn global_store_printout_events_roundtrip_and_drain() {
         let mut store = GlobalStore::new();
-        store.push_printout_event("t".to_string(), "hello".to_string());
-        store.push_printout_event("wtrace".to_string(), "trace".to_string());
+        store.push_printout_event("t".to_string(), b"hello");
+        store.push_printout_event("wtrace".to_string(), b"trace");
 
         let events = store.take_printout_events();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0], ("t".to_string(), "hello".to_string()));
-        assert_eq!(events[1], ("wtrace".to_string(), "trace".to_string()));
+        assert_eq!(events[0], ("t".to_string(), b"hello".to_vec()));
+        assert_eq!(events[1], ("wtrace".to_string(), b"trace".to_vec()));
         assert!(store.take_printout_events().is_empty());
     }
 
@@ -1307,7 +1307,7 @@ mod tests {
                     GlobalOp::TakePrintoutEvents => {
                         let actual_events = store.take_printout_events();
                         // Must match the model queue in FIFO order.
-                        let expected: Vec<_> = model_events.drain(..).collect();
+                        let expected: Vec<_> = model_events.drain(..).map(|(channel, text)| (channel, text.into_bytes())).collect();
                         prop_assert_eq!(
                             actual_events,
                             expected,
