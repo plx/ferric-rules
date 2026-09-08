@@ -17,7 +17,7 @@ use crate::beta::{
 use crate::binding::{BindingSet, ValueRef, VarId};
 use crate::fact::{Fact, FactBase, FactId, Timestamp};
 use crate::negative::NegativeMemoryId;
-use crate::sequence::{SequenceField, SequencePattern};
+use crate::sequence::{SequenceField, SequencePattern, SequenceSegment, SequenceSource};
 use crate::strategy::ConflictResolutionStrategy;
 use crate::token::{NodeId, Token, TokenId, TokenStore};
 use crate::value::{AtomKey, Value};
@@ -1887,19 +1887,25 @@ fn evaluate_join_bindings(fact: &Fact, bindings: Option<&BindingSet>, tests: &[J
 }
 
 /// Equality keys whose logical selectors also identify physical fact fields.
-/// A sequence's single fields before its first capture never shift. Captures
-/// and all later fields must be evaluated against each projected match instead.
+/// An ordered sequence's single fields before its first capture never shift.
+/// Template projections, captures, and all later ordered fields must be
+/// evaluated against each projected match instead.
 /// Use this same selection when requesting indexes and collecting candidates.
 pub(crate) fn indexable_tests<'a>(
     tests: &'a [JoinTest],
     sequence: Option<&SequencePattern>,
 ) -> impl Iterator<Item = (SlotIndex, VarId)> + 'a {
-    let fixed_prefix = sequence.map(|sequence| {
-        sequence
-            .fields
+    let fixed_prefix = sequence.map(|sequence| match sequence.segments.as_slice() {
+        [SequenceSegment {
+            source: SequenceSource::Ordered,
+            fields,
+        }] => fields
             .iter()
             .take_while(|field| **field == SequenceField::Single)
-            .count()
+            .count(),
+        // Even a template segment with one Single may unwrap a multislot;
+        // its logical selector is not a physical scalar index.
+        _ => 0,
     });
     tests.iter().filter_map(move |test| {
         let physical = fixed_prefix.map_or(
@@ -5017,7 +5023,10 @@ mod tests {
                 entry_type: AlphaEntryType::OrderedRelation(row_relation),
                 constant_tests: vec![],
                 sequence: Some(SequencePattern {
-                    fields,
+                    segments: vec![SequenceSegment {
+                        source: SequenceSource::Ordered,
+                        fields,
+                    }],
                     tests: vec![],
                 }),
                 variable_slots: vec![(SlotIndex::Ordered(prefix), variable)],
@@ -5260,7 +5269,7 @@ mod tests {
             .key_pattern
             .variable_slots
             .push((SlotIndex::Ordered(1), y));
-        fixture.row_pattern.sequence.as_mut().unwrap().fields = vec![
+        fixture.row_pattern.sequence.as_mut().unwrap().segments[0].fields = vec![
             SequenceField::Single,
             SequenceField::Multi,
             SequenceField::Single,
@@ -5374,7 +5383,7 @@ mod tests {
     fn ordered_prefix_index_preserves_multiple_split_tokens() {
         let mut fixture = PrefixIndexFixture::new(0);
         let sequence = fixture.row_pattern.sequence.as_mut().unwrap();
-        sequence.fields = vec![
+        sequence.segments[0].fields = vec![
             SequenceField::Single,
             SequenceField::Multi,
             SequenceField::Single,
@@ -5430,11 +5439,14 @@ mod tests {
             },
         ];
         let sequence = SequencePattern {
-            fields: vec![
-                SequenceField::Single,
-                SequenceField::Multi,
-                SequenceField::Single,
-            ],
+            segments: vec![SequenceSegment {
+                source: SequenceSource::Ordered,
+                fields: vec![
+                    SequenceField::Single,
+                    SequenceField::Multi,
+                    SequenceField::Single,
+                ],
+            }],
             tests: vec![],
         };
         assert!(indexable_tests(&tests, Some(&sequence)).next().is_none());
@@ -5445,5 +5457,59 @@ mod tests {
                 (SlotIndex::Ordered(2), VarId(2)),
             ]
         );
+    }
+
+    #[test]
+    fn template_single_element_multislot_is_not_a_physical_index_key() {
+        let sequence = SequencePattern {
+            segments: vec![SequenceSegment {
+                source: SequenceSource::TemplateSlot(0),
+                fields: vec![SequenceField::Single],
+            }],
+            tests: vec![],
+        };
+        sequence.validate().unwrap();
+        let tests = [JoinTest {
+            alpha_slot: SlotIndex::Template(0),
+            beta_var: VarId(0),
+            test_type: JoinTestType::Equal,
+        }];
+
+        // The projection is one scalar; the physical slot can hold [scalar].
+        assert!(indexable_tests(&tests, Some(&sequence)).next().is_none());
+        assert_eq!(
+            indexable_tests(&tests, None).collect::<Vec<_>>(),
+            vec![(SlotIndex::Template(0), VarId(0))]
+        );
+    }
+
+    #[test]
+    fn template_written_order_prefix_is_not_a_physical_index_key() {
+        let sequence = SequencePattern {
+            segments: vec![
+                SequenceSegment {
+                    source: SequenceSource::TemplateSlot(1),
+                    fields: vec![SequenceField::Single],
+                },
+                SequenceSegment {
+                    source: SequenceSource::TemplateSlot(2),
+                    fields: vec![SequenceField::Multi],
+                },
+                SequenceSegment {
+                    source: SequenceSource::TemplateSlot(0),
+                    fields: vec![SequenceField::Single],
+                },
+            ],
+            tests: vec![],
+        };
+        sequence.validate().unwrap();
+        let tests = [JoinTest {
+            alpha_slot: SlotIndex::Template(0),
+            beta_var: VarId(0),
+            test_type: JoinTestType::Equal,
+        }];
+
+        // Logical slot 0 precedes the Multi but comes from physical slot 1.
+        assert!(indexable_tests(&tests, Some(&sequence)).next().is_none());
     }
 }

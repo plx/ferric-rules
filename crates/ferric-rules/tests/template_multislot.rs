@@ -85,6 +85,90 @@ fixture!(template_multislot_negative_transitions);
 fixture!(template_multislot_owner_lifecycle);
 fixture!(template_multislot_indexed_joins);
 
+fn projected_template_join_control(
+    template_slots: &str,
+    fact_slots: impl Fn(usize) -> String,
+    pattern_slots: &str,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut source = format!(
+        "(deftemplate item {template_slots} (slot side))\n\
+         (defglobal ?*left* = 0 ?*right* = 0)\n\
+         (deffacts input\n"
+    );
+    // Cross both candidate-index thresholds, with each arrival direction
+    // isolated by a physical scalar slot constant.
+    for key in 0..24 {
+        writeln!(&mut source, "  (key-before k{key})").unwrap();
+    }
+    for side in ["right", "left"] {
+        for key in 0..24 {
+            writeln!(&mut source, "  (item {} (side {side}))", fact_slots(key)).unwrap();
+        }
+    }
+    for key in 0..24 {
+        writeln!(&mut source, "  (key-after k{key})").unwrap();
+    }
+    source.push_str(")\n");
+    writeln!(
+        &mut source,
+        "(defrule right-arrival\n\
+           (key-before ?key) (item {pattern_slots} (side right))\n\
+           => (bind ?*right* (+ ?*right* 1)))"
+    )
+    .unwrap();
+    writeln!(
+        &mut source,
+        "(defrule left-arrival\n\
+           (key-after ?key) (item {pattern_slots} (side left))\n\
+           => (bind ?*left* (+ ?*left* 1)))"
+    )
+    .unwrap();
+    source.push_str(
+        r#"(defrule summary (declare (salience -10))
+             => (printout t ?*left* ":" ?*right* crlf))
+"#,
+    );
+    source
+}
+
+#[test]
+fn template_single_element_multislot_is_not_a_raw_scalar_index() {
+    // A Single projection of a multislot still reads a raw Multifield value.
+    let source = projected_template_join_control(
+        "(multislot value)",
+        |key| format!("(value k{key})"),
+        "(value ?key)",
+    );
+    for late_rules in [false, true] {
+        check(
+            &source,
+            "24:24\n",
+            late_rules,
+            ConflictResolutionStrategy::Depth,
+        );
+    }
+}
+
+#[test]
+fn template_written_slot_order_is_not_physical_index_order() {
+    // The key is logical slot 0, but raw slot 0 contains the decoy instead.
+    let source = projected_template_join_control(
+        "(slot decoy) (slot key) (multislot tags)",
+        |key| format!("(decoy sentinel) (key k{key}) (tags x y)"),
+        "(key ?key) (tags $?tail) (decoy sentinel)",
+    );
+    for late_rules in [false, true] {
+        check(
+            &source,
+            "24:24\n",
+            late_rules,
+            ConflictResolutionStrategy::Depth,
+        );
+    }
+}
+
 macro_rules! rejected_fixture {
     ($name:ident) => {
         #[test]
