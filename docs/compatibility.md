@@ -804,7 +804,7 @@ identically to their CLIPS counterparts for the supported argument types.
 | `create$` | Create a multifield | `(create$ a b c)` |
 | `length$` | Multifield length | `(length$ (create$ a b c))` => `3` |
 | `nth$` | Get nth element (1-indexed) | `(nth$ 2 (create$ a b c))` => `b` |
-| `member$` | Find element position | `(member$ b (create$ a b c))` => `2` |
+| `member$` | Find element position or contiguous subsequence range | `(member$ b (create$ a b c))` => `2` |
 | `subsetp` | Subset test | `(subsetp (create$ a) (create$ a b))` => `TRUE` |
 | `insert$` | Insert values at position | `(insert$ (create$ a c) 2 b)` => `(a b c)` |
 | `delete$` | Remove range (1-indexed, inclusive) | `(delete$ (create$ a b c) 2 2)` => `(a c)` |
@@ -812,6 +812,15 @@ identically to their CLIPS counterparts for the supported argument types.
 | `first$` | First element as multifield | `(first$ (create$ a b c))` => `(a)` |
 | `rest$` | All but first as multifield | `(rest$ (create$ a b c))` => `(b c)` |
 | `sort` | Sort multifield | `(sort < (create$ 3 1 2))` => `(1 2 3)` |
+
+`member$` and its `member` alias return the first matching position as an INTEGER
+for a scalar or single-field MULTIFIELD needle. Longer matching needles return a
+two-INTEGER MULTIFIELD containing the inclusive start and end positions; for
+example, `(member$ (create$ b c) (create$ a b c d))` returns `(2 3)`. Missing
+matches return the symbol `FALSE`. An empty needle returns `(1 0)` for a nonempty
+haystack and `FALSE` for an empty one. Both operands are evaluated before the
+search, including empty-needle cases, and the haystack must be a MULTIFIELD.
+Comparison preserves field types, exact INTEGER values, and FLOAT bits.
 
 ### Fact Introspection Functions
 
