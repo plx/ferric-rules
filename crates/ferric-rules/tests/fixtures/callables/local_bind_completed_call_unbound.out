@@ -1,0 +1,4 @@
+first:10
+[PRCCODE5] Variable local unbound in deffunction remember.
+[PRCCODE4] Execution halted during the actions of deffunction remember.
+[PRCCODE4] Execution halted during the actions of defrule next-call.

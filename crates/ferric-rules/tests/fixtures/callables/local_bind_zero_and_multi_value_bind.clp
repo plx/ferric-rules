@@ -1,0 +1,6 @@
+(deffunction values (?x)
+  (bind ?local 1 2 3)
+  (printout t (length$ ?local) ":" (bind ?local) ":" (bind ?x) ":" ?x crlf)
+  (bind ?x 7 8)
+  (length$ ?x))
+(defrule probe => (printout t (values 42) crlf))

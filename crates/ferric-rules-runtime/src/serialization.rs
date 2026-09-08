@@ -597,6 +597,47 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_reject_iterator_binds_even_in_unexecuted_callable_bodies() {
+        fn replace_bind_target(value: &mut serde_json::Value) -> usize {
+            if let Some(call) = value.get_mut("FunctionCall") {
+                if call["name"] == "bind" {
+                    assert_eq!(call["args"][0]["Variable"][0], "scratch");
+                    call["args"][0]["Variable"][0] = serde_json::json!("i");
+                    return 1;
+                }
+            }
+            match value {
+                serde_json::Value::Array(entries) => {
+                    entries.iter_mut().map(replace_bind_target).sum()
+                }
+                serde_json::Value::Object(entries) => {
+                    entries.values_mut().map(replace_bind_target).sum()
+                }
+                _ => 0,
+            }
+        }
+
+        for definition in ["deffunction keep", "defmethod keep 1"] {
+            for (body, diagnostic) in [
+                ("(loop-for-count (?i 2 1) (bind ?scratch 9))", "PRCDRPSR1"),
+                ("(progn$ (?i (create$)) (bind ?scratch 9))", "MULTIFUN2"),
+                ("(foreach ?i (create$) (bind ?scratch 9))", "MULTIFUN2"),
+            ] {
+                let engine = Engine::with_rules(&format!("({definition} () {body} 7)")).unwrap();
+                // These empty loops never reach the evaluator's runtime guard.
+                // A checksummed payload must still obey source-time protection.
+                let result = alter_state(&engine, |state| {
+                    assert_eq!(replace_bind_target(state), 1);
+                });
+                assert!(
+                    matches!(result, Err(SerializationError::InvalidState(message)) if message.contains(diagnostic)),
+                    "{definition}: {body}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn snapshot_rejects_nonroot_root_without_panicking() {
         let engine = Engine::with_rules("(defrule ready (ready) =>)").unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
