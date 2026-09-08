@@ -270,3 +270,38 @@ the first pass's largest regression is +2.25% for `load_and_run_simple`;
 the repeat's largest is +5.88% for `reset_run_simple`
 (first pass -2.35%). These small controls are retained in the
 cumulative audit. The substantial, repeated loop gains justify the change.
+
+## Host boundary bookkeeping
+
+Host identity removal, clearing, and amortized pruning now use `Mutex::get_mut`
+under exclusive engine access. Shared exports and lookups retain their mutex,
+global identities, and provenance checks. The existing bounded pruning policy
+remains in place; synchronous cleanup on every RHS removal was measured and
+rejected after repeatable small-churn regressions.
+Host-value validation retains its depth/item limits, ownership checks, and
+traversal/error order, but stores its first eight pending values inline instead
+of allocating a vector for each scalar input.
+
+A dense `SecondaryMap` reverse index was evaluated and rejected. It made the
+first read of a high-index fact allocate for many unexported slots. The new
+`host_first_sparse_export` control excludes engine setup/destruction and retains
+an exact target-value and stable-handle oracle. The retained implementation uses
+sparse hash maps, so storage scales with exported identities rather than the
+fact arena's highest occupied slot. Rejected prototype measurements remain in
+[the experiment record](2026-09-07-host-bookkeeping-experiments.json).
+
+Regression tests check bounded storage reclamation through repeated RHS retract
+and template modify cycles, stable live handles, rejection of retired handles,
+reset/clear, and eight concurrent readers exporting the same initially
+unexported fact. Direct assertion/retraction benchmarks verify one and eight
+integer fields, alongside sparse reads, owned captures, registry operations,
+and facade lifecycle/retraction/churn/query controls.
+
+## Runtime snapshot benchmark repair
+
+The broader runtime audit exposed a pre-existing invalid workload: the large
+snapshot generator printed integral floating-point values as integer literals,
+which violate its `FLOAT` slot constraint. Formatting those generated values
+with one decimal place preserves the intended data and lets the existing fact,
+firing, output, and quiescence oracles run. Comparisons use the repaired source
+on both revisions; failed runs contribute no performance claims.

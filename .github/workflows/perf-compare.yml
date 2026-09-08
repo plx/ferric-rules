@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       workload_set:
-        description: "Optional bounded threading experiment"
+        description: "Benchmark suite: standard, threading experiments, or bounded audit-* suites"
         required: false
         default: "standard"
         type: string
@@ -27,7 +27,7 @@ on:
         required: true
         type: string
       workload_set:
-        description: "Optional bounded threading experiment"
+        description: "Benchmark suite: standard, threading experiments, or bounded audit-* suites"
         required: false
         default: "standard"
         type: string
@@ -42,7 +42,7 @@ env:
 
 jobs:
   perf-compare:
-    if: ${{ !startsWith(inputs.workload_set, 'threading') }}
+    if: ${{ !startsWith(inputs.workload_set, 'threading') && !startsWith(inputs.workload_set, 'audit-') }}
     name: Perf Comparison Report
     runs-on: ubuntu-latest
     steps:
@@ -136,3 +136,35 @@ jobs:
           name: threading-measurements
           retention-days: 30
           path: ${{ runner.temp }}/threading-measurements
+
+  audit-compare:
+    if: startsWith(inputs.workload_set, 'audit-')
+    name: Paired release audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Measure identical workloads on both revisions
+        env:
+          AUDIT_BASE: ${{ inputs.base_sha }}
+          AUDIT_HEAD: ${{ inputs.head_sha }}
+          AUDIT_SUITE: ${{ inputs.workload_set }}
+        run: python3 scripts/bench-audit.py "$AUDIT_BASE" "$AUDIT_HEAD" "$AUDIT_SUITE" "$RUNNER_TEMP/paired-audit"
+      - name: Publish summary
+        run: cat "$RUNNER_TEMP/paired-audit/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain estimates and build/measurement logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paired-release-audit
+          retention-days: 30
+          path: ${{ runner.temp }}/paired-audit

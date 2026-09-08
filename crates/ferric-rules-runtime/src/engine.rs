@@ -467,7 +467,10 @@ impl Engine {
         Ok(())
     }
 
-    fn host_assertion_result(&self, result: FactAssertionResult<FactId>) -> FactAssertionResult {
+    fn host_assertion_result(
+        &mut self,
+        result: FactAssertionResult<FactId>,
+    ) -> FactAssertionResult {
         self.host.prune(&self.fact_base);
         match result {
             FactAssertionResult::Asserted(id) => {

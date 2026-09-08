@@ -196,7 +196,7 @@ fn engine_large() -> Engine {
         let status = if i % 3 == 0 { "active" } else { "archived" };
         writeln!(
             facts,
-            "    (item (id {i}) (category \"{category}\") (value {value}) (status \"{status}\"))"
+            "    (item (id {i}) (category \"{category}\") (value {value:.1}) (status \"{status}\"))"
         )
         .unwrap();
     }

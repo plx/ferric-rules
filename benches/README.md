@@ -179,3 +179,12 @@ runs to quiescence. Reset still includes assertion/matching work. Untimed oracle
 check initial firings and result values, parent cleanup, and refiring after a
 parent is reinserted. The separate independent-negative scaling gate excludes
 compilation and assertion setup to isolate destructive cleanup.
+
+### Host boundary controls
+
+The runtime `template_registry_bench` includes `host_assert_retract_{1,8}_fields`
+for checked public assertions and retractions, and
+`host_first_sparse_export/{1000,100000}` for the first read of one fact near the
+end of an otherwise unexported arena. Sparse-read setup and engine destruction
+are excluded with `iter_batched_ref`; target values and stable identities are
+checked before timing. These complement the owned-template capture controls.

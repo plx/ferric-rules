@@ -107,7 +107,8 @@ impl HostValue {
         if self.owner.is_some() && self.owner != owner {
             return Err(EngineError::ForeignHandle);
         }
-        let mut pending = vec![(&self.value, 0)];
+        let mut pending = SmallVec::<[(&Value, usize); 8]>::new();
+        pending.push((&self.value, 0));
         while let Some((value, depth)) = pending.pop() {
             *remaining = remaining.checked_sub(1).ok_or_else(|| {
                 EngineError::InvalidHostValue("too many values in one assertion".into())
@@ -251,6 +252,9 @@ fn contains_symbol(value: &Value) -> bool {
     }
 }
 
+// Sparse indexes scale with exported identities; reading a high-index fact
+// does not allocate for unexported arena slots. RHS removals are reclaimed
+// by the existing bounded, amortized pruning policy.
 #[derive(Default)]
 struct FactHandles {
     by_handle: FxHashMap<FactHandle, FactId>,
@@ -286,19 +290,19 @@ impl HostState {
             .get(&handle)
             .copied()
     }
-    pub fn remove(&self, fact: FactId) {
-        let mut handles = self.facts.lock().expect("host handle lock poisoned");
+    pub fn remove(&mut self, fact: FactId) {
+        let handles = self.facts.get_mut().expect("host handle lock poisoned");
         if let Some(handle) = handles.by_fact.remove(&fact) {
             handles.by_handle.remove(&handle);
         }
     }
-    pub fn clear_facts(&self) {
-        *self.facts.lock().expect("host handle lock poisoned") = FactHandles::default();
+    pub fn clear_facts(&mut self) {
+        *self.facts.get_mut().expect("host handle lock poisoned") = FactHandles::default();
     }
     /// Amortize cleanup of RHS retractions without walking live facts after
     /// every operation. Stale entries remain bounded by live facts plus 256.
-    pub fn prune(&self, facts: &FactBase) {
-        let mut handles = self.facts.lock().expect("host handle lock poisoned");
+    pub fn prune(&mut self, facts: &FactBase) {
+        let handles = self.facts.get_mut().expect("host handle lock poisoned");
         if handles.by_fact.len() > facts.len().saturating_mul(2).saturating_add(256) {
             handles.by_fact.retain(|fact, _| facts.get(*fact).is_some());
             handles
@@ -334,5 +338,91 @@ mod tests {
         engine.assert_ordered("item", 2_i64).unwrap();
         engine.clear();
         assert!(engine.host.facts.lock().unwrap().by_handle.is_empty());
+    }
+
+    #[test]
+    fn rhs_removal_bounds_storage_and_rejects_retired_identities() {
+        let mut engine = Engine::with_rules(
+            "(deftemplate changed (slot value))
+             (defrule consume ?f <- (item ?id) => (retract ?f))
+             (defrule change ?f <- (changed (value 0)) => (modify ?f (value 1)))",
+        )
+        .unwrap();
+        engine.reset().unwrap();
+        let stable = engine.assert_ordered("keep", 7_i64).unwrap();
+        for value in 0..1024 {
+            let retired = engine.assert_ordered("item", value).unwrap();
+            assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert!(engine.get_fact(retired).unwrap().is_none());
+            assert_eq!(engine.find_facts("keep").unwrap()[0].0, stable);
+            let handles = engine.host.facts.lock().unwrap();
+            // Pruning observes at most two live facts in this scenario.
+            assert!(handles.by_fact.len() <= 260);
+            assert_eq!(handles.by_handle.len(), handles.by_fact.len());
+        }
+        for _ in 0..256 {
+            let retired = engine
+                .assert_template_slots("changed", [("value", 0_i64)])
+                .unwrap();
+            assert_eq!(engine.run(RunLimit::Unlimited).unwrap().rules_fired, 1);
+            assert!(engine.get_fact(retired).unwrap().is_none());
+            let fresh = engine
+                .facts()
+                .unwrap()
+                .find_map(|(id, fact)| {
+                    matches!(fact, ferric_rules_core::Fact::Template(_)).then_some(id)
+                })
+                .unwrap();
+            assert_ne!(fresh, retired);
+            assert!(matches!(
+                engine.get_fact_slot_by_name(fresh, "value"),
+                Ok(ferric_rules_core::Value::Integer(1))
+            ));
+            assert_eq!(
+                engine.facts().unwrap().find_map(|(id, fact)| {
+                    matches!(fact, ferric_rules_core::Fact::Template(_)).then_some(id)
+                }),
+                Some(fresh)
+            );
+            engine.retract(fresh).unwrap();
+            let handles = engine.host.facts.lock().unwrap();
+            // The last pruning pass includes keep, changed, and the internal initial fact.
+            assert!(handles.by_fact.len() <= 262);
+            assert_eq!(handles.by_handle.len(), handles.by_fact.len());
+        }
+        engine.retract(stable).unwrap();
+        engine.reset().unwrap();
+        assert!(engine.host.facts.lock().unwrap().by_handle.is_empty());
+        assert!(engine.host.facts.lock().unwrap().by_fact.is_empty());
+    }
+
+    #[test]
+    fn concurrent_shared_exports_keep_one_identity_per_live_fact() {
+        let mut engine = Engine::with_rules("(deffacts seeds (item 1))").unwrap();
+        engine.reset().unwrap();
+        // No host handle has been exported before threads start.
+        assert!(engine.host.facts.lock().unwrap().by_handle.is_empty());
+        let engine = &engine;
+        std::thread::scope(|scope| {
+            let readers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(move || {
+                        let first = engine.find_facts("item").unwrap()[0].0;
+                        for _ in 0..100 {
+                            assert_eq!(engine.find_facts("item").unwrap()[0].0, first);
+                            assert!(engine.get_fact(first).unwrap().is_some());
+                        }
+                        first
+                    })
+                })
+                .collect();
+            let ids: Vec<_> = readers
+                .into_iter()
+                .map(|reader| reader.join().unwrap())
+                .collect();
+            assert!(ids.iter().all(|id| *id == ids[0]));
+        });
+        assert_eq!(engine.host.facts.lock().unwrap().by_handle.len(), 1);
+        assert_eq!(engine.host.facts.lock().unwrap().by_fact.len(), 1);
     }
 }
