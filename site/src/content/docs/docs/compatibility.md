@@ -31,9 +31,8 @@ The same rendering applies inside deffunctions and methods and to Ferric's
 RHS `println`, which adds a newline.
 
 Printed STRING fields retain literal embedded quotes, backslashes, control
-characters, and UTF8 bytes. CLIPS `implode$` instead escapes embedded quotes
-and backslashes; its separate compatibility repair is tracked in
-[#344](https://github.com/plx/ferric-rules/issues/344). SYMBOL fields remain
+characters, and UTF8 bytes. `implode$` instead uses the escaped field mode
+described below. SYMBOL fields remain
 literal, including `crlf`, `tab`, `vtab`, and `ff`. Those four symbols expand
 to LF, TAB, VT, and FF only as top-level output operands.
 
@@ -48,6 +47,30 @@ Typed INSTANCE-NAME and FACT-ADDRESS print forms remain representation gaps;
 INTEGERs are printed as integers and host ExternalAddress values retain an
 opaque placeholder. This output contract does not cover arbitrary invalid
 UTF8 strings or general source round-tripping.
+
+## Multifield Text
+
+`create$` evaluates VOID-producing operands for their effects but omits those
+scalar results from the multifield. Empty STRINGs remain fields.
+
+`implode$` accepts exactly one MULTIFIELD and returns a STRING containing its
+fields separated by one space, without outer parentheses. An empty multifield
+returns an empty STRING; an empty STRING field contributes `""`. Each STRING
+field is quoted, with embedded quotes and backslashes escaped by a backslash.
+Literal control characters and UTF8 bytes remain unchanged, and SYMBOLs keep
+their raw spelling, including `crlf`, `tab`, `vtab`, and `ff`.
+
+INTEGER spelling stays exact. FLOATs share direct output's 15-significant-digit
+format, including `-0.0`, exponents, and nonfinite spellings. The operand is
+evaluated once after the argument-count check; a scalar result produces a type
+error. Rendering leaves input values and the separate `str-cat`, `sym-cat`,
+`format`, and `save-facts` formatters unchanged.
+
+Quoted STRING-field round-tripping through `explode$` still depends on
+[#339](https://github.com/plx/ferric-rules/issues/339). Arbitrary generated
+SYMBOL spellings have no general source round-trip guarantee. The typed-value
+and invalid-UTF8 boundaries described for direct output apply here too;
+INTEGERs are never reinterpreted as fact addresses.
 
 ## Conflict Resolution
 

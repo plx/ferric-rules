@@ -4296,7 +4296,8 @@ fn builtin_explode_mf(
 /// `create$` — create a multifield from 0+ arguments.
 ///
 /// If any argument is itself a multifield, its elements are flattened into
-/// the result (CLIPS implicit multifield flattening).
+/// the result (CLIPS implicit multifield flattening). Scalar VOID results
+/// contribute no field, but their expressions are still evaluated.
 fn builtin_create_mf(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -4311,6 +4312,7 @@ fn builtin_create_mf(
                     result.push(elem.clone());
                 }
             }
+            Value::Void => {}
             other => result.push(other),
         }
     }
@@ -4435,7 +4437,8 @@ fn builtin_nth(
     eval_nth(ctx, args, span, "nth")
 }
 
-/// `implode$` — convert a multifield to a space-separated string.
+/// `implode$` — convert a multifield to a space-separated STRING, quoting and
+/// escaping its STRING fields.
 fn builtin_implode_mf(
     ctx: &mut EvalContext<'_>,
     args: &[RuntimeExpr],
@@ -4450,7 +4453,7 @@ fn builtin_implode_mf(
                 if idx > 0 {
                     result.push(' ');
                 }
-                concat_values_to_string(ctx, std::slice::from_ref(element), &mut result);
+                crate::value_print::append_implode_field(element, ctx.symbol_table, &mut result);
             }
             let fs = FerricString::new(&result, ctx.config.string_encoding).map_err(|e| {
                 EvalError::TypeError {

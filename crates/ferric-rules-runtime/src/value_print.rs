@@ -1,5 +1,5 @@
-//! CLIPS value spelling for direct output. Expression evaluation and router
-//! delivery remain with the caller; fields are rendered without changing values.
+//! CLIPS value spelling for direct output and `implode$`. Expression evaluation
+//! and router delivery remain with the caller; rendering does not change values.
 
 use std::fmt::Write as _;
 
@@ -9,12 +9,19 @@ use ferric_rules_core::{SymbolTable, Value};
 enum Context {
     TopLevel,
     Field,
+    ImplodeField,
 }
 
 /// Append one printout operand. Control SYMBOLs expand only at the top level;
 /// STRING fields in multifields use raw quotes, without escaping their contents.
 pub(crate) fn append_printout_value(value: &Value, symbols: &SymbolTable, output: &mut String) {
     append_value(value, symbols, output, Context::TopLevel);
+}
+
+/// Append an `implode$` field, quoting STRINGs and escaping their quotes and
+/// backslashes. Control SYMBOLs retain their literal spelling.
+pub(crate) fn append_implode_field(value: &Value, symbols: &SymbolTable, output: &mut String) {
+    append_value(value, symbols, output, Context::ImplodeField);
 }
 
 fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, context: Context) {
@@ -39,23 +46,41 @@ fn append_value(value: &Value, symbols: &SymbolTable, output: &mut String, conte
             }
         }
         Value::String(string) => {
-            if context == Context::Field {
+            if context != Context::TopLevel {
                 output.push('"');
             }
-            output.push_str(string.as_str());
-            if context == Context::Field {
+            if context == Context::ImplodeField {
+                for character in string.as_str().chars() {
+                    if matches!(character, '"' | '\\') {
+                        output.push('\\');
+                    }
+                    output.push(character);
+                }
+            } else {
+                output.push_str(string.as_str());
+            }
+            if context != Context::TopLevel {
                 output.push('"');
             }
         }
         Value::Multifield(fields) => {
-            output.push('(');
+            let field_context = if context == Context::ImplodeField {
+                // Preserve the existing space-joined shape of host-created
+                // nested multifields; source-visible multifields are flat.
+                Context::ImplodeField
+            } else {
+                output.push('(');
+                Context::Field
+            };
             for (index, field) in fields.iter().enumerate() {
                 if index != 0 {
                     output.push(' ');
                 }
-                append_value(field, symbols, output, Context::Field);
+                append_value(field, symbols, output, field_context);
             }
-            output.push(')');
+            if context != Context::ImplodeField {
+                output.push(')');
+            }
         }
         Value::Void => {}
         // Preserve the existing opaque-host-value boundary; this is not a
